@@ -143,16 +143,20 @@ PACKAGES = [
 
 TOP_LEVEL = {name for name in PACKAGES if "." not in name}
 
+# tests/ is not part of the layout; tolerate an __init__.py there.
+NOT_PACKAGES = {"tests"}
+
 
 @pytest.mark.parametrize("name", PACKAGES)
 def test_package_imports_from_this_repo(name: str) -> None:
     module = importlib.import_module(name)
     assert module.__file__ is not None
-    assert Path(module.__file__).resolve().is_relative_to(REPO_ROOT)
+    expected = REPO_ROOT.joinpath(*name.split(".")) / "__init__.py"
+    assert Path(module.__file__).resolve() == expected
 
 
 def test_no_undeclared_top_level_packages() -> None:
-    found = {p.parent.name for p in REPO_ROOT.glob("*/__init__.py")}
+    found = {p.parent.name for p in REPO_ROOT.glob("*/__init__.py")} - NOT_PACKAGES
     assert found == TOP_LEVEL
 ```
 
