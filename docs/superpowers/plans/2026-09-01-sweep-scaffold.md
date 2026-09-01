@@ -916,7 +916,7 @@ just console    # console dev server on http://localhost:5173
 just media      # MediaMTX via docker compose
 ```
 
-Python runs from the repo root through uv, and modules are invoked as packages, for example `uv run python -m relay.main` once that module exists.
+Python runs from the repo root through uv, and modules are invoked as packages, for example `uv run python -m relay.main` once that module exists. Keep uv's default `.venv/` at the repo root (the ignore rules assume it). `tests/test_layout.py` guards the Appendix D layout: every top-level package must resolve from this repo, and no undeclared top-level package may appear; `adapters/` subpackages are by convention.
 
 ## Working agreement
 
