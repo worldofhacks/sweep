@@ -64,8 +64,8 @@ Each directory README states the owner, phase, and responsibility from PRD secti
 
 ### Infra
 
-- `docker-compose.yml`: a `mediamtx` service pinned to `bluenviron/mediamtx:1.20.1` exposing RTSP 8554 plus RTP/RTCP 8000 to 8001/udp, WebRTC 8889 plus 8189/udp, and HLS 8888, with the config mounted from `media/mediamtx.yml`. Comments mark where `relay` (Phase 1) and `perception` (Phase 3) are added.
-- `justfile` recipes: `setup`, `test`, `lint`, `fmt`, `console`, `media`, `gitlab-remote`.
+- `docker-compose.yml`: project name `sweep`, no restart policy, and a `mediamtx` service pinned to `bluenviron/mediamtx:1.20.1` exposing RTSP 8554 plus RTP/RTCP 8000 to 8001/udp, WebRTC 8889 plus 8189/udp, and HLS 8888, with the config mounted from `media/mediamtx.yml`. Comments mark where `relay` (Phase 1) and `perception` (Phase 3) are added.
+- `justfile` recipes: `setup`, `test`, `lint`, `fmt`, `console`, `media`, `gitlab-remote` (pushes without `-u`, so `main` keeps `origin` as upstream).
 - `.env.example` with `SWEEP_RELAY_TOKEN` and `ANTHROPIC_API_KEY`, both empty, per PRD section 7.2.
 
 ### CI

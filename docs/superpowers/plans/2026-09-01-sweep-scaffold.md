@@ -598,6 +598,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `docker-compose.yml`, `justfile`, `.env.example`, `.editorconfig`
+- Modify: `.gitignore` (add `recordings/`), `media/README.md` (restart and shell-less image notes)
 
 - [ ] **Step 1: Write docker-compose.yml**
 
@@ -606,11 +607,13 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 #
 # relay      arrives in Phase 1 (owner C) once relay/ has an app and a Dockerfile.
 # perception arrives in Phase 3 (owner A).
+# No restart policy: a bad config makes `just media` exit with the error instead of looping.
+name: sweep
+
 services:
   mediamtx:
     image: bluenviron/mediamtx:1.20.1
     container_name: sweep-mediamtx
-    restart: unless-stopped
     ports:
       - "8554:8554"                 # RTSP ingest from drones and cameras
       - "8000-8001:8000-8001/udp"   # RTSP RTP/RTCP for publishers that negotiate UDP (ffmpeg's default)
@@ -618,6 +621,7 @@ services:
       - "8189:8189/udp"             # WebRTC ICE
       - "8888:8888"                 # HLS
     volumes:
+      # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
       - ./media/mediamtx.yml:/mediamtx.yml:ro
       # Phase 3 (owner C): add ./recordings:/recordings and set recordPath in media/mediamtx.yml.
 ```
@@ -629,6 +633,7 @@ services:
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# Run the Python test suite (default)
 default: test
 
 # Install Python and console dependencies
@@ -646,25 +651,26 @@ lint:
     uv run ruff format --check .
     cd console && pnpm lint
 
-# Auto-format and auto-fix Python
+# Auto-format and auto-fix Python and the console
 fmt:
     uv run ruff format .
     uv run ruff check --fix .
+    cd console && pnpm lint --fix
 
 # Start the console dev server
 console:
     cd console && pnpm dev
 
-# Start MediaMTX
+# Start MediaMTX in the foreground (Ctrl-C stops it)
 media:
     docker compose up mediamtx
 
-# Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main.
 # Requires a prior: glab auth login --hostname labs.gauntletai.com
+# Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main
 gitlab-remote:
     glab auth status --hostname labs.gauntletai.com
     GITLAB_HOST=labs.gauntletai.com glab repo create sweep --public --remoteName gitlab --defaultBranch main --description "One person commands a small drone swarm with their hands, their head, or a sentence, and sees what the swarm sees."
-    git push -u gitlab main
+    git push gitlab main
 ```
 
 - [ ] **Step 3: Write .env.example and .editorconfig**
@@ -674,6 +680,7 @@ gitlab-remote:
 ```
 # Copy to .env (git-ignored). Keys never reach the console; only the relay and the
 # language module read them (PRD section 7.2).
+# Generate the relay token with: openssl rand -hex 32
 SWEEP_RELAY_TOKEN=
 ANTHROPIC_API_KEY=
 ```
@@ -693,18 +700,30 @@ indent_size = 2
 
 [*.py]
 indent_size = 4
+max_line_length = 100
 
-[justfile]
+[{justfile,Justfile,.justfile,*.just}]
 indent_size = 4
 
 [*.md]
 trim_trailing_whitespace = false
 ```
 
+- [ ] **Step 3b: Ignore recordings and note MediaMTX operations**
+
+Append to `.gitignore`, after `*.swp` and one blank line:
+
+```
+# Media
+recordings/
+```
+
+In `media/README.md`, replace the line `Start it with `just media` (or `docker compose up mediamtx`). Config: `mediamtx.yml`.` with `Start it with `just media` (or `docker compose up mediamtx`). Config: `mediamtx.yml`; edits need `docker compose restart mediamtx` because the bind mount does not hot-reload. The image is distroless (no shell), so debug with `docker compose logs mediamtx`.`
+
 - [ ] **Step 4: Verify compose parses and just lists recipes**
 
-Run: `docker compose config --quiet && echo "compose ok" && just --list`
-Expected: `compose ok` then a recipe list containing `console`, `default`, `fmt`, `gitlab-remote`, `lint`, `media`, `setup`, `test`.
+Run: `docker compose config --quiet && echo "compose ok" && docker compose config | grep '^name:' && just --list`
+Expected: `compose ok`, `name: sweep`, then a recipe list containing `console`, `default`, `fmt`, `gitlab-remote`, `lint`, `media`, `setup`, `test`, each with its description (just uses only the comment line directly above a recipe).
 
 Run: `just test`
 Expected: `11 passed`.
@@ -712,10 +731,10 @@ Expected: `11 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docker-compose.yml justfile .env.example .editorconfig
-git -c commit.gpgsign=false commit -m "build: compose (MediaMTX), justfile, env template, hygiene files
+git add docker-compose.yml justfile .env.example .editorconfig .gitignore media/README.md
+git -c commit.gpgsign=false commit --only -m "build: compose (MediaMTX), justfile, env template, editorconfig
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" -- docker-compose.yml justfile .env.example .editorconfig .gitignore media/README.md
 ```
 
 ---
@@ -990,7 +1009,7 @@ Expected when ready: `✓ Logged in to labs.gauntletai.com as <user>`. If it sti
 - [ ] **Step 2: Create the project, add the remote, push**
 
 Run: `just gitlab-remote`
-Expected: `✓ Created repository ... on GitLab` (or equivalent), then `branch 'main' set up to track 'gitlab/main'`.
+Expected: `✓ Created repository ... on GitLab` (or equivalent), then the push output `* [new branch]      main -> main` (the upstream of `main` stays `origin`).
 
 - [ ] **Step 3: Verify both remotes**
 
