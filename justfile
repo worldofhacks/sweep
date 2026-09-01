@@ -1,0 +1,40 @@
+# Sweep task runner. List recipes with: just --list
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+default: test
+
+# Install Python and console dependencies
+setup:
+    uv sync
+    cd console && pnpm install
+
+# Run the Python test suite
+test:
+    uv run pytest
+
+# Lint and format-check Python and the console
+lint:
+    uv run ruff check .
+    uv run ruff format --check .
+    cd console && pnpm lint
+
+# Auto-format and auto-fix Python
+fmt:
+    uv run ruff format .
+    uv run ruff check --fix .
+
+# Start the console dev server
+console:
+    cd console && pnpm dev
+
+# Start MediaMTX
+media:
+    docker compose up mediamtx
+
+# Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main.
+# Requires a prior: glab auth login --hostname labs.gauntletai.com
+gitlab-remote:
+    glab auth status --hostname labs.gauntletai.com
+    GITLAB_HOST=labs.gauntletai.com glab repo create sweep --public --remoteName gitlab --defaultBranch main --description "One person commands a small drone swarm with their hands, their head, or a sentence, and sees what the swarm sees."
+    git push -u gitlab main
