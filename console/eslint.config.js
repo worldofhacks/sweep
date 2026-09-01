@@ -23,7 +23,7 @@ export default defineConfig([
     files: ['**/*.{js,mjs,cjs}'],
     extends: [js.configs.recommended],
     languageOptions: {
-      ecmaVersion: 2020,
+      ecmaVersion: 'latest',
       globals: { ...globals.node, ...globals.browser },
     },
   },
