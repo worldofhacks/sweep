@@ -907,22 +907,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Create the GitHub repository and push
+### Task 7: Push to GitHub and confirm CI
 
 **Files:** none (remote operations)
 
-- [ ] **Step 1: Confirm the tree is clean and the name is free**
-
-Run: `git status --porcelain | wc -l && gh repo view worldofhacks/sweep 2>&1 | head -1`
-Expected: `0` and `GraphQL: Could not resolve to a Repository with the name 'worldofhacks/sweep'.`
-
-- [ ] **Step 2: Create the public repo from the local checkout and push main**
-
-```bash
-gh repo create worldofhacks/sweep --public --source=. --remote=origin --push \
-  --description "One person commands a small drone swarm with their hands, their head, or a sentence, and sees what the swarm sees."
-```
-Expected: `✓ Created repository worldofhacks/sweep on GitHub` and `✓ Pushed commits to https://github.com/worldofhacks/sweep.git`.
+- [x] **Steps 1 and 2 done early** (2026-09-01, after Task 2, at the user's request): `gh repo create worldofhacks/sweep --public --source=. --remote=origin --push` created https://github.com/worldofhacks/sweep with `origin` tracking `main`. From here on, every task pushes with `git push origin main` right after its commit, so the remote never lags the local tree.
 
 - [ ] **Step 3: Wait for CI and confirm both jobs are green**
 
