@@ -432,7 +432,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 3: Console (Vite + React + TypeScript)
 
 **Files:**
-- Create: `console/` via create-vite, then modify `console/index.html`, `console/src/App.tsx`, `console/src/App.css`, `console/src/index.css`, `console/package.json`, `console/README.md`
+- Create: `console/` via create-vite, then modify `console/index.html`, `console/src/App.tsx`, `console/src/App.css`, `console/src/index.css`, `console/package.json`, `console/eslint.config.js`, `console/README.md`
 - Delete: `console/src/assets/` (template demo images) and `console/public/favicon.svg`, `console/public/icons.svg` (template favicon and icon sprite)
 - Create: `console/public/phase0/.gitkeep`
 - Create: `.node-version`
@@ -453,10 +453,10 @@ Expected: `eslint.config.js index.html package.json public README.md src tsconfi
 24
 ```
 
-In `console/package.json`, set `"name": "sweep-console"` and add `"packageManager": "pnpm@10.2.1"` at the top level. Run:
+In `console/package.json`, set `"name": "sweep-console"`, `"version": "0.0.1"`, and `"packageManager": "pnpm@10.2.1"` at the top level. Run:
 
 ```bash
-cd console && pnpm pkg set name=sweep-console packageManager=pnpm@10.2.1 && cd ..
+cd console && pnpm pkg set name=sweep-console version=0.0.1 packageManager=pnpm@10.2.1 && cd ..
 ```
 
 - [ ] **Step 3: Replace the template page**
@@ -555,6 +555,23 @@ Phase 0's `swarm-gesture-console.html` (ten intents, dwell and confirmations, si
 
 PRD: sections 4.2, 5.8.
 ```
+
+- [ ] **Step 4b: Make ESLint cover plain JavaScript files**
+
+The template's only config object is scoped to `**/*.{ts,tsx}`, so `.js` files pass `pnpm lint` unlinted. In `console/eslint.config.js`, add this object as the last element of the array passed to `defineConfig([...])` (the `js` and `globals` imports already exist):
+
+```js
+  {
+    files: ['**/*.{js,mjs,cjs}'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: { ...globals.node, ...globals.browser },
+    },
+  },
+```
+
+Check the gate: a throwaway `console/src/lint-probe.js` containing `if (x = 2) { console.log(undefinedGlobalHere) }` must make `pnpm lint` fail with `no-cond-assign` and `no-undef`; delete it afterwards and confirm `pnpm lint` passes again.
 
 - [ ] **Step 5: Install, lint, build**
 
