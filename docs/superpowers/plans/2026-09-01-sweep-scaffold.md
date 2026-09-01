@@ -395,8 +395,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Generate the app**
 
-Run: `pnpm dlx create-vite@9.2.0 console --template react-ts --no-interactive`
-Expected: `Scaffolding project in /Users/quietguy/capystone/console...` then `Done.` If `--no-interactive` is rejected as unknown, rerun without it; with stdin not a TTY, create-vite skips its prompts.
+Run: `pnpm dlx create-vite@9.2.0 console --template react-ts --eslint --no-immediate --no-interactive`
+Expected: `Scaffolding project in /Users/quietguy/capystone/console...` then `Done.` The `--eslint` flag matters: create-vite 9 defaults React templates to Oxlint, and this plan expects `eslint.config.js` and an ESLint-based `pnpm lint`.
 
 Run: `ls console console/src`
 Expected: `eslint.config.js index.html package.json public README.md src tsconfig.app.json tsconfig.json tsconfig.node.json vite.config.ts` and `App.css App.tsx assets index.css main.tsx vite-env.d.ts`.
