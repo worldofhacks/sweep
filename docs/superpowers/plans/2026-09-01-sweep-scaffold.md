@@ -8,6 +8,8 @@
 
 **Tech Stack:** uv, Python 3.12, pytest, ruff; pnpm 10.2.1, Node 24, Vite 8, React 19, TypeScript; MediaMTX 1.20.1 via docker compose; just; gh 2.65; glab 1.109.
 
+Action pins: actions/checkout@v7, actions/setup-node@v7, pnpm/action-setup@v6 have floating major tags; astral-sh/setup-uv does not, so it is pinned to the exact release v10.0.1.
+
 Spec: `docs/superpowers/specs/2026-09-01-sweep-scaffold-design.md`. PRD: `docs/prd.md`.
 
 Conventions for every commit in this plan: run `git -c commit.gpgsign=false commit`, and end the message with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
@@ -766,7 +768,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1   # exact release: astral-sh publishes no floating v10 tag
         with:
           python-version: "3.12"
           enable-cache: true
