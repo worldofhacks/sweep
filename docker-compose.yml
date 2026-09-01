@@ -2,11 +2,13 @@
 #
 # relay      arrives in Phase 1 (owner C) once relay/ has an app and a Dockerfile.
 # perception arrives in Phase 3 (owner A).
+# No restart policy: a bad config makes `just media` exit with the error instead of looping.
+name: sweep
+
 services:
   mediamtx:
     image: bluenviron/mediamtx:1.20.1
     container_name: sweep-mediamtx
-    restart: unless-stopped
     ports:
       - "8554:8554"                 # RTSP ingest from drones and cameras
       - "8000-8001:8000-8001/udp"   # RTSP RTP/RTCP for publishers that negotiate UDP (ffmpeg's default)
@@ -14,5 +16,6 @@ services:
       - "8189:8189/udp"             # WebRTC ICE
       - "8888:8888"                 # HLS
     volumes:
+      # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
       - ./media/mediamtx.yml:/mediamtx.yml:ro
       # Phase 3 (owner C): add ./recordings:/recordings and set recordPath in media/mediamtx.yml.

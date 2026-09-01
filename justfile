@@ -2,6 +2,7 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# Run the Python test suite (default)
 default: test
 
 # Install Python and console dependencies
@@ -19,22 +20,23 @@ lint:
     uv run ruff format --check .
     cd console && pnpm lint
 
-# Auto-format and auto-fix Python
+# Auto-format and auto-fix Python and the console
 fmt:
     uv run ruff format .
     uv run ruff check --fix .
+    cd console && pnpm lint --fix
 
 # Start the console dev server
 console:
     cd console && pnpm dev
 
-# Start MediaMTX
+# Start MediaMTX in the foreground (Ctrl-C stops it)
 media:
     docker compose up mediamtx
 
-# Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main.
 # Requires a prior: glab auth login --hostname labs.gauntletai.com
+# Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main
 gitlab-remote:
     glab auth status --hostname labs.gauntletai.com
     GITLAB_HOST=labs.gauntletai.com glab repo create sweep --public --remoteName gitlab --defaultBranch main --description "One person commands a small drone swarm with their hands, their head, or a sentence, and sees what the swarm sees."
-    git push -u gitlab main
+    git push gitlab main
