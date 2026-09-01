@@ -1,8 +1,22 @@
 # Mirror of .github/workflows/ci.yml for the labs.gauntletai.com copy.
+# Runs on merge requests and on the default branch, like the GitHub workflow.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
 stages: [test]
 
-python:
+.ci-job:
   stage: test
+  interruptible: true
+  timeout: 10m
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+python:
+  extends: .ci-job
   image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
   variables:
     UV_LINK_MODE: copy
@@ -13,10 +27,11 @@ python:
     - uv run pytest
 
 console:
-  stage: test
+  extends: .ci-job
   image: node:24-bookworm-slim
   before_script:
-    - npm install -g pnpm@10.2.1
+    # Same pnpm as console/package.json's packageManager, so the two CIs cannot drift.
+    - npm install -g "pnpm@$(node -p "require('./console/package.json').packageManager.split('@')[1]")"
   script:
     - cd console
     - pnpm install --frozen-lockfile

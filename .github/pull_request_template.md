@@ -9,3 +9,4 @@
 - [ ] No new intent without a contract change, a test, and all three inputs updated
 - [ ] No model in the safety path
 - [ ] On the scripted mission path, or Phase 6 hardening
+- [ ] No change to a frozen contract (intent schema, telemetry schema, adapter interface, layout) without team agreement

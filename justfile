@@ -20,6 +20,14 @@ lint:
     uv run ruff format --check .
     cd console && pnpm lint
 
+# Run exactly what CI runs (locked sync, lint, format check, tests, console install/lint/build)
+ci:
+    uv sync --locked
+    uv run ruff check .
+    uv run ruff format --check .
+    uv run pytest
+    cd console && pnpm install --frozen-lockfile && pnpm lint && pnpm build
+
 # Auto-format and auto-fix Python and the console
 fmt:
     uv run ruff format .
