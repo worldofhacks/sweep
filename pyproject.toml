@@ -1,0 +1,28 @@
+[project]
+name = "sweep"
+version = "0.0.1"
+description = "One person commands a small drone swarm with their hands, their head, or a sentence, and sees what the swarm sees."
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.12",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
+pythonpath = ["."]
+testpaths = ["tests", "relay", "planner", "arbiter", "adapters", "perception", "language", "evals"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["console", "datasets", "glasses"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
