@@ -2,11 +2,11 @@
 
 Date: 2026-09-01
 Status: approved in session (bare skeleton)
-Product source of truth: `docs/prd.md` (Sweep PRD v0.1, Sept 1, 2026)
+Product source of truth: `docs/prd.md` (Sweep PRD v0.2, Sept 1, 2026)
 
 ## 1. Purpose
 
-Stand up the public `sweep` repository so the three engineers (A: Interaction, B: Autonomy, C: Platform) can freeze contracts on the morning of Sept 2 and start Phase 1 in a repo that already has the agreed layout, toolchains, CI, licensing, and planning structure. The scaffold contains no application code.
+Stand up the public `sweep` repository so the three engineers (A: Interaction, B: Autonomy, C: Platform) can freeze contracts on the morning of Sept 2 and start Phase 1 in a repo that already has the agreed layout, toolchains, CI, and planning structure. The scaffold contains no application code.
 
 ## 2. Decisions made in this session
 
@@ -18,8 +18,8 @@ Stand up the public `sweep` repository so the three engineers (A: Interaction, B
 | Console toolchain | Vite 8 + React 19 + TypeScript, pnpm | user's choice; still emits static files |
 | Python toolchain | uv, Python 3.12 (`>=3.12,<3.13`), pytest, ruff | ROS 2 Jazzy compatibility for B |
 | Python packaging | flat top-level packages per Appendix D; project not installed (`tool.uv.package = false`); imports resolve from the repo root | keeps the frozen layout literal; avoids installing generic names such as `evals` into site-packages |
-| Scaffold depth | bare skeleton: layout, READMEs, toolchains, one layout test, CI, licenses, compose | user's choice |
-| Licensing | Apache-2.0 for code (root `LICENSE`); CC BY 4.0 for `datasets/` and `docs/` | PRD section 7.4 |
+| Scaffold depth | bare skeleton: layout, READMEs, toolchains, one layout test, CI, compose | user's choice |
+| Licensing | no license files in the scaffold; a license is chosen at the Phase 6 release | user's direction |
 | CI | GitHub Actions `python` and `console` jobs; `.gitlab-ci.yml` mirrors them | PRD section 7.5; keeps the GitLab copy live |
 | Branch protection | `main` requires a pull request, one approval, and the `python` and `console` checks; admins may bypass | PRD section 8.2 rule 4 |
 | Milestones | six GitHub milestones, Phases 1 to 6, PRD dates | so issues can be filed on Sept 2 |
@@ -40,10 +40,10 @@ Appendix D of the PRD, verbatim, plus one root `tests/` directory.
 | `perception/` | A | 3 | empty Python package |
 | `language/` | A and C | 5 | empty Python package |
 | `evals/` | C | 1 onward | empty Python package; README naming the four gold sets |
-| `datasets/` | A, all | 1 onward | README with Git LFS guidance; CC BY 4.0 license |
-| `docs/` | all | now | `prd.md`, this spec, the plan, CC BY 4.0 license, index README |
+| `datasets/` | A, all | 1 onward | README with Git LFS guidance |
+| `docs/` | all | now | `prd.md`, this spec, the plan, index README |
 | `tests/` | C | now | `test_layout.py`, which imports every Python package |
-| root | C | now | `pyproject.toml`, `uv.lock`, `justfile`, `docker-compose.yml`, `.github/`, `.gitlab-ci.yml`, `.gitignore`, `.editorconfig`, `.python-version`, `.node-version`, `.env.example`, `LICENSE`, `README.md` |
+| root | C | now | `pyproject.toml`, `uv.lock`, `justfile`, `docker-compose.yml`, `.github/`, `.gitlab-ci.yml`, `.gitignore`, `.editorconfig`, `.python-version`, `.node-version`, `.env.example`, `README.md` |
 
 Each directory README states the owner, phase, and responsibility from PRD section 4.2 in a few lines.
 
