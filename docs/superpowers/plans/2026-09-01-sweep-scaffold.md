@@ -595,12 +595,14 @@ services:
     container_name: sweep-mediamtx
     restart: unless-stopped
     ports:
-      - "8554:8554"        # RTSP ingest from drones and cameras
-      - "8889:8889"        # WebRTC (WHIP publish, WHEP play) for the console
-      - "8189:8189/udp"    # WebRTC ICE
-      - "8888:8888"        # HLS fallback
+      - "8554:8554"                 # RTSP ingest from drones and cameras
+      - "8000-8001:8000-8001/udp"   # RTSP RTP/RTCP for publishers that negotiate UDP (ffmpeg's default)
+      - "8889:8889"                 # WebRTC (WHIP publish, WHEP play) for the console
+      - "8189:8189/udp"             # WebRTC ICE
+      - "8888:8888"                 # HLS
     volumes:
       - ./media/mediamtx.yml:/mediamtx.yml:ro
+      # Phase 3 (owner C): add ./recordings:/recordings and set recordPath in media/mediamtx.yml.
 ```
 
 - [ ] **Step 2: Write the justfile**
