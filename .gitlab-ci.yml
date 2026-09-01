@@ -1,0 +1,24 @@
+# Mirror of .github/workflows/ci.yml for the labs.gauntletai.com copy.
+stages: [test]
+
+python:
+  stage: test
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  variables:
+    UV_LINK_MODE: copy
+  script:
+    - uv sync --locked
+    - uv run ruff check .
+    - uv run ruff format --check .
+    - uv run pytest
+
+console:
+  stage: test
+  image: node:24-bookworm-slim
+  before_script:
+    - npm install -g pnpm@10.2.1
+  script:
+    - cd console
+    - pnpm install --frozen-lockfile
+    - pnpm lint
+    - pnpm build
