@@ -653,6 +653,14 @@ lint:
     uv run ruff format --check .
     cd console && pnpm lint
 
+# Run exactly what CI runs (locked sync, lint, format check, tests, console install/lint/build)
+ci:
+    uv sync --locked
+    uv run ruff check .
+    uv run ruff format --check .
+    uv run pytest
+    cd console && pnpm install --frozen-lockfile && pnpm lint && pnpm build
+
 # Auto-format and auto-fix Python and the console
 fmt:
     uv run ruff format .
@@ -725,7 +733,7 @@ In `media/README.md`, replace the line `Start it with `just media` (or `docker c
 - [ ] **Step 4: Verify compose parses and just lists recipes**
 
 Run: `docker compose config --quiet && echo "compose ok" && docker compose config | grep '^name:' && just --list`
-Expected: `compose ok`, `name: sweep`, then a recipe list containing `console`, `default`, `fmt`, `gitlab-remote`, `lint`, `media`, `setup`, `test`, each with its description (just uses only the comment line directly above a recipe).
+Expected: `compose ok`, `name: sweep`, then a recipe list containing `ci`, `console`, `default`, `fmt`, `gitlab-remote`, `lint`, `media`, `setup`, `test`, each with its description (just uses only the comment line directly above a recipe).
 
 Run: `just test`
 Expected: `11 passed`.
@@ -758,14 +766,18 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   python:
     name: python
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.0.1   # exact release: astral-sh publishes no floating v10 tag
@@ -780,6 +792,7 @@ jobs:
   console:
     name: console
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: console
@@ -804,10 +817,24 @@ jobs:
 
 ```yaml
 # Mirror of .github/workflows/ci.yml for the labs.gauntletai.com copy.
+# Runs on merge requests and on the default branch, like the GitHub workflow.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
 stages: [test]
 
-python:
+.ci-job:
   stage: test
+  interruptible: true
+  timeout: 10m
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+python:
+  extends: .ci-job
   image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
   variables:
     UV_LINK_MODE: copy
@@ -818,10 +845,11 @@ python:
     - uv run pytest
 
 console:
-  stage: test
+  extends: .ci-job
   image: node:24-bookworm-slim
   before_script:
-    - npm install -g pnpm@10.2.1
+    # Same pnpm as console/package.json's packageManager, so the two CIs cannot drift.
+    - npm install -g "pnpm@$(node -p "require('./console/package.json').packageManager.split('@')[1]")"
   script:
     - cd console
     - pnpm install --frozen-lockfile
@@ -845,6 +873,7 @@ console:
 - [ ] No new intent without a contract change, a test, and all three inputs updated
 - [ ] No model in the safety path
 - [ ] On the scripted mission path, or Phase 6 hardening
+- [ ] No change to a frozen contract (intent schema, telemetry schema, adapter interface, layout) without team agreement
 ```
 
 - [ ] **Step 4: Verify both CI files parse**

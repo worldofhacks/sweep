@@ -65,14 +65,14 @@ Each directory README states the owner, phase, and responsibility from PRD secti
 ### Infra
 
 - `docker-compose.yml`: project name `sweep`, no restart policy, and a `mediamtx` service pinned to `bluenviron/mediamtx:1.20.1` exposing RTSP 8554 plus RTP/RTCP 8000 to 8001/udp, WebRTC 8889 plus 8189/udp, and HLS 8888, with the config mounted from `media/mediamtx.yml`. Comments mark where `relay` (Phase 1) and `perception` (Phase 3) are added.
-- `justfile` recipes: `setup`, `test`, `lint`, `fmt`, `console`, `media`, `gitlab-remote` (pushes without `-u`, so `main` keeps `origin` as upstream).
+- `justfile` recipes: `setup`, `test`, `lint`, `ci` (exactly what CI runs), `fmt`, `console`, `media`, `gitlab-remote` (pushes without `-u`, so `main` keeps `origin` as upstream).
 - `.env.example` with `SWEEP_RELAY_TOKEN` and `ANTHROPIC_API_KEY`, both empty, per PRD section 7.2.
 
 ### CI
 
-- `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. Job `python`: setup-uv, `uv sync --locked`, `ruff check`, `ruff format --check`, `pytest`. Job `console`: pnpm and Node 24, `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm build`.
-- `.gitlab-ci.yml`: the same two jobs on the official `uv` and `node:24` images.
-- `.github/pull_request_template.md`: CI green, one review, and the PRD section 8.6 rules as a checklist.
+- `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, with read-only token permissions, 10-minute job timeouts, and a concurrency group that cancels superseded runs except on `main`. Job `python`: setup-uv, `uv sync --locked`, `ruff check`, `ruff format --check`, `pytest`. Job `console`: pnpm and Node 24, `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm build`.
+- `.gitlab-ci.yml`: the same two jobs on the official `uv` and `node:24` images, limited to merge requests and the default branch, interruptible, with 10-minute timeouts and the pnpm version read from `console/package.json`.
+- `.github/pull_request_template.md`: CI green, one review, the PRD section 8.6 rules, and no frozen-contract change without agreement, as a checklist.
 
 ### Repo settings
 
