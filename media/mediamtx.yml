@@ -1,14 +1,24 @@
 # MediaMTX configuration for Sweep (PRD section 5.7).
-# Streams are named by drone id: publish to rtsp://<ground-station>:8554/drone1 ... drone6.
+# Streams are named by drone id, f"drone{id}": publish to rtsp://<ground-station>:8554/drone1 ... drone6.
 # The console plays them over WebRTC (WHEP) at http://<ground-station>:8889/<name>/whep
-# and over HLS at http://<ground-station>:8888/<name>/.
+# and over HLS at http://<ground-station>:8888/<name>/index.m3u8 (the bare /<name>/ URL is the built-in player).
 # Every parameter not listed here keeps the MediaMTX default.
 
 logLevel: info
 
+# Serve only what the console uses; every other protocol stays off.
 rtsp: yes
 webrtc: yes
 hls: yes
+rtmp: no
+srt: no
+moq: no
+
+# Inside Docker, MediaMTX advertises its container IP as an ICE candidate. Set this to the
+# ground-station's LAN IP before WebRTC playback from another machine (Phase 3, owner C).
+# webrtcAdditionalHosts: []
+
+# Recording is switched on in Phase 3: pathDefaults.record plus a mounted recordings volume.
 
 paths:
   all_others:

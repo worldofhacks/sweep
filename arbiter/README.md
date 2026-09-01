@@ -6,4 +6,4 @@ Pure Python, no I/O, so every rule is trivially testable. Runs on every intent a
 
 Rule: no model in the safety path. Target: every safety rule has a test that tries to break it.
 
-PRD: sections 4.8, 5.5, 7.3.
+PRD: sections 4.8, 5.5, 7.3, 8.6.
