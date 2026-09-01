@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Node (console, glasses)
+node_modules/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# OS and editors
+.DS_Store
+.idea/
+*.swp

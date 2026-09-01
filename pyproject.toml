@@ -7,8 +7,8 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-  "pytest>=8.3",
-  "ruff>=0.12",
+  "pytest>=9,<10",
+  "ruff>=0.16,<0.17",
 ]
 
 [tool.uv]
@@ -22,7 +22,7 @@ testpaths = ["tests", "relay", "planner", "arbiter", "adapters", "perception", "
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["console", "datasets", "glasses"]
+extend-exclude = ["console", "datasets", "glasses", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
