@@ -18,7 +18,7 @@ Conventions for every commit in this plan: run `git -c commit.gpgsign=false comm
 
 | Path | Responsibility |
 |---|---|
-| `pyproject.toml`, `.python-version`, `uv.lock` | Python project, pytest and ruff config |
+| `pyproject.toml`, `.python-version`, `uv.lock`, `.gitignore` | Python project, pytest and ruff config, ignore rules (needed before any task runs pytest) |
 | `tests/test_layout.py` | Contract test: every Appendix D Python package imports |
 | `relay/`, `planner/`, `arbiter/`, `adapters/{,sim,crazyswarm2,mavlink}/`, `perception/`, `language/`, `evals/` | Empty packages, each with `__init__.py` and a README |
 | `media/mediamtx.yml`, `media/README.md` | MediaMTX config and stream naming |
@@ -26,7 +26,7 @@ Conventions for every commit in this plan: run `git -c commit.gpgsign=false comm
 | `console/` | Vite + React + TS app, trimmed to a placeholder page |
 | `.node-version` | Node 24 for local tooling and CI |
 | `docker-compose.yml` | MediaMTX service; relay and perception documented as later additions |
-| `justfile`, `.env.example`, `.gitignore`, `.editorconfig` | Task runner, env template, hygiene |
+| `justfile`, `.env.example`, `.editorconfig` | Task runner, env template, hygiene |
 | `.github/workflows/ci.yml`, `.gitlab-ci.yml`, `.github/pull_request_template.md` | CI and review rule |
 | `README.md` | Entry point: layout table, quickstart, working agreement |
 
@@ -37,10 +37,11 @@ Conventions for every commit in this plan: run `git -c commit.gpgsign=false comm
 **Files:**
 - Create: `pyproject.toml`
 - Create: `.python-version`
+- Create: `.gitignore`
 - Create: `tests/test_layout.py`
 - Create: `relay/__init__.py`, `planner/__init__.py`, `arbiter/__init__.py`, `adapters/__init__.py`, `adapters/sim/__init__.py`, `adapters/crazyswarm2/__init__.py`, `adapters/mavlink/__init__.py`, `perception/__init__.py`, `language/__init__.py`, `evals/__init__.py`
 
-- [ ] **Step 1: Write the project file and pin Python**
+- [ ] **Step 1: Write the project file, pin Python, and add .gitignore**
 
 `pyproject.toml`:
 
@@ -54,8 +55,8 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-  "pytest>=8.3",
-  "ruff>=0.12",
+  "pytest>=9,<10",
+  "ruff>=0.16,<0.17",
 ]
 
 [tool.uv]
@@ -69,7 +70,7 @@ testpaths = ["tests", "relay", "planner", "arbiter", "adapters", "perception", "
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["console", "datasets", "glasses"]
+extend-exclude = ["console", "datasets", "glasses", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
@@ -79,6 +80,33 @@ select = ["E", "F", "I", "B", "UP"]
 
 ```
 3.12
+```
+
+`.gitignore` (ruff 0.16 would otherwise format Python fences inside Markdown, and pytest writes `__pycache__` that later `git add <dir>` steps would sweep up):
+
+```
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Node (console, glasses)
+node_modules/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# OS and editors
+.DS_Store
+.idea/
+*.swp
 ```
 
 - [ ] **Step 2: Install the dev toolchain and create the lock file**
@@ -94,8 +122,11 @@ Expected: creates `.venv/` and `uv.lock`; output ends with `Installed N packages
 """Contract test for the frozen repository layout (PRD Appendix D, section 8.2)."""
 
 import importlib
+from pathlib import Path
 
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 PACKAGES = [
     "relay",
@@ -110,16 +141,25 @@ PACKAGES = [
     "evals",
 ]
 
+TOP_LEVEL = {name for name in PACKAGES if "." not in name}
+
 
 @pytest.mark.parametrize("name", PACKAGES)
-def test_package_imports(name: str) -> None:
-    assert importlib.import_module(name).__name__ == name
+def test_package_imports_from_this_repo(name: str) -> None:
+    module = importlib.import_module(name)
+    assert module.__file__ is not None
+    assert Path(module.__file__).resolve().is_relative_to(REPO_ROOT)
+
+
+def test_no_undeclared_top_level_packages() -> None:
+    found = {p.parent.name for p in REPO_ROOT.glob("*/__init__.py")}
+    assert found == TOP_LEVEL
 ```
 
 - [ ] **Step 4: Run the test to verify it fails**
 
 Run: `uv run pytest tests/test_layout.py -q`
-Expected: 10 failed, each with `ModuleNotFoundError: No module named 'relay'` (and so on per package).
+Expected: 11 failed: ten with `ModuleNotFoundError` (one per package) and `test_no_undeclared_top_level_packages`, because no package directory exists yet.
 
 - [ ] **Step 5: Create the packages**
 
@@ -155,15 +195,15 @@ printf '%s\n' '"""Eval harness: gesture, language, sim scenario, and hardware ac
 - [ ] **Step 6: Run the test to verify it passes, then lint**
 
 Run: `uv run pytest -q`
-Expected: `10 passed`.
+Expected: `11 passed`.
 
 Run: `uv run ruff check . && uv run ruff format --check .`
-Expected: `All checks passed!` and `N files already formatted`.
+Expected: `All checks passed!` and `11 files already formatted` (Markdown is excluded).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add pyproject.toml .python-version uv.lock tests relay planner arbiter adapters perception language evals
+git add pyproject.toml .python-version .gitignore uv.lock tests relay planner arbiter adapters perception language evals
 git -c commit.gpgsign=false commit -m "build: uv project, ruff, and layout contract test
 
 Flat top-level packages per PRD Appendix D; the project is not installed,
@@ -536,7 +576,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 4: Compose, justfile, env template, hygiene files
 
 **Files:**
-- Create: `docker-compose.yml`, `justfile`, `.env.example`, `.gitignore`, `.editorconfig`
+- Create: `docker-compose.yml`, `justfile`, `.env.example`, `.editorconfig`
 
 - [ ] **Step 1: Write docker-compose.yml**
 
@@ -604,7 +644,7 @@ gitlab-remote:
     git push -u gitlab main
 ```
 
-- [ ] **Step 3: Write .env.example, .gitignore, .editorconfig**
+- [ ] **Step 3: Write .env.example and .editorconfig**
 
 `.env.example`:
 
@@ -613,33 +653,6 @@ gitlab-remote:
 # language module read them (PRD section 7.2).
 SWEEP_RELAY_TOKEN=
 ANTHROPIC_API_KEY=
-```
-
-`.gitignore`:
-
-```
-# Python
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
-*.egg-info/
-build/
-dist/
-
-# Node (console, glasses)
-node_modules/
-
-# Secrets and local config
-.env
-.env.*
-!.env.example
-
-# OS and editors
-.DS_Store
-.idea/
-*.swp
 ```
 
 `.editorconfig`:
@@ -671,12 +684,12 @@ Run: `docker compose config --quiet && echo "compose ok" && just --list`
 Expected: `compose ok` then a recipe list containing `console`, `default`, `fmt`, `gitlab-remote`, `lint`, `media`, `setup`, `test`.
 
 Run: `just test`
-Expected: `10 passed`.
+Expected: `11 passed`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docker-compose.yml justfile .env.example .gitignore .editorconfig
+git add docker-compose.yml justfile .env.example .editorconfig
 git -c commit.gpgsign=false commit -m "build: compose (MediaMTX), justfile, env template, hygiene files
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"

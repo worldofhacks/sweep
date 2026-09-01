@@ -42,7 +42,7 @@ Appendix D of the PRD, verbatim, plus one root `tests/` directory.
 | `evals/` | C | 1 onward | empty Python package; README naming the four gold sets |
 | `datasets/` | A, all | 1 onward | README with Git LFS guidance |
 | `docs/` | all | now | `prd.md`, this spec, the plan, index README |
-| `tests/` | C | now | `test_layout.py`, which imports every Python package |
+| `tests/` | C | now | `test_layout.py`, which imports every Python package from this repo and rejects undeclared top-level packages |
 | root | C | now | `pyproject.toml`, `uv.lock`, `justfile`, `docker-compose.yml`, `.github/`, `.gitlab-ci.yml`, `.gitignore`, `.editorconfig`, `.python-version`, `.node-version`, `.env.example`, `README.md` |
 
 Each directory README states the owner, phase, and responsibility from PRD section 4.2 in a few lines.
@@ -51,9 +51,9 @@ Each directory README states the owner, phase, and responsibility from PRD secti
 
 ### Python
 
-- `pyproject.toml`: name `sweep`, version `0.0.1`, no runtime dependencies, dev dependency group with `pytest` and `ruff`.
+- `pyproject.toml`: name `sweep`, version `0.0.1`, no runtime dependencies, dev dependency group with `pytest` and `ruff` bounded to the locked minor versions.
 - `[tool.uv] package = false`. `[tool.pytest.ini_options]` sets `pythonpath = ["."]` and a `testpaths` list of `tests` plus the seven package directories, so package-local tests are collected later.
-- `[tool.ruff]`: line length 100, target py312, rule sets E, F, I, B, UP; `console/` and `datasets/` excluded.
+- `[tool.ruff]`: line length 100, target py312, rule sets E, F, I, B, UP; `console/`, `datasets/`, `glasses/`, and `*.md` excluded (ruff's formatter rewrites Python fences inside Markdown).
 - Everything runs from the repo root through `uv run`, with modules invoked as `python -m package.module`.
 
 ### Console
