@@ -565,7 +565,7 @@ The template's only config object is scoped to `**/*.{ts,tsx}`, so `.js` files p
     files: ['**/*.{js,mjs,cjs}'],
     extends: [js.configs.recommended],
     languageOptions: {
-      ecmaVersion: 2020,
+      ecmaVersion: 'latest',
       globals: { ...globals.node, ...globals.browser },
     },
   },
