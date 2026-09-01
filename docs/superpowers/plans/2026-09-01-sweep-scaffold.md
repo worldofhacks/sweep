@@ -433,7 +433,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `console/` via create-vite, then modify `console/index.html`, `console/src/App.tsx`, `console/src/App.css`, `console/src/index.css`, `console/package.json`, `console/README.md`
-- Delete: `console/src/assets/react.svg`, `console/public/vite.svg`
+- Delete: `console/src/assets/` (template demo images) and `console/public/favicon.svg`, `console/public/icons.svg` (template favicon and icon sprite)
 - Create: `console/public/phase0/.gitkeep`
 - Create: `.node-version`
 
@@ -443,7 +443,7 @@ Run: `pnpm dlx create-vite@9.2.0 console --template react-ts --eslint --no-immed
 Expected: `Scaffolding project in /Users/quietguy/capystone/console...` then `Done.` The `--eslint` flag matters: create-vite 9 defaults React templates to Oxlint, and this plan expects `eslint.config.js` and an ESLint-based `pnpm lint`.
 
 Run: `ls console console/src`
-Expected: `eslint.config.js index.html package.json public README.md src tsconfig.app.json tsconfig.json tsconfig.node.json vite.config.ts` and `App.css App.tsx assets index.css main.tsx vite-env.d.ts`.
+Expected: `eslint.config.js index.html package.json public README.md src tsconfig.app.json tsconfig.json tsconfig.node.json vite.config.ts` and `App.css App.tsx assets index.css main.tsx`. This template sets `"types": ["vite/client"]` in `tsconfig.app.json` instead of shipping `vite-env.d.ts`; `src/assets/` holds `hero.png react.svg vite.svg` and `public/` holds `favicon.svg icons.svg`.
 
 - [ ] **Step 2: Pin Node and pnpm**
 
@@ -528,8 +528,8 @@ body {
 Remove the demo assets and reserve the Phase 0 folder:
 
 ```bash
-rm console/src/assets/react.svg console/public/vite.svg
-rmdir console/src/assets
+rm -r console/src/assets
+rm console/public/favicon.svg console/public/icons.svg
 mkdir -p console/public/phase0 && touch console/public/phase0/.gitkeep
 ```
 
@@ -573,7 +573,7 @@ Phase 0 gesture console.
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
-`console/.gitignore` from the template excludes `node_modules` and `dist`, so neither is committed.
+`console/.gitignore` from the template excludes `node_modules` and `dist`, so neither is committed; `console/pnpm-lock.yaml` is committed.
 
 ---
 
