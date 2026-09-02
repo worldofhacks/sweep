@@ -1,6 +1,6 @@
 # Sweep MVP delivery plan
 
-This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble. M2 scales real hardware control to four Mini 3 nodes with live session membership. After M2.0, language and gesture input work may lead or run beside real known-map autonomous indoor traversal and capture. The lanes converge for the composed walkthrough and recorded demo.
+This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble. Language work may begin after M1.E. M2 scales real hardware control to four Mini 3 nodes with live session membership. After M2.0, gesture and real known-map autonomous indoor traversal become ready and may proceed concurrently; the input lane may land first. The lanes converge for the composed walkthrough and recorded demo.
 
 The MVP targets a live technical demonstration. Production governance and operations move to F.6. All hardware-safety gates remain in the active milestones.
 
@@ -299,7 +299,7 @@ After M2.0, the freely parallelizable pieces are MediaMTX recording and multi-st
 The parallel lanes after M2.0:
 
 1. Freeze the transcription request/response, plan result, detection-event, and stream-naming contracts. Each contract has one change owner and a different reviewer.
-2. Claim M4.1, M4.3, and M4.4 as soon as their M1 and M2.0 dependencies pass. The language and gesture lane may land before or alongside M3.0 and M3.4. Room-project UX, MediaMTX work, detector prototyping, corpus authoring, cached evaluation fixtures, and speech smoke preparation may proceed with their frozen input contracts.
+2. Claim M4.1 and M4.3 after M1.E and their listed dependencies pass. Claim M4.4 after M2.0 and its frozen contracts pass. The language and gesture lane may land before or alongside M3.0 and M3.4. Room-project UX, MediaMTX work, detector prototyping, corpus authoring, cached evaluation fixtures, and speech smoke preparation may proceed with their frozen input contracts.
 3. Use the accepted M1 one-node capture as the hardware baseline. M3.0 earns shared indoor localization and directional clearance, then M3.4 proves known-map traversal on one aircraft before two. M3 mosaic, sensor, and detection work proceeds beside those gates.
 4. Begin M4.5 after the accepted input producers and M3.5 are complete. It joins the input path, the real indoor known-map mission, and the operator-composed walkthrough. Shared console changes merge through one owner at a time.
 5. Continue delivery-gated M2 work in booked blocks while the input lane advances independently. Hardware bookings define the autonomy lane's pace.
