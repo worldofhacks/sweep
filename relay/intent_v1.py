@@ -68,7 +68,7 @@ class RejectedIntent:
 
 type ValidationResult = AcceptedIntent | RejectedIntent
 
-REGISTERED_SOURCES = frozenset({"webcam", "language", "keyboard"})
+REGISTERED_SOURCES = frozenset({"console", "keyboard"})
 M20_SUPPORTED_NAMES = frozenset(
     {
         IntentName.ARM,
@@ -79,16 +79,16 @@ M20_SUPPORTED_NAMES = frozenset(
         IntentName.COME_HOME,
         IntentName.LAND_ALL,
         IntentName.ESTOP,
+        IntentName.CAPTURE_ROOM,
     }
 )
 
-_FIELDS = frozenset(
+_REQUIRED_FIELDS = frozenset(
     {
         "v",
         "t",
         "type",
         "intent_id",
-        "retry_of",
         "source",
         "session",
         "name",
@@ -98,11 +98,12 @@ _FIELDS = frozenset(
         "confirm",
     }
 )
+_FIELDS = _REQUIRED_FIELDS | {"retry_of"}
 
 
 def validate_intent(raw: object) -> ValidationResult:
     """Validate untrusted input without raising; failures are returned as typed rejections."""
-    if not isinstance(raw, Mapping) or set(raw) != _FIELDS:
+    if not isinstance(raw, Mapping) or not _REQUIRED_FIELDS <= set(raw) or not set(raw) <= _FIELDS:
         return RejectedIntent(
             RejectionReason.INVALID_PAYLOAD, "payload fields do not match Intent v1"
         )
@@ -124,6 +125,11 @@ def validate_intent(raw: object) -> ValidationResult:
     except (KeyError, TypeError, ValueError):
         return RejectedIntent(RejectionReason.INVALID_PAYLOAD, f"invalid args for {name}")
 
+    if not _has_valid_scope(name, raw):
+        return RejectedIntent(
+            RejectionReason.INVALID_PAYLOAD, f"invalid selection or confirmation for {name}"
+        )
+
     if name not in M20_SUPPORTED_NAMES:
         return RejectedIntent(
             RejectionReason.UNSUPPORTED, f"{name} is outside the M2.0 capability set"
@@ -135,7 +141,7 @@ def validate_intent(raw: object) -> ValidationResult:
             t=raw["t"],
             type="intent",
             intent_id=raw["intent_id"],
-            retry_of=raw["retry_of"],
+            retry_of=raw.get("retry_of"),
             source=source,
             session=raw["session"],
             name=name,
@@ -163,9 +169,7 @@ def _has_valid_envelope(raw: Mapping[object, object]) -> bool:
         and raw["type"] == "intent"
         and isinstance(raw["intent_id"], str)
         and bool(raw["intent_id"])
-        and (
-            raw["retry_of"] is None or (isinstance(raw["retry_of"], str) and bool(raw["retry_of"]))
-        )
+        and _is_valid_retry_of(raw.get("retry_of"), raw["intent_id"])
         and isinstance(raw["source"], str)
         and bool(raw["source"])
         and isinstance(raw["session"], str)
@@ -183,6 +187,20 @@ def _is_drone_ids(value: object, *, allow_empty: bool) -> bool:
     return all(
         isinstance(item, int) and not isinstance(item, bool) and item > 0 for item in value
     ) and (len(set(value)) == len(value))
+
+
+def _is_valid_retry_of(value: object, intent_id: object) -> bool:
+    return value is None or (isinstance(value, str) and bool(value) and value != intent_id)
+
+
+def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
+    if name is IntentName.CAPTURE_ROOM:
+        return raw["confirm"] is True and len(raw["selection"]) == 1
+    if name is IntentName.SURVEY_AREA:
+        return raw["confirm"] is True
+    if name is IntentName.MAP_AREA:
+        return raw["confirm"] is True and bool(raw["selection"])
+    return True
 
 
 def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:

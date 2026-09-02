@@ -16,14 +16,15 @@ Run from the repo root: `uv run python -m relay.<module>`.
 
 The validator makes these schema choices where Appendix A leaves details open:
 
-- Every displayed field is required, and extra top-level fields are rejected.
+- Every displayed field except `retry_of` is required, and extra top-level fields are rejected. Initial requests may omit `retry_of` or set it to null.
 - `t` is a non-negative integer timestamp in epoch milliseconds. Freshness checks belong to the relay session path.
 - `session` is an opaque, non-empty string.
 - Drone IDs are unique positive integers. The current `selection` may be empty; `select.args.ids` may not.
 - Motion values are finite JSON numbers in planner-owned steps. The validator does not convert them to metres or impose mode bounds.
-- `confirm` records the source's confirmation state. The arbiter enforces which actions require confirmation.
+- `intent_id` is a non-empty stable identifier. A retry gets a new identifier and may link to a different failed request through `retry_of`.
+- `confirm` records the source's confirmation state. `capture_room` requires confirmation and exactly one selected drone; the arbiter enforces the remaining action-specific checks.
 - Rejection precedence is envelope, registered source, intent name, argument shape, then M2.0 capability.
-- M2.0 accepts eight Intent v1 names. The other seven keep their v1 argument shapes and return `unsupported`.
+- M2.0 accepts the eight flight-control names plus the previously accepted `capture_room` path. The remaining names keep their v1 argument shapes and return `unsupported`.
 - `come_home` returns selected drones to their home positions through planner-generated `goto` calls. The separate confirmed `land_all` intent maps to adapter `land`.
 
-The current source registry is `webcam`, `language`, and `keyboard`. Registering another source or enabling another Intent v1 name changes the shared constants and conformance tests in this module.
+The current source registry is `console` and `keyboard`. Language and webcam join only when their real producers and conformance tests land. Registering another source or enabling another Intent v1 name changes the shared constants and conformance tests in this module.

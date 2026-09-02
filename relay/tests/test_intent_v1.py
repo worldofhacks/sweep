@@ -11,14 +11,13 @@ from relay.intent_v1 import (
 
 
 @pytest.fixture
-def webcam_select_payload() -> dict[str, object]:
+def console_select_payload() -> dict[str, object]:
     return {
         "v": 1,
         "t": 1_756_700_000_000,
         "type": "intent",
         "intent_id": "01J7FQ9M6A7Z3T2R8C4N5K1P0B",
-        "retry_of": None,
-        "source": "webcam",
+        "source": "console",
         "session": "2026-09-02T09-00-00Z",
         "name": "select",
         "args": {"ids": [1, 2]},
@@ -28,10 +27,10 @@ def webcam_select_payload() -> dict[str, object]:
     }
 
 
-def test_webcam_select_payload_is_validated(
-    webcam_select_payload: dict[str, object],
+def test_console_select_payload_is_validated(
+    console_select_payload: dict[str, object],
 ) -> None:
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.name is IntentName.SELECT
@@ -41,29 +40,29 @@ def test_webcam_select_payload_is_validated(
 
 
 def test_validated_intent_is_detached_from_input(
-    webcam_select_payload: dict[str, object],
+    console_select_payload: dict[str, object],
 ) -> None:
-    result = validate_intent(webcam_select_payload)
-    args = webcam_select_payload["args"]
+    result = validate_intent(console_select_payload)
+    args = console_select_payload["args"]
     assert isinstance(args, dict)
     ids = args["ids"]
     assert isinstance(ids, list)
 
     ids.append(3)
-    webcam_select_payload["selection"] = [3]
+    console_select_payload["selection"] = [3]
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.args == {"ids": (1, 2)}
     assert result.intent.selection == ()
 
 
-@pytest.mark.parametrize("source", ["webcam", "language", "keyboard"])
+@pytest.mark.parametrize("source", ["console", "keyboard"])
 def test_registered_sources_share_the_validator(
-    webcam_select_payload: dict[str, object], source: str
+    console_select_payload: dict[str, object], source: str
 ) -> None:
-    webcam_select_payload["source"] = source
+    console_select_payload["source"] = source
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.source == source
@@ -81,15 +80,15 @@ def test_registered_sources_share_the_validator(
         ("estop", {}, False),
     ],
 )
-def test_m20_webcam_intents_match_the_planner_contract(
-    webcam_select_payload: dict[str, object],
+def test_m20_console_intents_match_the_planner_contract(
+    console_select_payload: dict[str, object],
     name: str,
     args: dict[str, object],
     confirm: bool,
 ) -> None:
-    webcam_select_payload.update(name=name, args=args, selection=[1, 2], confirm=confirm)
+    console_select_payload.update(name=name, args=args, selection=[1, 2], confirm=confirm)
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.name.value == name
@@ -98,11 +97,11 @@ def test_m20_webcam_intents_match_the_planner_contract(
 
 
 def test_intent_id_and_retry_of_pass_through(
-    webcam_select_payload: dict[str, object],
+    console_select_payload: dict[str, object],
 ) -> None:
-    webcam_select_payload["retry_of"] = "01J7FQ9M6A7Z3T2R8C4N5K1P0A"
+    console_select_payload["retry_of"] = "01J7FQ9M6A7Z3T2R8C4N5K1P0A"
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.intent_id == "01J7FQ9M6A7Z3T2R8C4N5K1P0B"
@@ -119,44 +118,45 @@ def test_intent_id_and_retry_of_pass_through(
     ],
 )
 def test_invalid_intent_id_or_retry_of_is_rejected(
-    webcam_select_payload: dict[str, object], field: str, value: object
+    console_select_payload: dict[str, object], field: str, value: object
 ) -> None:
-    webcam_select_payload[field] = value
+    console_select_payload[field] = value
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
-def test_unregistered_webcam_source_is_rejected(
-    webcam_select_payload: dict[str, object],
+@pytest.mark.parametrize("source", ["webcam", "language", "glasses"])
+def test_unregistered_source_is_rejected(
+    console_select_payload: dict[str, object], source: str
 ) -> None:
-    webcam_select_payload["source"] = "glasses"
+    console_select_payload["source"] = source
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.UNKNOWN_SOURCE
 
 
 def test_invalid_motion_args_are_rejected(
-    webcam_select_payload: dict[str, object],
+    console_select_payload: dict[str, object],
 ) -> None:
-    webcam_select_payload.update(name="translate", args={"dx": 1})
+    console_select_payload.update(name="translate", args={"dx": 1})
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
 def test_schema_version_requires_integer_one(
-    webcam_select_payload: dict[str, object],
+    console_select_payload: dict[str, object],
 ) -> None:
-    webcam_select_payload["v"] = 1.0
+    console_select_payload["v"] = 1.0
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
@@ -171,22 +171,22 @@ def test_schema_version_requires_integer_one(
     ],
 )
 def test_invalid_envelope_values_are_rejected(
-    webcam_select_payload: dict[str, object], field: str, value: object
+    console_select_payload: dict[str, object], field: str, value: object
 ) -> None:
-    webcam_select_payload[field] = value
+    console_select_payload[field] = value
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
 def test_extra_top_level_field_is_rejected(
-    webcam_select_payload: dict[str, object],
+    console_select_payload: dict[str, object],
 ) -> None:
-    webcam_select_payload["sequence"] = 1
+    console_select_payload["sequence"] = 1
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
@@ -194,22 +194,22 @@ def test_extra_top_level_field_is_rejected(
 
 @pytest.mark.parametrize("value", [True, float("nan"), float("inf")])
 def test_translate_rejects_non_numeric_or_non_finite_steps(
-    webcam_select_payload: dict[str, object], value: object
+    console_select_payload: dict[str, object], value: object
 ) -> None:
-    webcam_select_payload.update(name="translate", args={"dx": value, "dy": 0})
+    console_select_payload.update(name="translate", args={"dx": value, "dy": 0})
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
 def test_unknown_intent_name_is_rejected(
-    webcam_select_payload: dict[str, object],
+    console_select_payload: dict[str, object],
 ) -> None:
-    webcam_select_payload.update(name="flip", args={})
+    console_select_payload.update(name="flip", args={})
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.UNKNOWN_INTENT
@@ -227,45 +227,114 @@ def test_unknown_intent_name_is_rejected(
         ("sweep", {"box": {"x": 0, "y": 0, "width": 4, "height": 3}}),
         ("survey_area", {"area_id": "floor-1"}),
         ("map_area", {"area_id": "floor-1"}),
-        (
-            "capture_room",
-            {"room_id": "room-1", "capture_id": "capture-1", "pattern": "pano_360"},
-        ),
     ],
 )
 def test_valid_intents_outside_m20_are_unsupported(
-    webcam_select_payload: dict[str, object],
+    console_select_payload: dict[str, object],
     name: str,
     args: dict[str, object],
 ) -> None:
-    webcam_select_payload.update(name=name, args=args)
+    console_select_payload.update(name=name, args=args, selection=[1], confirm=True)
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.UNSUPPORTED
 
 
 def test_malformed_gated_intent_is_invalid_before_capability_check(
-    webcam_select_payload: dict[str, object],
+    console_select_payload: dict[str, object],
 ) -> None:
-    webcam_select_payload.update(name="altitude", args={"metres": 1})
+    console_select_payload.update(name="altitude", args={"metres": 1})
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
 def test_capture_room_rejects_unknown_pattern(
-    webcam_select_payload: dict[str, object],
+    console_select_payload: dict[str, object],
 ) -> None:
-    webcam_select_payload.update(
+    console_select_payload.update(
         name="capture_room",
         args={"room_id": "room-1", "capture_id": "capture-1", "pattern": "wide"},
+        selection=[1],
+        confirm=True,
     )
 
-    result = validate_intent(webcam_select_payload)
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+def test_capture_room_is_supported_at_one_confirmed_hover() -> None:
+    result = validate_intent(
+        {
+            "v": 1,
+            "t": 1_756_700_000_000,
+            "type": "intent",
+            "intent_id": "01J7FQ9M6A7Z3T2R8C4N5K1P0C",
+            "retry_of": None,
+            "source": "console",
+            "session": "2026-09-02T09-00-00Z",
+            "name": "capture_room",
+            "args": {
+                "room_id": "room-1",
+                "capture_id": "capture-1",
+                "pattern": "reconstruct_8",
+            },
+            "selection": [1],
+            "mode": "indoor",
+            "confirm": True,
+        }
+    )
+
+    assert isinstance(result, AcceptedIntent)
+    assert result.intent.name is IntentName.CAPTURE_ROOM
+    assert result.intent.selection == (1,)
+
+
+@pytest.mark.parametrize(
+    ("selection", "confirm"),
+    [([], True), ([1, 2], True), ([1], False)],
+)
+def test_capture_room_requires_one_selected_drone_and_confirmation(
+    console_select_payload: dict[str, object],
+    selection: list[int],
+    confirm: bool,
+) -> None:
+    console_select_payload.update(
+        name="capture_room",
+        args={"room_id": "room-1", "capture_id": "capture-1", "pattern": "pano_360"},
+        selection=selection,
+        confirm=confirm,
+    )
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+def test_initial_request_may_explicitly_set_null_retry(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload["retry_of"] = None
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, AcceptedIntent)
+    assert result.intent.retry_of is None
+
+
+def test_retry_cannot_reference_its_own_intent_id(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload["retry_of"] = console_select_payload["intent_id"]
+
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
