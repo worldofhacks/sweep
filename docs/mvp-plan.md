@@ -150,7 +150,7 @@ The checkpoint exercises the eight flight-control Intent v1 names `arm`, `select
 
 The one-drone proof selects the only connected drone and runs the same sequence and safety checks. The two-drone proof then replaces that selection with both connected drones and verifies coordinated translation and spacing.
 
-The checkpoint keeps the arbiter, network stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and independent physical RC safety path. Every active aircraft has an RC safety operator. The formation library, altitude gesture, sweep planner, detector, mosaic, language and LLM work, replay UI, metrics dashboard, session report, and release polish start after this gate.
+The checkpoint keeps the arbiter, network stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and independent physical RC safety path. Every active aircraft has an RC safety operator. Language work may already be active from M1.E. The formation library, altitude gesture, sweep planner, detector, mosaic, replay UI, metrics dashboard, session report, and release polish start after this gate.
 
 M2.0 passes when:
 
