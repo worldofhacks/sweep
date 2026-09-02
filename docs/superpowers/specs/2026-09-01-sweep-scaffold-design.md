@@ -31,7 +31,7 @@ Appendix D of the PRD, verbatim, plus one root `tests/` directory.
 | Path | Owner | Phase | Contents in this scaffold |
 |---|---|---|---|
 | `console/` | A | 0 onward | Vite + React + TS app; placeholder page naming where `swarm-gesture-console.html` drops in |
-| `glasses/` | A | 4 | README only |
+| `glasses/` | A, C | 4 | README only |
 | `relay/` | C | 1 | empty Python package |
 | `planner/` | B | 1 | empty Python package |
 | `arbiter/` | B | 1 | empty Python package |

@@ -12,4 +12,6 @@ One interface, three implementations (PRD Appendix C):
 
 Interface: `takeoff, goto, hover, land, estop, telemetry`. Hardware is a configuration flag; every feature is built and tested against `sim` first.
 
+CI has no ROS 2. Tests that import `rclpy` or the crazyswarm2 interfaces must guard with `pytest.importorskip("rclpy")` or run where ROS is on the path.
+
 PRD: sections 4.5, 5.6.
