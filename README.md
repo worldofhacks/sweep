@@ -57,7 +57,7 @@ Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema
 
 - No merge to `main` without CI green and one review (PRD section 8.2). `main` is protected accordingly: pull request, one approval, both CI checks.
 - No new intents without a contract change, a test, and every registered input updated. No model in the safety path. Nothing outside the M1 through M4 acceptance paths before M4 exits (PRD section 8.6).
-- Daily stand-up and integration. Two people are present for any flight: one operates Sweep and one holds the physical RC safety path. The network e-stop does not replace RC takeover. Every hardware session ends with a session report committed to the repo (PRD section 8.5).
+- Daily stand-up and integration. Hardware flights follow the operator and physical-RC rule in PRD section 8.5. Every hardware session ends with a session report committed to the repo.
 
 ## Remotes
 
