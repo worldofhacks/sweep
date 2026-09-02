@@ -15,8 +15,8 @@ The older Phase 0 through Phase 6 labels are retired for delivery planning. They
 | M0: Scope and contracts | Phase 0 evidence and the Phase 1 contract freeze | MVP boundary, frozen contracts, capability-area boundaries, and CI skeleton |
 | M1: Sim control MVP | Phase 1 plus the narrow spoken-language slice formerly in Phase 5 | Webcam and live microphone speech traverse relay, planner, arbiter, and sim |
 | M2: Hardware control MVP | Phase 2 and the delivery-gated hardware lane | The same control paths run safely on 4 to 6 real drones |
-| M3: Full MVP, video and sensor console | Phase 3 | Cameras, telemetry, sensor events, focus, and detection complete the initial MVP |
-| M4: Final proof of concept | Remaining Phase 5 language breadth plus Phase 6 hardening | Full eval corpus, resolvers, fallback, release evidence, and demo |
+| M3: Full MVP, video and sensor console | Phase 3 | Cameras, telemetry, sensor events, focus, and detection complete the initial MVP; provisionally runs beside M4 |
+| M4: Language completion and final proof of concept | Remaining Phase 5 language breadth plus Phase 6 hardening | Full eval corpus, resolvers, fallback, release evidence, and demo; provisionally runs beside M3 |
 | Future | Phase 4 glasses work, Band work, and vehicle portability | Optional registered inputs and additional vehicle adapters |
 
 The old labels should appear only in this mapping. New plans, issues, and status reports use M0 through M4.
@@ -43,7 +43,7 @@ flowchart TD
     R1 --> X1[Future registered inputs and vehicle adapters]
 ```
 
-M2 may run beside the language half of M1 after the webcam-to-sim gate is green. M3 may begin before M2 exits when a camera source is available, but the complete MVP claim waits for both M2 hardware evidence and M3 console evidence.
+M2 may run beside the language half of M1 after the webcam-to-sim gate is green. Koby has provisionally directed M3 video and M4 language completion to run in parallel after that same gate, pending team confirmation of the capacity gap below. The complete MVP claim waits for both M2 hardware evidence and M3 console evidence.
 
 ## Work breakdown
 
@@ -90,8 +90,8 @@ Done when: models cannot emit adapter commands, invalid plans emit nothing, and 
 
 **M1.6: Capture speech and add preview, clarification, and confirmation**
 Capability area: Interaction. Dependencies: M1.3, M1.5.
-Scope: add one-shot push-to-talk Web Speech capture to the pinned Chromium demo browser; show interim and final transcripts; add plan preview, clarification, confirm, cancel, and explicit unsupported, permission, capture, no-speech, service, and network error states.
-Done when: three live spoken multi-step orders reach plan preview, no language intent emits before confirmation, recognition failures emit nothing, and ambiguous requests present choices or a refusal.
+Scope: add one-shot push-to-talk recording to the pinned Chromium demo browser; upload recordings of at most 30 seconds to a relay endpoint; transcribe through the OpenAI Whisper API; show the final transcript; add plan preview, clarification, confirm, cancel, and explicit permission, capture, upload, timeout, rate-limit, service, and network error states. Keep `OPENAI_API_KEY` in the relay process environment.
+Done when: three live spoken multi-step orders reach plan preview, no language intent emits before confirmation, transcription failures emit nothing, the browser never receives the API key, and ambiguous requests present choices or a refusal.
 
 **M1.7: Establish the provisional language eval**
 Capability area: Platform, with team-contributed cases. Dependencies: M1.5, M1.6.
@@ -100,13 +100,13 @@ Done when: exact-match plan accuracy is at least 85%, the live speech smoke run 
 
 #### Does spoken language fit Sept 5 to 9?
 
-**Recommendation: yes, within the bounded M1 speech scope.** Browser-native Web Speech adds about 1 to 1.5 person-days beyond the reviewed transcript-to-plan slice. The five-day window provides 15 gross team-days under the PRD's calendar assumption. M1 needs about 8 to 11 team-days when speech capture, its error states, a manual smoke run, compiler integration, preview and confirmation, and integration margin are counted together.
+**Recommendation: yes, within the bounded M1 speech scope.** Whisper API capture and transcription add about 1.5 to 2 person-days beyond the reviewed transcript-to-plan slice. The five-day window provides 15 gross team-days under the PRD's calendar assumption. M1 needs about 8.5 to 11.5 team-days when browser recording, relay upload, server-side key handling, transcription and cost logging, error states, a manual smoke run, compiler integration, preview and confirmation, and integration margin are counted together.
 
-That estimate holds only for one-shot push-to-talk in the pinned Chromium browser, `en-US`, a working microphone, and an available network speech service. The final transcript enters the same compiler path that typed fixtures exercise. M1 does not include Whisper, offline recognition, continuous listening, multilingual support, or noisy-room hardening.
+That estimate holds for one-shot push-to-talk in the pinned Chromium browser, `en-US`, a working microphone and network, recordings capped at 30 seconds, and the `whisper-1` transcription endpoint. The final transcript enters the same compiler path that typed fixtures exercise. M4 owns offline transcription, continuous listening, multilingual support, and noisy-room hardening.
 
-The browser surface is small but real: feature detection, explicit microphone permission, start and stop controls, interim and final results, and visible capture, permission, service, and network errors. The [Chrome Web Speech guide](https://developer.chrome.com/blog/voice-driven-web-apps-introduction-to-the-web-speech-api/) documents this event-driven integration and click-to-start permission flow. [MDN marks `SpeechRecognition` as limited availability](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition), which is why M1 pins the browser and network rather than claiming portable or offline speech. The [Web Speech specification](https://dvcs.w3.org/hg/speech-api/raw-file/tip/speechapi) requires explicit consent and a visible recording indication; those are acceptance requirements, not polish.
+The Whisper path needs browser recording plus a relay endpoint because the API accepts an audio-file upload and the API key must stay off the client. OpenAI prices `whisper-1` transcription at [$0.006 per minute](https://developers.openai.com/api/docs/models/whisper-1). A 30-second command therefore contributes at most $0.003 to the $0.05 combined transcription-plus-compiler budget. The relay logs audio duration, transcription cost, compiler cost, and the combined total for every command. OpenAI's [API key safety guidance](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safet) requires requests from browser clients to pass through a server that holds the key.
 
-The 50 reviewed cases test transcript-to-plan behavior in CI. They do not prove microphone recognition. The separate 20-utterance, two-speaker live run exercises the real browser capture path and prevents synthetic transcripts from standing in for speech acceptance.
+The 50 reviewed cases test transcript-to-plan behavior in CI. Microphone recognition evidence comes from the separate 20-utterance, two-speaker live run through the real browser capture path. Synthetic transcripts cannot satisfy speech acceptance.
 
 ### M2: Hardware control MVP
 
@@ -152,7 +152,7 @@ Capability area: team. Dependencies: M2.4, M3.2, M3.3.
 Scope: demonstrate webcam or spoken-language control with the camera, telemetry, and sensor console active.
 Done when: the complete operator workflow succeeds on 4 to 6 drones and the session evidence supports every control, safety, video, and sensor claim.
 
-### M4: Final proof of concept
+### M4: Language completion and final proof of concept
 
 **M4.1: Complete deterministic language resolution**
 Capability area: Autonomy. Dependencies: M1.7 and stable relay state.
@@ -160,14 +160,14 @@ Scope: implement bounded selection and location resolution with explicit ambigui
 Done when: resolver tests cover IDs, current selection, supported relative phrases, stale state, ambiguity, and unresolved locations without bypassing the planner.
 
 **M4.2: Complete language evaluation and fallback**
-Capability area: Platform, with team-contributed cases. Dependencies: M1.7, M4.1.
-Scope: expand to the responder-reviewed 200-item set, complete cached and live eval paths, add the local fallback, and close compiler failure cases.
+Capability area: Platform, with team-contributed cases. Dependencies: M1.7. Resolver-dependent cases also depend on M4.1.
+Scope: expand to the responder-reviewed 200-item set, complete cached and live eval paths, add the local compiler fallback, and close compiler failure cases. Corpus authoring, cached fixtures, and non-resolver cases proceed beside M4.1; resolver cases join after its result contract freezes.
 Done when: exact-match accuracy remains at least 85%, unsafe-intent count is zero, cached fixtures are produced by real compiler runs, and fallback uses the same validation path.
 
-**M4.3: Add Whisper fallback and harden speech UX**
-Capability area: Interaction with Platform support. Dependencies: M1.6, M4.2.
-Scope: add Whisper for offline or accuracy fallback; evaluate noisy-room speech; polish transcript, preview, clarification, confirmation, and refusal behavior.
-Done when: Web Speech and Whisper feed the same transcript-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
+**M4.3: Harden speech UX and evaluate offline transcription**
+Capability area: Interaction with Platform support. Dependencies: M1.6.
+Scope: evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it; polish transcript, preview, clarification, confirmation, and refusal behavior.
+Done when: the primary Whisper API path and any approved local fallback feed the same transcript-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
 
 **M4.4: Harden, document, and release**
 Capability area: team. Dependencies: M2.4, M3.4, M4.2, M4.3.
@@ -186,27 +186,28 @@ Capability area: Autonomy with Platform eval support. Dependencies: working M2 e
 Scope: evolve capability contracts and add one evidence-backed vehicle adapter at a time.
 Done when: unsupported behavior returns a typed refusal and no input or model calls an adapter directly.
 
-## Can full video and full language work run concurrently?
+## Concurrent M3 video and M4 language decision
 
-**Recommendation: no.** The two feature sets have no hard sequential dependency on each other after M1 establishes the relay, authoritative state, Intent v1, planner, arbiter, sim, and console shell. Dynamic claiming creates more scheduling options, but it does not reduce the total work or remove shared-file and review gates.
+**Capacity analysis: the Sept 5 to 12 window is short by 3 to 8 person-days. Provisional decision: run both lanes concurrently pending team confirmation.** The two feature sets have no hard sequential dependency on each other after M1 establishes the relay, authoritative state, Intent v1, planner, arbiter, sim, and console shell. Dynamic claiming creates more scheduling options, but it does not reduce the total work or remove shared-file and review gates.
 
 | Work package | Estimated team effort | Parallelization boundary |
 |---|---:|---|
 | Full language compiler, state context, validation, logging, ordered emission, and eval plumbing | 4 to 5 person-days | Plan schema, relay state shape, and ordered emission use one change owner and cross-review. |
-| Web Speech capture, language UI, full resolvers, corpus completion, Whisper fallback, and speech hardening | 5 to 6 person-days | Corpus writing and the live speech smoke run can fan out. Resolver and UI integration wait on frozen result envelopes. |
+| Whisper API capture, language UI, full resolvers, corpus completion, offline evaluation, and speech hardening | 5 to 6 person-days | Corpus writing and the live speech smoke run can fan out. Resolver and UI integration wait on frozen result envelopes. |
 | Media ingest, recording, stream naming, detection-event transport, and latency measurement | 3 to 4 person-days | Media configuration can proceed independently. Detection and relay-state changes use one change owner and cross-review. |
 | Mosaic, focus, sensor state, detector, attention promotion, and confirmation | 4 to 5 person-days | Detector experiments can run independently. Console integration overlaps the language UI files. |
 | Cross-stack review, end-to-end acceptance, and defect margin | 2 to 3 person-days | Safety-path and shared-contract reviews cannot be self-approved or merged concurrently. |
 
-The combined range is 18 to 23 person-days. Sept 5 through Sept 12 contains five normal weekdays, or 15 gross person-days for three engineers. Even treating all eight calendar days as work provides 24 gross person-days before M1 carryover, hardware support, review, and defects. Reassigning engineers dynamically helps isolated work start sooner, but the plan schema, relay state, ordered emission, safety-path review, and shared console integrations still serialize part of the work. The standard-week capacity is insufficient, and the seven-day schedule leaves too little margin for a safety-critical integration.
+The combined range remains 18 to 23 person-days because Whisper was already included in the full-language estimate; moving it into M1 changes sequencing rather than total scope. Sept 5 through Sept 12 contains five normal weekdays, or 15 gross person-days for three engineers. The capacity gap is 3 to 8 person-days before hardware support. Treating all eight calendar days as work provides 24 gross person-days before M1 carryover, review, and defects. Dynamic claiming helps isolated work start sooner, while the plan schema, relay state, ordered emission, safety-path review, detection-event shape, and shared console integrations still serialize part of the work.
 
 The freely parallelizable pieces are MediaMTX setup, detector prototyping, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
 
-The recommended sequence keeps the initial MVP line at M3 without hiding that load:
+The provisional concurrent schedule is:
 
-1. Finish the narrow spoken-language vertical slice in M1 from Sept 5 to 9.
-2. Move Interaction and Platform to M3 video and sensor work from Sept 10 to 15.
-3. Claim delivery-gated M2 work as hardware becomes ready and pull M4 resolver cases forward only when team capacity is idle.
-4. Finish the 200-item language set, Whisper fallback, noisy-room speech hardening, and resolver edge cases in M4.
+1. Sept 5: freeze the transcription request/response, plan result, detection-event, and stream-naming contracts. Each contract has one change owner and a different reviewer.
+2. Sept 5 to 9: complete M1 Whisper capture and compiler integration. In parallel, claim MediaMTX setup, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation.
+3. Sept 10 to 12: integrate the M3 console and detection path beside M4 resolvers, the 200-item eval, local compiler fallback, and speech hardening. Shared console changes merge through one owner at a time.
+4. Continue delivery-gated M2 work in booked blocks. Hardware work reduces the capacity available to the concurrent lanes and increases the documented gap.
+5. Sept 12: the team confirms added capacity or records the revised exit date. Parallel scheduling leaves the 3-to-8-person-day gap in place.
 
-This yields an initial MVP through M3, including webcam and spoken-language control plus the camera and sensor console. It does not claim that the full video and full language scopes fit concurrently in the Sept 5 to 12 window.
+This schedule preserves Koby's concurrent direction and the original capacity finding. It is provisional until the team confirms how it will cover the gap.
