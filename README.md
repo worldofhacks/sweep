@@ -48,13 +48,9 @@ just media      # MediaMTX via docker compose, in the foreground
 
 `just --list` shows every recipe. Python runs from the repo root through uv, and modules are invoked as packages, for example `uv run python -m relay.main` once that module exists. Keep uv's default `.venv/` at the repo root (the ignore rules assume it). Copy `.env.example` to `.env` when you need the relay token or the API key; keys never reach the console. `tests/test_layout.py` guards the Appendix D layout: every declared package, including the three `adapters/` subpackages, must resolve from this repo, and no undeclared top-level package may appear.
 
-## Sept 2, first hour
+## Start here
 
-Contracts freeze at 9:00: intent schema and WebSocket topics, telemetry schema, adapter interface, repo layout (PRD section 8.2). Then, from PRD section 8.3:
-
-- Interaction: wire the webcam console to the relay and strip its internal sim; the prototype page lives at `console/public/phase0/` (see [console/README.md](console/README.md)).
-- Autonomy: planner and arbiter with tests, against the `sim` adapter.
-- Platform: relay with WebSocket, token, and JSONL logging; schemas.
+Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter interface, repo layout (PRD section 8.2). The work order is PRD section 8.3 and the M0 to M2 items in [docs/mvp-plan.md](docs/mvp-plan.md): contracts, the two-drone sim path, one real drone, two real drones, one selected live feed. Language and the 4-to-6-drone expansion follow the M2.0 checkpoint. Any engineer may claim a ready item.
 
 ## Working agreement
 
