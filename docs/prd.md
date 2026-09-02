@@ -1,6 +1,6 @@
 # Sweep (working name): PRD, architecture, and division of labor
 
-Version 0.2, Sept 1, 2026. Owners: three engineers (A: Interaction, B: Autonomy, C: Platform). Status: approved to start Phase 1 tomorrow; Phase 0 (webcam gesture console plus simulator) shipped today.
+Version 0.3, Sept 2, 2026. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task rather than owning an area for the capstone. Status: M0 scope and contracts in progress; the webcam gesture prototype shipped Sept 1.
 
 This document answers every item in the Pre-Search Checklist. Section headers carry the checklist numbers so nothing is skipped, and Appendix F is a crosswalk from each question to the section that answers it.
 
@@ -8,9 +8,9 @@ This document answers every item in the Pre-Search Checklist. Section headers ca
 
 ## 0. Summary
 
-One person commands a small drone swarm with their hands, their head, or a sentence, and sees what the swarm sees. The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and six indoor drones; the glasses and Neural Band replace the webcam without changing anything behind the intent bus; natural language is the third input into the same bus.
+One person commands 4 to 6 indoor drones through webcam gestures or spoken natural language and uses a laptop control panel to see their cameras, telemetry, and sensor events. The first user is a responder who needs eyes inside a building before entry and whose hands are already full. Spoken natural language is the second control path built, immediately after the shared intent bus, planner, arbiter, and simulator work.
 
-The product is three things: an input-agnostic **intent contract** (gesture, glasses, language all emit the same JSON), an **autonomy and safety core** that executes intents across a swarm and refuses unsafe ones, and an **operator console** that shows the swarm and its cameras. Everything is open source.
+The product is three things: an input-agnostic **intent contract**, an **autonomy and safety core** that executes intents across a swarm and refuses unsafe ones, and an **operator console** that shows the swarm and its cameras. The core MVP registers webcam, language, and keyboard sources. The source registry and shared conformance suite let a future glasses client or EMG band join by adding its producer, registry entry, and tests. The relay, planner, arbiter, and adapters stay unchanged. Everything is open source.
 
 ---
 
@@ -23,18 +23,20 @@ The product is three things: an input-agnostic **intent contract** (gesture, gla
 - Secondary: facility operators verifying incidents (smoke, leaks, forced doors) in warehouses, plants, campuses.
 - Tertiary: swarm researchers and educators who want a human interface on top of crazyswarm2 or MAVLink without writing one.
 
-**Value.** Intent in under a second with no hands. Parallel coverage from six drones instead of one. A private, glanceable view of what they see. A safety core that makes "one person, many drones" trustworthy.
+**Value.** Intent in under a second with no hands. Parallel coverage from 4 to 6 drones instead of one. A private, glanceable view of what they see. A safety core that makes "one person, many drones" trustworthy.
 
 ---
 
 ## 2. Goals, non-goals, success metrics
 
 **Goals (capstone scope).**
-1. Ten-intent gesture control of up to six drones, indoors, with a webcam and then with the glasses and band.
+1. Gesture and spoken natural-language control of 4 to 6 indoor drones through the same Intent v1 contract.
 2. Live video from the drones in the console, with detections, focus-by-selection, and attention promotion.
 3. Natural-language commands resolved into the same intents, with plan preview and confirmation.
 4. A safety core (geofence, altitude and spacing limits, confirmations, e-stop, battery return) that no input path can bypass.
 5. An open-source release: console, relay, planner, adapters, datasets, evals.
+
+**Extension goals.** An EMG band and glasses can become registered input sources after the core MVP. The Band ticket remains gated on evidence of a direct host API and real-device events. Glasses return through the same registration and conformance path when the team schedules a client. Neither extension blocks M1 through M4.
 
 **Non-goals.** Outdoor swarm flight during the capstone (the hardware and positioning are indoor; the outdoor modes are designed, not flown), lethal or surveillance use, face or person identification, autonomous flight without an operator present, more than six drones.
 
@@ -45,17 +47,17 @@ The product is three things: an input-agnostic **intent contract** (gesture, gla
 | Gesture false positives while hands are moving | < 1 per 5 minutes |
 | Gesture intent recall on the scripted run | ≥ 95% |
 | Gesture to intent latency | < 150 ms |
-| Intent to first drone motion (indoor, six drones) | < 300 ms |
+| Intent to first drone motion (indoor, 4 to 6 drones) | < 300 ms |
 | NL utterance to plan preview | < 2 s; plan exact-match accuracy ≥ 85% on the gold set |
 | Unsafe intents emitted (fail geofence, limits, or confirmation rules) | 0, enforced by schema and arbiter |
 | Video glass-to-glass latency (laptop) | < 300 ms WebRTC, < 500 ms MJPEG |
 | Detection to alert | < 1 s |
-| Scripted mission (arm, take off, formation, sweep, come home, land) | completes hands-free in < 3 minutes with six drones |
+| Scripted mission (arm, take off, formation, sweep, come home, land) | completes hands-free in < 3 minutes with 4 to 6 drones |
 | Demo reliability | 5 consecutive scripted runs without a safety intervention |
 
 ---
 
-## 3. Phase 1 of the checklist: constraints
+## 3. Checklist: constraints
 
 ### 3.1 (1) Domain selection
 
@@ -66,10 +68,10 @@ The product is three things: an input-agnostic **intent contract** (gesture, gla
 
 ### 3.2 (2) Scale and performance
 
-- **Query volume:** one operator; roughly 10 gesture intents per minute during active control, 1 to 2 language commands per minute, telemetry at 10 to 50 Hz per drone, 6 video streams.
+- **Query volume:** one operator; roughly 10 gesture intents per minute during active control, 1 to 2 language commands per minute, telemetry at 10 to 50 Hz per drone, 4 to 6 video streams.
 - **Latency:** gesture to intent under 150 ms; intent to drone motion under 300 ms; language to plan preview under 2 s; video under 300 ms; e-stop propagation under 100 ms.
 - **Concurrency:** one operator, up to three observers on the console, one swarm.
-- **LLM cost:** language commands only; under $0.05 per command at frontier-model prices; development budget under $30 per month. Gesture and safety paths never call an LLM.
+- **Language cost:** Whisper transcription plus plan compilation stays under $0.05 per command; development budget stays under $30 per month. At [`whisper-1`'s published $0.006 per minute](https://developers.openai.com/api/docs/models/whisper-1), the 30-second recording cap contributes at most $0.003 per command before compiler cost. Gesture and safety paths never call a model.
 
 ### 3.3 (3) Reliability requirements
 
@@ -80,13 +82,13 @@ The product is three things: an input-agnostic **intent contract** (gesture, gla
 
 ### 3.4 (4) Team and skill constraints
 
-- Three engineers, full time, for the capstone window. Skills assumed: A is strongest in web front-end and computer vision; B in Python, ROS 2, and control; C in backend, infrastructure, and evaluation. Nobody needs to learn a heavy agent framework: the orchestration is small and custom, with structured LLM outputs.
+- Three engineers work full time for the capstone window. The team must cover web front-end and computer vision, Python and ROS 2 control, and backend, infrastructure, and evaluation. Anyone may claim a ready task; capability areas coordinate module boundaries and review rather than assign people. The orchestration is small and custom, with structured LLM outputs, so nobody needs to learn a heavy agent framework.
 - Domain experience: none of us is a firefighter. Mitigation: one interview with a fire or SAR contact in week one, and the scripted mission modeled on a real building sweep.
 - Eval comfort: moderate. The eval harness is deliberately simple (pytest plus JSONL gold sets plus a simulator scenario runner) so everyone can add cases.
 
 ---
 
-## 4. Phase 2 of the checklist: architecture discovery
+## 4. Checklist: architecture discovery
 
 ### 4.1 System overview
 
@@ -96,10 +98,10 @@ INPUT SOURCES                     INTENT BUS                 AUTONOMY AND SAFETY
 │ webcam gesture │──intents────► │          │──intents────► │ planner (deterministic│──cmds──► │ sim      │
 │ console (web)  │               │ WebSocket│               │ formations, sweep,    │          │ crazyswarm2 (ROS 2)
 ├────────────────┤               │ relay    │               │ allocation, geofence) │          │ MAVLink  │
-│ glasses web app│──intents────► │ + state  │               │ safety arbiter        │          └────┬─────┘
+│ future sources │──intents────► │ + state  │               │ safety arbiter        │          └────┬─────┘
 ├────────────────┤               │ fan-out  │◄──telemetry── │ (validates everything)│◄──telemetry───┘
 │ language module│──intents────► │          │               │ LLM plan compiler     │
-│ (text/voice)   │◄──state─────  └──────────┘               └──────────────────────┘
+│ (speech)       │◄──state─────  └──────────┘               └──────────────────────┘
 └────────────────┘                     │
                                        ▼
                      ┌───────────────────────────────────┐
@@ -112,22 +114,22 @@ Every arrow labeled "intents" carries the same JSON schema (Appendix A). Every a
 
 ### 4.2 Components
 
-| Component | Language | Owner | Responsibility |
+| Component | Language | Capability area | Responsibility |
 |---|---|---|---|
-| Gesture console (web) | JS, MediaPipe Tasks | A | Webcam, hand landmarks, gesture classification, dwell and confirmation UI, intent emission, session recording. Shipped in Phase 0. |
-| Glasses web app | JS, Meta Web Apps SDK | A | Same intents from pinch, D-pad, drag, head direction; one video feed; minimap; alerts. Phase 4. |
-| Language module | Python | A (front) + C (LLM plumbing) | Text and voice in, plan preview out, intents to the bus. Phase 5. |
-| Intent relay | Python (FastAPI + websockets) | C | Accepts intents from any source, stamps and logs them, forwards to the planner, fans out state and telemetry to consoles. Phase 1. |
-| Planner | Python | B | Deterministic: formations, sweep lanes, translate, altitude, come home, allocation to drones, geofence clamping. Phase 1. |
-| Safety arbiter | Python | B | Validates every intent and every planned command against limits and state; owns e-stop and battery return. Phase 1. |
-| Plan compiler (LLM) | Python | C | Turns language into an ordered list of intents using structured output; never touches commands. Phase 5. |
-| Swarm adapters | Python, ROS 2 | B | `sim` (Phase 1), `crazyswarm2` (Phase 2), `mavlink` (optional). One interface: `takeoff, goto, land, hover, estop, telemetry`. |
-| Simulator | Python | B | Kinematic six-drone sim with the same adapter interface, used by CI and by the console before hardware. |
-| Media server | MediaMTX | C | Ingest drone video (RTSP, UDP, MJPEG), serve WebRTC and MJPEG, record. Phase 3. |
-| Perception | Python, ONNX or PyTorch | A | Detector on sampled frames per stream; emits detection events with world-position estimates. Phase 3. |
-| Console dashboard | JS | A | Map, mosaic, focus, attention, ledger, health. Grows from the Phase 0 page. |
-| Telemetry and logs | Python | C | JSONL append-only logs, session bundles, replay tool. Phase 1. |
-| Evals and CI | Python, GitHub Actions | C | Gesture gold set, NL gold set, sim scenario suite, safety tests. Phase 1 onward. |
+| Gesture console (web) | JS, MediaPipe Tasks | A, Interaction | Webcam, hand landmarks, gesture classification, dwell and confirmation UI, intent emission, session recording. Prototype shipped Sept 1. |
+| Optional input producers | Source-specific | A with C | Future glasses and Band producers register against Intent v1 and pass the shared source conformance suite. They are outside the core MVP. |
+| Language module | JS and Python | A with C | Browser microphone capture, relay-side Whisper API transcription, plan preview, and intents to the bus in M1; speech hardening in M4. |
+| Intent relay | Python (FastAPI + websockets) | C, Platform | Accepts intents from registered sources, stamps and logs them, forwards to the planner, and fans out state and telemetry. M1. |
+| Planner | Python | B, Autonomy | Deterministic formations, sweep lanes, translate, altitude, come home, allocation, and geofence clamping. M1. |
+| Safety arbiter | Python | B, Autonomy | Validates every intent and planned command against limits and state; owns e-stop and battery return. M1. |
+| Plan compiler (LLM) | Python | C, Platform | Turns language into an ordered list of intents using structured output; never touches commands. M1 vertical slice, M4 completion. |
+| Swarm adapters | Python, ROS 2 | B, Autonomy | `sim` in M1, then `crazyswarm2` or optional `mavlink` in M2. One interface: `takeoff, goto, land, hover, estop, telemetry`. |
+| Simulator | Python | B, Autonomy | Kinematic six-drone sim with the same adapter interface, used by CI and by the console before hardware. |
+| Media server | MediaMTX | C, Platform | Ingest drone video, serve WebRTC and MJPEG, and record. M3. |
+| Perception | Python, ONNX or PyTorch | A, Interaction | Detector on sampled frames per stream; emits detection events with world-position estimates. M3. |
+| Console dashboard | JS | A, Interaction | Map, cameras, sensor state, focus, attention, ledger, and health. Grows from the webcam prototype. |
+| Telemetry and logs | Python | C, Platform | JSONL append-only logs, session bundles, replay tool. M1. |
+| Evals and CI | Python, GitHub Actions | C, Platform | Gesture gold set, NL gold set, sim scenario suite, safety tests. M1 onward. |
 
 ### 4.3 (5) Agent framework selection
 
@@ -159,7 +161,7 @@ Internal tools (deterministic Python, callable by the plan compiler through sche
 | Adapter: `takeoff, goto, land, hover, estop, battery` | per drone | acks, telemetry | timeout → hold and alert; link loss → return to home |
 | `detect(frame)` | image | boxes with confidence | model error → stream marked "no detection", never blocks video |
 
-External dependencies: the LLM API (language only), MediaPipe model download (once), MediaTX (local), ROS 2 and crazyswarm2 (local), the positioning system.
+External dependencies: the OpenAI Whisper API and plan-compiler LLM API (language only), MediaPipe model download (once), MediaMTX (local), ROS 2 and crazyswarm2 (local), and the positioning system. Future input producers may add source-specific SDKs after their access gates pass.
 
 Mock versus real: the `sim` adapter is the mock and it is a first-class target. Every feature is built and tested against sim first; hardware is a configuration flag.
 
@@ -167,9 +169,9 @@ Mock versus real: the `sim` adapter is the mock and it is a first-class target. 
 
 - **Traces for the LLM path:** LangSmith (or Braintrust if the team prefers its eval UI), one project, every plan-compiler call traced with input state, output plan, validation result, and operator decision.
 - **Everything else:** structured JSONL logs from the relay (intents, state transitions, telemetry samples at 5 Hz, detections, safety refusals), plus a lightweight metrics endpoint the console reads (latencies, fps, link quality).
-- **Metrics that matter most:** unsafe-intent count (must stay 0), gesture false positives per minute, intent latency p50 and p95, plan accuracy, mission completion time, per-drone link quality and battery, video fps and latency.
+- **Metrics that matter most:** unsafe-intent count (must stay 0), gesture false positives per minute, transcription and intent latency p50 and p95, transcription-plus-compiler cost per command, plan accuracy, mission completion time, per-drone link quality and battery, video fps and latency.
 - **Real-time monitoring:** the console's health strip is the monitor; a red tile means investigate. No separate ops stack for a laptop ground station.
-- **Cost tracking:** LLM tokens per command logged in the trace; a daily sum in the session report.
+- **Cost tracking:** audio duration, Whisper transcription cost, compiler tokens and cost, and combined cost per command are logged in the trace; the session report includes daily totals.
 
 ### 4.7 (9) Eval approach
 
@@ -191,15 +193,15 @@ Mock versus real: the `sim` adapter is the mock and it is a first-class target. 
 | A language plan is what the operator meant | preview in the console, operator confirm | operator decision | ambiguous resolution returns options |
 | A detection is real | detector confidence, then operator confirm | ≥ 0.6 shown, ≥ 0.8 auto-promoted to focus, none auto-acted | operator thumb-up marks it real; thumb-down dismisses |
 | A drone is where it says it is | positioning system consistency check against commanded motion | position error > 0.5 m for 2 s indoors | hold that drone, alert |
-| The operator is present | hand or glasses activity within 10 s while armed | 10 s | come home |
+| The operator is present | registered input or console confirmation activity within 10 s while armed | 10 s | come home |
 
 ---
 
 ## 5. Architecture in depth
 
-### 5.1 Intent contract (frozen in Phase 1)
+### 5.1 Intent contract (frozen in M0)
 
-See Appendix A. Rules: intents are the only thing inputs may emit; the planner is the only thing that turns intents into per-drone commands; the arbiter sees both. A new input source is accepted when it can emit the ten intents plus `estop` and pass the same contract tests the webcam console passes.
+See Appendix A. Rules: intents are the only thing inputs may emit; the planner is the only thing that turns intents into per-drone commands; the arbiter sees both. A new input source is accepted when its identifier is registered, its real producer emits the required Intent v1 matrix, and it passes the same conformance suite as the webcam console. Adding a source changes its producer, registry entry, and tests. Relay, planner, arbiter, and adapter code remain unchanged.
 
 ### 5.2 Relay
 
@@ -231,65 +233,69 @@ MediaMTX ingests each drone's stream and serves WebRTC and MJPEG; each stream is
 
 ### 5.8 Console
 
-Phase 0's page grows into the console: map, gesture readout, ledger, plus the video mosaic, focus pane, attention promotion, health strip, and the language input box with plan preview. It is a static web app; all state comes from the relay.
+The webcam prototype grows into the console: map, gesture readout, ledger, plus the video mosaic, focus pane, attention promotion, health strip, microphone control, transcript, and language-plan preview. It is a static web app; all state comes from the relay.
 
-### 5.9 Glasses path
+### 5.9 Optional input extensions
 
-A Meta Ray-Ban Display web app that renders one video feed, a minimap, and the alert line, and emits intents from pinch (select and confirm), D-pad (cycle drones, step formation), drag (altitude), head direction (translate direction and the sweep box), middle pinch (cancel and, held, e-stop), and Neural Handwriting (language). The glasses need the app over HTTPS and the relay over WebSocket on the same network.
+Glasses and an EMG band are Future extensions. Each extension supplies a source-specific producer, adds one source identifier to the registry, and runs the shared Intent v1 conformance suite. A future glasses client may add its own display and input surface without changing the control core. The Band remains gated on a confirmed direct host API and a real device event through the conformance suite. Simulated vendor events provide development fixtures but cannot satisfy hardware acceptance. Neither extension blocks the M1 through M4 path.
 
 ### 5.10 Language path
 
-Text box and Web Speech API on the laptop, Whisper for accuracy when needed, Neural Handwriting on the glasses. The plan compiler receives state plus schema plus utterance and returns a plan object; `validate_plan` runs; the console previews; the operator confirms; intents are emitted one at a time through the same relay. Spatial phrases resolve through the map or the operator's heading. Safety rules live in the arbiter, not the prompt.
+M1 uses one-shot, push-to-talk microphone capture in the pinned Chromium demo browser. The console records at most 30 seconds after an explicit operator action and uploads the audio to a relay endpoint. The relay calls the OpenAI Whisper API with `whisper-1`, returns the final transcript, and records audio duration, transcription latency, transcription cost, and the combined transcription-plus-compiler cost. The API key stays in the relay process environment and never reaches the browser. Denied permission, empty audio, capture failure, upload failure, API timeout, rate limit, and transcription failure are shown without emitting an intent. The plan compiler receives state plus schema plus transcript and returns a plan object; `validate_plan` runs; the console previews the transcript and plan; the operator confirms; intents are emitted one at a time through the same relay. Offline transcription, continuous listening, multilingual support, and noisy-room hardening land in M4. Safety rules live in the arbiter, not the transcription or compiler prompt.
 
 ---
 
-## 6. Phased plan
+## 6. Delivery milestones
 
-Each phase has an entry criterion, deliverables, an exit test, and an owner per deliverable. Dates assume the drones arrive within a week and the glasses within two.
+Sweep uses one delivery sequence: M0 through M4, followed by Future extensions. M2.0 is the first checkpoint inside that sequence: two real indoor drones complete a bounded webcam-gesture workflow through the deterministic safety path while the console shows one selected live feed. M1 through M3 then build the polished MVP on that proof. The complete MVP exits M3, when webcam gestures and spoken language control 4 to 6 drones and the control panel shows live cameras, telemetry, and sensor events.
 
-### Phase 0: Webcam gesture console plus simulator (done, Sept 1)
+### M0: Scope and contracts (Sept 2)
 
-- Deliverable: `swarm-gesture-console.html`, ten intents, dwell and confirmations, six-drone map sim, session recording, WebSocket intent emission.
-- Exit: scripted run passes on video; recorded session saved.
+- Entry: webcam gesture prototype and six-drone map simulator recorded on Sept 1.
+- Deliverables: approved MVP and extension boundaries; Intent v1, telemetry, adapter, WebSocket, and repository contracts; input-source registry and shared conformance-suite requirements; CI skeleton; capability-area boundaries and dynamic task-claiming rules.
+- Exit: contracts are reviewed and frozen; every M1 deliverable has a capability area and can be claimed independently; the branch and PR rule is active.
 
-### Phase 1: Intent bus, planner, arbiter, sim adapter, CI (Sept 2 to 4)
+### M1: Sim control MVP (Sept 2 to 9)
 
-- Entry: intent schema frozen (morning of Sept 2).
-- Deliverables: relay (C), planner and arbiter with unit tests (B), sim adapter (B), console wired to the relay instead of its internal sim (A), JSONL logging and replay tool (C), CI with unit tests and the first three sim scenarios (C), gesture gold-set v1 from Phase 0 recordings (A).
-- Exit: the scripted mission runs end to end through relay, planner, arbiter, and sim, driven by webcam gestures, with zero unsafe intents in the log and the sim suite green in CI.
+- Entry: M0 contracts frozen.
+- Work order: first connect the webcam producer to the relay, planner, arbiter, and a two-drone sim. That path supports the eight M2.0 intents and returns `unsupported` for the other valid Intent v1 names. One-drone hardware, two-drone hardware, and one selected live feed complete M2.0 before the 4-to-6-drone expansion or spoken-language implementation begins.
+- Deliverables: relay, authoritative state, JSONL logging, replay, and CI (Platform); planner, arbiter, and sim adapter with unit and scenario tests (Autonomy); webcam console on the relay plus ledger, health, and replay views (Interaction); one pinned plan compiler, `validate_plan`, ordered emission, and cached eval mode (Platform); push-to-talk microphone capture, relay-side Whisper API transcription, transcript preview, clarification, confirm, cancel, cost logging, and visible error states (Interaction with Platform); a 50-transcript provisional plan set plus a 20-utterance live speech smoke set covering the scripted mission, three multi-step orders, ambiguity, confirmations, and unsafe requests (team).
+- Boundaries: the M1 speech path targets one pinned Chromium browser, one-shot recordings of at most 30 seconds, `en-US`, the `whisper-1` transcription endpoint, and a working network. It uses existing intents, current selection, and explicit drone IDs. Full selection and location expressions, the 200-item set, offline transcription, continuous listening, multilingual support, and noisy-room hardening land in M4. Every confirmed plan still passes the planner and arbiter.
+- First gate: the M2.0 workflow passes through webcam, relay, planner, arbiter, and two-drone sim before hardware work begins. The polished M1 exit then expands the sim to 4 to 6 drones and Appendix E; three live spoken multi-step orders pass through recording, Whisper transcription, compiler, validation, preview, confirmation, and the same sim path; provisional plan exact-match accuracy is at least 85%; the 20-utterance clean-room speech smoke run reaches at least 85% exact transcript match across two speakers; language-to-preview latency and combined transcription-plus-compiler cost meet the §3.2 targets; unsafe-intent count is zero; transcription failures, ambiguous plans, and invalid plans emit nothing.
 
-### Phase 2: Real drones, indoor (Sept 4 to 9)
+### M2: Hardware control MVP (delivery-gated, five working days)
 
-- Entry: drone model known, positioning chosen, flight space set up with netting or guards.
-- Deliverables: `crazyswarm2` or `mavlink` adapter (B), hardware bring-up checklist and positioning calibration (B), one-drone acceptance (arm, take off, hold, land, come home, e-stop), then three, then six (B with A on the console), battery return and link-loss behaviors verified on hardware (B), operator-presence watchdog (C).
-- Exit: the scripted mission completes hands-free on six drones five times in a row; safety log shows correct refusals for a deliberately unsafe intent (translate through the geofence).
+- Entry: M1's two-drone webcam-to-sim safety path is green; drone model and adapter are known; positioning equipment and a guarded flight space are available; a two-person crew is booked.
+- Scheduling: hardware safety work takes priority until M2.0 passes. Interaction and Platform flight support is booked in bounded blocks. The language and 4-to-6-drone work starts after M2.0.
+- M2.0 workflow: arm; select both drones; confirmed takeoff; translate both together; hold; come home; confirmed land-all. E-stop remains available throughout. The one-drone proof selects the only connected drone and runs the same sequence and safety checks; the two-drone proof then verifies coordinated translation and spacing. The checkpoint uses the existing Intent v1 names `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop`. Other valid Intent v1 names return `unsupported` during the checkpoint. Unknown names and invalid arguments keep their existing validation refusals.
+- M2.0 safety and evidence: keep the complete arbiter, e-stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and two-person hardware rule. The formation library, altitude gesture, sweep planner, detector, mosaic, glasses, language and LLM work, replay UI, metrics dashboard, session report, and release polish remain outside the checkpoint.
+- M2.0 exit: the workflow passes in the two-drone simulator; one real drone passes before the second is added; two real drones complete it without manual flight correction; a deliberate geofence violation is refused before an adapter command is sent; e-stop reaches both drones; link loss produces the configured safe behavior; the selected live feed stays visible; and the JSONL log explains the run.
+- Polished-MVP deliverables: expand from two drones to three, then 4 to 6 (Autonomy with Interaction support); add altitude, formation, sweep, the operator-presence watchdog, extended logs, and session reports; repeat the M1 language orders on hardware after both paths are green (team).
+- Exit: 4 to 6 drones complete the scripted mission five times in a row; the arbiter refuses a deliberate geofence violation; webcam and spoken-language runs produce the expected plans, commands, and safety outcomes.
 
-### Phase 3: Video and perception (Sept 8 to 12, overlaps Phase 2)
+### M3: Full MVP, video and sensor console (provisional Sept 5 to 12 parallel lane)
 
-- Entry: one camera source available (drone camera, AI deck, or FPV capture).
-- Deliverables: MediaMTX ingest and WebRTC/MJPEG serving with recording (C), mosaic and focus-by-selection in the console (A), detector on sampled frames with world-position estimates (A), attention promotion and thumb-up/thumb-down confirmation (A), detection events in the relay and logs (C), six sources on the dual-band network with latency measured (C).
-- Exit: focus on a drone by holding up its number; a detection promotes its feed within one second; video latency within budget on all six.
+- Entry: M2.0 is green. Its one selected live feed provides the narrow media proof. Recording, multi-stream work, detector prototyping, and the M1/M4 language lanes may then run concurrently; relay and console integration wait for their shared contracts.
+- Deliverables: expand the M2.0 selected-feed proof into MediaMTX ingest, WebRTC/MJPEG serving, recording, detection events, and latency measurement (Platform); add the live camera mosaic, focus-by-selection, telemetry and sensor state, detector, attention promotion, and operator confirmation in the console (Interaction).
+- Exit: the control panel shows live cameras, telemetry, and sensor events; the operator can focus a drone by selection; a detection promotes its feed within one second; one-source video meets the latency budget. The 4-to-6-source claim requires recorded hardware evidence.
 
-### Phase 4: Glasses and Neural Band (Sept 12 to 17, starts when the glasses arrive)
+### M4: Language completion and final proof of concept (provisional Sept 5 to 12 concurrent build; hardening through Sept 24)
 
-- Entry: glasses in hand, developer mode on, relay reachable from the glasses' network.
-- Deliverables: glasses web app emitting the intent set from band gestures and head direction (A), one-feed video in the lens via MJPEG (C for serving, A for UI), alert line and minimap (A), contract tests showing the glasses pass the same intent tests as the webcam (C), head-direction calibration ritual and measured compass accuracy (A), display recording of the scripted mission (all).
-- Exit: the scripted mission completes from the glasses with hands at the sides, video visible in the lens, and the safety log identical in shape to the webcam run.
+- Entry: M2.0 is green. Corpus authoring, cached eval work, speech fixtures, and M3 work may proceed concurrently; resolver and emission integration wait for the M1 plan and relay contracts.
+- Deliverables: `resolve_selection` and `resolve_location` with ambiguity handling (Autonomy); expansion to the responder-reviewed 200-utterance set, full cached eval, and local compiler fallback (Platform with team-contributed cases); offline transcription evaluation, noisy-room speech evaluation, retry and timeout hardening, plus final preview and confirmation polish (Interaction with Platform); hardware language acceptance when M2 is open; failure drills, adversarial tests, documentation, build guide, release, demo script, and recorded reel (team).
+- Scheduling decision under review: Koby has directed M3 video and the full M4 language scope to run concurrently after M2.0. The current estimate is 18 to 23 person-days against 15 gross team-days from Sept 5 through Sept 12, a capacity gap of 3 to 8 person-days pending team confirmation. The estimate is unchanged; its calendar start assumes M2.0 passes in time. Contract and safety gates still serialize the plan schema, relay state, ordered emission, detection-event shape, shared console integration, and cross-review. Media setup beyond the selected feed, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation can proceed in parallel.
+- Exit: plan exact-match accuracy is at least 85% on the 200-item set; unsafe-intent count is zero; ambiguity produces clarification without emission; five consecutive scripted hardware runs pass when hardware is available; the public repository is tagged v0.1 and the demo reel is complete. Hardware claims require recorded hardware evidence.
 
-### Phase 5: Natural language (Sept 15 to 19, overlaps Phase 4)
+### Future: Optional inputs and vehicle portability
 
-- Entry: intent contract stable; relay exposes state to the language module.
-- Deliverables: plan compiler with schema-constrained output and validation (C), selection and location resolvers (B), preview and confirm UI on the laptop and a text-field path on the glasses (A), utterance gold set of 200 with a responder's review (all), eval in CI with cached responses (C), local-model fallback (C).
-- Exit: plan accuracy ≥ 85% on the gold set, zero unsafe intents, three multi-step orders demonstrated on real drones.
-
-### Phase 6: Hardening, demo, release (Sept 19 to 24)
-
-- Deliverables: failure-mode drills (Section 7.1) on hardware, adversarial tests (Section 7.3), documentation and build guide, release, demo script and recorded reel.
-- Exit: five consecutive scripted runs on hardware with no safety intervention; public repository tagged v0.1; demo reel cut.
+- Glasses: add a source-specific client, registry entry, and conformance runner. Display features stay inside that client.
+- EMG band: proceed after the direct-host API gate passes; require real-device events through the shared conformance suite and safety path.
+- Vehicle portability: evolve capability contracts and add adapters from evidence produced by working vehicles and the capability/action evals.
+- Future work cannot change the rule that inputs emit intents, the planner alone produces per-drone commands, and the arbiter validates every intent and command.
 
 ---
 
-## 7. Phase 3 of the checklist: post-stack refinement
+## 7. Checklist: post-stack refinement
 
 ### 7.1 (11) Failure mode analysis
 
@@ -302,17 +308,18 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 | Link loss to a drone | onboard failsafe lands or returns (configured per adapter); the relay marks it lost |
 | Positioning loss indoors | all drones hold at last good position for 3 s, then land in place |
 | Ambiguous language | the compiler returns options; nothing executes |
+| Microphone capture or Whisper API transcription is denied, unavailable, or times out | voice input is disabled and the error is shown; gestures and keyboard e-stop remain active |
 | LLM API rate limit or outage | local model fallback; if none, language input is disabled and the operator is told; gestures unaffected |
 | Video stream drops | tile shows "no video" with the last frame time; detection for that stream pauses; flight unaffected |
 | Two conflicting intents within 500 ms | the later one wins for selection changes; for motion, both are dropped and the swarm holds, with an alert |
-| Graceful degradation ladder | full → no video → no language → no glasses → webcam only → keyboard e-stop only |
+| Graceful degradation ladder | full → no video → no language → webcam only → keyboard e-stop only |
 
 ### 7.2 (12) Security considerations
 
 - **Prompt injection:** the plan compiler's only untrusted input is the operator's utterance, and its output is schema-constrained to intents that the arbiter re-validates. Detection labels, stream names, and any text that arrives from devices are treated as data and never pass through the compiler as instructions.
-- **Data leakage:** everything runs on the ground-station LAN; video and logs stay local; the only outbound call is the LLM API with swarm state and the utterance, never video.
-- **API key management:** environment variables loaded from a git-ignored `.env`; keys never in the console; the console talks only to the relay.
-- **Access:** the relay accepts sources with a shared token over LAN or loopback; the glasses app carries the token in its config page, not its URL.
+- **Data leakage:** video and logs stay on the ground-station LAN. In M1, the console sends microphone audio to the relay, which sends it to the OpenAI Whisper API; the plan-compiler API receives the resulting transcript plus swarm state. Audio is captured only after an explicit operator action and is not written to Sweep's logs.
+- **API key management:** `OPENAI_API_KEY` is loaded into the relay process from a git-ignored `.env`; the key never reaches the console, logs, or repository. The console calls only the relay, following [OpenAI's server-side key guidance](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safet). Usage and spend thresholds are configured for the OpenAI project.
+- **Access:** the relay accepts registered sources with a shared token over LAN or loopback. Source-specific credentials and licenses stay outside the relay and repository.
 - **Audit logging:** append-only JSONL per session with hashes chained per file, so a log cannot be edited without detection.
 
 ### 7.3 (13) Testing strategy
@@ -324,37 +331,41 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 
 ### 7.4 (14) Open source planning
 
-- **Release:** the console, relay, planner, arbiter, sim, adapters, media and perception configs, the glasses app, the language module, the gesture and utterance datasets, the eval harness, and the docs.
+- **Release:** the console, relay, planner, arbiter, sim, adapters, media and perception configs, language module, gesture and utterance datasets, eval harness, and docs. Optional input producers release separately after Future acceptance.
 - **Documentation:** README with a five-minute sim quickstart, a hardware build guide, the intent contract, and a contributor guide for adding an input source or an adapter.
-- **Community:** GitHub, a post in the Bitcraze forum and ROS Discourse, a demo reel with display recording, and an invitation to add adapters.
+- **Community:** GitHub, a post in the Bitcraze forum and ROS Discourse, a demo reel, and an invitation to add adapters and registered input sources.
 
 ### 7.5 (15) Deployment and operations
 
-- **Hosting:** the ground station is a laptop; `docker compose` brings up the relay, MediaMTX, and perception; the console and the glasses app are static files served from the laptop for development and from GitHub Pages or Vercel for the glasses (which require a public HTTPS URL).
-- **CI/CD:** GitHub Actions for tests and evals; tagged releases; the console and glasses app deploy on tag.
+- **Hosting:** the ground station is a laptop; `docker compose` brings up the relay, MediaMTX, and perception; the console is served locally.
+- **CI/CD:** GitHub Actions runs tests and evals; tagged releases package the console and local producers.
 - **Monitoring and alerting:** the console health strip; a session report generated at the end of each run with latencies, refusals, battery curves, and any degraded drones.
 - **Rollback:** pinned versions for models and adapters in `config.yaml`; a release is a tag; rolling back is checking out the previous tag and restarting compose.
 
 ### 7.6 (16) Iteration planning
 
-- **User feedback:** one responder walkthrough per phase from Phase 2 on, recorded; the operator's confirms and dismisses of detections and plans are logged as implicit feedback.
+- **User feedback:** one responder walkthrough per milestone from M2 onward, recorded; the operator's confirms and dismisses of detections and plans are logged as implicit feedback.
 - **Eval-driven improvement:** every bug becomes a scenario or a gold-set item before it is fixed; the eval numbers are in the session report.
 - **Prioritization:** by risk-adjusted demo value: anything that touches safety first, then anything on the scripted mission path, then breadth.
 - **Long-term maintenance:** adapters isolate hardware churn; the intent contract is versioned; the repo has a maintainers file and a triage label set from day one.
 
 ---
 
-## 8. Division of labor
+## 8. Work coordination
 
-### 8.1 Roles
+### 8.1 Capability areas and dynamic claiming
 
-| Engineer | Title | Owns | Also covers |
+The A, B, and C labels describe capability areas and module boundaries. They are not standing assignments to people. Any engineer may claim any ready task, and the claimant owns that task through review, integration, and evidence.
+
+| Capability area | Boundary | Typical work | Adjacent work |
 |---|---|---|---|
-| A | Interaction and perception | gesture console, console dashboard, video UI, detector, glasses web app, language UI | gesture gold set, display recording |
-| B | Autonomy and safety | planner, arbiter, sim, drone adapters, positioning, hardware bring-up, flight operations | resolvers for language, mode parameters |
-| C | Platform and data | relay, intent contract, logging and replay, media server, plan compiler plumbing, observability, evals, CI, release | networking, glasses hosting, language fallback |
+| A, Interaction | Operator inputs and visible feedback | gesture console, console dashboard, video UI, detector, language UI | gesture gold set, future input-producer UX |
+| B, Autonomy | Deterministic motion and flight safety | planner, arbiter, sim, drone adapters, positioning, hardware bring-up, flight operations | language resolvers, mode parameters |
+| C, Platform | Contracts, transport, data, and evaluation | relay, intent registry, logging and replay, media server, plan compiler plumbing, observability, evals, CI, release | networking, future source registration and CI, language fallback |
 
-### 8.2 Contracts frozen on day one (Sept 2, 9 am)
+Dynamic claiming does not permit competing contract or safety edits. Each change to Intent v1, the adapter interface, relay state shape, the arbiter, e-stop, or a safety-relevant planner path has one named change owner and requires cross-review before merge. Other ready tasks may proceed in parallel when their dependencies and file boundaries do not overlap.
+
+### 8.2 Contracts frozen in M0 (Sept 2, 9 am)
 
 1. Intent schema (Appendix A) and the WebSocket topics.
 2. Telemetry schema (Appendix B).
@@ -363,32 +374,39 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 
 ### 8.3 Week one, by day
 
-| Day | A | B | C |
+The M2.0 sequence controls near-term work: contracts, two-drone sim, one real drone, two real drones, then one selected live feed. Physical inventory may happen when hardware arrives, but it cannot displace the planner, arbiter, sim, relay, schema, console, logging, or CI work. Language, the 4-to-6-drone expansion, and the broader M3/M4 lanes begin after M2.0.
+
+The columns below describe capability-area work. They do not reserve an engineer for the week; ready cells become tasks that any engineer may claim.
+
+| Day | A, Interaction | B, Autonomy | C, Platform |
 |---|---|---|---|
-| Sept 2 | Wire the console to the relay; strip the internal sim; ship the gesture gold set v1 from yesterday's recordings | Planner and arbiter with tests; sim adapter | Relay with WebSocket, token, JSONL logging; repo, CI skeleton, schemas |
-| Sept 3 | Ledger and health strip driven by relay state; replay viewer in the console | Sim scenarios 1 to 5; battery and link-loss behaviors in sim | Replay tool; sim scenario runner in CI; gesture eval runner |
-| Sept 4 | Console polish for the hardware runs; start the video mosaic against a webcam as a fake drone stream | Hardware bring-up: radios, positioning, one drone flying through the adapter | MediaMTX up; the first stream served as WebRTC and MJPEG; network plan executed (5 GHz video, 2.4 GHz control) |
-| Sept 5 | Focus-by-selection; detector running on the fake stream | Three drones, then six; acceptance runs | Recording, session reports, operator-presence watchdog |
-| Sept 6 | Attention promotion and confirm and dismiss | Sweep and come home on six; unsafe-intent refusal on hardware | Six streams measured; latency dashboard; hardware acceptance script |
+| Sept 2 | Wire the webcam console to the relay; show connection, selection, two drone states, and the last acknowledgement or refusal; keep keyboard e-stop live | Build the two-drone sim, eight-intent planner subset, and complete arbiter checks | Freeze Intent v1 and the adapter contract; add one authenticated WebSocket session, canonical two-drone state, acknowledgements, refusals, JSONL, and basic CI |
+| Sept 3 | Run the eight-intent workflow and fix checkpoint UI defects | Complete the two-drone scenarios for confirmation, geofence, ceiling, spacing, battery, link and positioning loss, and e-stop | Complete checkpoint state fan-out, logging, and sim CI; verify unsupported valid intents are typed refusals |
+| Sept 4 | Operate the console during the one-drone proof if hardware is ready | Select the adapter, calibrate positioning, and pass the workflow on one real drone with a two-person crew | Capture the hardware JSONL evidence and expose acknowledgements, refusals, and state |
+| Sept 5 | Operate the two-drone proof and connect one selected live feed | Add the second drone; pass the workflow, deliberate geofence refusal, e-stop, and link-loss checks without manual correction | Keep the selected feed visible and verify that the JSONL log explains the run |
+| Sept 6 | After M2.0, begin push-to-talk capture, transcript preview, clarification, confirm, and cancel | After M2.0, expand the sim and hardware path toward 4 to 6 drones and Appendix E | After M2.0, add Whisper transcription, the plan schema, `validate_plan`, ordered emission, and independent M3/M4 work |
 
-### 8.4 Weeks two and three, by phase
+### 8.4 Weeks two and three, by milestone
 
-- **Phase 4 (glasses):** A builds the glasses app; C hosts it, wires MJPEG for the lens, and writes the contract tests; B measures head-direction accuracy on real flights and tunes translate steps.
-- **Phase 5 (language):** C builds the compiler and evals; B writes the resolvers; A builds preview and confirm on both surfaces; all three write utterances.
-- **Phase 6 (hardening):** B runs failure drills; C runs adversarial tests and cuts the release; A produces the demo reel and docs for the console and glasses.
+- **M1 language completion (target Sept 7 to 9 after M2.0):** Platform work completes the Whisper API transcription endpoint, transcript-to-plan compiler path, latency and cost logging, cached eval, error handling, and provisional 50-case report. Interaction work completes push-to-talk capture, transcript, preview, and confirmation UX. The team finishes the 50-transcript plan set and a 20-utterance live speech smoke run. Autonomy work expands the sim and hardware paths toward the polished exit. The language exit is earned on sim through live microphone input.
+- **M2 hardware control MVP (delivery-gated):** M2.0 accepts one real drone and then two before any 4-to-6-drone or language work. After that checkpoint, Autonomy expands to three and then 4 to 6 drones. Interaction support operates the console during booked flight blocks. Platform adds the operator-presence watchdog and full session reports after the checkpoint. Every flight requires two people under §8.5.
+- **M3 full MVP, video and sensor console (provisional parallel lane after M2.0):** The checkpoint consumes one selected live feed. Recording configuration, multi-stream ingest, detector prototyping, and stream fixtures follow. Detection-event and console integration wait for their contracts and run beside M1/M4 language work only when a separate engineer can claim them. The lane completes WebRTC/MJPEG, latency measurement, mosaic, focus behavior, detector, attention promotion, and confirmation.
+- **M4 language completion and final proof of concept (provisional Sept 5 to 12 concurrent build; hardening through Sept 24):** After M2.0, corpus authoring, cached eval fixtures, and speech smoke preparation start beside M1 and M3. Resolver, fallback, and ordered-emission integration begin as their M1 contracts freeze. Platform work expands the eval to the full cached 200-item set, adds the local compiler fallback, closes compiler failures, runs adversarial tests, and cuts the release. Autonomy work completes resolver edge cases and failure drills. Interaction work evaluates offline and noisy-room speech and polishes preview and confirmation, then produces the demo reel and console documentation. The team completes the utterance set, responder review, and real-drone spoken-language demonstration when the full M2 path is open.
+- **Capacity confirmation:** concurrent M3 and full-language work is Koby's provisional direction pending team confirmation. The estimate remains 18 to 23 person-days against 15 gross team-days from Sept 5 through Sept 12. The 3-to-8-person-day gap requires added capacity, work outside the five normal weekdays, or an exit-date extension. Parallel claiming reduces idle time but does not remove the single-owner and cross-review gates on shared contracts, relay state, console integration, and safety-relevant paths.
+- **Future extensions:** glasses, an EMG band, and additional vehicle adapters proceed only after M4 and their own access and evidence gates. They use the same registered-source and capability boundaries without changing the MVP control path.
 
 ### 8.5 Cadence and integration
 
 - 9:00 stand-up, ten minutes, blockers only.
 - 16:00 integration: everything merged runs end to end on sim; on hardware days, one full scripted run.
 - Flight rule: two people present for any flight, one on the e-stop keyboard, one operating; nobody flies alone.
-- Every hardware session ends with a session report committed to the repo.
+- M2.0 hardware sessions commit their JSONL evidence. Later hardware sessions also commit the generated session report.
 
 ### 8.6 What not to do
 
-- No new intents without a contract change, a test, and all three inputs updated.
+- No new intents without a contract change, a test, and every registered input updated.
 - No model in the safety path.
-- No feature that isn't on the scripted mission path until Phase 6.
+- No feature outside the M1 through M4 acceptance paths before M4 exits.
 
 ---
 
@@ -396,10 +414,12 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Drone model needs a different adapter than planned | medium | medium | adapter interface is fixed; B has three days budgeted for bring-up |
+| Drone model needs a different adapter than planned | medium | medium | adapter interface is fixed; budget three person-days of Autonomy work for bring-up |
 | Positioning is flaky indoors | medium | high | Lighthouse if possible; otherwise wider spacing, slower speed, hold-on-loss rule |
 | Video bandwidth fights control links | high | medium | dual-band plan, MJPEG at reduced fps, capture-card FPV as fallback |
-| Glasses arrive late | medium | low | webcam path is the demo of record; glasses are an upgrade |
+| Camera or sensor hardware arrives after M3 | medium | high | integrate one available source first; do not claim 4-to-6-source coverage without recorded hardware evidence |
+| Whisper API latency, rate limits, or outage block the M1 language path | medium | high | cap recordings at 30 seconds; test timeout and rate-limit handling; run the 20-utterance smoke set before integration; keep gestures and keyboard e-stop available |
+| Concurrent M3 and full-language work exceeds Sept 5 to 12 capacity | high | high | confirm the 3-to-8-person-day gap with the team; freeze shared contracts first; parallelize media setup, detector prototypes, corpus work, and eval fixtures; extend the exit date if capacity is not added |
 | Language produces plausible but wrong plans | medium | medium | preview and confirm; schema; gold set; unsafe rate stays zero by construction |
 | Gesture false positives in a busy room | medium | medium | dwell, stillness, confirmation; operator-facing readout; fallback to keyboard |
 | A crash injures someone | low | severe | netting or guards, 27-gram drones, e-stop discipline, two-person flight rule |
@@ -413,7 +433,7 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
   "v": 1,
   "t": 1756700000000,
   "type": "intent",
-  "source": "webcam | glasses | language | keyboard",
+  "source": "webcam",
   "session": "2026-09-02T09-00-00Z",
   "name": "arm | disarm | estop | select | takeoff | land | land_all | hold | translate | altitude | formation_next | formation_set | spacing | come_home | sweep",
   "args": {},
@@ -424,6 +444,10 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 ```
 
 Args by intent: `select {ids}`, `translate {dx, dy}` in steps, `altitude {delta}` in steps, `formation_set {name}`, `spacing {delta}`, `sweep {box?}`, `confirm` is set by the source when the operator confirmed a pending intent. Everything else has empty args. Unknown names or args are refused by the relay before the planner sees them.
+
+`source` is a registered identifier. M1 registers `webcam`, `language`, and `keyboard`. A Future glasses or Band identifier lands only with its real producer and conformance runner.
+
+M2.0 uses the existing `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop` names. The relay returns `unsupported` for every other valid Intent v1 name until the checkpoint passes. This is a capability gate inside Intent v1, so the schema version stays unchanged. `come_home` remains planner behavior implemented through `goto`, while `land_all` uses `land`; the adapter interface stays unchanged.
 
 ## Appendix B: Telemetry v1
 
@@ -450,8 +474,8 @@ class SwarmAdapter(Protocol):
 
 ```
 sweep/
-  console/          Phase 0 page grown into the dashboard (static)
-  glasses/          Meta Ray-Ban Display web app (static)
+  console/          webcam prototype grown into the dashboard (static)
+  glasses/          future optional input client (inactive for the MVP)
   relay/            FastAPI relay, schemas, logging, replay
   planner/          formations, sweep, allocation, modes
   arbiter/          safety rules, e-stop, battery return
@@ -467,7 +491,7 @@ sweep/
 
 ## Appendix E: Scripted mission (the acceptance test)
 
-1. Both palms up: arm. 2. Open palm: select all. 3. Open palm up: takeoff; thumb up: confirm. 4. Circle: formation to circle. 5. Index swipe right twice: translate. 6. Pinch and raise: altitude up one step. 7. Two fingers held: sweep; thumb up: confirm; wait for lanes to finish. 8. Rock sign: come home. 9. Rock sign: land. 10. Both palms up: disarm. Pass: all steps execute, zero unsafe intents, no manual intervention, under three minutes.
+1. Both palms up: arm. 2. Open palm: select all. 3. Open palm up: takeoff; thumb up: confirm. 4. Circle: formation to circle. 5. Index swipe right twice: translate. 6. Pinch and raise: altitude up one step. 7. Two fingers held: sweep; thumb up: confirm; wait for lanes to finish. 8. Rock sign: come home. 9. Rock sign: land. 10. Both palms up: disarm. Pass: all steps execute on 4 to 6 connected drones, zero unsafe intents, no manual intervention, under three minutes.
 
 ## Appendix F: Checklist crosswalk
 

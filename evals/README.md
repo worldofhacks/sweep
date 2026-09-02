@@ -1,6 +1,8 @@
 # evals
 
-Owner: C (Platform). Phase 1 onward.
+Capability area: Platform. Milestone: M1 onward.
+
+Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes that encode shared-contract or safety expectations name one change owner and require cross-review.
 
 Four gold sets (PRD section 4.7):
 

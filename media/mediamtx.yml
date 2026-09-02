@@ -20,5 +20,8 @@ moq: no
 
 # Recording is switched on in Phase 3: pathDefaults.record plus a mounted recordings volume.
 
+# Phase 3 prerequisite (owner C): set authInternalUsers so publishing and reading need credentials;
+# the MediaMTX default lets anyone on the LAN publish or read every path.
+
 paths:
   all_others:
