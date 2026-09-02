@@ -1,6 +1,6 @@
 # Sweep MVP delivery plan
 
-This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble. M2 scales the control path and proves the outdoor planner against three fake-bridge drones. M3 gates indoor known-map capture and a three-Mini-3 outdoor field flight. M4 adds language and gesture producers, the composed walkthrough, and the recorded demo.
+This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble. M2 scales real hardware control from one to three Mini 3 nodes. M3 proves real known-map autonomous indoor traversal and capture. M4 adds language and gesture producers, the composed walkthrough, and the recorded demo.
 
 The MVP targets a live technical demonstration. Production governance and operations move to F.6. All hardware-safety gates remain in the active milestones.
 
@@ -31,13 +31,11 @@ flowchart TD
     hw2 --> feed[One selected live feed]
     feed --> m20[M2.0 walking-skeleton checkpoint]
     m20 --> scale[Three-node hardware and 4-to-6-drone sim scope]
-    m20 --> fieldsim[Three-drone outdoor fake-bridge safety stack]
     m20 --> video[M3 video and sensor console]
+    m20 --> localization[Real indoor localization and clearance gate]
     rooms --> knownmap[Known-map autonomous traversal and capture]
-    m20 --> knownmap
+    localization --> knownmap
     video --> knownmap
-    fieldsim --> fieldflight[Three-Mini-3 outdoor field gate]
-    scale --> fieldflight
     speech --> hwlang[Language acceptance on hardware]
     speech --> langfull[M4 language completion]
     knownmap --> compose[Operator-composed walkthrough]
@@ -45,7 +43,6 @@ flowchart TD
     video --> release[M4 final integration and recorded demo]
     compose --> release
     scale --> release
-    fieldflight --> release
     hwlang --> release
     langfull --> release
     release --> future[Future registered inputs and vehicle adapters]
@@ -190,12 +187,7 @@ Capability area: Interaction with Platform integration. Dependencies: M1.E.
 Scope: confirm `survey_area {area_id}`, then let the RC safety operator fly through 3 to 5 rooms while the user marks room entry, names, doorways, and candidate capture poses. Record both sides of every doorway and run `capture_room` at each approved pose. Store room adjacency, operator annotations, optional floor-plan reference, and any accepted metric pose evidence. Without an accepted shared pose source, label the output topological and keep it out of autonomous planning. Continue capturing while prior Marble jobs run.
 Done when: one pilot-assisted project exposes each room's capture bundle, doorway evidence, graph, candidate pose, job state, and Marble world, and has no orphaned or cross-linked IDs. The pilot-assisted result can be composed into a complete walkthrough. Before M3 reuses it, the operator imports or validates a metric occupancy map, room graph, capture poses, and geofence through the M3 localization gate.
 
-**M2.7: Prove the outdoor fleet stack against the fake bridge**
-Capability area: Autonomy with Platform evidence support. Dependencies: M1.2, M1.4, M2.0, a hand-drawn demo-field grid.
-Scope: build the laptop fleet manager with geofence polygon, altitude floor and ceiling, and the pairwise hard-stop rule. Add A* over a manually registered occupancy grid, carrot-chasing GPS-waypoint tracking, ORCA at 10 Hz with 5 m horizontal separation, fixed altitude offsets of 0, +3, and +6 m, triangle and line formations, Hungarian slot assignment, and planner-routed transitions. After the route controller produces a bounded candidate velocity, every downstream filter may reduce its magnitude or redirect it within the global cap; no filter may increase the magnitude it receives.
-Done when: three fake-bridge drones complete five scripted runs. Goals outside the geofence or inside blocked cells are refused. No route crosses a blocked cell. Any pair inside both 3 m horizontal and 2 m vertical receives hover before another translation. Triangle-to-line transitions preserve the 5 m horizontal target and altitude offsets. Every aircraft returns home, and the log records planner, controller, ORCA, hard-stop, and adapter decisions at 10 Hz.
-
-### M3: Video, sensor, known-map room capture, and outdoor field flight
+### M3: Video, sensor, and real known-map indoor capture
 
 **M3.0: Prove indoor localization and collision-clearance sensing**
 Capability area: Autonomy with Platform evidence support. Dependencies: M2.2, surveyed test layout, selected shared localization and clearance sensors.
@@ -227,11 +219,6 @@ Capability area: team. Dependencies: M2.4, M3.2, M3.3, M3.4.
 Scope: demonstrate button control, plus each accepted later language or gesture producer, with the camera, telemetry, sensor console, and known-map autonomous multi-room traversal and capture path active.
 Done when: the complete operator workflow succeeds on three physical Mini 3 nodes and 4 to 6 simulated drones, known-map autonomous multi-room traversal and capture succeeds on the accepted two-drone configuration, and the session evidence supports every control, safety, video, sensor, and capture claim.
 
-**M3.6: Prove the three-drone outdoor field flight**
-Capability area: Autonomy with Platform and Interaction support. Dependencies: M2.4, M2.7, field geofence review, measured GPS and command-latency report.
-Scope: register the hand-drawn field grid to GPS, mark the tree line and fence as blocked, verify launch and return points, and run the accepted fake-bridge stack on three Mini 3 nodes. Use console buttons for the first hardware runs. Keep one RC safety operator per active aircraft and preserve the network stop and physical takeover paths.
-Done when: one recorded run takes off, forms a triangle, switches to a line, moves the formation anchor, and returns home. No command leaves the geofence or altitude band, enters a blocked cell, violates the pairwise thresholds, or exceeds the velocity supplied by the preceding stage. Every hard-stop injection commands both affected aircraft to hover, and every aircraft ends home or in the configured fail-safe.
-
 ### M4: Language completion and final proof of concept
 
 **M4.1: Complete deterministic language resolution**
@@ -255,10 +242,9 @@ Scope: add camera selection, explicit gesture-tracking enablement, hand-landmark
 Done when: one recorded browser session selects a camera, enables tracking, shows landmarks, proposes `capture_room`, confirms it, and observes the same `intent_id` through execution and terminal state. Cancellation, hold, timeout, camera unplug, low confidence, and duplicate suppression pass. The gesture producer passes the same Intent v1 conformance suite as console buttons.
 
 **M4.5: Integrate and record the demo**
-Capability area: team. Dependencies: M2.4, M2.6, M3.5, M3.6, M4.2, M4.3, M4.4.
-Scope: repeat the accepted outdoor field mission through one language or gesture producer, then add the room worlds generated from M3.4's accepted drone run to Marble Studio Compose. Manually place, rotate, and scale them against room adjacency and the floor-plan reference, align floors and doorways, review each transition, create a camera path in Studio Record, download the MP4 before leaving the page, and upload it to the same building project. Preserve and label captured, generated, composed, and enhanced artifacts. Finish the visible failure states, short run guide, demo script, and reel.
-Done when: the confirmed “Map this floor” chain is traceable from its source through `map_area`, the accepted capture bundles and World API jobs to a 3-to-5-room composition; every doorway transition is reviewed; and the stored MP4 visits each room once. All claimed control and capture exits have recorded evidence, CI is green, and a fresh checkout can run the scripted demo from the guide. Record paths and enhanced video are downloaded during the Studio session because World Labs says they do not persist after leaving the page.
-The selected language or gesture producer also completes the accepted M3.6 outdoor mission while preserving the planner, arbiter, adapter, geofence, altitude, separation, hard-stop, and velocity-filter outcomes from the button-driven runs.
+Capability area: team. Dependencies: M2.4, M2.6, M3.5, M4.2, M4.3, M4.4.
+Scope: repeat the accepted indoor known-map capture through one language or gesture producer, then add the room worlds generated from M3.4's accepted drone run to Marble Studio Compose. Manually place, rotate, and scale them against room adjacency and the floor-plan reference, align floors and doorways, review each transition, create a camera path in Studio Record, download the MP4 before leaving the page, and upload it to the same building project. Preserve and label captured, generated, composed, and enhanced artifacts. Finish the visible failure states, short run guide, demo script, and reel.
+Done when: the confirmed “Map this floor” chain is traceable from its source through `map_area`, the accepted capture bundles and World API jobs to a 3-to-5-room composition; every doorway transition is reviewed; and the stored MP4 visits each room once. The selected language or gesture producer completes the accepted indoor mission through the same planner, arbiter, adapter, localization, clearance, geofence, separation, and physical-RC safety path. All claimed control and capture exits have recorded evidence, CI is green, and a fresh checkout can run the scripted demo from the guide. Record paths and enhanced video are downloaded during the Studio session because World Labs says they do not persist after leaving the page.
 
 ### Future
 
@@ -283,18 +269,18 @@ Scope: add one confirmed `search_area {area_id, query_id}` outcome intent backed
 Done when: the planner searches only the confirmed area through the normal arbiter path, description matching meets its reviewed evaluation gate, every candidate requires human validation, and expiration or cancellation stops the search without leaving an active query.
 
 **F.5: Extend outdoor mapping and perception**
-Capability area: Autonomy with Platform and Interaction evidence support. Dependencies: M3.6 and separate measured acceptance plans.
-Scope: in priority order, replace the hand-drawn grid with ODM survey output, a height map, and altitude-band occupancy grids; add a Depth Anything V2 forward brake that scales velocity to zero under a tested 8 m threshold; yaw toward travel before translation and point the gimbal down before descent; stop and climb 5 m when validated YOLO evidence places a person within about 10 m; project detections from one 40 m nadir-view aircraft into the live grid; and evaluate AprilTags as an indoor shared-position source.
-Done when: each item has its own evidence-backed accuracy, latency, failure, and safety gate before it can affect commanded velocity or occupancy state.
+Capability area: Autonomy with Platform and Interaction evidence support. Dependencies: M4.5 and separate measured acceptance plans.
+Scope: define a separate real-hardware outdoor program for geofencing, direct formation movement, fixed altitude offsets, pairwise hard-stop behavior, occupancy-grid routing with A*, carrot-chasing along multi-waypoint GPS routes, ORCA reciprocal collision avoidance, Hungarian or dynamic slot assignment, and obstacle-aware formation transitions. Then, in the original Stretch order, add ODM survey output, a height map, and altitude-band occupancy grids; add a Depth Anything V2 forward brake that scales velocity to zero under a tested 8 m threshold; yaw toward travel before translation and point the gimbal down before descent; stop and climb 5 m when validated YOLO evidence places a person within about 10 m; project detections from one 40 m nadir-view aircraft into the live grid; and evaluate AprilTags as an indoor shared-position source. Simulation may support engineering tests and cannot earn the product exit.
+Done when: each item has its own real-hardware, evidence-backed accuracy, latency, failure, and safety gate before it can affect commanded velocity or occupancy state.
 
 **F.6: Harden the proof for production use**
 Capability area: team. Dependencies: M4.5 and an owner decision to pursue real-user deployment.
-Scope: add access-control verification, retention and deletion policy, multi-user administration, operational and cost reporting, the 200-item language evaluation, extended random-motion gesture evaluation, five-run hardware repeatability, packaging, deployment automation, and rollback procedures.
+Scope: add access-control verification, retention and deletion policy, multi-user administration, operational and cost reporting, the 200-item language evaluation, extended random-motion gesture evaluation, five-run indoor hardware repeatability, parameter sweeps, RF and latency stress, broader failure campaigns, packaging, deployment automation, and rollback procedures.
 Done when: each selected production concern has an owner, a measurable gate, and evidence from the target deployment environment.
 
 ## Concurrent M3 and M4 lanes
 
-**Provisional decision: run M3 video and outdoor planning beside M4 input work after M2.0, pending team confirmation that capacity covers the lanes.** These feature sets have no hard sequential dependency once M2.0 establishes the relay, authoritative state, Intent v1, safety path, two-drone hardware proof, and selected-feed shell. Dynamic claiming creates more scheduling options, but it does not reduce the total work or remove shared-file and review gates.
+**Provisional decision: run M3 video beside M4 input work after M2.0, pending team confirmation that capacity covers the lanes.** These feature sets have no hard sequential dependency once M2.0 establishes the relay, authoritative state, Intent v1, safety path, two-drone hardware proof, and selected-feed shell. Dynamic claiming creates more scheduling options, but it does not reduce the total work or remove shared-file and review gates.
 
 | Work package | Parallelization boundary |
 |---|---|
@@ -302,7 +288,6 @@ Done when: each selected production concern has an owner, a measurable gate, and
 | Whisper API capture, language UI, full resolvers, corpus completion, offline evaluation, and speech hardening | Corpus writing and the live speech smoke run can fan out. Resolver and UI integration wait on frozen result envelopes. |
 | Media ingest, recording, stream naming, detection-event transport, and latency measurement | Media configuration can proceed independently. Detection and relay-state changes use one change owner and cross-review. |
 | Mosaic, focus, sensor state, detector, attention promotion, and confirmation | Detector experiments can run independently. Console integration overlaps the language UI files. |
-| Outdoor grid, A*, carrot controller, ORCA, formation assignment, and fake-bridge evidence | The fake-bridge stack can proceed after M2.0. Physical flight waits for three-node hardware and measured field telemetry. |
 | Room project, World API jobs, room catalog, and Studio composition | The manual capture proof is complete. Persistent room-project work can proceed after M1.E. Shared console and persistence changes merge through one owner. Studio composition stays operator-assisted. |
 | Drone scaling and known-map autonomous multi-room traversal and capture | M1.E proves capture at one approved hover pose. Translation and fleet scaling proceed through M2.0; M3 proves known-map traversal on one aircraft before two. Every safety-relevant planner or adapter change receives cross-review. |
 | Cross-stack review, end-to-end acceptance, and defect margin | Safety-path and shared-contract reviews cannot be self-approved or merged concurrently. |
@@ -314,7 +299,7 @@ The order after M2.0:
 1. Freeze the transcription request/response, plan result, detection-event, and stream-naming contracts. Each contract has one change owner and a different reviewer.
 2. Complete M1 Whisper capture and compiler integration. In parallel, claim the room project, MediaMTX recording and multi-stream work, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation.
 3. Treat the accepted M1 one-node capture as the hardware baseline. After M2.0, duplicate it to three nodes and integrate known-map autonomous multi-room traversal and capture beside the M3 mosaic, sensor, and detection path.
-4. Integrate M4 resolvers, the 20-utterance live language gate, local compiler fallback, speech and gesture producers, the outdoor field demo, and the operator-composed walkthrough. Shared console changes merge through one owner at a time.
+4. Integrate M4 resolvers, the 20-utterance live language gate, local compiler fallback, speech and gesture producers, the real indoor known-map demo, and the operator-composed walkthrough. Shared console changes merge through one owner at a time.
 5. Continue delivery-gated M2 work in booked blocks. Hardware work reduces the capacity available to the concurrent lanes.
 6. Before the lanes start, the team confirms it has the capacity for both or drops the concurrency.
 
