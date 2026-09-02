@@ -1,7 +1,7 @@
 [project]
 name = "sweep"
 version = "0.0.1"
-description = "One person creates AI-generated room worlds from guided photos, commands three indoor DJI Mini 3 drones through webcam gestures or spoken natural language, and sees what the swarm sees on a laptop console."
+description = "One person creates AI-generated room worlds and commands three indoor DJI Mini 3 drones through a shared intent engine, starting with laptop controls."
 requires-python = ">=3.12,<3.13"
 dependencies = []
 

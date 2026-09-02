@@ -1,8 +1,8 @@
 # Sweep
 
-One person creates AI-generated room worlds from guided photos, commands three indoor DJI Mini 3 drones through webcam gestures or spoken natural language, and sees what the swarm sees on a laptop console. The simulator retains the 4-to-6-drone expansion target.
+One person creates AI-generated room worlds from guided photos, commands three indoor DJI Mini 3 drones through button controls on a laptop console, and sees what the swarm sees. Spoken language and gesture inputs join the same intent engine after the button-driven slice. The simulator retains the 4-to-6-drone expansion target.
 
-The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The three-guided-phone-photo Marble flow is completed feasibility evidence and remains a fallback. The first pending user-visible slice is one end-to-end drone capture: the operator asks Sweep to capture a room, the planner and arbiter approve the mission, one DJI Mini 3 holds an approved pose, and its files create a private Marble room world. The north-star command is “Map this floor.” During the MVP, it sends an operator-present three-drone swarm through approved room poses on a supplied occupancy map, then generates a room-by-room visual walkthrough. Physical bring-up uses three Mini 3 aircraft, three RC-N1 controllers, and three benchmarked Android bridge nodes, one node before three. Four to six drones remain a simulator and Future hardware target. An EMG band is an optional Future input source outside the core MVP. Everything is open source.
+The first user is a responder who needs eyes inside a building before entry. The three-guided-phone-photo Marble flow is completed feasibility evidence and remains a fallback. The first pending user-visible slice is one end-to-end drone capture: the operator clicks Capture room, reviews the Intent v1 preview, confirms it, and one DJI Mini 3 holds an approved pose while its files create a private Marble room world. The north-star command is “Map this floor.” During the MVP, it sends an operator-present three-drone swarm through approved room poses on a supplied occupancy map, then generates a room-by-room visual walkthrough. Physical bring-up uses three Mini 3 aircraft, three RC-N1 controllers, and three benchmarked Android bridge nodes, one node before three. Four to six drones remain a simulator and Future hardware target. Spoken language, gestures, and an EMG band are later input sources outside the first slice. Everything is open source.
 
 Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the M0 through M4 delivery sequence.
 
@@ -24,7 +24,7 @@ Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp
 | [`adapters/`](adapters/) | Autonomy | M1, M2 | deterministic simulator and DJI Mini 3 bridge contract |
 | [`media/`](media/) | Platform | M3 | MediaMTX config and stream naming |
 | [`perception/`](perception/) | Interaction | M3 | Detector and world-position estimates |
-| [`language/`](language/) | Interaction, Platform | M1, M4 | Plan compiler, resolvers, prompts, local fallback |
+| [`language/`](language/) | Interaction, Platform | M4 | Plan compiler, resolvers, prompts, local fallback |
 | [`evals/`](evals/) | Platform | M1+ | Gesture, language, sim scenario, and hardware acceptance evals |
 | [`datasets/`](datasets/) | Interaction, all | M1+ | Recorded gesture sessions and utterances |
 | [`docs/`](docs/) | all | all | PRD, MVP plan, specs, plans, build guide, contract, demo script |
@@ -51,7 +51,7 @@ just media      # MediaMTX via docker compose, in the foreground
 
 ## Start here
 
-Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter and camera-capability interfaces, repo layout, and the room-world records (PRD section 8.2). M1 then proves one complete Mini 3 room capture and private Marble result through Sweep's natural-language path. M2 adds the second and third matching bridge nodes; 4 to 6 remain in simulation. Known-map autonomous multi-room traversal and capture proves one drone before two only after indoor localization and collision-clearance sensing pass their gates. The complete dependency map is in [docs/mvp-plan.md](docs/mvp-plan.md), and any engineer may claim a ready item.
+Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter and camera-capability interfaces, repo layout, and the room-world records (PRD section 8.2). M1 then proves one complete Mini 3 room capture and private Marble result through button-generated Intent v1. M2 adds the second and third matching bridge nodes; 4 to 6 remain in simulation. Known-map autonomous multi-room traversal and capture proves one drone before two only after indoor localization and collision-clearance sensing pass their gates. The complete dependency map is in [docs/mvp-plan.md](docs/mvp-plan.md), and any engineer may claim a ready item.
 
 ## Working agreement
 

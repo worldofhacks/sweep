@@ -56,7 +56,7 @@ For autonomous exploration of an initially unmapped office, the practical long-t
 ### M1: one-drone room capture
 
 - Safety pilot places one guarded Mini 3 at the approved pose.
-- Sweep receives a spoken or gesture-derived `capture_room` intent and shows the plan for confirmation.
+- Sweep receives a button-generated `capture_room` intent and shows the plan for confirmation. Later speech and gesture producers use the same Intent v1 path.
 - The bridge reports fresh flight, battery, link, camera, gimbal, and storage state.
 - Sweep holds position and executes the verified capture pattern.
 - Media retrieval and a private Marble job complete with provenance.
