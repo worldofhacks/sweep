@@ -1,6 +1,6 @@
 # Sweep MVP delivery plan
 
-This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble. M2 scales real hardware control from one to three Mini 3 nodes. M3 proves real known-map autonomous indoor traversal and capture. M4 adds language and gesture producers, the composed walkthrough, and the recorded demo.
+This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble. M2 scales real hardware control from one to three Mini 3 nodes. After M2.0, language and gesture input work may lead or run beside real known-map autonomous indoor traversal and capture. The lanes converge for the composed walkthrough and recorded demo.
 
 The MVP targets a live technical demonstration. Production governance and operations move to F.6. All hardware-safety gates remain in the active milestones.
 
@@ -19,32 +19,32 @@ flowchart TD
     relay --> simgate[Two-drone button-to-sim gate]
     controls --> simgate
     autonomy --> simgate
-    m20 --> speech[Language and gesture producers]
     relay --> bridge[One Mini 3 bridge bring-up]
     autonomy --> bridge
     bridge --> hw1[One-drone capture and room world]
     controls --> hw1
     worldapi --> hw1
-    hw1 --> m1[M1 one-drone vertical-slice exit]
-    m1 --> rooms[Pilot-assisted 3-to-5-room survey and capture]
+    hw1 --> m1e[M1.E one-drone vertical-slice exit]
+    m1e --> rooms[Pilot-assisted 3-to-5-room survey and capture]
     hw1 --> hw2[Two-drone hardware proof]
     hw2 --> feed[One selected live feed]
     feed --> m20[M2.0 walking-skeleton checkpoint]
+    m1e --> language[Language producer]
+    m20 --> gesture[Gesture producer]
     m20 --> scale[Three-node hardware and 4-to-6-drone sim scope]
     m20 --> video[M3 video and sensor console]
     m20 --> localization[Real indoor localization and clearance gate]
     rooms --> knownmap[Known-map autonomous traversal and capture]
     localization --> knownmap
     video --> knownmap
-    speech --> hwlang[Language acceptance on hardware]
-    speech --> langfull[M4 language completion]
+    language --> inputs[Accepted input producers]
+    gesture --> inputs
     knownmap --> compose[Operator-composed walkthrough]
     rooms --> compose
     video --> release[M4 final integration and recorded demo]
     compose --> release
     scale --> release
-    hwlang --> release
-    langfull --> release
+    inputs --> release
     release --> future[Future registered inputs and vehicle adapters]
 ```
 
@@ -278,9 +278,9 @@ Capability area: team. Dependencies: M4.5 and an owner decision to pursue real-u
 Scope: add access-control verification, retention and deletion policy, multi-user administration, operational and cost reporting, the 200-item language evaluation, extended random-motion gesture evaluation, five-run indoor hardware repeatability, parameter sweeps, RF and latency stress, broader failure campaigns, packaging, deployment automation, and rollback procedures.
 Done when: each selected production concern has an owner, a measurable gate, and evidence from the target deployment environment.
 
-## Concurrent M3 and M4 lanes
+## Confirmed post-M2.0 lanes
 
-**Provisional decision: run M3 video beside M4 input work after M2.0, pending team confirmation that capacity covers the lanes.** These feature sets have no hard sequential dependency once M2.0 establishes the relay, authoritative state, Intent v1, safety path, two-drone hardware proof, and selected-feed shell. Dynamic claiming creates more scheduling options, but it does not reduce the total work or remove shared-file and review gates.
+**Confirmed decision: language work may begin after M1.E. Gesture and indoor-autonomy work become ready after M2.0 and proceed concurrently; the team may prioritize the input lane first.** M4.1, M4.3, and M4.4 have no M3 dependency. M4.5 is the convergence point after accepted input producers and the M3 indoor-autonomy exit are complete. Shared-file and review gates still serialize safety-critical and contract changes.
 
 | Work package | Parallelization boundary |
 |---|---|
@@ -294,13 +294,10 @@ Done when: each selected production concern has an owner, a measurable gate, and
 
 After M2.0, the freely parallelizable pieces are MediaMTX recording and multi-stream setup, detector prototyping, human room-project UX, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, camera capability and capture-bundle contracts, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
 
-The order after M2.0:
+The parallel lanes after M2.0:
 
 1. Freeze the transcription request/response, plan result, detection-event, and stream-naming contracts. Each contract has one change owner and a different reviewer.
-2. Complete M1 Whisper capture and compiler integration. In parallel, claim the room project, MediaMTX recording and multi-stream work, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation.
-3. Treat the accepted M1 one-node capture as the hardware baseline. After M2.0, duplicate it to three nodes and integrate known-map autonomous multi-room traversal and capture beside the M3 mosaic, sensor, and detection path.
-4. Integrate M4 resolvers, the 20-utterance live language gate, local compiler fallback, speech and gesture producers, the real indoor known-map demo, and the operator-composed walkthrough. Shared console changes merge through one owner at a time.
-5. Continue delivery-gated M2 work in booked blocks. Hardware work reduces the capacity available to the concurrent lanes.
-6. Before the lanes start, the team confirms it has the capacity for both or drops the concurrency.
-
-This preserves Koby's concurrent direction. It is provisional until the team confirms capacity.
+2. Claim M4.1, M4.3, and M4.4 as soon as their M1 and M2.0 dependencies pass. The language and gesture lane may land before or alongside M3.0 and M3.4. Room-project UX, MediaMTX work, detector prototyping, corpus authoring, cached evaluation fixtures, and speech smoke preparation may proceed with their frozen input contracts.
+3. Use the accepted M1 one-node capture as the hardware baseline. M3.0 earns shared indoor localization and directional clearance, then M3.4 proves known-map traversal on one aircraft before two. M3 mosaic, sensor, and detection work proceeds beside those gates.
+4. Begin M4.5 after the accepted input producers and M3.5 are complete. It joins the input path, the real indoor known-map mission, and the operator-composed walkthrough. Shared console changes merge through one owner at a time.
+5. Continue delivery-gated M2 work in booked blocks while the input lane advances independently. Hardware bookings define the autonomy lane's pace.
