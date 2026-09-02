@@ -40,7 +40,7 @@ The product has four parts: an input-agnostic **intent contract**, an **autonomy
 
 **Extension goals.** An EMG band can become a registered input source after the core MVP. Automated multi-room registration, a branded multi-room splat viewer, metric mapping, time-indexed rescans, Atlas integration, and autonomous exploration of an initially unmapped area also remain Future work. These items do not block M1 through M4.
 
-**Non-goals.** Outdoor swarm flight during the capstone (the hardware and positioning are indoor; the outdoor modes are designed, not flown), lethal or surveillance use, face or person identification, autonomous flight without an operator present, autonomous exploration of an initially unmapped area, more than six drones, metric or as-built reconstruction from Marble, automatic room registration, factual inventory from generated content, and use of Marble geometry for planning, geofencing, collision avoidance, or safety.
+**Non-goals.** Outdoor swarm flight during the capstone (the hardware and positioning are indoor; the outdoor modes are designed, not flown — a proposed outdoor multi-drone field-operations addition is recorded, unreconciled against this non-goal, as [F.5 in the delivery plan](mvp-plan.md#f5-outdoor-multi-drone-field-operations-proposed-unreconciled)), lethal or surveillance use, face or person identification, autonomous flight without an operator present, autonomous exploration of an initially unmapped area, more than six drones, metric or as-built reconstruction from Marble, automatic room registration, factual inventory from generated content, and use of Marble geometry for planning, geofencing, collision avoidance, or safety.
 
 **Success metrics.**
 

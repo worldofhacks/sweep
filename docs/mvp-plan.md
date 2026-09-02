@@ -258,6 +258,32 @@ Capability area: Interaction with Platform and Autonomy integration. Dependencie
 Scope: add one confirmed `search_area {area_id, query_id}` outcome intent backed by a stored, bounded `perception_query`. Voice or text supplies permitted clothing, accessory, or object attributes; gestures select the search area and confirm or cancel. Perception emits candidate, progress, and completion events with source-frame and pose provenance and never emits motion. Exclude face identity, autonomous following, and autonomous approach.
 Done when: the planner searches only the confirmed area through the normal arbiter path, description matching meets its reviewed evaluation gate, every candidate requires human validation, and expiration or cancellation stops the search without leaving an active query.
 
+**F.5: Outdoor multi-drone field operations (proposed, unreconciled)**
+
+Alex asked for this to fold into PR #23. It is recorded here as submitted, not as accepted scope: Section 2's non-goals list "outdoor swarm flight during the capstone," and Section 5.4 marks both outdoor modes "design only in the capstone window." This item asks for outdoor flight, GPS-based deconfliction, and a hand-drawn occupancy grid on a real field — a different navigation and safety stack (GPS/ORCA/A*) from the indoor Mini 3 vertical slice this plan currently builds (shared indoor localization, DJI Virtual Stick, `map_area` over a known indoor room graph). Whether this becomes real MVP scope, a parallel outdoor lane, or stays Future work is a call for Koby and Alex, not something reconciled by editing this document. The MVP/Stretch split below is preserved as given.
+
+Capability area: Autonomy, with Platform support for the fleet manager and deconfliction service. Dependencies: not yet placed against M0 through M4 — see above.
+
+MVP (must fly for a first working demo):
+1. Fleet manager on the laptop with a geofence polygon, altitude floor/ceiling, and a hard-stop rule: any two drones inside 3 m horizontal and 2 m vertical both hover. Tested against a fake bridge with three simulated drones.
+2. ORCA deconfliction filter at 10 Hz, 5 m horizontal separation, plus fixed altitude stagger per drone (0 / +3 / +6 m).
+3. Carrot-chasing velocity controller over virtual stick, following a list of GPS waypoints.
+4. A* planner on a hand-drawn occupancy grid of the demo field (tree line and fence blocked out manually, no ODM yet). Refuses targets outside the fence or inside obstacles.
+5. Formations as anchor + offsets (triangle, line), Hungarian slot assignment, transitions routed through the planner.
+6. Every stage can only reduce or redirect velocity, never increase it.
+
+Demo at MVP: voice or gesture → three drones take off, form a triangle, switch to a line, move the shape, return home, never crossing the fence or each other.
+
+Stretch (in priority order):
+1. ODM survey → real height map → occupancy grid per altitude band, replacing the hand-drawn grid.
+2. Depth brake: Depth Anything V2 on each feed, forward velocity scaled to zero under 8 m.
+3. Look-before-you-move: yaw to face the travel direction before translating, gimbal down before descending.
+4. People rule: YOLO on all feeds, person under ~10 m → stop and climb 5 m.
+5. Eye in the sky: one drone at 40 m looking down, detections projected into the grid as live obstacles.
+6. Indoor mode via AprilTags.
+
+Done when: not yet defined — depends on the scope decision above.
+
 ## Concurrent M3 and M4 lanes
 
 **Provisional decision: run the M3 video lane and the M4 language lane concurrently after M2.0, pending team confirmation that capacity covers both.** The two feature sets have no hard sequential dependency on each other once M2.0 establishes the relay, authoritative state, Intent v1, safety path, two-drone hardware proof, and selected-feed shell. Dynamic claiming creates more scheduling options, but it does not reduce the total work or remove shared-file and review gates.
