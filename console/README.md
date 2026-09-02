@@ -11,8 +11,33 @@ Stack: Vite, React, TypeScript, pnpm. Webcam hand landmarks come from MediaPipe 
     pnpm install
     pnpm dev        # http://localhost:5173
     pnpm lint
+    pnpm test       # deterministic contract, reducer, client, and component tests
     pnpm build      # static files in dist/
 
 M0's `swarm-gesture-console.html` (ten intents, dwell and confirmations, six-drone map sim, session recording, WebSocket intent emission) drops into `public/phase0/`. Vite serves it unchanged at `/phase0/swarm-gesture-console.html` while it is ported into components. First M1 job: point it at the relay instead of its internal sim.
 
 PRD: sections 4.2, 5.8.
+
+## Relay bootstrap
+
+Production has no simulator or fixture fallback. The hosting shell must set an in-memory runtime
+bootstrap before `main.tsx` runs:
+
+```ts
+window.__SWEEP_RELAY_CONFIG__ = {
+  baseUrl: 'wss://relay.example.internal',
+  sessionId: 'active-session-id',
+  token: '<relay token supplied by the trusted local shell>',
+}
+```
+
+The client opens `/ws/{session_id}` twice: one connection authenticates as `console` for buttons
+and state, and a separate connection authenticates as `keyboard` for the Shift+Escape network
+stop. An intent is never moved between those sources, and neither connection retries silently.
+The token is sent only in the first WebSocket frame; it is never placed in a URL, rendered in the
+UI, or included in console logging. Without the full bootstrap, both sources remain visibly
+disconnected and network controls are unavailable.
+
+For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
+development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build
+cannot enable it. It is a UI/contract fixture, not acceptance evidence and not a flight simulator.
