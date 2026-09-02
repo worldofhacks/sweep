@@ -8,7 +8,7 @@ This document answers every item in the Pre-Search Checklist. Section headers ca
 
 ## 0. Summary
 
-One person clicks Capture room, reviews and confirms the resulting Intent v1 request, and one DJI Mini 3 holds an operator-approved pose while its files create a private AI-generated Marble room world with provenance and visible job state. The previously proven three-guided-phone-photo flow is completed feasibility evidence and remains a fallback, not a pending milestone. The north-star command is “Map this floor.” In the capstone, it resolves against a supplied occupancy map and room graph for a bounded 3-to-5-room, single-floor test area. The physical target is three Mini 3 aircraft, three RC-N1 controllers, and three Android bridge nodes; 4 to 6 drones remain a simulator and Future hardware expansion.
+One person clicks Capture room, reviews and confirms the resulting Intent v1 request, and one DJI Mini 3 holds an operator-approved pose while its files create a private AI-generated Marble room world with provenance and visible job state. The completed three-guided-phone-photo flow remains fallback evidence; M1 begins with drone capture. The north-star command is “Map this floor.” In the capstone, it resolves against a supplied occupancy map and room graph for a bounded 3-to-5-room, single-floor test area. The physical target is three Mini 3 aircraft, three RC-N1 controllers, and three Android bridge nodes; 4 to 6 drones remain a simulator and Future hardware expansion.
 
 The product has four parts: an input-agnostic **intent contract**, an **autonomy and safety core** that executes intents across a swarm and refuses unsafe ones, an **operator console** that shows the swarm and its cameras, and a separate **room-world path** that turns captured photos into private Marble worlds. Human phone capture does not emit Intent v1. Drone acquisition uses `capture_room`, the pilot-assisted `survey_area`, and the autonomous `map_area` through the same validated boundary, then hands pose-anchored media downstream. Marble output never supplies safety geometry or flight state. M1 registers the console button and keyboard safety sources. Language, webcam gesture, and future wearable producers join through the source registry and shared conformance suite after the button path passes. Everything is open source.
 
@@ -289,7 +289,7 @@ Each building stores named rooms, explicit doorway adjacency, and an optional fl
 
 `capture_room` requires confirmation and exactly one selected aircraft. The aircraft must already be armed and hovering at an operator-approved capture pose with good positioning and link quality, enough battery and storage, no active motion mission, and a live e-stop. The planner expands the request into a deterministic camera mission. It aborts to hold on stale telemetry, capture timeout, camera error, unexpected translation, or link or position loss. Every returned file records capture ID, aircraft pose, actual yaw, gimbal pitch, camera intrinsics, timestamp, and file ID before the room-world job can use it.
 
-Pilot-guided capture does not add another flight intent. Before confirmation, the console derives a non-command `capture_readiness` event from pose, clearance, camera, storage, and coverage state. It may suggest a bounded repositioning delta, which the pilot executes through the existing `translate`, `altitude`, yaw, and `hold` paths. Yaw, gimbal, settle, camera, and download steps remain planner actions rather than user-facing intents.
+Pilot-guided capture does not add another flight intent. Before confirmation, the console derives a non-command `capture_readiness` event from pose, clearance, camera, storage, and coverage state. In `visual_advisory` mode, suggestions are limited to yaw and gimbal changes. XYZ suggestions require `registered_metric` mode after map registration, pose freshness, uncertainty, and directional-clearance gates pass. Yaw, gimbal, settle, camera, and download steps remain planner actions rather than user-facing intents.
 
 `survey_area {area_id}` opens a pilot-assisted evidence workflow and authorizes no autonomous motion. The RC safety operator flies the route while Sweep records `room_entered`, `doorway_marked`, and `capture_pose_candidate` events, plus `capture_room` results. Without an accepted shared pose source, the result is a topological room graph with doorway media and operator annotations. Metric positions may be attached only when the localization gate passes, and the operator must still validate the occupancy map before `map_area`.
 
@@ -301,7 +301,7 @@ DJI bring-up uses one small Android Mobile SDK bridge per Mini 3 and RC-N1 pair.
 
 The bridge probes camera capabilities at runtime because DJI panorama support varies by aircraft, camera, firmware, and Mobile SDK version. The `pano_360` pattern succeeds only when the bridge returns a valid full equirectangular panorama, either camera-native or locally stitched from a complete multi-row capture. If the hardware cannot produce that artifact, the pattern returns typed `unsupported`. The separate `reconstruct_8` pattern collects up to eight overlapping component frames for Marble reconstruction and labels the bundle as incomplete vertical coverage. Changing patterns requires a new preview and confirmation.
 
-For `reconstruct_8`, the planner sequences yaw, settle, camera-ready, capture, and file-created acknowledgements. Yaw spacing follows `yaw_step <= measured_horizontal_fov * (1 - overlap_fraction)`. Forty percent overlap is the first experiment. DJI's published 82.1-degree value is lens field of view, so it cannot be used as horizontal field of view. Eight evenly spaced headings use a 45-degree step and meet 40 percent overlap only when the selected camera mode measures at least 75 degrees horizontally. Otherwise the pattern returns `unsupported` or uses a separately specified capture plan. A single yaw ring misses floor and ceiling and never satisfies `pano_360`. [Mini 3 specifications](https://www.dji.com/mini-3/specs) · [DJI panorama tutorial](https://developer.dji.com/mobile-sdk/documentation/ios-tutorials/PanoDemo.html)
+For `reconstruct_8`, the planner sequences yaw, settle, camera-ready, capture, and file-created acknowledgements. The selected camera mode must have a measured horizontal field of view that satisfies the tested overlap target. A single yaw ring misses floor and ceiling and never satisfies `pano_360`. The derivation and vendor evidence live in [DJI Mini 3 capture guidance](../RESEARCH/DJI_MINI_3_CAPTURE_GUIDANCE_DISPLAY_2026_09_02.md).
 
 ### 5.13 Operator displays and capture guidance
 
@@ -311,7 +311,7 @@ The laptop uses one persistent operator shell. Network stop, physical-RC status,
 
 | Module | M1 behavior |
 |---|---|
-| Control/Capture | Select a connected aircraft and capture pattern; show readiness reasons; expose `Capture room`, `Hold`, and supplemental network `E-stop`; preview the exact plan; confirm or cancel; and track one event ID and timestamps through draft, pending confirmation, sent, accepted or refused, executing, and completed or failed. Display every refusal and failure reason. Gesture tracking is outside the first slice. |
+| Control/Capture | Select a connected aircraft and capture pattern; show readiness reasons; expose `Capture room`, `Hold`, and supplemental network `E-stop`; preview the exact plan; confirm or cancel; and track one `intent_id` and timestamps through draft, pending confirmation, sent, accepted or refused, executing, and completed or failed. Display every refusal and failure reason. Gesture tracking is outside the first slice. |
 | Live view | Show the accepted Mini 3 feed with health, readiness, guidance mode, and capture progress. |
 | Capture library | Browse and export source photos and panoramas by project, room, capture, aircraft, and time with checksums, pose metadata, and quality results. |
 | World Builder | Select an accepted capture bundle, preview the exact upload set, display private-access, cost, and model settings, submit the World API job, and track it to a Marble link or supported asset preview. Atlas becomes a provider only after it has a public API. |
@@ -324,11 +324,11 @@ The Android app publishes readiness and media metadata through the relay. The la
 
 ## 6. Delivery milestones
 
-Sweep uses one delivery sequence: M0 through M4, followed by Future extensions. The three-photo phone flow is a completed precursor and fallback. The first pending visible slice in M1 takes a button-generated `capture_room` request through preview, confirmation, the planner, arbiter, one proven Mini 3 bridge node, private Marble generation, and a visible room world. M2.0 then adds a second real node to the bounded control workflow. Later gates add the third physical node, language and gesture producers, known-map autonomous multi-room traversal and capture, and an operator-composed walkthrough. The complete MVP exits M4 when the control and capture paths pass together.
+This section defines product outcomes and acceptance gates. Task order and dependencies live in [the MVP delivery plan](mvp-plan.md).
 
 ### Completed precursor: manual room capture
 
-The team has already proven that three guided phone photos can produce one Marble room world. Preserve that result, its inputs, and its observed quality as feasibility evidence. The manual path remains the fallback when drone capture is unsupported or unsafe, but it is not a pending M1 deliverable or a dependency for flight work.
+Three guided phone photos have produced one Marble room world. Preserve the photos, result, and observed quality as fallback evidence.
 
 ### M0: Scope and contracts
 
@@ -464,17 +464,9 @@ Dynamic claiming does not permit competing contract or safety edits. Each change
 4. Repo layout (Appendix D) and the branch and review rule: no merge to main without CI green and one review.
 5. Room-world records, generation-job states, camera capability negotiation, and pose-anchored capture bundles.
 
-### 8.3 Work order
+### 8.3 and 8.4 Work order and sequencing
 
-M0 first freezes the flight and room-world contracts and proves paid World API access and private permissions. The manual three-photo result is completed precursor evidence. M1 connects button controls, sim, planner, arbiter, one proven Mini 3 bridge node, approved-pose capture, and a private room world. M2.0 broadens that node's flight proof and adds a second node and selected live feed. The physical target expands to three matching nodes; 4 to 6 drones remain in simulation and Future hardware work. Known-map autonomous multi-room traversal and capture proves one drone before two only after shared indoor localization and collision-clearance sensing pass. The work items and their dependencies are in `docs/mvp-plan.md`; any engineer may claim a ready item.
-
-### 8.4 Sequencing after M2.0
-
-- **Language and gesture expansion after M2.0:** M1 has accepted the canonical button-generated intents and status lifecycle. Platform then completes transcript-to-plan evaluation and Interaction adds language and gesture producers against the same conformance suite. Neither input changes the planner, arbiter, or adapter boundary.
-- **M2 hardware control MVP (delivery-gated):** M1.9 first proves one exact Mini 3, RC-N1, Android, firmware, and Mobile SDK combination, and M1.0 completes its drone-to-Marble slice. M2.0 then accepts the broader one-node control path and a second node. After that checkpoint, Autonomy duplicates the proven stack to three physical nodes and keeps 4 to 6 in simulation, Interaction operates the console during booked flight blocks, and Platform adds the operator-presence watchdog and full session reports. Every flight has one Sweep operator plus one physical RC safety operator per active aircraft.
-- **Room-world lane:** the manual three-photo flow is completed precursor evidence and a fallback. M1 proves one button-driven drone capture and private room generation. M2 proves a pilot-assisted 3-to-5-room survey and capture project and scales the bridge. M3 reuses the validated graph and approved poses for known-map autonomous multi-room traversal and capture with one drone and then two. M4 finishes one operator-composed, reviewed walkthrough and stores its MP4.
-- **M3 and M4 lanes:** after M2.0, recording configuration, multi-stream ingest, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation can be claimed in parallel. Detection-event, console, resolver, fallback, and ordered-emission integration wait for their contracts. Running the M3 video lane and the full M4 language lane concurrently is Koby's provisional direction, pending team confirmation that capacity covers both. Parallel claiming reduces idle time but does not remove the single-owner and cross-review gates on shared contracts, relay state, console integration, and safety-relevant paths.
-- **Future extensions:** an EMG band and additional vehicle adapters proceed only after M4 and their own access and evidence gates. They use the same registered-source and capability boundaries without changing the MVP control path.
+Engineers claim ready work from [the MVP delivery plan](mvp-plan.md). Contract, relay-state, console-integration, and safety changes keep one change owner and cross-review. Every hardware flight has one Sweep operator and one physical RC safety operator per active aircraft.
 
 ### 8.5 Cadence and integration
 
@@ -522,6 +514,8 @@ M0 first freezes the flight and room-world contracts and proves paid World API a
   "v": 1,
   "t": 1756700000000,
   "type": "intent",
+  "intent_id": "01J7FQ9M6A7Z3T2R8C4N5K1P0B",
+  "retry_of": null,
   "source": "console",
   "session": "2026-09-02T09-00-00Z",
   "name": "arm | disarm | estop | select | takeoff | land | land_all | hold | translate | altitude | formation_next | formation_set | spacing | come_home | sweep | capture_room | survey_area | map_area",
@@ -534,9 +528,11 @@ M0 first freezes the flight and room-world contracts and proves paid World API a
 
 Args by intent: `select {ids}`, `translate {dx, dy}` in steps, `altitude {delta}` in steps, `formation_set {name}`, `spacing {delta}`, `sweep {box?}`, `capture_room {room_id, capture_id, pattern}` where `pattern` is `pano_360` or `reconstruct_8`, `survey_area {area_id}`, and `map_area {area_id}`. `pano_360` requires a valid full equirectangular result; a level yaw ring cannot satisfy it. `reconstruct_8` produces an overlapping multi-image bundle visibly marked as incomplete vertical coverage. `capture_room` requires `confirm: true` and exactly one selected aircraft. `survey_area` requires confirmation to begin recording but authorizes no autonomous motion; operator annotations and room-capture results build its graph. `map_area` requires `confirm: true`, a non-empty selection, and a supplied occupancy map, room graph, and approved capture poses for the area. Its confirmation signs the displayed selection, map version, assignments, routes, poses, and patterns; any revision invalidates it. Internal capture tasks inherit that batch authorization, but the arbiter revalidates current safety and capture state immediately before every route segment and capture and fails closed on any stale or unsafe input. Sources request outcomes; only the planner may expand them into routes, assignments, yaw, gimbal, settle, and camera actions. `confirm` is set by the source when the operator confirmed a pending intent. Everything else has empty args. Unknown names or args are refused by the relay before the planner sees them.
 
+The console assigns `intent_id` when it creates the draft. Preview, confirmation, dispatch, acknowledgement, execution, and the terminal event preserve that identifier. A retry after terminal failure creates a new `intent_id` and sets `retry_of` to the failed request's identifier. Initial requests omit `retry_of` or set it to `null`.
+
 `source` is a registered identifier. M1 registers `console` and `keyboard`. Language, webcam gesture, and a Future Band identifier land only with their real producers and conformance runners.
 
-`capture_readiness` is console guidance, not an intent. It reports pose, clearance, camera, storage, and missing-coverage readiness plus an optional suggested delta. A Future `search_area` intent references a separately stored `perception_query`; detector candidates and search progress are events, not commands.
+`capture_readiness` is console guidance, not an intent. It reports pose, clearance, camera, storage, and missing-coverage readiness. In `visual_advisory` mode, its optional suggestion is limited to yaw or gimbal. XYZ suggestions require accepted `registered_metric` localization and directional clearance. A Future `search_area` intent references a separately stored `perception_query`; detector candidates and search progress are events, not commands.
 
 M2.0 exercises the existing `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop` names. The accepted M1 `capture_room` path remains available at an operator-approved hover pose. The relay returns `unsupported` for unearned names, including `map_area`, until their gates pass. This is a capability gate inside Intent v1, so the schema version stays unchanged. `come_home` remains planner behavior implemented through `goto`, while `land_all` uses `land`.
 
@@ -597,7 +593,7 @@ sweep/
 
 ## Appendix E: Scripted mission (the acceptance test)
 
-Use the console controls to select all aircraft, arm, confirm takeoff, set the circle formation, translate right twice, increase altitude one step, confirm and complete a sweep, come home, confirm land-all, and disarm. Every request keeps one event ID through draft, pending confirmation, sent, accepted or refused, executing, and completed or failed states. Pass: all steps execute on three connected Mini 3 bridge nodes with zero unsafe intents, no manual flight correction, and a total duration under three minutes. The same test runs on 4 to 6 simulated drones. Later language and gesture producers must pass the same mission without changing the downstream intent, planner, arbiter, or adapter behavior.
+Use the console controls to select all aircraft, arm, confirm takeoff, set the circle formation, translate right twice, increase altitude one step, confirm and complete a sweep, come home, confirm land-all, and disarm. Every request keeps one `intent_id` through draft, pending confirmation, sent, accepted or refused, executing, and completed or failed states. Pass: all steps execute on three connected Mini 3 bridge nodes with zero unsafe intents, no manual flight correction, and a total duration under three minutes. The same test runs on 4 to 6 simulated drones. Later language and gesture producers must pass the same mission without changing the downstream intent, planner, arbiter, or adapter behavior.
 
 ## Appendix F: Checklist crosswalk
 
