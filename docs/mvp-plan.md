@@ -1,6 +1,6 @@
 # Sweep MVP delivery plan
 
-This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble. M2 scales real hardware control from one to three Mini 3 nodes. After M2.0, language and gesture input work may lead or run beside real known-map autonomous indoor traversal and capture. The lanes converge for the composed walkthrough and recorded demo.
+This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble. M2 scales real hardware control to four Mini 3 nodes with live session membership. After M2.0, language and gesture input work may lead or run beside real known-map autonomous indoor traversal and capture. The lanes converge for the composed walkthrough and recorded demo.
 
 The MVP targets a live technical demonstration. Production governance and operations move to F.6. All hardware-safety gates remain in the active milestones.
 
@@ -31,7 +31,7 @@ flowchart TD
     feed --> m20[M2.0 walking-skeleton checkpoint]
     m1e --> language[Language producer]
     m20 --> gesture[Gesture producer]
-    m20 --> scale[Three-node hardware and 4-to-6-drone sim scope]
+    m20 --> scale[Four-node hardware and 4-to-6-drone sim scope]
     m20 --> video[M3 video and sensor console]
     m20 --> localization[Real indoor localization and clearance gate]
     rooms --> knownmap[Known-map autonomous traversal and capture]
@@ -58,12 +58,12 @@ Subtask IDs are stable historical identifiers referenced by existing issues. Rem
 
 **M0.1: Freeze the MVP boundary and capability areas**
 Capability area: team. Dependencies: none.
-Scope: record that four DJI Mini 3 and RC-N1 sets are on hand; approve three aircraft with three Android bridge nodes as the physical core MVP; reserve the fourth set as a spare and first post-gate scale-out unit; retain 4 to 6 drones in simulation and Future hardware expansion; make console buttons the reference producer; stage spoken language and gestures afterward; move the Band to Future; and adopt dynamic task claiming with the contract and safety exception above.
+Scope: approve the four DJI Mini 3 and RC-N1 sets on hand, paired with four Android bridge nodes, as the physical core MVP; retain 4 to 6 drones in simulation; make console buttons the reference producer; stage spoken language and gestures afterward; move the Band to Future; and adopt dynamic task claiming with the contract and safety exception above.
 Done when: the PRD has one milestone scheme, every core deliverable has a capability area and dependency boundary, and no optional input blocks M1 through M4.
 
 **M0.2: Draft and freeze executable contracts**
 Capability area: Platform, with Interaction and Autonomy review. Dependencies: M0.1.
-Scope: freeze Intent v1 including `intent_id`, retry correlation, `capture_room`, `survey_area`, and `map_area`; telemetry, flight and camera adapters, pose-anchored capture-bundle, WebSocket, source-registry, repository, `building`, `room`, and `capture` contracts; draft the World API-dependent `generation_job` fields; establish the shared input conformance runner and CI skeleton. The flight interface includes acknowledged yaw control. The camera interface includes capability discovery, gimbal positioning, readiness, native panorama, component capture, media retrieval, and typed unsupported results.
+Scope: freeze Intent v1 including `intent_id`, retry correlation, `capture_room`, `survey_area`, and `map_area`; telemetry, flight and camera adapters, live fleet membership, pose-anchored capture-bundle, WebSocket, source-registry, repository, `building`, `room`, and `capture` contracts; draft the World API-dependent `generation_job` fields; establish the shared input conformance runner and CI skeleton. The flight interface includes acknowledged yaw control. The camera interface includes capability discovery, gimbal positioning, readiness, native panorama, component capture, media retrieval, and typed unsupported results.
 Done when: console-button fixtures exercise the real validator, unknown sources and invalid payloads are rejected, `intent_id` persists from draft through terminal state, a retry creates a new identifier linked to the failed request, planner motion semantics match the intent schema, `capture_room` requires confirmation and exactly one selected aircraft, `survey_area` authorizes recording and annotation but no autonomous motion, `map_area` requires confirmation and supplied map and room-graph inputs, every non-vendor state transition has one defined owner and terminal result, and the provisional World API fields are marked for M0.3 validation.
 
 **M0.3: Prove a real World API job**
@@ -79,18 +79,18 @@ Three guided phone photos have created one Marble room world. Preserve the photo
 
 **M1.1: Build relay state, logging, and replay**
 Capability area: Platform. Dependencies: M0.2.
-Scope: first establish one authenticated WebSocket session, canonical two-drone state, acknowledgements and refusals, append-only JSONL, and basic CI for M2.0. State fan-out and backend replay follow on the same contracts.
-Done when: the checkpoint path authenticates the console and keyboard sources, logs every accepted or refused intent and acknowledgement, and reconstructs canonical state from adapter telemetry. Backend replay later reproduces the ordered intent and state history; replay UI is outside M2.0.
+Scope: first establish one authenticated WebSocket session and a live aircraft registry keyed by stable `drone_id`. The registry carries a monotonic `roster_version`, a connection epoch per aircraft, and `registered`, `ready`, `leaving`, `disconnected`, or `degraded` state. Signed join, readiness, graceful-leave, and unexpected-loss events update the registry. Up to four physical aircraft may register, disconnect, and rejoin without restarting the session. A joined node becomes selectable after identity, adapter capabilities, telemetry freshness, home pose, control authority, and RC-safety-operator presence pass. State fan-out, append-only JSONL, and backend replay use the same contract.
+Done when: the checkpoint path authenticates the console and keyboard sources, logs every accepted or refused intent, acknowledgement, membership event, roster version, and connection epoch, derives canonical state and selection from current adapter telemetry, and preserves the history of disconnected aircraft. Join leaves current selection and accepted plan unchanged; the next dispatch applies roster-version validation. Reconnection increments the aircraft's connection epoch. Backend replay later reproduces the ordered intent, membership, and state history; replay UI is outside M2.0.
 
 **M1.2: Build the deterministic autonomy and safety path**
 Capability area: Autonomy. Dependencies: M0.2.
-Scope: start with a two-drone flight sim and planner support for `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop`. Represent the fleet as a collection keyed by registered aircraft ID; planner expansion, arbiter checks, and adapter dispatch iterate the selected registered aircraft. The two- and three-drone counts select acceptance fixtures. Add a concrete simulated camera implementation with deterministic full-equirectangular and eight-frame fixtures plus injected unsupported-capability, camera, and download failures. Keep the full Intent v1 schema; preserve the M1-approved `capture_room` path during M2.0 and return `unsupported` for the remaining unearned names. Implement the complete arbiter checks for state, confirmation, geofence, ceiling, spacing, battery, link loss, positioning loss, and e-stop.
-Done when: every checkpoint intent and planned command is checked, unsupported valid intents produce a typed refusal before planning, unsafe requests produce no adapter command, the camera protocol runs against the simulated implementation, and the two-drone scenarios pass deterministically. The conformance and scenario suite exercises registry sizes of 1, 2, 3, and 4; adding the fourth simulated or DJI node changes configuration and credentials without a count-specific schema or control branch. Camera fixtures prove `pano_360` and `reconstruct_8` result typing and failure handling before hardware. `come_home` remains planner behavior expressed through the existing adapter methods.
+Scope: start with a two-drone flight sim and planner support for `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop`. Represent the fleet as a collection keyed by registered aircraft ID; planner expansion, arbiter checks, and adapter dispatch iterate the selected registered aircraft. Acceptance fixtures select the exercised count. Every accepted plan records `roster_version`, and dispatch refuses a stale version. Joining preserves current selection and accepted plans. Graceful removal requires the aircraft to be landed, disarmed, and free of active tasks. Removal atomically clears that aircraft from selection and invalidates pending confirmations or plans built against the prior roster. Commands and acknowledgements carry the connection epoch; a prior epoch is refused. Unexpected or airborne loss takes the configured hold or fail-safe path, remains visible in state, and preserves physical RC authority. Spacing checks cover every ready airborne aircraft, including aircraft outside the command selection. Add a concrete simulated camera implementation with deterministic full-equirectangular and eight-frame fixtures plus injected unsupported-capability, camera, and download failures. Keep the full Intent v1 schema; preserve the M1-approved `capture_room` path during M2.0 and return `unsupported` for the remaining unearned names. Implement the complete arbiter checks for state, confirmation, geofence, ceiling, spacing, battery, link loss, positioning loss, and e-stop.
+Done when: every checkpoint intent and planned command is checked, unsupported valid intents produce a typed refusal before planning, unsafe requests produce no adapter command, the camera protocol runs against the simulated implementation, and the two-drone scenarios pass deterministically. The conformance and scenario suite exercises registry sizes of 1, 2, 3, and 4 plus join, ready, graceful leave, unexpected loss, and rejoin. It also proves stale-roster dispatch refusal, prior-epoch command and acknowledgement rejection, plan invalidation, and spacing checks against unselected airborne aircraft. Adding a simulated or DJI node changes configuration and credentials while the schema and control flow stay stable. Camera fixtures prove `pano_360` and `reconstruct_8` result typing and failure handling before hardware. `come_home` remains planner behavior expressed through the existing adapter methods.
 
 **M1.3: Connect button controls to Intent v1**
 Capability area: Interaction. Dependencies: M0.2, M1.1.
-Scope: isolate the real event-to-intent boundary and remove production use of the internal simulator. Build a Control/Capture module with a connected-aircraft selector, capture-pattern selector, readiness reasons, `Capture room`, `Hold`, and supplemental network `E-stop` controls, plan preview, confirmation, and cancellation. For M2.0, show connection, selection, two drone states, the last acknowledgement or refusal, keyboard network stop, and a slot for one selected live feed. Ledger, health, and replay views follow after the checkpoint.
-Done when: console-button and keyboard events produce accepted Intent v1 payloads; each request retains one `intent_id` and timestamps through draft, pending confirmation, sent, accepted or refused, executing, and completed or failed; every refusal or failure reason is visible; retries receive a new `intent_id` linked to the failed request; the checkpoint state is visible; and disconnects or send failures are shown without substitute commands or silent retry.
+Scope: isolate the real event-to-intent boundary and remove production use of the internal simulator. Build a Control/Capture module with a live aircraft registry and selector, capture-pattern selector, readiness reasons, `Capture room`, `Hold`, and supplemental network `E-stop` controls, plan preview, confirmation, and cancellation. For M2.0, show membership state, connection epoch, readiness or loss reason, selection, two active drone states, the last acknowledgement or refusal, keyboard network stop, and a slot for one selected live feed. Preserve departed nodes in session history. Ledger, health, and replay views follow after the checkpoint.
+Done when: console-button and keyboard events produce accepted Intent v1 payloads; each request retains one `intent_id` and timestamps through draft, pending confirmation, sent, accepted or refused, executing, and completed or failed; every refusal or failure reason is visible; retries receive a new `intent_id` linked to the failed request; join, readiness, leave, unexpected loss, and rejoin update the registry and selector without reloading; stale selections and invalidated plans are cleared visibly; the checkpoint state is visible; and disconnects or send failures are shown without substitute commands or silent retry.
 
 **M1.4: Pass the two-drone button-to-sim gate**
 Capability area: team. Dependencies: M1.1, M1.2, M1.3.
@@ -161,6 +161,8 @@ M2.0 passes when:
 - the network stop reaches both drones, link loss produces the configured safe behavior, and each RC safety operator can pause, take over, return, or land independently;
 - the selected live video feed stays visible; and
 - the JSONL log explains accepted commands, refusals, acknowledgements, state changes, and safety actions.
+- a third or fourth simulated node joins, leaves while landed and disarmed, and rejoins during the same session; selection and dispatch follow the live registry throughout.
+- one real node becomes ready, a second joins, and a landed and disarmed node gracefully leaves and reconnects in the same session; `roster_version`, connection epochs, selection, pending confirmation invalidation, telemetry, and the unaffected aircraft follow the membership contract.
 
 **M2.1: Prove one-drone flight control**
 Capability area: Autonomy. Dependencies: M1.E, M1.4, guards, and a contained flight space.
@@ -177,10 +179,10 @@ Capability area: Platform. Dependencies: M1.1, M2.0.
 Scope: add operator-presence enforcement, extended hardware log capture, and end-of-session reports. These are polished-MVP work after the checkpoint.
 Done when: stale operator presence triggers the configured safe behavior and the report contains commands, refusals, telemetry, and timing.
 
-**M2.4: Complete staged flight acceptance**
+**M2.4: Complete staged four-node flight acceptance**
 Capability area: Autonomy, with bounded Interaction and Platform support. Dependencies: M1.5, M2.2, M2.3.
-Scope: expand from the accepted two-node checkpoint to three matching Mini 3, RC-N1, and Android nodes; add altitude, formation, and sweep to the accepted checkpoint behaviors. Keep the 4-to-6-drone proof in simulation.
-Done when: three physical nodes pass Appendix E once on camera, 4 to 6 simulated drones pass the same scenarios, and every deliberate unsafe request produces the expected refusal.
+Scope: expand from the accepted two-node checkpoint to four matching Mini 3, RC-N1, and Android nodes; add altitude, formation, and sweep to the accepted checkpoint behaviors. Exercise the complete registry lifecycle with the fourth node, including readiness, landed and disarmed graceful leave, reconnection with a new epoch, and inclusion in the next confirmed plan. Keep the 4-to-6-drone proof in simulation. A simultaneous four-aircraft flight requires four physical RC safety operators; the live cycling proof may keep fewer aircraft airborne when staffing is limited.
+Done when: four physical nodes pass Appendix E once on camera, the fourth-node lifecycle preserves audit history, increments `roster_version` and connection epoch, clears stale selection, invalidates stale plans, and leaves unaffected aircraft stable; 4 to 6 simulated drones pass the same scenarios; and every deliberate unsafe request produces the expected refusal.
 
 **M2.6: Prove pilot-assisted multi-room survey and capture**
 Capability area: Interaction with Platform integration. Dependencies: M1.E.
@@ -197,7 +199,7 @@ Done when: across five complete mapped-route rehearsals, every aircraft remains 
 **M3.1: Establish media ingest and recording**
 Capability area: Platform with Interaction integration. Dependencies: M1.1 and one camera source. The M2.0 slice also depends on M2.2.
 Scope: first keep one selected live feed visible through the M2.0 run. After the checkpoint, configure MediaMTX ingest, WebRTC and MJPEG serving, recording, stream naming, and latency measurement.
-Done when: M2.0 can display the selected feed throughout its run. Full M3.1 exits when one source also streams and records reliably within the latency budget, then three Mini 3 nodes meet the same gate together. Four-to-six-source hardware remains Future work.
+Done when: M2.0 can display the selected feed throughout its run. Full M3.1 exits when one source also streams and records reliably within the latency budget, then four Mini 3 nodes meet the same gate together. Five-to-six-source hardware remains Future work.
 
 **M3.2: Build the camera and sensor dashboard**
 Capability area: Interaction. Dependencies: M1.3, M3.1.
@@ -217,7 +219,7 @@ Done when: one-drone evidence passes before the two-drone trial, then the two-dr
 **M3.5: Earn the control and media exit**
 Capability area: team. Dependencies: M2.4, M3.2, M3.3, M3.4.
 Scope: demonstrate button control, plus each accepted later language or gesture producer, with the camera, telemetry, sensor console, and known-map autonomous multi-room traversal and capture path active.
-Done when: the complete operator workflow succeeds on three physical Mini 3 nodes and 4 to 6 simulated drones, known-map autonomous multi-room traversal and capture succeeds on the accepted two-drone configuration, and the session evidence supports every control, safety, video, sensor, and capture claim.
+Done when: the complete operator workflow succeeds on four physical Mini 3 nodes and 4 to 6 simulated drones, known-map autonomous multi-room traversal and capture succeeds on the accepted two-drone configuration, and the session evidence supports every control, safety, video, sensor, membership, and capture claim.
 
 ### M4: Language completion and final proof of concept
 
@@ -255,7 +257,7 @@ Done when: real source events pass Intent v1 conformance and the same safety pat
 
 **F.2: Extend vehicle portability**
 Capability area: Autonomy with Platform eval support. Dependencies: working M2 evidence and the capability/action eval harness.
-Scope: enable the owned fourth aircraft after M2 evidence passes. Any simultaneous four-aircraft flight requires four physical RC safety operators. Expansion to five or six requires additional hardware plus staffing, RF, video, positioning, and clearance evidence. Evolve capability contracts and add one evidence-backed vehicle adapter at a time.
+Scope: expand beyond the four-aircraft MVP when additional hardware plus staffing, RF, video, positioning, and clearance evidence supports it. Evolve capability contracts and add one evidence-backed vehicle adapter at a time.
 Done when: unsupported behavior returns a typed refusal and no input or model calls an adapter directly.
 
 **F.3: Automate spatial capture and exploration**
