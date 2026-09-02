@@ -61,7 +61,14 @@ For autonomous exploration of an initially unmapped office, the practical long-t
 - Sweep holds position and executes the verified capture pattern.
 - Media retrieval and a private Marble job complete with provenance.
 
-### M2: one-room autonomous motion
+### M2: pilot-assisted multi-room survey and capture
+
+- The RC safety operator flies through 3 to 5 rooms while Sweep records room-entry, doorway, candidate-pose, and capture events.
+- Run `capture_room` at each approved pose and preserve both sides of every doorway.
+- Without an accepted shared position source, label the result as a topological room graph and keep it out of autonomous planning.
+- The pilot-assisted result may produce the complete visual walkthrough before autonomy is ready.
+
+### M2 autonomy gate: one-room autonomous motion
 
 - Add one external shared-pose source and directional clearance coverage in a contained room.
 - Prove hover, translate, yaw, stop, and return-to-launch-pad routes on one aircraft.

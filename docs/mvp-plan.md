@@ -24,7 +24,7 @@ flowchart TD
     speech --> hw1
     worldapi --> hw1
     hw1 --> m1[M1 one-drone vertical-slice exit]
-    m1 --> rooms[Persistent 3-to-5-room project]
+    m1 --> rooms[Pilot-assisted 3-to-5-room survey and capture]
     hw1 --> hw2[Two-drone hardware proof]
     hw2 --> feed[One selected live feed]
     feed --> m20[M2.0 walking-skeleton checkpoint]
@@ -60,8 +60,8 @@ Done when: the PRD has one milestone scheme, every core deliverable has a capabi
 
 **M0.2: Draft and freeze executable contracts**
 Capability area: Platform, with Interaction and Autonomy review. Dependencies: M0.1.
-Scope: freeze Intent v1 including `capture_room` and `map_area`; telemetry, flight and camera adapters, pose-anchored capture-bundle, WebSocket, source-registry, repository, `building`, `room`, and `capture` contracts; draft the World API-dependent `generation_job` fields; establish the shared input conformance runner and CI skeleton. The flight interface includes acknowledged yaw control. The camera interface includes capability discovery, gimbal positioning, readiness, native panorama, component capture, media retrieval, and typed unsupported results.
-Done when: webcam fixtures exercise the real validator, unknown sources and invalid payloads are rejected, planner motion semantics match the intent schema, `capture_room` requires confirmation and exactly one selected aircraft, `map_area` requires confirmation and supplied map and room-graph inputs, every non-vendor state transition has one defined owner and terminal result, and the provisional World API fields are marked for M0.3 validation.
+Scope: freeze Intent v1 including `capture_room`, `survey_area`, and `map_area`; telemetry, flight and camera adapters, pose-anchored capture-bundle, WebSocket, source-registry, repository, `building`, `room`, and `capture` contracts; draft the World API-dependent `generation_job` fields; establish the shared input conformance runner and CI skeleton. The flight interface includes acknowledged yaw control. The camera interface includes capability discovery, gimbal positioning, readiness, native panorama, component capture, media retrieval, and typed unsupported results.
+Done when: webcam fixtures exercise the real validator, unknown sources and invalid payloads are rejected, planner motion semantics match the intent schema, `capture_room` requires confirmation and exactly one selected aircraft, `survey_area` authorizes recording and annotation but no autonomous motion, `map_area` requires confirmation and supplied map and room-graph inputs, every non-vendor state transition has one defined owner and terminal result, and the provisional World API fields are marked for M0.3 validation.
 
 **M0.3: Prove World API access**
 Capability area: Platform. Dependencies: M0.2, paid World API account and key.
@@ -199,10 +199,10 @@ Capability area: team. Dependencies: M1.8, M2.4.
 Scope: run the three M1 multi-step language orders through the hardware adapter.
 Done when: plans, commands, refusals, and operator decisions match the sim acceptance within hardware tolerances.
 
-**M2.6: Build the room-by-room project**
+**M2.6: Prove pilot-assisted multi-room survey and capture**
 Capability area: Interaction with Platform integration. Dependencies: M1.0.
-Scope: let the user name and capture 3 to 5 rooms in any order, see each job state, retry a room, open every successful room world, record both sides of doorways, and store explicit room adjacency plus an optional floor-plan reference. Store doorway and floor-plan evidence as composition references separate from the selected drone bundle or three-photo fallback, so rooms with several exits remain representable.
-Done when: one scripted project continues capturing while prior jobs run, survives reload, exposes each room's capture bundle, any composition references, and Marble world, and has no orphaned or cross-linked room, capture, or job IDs.
+Scope: confirm `survey_area {area_id}`, then let the RC safety operator fly through 3 to 5 rooms while the user marks room entry, names, doorways, and candidate capture poses. Record both sides of every doorway and run `capture_room` at each approved pose. Store room adjacency, operator annotations, optional floor-plan reference, and any accepted metric pose evidence. Without an accepted shared pose source, label the output topological and keep it out of autonomous planning. Continue capturing while prior Marble jobs run.
+Done when: one pilot-assisted project survives reload, exposes each room's capture bundle, doorway evidence, graph, candidate pose, job state, and Marble world, and has no orphaned or cross-linked IDs. The pilot-assisted result can be composed into a complete walkthrough. Before M3 reuses it, the operator imports or validates a metric occupancy map, room graph, capture poses, and geofence through the M3 localization gate.
 
 ### M3: Video, sensor, and known-map autonomous multi-room traversal and capture
 
