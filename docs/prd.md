@@ -8,7 +8,7 @@ This document answers every item in the Pre-Search Checklist. Section headers ca
 
 ## 0. Summary
 
-One person clicks Capture room, reviews and confirms the resulting Intent v1 request, and one DJI Mini 3 holds an operator-approved pose while its files create a private AI-generated Marble room world with provenance and visible job state. The completed three-guided-phone-photo flow remains fallback evidence; M1 begins with drone capture. The north-star command is “Map this floor.” It resolves against a supplied occupancy map and room graph for a bounded 3-to-5-room, single-floor indoor test area. The physical target is three Mini 3 aircraft, three RC-N1 controllers, and three Android bridge nodes; 4 to 6 drones remain a simulator and Future hardware expansion.
+One person clicks Capture room, reviews and confirms the resulting Intent v1 request, and one DJI Mini 3 holds an operator-approved pose while its files create a private AI-generated Marble room world with provenance and visible job state. The completed three-guided-phone-photo flow remains fallback evidence; M1 begins with drone capture. The north-star command is “Map this floor.” It resolves against a supplied occupancy map and room graph for a bounded 3-to-5-room, single-floor indoor test area. Four Mini 3 and RC-N1 sets are on hand. The physical acceptance target uses three aircraft with three Android bridge nodes; the fourth set is the spare and first post-gate scale-out unit. Four to six drones remain a simulator and Future hardware expansion.
 
 This MVP is a live technical proof. It prioritizes visible capability breadth, one recorded end-to-end proof for each headline workflow, and every safety control required around real aircraft. Production access governance, retention policy, multi-user administration, operational reporting, and deployment automation move to post-demo hardening. Room captures use empty staged spaces and disposable demo data.
 
@@ -244,7 +244,7 @@ FastAPI with a WebSocket endpoint. Responsibilities: authenticate sources with a
 
 ### 5.3 Planner
 
-Deterministic and unit-tested: formations (line, column, circle, grid, V) around a center with spacing; translate; altitude; sweep lanes (lawnmower per drone with lane assignment by current position); come home with staggered pads and a second call to land; hold; select; `capture_room`; and `map_area`. Known-map area capture resolves the room graph and approved capture poses, assigns rooms, plans collision-checked routes, and schedules capture tasks. The demo uses deterministic fixed slots and nearest available aircraft. Everything is clamped to the mode's box before it becomes a command.
+Deterministic and unit-tested: formations (line, column, circle, grid, V) around a center with spacing; translate; altitude; sweep lanes (lawnmower per drone with lane assignment by current position); come home with staggered pads and a second call to land; hold; select; `capture_room`; and `map_area`. Fleet size comes from the runtime aircraft registry. Planner expansion, arbiter checks, and adapter dispatch iterate the selected registered aircraft. Known-map area capture resolves the room graph and approved capture poses, assigns rooms, plans collision-checked routes, and schedules capture tasks. The demo uses deterministic fixed slots and nearest available aircraft. Everything is clamped to the mode's box before it becomes a command.
 
 ### 5.4 Modes
 

@@ -58,7 +58,7 @@ Subtask IDs are stable historical identifiers referenced by existing issues. Rem
 
 **M0.1: Freeze the MVP boundary and capability areas**
 Capability area: team. Dependencies: none.
-Scope: approve three DJI Mini 3, RC-N1, and Android bridge nodes as the physical core MVP, retain 4 to 6 drones in simulation and Future hardware expansion, make console buttons the reference producer, stage spoken language and gestures afterward, move the Band to Future, and adopt dynamic task claiming with the contract and safety exception above.
+Scope: record that four DJI Mini 3 and RC-N1 sets are on hand; approve three aircraft with three Android bridge nodes as the physical core MVP; reserve the fourth set as a spare and first post-gate scale-out unit; retain 4 to 6 drones in simulation and Future hardware expansion; make console buttons the reference producer; stage spoken language and gestures afterward; move the Band to Future; and adopt dynamic task claiming with the contract and safety exception above.
 Done when: the PRD has one milestone scheme, every core deliverable has a capability area and dependency boundary, and no optional input blocks M1 through M4.
 
 **M0.2: Draft and freeze executable contracts**
@@ -84,8 +84,8 @@ Done when: the checkpoint path authenticates the console and keyboard sources, l
 
 **M1.2: Build the deterministic autonomy and safety path**
 Capability area: Autonomy. Dependencies: M0.2.
-Scope: start with a two-drone flight sim and planner support for `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop`. Add a concrete simulated camera implementation with deterministic full-equirectangular and eight-frame fixtures plus injected unsupported-capability, camera, and download failures. Keep the full Intent v1 schema; preserve the M1-approved `capture_room` path during M2.0 and return `unsupported` for the remaining unearned names. Implement the complete arbiter checks for state, confirmation, geofence, ceiling, spacing, battery, link loss, positioning loss, and e-stop.
-Done when: every checkpoint intent and planned command is checked, unsupported valid intents produce a typed refusal before planning, unsafe requests produce no adapter command, the camera protocol runs against the simulated implementation, and the two-drone scenarios pass deterministically. Camera fixtures prove `pano_360` and `reconstruct_8` result typing and failure handling before hardware. `come_home` remains planner behavior expressed through the existing adapter methods.
+Scope: start with a two-drone flight sim and planner support for `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop`. Represent the fleet as a collection keyed by registered aircraft ID; planner expansion, arbiter checks, and adapter dispatch iterate the selected registered aircraft. The two- and three-drone counts select acceptance fixtures. Add a concrete simulated camera implementation with deterministic full-equirectangular and eight-frame fixtures plus injected unsupported-capability, camera, and download failures. Keep the full Intent v1 schema; preserve the M1-approved `capture_room` path during M2.0 and return `unsupported` for the remaining unearned names. Implement the complete arbiter checks for state, confirmation, geofence, ceiling, spacing, battery, link loss, positioning loss, and e-stop.
+Done when: every checkpoint intent and planned command is checked, unsupported valid intents produce a typed refusal before planning, unsafe requests produce no adapter command, the camera protocol runs against the simulated implementation, and the two-drone scenarios pass deterministically. The conformance and scenario suite exercises registry sizes of 1, 2, 3, and 4; adding the fourth simulated or DJI node changes configuration and credentials without a count-specific schema or control branch. Camera fixtures prove `pano_360` and `reconstruct_8` result typing and failure handling before hardware. `come_home` remains planner behavior expressed through the existing adapter methods.
 
 **M1.3: Connect button controls to Intent v1**
 Capability area: Interaction. Dependencies: M0.2, M1.1.
@@ -255,7 +255,7 @@ Done when: real source events pass Intent v1 conformance and the same safety pat
 
 **F.2: Extend vehicle portability**
 Capability area: Autonomy with Platform eval support. Dependencies: working M2 evidence and the capability/action eval harness.
-Scope: expand the physical fleet from three toward 4 to 6 only when staffing, RF, video, positioning, and clearance evidence supports it; evolve capability contracts and add one evidence-backed vehicle adapter at a time.
+Scope: enable the owned fourth aircraft after M2 evidence passes. Any simultaneous four-aircraft flight requires four physical RC safety operators. Expansion to five or six requires additional hardware plus staffing, RF, video, positioning, and clearance evidence. Evolve capability contracts and add one evidence-backed vehicle adapter at a time.
 Done when: unsupported behavior returns a typed refusal and no input or model calls an adapter directly.
 
 **F.3: Automate spatial capture and exploration**
