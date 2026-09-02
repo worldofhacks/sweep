@@ -318,6 +318,33 @@ def test_capture_room_requires_one_selected_drone_and_confirmation(
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
+@pytest.mark.parametrize(
+    ("name", "selection", "confirm"),
+    [
+        ("survey_area", [1], False),
+        ("map_area", [], True),
+        ("map_area", [1], False),
+    ],
+)
+def test_area_workflows_enforce_confirmation_and_map_selection(
+    console_select_payload: dict[str, object],
+    name: str,
+    selection: list[int],
+    confirm: bool,
+) -> None:
+    console_select_payload.update(
+        name=name,
+        args={"area_id": "floor-1"},
+        selection=selection,
+        confirm=confirm,
+    )
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
 def test_initial_request_may_explicitly_set_null_retry(
     console_select_payload: dict[str, object],
 ) -> None:
