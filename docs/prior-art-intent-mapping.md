@@ -1,7 +1,5 @@
 # Prior art for intent mapping and grounded execution
 
-Research current through September 2, 2026.
-
 ## Summary
 
 Sweep's existing boundary is stricter than most embodied-agent systems reviewed here. SayCan limits a language model to a fixed skill list and grounds each choice with learned affordances. Code as Policies and VoxPoser run model-generated code through bounded robot APIs. RT-2 predicts robot actions directly. Eureka searches over model-generated reward code in simulation. These systems contribute useful grounding and evaluation techniques, but none provides Sweep's complete chain of a frozen intent contract, deterministic validation, operator preview, deterministic planning, command-level arbitration, and adapter isolation.

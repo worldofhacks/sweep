@@ -1,6 +1,6 @@
 # Sweep (working name): PRD, architecture, and division of labor
 
-Version 0.4, Sept 2, 2026. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task rather than owning an area for the capstone. Status: M0 scope and contracts in progress.
+Version 0.4. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task rather than owning an area for the capstone. Status: M0 scope and contracts in progress.
 
 This document answers every item in the Pre-Search Checklist. Section headers carry the checklist numbers so nothing is skipped, and Appendix F is a crosswalk from each question to the section that answers it.
 
@@ -158,7 +158,7 @@ Internal tools (deterministic Python, callable by the plan compiler through sche
 | `resolve_location(expr, pose)` | "north wall", "over there" plus operator heading | map point | unresolvable → ask |
 | `validate_plan(plan)` | list of intents | ok, or list of violations | always returns; never throws |
 | `emit(intents)` | validated intents | acks | relay down → queued, operator warned |
-| Adapter: `takeoff, goto, land, hover, estop, battery` | per drone | acks, telemetry | timeout → hold and alert; link loss → return to home |
+| Adapter: `takeoff, goto, land, hover, estop, telemetry` | per drone | acks, telemetry | timeout → hold and alert; link loss → return to home |
 | `detect(frame)` | image | boxes with confidence | model error → stream marked "no detection", never blocks video |
 
 External dependencies: the OpenAI Whisper API and plan-compiler LLM API (language only), MediaPipe model download (once), MediaMTX (local), ROS 2 and crazyswarm2 (local), and the positioning system. Future input producers may add source-specific SDKs after their access gates pass.
@@ -384,8 +384,8 @@ M2.0 sets the order of the first work: contracts, the two-drone sim path, one re
 
 ### 8.5 Cadence and integration
 
-- 9:00 stand-up, ten minutes, blockers only.
-- 16:00 integration: everything merged runs end to end on sim; on hardware days, one full scripted run.
+- Daily stand-up, ten minutes, blockers only.
+- Daily integration: everything merged runs end to end on sim; on hardware days, one full scripted run.
 - Flight rule: two people present for any flight, one on the e-stop keyboard, one operating; nobody flies alone.
 - M2.0 hardware sessions commit their JSONL evidence. Later hardware sessions also commit the generated session report.
 
@@ -401,7 +401,7 @@ M2.0 sets the order of the first work: contracts, the two-drone sim path, one re
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Drone model needs a different adapter than planned | medium | medium | adapter interface is fixed; budget three person-days of Autonomy work for bring-up |
+| Drone model needs a different adapter than planned | medium | medium | adapter interface is fixed; bring-up is bounded Autonomy work inside M2 |
 | Positioning is flaky indoors | medium | high | Lighthouse if possible; otherwise wider spacing, slower speed, hold-on-loss rule |
 | Video bandwidth fights control links | high | medium | dual-band plan, MJPEG at reduced fps, capture-card FPV as fallback |
 | Camera or sensor hardware arrives after M3 | medium | high | integrate one available source first; do not claim 4-to-6-source coverage without recorded hardware evidence |

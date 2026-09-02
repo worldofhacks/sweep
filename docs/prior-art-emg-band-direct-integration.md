@@ -1,6 +1,6 @@
 # EMG wristband direct-integration check
 
-Checked 2026-09-02 against Wearable Devices' product, SDK, and sample repositories.
+Checked against Wearable Devices' product, SDK, and sample repositories.
 
 ## Decision
 
@@ -27,7 +27,7 @@ The work is a small integration around the selected producer seam. Supported ges
 
 ## Procurement status
 
-[Mudra Link](https://mudra-band.com/products/mudra-link) is actively orderable at $249. The vendor quotes five to eight business days for US delivery. This is documentary evidence only; stock and delivery were not independently tested.
+[Mudra Link](https://mudra-band.com/products/mudra-link) is actively orderable at $249. This is documentary evidence only; stock and delivery were not independently tested.
 
 Myo is discontinued and remains reference material for signal-to-gesture mapping. Mudra passed the direct-host criterion. If its approval or licensing cannot be obtained during the spike, OYMotion's current gForcePro+ is the next candidate to verify: its official documentation advertises BLE, public Python/C++/C#/Android SDKs, recognized gesture IDs with probabilities, and raw eight-channel EMG, but sales availability is less clear than Mudra's retail purchase flow.
 

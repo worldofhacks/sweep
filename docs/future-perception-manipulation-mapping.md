@@ -1,6 +1,6 @@
 # Future perception, manipulation, and spatial mapping
 
-Research checked 2026-09-02 against official platform documentation, open-source repositories, and peer-reviewed papers.
+Research checked against official platform documentation, open-source repositories, and peer-reviewed papers.
 
 ## Recommendation
 

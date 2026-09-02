@@ -6,21 +6,6 @@ Interaction, Autonomy, and Platform are capability areas for coordination and mo
 
 Dynamic claiming has one safety exception. Changes to shared contracts or safety-critical code have one named change owner per change and require cross-review before merge. This applies to Intent v1, the adapter interface, relay state shape, the arbiter, e-stop, and safety-relevant planner paths.
 
-## Milestone reconciliation
-
-The older Phase 0 through Phase 6 labels are retired for delivery planning. They map to the canonical sequence as follows:
-
-| Canonical milestone | Legacy scope absorbed | Outcome |
-|---|---|---|
-| M0: Scope and contracts | Phase 0 evidence and the Phase 1 contract freeze | MVP boundary, frozen contracts, capability-area boundaries, and CI skeleton |
-| M1: Sim control MVP | Phase 1 plus the narrow spoken-language slice formerly in Phase 5 | A two-drone sim gate feeds M2.0; the polished sim exit adds 4 to 6 drones and live microphone speech |
-| M2: Hardware control MVP | Phase 2 and the delivery-gated hardware lane | M2.0 proves the two-drone walking skeleton; later M2 work expands the same control paths to 4 to 6 real drones |
-| M3: Full MVP, video and sensor console | Phase 3 | Cameras, telemetry, sensor events, focus, and detection complete the initial MVP; provisionally runs beside M4 |
-| M4: Language completion and final proof of concept | Remaining Phase 5 language breadth plus Phase 6 hardening | Full eval corpus, resolvers, fallback, release evidence, and demo; provisionally runs beside M3 |
-| Future | Band work and vehicle portability; Phase 4 is dropped rather than mapped | Optional registered inputs and additional vehicle adapters |
-
-The old labels should appear only in this mapping. New plans, issues, and status reports use M0 through M4.
-
 ## Dependency map
 
 ```mermaid

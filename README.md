@@ -4,12 +4,12 @@ One person commands 4 to 6 indoor drones through webcam gestures or spoken natur
 
 The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and 4 to 6 indoor drones; spoken natural language is the second control path, built right after the shared intent bus, planner, arbiter, and simulator. An EMG band is an optional Future input source outside the core MVP. Everything is open source.
 
-Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the full M0 through M4 delivery sequence and its mapping from the earlier Phase 0 through Phase 6 labels.
+Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the M0 through M4 delivery sequence.
 
 ## Read first
 
 - [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. The four frozen contracts are [Appendix A (intent)](docs/prd.md#appendix-a-intent-contract-v1), [Appendix B (telemetry)](docs/prd.md#appendix-b-telemetry-v1), [Appendix C (adapter interface)](docs/prd.md#appendix-c-adapter-interface), and [Appendix D (repository layout)](docs/prd.md#appendix-d-repository-layout).
-- [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped, issue-ready work breakdown, with the legacy Phase 0 through Phase 6 mapping.
+- [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped work breakdown.
 - [Decision records](docs/decisions/): why the scaffold and the architecture look the way they do. The [docs index](docs/README.md) lists everything else.
 - The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.
 
@@ -56,7 +56,7 @@ Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema
 
 - No merge to `main` without CI green and one review (PRD section 8.2). `main` is protected accordingly: pull request, one approval, both CI checks.
 - No new intents without a contract change, a test, and every registered input updated. No model in the safety path. Nothing outside the M1 through M4 acceptance paths before M4 exits (PRD section 8.6).
-- Stand-up 9:00, integration 16:00. Two people present for any flight, one on the e-stop keyboard; nobody flies alone. Every hardware session ends with a session report committed to the repo (PRD section 8.5).
+- Daily stand-up and integration. Two people present for any flight, one on the e-stop keyboard; nobody flies alone. Every hardware session ends with a session report committed to the repo (PRD section 8.5).
 
 ## Remotes
 

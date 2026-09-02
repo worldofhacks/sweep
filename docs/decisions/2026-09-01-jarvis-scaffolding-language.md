@@ -1,8 +1,8 @@
 # Architecture decisions: Jarvis proposal, input/eval scaffolding, glasses removed
 
-Decision record from the 2026-09-01/02 architecture review. Working transcripts
+Decision record from the architecture review that preceded PRD v0.3. Working transcripts
 (round-by-round agent reviews) aren't kept here — this is the outcome and the
-reasoning, not the process. The issues linked below were closed on Sept 2 and folded
+reasoning, not the process. The issues linked below were later closed and folded
 into `docs/mvp-plan.md`; research detail lives in `docs/prior-art-intent-mapping.md`.
 
 ## 1. Jarvis-style generalization — rejected for now
@@ -13,7 +13,7 @@ universal command-primitive layer, and a semantic world-grounding layer.
 
 Two independent reviews (different models) converged: none of the four changes are
 free during the capstone. The universal primitive layer and semantic world model
-would compete with the Sept 2-6 planner/arbiter/hardware critical path for no
+would compete with the planner/arbiter/hardware critical path for no
 scripted-mission benefit, and are deferred past Phase 6. See narrowed epic
 [worldofhacks/sweep#3](https://github.com/worldofhacks/sweep/issues/3).
 
@@ -36,14 +36,14 @@ justify it):
 
 ## 3. Glasses removed; language moved up; Band resolved
 
-Koby cut the glasses phase from capstone scope on Sept 1 and made natural language "the
+Koby cut the glasses phase from capstone scope and made natural language "the
 second thing built", ahead of video/perception. Feasibility review found the full language
 scope doesn't fit that early; PR #10 settled the sequence: a narrow spoken-language slice
 in M1, the rest in M4, and the M2.0 two-drone checkpoint ahead of both.
 
-On Sept 2 the team removed glasses entirely rather than keeping them as a Future input:
+The team then removed glasses entirely rather than keeping them as a Future input:
 the `glasses/` directory, its Appendix D entry, and every glasses reference are gone.
-The band question is resolved the same day: Wearable Devices' Mudra Link exposes events
+The band question is resolved: Wearable Devices' Mudra Link exposes events
 directly to a host process, so an EMG band is the one Future input, gated on a real-device
 event through the conformance suite (`docs/prior-art-emg-band-direct-integration.md`).
 
