@@ -183,7 +183,7 @@ Done when: stale operator presence triggers the configured safe behavior and the
 **M2.4: Complete staged flight acceptance**
 Capability area: Autonomy, with bounded Interaction and Platform support. Dependencies: M1.5, M2.2, M2.3.
 Scope: expand from the accepted two-node checkpoint to three matching Mini 3, RC-N1, and Android nodes; add altitude, formation, and sweep to the accepted checkpoint behaviors. Keep the 4-to-6-drone proof in simulation.
-Done when: three physical nodes pass Appendix E five consecutive times, 4 to 6 simulated drones pass the same scenarios, and every deliberate unsafe request produces the expected refusal.
+Done when: three physical nodes pass Appendix E once on camera, 4 to 6 simulated drones pass the same scenarios, and every deliberate unsafe request produces the expected refusal.
 
 **M2.6: Prove pilot-assisted multi-room survey and capture**
 Capability area: Interaction with Platform integration. Dependencies: M1.E.
@@ -220,7 +220,7 @@ Done when: a qualifying detection promotes the selected feed within one second, 
 **M3.4: Prove known-map autonomous multi-room traversal and capture**
 Capability area: Autonomy with Platform and Interaction integration. Dependencies: M1.E, M2.2, M3.0, M3.1, a supplied occupancy map and approved room poses.
 Scope: the operator first imports or creates the occupancy map, marks and validates the room graph and approved capture poses, and approves the geofence. The console or language path then previews `map_area {area_id}` for one explicit batch confirmation. Freeze the selected aircraft, map version, room assignments, approved poses, routes, and capture patterns into that authorization. Execute it through one drone in a fixed 3-to-5-room, single-floor test area, then let two selected drones partition the same known targets, maintain separation, collect complete bundles, and return home. The planner resolves the supplied occupancy map, room graph, and approved capture poses into collision-checked routes and internal room-capture tasks. Each route segment and capture is revalidated immediately before dispatch; a changed selection or plan invalidates confirmation, while stale or unsafe state fails closed to hold or the configured fail-safe. Use open doors, a static empty area, no stairs, no people or pets, guarded aircraft, a known launch and return zone, an operator present, and one physical RC safety operator per active aircraft. Marble receives media only after the flight path has completed its conventional safety checks.
-Done when: one-drone evidence passes before the two-drone trial, then the two-drone workflow passes five consecutive runs without manual flight correction. Every reachable room receives one complete pose-anchored bundle; no planned path crosses an occupied cell or minimum-clearance boundary; no separation violation occurs; every aircraft returns or executes its configured fail-safe; and the room catalog has no missing, duplicate, or cross-linked captures. Capture bundles from the final accepted run complete per-room World API jobs with `public: false`, and every returned room world links to the same building, room, capture, and generation records.
+Done when: one-drone evidence passes before the two-drone trial, then the two-drone workflow passes once on camera with no manual flight correction. Every reachable room receives one complete pose-anchored bundle; no planned path crosses an occupied cell or minimum-clearance boundary; no separation violation occurs; every aircraft returns or executes its configured fail-safe; and the room catalog has no missing, duplicate, or cross-linked captures. Capture bundles from the accepted run complete per-room World API jobs with `public: false`, and every returned room world links to the same building, room, capture, and generation records.
 
 **M3.5: Earn the control and media exit**
 Capability area: team. Dependencies: M2.4, M3.2, M3.3, M3.4.
@@ -230,7 +230,7 @@ Done when: the complete operator workflow succeeds on three physical Mini 3 node
 **M3.6: Prove the three-drone outdoor field flight**
 Capability area: Autonomy with Platform and Interaction support. Dependencies: M2.4, M2.7, field geofence review, measured GPS and command-latency report.
 Scope: register the hand-drawn field grid to GPS, mark the tree line and fence as blocked, verify launch and return points, and run the accepted fake-bridge stack on three Mini 3 nodes. Use console buttons for the first hardware runs. Keep one RC safety operator per active aircraft and preserve the network stop and physical takeover paths.
-Done when: five consecutive runs take off, form a triangle, switch to a line, move the formation anchor, and return home. No command leaves the geofence or altitude band, enters a blocked cell, violates the pairwise thresholds, or exceeds the velocity supplied by the preceding stage. Every hard-stop injection commands both affected aircraft to hover, and every run ends with all aircraft home or in the configured fail-safe.
+Done when: one recorded run takes off, forms a triangle, switches to a line, moves the formation anchor, and returns home. No command leaves the geofence or altitude band, enters a blocked cell, violates the pairwise thresholds, or exceeds the velocity supplied by the preceding stage. Every hard-stop injection commands both affected aircraft to hover, and every aircraft ends home or in the configured fail-safe.
 
 ### M4: Language completion and final proof of concept
 
@@ -241,10 +241,8 @@ Done when: resolver tests cover IDs, current selection, supported relative phras
 
 **M4.2: Complete language evaluation and fallback**
 Capability area: Platform, with team-contributed cases. Dependencies: M4.1.
-Scope: build the initial 50-case and 20-utterance smoke sets, expand to the responder-reviewed 200-item set, complete cached and live eval paths, add the local compiler fallback, and close compiler failure cases. Corpus authoring and cached fixtures may proceed while M4.1 freezes result envelopes.
-Done when: exact-match accuracy remains at least 85%, unsafe-intent count is zero, cached fixtures are produced by real compiler runs, and fallback uses the same validation path.
-
-Owner decision before scheduling: the current reliability profile keeps the 200-item gate. The demo-first profile exits after the 20-utterance live set passes once on camera and moves the broad evaluation to F.6. Both profiles keep unsafe-intent count at zero and use the same validation path.
+Scope: build the 20-utterance live set, complete its cached and live eval paths, add the local compiler fallback, and close the failure cases needed by the scripted demo.
+Done when: the 20-utterance live set passes once on camera, unsafe-intent count is zero, cached fixtures are produced by real compiler runs, and fallback uses the same validation path.
 
 **M4.3: Harden speech UX and evaluate offline transcription**
 Capability area: Interaction with Platform support. Dependencies: M1.3, M4.1.
@@ -254,7 +252,7 @@ Done when: the primary Whisper API path and any approved local fallback feed the
 **M4.4: Add the webcam gesture producer**
 Capability area: Interaction with Platform support. Dependencies: M1.3, M2.0, frozen Intent v1 and source-registry contracts.
 Scope: add camera selection, explicit gesture-tracking enablement, hand-landmark overlay, confidence and dwell feedback, candidate preview, confirmation, cancellation, duplicate suppression, and the shared `intent_id` lifecycle. Start with MediaPipe's built-in gesture classes for `capture_room`, `hold`, confirm, and cancel. Keep arm, takeoff, free-flight translation, and the trusted emergency path on console controls or the physical RC.
-Done when: one browser session selects a camera, enables tracking, shows landmarks, proposes `capture_room`, confirms it, and observes the same `intent_id` through execution and terminal state. Cancellation, hold, timeout, camera unplug, low confidence, and duplicate suppression pass. Five minutes of random hand motion emit fewer than one false intent. The gesture producer passes the same Intent v1 conformance suite as console buttons.
+Done when: one recorded browser session selects a camera, enables tracking, shows landmarks, proposes `capture_room`, confirms it, and observes the same `intent_id` through execution and terminal state. Cancellation, hold, timeout, camera unplug, low confidence, and duplicate suppression pass. The gesture producer passes the same Intent v1 conformance suite as console buttons.
 
 **M4.5: Integrate and record the demo**
 Capability area: team. Dependencies: M2.4, M2.6, M3.5, M3.6, M4.2, M4.3, M4.4.
@@ -291,7 +289,7 @@ Done when: each item has its own evidence-backed accuracy, latency, failure, and
 
 **F.6: Harden the proof for production use**
 Capability area: team. Dependencies: M4.5 and an owner decision to pursue real-user deployment.
-Scope: add access-control verification, retention and deletion policy, multi-user administration, operational and cost reporting, broad language evaluation, repeated hardware reliability runs, packaging, deployment automation, and rollback procedures.
+Scope: add access-control verification, retention and deletion policy, multi-user administration, operational and cost reporting, the 200-item language evaluation, extended random-motion gesture evaluation, five-run hardware repeatability, packaging, deployment automation, and rollback procedures.
 Done when: each selected production concern has an owner, a measurable gate, and evidence from the target deployment environment.
 
 ## Concurrent M3 and M4 lanes
@@ -316,7 +314,7 @@ The order after M2.0:
 1. Freeze the transcription request/response, plan result, detection-event, and stream-naming contracts. Each contract has one change owner and a different reviewer.
 2. Complete M1 Whisper capture and compiler integration. In parallel, claim the room project, MediaMTX recording and multi-stream work, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation.
 3. Treat the accepted M1 one-node capture as the hardware baseline. After M2.0, duplicate it to three nodes and integrate known-map autonomous multi-room traversal and capture beside the M3 mosaic, sensor, and detection path.
-4. Integrate M4 resolvers, the owner-selected language gate, local compiler fallback, speech and gesture producers, the outdoor field demo, and the operator-composed walkthrough. Shared console changes merge through one owner at a time.
+4. Integrate M4 resolvers, the 20-utterance live language gate, local compiler fallback, speech and gesture producers, the outdoor field demo, and the operator-composed walkthrough. Shared console changes merge through one owner at a time.
 5. Continue delivery-gated M2 work in booked blocks. Hardware work reduces the capacity available to the concurrent lanes.
 6. Before the lanes start, the team confirms it has the capacity for both or drops the concurrency.
 
