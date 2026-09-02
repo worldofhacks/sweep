@@ -1,6 +1,8 @@
 # planner
 
-Owner: B (Autonomy). Phase 1.
+Capability area: Autonomy. Milestone: M1.
+
+Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to safety-relevant planner paths name one change owner and require cross-review.
 
 Deterministic and unit-tested. Formations (line, column, circle, grid, V) around a center with spacing; translate; altitude; sweep lanes (lawnmower per drone, lanes assigned by current position); come home with staggered pads and a second call to land; hold; select. Allocation is nearest-drone-to-target. Everything is clamped to the mode's box before it becomes a command.
 
