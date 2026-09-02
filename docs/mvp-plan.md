@@ -73,7 +73,7 @@ Done when: the real job reaches `done=true` and returns a world ID, `world_marbl
 **M1.0: Earn the one-drone room-world exit**
 Capability area: team. Dependencies: M0.3, M1.1, M1.2, M1.6, M1.7, M1.9.
 Scope: let the operator create a room, have the RC safety operator pilot one connected Mini 3 to an approved hover pose, and say “Capture this room.” Show the transcript, compiled `capture_room`, requested pattern, approved pose, and plan for confirmation. The planner and arbiter dispatch only to the proven bridge. M1 permits capture yaw and gimbal actions but no autonomous translation. The drone holds the approved pose, collects `pano_360` if verified or a separately confirmed `reconstruct_8`, downloads pose-anchored media, and starts one explicitly private Marble job. Show asynchronous states and retry without losing the capture.
-Done when: the complete spoken request reaches a visible room world with matching room, capture, operation, world, asset, model, cost, permission, and timestamp records. `pano_360` accepts only a full equirectangular artifact; `reconstruct_8` remains labeled as incomplete vertical coverage. Owner access succeeds while unauthenticated and second-account access fail. Injected stale command, telemetry, camera, download, link, bridge, and World API failures take the documented hold or recovery path. The physical RC safety operator can pause, take over, return, or land throughout.
+Done when: the complete spoken request reaches a visible room world with matching room, capture, operation, world, asset, model, cost, permission, and timestamp records. Before confirmation, a non-command `capture_readiness` event reports pose, clearance, camera, storage, and coverage readiness plus any suggested pilot delta; repositioning uses existing motion intents. `pano_360` accepts only a full equirectangular artifact; `reconstruct_8` remains labeled as incomplete vertical coverage. Owner access succeeds while unauthenticated and second-account access fail. Injected stale command, telemetry, camera, download, link, bridge, and World API failures take the documented hold or recovery path. The physical RC safety operator can pause, take over, return, or land throughout.
 
 #### Completed precursor: manual three-photo capture
 
@@ -274,6 +274,11 @@ Done when: unsupported behavior returns a typed refusal and no input or model ca
 Capability area: Autonomy with Platform and Interaction integration. Dependencies: M3.4, a conventional mapping stack, and measured accuracy gates.
 Scope: evaluate automatic room registration, a branded multi-room Spark renderer, metric alignment through SLAM, photogrammetry, or LiDAR, time-indexed rescans, Atlas integration, and autonomous exploration of an initially unmapped area. Onboard VIO plus depth or LiDAR must produce the occupancy map used by the planner. Marble remains a downstream presentation layer.
 Done when: each capability has its own measured geometry, localization, coverage, and safety acceptance. Generated Marble content never supplies occupancy, clearance, geofence, collision, or position truth.
+
+**F.4: Add description-guided person and object search**
+Capability area: Interaction with Platform and Autonomy integration. Dependencies: M3.3, M3.4, reviewed privacy and evaluation sets.
+Scope: add one confirmed `search_area {area_id, query_id}` outcome intent backed by a stored, bounded `perception_query`. Voice or text supplies permitted clothing, accessory, or object attributes; gestures select the search area and confirm or cancel. Perception emits candidate, progress, and completion events with source-frame and pose provenance and never emits motion. Exclude face identity, autonomous following, and autonomous approach.
+Done when: the planner searches only the confirmed area through the normal arbiter path, description matching meets its reviewed evaluation gate, every candidate requires human validation, and expiration or cancellation stops the search without leaving an active query.
 
 ## Concurrent M3 and M4 lanes
 
