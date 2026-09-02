@@ -8,7 +8,7 @@ __pycache__/
 build/
 dist/
 
-# Node (console, glasses)
+# Node (console)
 node_modules/
 
 # Secrets and local config

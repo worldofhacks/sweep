@@ -1,9 +1,9 @@
-# Architecture decisions: Jarvis proposal, input/eval scaffolding, glasses cut
+# Architecture decisions: Jarvis proposal, input/eval scaffolding, glasses removed
 
 Decision record from the 2026-09-01/02 architecture review. Working transcripts
 (round-by-round agent reviews) aren't kept here — this is the outcome and the
-reasoning, not the process. Full ticket detail lives in the GitHub issues linked
-below; research detail lives in `docs/prior-art-intent-mapping.md`.
+reasoning, not the process. The issues linked below were closed on Sept 2 and folded
+into `docs/mvp-plan.md`; research detail lives in `docs/prior-art-intent-mapping.md`.
 
 ## 1. Jarvis-style generalization — rejected for now
 
@@ -34,21 +34,18 @@ justify it):
 - [#7](https://github.com/worldofhacks/sweep/issues/7) — Capability-profile execution oracle (extends #1)
 - [#8](https://github.com/worldofhacks/sweep/issues/8) — Score plan-compiler models against capability profiles (extends #1, #7, #2)
 
-## 3. Glasses cut; language moved up; Neural Band under revision
+## 3. Glasses removed; language moved up; Band resolved
 
-Koby cut the glasses phase from capstone scope and made natural language "the second
-thing built" — immediately after Phase 1, ahead of video/perception, instead of after
-glasses. Feasibility review found the full Phase 5 language scope (compiler,
-resolvers, preview/confirm UI, 200-utterance gold set) doesn't fit that early; a
-vertical slice does (typed text, current-selection only, one pinned compiler, ~50-item
-provisional gold set), with the rest staying in the original Phase 5 window.
+Koby cut the glasses phase from capstone scope on Sept 1 and made natural language "the
+second thing built", ahead of video/perception. Feasibility review found the full language
+scope doesn't fit that early; PR #10 settled the sequence: a narrow spoken-language slice
+in M1, the rest in M4, and the M2.0 two-drone checkpoint ahead of both.
 
-**Open at time of writing:** the PRD's only description of Neural Band gestures
-becoming intents lives inside the glasses client that's being cut — Meta's Band SDK
-doesn't expose events outside a glasses-hosted web app. Evaluating a non-Meta EMG
-band (e.g. Wearable Devices Ltd's Mudra Band) as the fix, since it would let the band
-register against the webcam console directly rather than needing a glasses bridge.
-The PRD diff for this resequencing is pending that answer.
+On Sept 2 the team removed glasses entirely rather than keeping them as a Future input:
+the `glasses/` directory, its Appendix D entry, and every glasses reference are gone.
+The band question is resolved the same day: Wearable Devices' Mudra Link exposes events
+directly to a host process, so an EMG band is the one Future input, gated on a real-device
+event through the conformance suite (`docs/prior-art-emg-band-direct-integration.md`).
 
 ## 4. Process fix
 

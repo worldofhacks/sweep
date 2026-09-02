@@ -2,7 +2,7 @@
 
 One person commands 4 to 6 indoor drones through webcam gestures or spoken natural language, and sees what the swarm sees on a laptop console.
 
-The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and 4 to 6 indoor drones; spoken natural language is the second control path, built right after the shared intent bus, planner, arbiter, and simulator. Glasses and an EMG band are optional Future input sources outside the core MVP. Everything is open source.
+The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and 4 to 6 indoor drones; spoken natural language is the second control path, built right after the shared intent bus, planner, arbiter, and simulator. An EMG band is an optional Future input source outside the core MVP. Everything is open source.
 
 Status: the webcam gesture prototype shipped Sept 1, 2026. M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the full M0 through M4 delivery sequence and its mapping from the earlier Phase 0 through Phase 6 labels.
 
@@ -18,7 +18,6 @@ Status: the webcam gesture prototype shipped Sept 1, 2026. M0 (scope and contrac
 | Path | Capability area | Milestone | What lives here |
 |---|---|---|---|
 | [`console/`](console/) | Interaction | M0+ | Operator console: Vite + React + TypeScript |
-| [`glasses/`](glasses/) | Interaction, Platform | Future | Meta Ray-Ban Display web app |
 | [`relay/`](relay/) | Platform | M1 | FastAPI WebSocket intent bus, state, JSONL logging, replay |
 | [`planner/`](planner/) | Autonomy | M1 | Deterministic formations, sweep lanes, allocation, clamping |
 | [`arbiter/`](arbiter/) | Autonomy | M1 | Safety rules, e-stop, battery return |

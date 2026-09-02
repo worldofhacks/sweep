@@ -46,5 +46,5 @@ media:
 # Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main
 gitlab-remote:
     glab auth status --hostname labs.gauntletai.com
-    GITLAB_HOST=labs.gauntletai.com glab repo create sweep --public --remoteName gitlab --defaultBranch main --description "One person commands a small drone swarm with their hands, their head, or a sentence, and sees what the swarm sees."
+    GITLAB_HOST=labs.gauntletai.com glab repo create sweep --public --remoteName gitlab --defaultBranch main --description "One person commands 4 to 6 indoor drones through webcam gestures or spoken natural language, and sees what the swarm sees on a laptop console."
     git push gitlab main

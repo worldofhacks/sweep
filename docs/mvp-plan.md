@@ -17,7 +17,7 @@ The older Phase 0 through Phase 6 labels are retired for delivery planning. They
 | M2: Hardware control MVP | Phase 2 and the delivery-gated hardware lane | M2.0 proves the two-drone walking skeleton; later M2 work expands the same control paths to 4 to 6 real drones |
 | M3: Full MVP, video and sensor console | Phase 3 | Cameras, telemetry, sensor events, focus, and detection complete the initial MVP; provisionally runs beside M4 |
 | M4: Language completion and final proof of concept | Remaining Phase 5 language breadth plus Phase 6 hardening | Full eval corpus, resolvers, fallback, release evidence, and demo; provisionally runs beside M3 |
-| Future | Phase 4 glasses work, Band work, and vehicle portability | Optional registered inputs and additional vehicle adapters |
+| Future | Band work and vehicle portability; Phase 4 is dropped rather than mapped | Optional registered inputs and additional vehicle adapters |
 
 The old labels should appear only in this mapping. New plans, issues, and status reports use M0 through M4.
 
@@ -57,7 +57,7 @@ Each item below has enough boundary and acceptance detail to become an issue lat
 
 **M0.1: Freeze the MVP boundary and capability areas**
 Capability area: team. Dependencies: none.
-Scope: approve the 4-to-6-drone core MVP, move glasses and the Band to Future, make spoken language the second control path, and adopt dynamic task claiming with the contract and safety exception above.
+Scope: approve the 4-to-6-drone core MVP, move the Band to Future, make spoken language the second control path, and adopt dynamic task claiming with the contract and safety exception above.
 Done when: the PRD has one milestone scheme, every core deliverable has a capability area and dependency boundary, and no optional input blocks M1 through M4.
 
 **M0.2: Freeze executable contracts**
@@ -135,7 +135,7 @@ The checkpoint supports the eight existing Intent v1 names `arm`, `select`, `tak
 
 The one-drone proof selects the only connected drone and runs the same sequence and safety checks. The two-drone proof then replaces that selection with both connected drones and verifies coordinated translation and spacing.
 
-The checkpoint keeps the arbiter, e-stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and the two-person hardware rule. The formation library, altitude gesture, sweep planner, detector, mosaic, glasses, language and LLM work, replay UI, metrics dashboard, session report, and release polish start after this gate.
+The checkpoint keeps the arbiter, e-stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and the two-person hardware rule. The formation library, altitude gesture, sweep planner, detector, mosaic, language and LLM work, replay UI, metrics dashboard, session report, and release polish start after this gate.
 
 M2.0 passes when:
 
@@ -220,7 +220,7 @@ Done when: all claimed hardware and software exits have recorded evidence, CI is
 
 **F.1: Add optional input sources**
 Capability area: Interaction with Platform registration support. Dependencies: M4.4 and a concrete source with host access.
-Scope: add glasses or an EMG band through a source-specific producer, registry entry, and shared conformance runner.
+Scope: add an EMG band through a source-specific producer, registry entry, and shared conformance runner.
 Done when: real source events pass Intent v1 conformance and the production safety path without relay, planner, arbiter, or adapter redesign.
 
 **F.2: Extend vehicle portability**

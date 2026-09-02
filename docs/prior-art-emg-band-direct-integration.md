@@ -4,7 +4,7 @@ Checked 2026-09-02 against Wearable Devices' product, SDK, and sample repositori
 
 ## Decision
 
-Mudra Link clears the glasses-independent host-access gate. It is currently sold as a standalone wristband, and Wearable Devices documents two ways for software we control to receive its data:
+Mudra Link clears the direct host-access gate. It is currently sold as a standalone wristband, and Wearable Devices documents two ways for software we control to receive its data:
 
 1. Mudra Companion connects to the band and publishes JSON on `ws://127.0.0.1:8766`. The vendor's browser samples subscribe to gesture, button, pressure, and SNC signals.
 2. The official Python and Android SDKs connect to Mudra devices over BLE and invoke application callbacks directly. The documented callbacks include Tap, Double Tap, Twist, Double Twist, Press/Release, pressure, navigation, connection state, and battery state. A separate raw-data entitlement exposes three SNC channels plus accelerometer and gyroscope data.
