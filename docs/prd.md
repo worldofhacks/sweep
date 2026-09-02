@@ -1,6 +1,6 @@
 # Sweep (working name): PRD, architecture, and division of labor
 
-Version 0.2, Sept 1, 2026. Owners: three engineers (A: Interaction, B: Autonomy, C: Platform). Status: approved to start Phase 1 tomorrow; Phase 0 (webcam gesture console plus simulator) shipped today.
+Version 0.3, Sept 2, 2026. Owners: three engineers (A: Interaction, B: Autonomy, C: Platform). Status: Phase 1 in progress; Phase 0 (webcam gesture console plus simulator) shipped Sept 1.
 
 This document answers every item in the Pre-Search Checklist. Section headers carry the checklist numbers so nothing is skipped, and Appendix F is a crosswalk from each question to the section that answers it.
 
@@ -8,9 +8,9 @@ This document answers every item in the Pre-Search Checklist. Section headers ca
 
 ## 0. Summary
 
-One person commands a small drone swarm with their hands, their head, or a sentence, and sees what the swarm sees. The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and six indoor drones; the glasses and Neural Band replace the webcam without changing anything behind the intent bus; natural language is the third input into the same bus.
+One person commands a small drone swarm with webcam gestures, a Mudra Link EMG wristband, or a sentence, and sees what the swarm sees on a laptop. The first user is a responder who needs eyes inside a building before entry and whose hands are already full. Every input emits the same Intent v1 messages, so the relay, planner, arbiter, and drone adapters stay unchanged when the operator switches inputs.
 
-The product is three things: an input-agnostic **intent contract** (gesture, glasses, language all emit the same JSON), an **autonomy and safety core** that executes intents across a swarm and refuses unsafe ones, and an **operator console** that shows the swarm and its cameras. Everything is open source.
+The product is three things: an input-agnostic **intent contract** (webcam, Mudra Link, and language all emit the same JSON), an **autonomy and safety core** that executes intents across a swarm and refuses unsafe ones, and an **operator console** that shows the swarm and its cameras. Everything is open source.
 
 ---
 
@@ -30,7 +30,7 @@ The product is three things: an input-agnostic **intent contract** (gesture, gla
 ## 2. Goals, non-goals, success metrics
 
 **Goals (capstone scope).**
-1. Ten-intent gesture control of up to six drones, indoors, with a webcam and then with the glasses and band.
+1. Ten-intent gesture control of up to six drones indoors, first with a webcam and then with Mudra Link.
 2. Live video from the drones in the console, with detections, focus-by-selection, and attention promotion.
 3. Natural-language commands resolved into the same intents, with plan preview and confirmation.
 4. A safety core (geofence, altitude and spacing limits, confirmations, e-stop, battery return) that no input path can bypass.
@@ -96,7 +96,7 @@ INPUT SOURCES                     INTENT BUS                 AUTONOMY AND SAFETY
 │ webcam gesture │──intents────► │          │──intents────► │ planner (deterministic│──cmds──► │ sim      │
 │ console (web)  │               │ WebSocket│               │ formations, sweep,    │          │ crazyswarm2 (ROS 2)
 ├────────────────┤               │ relay    │               │ allocation, geofence) │          │ MAVLink  │
-│ glasses web app│──intents────► │ + state  │               │ safety arbiter        │          └────┬─────┘
+│ Mudra producer │──intents────► │ + state  │               │ safety arbiter        │          └────┬─────┘
 ├────────────────┤               │ fan-out  │◄──telemetry── │ (validates everything)│◄──telemetry───┘
 │ language module│──intents────► │          │               │ LLM plan compiler     │
 │ (text/voice)   │◄──state─────  └──────────┘               └──────────────────────┘
@@ -115,13 +115,13 @@ Every arrow labeled "intents" carries the same JSON schema (Appendix A). Every a
 | Component | Language | Owner | Responsibility |
 |---|---|---|---|
 | Gesture console (web) | JS, MediaPipe Tasks | A | Webcam, hand landmarks, gesture classification, dwell and confirmation UI, intent emission, session recording. Shipped in Phase 0. |
-| Glasses web app | JS, Meta Web Apps SDK | A | Same intents from pinch, D-pad, drag, head direction; one video feed; minimap; alerts. Phase 4. |
-| Language module | Python | A (front) + C (LLM plumbing) | Text and voice in, plan preview out, intents to the bus. Phase 5. |
+| Mudra Link producer | JS or Python | A, with C for registry and CI | Receives real device events through Mudra Companion's localhost WebSocket or the official BLE SDK, maps them to Intent v1, and emits with `source=band`. Phase 2. |
+| Language module | Python | A (front) + C (LLM plumbing) | Typed text in, plan preview out, intents to the bus in Phase 2; speech and fallback breadth in Phase 5. |
 | Intent relay | Python (FastAPI + websockets) | C | Accepts intents from any source, stamps and logs them, forwards to the planner, fans out state and telemetry to consoles. Phase 1. |
 | Planner | Python | B | Deterministic: formations, sweep lanes, translate, altitude, come home, allocation to drones, geofence clamping. Phase 1. |
 | Safety arbiter | Python | B | Validates every intent and every planned command against limits and state; owns e-stop and battery return. Phase 1. |
-| Plan compiler (LLM) | Python | C | Turns language into an ordered list of intents using structured output; never touches commands. Phase 5. |
-| Swarm adapters | Python, ROS 2 | B | `sim` (Phase 1), `crazyswarm2` (Phase 2), `mavlink` (optional). One interface: `takeoff, goto, land, hover, estop, telemetry`. |
+| Plan compiler (LLM) | Python | C | Turns language into an ordered list of intents using structured output; never touches commands. Vertical slice in Phase 2, completion in Phase 5. |
+| Swarm adapters | Python, ROS 2 | B | `sim` (Phase 1), then `crazyswarm2` or optional `mavlink` in the delivery-gated hardware lane. One interface: `takeoff, goto, land, hover, estop, telemetry`. |
 | Simulator | Python | B | Kinematic six-drone sim with the same adapter interface, used by CI and by the console before hardware. |
 | Media server | MediaMTX | C | Ingest drone video (RTSP, UDP, MJPEG), serve WebRTC and MJPEG, record. Phase 3. |
 | Perception | Python, ONNX or PyTorch | A | Detector on sampled frames per stream; emits detection events with world-position estimates. Phase 3. |
@@ -159,7 +159,7 @@ Internal tools (deterministic Python, callable by the plan compiler through sche
 | Adapter: `takeoff, goto, land, hover, estop, battery` | per drone | acks, telemetry | timeout → hold and alert; link loss → return to home |
 | `detect(frame)` | image | boxes with confidence | model error → stream marked "no detection", never blocks video |
 
-External dependencies: the LLM API (language only), MediaPipe model download (once), MediaTX (local), ROS 2 and crazyswarm2 (local), the positioning system.
+External dependencies: the LLM API (language only), MediaPipe model download (once), Mudra Link plus Companion or the official SDK, MediaMTX (local), ROS 2 and crazyswarm2 (local), and the positioning system.
 
 Mock versus real: the `sim` adapter is the mock and it is a first-class target. Every feature is built and tested against sim first; hardware is a configuration flag.
 
@@ -191,7 +191,7 @@ Mock versus real: the `sim` adapter is the mock and it is a first-class target. 
 | A language plan is what the operator meant | preview in the console, operator confirm | operator decision | ambiguous resolution returns options |
 | A detection is real | detector confidence, then operator confirm | ≥ 0.6 shown, ≥ 0.8 auto-promoted to focus, none auto-acted | operator thumb-up marks it real; thumb-down dismisses |
 | A drone is where it says it is | positioning system consistency check against commanded motion | position error > 0.5 m for 2 s indoors | hold that drone, alert |
-| The operator is present | hand or glasses activity within 10 s while armed | 10 s | come home |
+| The operator is present | registered input or console confirmation activity within 10 s while armed | 10 s | come home |
 
 ---
 
@@ -199,7 +199,7 @@ Mock versus real: the `sim` adapter is the mock and it is a first-class target. 
 
 ### 5.1 Intent contract (frozen in Phase 1)
 
-See Appendix A. Rules: intents are the only thing inputs may emit; the planner is the only thing that turns intents into per-drone commands; the arbiter sees both. A new input source is accepted when it can emit the ten intents plus `estop` and pass the same contract tests the webcam console passes.
+See Appendix A. Rules: intents are the only thing inputs may emit; the planner is the only thing that turns intents into per-drone commands; the arbiter sees both. A new input source is accepted when its identifier is registered, its real producer can emit the required intent matrix, and it passes the same conformance suite as the webcam console.
 
 ### 5.2 Relay
 
@@ -233,19 +233,21 @@ MediaMTX ingests each drone's stream and serves WebRTC and MJPEG; each stream is
 
 Phase 0's page grows into the console: map, gesture readout, ledger, plus the video mosaic, focus pane, attention promotion, health strip, and the language input box with plan preview. It is a static web app; all state comes from the relay.
 
-### 5.9 Glasses path
+### 5.9 Mudra Link band path
 
-A Meta Ray-Ban Display web app that renders one video feed, a minimap, and the alert line, and emits intents from pinch (select and confirm), D-pad (cycle drones, step formation), drag (altitude), head direction (translate direction and the sweep box), middle pinch (cancel and, held, e-stop), and Neural Handwriting (language). The glasses need the app over HTTPS and the relay over WebSocket on the same network.
+Mudra Link is a standalone EMG wristband with two documented host paths. The Phase 2 primary path uses Mudra Companion, which publishes gesture, button, pressure, and SNC JSON to a source we control at `ws://127.0.0.1:8766`. A thin Python producer using Mudra's official SDK can connect over BLE and receive gesture, press/release, pressure, navigation, connection, and battery callbacks without Companion. Both paths normalize real device events into Intent v1 with `source=band`, authenticate to the relay as registered producers, and pass the shared input conformance suite. The capstone uses discrete vendor events and does not require a raw SNC license.
+
+Phase 2 begins with a one-device access spike. Mudra Studio requires vendor approval; the native SDK requires cloud sign-in, internet access, and the Main feature license; raw SNC requires a separate license. Public samples synthesize events when no band is connected, so acceptance requires a real device event to traverse the producer, relay validation, planner, and arbiter. OYMotion gForcePro+ remains a procurement fallback if Mudra access fails; its evaluation starts only after that gate fails. Vendor links and the integration evidence are recorded in [the EMG wristband direct-integration check](prior-art-emg-band-direct-integration.md).
 
 ### 5.10 Language path
 
-Text box and Web Speech API on the laptop, Whisper for accuracy when needed, Neural Handwriting on the glasses. The plan compiler receives state plus schema plus utterance and returns a plan object; `validate_plan` runs; the console previews; the operator confirms; intents are emitted one at a time through the same relay. Spatial phrases resolve through the map or the operator's heading. Safety rules live in the arbiter, not the prompt.
+Phase 2 starts with typed text on the laptop. Web Speech API and Whisper follow in Phase 5 when needed for accuracy. The plan compiler receives state plus schema plus utterance and returns a plan object; `validate_plan` runs; the console previews; the operator confirms; intents are emitted one at a time through the same relay. Spatial phrases resolve through the map or the operator's heading. Safety rules live in the arbiter, not the prompt.
 
 ---
 
 ## 6. Phased plan
 
-Each phase has an entry criterion, deliverables, an exit test, and an owner per deliverable. Dates assume the drones arrive within a week and the glasses within two.
+Each phase has an entry criterion, deliverables, an exit test, and an owner per deliverable. Hardware work runs as a parallel lane because its start depends on physical delivery. Phase numbers express product priority rather than hardware arrival order.
 
 ### Phase 0: Webcam gesture console plus simulator (done, Sept 1)
 
@@ -256,36 +258,44 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 
 - Entry: intent schema frozen (morning of Sept 2).
 - Deliverables: relay (C), planner and arbiter with unit tests (B), sim adapter (B), console wired to the relay instead of its internal sim (A), JSONL logging and replay tool (C), CI with unit tests and the first three sim scenarios (C), gesture gold-set v1 from Phase 0 recordings (A).
-- Exit: the scripted mission runs end to end through relay, planner, arbiter, and sim, driven by webcam gestures, with zero unsafe intents in the log and the sim suite green in CI.
+- Exit: the scripted mission runs end to end through relay, planner, arbiter, and sim, driven by webcam gestures, with zero unsafe intents in the log and the sim suite green in CI. Language work starts after this exit is green.
 
-### Phase 2: Real drones, indoor (Sept 4 to 9)
+### Phase 2: Natural-language vertical slice and Mudra Link producer (Sept 5 to 9)
 
-- Entry: drone model known, positioning chosen, flight space set up with netting or guards.
-- Deliverables: `crazyswarm2` or `mavlink` adapter (B), hardware bring-up checklist and positioning calibration (B), one-drone acceptance (arm, take off, hold, land, come home, e-stop), then three, then six (B with A on the console), battery return and link-loss behaviors verified on hardware (B), operator-presence watchdog (C).
-- Exit: the scripted mission completes hands-free on six drones five times in a row; safety log shows correct refusals for a deliberately unsafe intent (translate through the geofence).
+- Entry: Phase 1 exit green; Intent v1 stable; relay exposes authoritative state to the language module; planner, arbiter, and sim accept confirmed intents end to end.
+- Deliverables: one pinned frontier compiler with schema-constrained plan output (C); typed laptop input with plan preview, clarification, confirm, and cancel in the webcam console (A); plan validation, JSONL logging, ordered relay emission, and cached-response CI (C); a 50-utterance provisional gold set covering the scripted mission, three multi-step orders, ambiguity, confirmation-sensitive intents, and unsafe requests (all); one-device Mudra access spike and host-path decision (A); Mudra event normalization and producer tests (A, 0.5 to 1 day), with `band` registration and CI support (C, 1 to 2 hours).
+- Boundaries: the early compiler uses existing mission intents, current selection, and explicit drone IDs. Natural-language selection and location expressions remain in Phase 5. Typed text is the required language input; Web Speech and Whisper remain Phase 5 work. The model never emits adapter commands. The Mudra producer is a small localhost WebSocket client or Python BLE process. Relay, planner, arbiter, and adapter contracts stay unchanged.
+- Exit: three typed multi-step orders execute through compiler, validation, preview, confirmation, relay, planner, arbiter, and sim; exact-match accuracy is at least 85% on the provisional set; unsafe-intent count is zero; ambiguous or invalid plans emit nothing. Mudra Link earns its separate source exit only when a real device event passes the Intent v1 conformance suite and the production safety path. Delivery or licensing can leave the Band sub-exit open without delaying the language sim exit.
 
-### Phase 3: Video and perception (Sept 8 to 12, overlaps Phase 2)
+### Delivery-gated parallel lane: Real drones, indoor (five working days from arrival)
 
-- Entry: one camera source available (drone camera, AI deck, or FPV capture).
-- Deliverables: MediaMTX ingest and WebRTC/MJPEG serving with recording (C), mosaic and focus-by-selection in the console (A), detector on sampled frames with world-position estimates (A), attention promotion and thumb-up/thumb-down confirmation (A), detection events in the relay and logs (C), six sources on the dual-band network with latency measured (C).
-- Exit: focus on a drone by holding up its number; a detection promotes its feed within one second; video latency within budget on all six.
+- Entry: drone model known, matching adapter path selected, positioning equipment available, guarded flight space ready, two-person flight crew booked, and Phase 1 exit green.
+- Deliverables: `crazyswarm2` or `mavlink` adapter (B), hardware bring-up checklist and positioning calibration (B), one-drone acceptance, then three, then six (B with A on the console), battery return and link-loss behaviors verified on hardware (B), operator-presence watchdog and session reports (C).
+- C sequencing: Sept 5 to 7 remains reserved for the compiler-to-sim critical path. If hardware arrives during that window, B may inventory equipment and run adapter ground checks using Phase 1 logging, but flight acceptance that requires the operator-presence watchdog waits. C implements the watchdog and full session reports on Sept 8 to 9 after the core language path is green. If the compiler path slips, provisional-corpus breadth defers before either safety path is partially implemented.
+- Language integration: after Phase 2 exits, repeat its three multi-step orders through the hardware adapter. This repetition does not block the sim exit when hardware has not arrived.
+- Exit: the scripted mission completes hands-free on six drones five times in a row; the safety log shows the correct refusal for a deliberately unsafe translate intent; the three language orders produce the same validated plans and safety outcomes observed on sim.
 
-### Phase 4: Glasses and Neural Band (Sept 12 to 17, starts when the glasses arrive)
+### Phase 3: Video and perception (Sept 10 to 15)
 
-- Entry: glasses in hand, developer mode on, relay reachable from the glasses' network.
-- Deliverables: glasses web app emitting the intent set from band gestures and head direction (A), one-feed video in the lens via MJPEG (C for serving, A for UI), alert line and minimap (A), contract tests showing the glasses pass the same intent tests as the webcam (C), head-direction calibration ritual and measured compass accuracy (A), display recording of the scripted mission (all).
-- Exit: the scripted mission completes from the glasses with hands at the sides, video visible in the lens, and the safety log identical in shape to the webcam run.
+- Entry: Phase 2 sim exit green and one camera source available.
+- Deliverables: MediaMTX ingest and WebRTC/MJPEG serving with recording (C), mosaic and focus-by-selection in the webcam console (A), detector on sampled frames with world-position estimates (A), attention promotion and thumb-up/thumb-down confirmation (A), detection events in the relay and logs (C), six sources on the dual-band network with latency measured when hardware is available (C).
+- Exit: focus on a drone by holding up its number; a detection promotes its feed within one second; one-source latency meets the budget. Six-source acceptance remains tied to available camera hardware.
 
-### Phase 5: Natural language (Sept 15 to 19, overlaps Phase 4)
+### Phase 4: Removed
 
-- Entry: intent contract stable; relay exposes state to the language module.
-- Deliverables: plan compiler with schema-constrained output and validation (C), selection and location resolvers (B), preview and confirm UI on the laptop and a text-field path on the glasses (A), utterance gold set of 200 with a responder's review (all), eval in CI with cached responses (C), local-model fallback (C).
-- Exit: plan accuracy ≥ 85% on the gold set, zero unsafe intents, three multi-step orders demonstrated on real drones.
+The Meta Ray-Ban Display application, lens video, minimap, alert line, head-direction controls, hosting, and display recording are outside capstone scope. Mudra Link remains an independent Phase 2 input producer.
+
+### Phase 5: Natural-language completion and integrated acceptance (Sept 15 to 19)
+
+- Entry: Phase 2 language slice green; relay state remains stable; the hardware lane has reached the adapter stage if drones have arrived.
+- Deliverables: `resolve_selection` and `resolve_location` with ambiguity handling (B); expansion to the 200-utterance gold set with responder review (all); full cached-response eval in CI (C); local-model fallback (C); Web Speech input and Whisper accuracy work when needed (A with C); final laptop preview and confirmation polish (A); Mudra mapping, conformance, and hardware acceptance if device access was delayed in Phase 2 (A with C); three multi-step language orders repeated on real drones when the hardware lane is open (all).
+- Exit: plan exact-match accuracy is at least 85% on the 200-item gold set, unsafe-intent count is zero, ambiguity produces clarification without emission, and three multi-step orders are demonstrated on real drones when hardware is available. The Band claim additionally requires a real Mudra producer, its registered-source contract, and scripted input acceptance. Hardware and Band claims remain blocked until their respective evidence exists.
 
 ### Phase 6: Hardening, demo, release (Sept 19 to 24)
 
+- Entry: Phase 2 sim language exit, Phase 3 video exit, Phase 5 full language exit, and delivery-gated hardware acceptance complete for every hardware claim included in the release.
 - Deliverables: failure-mode drills (Section 7.1) on hardware, adversarial tests (Section 7.3), documentation and build guide, release, demo script and recorded reel.
-- Exit: five consecutive scripted runs on hardware with no safety intervention; public repository tagged v0.1; demo reel cut.
+- Exit: five consecutive scripted runs on hardware with no safety intervention; public repository tagged v0.1; demo reel cut. If hardware delivery or Mudra access blocks acceptance evidence, the software release may proceed but cannot claim the blocked hardware input or flight exit.
 
 ---
 
@@ -303,16 +313,17 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 | Positioning loss indoors | all drones hold at last good position for 3 s, then land in place |
 | Ambiguous language | the compiler returns options; nothing executes |
 | LLM API rate limit or outage | local model fallback; if none, language input is disabled and the operator is told; gestures unaffected |
+| Mudra device, Companion, or SDK unavailable | Band input is disabled and shown as unavailable; webcam, language, and keyboard e-stop remain active |
 | Video stream drops | tile shows "no video" with the last frame time; detection for that stream pauses; flight unaffected |
 | Two conflicting intents within 500 ms | the later one wins for selection changes; for motion, both are dropped and the swarm holds, with an alert |
-| Graceful degradation ladder | full → no video → no language → no glasses → webcam only → keyboard e-stop only |
+| Graceful degradation ladder | full → no video → no language → no band → webcam only → keyboard e-stop only |
 
 ### 7.2 (12) Security considerations
 
 - **Prompt injection:** the plan compiler's only untrusted input is the operator's utterance, and its output is schema-constrained to intents that the arbiter re-validates. Detection labels, stream names, and any text that arrives from devices are treated as data and never pass through the compiler as instructions.
 - **Data leakage:** everything runs on the ground-station LAN; video and logs stay local; the only outbound call is the LLM API with swarm state and the utterance, never video.
 - **API key management:** environment variables loaded from a git-ignored `.env`; keys never in the console; the console talks only to the relay.
-- **Access:** the relay accepts sources with a shared token over LAN or loopback; the glasses app carries the token in its config page, not its URL.
+- **Access:** the relay accepts sources with a shared token over LAN or loopback. The Mudra producer keeps the token in local configuration. Mudra vendor credentials and licenses stay outside the relay and repository.
 - **Audit logging:** append-only JSONL per session with hashes chained per file, so a log cannot be edited without detection.
 
 ### 7.3 (13) Testing strategy
@@ -324,14 +335,14 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 
 ### 7.4 (14) Open source planning
 
-- **Release:** the console, relay, planner, arbiter, sim, adapters, media and perception configs, the glasses app, the language module, the gesture and utterance datasets, the eval harness, and the docs.
+- **Release:** the console, Mudra Link producer, relay, planner, arbiter, sim, adapters, media and perception configs, language module, gesture and utterance datasets, eval harness, and docs.
 - **Documentation:** README with a five-minute sim quickstart, a hardware build guide, the intent contract, and a contributor guide for adding an input source or an adapter.
-- **Community:** GitHub, a post in the Bitcraze forum and ROS Discourse, a demo reel with display recording, and an invitation to add adapters.
+- **Community:** GitHub, a post in the Bitcraze forum and ROS Discourse, a demo reel, and an invitation to add adapters and registered input sources.
 
 ### 7.5 (15) Deployment and operations
 
-- **Hosting:** the ground station is a laptop; `docker compose` brings up the relay, MediaMTX, and perception; the console and the glasses app are static files served from the laptop for development and from GitHub Pages or Vercel for the glasses (which require a public HTTPS URL).
-- **CI/CD:** GitHub Actions for tests and evals; tagged releases; the console and glasses app deploy on tag.
+- **Hosting:** the ground station is a laptop; `docker compose` brings up the relay, MediaMTX, and perception; the console is served locally. Mudra Companion publishes to localhost, or the Python SDK producer runs as a local process.
+- **CI/CD:** GitHub Actions runs tests and evals; tagged releases package the console and local producers.
 - **Monitoring and alerting:** the console health strip; a session report generated at the end of each run with latencies, refusals, battery curves, and any degraded drones.
 - **Rollback:** pinned versions for models and adapters in `config.yaml`; a release is a tag; rolling back is checking out the previous tag and restarting compose.
 
@@ -350,9 +361,9 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 
 | Engineer | Title | Owns | Also covers |
 |---|---|---|---|
-| A | Interaction and perception | gesture console, console dashboard, video UI, detector, glasses web app, language UI | gesture gold set, display recording |
+| A | Interaction and perception | gesture console, console dashboard, video UI, detector, Mudra Link producer, language UI | gesture gold set, Band conformance runner |
 | B | Autonomy and safety | planner, arbiter, sim, drone adapters, positioning, hardware bring-up, flight operations | resolvers for language, mode parameters |
-| C | Platform and data | relay, intent contract, logging and replay, media server, plan compiler plumbing, observability, evals, CI, release | networking, glasses hosting, language fallback |
+| C | Platform and data | relay, intent contract, logging and replay, media server, plan compiler plumbing, observability, evals, CI, release | networking, Band registry and CI, language fallback |
 
 ### 8.2 Contracts frozen on day one (Sept 2, 9 am)
 
@@ -363,19 +374,23 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 
 ### 8.3 Week one, by day
 
+Phase 1 remains the only product work until its exit is green. Physical inventory may happen when hardware arrives, but it cannot displace the Phase 1 planner, arbiter, sim, relay, schema, console, logging, or CI work.
+
 | Day | A | B | C |
 |---|---|---|---|
-| Sept 2 | Wire the console to the relay; strip the internal sim; ship the gesture gold set v1 from yesterday's recordings | Planner and arbiter with tests; sim adapter | Relay with WebSocket, token, JSONL logging; repo, CI skeleton, schemas |
-| Sept 3 | Ledger and health strip driven by relay state; replay viewer in the console | Sim scenarios 1 to 5; battery and link-loss behaviors in sim | Replay tool; sim scenario runner in CI; gesture eval runner |
-| Sept 4 | Console polish for the hardware runs; start the video mosaic against a webcam as a fake drone stream | Hardware bring-up: radios, positioning, one drone flying through the adapter | MediaMTX up; the first stream served as WebRTC and MJPEG; network plan executed (5 GHz video, 2.4 GHz control) |
-| Sept 5 | Focus-by-selection; detector running on the fake stream | Three drones, then six; acceptance runs | Recording, session reports, operator-presence watchdog |
-| Sept 6 | Attention promotion and confirm and dismiss | Sweep and come home on six; unsafe-intent refusal on hardware | Six streams measured; latency dashboard; hardware acceptance script |
+| Sept 2 | Wire the webcam console to the relay; strip the internal sim; ship gesture gold-set v1 from Phase 0 recordings | Planner and arbiter with tests; sim adapter | Relay with WebSocket, token, authoritative state, JSONL logging; repo, CI skeleton, schemas |
+| Sept 3 | Ledger, health strip, and replay view driven by relay state | Sim scenarios 1 to 5; battery and link-loss behaviors in sim | Replay tool; state fan-out; sim scenario runner in CI; gesture eval runner |
+| Sept 4 | Run Appendix E through the webcam console and fix exit-blocking console defects; prepare the laptop language-input shell only after the exit is green | Complete planner, arbiter, sim, and unsafe-intent tests; begin hardware inventory only if Phase 1 is green and equipment has arrived | Complete end-to-end logging, replay, CI, and relay state exposure; freeze the language-facing state snapshot only after the Phase 1 exit |
+| Sept 5 | Build typed laptop input, plan preview, clarification, confirm, and cancel in the existing console; begin the Mudra device and access spike | Lead one-drone hardware bring-up if the delivery gate is open; otherwise pull forward time-boxed Phase 5 resolver tests that do not gate Phase 2 | Define the plan schema; implement the pinned compiler against authoritative relay state; run `validate_plan` before preview |
+| Sept 6 | Wire confirmed plans to ordered relay emission; implement the selected Mudra WebSocket or BLE producer boundary and event normalization | Continue hardware bring-up if open; otherwise pull forward Phase 5 resolver success, ambiguity, and refusal cases that do not gate Phase 2 | Integrate compiler logging, operator decision logging, ordered emission, and cached-response CI; defer watchdog work until the core compiler-to-sim path is green |
 
 ### 8.4 Weeks two and three, by phase
 
-- **Phase 4 (glasses):** A builds the glasses app; C hosts it, wires MJPEG for the lens, and writes the contract tests; B measures head-direction accuracy on real flights and tunes translate steps.
-- **Phase 5 (language):** C builds the compiler and evals; B writes the resolvers; A builds preview and confirm on both surfaces; all three write utterances.
-- **Phase 6 (hardening):** B runs failure drills; C runs adversarial tests and cuts the release; A produces the demo reel and docs for the console and glasses.
+- **Phase 2, language and Mudra slice (Sept 7 to 9):** C completes the typed-text compiler path, cached eval, error handling, and provisional 50-case report, then spends the planned one to two hours on `band` registration and conformance CI after the core language path is green. A completes preview/confirm UX and the Mudra producer mapping and native runner, then captures a real device event if delivery and vendor access are available. All three finish the provisional set. B stays on hardware when the delivery gate is open; any resolver work pulled forward during idle time remains Phase 5 work and does not gate this exit. The language exit is earned on sim. The Band exit requires real-device evidence.
+- **Delivery-gated hardware lane:** B owns adapter selection, positioning, calibration, and one/three/six-drone acceptance. A operates the console during booked flight blocks. C reserves Sept 5 to 7 for the compiler-to-sim path, then supplies the operator-presence watchdog and full session reports on Sept 8 to 9. Hardware inventory and ground checks may proceed earlier with Phase 1 logging, but watchdog-dependent flight acceptance cannot. Every flight still requires two people under §8.5; this support time is scheduled.
+- **Phase 3, video and perception (Sept 10 to 15):** C brings up MediaMTX, WebRTC/MJPEG, recording, detection events, and latency measurement. A builds mosaic, focus, detector, attention promotion, and confirmation in the webcam console. B completes the language resolvers after hardware bring-up permits, then returns to hardware acceptance or sim hardening.
+- **Phase 5, language completion (Sept 15 to 19):** C expands the eval to the full cached 200-item set, adds the local fallback, and closes compiler failures. B completes resolver edge cases. A finishes Web Speech and preview/confirmation polish. If Mudra hardware or access was delayed, A and C complete its mapping, conformance, and hardware acceptance. All three complete the utterance set, responder review, and real-drone language demonstration when the hardware gate is open.
+- **Phase 6, hardening (Sept 19 to 24):** B runs failure drills; C runs adversarial tests and cuts the release; A produces the demo reel and documentation for the webcam console, language flow, video, and Mudra Link producer.
 
 ### 8.5 Cadence and integration
 
@@ -386,7 +401,7 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 
 ### 8.6 What not to do
 
-- No new intents without a contract change, a test, and all three inputs updated.
+- No new intents without a contract change, a test, and every registered input updated.
 - No model in the safety path.
 - No feature that isn't on the scripted mission path until Phase 6.
 
@@ -399,7 +414,7 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
 | Drone model needs a different adapter than planned | medium | medium | adapter interface is fixed; B has three days budgeted for bring-up |
 | Positioning is flaky indoors | medium | high | Lighthouse if possible; otherwise wider spacing, slower speed, hold-on-loss rule |
 | Video bandwidth fights control links | high | medium | dual-band plan, MJPEG at reduced fps, capture-card FPV as fallback |
-| Glasses arrive late | medium | low | webcam path is the demo of record; glasses are an upgrade |
+| Mudra delivery, Studio approval, or SDK licensing is delayed | medium | medium | order one device immediately; run an access spike; use Companion WebSocket first; keep the Python BLE producer as the second Mudra path; evaluate OYMotion only if access fails |
 | Language produces plausible but wrong plans | medium | medium | preview and confirm; schema; gold set; unsafe rate stays zero by construction |
 | Gesture false positives in a busy room | medium | medium | dwell, stillness, confirmation; operator-facing readout; fallback to keyboard |
 | A crash injures someone | low | severe | netting or guards, 27-gram drones, e-stop discipline, two-person flight rule |
@@ -413,7 +428,7 @@ Each phase has an entry criterion, deliverables, an exit test, and an owner per 
   "v": 1,
   "t": 1756700000000,
   "type": "intent",
-  "source": "webcam | glasses | language | keyboard",
+  "source": "webcam | band | language | keyboard",
   "session": "2026-09-02T09-00-00Z",
   "name": "arm | disarm | estop | select | takeoff | land | land_all | hold | translate | altitude | formation_next | formation_set | spacing | come_home | sweep",
   "args": {},
@@ -451,7 +466,7 @@ class SwarmAdapter(Protocol):
 ```
 sweep/
   console/          Phase 0 page grown into the dashboard (static)
-  glasses/          Meta Ray-Ban Display web app (static)
+  band/             Mudra Link WebSocket or BLE producer and native tests
   relay/            FastAPI relay, schemas, logging, replay
   planner/          formations, sweep, allocation, modes
   arbiter/          safety rules, e-stop, battery return
