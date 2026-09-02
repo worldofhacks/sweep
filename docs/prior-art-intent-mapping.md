@@ -21,8 +21,8 @@ These changes fit the PRD and the scaffolding draft without adding another plann
 1. Implement the model output as a tagged result with mutually exclusive `plan`, `clarify`, `unsupported`, and `refuse` outcomes. Provider refusal, timeout, truncation, and malformed output remain separate transport or parsing failures.
 2. Bind a preview to a plan digest, state version, capability profile version, expiry, and operator decision. Revalidate before every intent emission and command dispatch.
 3. Record every compiler boundary in the eval artifact: raw provider result metadata, parsed result, schema verdict, resolver verdict, capability verdict, planned commands, arbiter verdict, operator decision, and execution result.
-4. After A2 restores and tests the Phase 0 behavior unchanged, evaluate a deterministic acceptance state machine for the later gesture-hardening work: `idle -> candidate -> accepted -> wait_for_release -> idle`. Use monotonic elapsed time and test enter/leave hysteresis plus a neutral or no-hand release condition through replay before changing production behavior.
-5. Build the 200 language cases across successful plans, clarification, unsupported capabilities, safety refusals, changed-state invalidation, injection attempts, and benign hard negatives. Preserve the existing exact-match threshold and add diagnostic execution-validity and failure-reason metrics through B1 and B2.
+4. After the webcam conformance runner (M1.3) restores and tests the prototype behavior unchanged, evaluate a deterministic acceptance state machine for the later gesture-hardening work: `idle -> candidate -> accepted -> wait_for_release -> idle`. Use monotonic elapsed time and test enter/leave hysteresis plus a neutral or no-hand release condition through replay before changing production behavior.
+5. Build the 200 language cases across successful plans, clarification, unsupported capabilities, safety refusals, changed-state invalidation, injection attempts, and benign hard negatives. Preserve the existing exact-match threshold and add diagnostic execution-validity and failure-reason metrics through the capability execution oracle and the capability-aware compiler eval.
 
 ## 1. Embodied LLM planners
 
@@ -32,7 +32,7 @@ Sources: [paper](https://arxiv.org/abs/2204.01691), [project and results](https:
 
 SayCan asks a language model to score a finite list of language-described skills. A learned value function scores whether each skill can succeed in the current state. The system combines usefulness and affordance, executes the selected pretrained skill, then repeats. The model chooses among known skills rather than inventing motor commands.
 
-Sweep can reuse the separation between semantic relevance and embodiment feasibility. Intent v1 is the finite skill list, and B1 is the stronger deterministic feasibility check. The Phase 5 report should distinguish wrong intent, unsupported capability, unsafe state, and execution failure. Changed-state cases should include battery reserve, positioning loss, link loss, a new selection, and a drone that changed flight state after preview.
+Sweep can reuse the separation between semantic relevance and embodiment feasibility. Intent v1 is the finite skill list, and the capability execution oracle is the stronger deterministic feasibility check. The M4 language report should distinguish wrong intent, unsupported capability, unsafe state, and execution failure. Changed-state cases should include battery reserve, positioning loss, link loss, a new selection, and a drone that changed flight state after preview.
 
 SayCan's affordance score is learned and probabilistic. It is useful for ranking candidates, but it is not a safety proof. SayCan also executes one skill at a time without Sweep's whole-plan preview. Sweep's validator and arbiter should remain authoritative.
 
@@ -70,7 +70,7 @@ Sources: [paper](https://arxiv.org/abs/2310.12931), [project](https://eureka-res
 
 Eureka generates reward functions, trains policies in parallel Isaac Gym simulations, returns training statistics to the model, and iterates. It is an offline reward-design and skill-learning system rather than an online command compiler.
 
-Sweep can reuse its generate, simulate, score, and revise loop while developing prompts or choosing models. Each compiler candidate should run through the real schema, resolver, validator, planner, arbiter, B1 oracle, and simulator. Typed aggregate failures are better prompt-development feedback than a single exact-match score.
+Sweep can reuse its generate, simulate, score, and revise loop while developing prompts or choosing models. Each compiler candidate should run through the real schema, resolver, validator, planner, arbiter, capability oracle, and simulator. Typed aggregate failures are better prompt-development feedback than a single exact-match score.
 
 Model-generated reward code and reinforcement learning do not belong in Sweep's runtime path.
 
@@ -126,7 +126,7 @@ Its multi-agent orchestration and full digital-twin stack are larger than Sweep 
 
 [ros2_lingua](https://github.com/purahan/ros2_lingua) is an early Apache-2.0 ROS 2 project with a capability registry, structured action plans, backward prerequisite chaining, and a dispatcher. Its useful pattern is a ROS-independent schema and registry core that can be tested without hardware. Its README labels the project early development, and dispatcher parameter validation was still on its roadmap when reviewed. Sweep should treat it as implementation inspiration rather than a safety dependency.
 
-[URML](https://github.com/URML-MARS/URML) is a 2026 Apache-2.0 intent language and validator with robot manifests and safety envelopes. Its static validation and conformance-suite organization resemble Sweep's A1, B1, and B2 tickets. The scaffolding draft explicitly rejects a universal vehicle language, so Sweep should borrow test organization or reason-code ideas only.
+[URML](https://github.com/URML-MARS/URML) is a 2026 Apache-2.0 intent language and validator with robot manifests and safety envelopes. Its static validation and conformance-suite organization resemble Sweep's conformance suite, capability oracle, and capability-aware eval. The scaffolding draft explicitly rejects a universal vehicle language, so Sweep should borrow test organization or reason-code ideas only.
 
 [LaMMA-P](https://arxiv.org/abs/2409.20560) combines language decomposition, PDDL validation, and capability-aware allocation for heterogeneous robots. Its vague and capability-limited cases can inform B2. Its general PDDL domain would duplicate Sweep's small deterministic planner.
 
@@ -136,7 +136,7 @@ Its multi-agent orchestration and full digital-twin stack are larger than Sweep 
 
 Sources: [Gesture Recognizer guide](https://developers.google.com/edge/mediapipe/solutions/vision/gesture_recognizer), [Web guide](https://developers.google.com/edge/mediapipe/solutions/vision/gesture_recognizer/web_js), [GestureRecognizer options](https://ai.google.dev/edge/api/mediapipe/python/mp/tasks/vision/GestureRecognizerOptions), [current web worker sample](https://github.com/google-ai-edge/mediapipe-samples-web/blob/main/src/workers/gesture-recognizer.worker.ts)
 
-MediaPipe exposes separate controls for hand detection, hand presence, tracking, and gesture-classifier score. Detection, presence, and tracking default to 0.5. The canned classifier has seven named gestures plus `None`; Sweep's larger semantic vocabulary therefore depends on the recovered Phase 0 mappings or a custom classifier.
+MediaPipe exposes separate controls for hand detection, hand presence, tracking, and gesture-classifier score. Detection, presence, and tracking default to 0.5. The canned classifier has seven named gestures plus `None`; Sweep's larger semantic vocabulary therefore depends on the recovered prototype mappings or a custom classifier.
 
 The browser's `recognize()` and `recognizeForVideo()` calls are synchronous. Google's current sample moves recognition into a worker. Sweep can use the same boundary so inference cannot stall dwell feedback, confirmation UI, or keyboard e-stop handling. MediaPipe live-stream implementations may drop frames to preserve latency, so dwell should use monotonic timestamps rather than a number of frames.
 
@@ -170,7 +170,7 @@ This stillness measure is an implementation inference from MediaPipe's coordinat
 
 ### Threshold selection for Sweep
 
-No reviewed source provides a universal operating point. Preserve the PRD values during the Phase 1 wiring ticket. Once the Phase 0 artifact and recordings are available, replay the same timestamped candidate stream over a grid of score, dwell, stillness, enter/leave hysteresis, disappearance grace, and rearm settings.
+No reviewed source provides a universal operating point. Preserve the PRD values during the M1 wiring work. Once the prototype artifact and recordings are available, replay the same timestamped candidate stream over a grid of score, dwell, stillness, enter/leave hysteresis, disappearance grace, and rearm settings.
 
 Each run should report:
 
@@ -220,11 +220,11 @@ Keep these metrics separate:
 - clarification recall and over-clarification rate on clear requests;
 - unsupported-capability recall;
 - safety-refusal recall;
-- capability-valid execution rate through B1;
+- capability-valid execution rate through the capability oracle;
 - unsafe dispatch count;
 - latency, token use, and cost.
 
-DESPITE accepts alternative plans that are feasible and safe, which exposes a limitation of exact match. Sweep's 85 percent exact-match target should remain for the frozen mission. B2's deterministic execution verdict should be reported beside it so a harmless alternative is distinguishable from a wrong or unsafe plan.
+DESPITE accepts alternative plans that are feasible and safe, which exposes a limitation of exact match. Sweep's 85 percent exact-match target should remain for the frozen mission. The capability-aware eval's deterministic execution verdict should be reported beside it so a harmless alternative is distinguishable from a wrong or unsafe plan.
 
 ## 4. Structured output and the safety boundary
 
@@ -247,7 +247,7 @@ For Sweep:
 
 [ros2_lingua](https://github.com/purahan/ros2_lingua) validates proposed actions against a registered capability set before dispatch. [Precise Robot Command Understanding Using Grammar-Constrained LLMs](https://arxiv.org/abs/2604.04233) canonicalizes model output into known action frames, validates it with a grammar parser, and retries invalid generations. [Decode-Time Grammars](https://arxiv.org/abs/2607.18357) makes the broader point that grammar-valid output can still contain references absent from the current runtime environment.
 
-Sweep already has the right answer in A1, B1, and B2: grammar limits names, the source registry limits producers, resolvers validate references, B1 validates adapter capability, and the arbiter validates current safety. A model-facing capability summary may improve proposals, but only the registered profile grants authority.
+Sweep already has the right answer in the conformance suite, capability oracle, and capability-aware eval: grammar limits names, the source registry limits producers, resolvers validate references, the oracle validates adapter capability, and the arbiter validates current safety. A model-facing capability summary may improve proposals, but only the registered profile grants authority.
 
 Automatic retry is suitable for malformed syntax before preview. Semantic ambiguity should return clarification rather than letting repeated model calls silently choose a meaning.
 
@@ -278,7 +278,7 @@ The PRD already provides the load-bearing controls: restricted model inputs, sch
 | Resolver ambiguity can be hidden by a valid schema | Return candidate options and require clarification. Show resolved IDs and concrete spatial values in preview. | DialFRED, ASIMOV-Agentic, OK-Robot |
 | Perception data could drift into model context during implementation | Construct context from an explicit typed allowlist. Add a data-flow test that fails if perception or device text reaches an instruction-bearing message. | AgentDojo, RIPA, physical prompt injection studies |
 | Direct injection can still request a schema-valid action | Evaluate adversarial utterances and authority spoofing. Limit speech capture to deliberate operator input and retain preview for every language plan. Physical safety remains in the arbiter. | RoboJailBench, EMBODYGUARD, AutoRT |
-| Shared relay token does not by itself bind source identity | At admission, verify that the authenticated source is allowed to claim its registered source ID. Log authenticated identity separately from the payload's `source` string. | Hardening inference from A1's registry and Section 7.2's authentication goal |
+| Shared relay token does not by itself bind source identity | At admission, verify that the authenticated source is allowed to claim its registered source ID. Log authenticated identity separately from the payload's `source` string. | Hardening inference from the source registry and Section 7.2's authentication goal |
 | Retries and replay can duplicate motion | Use per-session monotonic sequence numbers, short confirmation expiry, and idempotency keys. Reject stale or duplicate emissions before planning. | Hardening inference extending the PRD's stale-timestamp adversarial case |
 | Resource exhaustion can turn failure into delay or repeated attempts | Bound utterance size, result size, plan length, resolver candidates, retries, and total confirmation lifetime. Fail closed on provider or local-model failure. | Hardening inference from the fail-closed requirement and provider failure modes |
 | Audit log may omit the evidence needed to reconstruct authorization | Log provider metadata, parsed outcome, schema result, resolver result, capability verdict, plan and state digests, operator decision, each pre-dispatch revalidation, arbiter result, and adapter acknowledgement. Exclude secrets and unrestricted request headers. | SELP artifacts, industrial typed failures, PRD audit requirement |

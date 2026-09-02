@@ -1,1 +1,1 @@
-"""Safety arbiter: validates every intent and command, owns e-stop and battery return (owner B)."""
+"""Safety arbiter: validates every intent and command, owns e-stop and battery return."""

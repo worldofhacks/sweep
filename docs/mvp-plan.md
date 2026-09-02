@@ -25,26 +25,26 @@ The old labels should appear only in this mapping. New plans, issues, and status
 
 ```mermaid
 flowchart TD
-    M0[M0 contracts and capability boundaries] --> C1[Relay, state, logging, and CI]
-    M0 --> A1[Webcam producer and console boundary]
-    M0 --> B1[Planner, arbiter, and sim]
-    C1 --> I1[Two-drone webcam-to-sim gate]
-    A1 --> I1
-    B1 --> I1
-    I1 --> H1[One-drone hardware proof]
-    H1 --> H2[Two-drone hardware proof]
-    H2 --> V0[One selected live feed]
-    V0 --> W1[M2.0 walking-skeleton checkpoint]
-    W1 --> L1[Spoken-language vertical slice]
-    W1 --> S1[Full 4-to-6-drone sim and hardware scope]
-    W1 --> V1[M3 video and sensor console]
-    L1 --> H3[Language acceptance on hardware]
-    L1 --> F1[M4 language completion]
-    V1 --> R1[M4 final integration and release]
-    S1 --> R1
-    H3 --> R1
-    F1 --> R1
-    R1 --> X1[Future registered inputs and vehicle adapters]
+    m0[M0 contracts and capability boundaries] --> relay[Relay, state, logging, and CI]
+    m0 --> webcam[Webcam producer and console boundary]
+    m0 --> autonomy[Planner, arbiter, and sim]
+    relay --> simgate[Two-drone webcam-to-sim gate]
+    webcam --> simgate
+    autonomy --> simgate
+    simgate --> hw1[One-drone hardware proof]
+    hw1 --> hw2[Two-drone hardware proof]
+    hw2 --> feed[One selected live feed]
+    feed --> m20[M2.0 walking-skeleton checkpoint]
+    m20 --> speech[Spoken-language vertical slice]
+    m20 --> scale[Full 4-to-6-drone sim and hardware scope]
+    m20 --> video[M3 video and sensor console]
+    speech --> hwlang[Language acceptance on hardware]
+    speech --> langfull[M4 language completion]
+    video --> release[M4 final integration and release]
+    scale --> release
+    hwlang --> release
+    langfull --> release
+    release --> future[Future registered inputs and vehicle adapters]
 ```
 
 M2.0 follows one order: contracts, two-drone sim, one real drone, two real drones, then one selected live feed. Language work and the 4-to-6-drone expansion begin after that checkpoint. Koby's provisional direction to run M3 video and M4 language completion concurrently remains in place after M2.0, pending team confirmation of the capacity gap below. The complete MVP claim waits for both the full M2 hardware evidence and M3 console evidence.

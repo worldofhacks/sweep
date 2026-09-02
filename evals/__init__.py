@@ -1,1 +1,1 @@
-"""Eval harness: gesture, language, sim scenario, and hardware acceptance suites (owner C)."""
+"""Eval harness: gesture, language, sim scenario, and hardware acceptance suites."""

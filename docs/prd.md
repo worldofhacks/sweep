@@ -116,20 +116,20 @@ Every arrow labeled "intents" carries the same JSON schema (Appendix A). Every a
 
 | Component | Language | Capability area | Responsibility |
 |---|---|---|---|
-| Gesture console (web) | JS, MediaPipe Tasks | A, Interaction | Webcam, hand landmarks, gesture classification, dwell and confirmation UI, intent emission, session recording. Prototype shipped Sept 1. |
-| Optional input producers | Source-specific | A with C | A Future Band producer registers against Intent v1 and passes the shared source conformance suite. It is outside the core MVP. |
-| Language module | JS and Python | A with C | Browser microphone capture, relay-side Whisper API transcription, plan preview, and intents to the bus in M1; speech hardening in M4. |
-| Intent relay | Python (FastAPI + websockets) | C, Platform | Accepts intents from registered sources, stamps and logs them, forwards to the planner, and fans out state and telemetry. M1. |
-| Planner | Python | B, Autonomy | Deterministic formations, sweep lanes, translate, altitude, come home, allocation, and geofence clamping. M1. |
-| Safety arbiter | Python | B, Autonomy | Validates every intent and planned command against limits and state; owns e-stop and battery return. M1. |
-| Plan compiler (LLM) | Python | C, Platform | Turns language into an ordered list of intents using structured output; never touches commands. M1 vertical slice, M4 completion. |
-| Swarm adapters | Python, ROS 2 | B, Autonomy | `sim` in M1, then `crazyswarm2` or optional `mavlink` in M2. One interface: `takeoff, goto, land, hover, estop, telemetry`. |
-| Simulator | Python | B, Autonomy | Kinematic six-drone sim with the same adapter interface, used by CI and by the console before hardware. |
-| Media server | MediaMTX | C, Platform | Ingest drone video, serve WebRTC and MJPEG, and record. M3. |
-| Perception | Python, ONNX or PyTorch | A, Interaction | Detector on sampled frames per stream; emits detection events with world-position estimates. M3. |
-| Console dashboard | JS | A, Interaction | Map, cameras, sensor state, focus, attention, ledger, and health. Grows from the webcam prototype. |
-| Telemetry and logs | Python | C, Platform | JSONL append-only logs, session bundles, replay tool. M1. |
-| Evals and CI | Python, GitHub Actions | C, Platform | Gesture gold set, NL gold set, sim scenario suite, safety tests. M1 onward. |
+| Gesture console (web) | JS, MediaPipe Tasks | Interaction | Webcam, hand landmarks, gesture classification, dwell and confirmation UI, intent emission, session recording. Prototype shipped Sept 1. |
+| Optional input producers | Source-specific | Interaction with Platform | A Future Band producer registers against Intent v1 and passes the shared source conformance suite. It is outside the core MVP. |
+| Language module | JS and Python | Interaction with Platform | Browser microphone capture, relay-side Whisper API transcription, plan preview, and intents to the bus in M1; speech hardening in M4. |
+| Intent relay | Python (FastAPI + websockets) | Platform | Accepts intents from registered sources, stamps and logs them, forwards to the planner, and fans out state and telemetry. M1. |
+| Planner | Python | Autonomy | Deterministic formations, sweep lanes, translate, altitude, come home, allocation, and geofence clamping. M1. |
+| Safety arbiter | Python | Autonomy | Validates every intent and planned command against limits and state; owns e-stop and battery return. M1. |
+| Plan compiler (LLM) | Python | Platform | Turns language into an ordered list of intents using structured output; never touches commands. M1 vertical slice, M4 completion. |
+| Swarm adapters | Python, ROS 2 | Autonomy | `sim` in M1, then `crazyswarm2` or optional `mavlink` in M2. One interface: `takeoff, goto, land, hover, estop, telemetry`. |
+| Simulator | Python | Autonomy | Kinematic sim, two drones for M2.0 and then 4 to 6, with the same adapter interface, used by CI and by the console before hardware. |
+| Media server | MediaMTX | Platform | Ingest drone video, serve WebRTC and MJPEG, and record. M3. |
+| Perception | Python, ONNX or PyTorch | Interaction | Detector on sampled frames per stream; emits detection events with world-position estimates. M3. |
+| Console dashboard | JS | Interaction | Map, cameras, sensor state, focus, attention, ledger, and health. Grows from the webcam prototype. |
+| Telemetry and logs | Python | Platform | JSONL append-only logs, session bundles, replay tool. M1. |
+| Evals and CI | Python, GitHub Actions | Platform | Gesture gold set, NL gold set, sim scenario suite, safety tests. M1 onward. |
 
 ### 4.3 (5) Agent framework selection
 
@@ -354,13 +354,13 @@ Sweep uses one delivery sequence: M0 through M4, followed by Future extensions. 
 
 ### 8.1 Capability areas and dynamic claiming
 
-The A, B, and C labels describe capability areas and module boundaries. They are not standing assignments to people. Any engineer may claim any ready task, and the claimant owns that task through review, integration, and evidence.
+Interaction, Autonomy, and Platform are capability areas and module boundaries, not standing assignments to people. Any engineer may claim any ready task, and the claimant owns that task through review, integration, and evidence.
 
 | Capability area | Boundary | Typical work | Adjacent work |
 |---|---|---|---|
-| A, Interaction | Operator inputs and visible feedback | gesture console, console dashboard, video UI, detector, language UI | gesture gold set, future input-producer UX |
-| B, Autonomy | Deterministic motion and flight safety | planner, arbiter, sim, drone adapters, positioning, hardware bring-up, flight operations | language resolvers, mode parameters |
-| C, Platform | Contracts, transport, data, and evaluation | relay, intent registry, logging and replay, media server, plan compiler plumbing, observability, evals, CI, release | networking, future source registration and CI, language fallback |
+| Interaction | Operator inputs and visible feedback | gesture console, console dashboard, video UI, detector, language UI | gesture gold set, future input-producer UX |
+| Autonomy | Deterministic motion and flight safety | planner, arbiter, sim, drone adapters, positioning, hardware bring-up, flight operations | language resolvers, mode parameters |
+| Platform | Contracts, transport, data, and evaluation | relay, intent registry, logging and replay, media server, plan compiler plumbing, observability, evals, CI, release | networking, future source registration and CI, language fallback |
 
 Dynamic claiming does not permit competing contract or safety edits. Each change to Intent v1, the adapter interface, relay state shape, the arbiter, e-stop, or a safety-relevant planner path has one named change owner and requires cross-review before merge. Other ready tasks may proceed in parallel when their dependencies and file boundaries do not overlap.
 
@@ -377,7 +377,7 @@ The M2.0 sequence controls near-term work: contracts, two-drone sim, one real dr
 
 The columns below describe capability-area work. They do not reserve an engineer for the week; ready cells become tasks that any engineer may claim.
 
-| Day | A, Interaction | B, Autonomy | C, Platform |
+| Day | Interaction | Autonomy | Platform |
 |---|---|---|---|
 | Sept 2 | Wire the webcam console to the relay; show connection, selection, two drone states, and the last acknowledgement or refusal; keep keyboard e-stop live | Build the two-drone sim, eight-intent planner subset, and complete arbiter checks | Freeze Intent v1 and the adapter contract; add one authenticated WebSocket session, canonical two-drone state, acknowledgements, refusals, JSONL, and basic CI |
 | Sept 3 | Run the eight-intent workflow and fix checkpoint UI defects | Complete the two-drone scenarios for confirmation, geofence, ceiling, spacing, battery, link and positioning loss, and e-stop | Complete checkpoint state fan-out, logging, and sim CI; verify unsupported valid intents are typed refusals |
