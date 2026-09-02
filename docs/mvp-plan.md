@@ -1,6 +1,6 @@
 # Sweep MVP delivery plan
 
-This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. The complete initial MVP is the combined M1, M2, and M3 exit: an operator controls 4 to 6 indoor drones by webcam gesture or typed natural language, every command passes the deterministic safety path, and the laptop console shows live cameras, telemetry, and sensor events. Hardware claims remain gated on recorded M2 evidence.
+This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. The complete initial MVP is the combined M1, M2, and M3 exit: an operator controls 4 to 6 indoor drones by webcam gesture or spoken natural language, every command passes the deterministic safety path, and the laptop console shows live cameras, telemetry, and sensor events. Hardware claims remain gated on recorded M2 evidence.
 
 Interaction, Autonomy, and Platform are capability areas for coordination and module boundaries. They are not assigned to people for the capstone. Any engineer may claim a ready item and owns that item through review, integration, and acceptance evidence.
 
@@ -13,7 +13,7 @@ The older Phase 0 through Phase 6 labels are retired for delivery planning. They
 | Canonical milestone | Legacy scope absorbed | Outcome |
 |---|---|---|
 | M0: Scope and contracts | Phase 0 evidence and the Phase 1 contract freeze | MVP boundary, frozen contracts, capability-area boundaries, and CI skeleton |
-| M1: Sim control MVP | Phase 1 plus the narrow typed-language slice formerly in Phase 5 | Webcam and typed text traverse relay, planner, arbiter, and sim |
+| M1: Sim control MVP | Phase 1 plus the narrow spoken-language slice formerly in Phase 5 | Webcam and live microphone speech traverse relay, planner, arbiter, and sim |
 | M2: Hardware control MVP | Phase 2 and the delivery-gated hardware lane | The same control paths run safely on 4 to 6 real drones |
 | M3: Full MVP, video and sensor console | Phase 3 | Cameras, telemetry, sensor events, focus, and detection complete the initial MVP |
 | M4: Final proof of concept | Remaining Phase 5 language breadth plus Phase 6 hardening | Full eval corpus, resolvers, fallback, release evidence, and demo |
@@ -31,7 +31,7 @@ flowchart TD
     C1 --> I1[Webcam-to-sim integration]
     A1 --> I1
     B1 --> I1
-    I1 --> L1[Typed-language vertical slice]
+    I1 --> L1[Spoken-language vertical slice]
     I1 --> H1[M2 hardware bring-up]
     I1 --> V1[M3 video and sensor console]
     L1 --> H2[Language acceptance on hardware]
@@ -53,7 +53,7 @@ Each item below has enough boundary and acceptance detail to become an issue lat
 
 **M0.1: Freeze the MVP boundary and capability areas**
 Capability area: team. Dependencies: none.
-Scope: approve the 4-to-6-drone core MVP, move glasses and the Band to Future, make typed language the second control path, and adopt dynamic task claiming with the contract and safety exception above.
+Scope: approve the 4-to-6-drone core MVP, move glasses and the Band to Future, make spoken language the second control path, and adopt dynamic task claiming with the contract and safety exception above.
 Done when: the PRD has one milestone scheme, every core deliverable has a capability area and dependency boundary, and no optional input blocks M1 through M4.
 
 **M0.2: Freeze executable contracts**
@@ -83,20 +83,30 @@ Capability area: team. Dependencies: M1.1, M1.2, M1.3.
 Scope: run Appendix E through the production relay, planner, arbiter, and sim path.
 Done when: 4 to 6 simulated drones complete the mission in under three minutes, CI is green, and the log contains zero unsafe intents.
 
-**M1.5: Build the typed-language compiler path**
+**M1.5: Build the transcript-to-plan compiler path**
 Capability area: Platform. Dependencies: M1.1, M1.2, M1.4.
-Scope: use one pinned model to produce ordered Intent v1 plans from typed text and authoritative relay state; validate, log, and emit confirmed intents one at a time.
+Scope: use one pinned model to produce ordered Intent v1 plans from final speech transcripts and authoritative relay state; validate, log, and emit confirmed intents one at a time.
 Done when: models cannot emit adapter commands, invalid plans emit nothing, and compiler input, output, validation, operator decision, and usage are replayable.
 
-**M1.6: Add preview, clarification, and confirmation**
+**M1.6: Capture speech and add preview, clarification, and confirmation**
 Capability area: Interaction. Dependencies: M1.3, M1.5.
-Scope: add typed input and plan preview to the laptop console, including clarification, confirm, and cancel states.
-Done when: no language intent emits before confirmation and ambiguous requests present choices or a refusal.
+Scope: add one-shot push-to-talk Web Speech capture to the pinned Chromium demo browser; show interim and final transcripts; add plan preview, clarification, confirm, cancel, and explicit unsupported, permission, capture, no-speech, service, and network error states.
+Done when: three live spoken multi-step orders reach plan preview, no language intent emits before confirmation, recognition failures emit nothing, and ambiguous requests present choices or a refusal.
 
 **M1.7: Establish the provisional language eval**
 Capability area: Platform, with team-contributed cases. Dependencies: M1.5, M1.6.
-Scope: create 50 reviewed cases for the scripted mission, three multi-step orders, ambiguity, confirmation-sensitive requests, and unsafe requests; support cached CI and an explicit live refresh.
-Done when: exact-match plan accuracy is at least 85%, unsafe-intent count is zero, and three multi-step orders pass through the complete sim path.
+Scope: create 50 reviewed transcript-to-plan cases for the scripted mission, three multi-step orders, ambiguity, confirmation-sensitive requests, and unsafe requests; add a manual 20-utterance clean-room speech smoke run across two speakers; support cached CI and an explicit live compiler refresh.
+Done when: exact-match plan accuracy is at least 85%, the live speech smoke run reaches at least 85% exact transcript match, unsafe-intent count is zero, and three spoken multi-step orders pass through the complete sim path.
+
+#### Does spoken language fit Sept 5 to 9?
+
+**Recommendation: yes, within the bounded M1 speech scope.** Browser-native Web Speech adds about 1 to 1.5 person-days beyond the reviewed transcript-to-plan slice. The five-day window provides 15 gross team-days under the PRD's calendar assumption. M1 needs about 8 to 11 team-days when speech capture, its error states, a manual smoke run, compiler integration, preview and confirmation, and integration margin are counted together.
+
+That estimate holds only for one-shot push-to-talk in the pinned Chromium browser, `en-US`, a working microphone, and an available network speech service. The final transcript enters the same compiler path that typed fixtures exercise. M1 does not include Whisper, offline recognition, continuous listening, multilingual support, or noisy-room hardening.
+
+The browser surface is small but real: feature detection, explicit microphone permission, start and stop controls, interim and final results, and visible capture, permission, service, and network errors. The [Chrome Web Speech guide](https://developer.chrome.com/blog/voice-driven-web-apps-introduction-to-the-web-speech-api/) documents this event-driven integration and click-to-start permission flow. [MDN marks `SpeechRecognition` as limited availability](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition), which is why M1 pins the browser and network rather than claiming portable or offline speech. The [Web Speech specification](https://dvcs.w3.org/hg/speech-api/raw-file/tip/speechapi) requires explicit consent and a visible recording indication; those are acceptance requirements, not polish.
+
+The 50 reviewed cases test transcript-to-plan behavior in CI. They do not prove microphone recognition. The separate 20-utterance, two-speaker live run exercises the real browser capture path and prevents synthetic transcripts from standing in for speech acceptance.
 
 ### M2: Hardware control MVP
 
@@ -139,7 +149,7 @@ Done when: a qualifying detection promotes the selected feed within one second, 
 
 **M3.4: Earn the complete MVP exit**
 Capability area: team. Dependencies: M2.4, M3.2, M3.3.
-Scope: demonstrate webcam or typed-language control with the camera, telemetry, and sensor console active.
+Scope: demonstrate webcam or spoken-language control with the camera, telemetry, and sensor console active.
 Done when: the complete operator workflow succeeds on 4 to 6 drones and the session evidence supports every control, safety, video, and sensor claim.
 
 ### M4: Final proof of concept
@@ -154,10 +164,10 @@ Capability area: Platform, with team-contributed cases. Dependencies: M1.7, M4.1
 Scope: expand to the responder-reviewed 200-item set, complete cached and live eval paths, add the local fallback, and close compiler failure cases.
 Done when: exact-match accuracy remains at least 85%, unsafe-intent count is zero, cached fixtures are produced by real compiler runs, and fallback uses the same validation path.
 
-**M4.3: Complete speech and operator UX**
+**M4.3: Add Whisper fallback and harden speech UX**
 Capability area: Interaction with Platform support. Dependencies: M1.6, M4.2.
-Scope: add Web Speech and Whisper only where accuracy evidence requires them; polish preview, clarification, confirmation, and refusal behavior.
-Done when: speech feeds the same text-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
+Scope: add Whisper for offline or accuracy fallback; evaluate noisy-room speech; polish transcript, preview, clarification, confirmation, and refusal behavior.
+Done when: Web Speech and Whisper feed the same transcript-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
 
 **M4.4: Harden, document, and release**
 Capability area: team. Dependencies: M2.4, M3.4, M4.2, M4.3.
@@ -183,20 +193,20 @@ Done when: unsupported behavior returns a typed refusal and no input or model ca
 | Work package | Estimated team effort | Parallelization boundary |
 |---|---:|---|
 | Full language compiler, state context, validation, logging, ordered emission, and eval plumbing | 4 to 5 person-days | Plan schema, relay state shape, and ordered emission use one change owner and cross-review. |
-| Language UI, full resolvers, corpus completion, fallback, and speech breadth | 4 to 5 person-days | Corpus writing can fan out. Resolver and UI integration wait on frozen result envelopes. |
+| Web Speech capture, language UI, full resolvers, corpus completion, Whisper fallback, and speech hardening | 5 to 6 person-days | Corpus writing and the live speech smoke run can fan out. Resolver and UI integration wait on frozen result envelopes. |
 | Media ingest, recording, stream naming, detection-event transport, and latency measurement | 3 to 4 person-days | Media configuration can proceed independently. Detection and relay-state changes use one change owner and cross-review. |
 | Mosaic, focus, sensor state, detector, attention promotion, and confirmation | 4 to 5 person-days | Detector experiments can run independently. Console integration overlaps the language UI files. |
 | Cross-stack review, end-to-end acceptance, and defect margin | 2 to 3 person-days | Safety-path and shared-contract reviews cannot be self-approved or merged concurrently. |
 
-The combined range is 17 to 22 person-days. Sept 5 through Sept 12 contains five normal weekdays, or 15 gross person-days for three engineers. Even treating all eight calendar days as work provides 24 gross person-days before M1 carryover, hardware support, review, and defects. Reassigning engineers dynamically helps isolated work start sooner, but the plan schema, relay state, ordered emission, safety-path review, and shared console integrations still serialize part of the work. The standard-week capacity is insufficient, and the seven-day schedule leaves too little margin for a safety-critical integration.
+The combined range is 18 to 23 person-days. Sept 5 through Sept 12 contains five normal weekdays, or 15 gross person-days for three engineers. Even treating all eight calendar days as work provides 24 gross person-days before M1 carryover, hardware support, review, and defects. Reassigning engineers dynamically helps isolated work start sooner, but the plan schema, relay state, ordered emission, safety-path review, and shared console integrations still serialize part of the work. The standard-week capacity is insufficient, and the seven-day schedule leaves too little margin for a safety-critical integration.
 
 The freely parallelizable pieces are MediaMTX setup, detector prototyping, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
 
 The recommended sequence keeps the initial MVP line at M3 without hiding that load:
 
-1. Finish the narrow typed-language vertical slice in M1 from Sept 5 to 9.
+1. Finish the narrow spoken-language vertical slice in M1 from Sept 5 to 9.
 2. Move Interaction and Platform to M3 video and sensor work from Sept 10 to 15.
 3. Claim delivery-gated M2 work as hardware becomes ready and pull M4 resolver cases forward only when team capacity is idle.
-4. Finish the 200-item language set, fallback, speech breadth, and resolver edge cases in M4.
+4. Finish the 200-item language set, Whisper fallback, noisy-room speech hardening, and resolver edge cases in M4.
 
-This yields an initial MVP through M3, including webcam and typed-language control plus the camera and sensor console. It does not claim that the full video and full language scopes fit concurrently in the Sept 5 to 12 window.
+This yields an initial MVP through M3, including webcam and spoken-language control plus the camera and sensor console. It does not claim that the full video and full language scopes fit concurrently in the Sept 5 to 12 window.
