@@ -21,7 +21,7 @@ The validator makes these schema choices where Appendix A leaves details open:
 - `session` is an opaque, non-empty string.
 - Drone IDs are unique positive integers. The current `selection` may be empty; `select.args.ids` may not.
 - Motion values are finite JSON numbers in planner-owned steps. The validator does not convert them to metres or impose mode bounds.
-- `intent_id` is a non-empty stable identifier. A retry gets a new identifier and may link to a different failed request through `retry_of`.
+- `intent_id` is a non-empty stable identifier. A retry gets a new identifier and may link to a different request through `retry_of`. This function validates the reference shape; the relay lifecycle validates same-session failure, deduplication, and terminal-state semantics.
 - `confirm` records the source's confirmation state. `capture_room` requires confirmation and exactly one selected drone; the arbiter enforces the remaining action-specific checks.
 - Rejection precedence is envelope, registered source, intent name, argument shape, then M2.0 capability.
 - M2.0 accepts the eight flight-control names plus the previously accepted `capture_room` path. The remaining names keep their v1 argument shapes and return `unsupported`.

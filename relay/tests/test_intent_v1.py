@@ -253,6 +253,23 @@ def test_malformed_gated_intent_is_invalid_before_capability_check(
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
+def test_deeply_nested_sweep_box_is_a_typed_rejection(
+    console_select_payload: dict[str, object],
+) -> None:
+    box: dict[str, object] = {}
+    cursor = box
+    for _ in range(1_100):
+        nested: dict[str, object] = {}
+        cursor["nested"] = nested
+        cursor = nested
+    console_select_payload.update(name="sweep", args={"box": box})
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
 def test_capture_room_rejects_unknown_pattern(
     console_select_payload: dict[str, object],
 ) -> None:

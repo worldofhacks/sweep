@@ -122,7 +122,7 @@ def validate_intent(raw: object) -> ValidationResult:
 
     try:
         args = _parse_args(name, raw["args"])
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, RecursionError, TypeError, ValueError):
         return RejectedIntent(RejectionReason.INVALID_PAYLOAD, f"invalid args for {name}")
 
     if not _has_valid_scope(name, raw):
