@@ -4,7 +4,7 @@ One person commands 4 to 6 indoor drones through webcam gestures or spoken natur
 
 The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and 4 to 6 indoor drones; spoken natural language is the second control path, built right after the shared intent bus, planner, arbiter, and simulator. An EMG band is an optional Future input source outside the core MVP. Everything is open source.
 
-Status: the webcam gesture prototype shipped Sept 1, 2026. M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the full M0 through M4 delivery sequence and its mapping from the earlier Phase 0 through Phase 6 labels.
+Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the full M0 through M4 delivery sequence and its mapping from the earlier Phase 0 through Phase 6 labels.
 
 ## Read first
 

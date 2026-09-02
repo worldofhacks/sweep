@@ -1,6 +1,6 @@
 # Sweep (working name): PRD, architecture, and division of labor
 
-Version 0.4, Sept 2, 2026. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task rather than owning an area for the capstone. Status: M0 scope and contracts in progress; the webcam gesture prototype shipped Sept 1.
+Version 0.4, Sept 2, 2026. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task rather than owning an area for the capstone. Status: M0 scope and contracts in progress.
 
 This document answers every item in the Pre-Search Checklist. Section headers carry the checklist numbers so nothing is skipped, and Appendix F is a crosswalk from each question to the section that answers it.
 
@@ -116,7 +116,7 @@ Every arrow labeled "intents" carries the same JSON schema (Appendix A). Every a
 
 | Component | Language | Capability area | Responsibility |
 |---|---|---|---|
-| Gesture console (web) | JS, MediaPipe Tasks | Interaction | Webcam, hand landmarks, gesture classification, dwell and confirmation UI, intent emission, session recording. Prototype shipped Sept 1. |
+| Gesture console (web) | JS, MediaPipe Tasks | Interaction | Webcam, hand landmarks, gesture classification, dwell and confirmation UI, intent emission, session recording. |
 | Optional input producers | Source-specific | Interaction with Platform | A Future Band producer registers against Intent v1 and passes the shared source conformance suite. It is outside the core MVP. |
 | Language module | JS and Python | Interaction with Platform | Browser microphone capture, relay-side Whisper API transcription, plan preview, and intents to the bus in M1; speech hardening in M4. |
 | Intent relay | Python (FastAPI + websockets) | Platform | Accepts intents from registered sources, stamps and logs them, forwards to the planner, and fans out state and telemetry. M1. |
@@ -251,7 +251,7 @@ Sweep uses one delivery sequence: M0 through M4, followed by Future extensions. 
 
 ### M0: Scope and contracts
 
-- Entry: webcam gesture prototype and six-drone map simulator recorded on Sept 1.
+- Entry: the team has agreed to the MVP boundary in this document.
 - Deliverables: approved MVP and extension boundaries; Intent v1, telemetry, adapter, WebSocket, and repository contracts; input-source registry and shared conformance-suite requirements; CI skeleton; capability-area boundaries and dynamic task-claiming rules.
 - Exit: contracts are reviewed and frozen; every M1 deliverable has a capability area and can be claimed independently; the branch and PR rule is active.
 
