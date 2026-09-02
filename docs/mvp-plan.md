@@ -167,7 +167,7 @@ Done when: all claimed hardware and software exits have recorded evidence, CI is
 ### Future
 
 **F.1: Add optional input sources**
-Capability area: Interaction with Platform registration support. Dependencies: M0.2 and a concrete source with host access.
+Capability area: Interaction with Platform registration support. Dependencies: M4.4 and a concrete source with host access.
 Scope: add glasses or an EMG band through a source-specific producer, registry entry, and shared conformance runner.
 Done when: real source events pass Intent v1 conformance and the production safety path without relay, planner, arbiter, or adapter redesign.
 
