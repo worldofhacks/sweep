@@ -2,15 +2,15 @@
 
 One person commands 4 to 6 indoor drones through webcam gestures or spoken natural language, and sees what the swarm sees on a laptop console.
 
-The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and 4 to 6 indoor drones; spoken natural language is the second control path, built right after the shared intent bus, planner, arbiter, and simulator. Glasses and an EMG band are optional Future input sources outside the core MVP. Everything is open source.
+The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and 4 to 6 indoor drones; spoken natural language is the second control path, built right after the shared intent bus, planner, arbiter, and simulator. An EMG band is an optional Future input source outside the core MVP. Everything is open source.
 
-Status: the webcam gesture prototype shipped Sept 1, 2026. M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the full M0 through M4 delivery sequence and its mapping from the earlier Phase 0 through Phase 6 labels.
+Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the M0 through M4 delivery sequence.
 
 ## Read first
 
 - [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. The four frozen contracts are [Appendix A (intent)](docs/prd.md#appendix-a-intent-contract-v1), [Appendix B (telemetry)](docs/prd.md#appendix-b-telemetry-v1), [Appendix C (adapter interface)](docs/prd.md#appendix-c-adapter-interface), and [Appendix D (repository layout)](docs/prd.md#appendix-d-repository-layout).
-- [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped, issue-ready work breakdown, with the legacy Phase 0 through Phase 6 mapping.
-- [Scaffold design](docs/superpowers/specs/2026-09-01-sweep-scaffold-design.md), its [plan](docs/superpowers/plans/2026-09-01-sweep-scaffold.md), and the [docs index](docs/README.md).
+- [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped work breakdown.
+- [Decision records](docs/decisions/): why the scaffold and the architecture look the way they do. The [docs index](docs/README.md) lists everything else.
 - The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.
 
 ## Layout
@@ -18,7 +18,6 @@ Status: the webcam gesture prototype shipped Sept 1, 2026. M0 (scope and contrac
 | Path | Capability area | Milestone | What lives here |
 |---|---|---|---|
 | [`console/`](console/) | Interaction | M0+ | Operator console: Vite + React + TypeScript |
-| [`glasses/`](glasses/) | Interaction, Platform | Future | Meta Ray-Ban Display web app |
 | [`relay/`](relay/) | Platform | M1 | FastAPI WebSocket intent bus, state, JSONL logging, replay |
 | [`planner/`](planner/) | Autonomy | M1 | Deterministic formations, sweep lanes, allocation, clamping |
 | [`arbiter/`](arbiter/) | Autonomy | M1 | Safety rules, e-stop, battery return |
@@ -49,19 +48,15 @@ just media      # MediaMTX via docker compose, in the foreground
 
 `just --list` shows every recipe. Python runs from the repo root through uv, and modules are invoked as packages, for example `uv run python -m relay.main` once that module exists. Keep uv's default `.venv/` at the repo root (the ignore rules assume it). Copy `.env.example` to `.env` when you need the relay token or the API key; keys never reach the console. `tests/test_layout.py` guards the Appendix D layout: every declared package, including the three `adapters/` subpackages, must resolve from this repo, and no undeclared top-level package may appear.
 
-## Sept 2, first hour
+## Start here
 
-Contracts freeze at 9:00: intent schema and WebSocket topics, telemetry schema, adapter interface, repo layout (PRD section 8.2). Then, from PRD section 8.3:
-
-- Interaction: wire the webcam console to the relay and strip its internal sim; the prototype page lives at `console/public/phase0/` (see [console/README.md](console/README.md)).
-- Autonomy: planner and arbiter with tests, against the `sim` adapter.
-- Platform: relay with WebSocket, token, and JSONL logging; schemas.
+Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter interface, repo layout (PRD section 8.2). The work order is PRD section 8.3 and the M0 to M2 items in [docs/mvp-plan.md](docs/mvp-plan.md): contracts, the two-drone sim path, one real drone, two real drones, one selected live feed. Language and the 4-to-6-drone expansion follow the M2.0 checkpoint. Any engineer may claim a ready item.
 
 ## Working agreement
 
 - No merge to `main` without CI green and one review (PRD section 8.2). `main` is protected accordingly: pull request, one approval, both CI checks.
 - No new intents without a contract change, a test, and every registered input updated. No model in the safety path. Nothing outside the M1 through M4 acceptance paths before M4 exits (PRD section 8.6).
-- Stand-up 9:00, integration 16:00. Two people present for any flight, one on the e-stop keyboard; nobody flies alone. Every hardware session ends with a session report committed to the repo (PRD section 8.5).
+- Daily stand-up and integration. Two people present for any flight, one on the e-stop keyboard; nobody flies alone. Every hardware session ends with a session report committed to the repo (PRD section 8.5).
 
 ## Remotes
 

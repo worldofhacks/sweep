@@ -1,7 +1,7 @@
 # Ground-station services (PRD section 7.5). Start with: docker compose up
 #
-# relay      arrives in Phase 1 (owner C) once relay/ has an app and a Dockerfile.
-# perception arrives in Phase 3 (owner A).
+# relay      arrives in M1 once relay/ has an app and a Dockerfile.
+# perception arrives in M3.
 # No restart policy: a bad config makes `just media` exit with the error instead of looping.
 name: sweep
 
@@ -18,4 +18,4 @@ services:
     volumes:
       # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
       - ./media/mediamtx.yml:/mediamtx.yml:ro
-      # Phase 3 (owner C): add ./recordings:/recordings and set recordPath in media/mediamtx.yml.
+      # M3: add ./recordings:/recordings and set recordPath in media/mediamtx.yml.

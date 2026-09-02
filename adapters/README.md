@@ -1,13 +1,15 @@
 # adapters
 
-Owner: B (Autonomy).
+Capability area: Autonomy. Milestones: M1 (`sim`), M2 (hardware).
+
+Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to the adapter interface name one change owner and require cross-review.
 
 One interface, three implementations (PRD Appendix C):
 
-| Package | Target | Phase |
+| Package | Target | Milestone |
 |---|---|---|
-| `sim/` | kinematic, deterministic six-drone simulator; the first-class mock used by CI and the console before hardware | 1 |
-| `crazyswarm2/` | ROS 2 Crazyflie server (takeoff, go_to, land, notify_setpoints_stop, emergency) with Lighthouse or Loco positioning | 2 |
+| `sim/` | kinematic, deterministic simulator, two drones for M2.0 and then 4 to 6; the first-class mock used by CI and the console before hardware | M1 |
+| `crazyswarm2/` | ROS 2 Crazyflie server (takeoff, go_to, land, notify_setpoints_stop, emergency) with Lighthouse or Loco positioning | M2 |
 | `mavlink/` | pymavlink or MAVSDK for PX4 or ArduPilot quads | optional |
 
 Interface: `takeoff, goto, hover, land, estop, telemetry`. Hardware is a configuration flag; every feature is built and tested against `sim` first.

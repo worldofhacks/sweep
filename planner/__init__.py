@@ -1,1 +1,1 @@
-"""Deterministic planner: formations, sweep lanes, allocation, clamping (owner B)."""
+"""Deterministic planner: formations, sweep lanes, allocation, clamping."""

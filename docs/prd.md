@@ -1,6 +1,6 @@
 # Sweep (working name): PRD, architecture, and division of labor
 
-Version 0.3, Sept 2, 2026. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task rather than owning an area for the capstone. Status: M0 scope and contracts in progress; the webcam gesture prototype shipped Sept 1.
+Version 0.4. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task rather than owning an area for the capstone. Status: M0 scope and contracts in progress.
 
 This document answers every item in the Pre-Search Checklist. Section headers carry the checklist numbers so nothing is skipped, and Appendix F is a crosswalk from each question to the section that answers it.
 
@@ -10,7 +10,7 @@ This document answers every item in the Pre-Search Checklist. Section headers ca
 
 One person commands 4 to 6 indoor drones through webcam gestures or spoken natural language and uses a laptop control panel to see their cameras, telemetry, and sensor events. The first user is a responder who needs eyes inside a building before entry and whose hands are already full. Spoken natural language is the second control path built, immediately after the shared intent bus, planner, arbiter, and simulator work.
 
-The product is three things: an input-agnostic **intent contract**, an **autonomy and safety core** that executes intents across a swarm and refuses unsafe ones, and an **operator console** that shows the swarm and its cameras. The core MVP registers webcam, language, and keyboard sources. The source registry and shared conformance suite let a future glasses client or EMG band join by adding its producer, registry entry, and tests. The relay, planner, arbiter, and adapters stay unchanged. Everything is open source.
+The product is three things: an input-agnostic **intent contract**, an **autonomy and safety core** that executes intents across a swarm and refuses unsafe ones, and an **operator console** that shows the swarm and its cameras. The core MVP registers webcam, language, and keyboard sources. The source registry and shared conformance suite let a future EMG band join by adding its producer, registry entry, and tests. The relay, planner, arbiter, and adapters stay unchanged. Everything is open source.
 
 ---
 
@@ -36,7 +36,7 @@ The product is three things: an input-agnostic **intent contract**, an **autonom
 4. A safety core (geofence, altitude and spacing limits, confirmations, e-stop, battery return) that no input path can bypass.
 5. An open-source release: console, relay, planner, adapters, datasets, evals.
 
-**Extension goals.** An EMG band and glasses can become registered input sources after the core MVP. The Band ticket remains gated on evidence of a direct host API and real-device events. Glasses return through the same registration and conformance path when the team schedules a client. Neither extension blocks M1 through M4.
+**Extension goals.** An EMG band can become a registered input source after the core MVP. The Band ticket remains gated on evidence of a direct host API and real-device events. It does not block M1 through M4.
 
 **Non-goals.** Outdoor swarm flight during the capstone (the hardware and positioning are indoor; the outdoor modes are designed, not flown), lethal or surveillance use, face or person identification, autonomous flight without an operator present, more than six drones.
 
@@ -83,7 +83,7 @@ The product is three things: an input-agnostic **intent contract**, an **autonom
 ### 3.4 (4) Team and skill constraints
 
 - Three engineers work full time for the capstone window. The team must cover web front-end and computer vision, Python and ROS 2 control, and backend, infrastructure, and evaluation. Anyone may claim a ready task; capability areas coordinate module boundaries and review rather than assign people. The orchestration is small and custom, with structured LLM outputs, so nobody needs to learn a heavy agent framework.
-- Domain experience: none of us is a firefighter. Mitigation: one interview with a fire or SAR contact in week one, and the scripted mission modeled on a real building sweep.
+- Domain experience: none of us is a firefighter. Mitigation: one interview with a fire or SAR contact early in M1, and the scripted mission modeled on a real building sweep.
 - Eval comfort: moderate. The eval harness is deliberately simple (pytest plus JSONL gold sets plus a simulator scenario runner) so everyone can add cases.
 
 ---
@@ -116,20 +116,20 @@ Every arrow labeled "intents" carries the same JSON schema (Appendix A). Every a
 
 | Component | Language | Capability area | Responsibility |
 |---|---|---|---|
-| Gesture console (web) | JS, MediaPipe Tasks | A, Interaction | Webcam, hand landmarks, gesture classification, dwell and confirmation UI, intent emission, session recording. Prototype shipped Sept 1. |
-| Optional input producers | Source-specific | A with C | Future glasses and Band producers register against Intent v1 and pass the shared source conformance suite. They are outside the core MVP. |
-| Language module | JS and Python | A with C | Browser microphone capture, relay-side Whisper API transcription, plan preview, and intents to the bus in M1; speech hardening in M4. |
-| Intent relay | Python (FastAPI + websockets) | C, Platform | Accepts intents from registered sources, stamps and logs them, forwards to the planner, and fans out state and telemetry. M1. |
-| Planner | Python | B, Autonomy | Deterministic formations, sweep lanes, translate, altitude, come home, allocation, and geofence clamping. M1. |
-| Safety arbiter | Python | B, Autonomy | Validates every intent and planned command against limits and state; owns e-stop and battery return. M1. |
-| Plan compiler (LLM) | Python | C, Platform | Turns language into an ordered list of intents using structured output; never touches commands. M1 vertical slice, M4 completion. |
-| Swarm adapters | Python, ROS 2 | B, Autonomy | `sim` in M1, then `crazyswarm2` or optional `mavlink` in M2. One interface: `takeoff, goto, land, hover, estop, telemetry`. |
-| Simulator | Python | B, Autonomy | Kinematic six-drone sim with the same adapter interface, used by CI and by the console before hardware. |
-| Media server | MediaMTX | C, Platform | Ingest drone video, serve WebRTC and MJPEG, and record. M3. |
-| Perception | Python, ONNX or PyTorch | A, Interaction | Detector on sampled frames per stream; emits detection events with world-position estimates. M3. |
-| Console dashboard | JS | A, Interaction | Map, cameras, sensor state, focus, attention, ledger, and health. Grows from the webcam prototype. |
-| Telemetry and logs | Python | C, Platform | JSONL append-only logs, session bundles, replay tool. M1. |
-| Evals and CI | Python, GitHub Actions | C, Platform | Gesture gold set, NL gold set, sim scenario suite, safety tests. M1 onward. |
+| Gesture console (web) | JS, MediaPipe Tasks | Interaction | Webcam, hand landmarks, gesture classification, dwell and confirmation UI, intent emission, session recording. |
+| Optional input producers | Source-specific | Interaction with Platform | A Future Band producer registers against Intent v1 and passes the shared source conformance suite. It is outside the core MVP. |
+| Language module | JS and Python | Interaction with Platform | Browser microphone capture, relay-side Whisper API transcription, plan preview, and intents to the bus in M1; speech hardening in M4. |
+| Intent relay | Python (FastAPI + websockets) | Platform | Accepts intents from registered sources, stamps and logs them, forwards to the planner, and fans out state and telemetry. M1. |
+| Planner | Python | Autonomy | Deterministic formations, sweep lanes, translate, altitude, come home, allocation, and geofence clamping. M1. |
+| Safety arbiter | Python | Autonomy | Validates every intent and planned command against limits and state; owns e-stop and battery return. M1. |
+| Plan compiler (LLM) | Python | Platform | Turns language into an ordered list of intents using structured output; never touches commands. M1 vertical slice, M4 completion. |
+| Swarm adapters | Python, ROS 2 | Autonomy | `sim` in M1, then `crazyswarm2` or optional `mavlink` in M2. One interface: `takeoff, goto, land, hover, estop, telemetry`. |
+| Simulator | Python | Autonomy | Kinematic sim, two drones for M2.0 and then 4 to 6, with the same adapter interface, used by CI and by the console before hardware. |
+| Media server | MediaMTX | Platform | Ingest drone video, serve WebRTC and MJPEG, and record. M3. |
+| Perception | Python, ONNX or PyTorch | Interaction | Detector on sampled frames per stream; emits detection events with world-position estimates. M3. |
+| Console dashboard | JS | Interaction | Map, cameras, sensor state, focus, attention, ledger, and health. Grows from the webcam prototype. |
+| Telemetry and logs | Python | Platform | JSONL append-only logs, session bundles, replay tool. M1. |
+| Evals and CI | Python, GitHub Actions | Platform | Gesture gold set, NL gold set, sim scenario suite, safety tests. M1 onward. |
 
 ### 4.3 (5) Agent framework selection
 
@@ -158,7 +158,7 @@ Internal tools (deterministic Python, callable by the plan compiler through sche
 | `resolve_location(expr, pose)` | "north wall", "over there" plus operator heading | map point | unresolvable → ask |
 | `validate_plan(plan)` | list of intents | ok, or list of violations | always returns; never throws |
 | `emit(intents)` | validated intents | acks | relay down → queued, operator warned |
-| Adapter: `takeoff, goto, land, hover, estop, battery` | per drone | acks, telemetry | timeout → hold and alert; link loss → return to home |
+| Adapter: `takeoff, goto, land, hover, estop, telemetry` | per drone | acks, telemetry | timeout → hold and alert; link loss → return to home |
 | `detect(frame)` | image | boxes with confidence | model error → stream marked "no detection", never blocks video |
 
 External dependencies: the OpenAI Whisper API and plan-compiler LLM API (language only), MediaPipe model download (once), MediaMTX (local), ROS 2 and crazyswarm2 (local), and the positioning system. Future input producers may add source-specific SDKs after their access gates pass.
@@ -237,7 +237,7 @@ The webcam prototype grows into the console: map, gesture readout, ledger, plus 
 
 ### 5.9 Optional input extensions
 
-Glasses and an EMG band are Future extensions. Each extension supplies a source-specific producer, adds one source identifier to the registry, and runs the shared Intent v1 conformance suite. A future glasses client may add its own display and input surface without changing the control core. The Band remains gated on a confirmed direct host API and a real device event through the conformance suite. Simulated vendor events provide development fixtures but cannot satisfy hardware acceptance. Neither extension blocks the M1 through M4 path.
+An EMG band is the one Future input extension. It supplies a source-specific producer, adds one source identifier to the registry, and runs the shared Intent v1 conformance suite. The Band remains gated on a confirmed direct host API and a real device event through the conformance suite. Simulated vendor events provide development fixtures but cannot satisfy hardware acceptance. It does not block the M1 through M4 path.
 
 ### 5.10 Language path
 
@@ -249,13 +249,13 @@ M1 uses one-shot, push-to-talk microphone capture in the pinned Chromium demo br
 
 Sweep uses one delivery sequence: M0 through M4, followed by Future extensions. M2.0 is the first checkpoint inside that sequence: two real indoor drones complete a bounded webcam-gesture workflow through the deterministic safety path while the console shows one selected live feed. M1 through M3 then build the polished MVP on that proof. The complete MVP exits M3, when webcam gestures and spoken language control 4 to 6 drones and the control panel shows live cameras, telemetry, and sensor events.
 
-### M0: Scope and contracts (Sept 2)
+### M0: Scope and contracts
 
-- Entry: webcam gesture prototype and six-drone map simulator recorded on Sept 1.
+- Entry: the team has agreed to the MVP boundary in this document.
 - Deliverables: approved MVP and extension boundaries; Intent v1, telemetry, adapter, WebSocket, and repository contracts; input-source registry and shared conformance-suite requirements; CI skeleton; capability-area boundaries and dynamic task-claiming rules.
 - Exit: contracts are reviewed and frozen; every M1 deliverable has a capability area and can be claimed independently; the branch and PR rule is active.
 
-### M1: Sim control MVP (Sept 2 to 9)
+### M1: Sim control MVP
 
 - Entry: M0 contracts frozen.
 - Work order: first connect the webcam producer to the relay, planner, arbiter, and a two-drone sim. That path supports the eight M2.0 intents and returns `unsupported` for the other valid Intent v1 names. One-drone hardware, two-drone hardware, and one selected live feed complete M2.0 before the 4-to-6-drone expansion or spoken-language implementation begins.
@@ -263,32 +263,31 @@ Sweep uses one delivery sequence: M0 through M4, followed by Future extensions. 
 - Boundaries: the M1 speech path targets one pinned Chromium browser, one-shot recordings of at most 30 seconds, `en-US`, the `whisper-1` transcription endpoint, and a working network. It uses existing intents, current selection, and explicit drone IDs. Full selection and location expressions, the 200-item set, offline transcription, continuous listening, multilingual support, and noisy-room hardening land in M4. Every confirmed plan still passes the planner and arbiter.
 - First gate: the M2.0 workflow passes through webcam, relay, planner, arbiter, and two-drone sim before hardware work begins. The polished M1 exit then expands the sim to 4 to 6 drones and Appendix E; three live spoken multi-step orders pass through recording, Whisper transcription, compiler, validation, preview, confirmation, and the same sim path; provisional plan exact-match accuracy is at least 85%; the 20-utterance clean-room speech smoke run reaches at least 85% exact transcript match across two speakers; language-to-preview latency and combined transcription-plus-compiler cost meet the §3.2 targets; unsafe-intent count is zero; transcription failures, ambiguous plans, and invalid plans emit nothing.
 
-### M2: Hardware control MVP (delivery-gated, five working days)
+### M2: Hardware control MVP (delivery-gated)
 
 - Entry: M1's two-drone webcam-to-sim safety path is green; drone model and adapter are known; positioning equipment and a guarded flight space are available; a two-person crew is booked.
 - Scheduling: hardware safety work takes priority until M2.0 passes. Interaction and Platform flight support is booked in bounded blocks. The language and 4-to-6-drone work starts after M2.0.
 - M2.0 workflow: arm; select both drones; confirmed takeoff; translate both together; hold; come home; confirmed land-all. E-stop remains available throughout. The one-drone proof selects the only connected drone and runs the same sequence and safety checks; the two-drone proof then verifies coordinated translation and spacing. The checkpoint uses the existing Intent v1 names `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop`. Other valid Intent v1 names return `unsupported` during the checkpoint. Unknown names and invalid arguments keep their existing validation refusals.
-- M2.0 safety and evidence: keep the complete arbiter, e-stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and two-person hardware rule. The formation library, altitude gesture, sweep planner, detector, mosaic, glasses, language and LLM work, replay UI, metrics dashboard, session report, and release polish remain outside the checkpoint.
+- M2.0 safety and evidence: keep the complete arbiter, e-stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and two-person hardware rule. The formation library, altitude gesture, sweep planner, detector, mosaic, language and LLM work, replay UI, metrics dashboard, session report, and release polish remain outside the checkpoint.
 - M2.0 exit: the workflow passes in the two-drone simulator; one real drone passes before the second is added; two real drones complete it without manual flight correction; a deliberate geofence violation is refused before an adapter command is sent; e-stop reaches both drones; link loss produces the configured safe behavior; the selected live feed stays visible; and the JSONL log explains the run.
 - Polished-MVP deliverables: expand from two drones to three, then 4 to 6 (Autonomy with Interaction support); add altitude, formation, sweep, the operator-presence watchdog, extended logs, and session reports; repeat the M1 language orders on hardware after both paths are green (team).
 - Exit: 4 to 6 drones complete the scripted mission five times in a row; the arbiter refuses a deliberate geofence violation; webcam and spoken-language runs produce the expected plans, commands, and safety outcomes.
 
-### M3: Full MVP, video and sensor console (provisional Sept 5 to 12 parallel lane)
+### M3: Full MVP, video and sensor console (provisional parallel lane after M2.0)
 
 - Entry: M2.0 is green. Its one selected live feed provides the narrow media proof. Recording, multi-stream work, detector prototyping, and the M1/M4 language lanes may then run concurrently; relay and console integration wait for their shared contracts.
 - Deliverables: expand the M2.0 selected-feed proof into MediaMTX ingest, WebRTC/MJPEG serving, recording, detection events, and latency measurement (Platform); add the live camera mosaic, focus-by-selection, telemetry and sensor state, detector, attention promotion, and operator confirmation in the console (Interaction).
 - Exit: the control panel shows live cameras, telemetry, and sensor events; the operator can focus a drone by selection; a detection promotes its feed within one second; one-source video meets the latency budget. The 4-to-6-source claim requires recorded hardware evidence.
 
-### M4: Language completion and final proof of concept (provisional Sept 5 to 12 concurrent build; hardening through Sept 24)
+### M4: Language completion and final proof of concept (provisional concurrent lane after M2.0)
 
 - Entry: M2.0 is green. Corpus authoring, cached eval work, speech fixtures, and M3 work may proceed concurrently; resolver and emission integration wait for the M1 plan and relay contracts.
 - Deliverables: `resolve_selection` and `resolve_location` with ambiguity handling (Autonomy); expansion to the responder-reviewed 200-utterance set, full cached eval, and local compiler fallback (Platform with team-contributed cases); offline transcription evaluation, noisy-room speech evaluation, retry and timeout hardening, plus final preview and confirmation polish (Interaction with Platform); hardware language acceptance when M2 is open; failure drills, adversarial tests, documentation, build guide, release, demo script, and recorded reel (team).
-- Scheduling decision under review: Koby has directed M3 video and the full M4 language scope to run concurrently after M2.0. The current estimate is 18 to 23 person-days against 15 gross team-days from Sept 5 through Sept 12, a capacity gap of 3 to 8 person-days pending team confirmation. The estimate is unchanged; its calendar start assumes M2.0 passes in time. Contract and safety gates still serialize the plan schema, relay state, ordered emission, detection-event shape, shared console integration, and cross-review. Media setup beyond the selected feed, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation can proceed in parallel.
+- Scheduling decision under review: Koby has directed M3 video and the full M4 language scope to run concurrently after M2.0, pending team confirmation that capacity covers both lanes. Contract and safety gates still serialize the plan schema, relay state, ordered emission, detection-event shape, shared console integration, and cross-review. Media setup beyond the selected feed, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation can proceed in parallel.
 - Exit: plan exact-match accuracy is at least 85% on the 200-item set; unsafe-intent count is zero; ambiguity produces clarification without emission; five consecutive scripted hardware runs pass when hardware is available; the public repository is tagged v0.1 and the demo reel is complete. Hardware claims require recorded hardware evidence.
 
 ### Future: Optional inputs and vehicle portability
 
-- Glasses: add a source-specific client, registry entry, and conformance runner. Display features stay inside that client.
 - EMG band: proceed after the direct-host API gate passes; require real-device events through the shared conformance suite and safety path.
 - Vehicle portability: evolve capability contracts and add adapters from evidence produced by working vehicles and the capability/action evals.
 - Future work cannot change the rule that inputs emit intents, the planner alone produces per-drone commands, and the arbiter validates every intent and command.
@@ -355,50 +354,38 @@ Sweep uses one delivery sequence: M0 through M4, followed by Future extensions. 
 
 ### 8.1 Capability areas and dynamic claiming
 
-The A, B, and C labels describe capability areas and module boundaries. They are not standing assignments to people. Any engineer may claim any ready task, and the claimant owns that task through review, integration, and evidence.
+Interaction, Autonomy, and Platform are capability areas and module boundaries, not standing assignments to people. Any engineer may claim any ready task, and the claimant owns that task through review, integration, and evidence.
 
 | Capability area | Boundary | Typical work | Adjacent work |
 |---|---|---|---|
-| A, Interaction | Operator inputs and visible feedback | gesture console, console dashboard, video UI, detector, language UI | gesture gold set, future input-producer UX |
-| B, Autonomy | Deterministic motion and flight safety | planner, arbiter, sim, drone adapters, positioning, hardware bring-up, flight operations | language resolvers, mode parameters |
-| C, Platform | Contracts, transport, data, and evaluation | relay, intent registry, logging and replay, media server, plan compiler plumbing, observability, evals, CI, release | networking, future source registration and CI, language fallback |
+| Interaction | Operator inputs and visible feedback | gesture console, console dashboard, video UI, detector, language UI | gesture gold set, future input-producer UX |
+| Autonomy | Deterministic motion and flight safety | planner, arbiter, sim, drone adapters, positioning, hardware bring-up, flight operations | language resolvers, mode parameters |
+| Platform | Contracts, transport, data, and evaluation | relay, intent registry, logging and replay, media server, plan compiler plumbing, observability, evals, CI, release | networking, future source registration and CI, language fallback |
 
 Dynamic claiming does not permit competing contract or safety edits. Each change to Intent v1, the adapter interface, relay state shape, the arbiter, e-stop, or a safety-relevant planner path has one named change owner and requires cross-review before merge. Other ready tasks may proceed in parallel when their dependencies and file boundaries do not overlap.
 
-### 8.2 Contracts frozen in M0 (Sept 2, 9 am)
+### 8.2 Contracts frozen in M0
 
 1. Intent schema (Appendix A) and the WebSocket topics.
 2. Telemetry schema (Appendix B).
 3. Adapter interface (Appendix C).
 4. Repo layout (Appendix D) and the branch and review rule: no merge to main without CI green and one review.
 
-### 8.3 Week one, by day
+### 8.3 Work order
 
-The M2.0 sequence controls near-term work: contracts, two-drone sim, one real drone, two real drones, then one selected live feed. Physical inventory may happen when hardware arrives, but it cannot displace the planner, arbiter, sim, relay, schema, console, logging, or CI work. Language, the 4-to-6-drone expansion, and the broader M3/M4 lanes begin after M2.0.
+M2.0 sets the order of the first work: contracts, the two-drone sim path, one real drone, two real drones, then one selected live feed. Physical inventory may happen when hardware arrives, but it does not displace the planner, arbiter, sim, relay, schema, console, logging, or CI work. Spoken language, the 4-to-6-drone expansion, and the broader M3 and M4 lanes begin after M2.0. The work items and their dependencies are in `docs/mvp-plan.md`; any engineer may claim a ready item.
 
-The columns below describe capability-area work. They do not reserve an engineer for the week; ready cells become tasks that any engineer may claim.
+### 8.4 Sequencing after M2.0
 
-| Day | A, Interaction | B, Autonomy | C, Platform |
-|---|---|---|---|
-| Sept 2 | Wire the webcam console to the relay; show connection, selection, two drone states, and the last acknowledgement or refusal; keep keyboard e-stop live | Build the two-drone sim, eight-intent planner subset, and complete arbiter checks | Freeze Intent v1 and the adapter contract; add one authenticated WebSocket session, canonical two-drone state, acknowledgements, refusals, JSONL, and basic CI |
-| Sept 3 | Run the eight-intent workflow and fix checkpoint UI defects | Complete the two-drone scenarios for confirmation, geofence, ceiling, spacing, battery, link and positioning loss, and e-stop | Complete checkpoint state fan-out, logging, and sim CI; verify unsupported valid intents are typed refusals |
-| Sept 4 | Operate the console during the one-drone proof if hardware is ready | Select the adapter, calibrate positioning, and pass the workflow on one real drone with a two-person crew | Capture the hardware JSONL evidence and expose acknowledgements, refusals, and state |
-| Sept 5 | Operate the two-drone proof and connect one selected live feed | Add the second drone; pass the workflow, deliberate geofence refusal, e-stop, and link-loss checks without manual correction | Keep the selected feed visible and verify that the JSONL log explains the run |
-| Sept 6 | After M2.0, begin push-to-talk capture, transcript preview, clarification, confirm, and cancel | After M2.0, expand the sim and hardware path toward 4 to 6 drones and Appendix E | After M2.0, add Whisper transcription, the plan schema, `validate_plan`, ordered emission, and independent M3/M4 work |
-
-### 8.4 Weeks two and three, by milestone
-
-- **M1 language completion (target Sept 7 to 9 after M2.0):** Platform work completes the Whisper API transcription endpoint, transcript-to-plan compiler path, latency and cost logging, cached eval, error handling, and provisional 50-case report. Interaction work completes push-to-talk capture, transcript, preview, and confirmation UX. The team finishes the 50-transcript plan set and a 20-utterance live speech smoke run. Autonomy work expands the sim and hardware paths toward the polished exit. The language exit is earned on sim through live microphone input.
-- **M2 hardware control MVP (delivery-gated):** M2.0 accepts one real drone and then two before any 4-to-6-drone or language work. After that checkpoint, Autonomy expands to three and then 4 to 6 drones. Interaction support operates the console during booked flight blocks. Platform adds the operator-presence watchdog and full session reports after the checkpoint. Every flight requires two people under §8.5.
-- **M3 full MVP, video and sensor console (provisional parallel lane after M2.0):** The checkpoint consumes one selected live feed. Recording configuration, multi-stream ingest, detector prototyping, and stream fixtures follow. Detection-event and console integration wait for their contracts and run beside M1/M4 language work only when a separate engineer can claim them. The lane completes WebRTC/MJPEG, latency measurement, mosaic, focus behavior, detector, attention promotion, and confirmation.
-- **M4 language completion and final proof of concept (provisional Sept 5 to 12 concurrent build; hardening through Sept 24):** After M2.0, corpus authoring, cached eval fixtures, and speech smoke preparation start beside M1 and M3. Resolver, fallback, and ordered-emission integration begin as their M1 contracts freeze. Platform work expands the eval to the full cached 200-item set, adds the local compiler fallback, closes compiler failures, runs adversarial tests, and cuts the release. Autonomy work completes resolver edge cases and failure drills. Interaction work evaluates offline and noisy-room speech and polishes preview and confirmation, then produces the demo reel and console documentation. The team completes the utterance set, responder review, and real-drone spoken-language demonstration when the full M2 path is open.
-- **Capacity confirmation:** concurrent M3 and full-language work is Koby's provisional direction pending team confirmation. The estimate remains 18 to 23 person-days against 15 gross team-days from Sept 5 through Sept 12. The 3-to-8-person-day gap requires added capacity, work outside the five normal weekdays, or an exit-date extension. Parallel claiming reduces idle time but does not remove the single-owner and cross-review gates on shared contracts, relay state, console integration, and safety-relevant paths.
-- **Future extensions:** glasses, an EMG band, and additional vehicle adapters proceed only after M4 and their own access and evidence gates. They use the same registered-source and capability boundaries without changing the MVP control path.
+- **M1 language completion:** Platform work completes the Whisper API transcription endpoint, transcript-to-plan compiler path, latency and cost logging, cached eval, error handling, and the provisional 50-case report. Interaction work completes push-to-talk capture, transcript, preview, and confirmation UX. The team finishes the 50-transcript plan set and the 20-utterance live speech smoke run. The language exit is earned on sim through live microphone input.
+- **M2 hardware control MVP (delivery-gated):** M2.0 accepts one real drone and then two before any 4-to-6-drone or language work. After that checkpoint, Autonomy work expands to three and then 4 to 6 drones, Interaction support operates the console during booked flight blocks, and Platform work adds the operator-presence watchdog and full session reports. Every flight requires two people under 8.5.
+- **M3 and M4 lanes:** after M2.0, recording configuration, multi-stream ingest, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation can be claimed in parallel. Detection-event, console, resolver, fallback, and ordered-emission integration wait for their contracts. Running the M3 video lane and the full M4 language lane concurrently is Koby's provisional direction, pending team confirmation that capacity covers both. Parallel claiming reduces idle time but does not remove the single-owner and cross-review gates on shared contracts, relay state, console integration, and safety-relevant paths.
+- **Future extensions:** an EMG band and additional vehicle adapters proceed only after M4 and their own access and evidence gates. They use the same registered-source and capability boundaries without changing the MVP control path.
 
 ### 8.5 Cadence and integration
 
-- 9:00 stand-up, ten minutes, blockers only.
-- 16:00 integration: everything merged runs end to end on sim; on hardware days, one full scripted run.
+- Daily stand-up, ten minutes, blockers only.
+- Daily integration: everything merged runs end to end on sim; on hardware days, one full scripted run.
 - Flight rule: two people present for any flight, one on the e-stop keyboard, one operating; nobody flies alone.
 - M2.0 hardware sessions commit their JSONL evidence. Later hardware sessions also commit the generated session report.
 
@@ -414,12 +401,12 @@ The columns below describe capability-area work. They do not reserve an engineer
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Drone model needs a different adapter than planned | medium | medium | adapter interface is fixed; budget three person-days of Autonomy work for bring-up |
+| Drone model needs a different adapter than planned | medium | medium | adapter interface is fixed; bring-up is bounded Autonomy work inside M2 |
 | Positioning is flaky indoors | medium | high | Lighthouse if possible; otherwise wider spacing, slower speed, hold-on-loss rule |
 | Video bandwidth fights control links | high | medium | dual-band plan, MJPEG at reduced fps, capture-card FPV as fallback |
 | Camera or sensor hardware arrives after M3 | medium | high | integrate one available source first; do not claim 4-to-6-source coverage without recorded hardware evidence |
 | Whisper API latency, rate limits, or outage block the M1 language path | medium | high | cap recordings at 30 seconds; test timeout and rate-limit handling; run the 20-utterance smoke set before integration; keep gestures and keyboard e-stop available |
-| Concurrent M3 and full-language work exceeds Sept 5 to 12 capacity | high | high | confirm the 3-to-8-person-day gap with the team; freeze shared contracts first; parallelize media setup, detector prototypes, corpus work, and eval fixtures; extend the exit date if capacity is not added |
+| Concurrent M3 and full-language work exceeds team capacity | high | high | confirm capacity with the team; freeze shared contracts first; parallelize media setup, detector prototypes, corpus work, and eval fixtures; drop the concurrency if capacity is not added |
 | Language produces plausible but wrong plans | medium | medium | preview and confirm; schema; gold set; unsafe rate stays zero by construction |
 | Gesture false positives in a busy room | medium | medium | dwell, stillness, confirmation; operator-facing readout; fallback to keyboard |
 | A crash injures someone | low | severe | netting or guards, 27-gram drones, e-stop discipline, two-person flight rule |
@@ -445,7 +432,7 @@ The columns below describe capability-area work. They do not reserve an engineer
 
 Args by intent: `select {ids}`, `translate {dx, dy}` in steps, `altitude {delta}` in steps, `formation_set {name}`, `spacing {delta}`, `sweep {box?}`, `confirm` is set by the source when the operator confirmed a pending intent. Everything else has empty args. Unknown names or args are refused by the relay before the planner sees them.
 
-`source` is a registered identifier. M1 registers `webcam`, `language`, and `keyboard`. A Future glasses or Band identifier lands only with its real producer and conformance runner.
+`source` is a registered identifier. M1 registers `webcam`, `language`, and `keyboard`. A Future Band identifier lands only with its real producer and conformance runner.
 
 M2.0 uses the existing `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop` names. The relay returns `unsupported` for every other valid Intent v1 name until the checkpoint passes. This is a capability gate inside Intent v1, so the schema version stays unchanged. `come_home` remains planner behavior implemented through `goto`, while `land_all` uses `land`; the adapter interface stays unchanged.
 
@@ -475,7 +462,6 @@ class SwarmAdapter(Protocol):
 ```
 sweep/
   console/          webcam prototype grown into the dashboard (static)
-  glasses/          future optional input client (inactive for the MVP)
   relay/            FastAPI relay, schemas, logging, replay
   planner/          formations, sweep, allocation, modes
   arbiter/          safety rules, e-stop, battery return

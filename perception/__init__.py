@@ -1,1 +1,1 @@
-"""Perception: detector on sampled frames, detection events with world positions (owner A)."""
+"""Perception: detector on sampled frames, detection events with world positions."""

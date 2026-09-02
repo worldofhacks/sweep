@@ -15,12 +15,12 @@ srt: no
 moq: no
 
 # Inside Docker, MediaMTX advertises its container IP as an ICE candidate. Set this to the
-# ground-station's LAN IP before WebRTC playback from another machine (Phase 3, owner C).
+# ground-station's LAN IP before WebRTC playback from another machine (M3).
 # webrtcAdditionalHosts: []
 
-# Recording is switched on in Phase 3: pathDefaults.record plus a mounted recordings volume.
+# Recording is switched on in M3: pathDefaults.record plus a mounted recordings volume.
 
-# Phase 3 prerequisite (owner C): set authInternalUsers so publishing and reading need credentials;
+# M3 prerequisite: set authInternalUsers so publishing and reading need credentials;
 # the MediaMTX default lets anyone on the LAN publish or read every path.
 
 paths:
