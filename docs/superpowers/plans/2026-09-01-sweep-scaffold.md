@@ -159,7 +159,13 @@ def test_package_imports_from_this_repo(name: str) -> None:
 
 def test_no_undeclared_top_level_packages() -> None:
     found = {p.parent.name for p in REPO_ROOT.glob("*/__init__.py")} - NOT_PACKAGES
-    assert found == TOP_LEVEL
+    extra = sorted(found - TOP_LEVEL)
+    missing = sorted(TOP_LEVEL - found)
+    assert not extra, (
+        f"undeclared top-level package(s) {extra}: add them to PACKAGES and PRD Appendix D, "
+        "or move them inside an existing package"
+    )
+    assert not missing, f"declared package(s) missing from the repo: {missing}"
 ```
 
 - [x] **Step 4: Run the test to verify it fails**
