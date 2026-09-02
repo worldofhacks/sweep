@@ -31,7 +31,7 @@ Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp
 | [`RESEARCH/`](RESEARCH/) | all | all | Source-backed feasibility notes that constrain product claims and planning |
 | [`tests/`](tests/) | Platform | all | Cross-cutting tests, starting with the layout contract test |
 
-Capability areas are module boundaries, not standing assignments: any engineer may claim a ready task (PRD section 8.1). Each runtime directory has a README with its capability area, milestone, responsibility, and PRD sections.
+Capability areas define module boundaries. Any engineer may claim a ready task and own it through review (PRD section 8.1). Each runtime directory has a README with its capability area, milestone, responsibility, and PRD sections.
 
 ## Quickstart
 

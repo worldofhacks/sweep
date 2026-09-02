@@ -8,7 +8,7 @@ This document answers every item in the Pre-Search Checklist. Section headers ca
 
 ## 0. Summary
 
-One person clicks Capture room, reviews and confirms the resulting Intent v1 request, and one DJI Mini 3 holds an operator-approved pose while its files create a private AI-generated Marble room world with provenance and visible job state. The completed three-guided-phone-photo flow remains fallback evidence; M1 begins with drone capture. The north-star command is “Map this floor.” In the capstone, it resolves against a supplied occupancy map and room graph for a bounded 3-to-5-room, single-floor test area. The physical target is three Mini 3 aircraft, three RC-N1 controllers, and three Android bridge nodes; 4 to 6 drones remain a simulator and Future hardware expansion.
+One person clicks Capture room, reviews and confirms the resulting Intent v1 request, and one DJI Mini 3 holds an operator-approved pose while its files create a private AI-generated Marble room world with provenance and visible job state. The completed three-guided-phone-photo flow remains fallback evidence; M1 begins with drone capture. The north-star command is “Map this floor.” In the indoor capstone, it resolves against a supplied occupancy map and room graph for a bounded 3-to-5-room, single-floor test area. A separate bounded outdoor field demo proves three-drone geofencing, planning, formation changes, and collision avoidance. The physical target is three Mini 3 aircraft, three RC-N1 controllers, and three Android bridge nodes; 4 to 6 drones remain a simulator and Future hardware expansion.
 
 The product has four parts: an input-agnostic **intent contract**, an **autonomy and safety core** that executes intents across a swarm and refuses unsafe ones, an **operator console** that shows the swarm and its cameras, and a separate **room-world path** that turns captured photos into private Marble worlds. Human phone capture does not emit Intent v1. Drone acquisition uses `capture_room`, the pilot-assisted `survey_area`, and the autonomous `map_area` through the same validated boundary, then hands pose-anchored media downstream. Marble output never supplies safety geometry or flight state. M1 registers the console button and keyboard safety sources. Language, webcam gesture, and future wearable producers join through the source registry and shared conformance suite after the button path passes. Everything is open source.
 
@@ -37,10 +37,11 @@ The product has four parts: an input-agnostic **intent contract**, an **autonomy
 5. Natural-language commands resolved into the same intents, with plan preview and confirmation.
 6. A safety core (geofence, altitude and spacing limits, confirmations, e-stop, battery return) that no input path can bypass.
 7. An open-source release: console, relay, planner, adapters, datasets, evals, and the room-world capture path.
+8. A three-drone outdoor field demo using a hand-drawn occupancy grid, GPS waypoints, A*, velocity tracking, ORCA deconfliction, and formation transitions.
 
 **Extension goals.** An EMG band can become a registered input source after the core MVP. Automated multi-room registration, a branded multi-room splat viewer, metric mapping, time-indexed rescans, Atlas integration, and autonomous exploration of an initially unmapped area also remain Future work. These items do not block M1 through M4.
 
-**Non-goals.** Outdoor swarm flight during the capstone (the hardware and positioning are indoor; the outdoor modes are designed, not flown — a proposed outdoor multi-drone field-operations addition is recorded, unreconciled against this non-goal, as [F.5 in the delivery plan](mvp-plan.md#f5-outdoor-multi-drone-field-operations-proposed-unreconciled)), lethal or surveillance use, face or person identification, autonomous flight without an operator present, autonomous exploration of an initially unmapped area, more than six drones, metric or as-built reconstruction from Marble, automatic room registration, factual inventory from generated content, and use of Marble geometry for planning, geofencing, collision avoidance, or safety.
+**Non-goals.** Outdoor operation beyond the bounded field demo, lethal or surveillance use, face or person identification, autonomous flight without an operator present, autonomous exploration of an initially unmapped area, more than six drones, metric or as-built reconstruction from Marble, automatic room registration, factual inventory from generated content, and use of Marble geometry for planning, geofencing, collision avoidance, or safety.
 
 **Success metrics.**
 
@@ -59,6 +60,8 @@ The product has four parts: an input-agnostic **intent contract**, an **autonomy
 | Room-world privacy | every request explicitly sets `public: false`, `allow_id_access: false`, `allowed_readers: []`, and `allowed_writers: []`; only the owner can open the result; World Labs API key and Marble URLs appear in 0 browser bundles or logs |
 | Multi-room walkthrough | 1 project with 3 to 5 rooms survives reload, opens every successful room world, and produces an operator-reviewed MP4 that visits each room once |
 | “Map this floor” known-map autonomous multi-room traversal and capture | 5 consecutive two-drone runs cover every reachable room with no occupied-cell, clearance, or separation violation and no manual flight correction |
+| Outdoor three-drone separation | ORCA runs at 10 Hz with 5 m horizontal separation; any pair inside both 3 m horizontal and 2 m vertical is commanded to hover |
+| Outdoor field route safety | 0 commanded paths leave the geofence or enter blocked grid cells across 5 consecutive runs; every aircraft returns home |
 | Scripted mission (arm, take off, formation, sweep, come home, land) | completes hands-free in < 3 minutes with 4 to 6 simulated drones and three physical Mini 3 nodes |
 | Demo reliability | 5 consecutive scripted runs without a safety intervention |
 
@@ -249,8 +252,8 @@ Deterministic and unit-tested: formations (line, column, circle, grid, V) around
 
 | Mode | Positioning | Box | Spacing | Speed | Notes |
 |---|---|---|---|---|---|
-| Indoor, constrained | shared indoor localization plus independent collision-clearance sensing, both acceptance-gated | defined once per space | 0.8 m | 0.5 m/s until measured evidence supports more | the Mini 3 capstone mode |
-| Outdoor, constrained | GPS, RTK optional | polygon plus ceiling | 4 m | 4 m/s | design only in the capstone window |
+| Indoor, constrained | shared indoor localization plus independent collision-clearance sensing, both acceptance-gated | defined once per space | 0.8 m | 0.5 m/s until measured evidence supports more | the Mini 3 room-capture mode |
+| Outdoor field | GPS | hand-drawn polygon, altitude floor and ceiling, blocked occupancy cells | 5 m horizontal, plus fixed altitude offsets | acceptance-gated | the bounded three-Mini-3 field demo |
 | Outdoor, unconstrained | GPS plus compass | moving fence around operator | 6 m | 6 m/s | design only |
 
 ### 5.5 Safety arbiter
@@ -320,6 +323,16 @@ The laptop uses one persistent operator shell. Network stop, physical-RC status,
 
 The Android app publishes readiness and media metadata through the relay. The laptop issues the confirmed `capture_room` request through the planner and arbiter. Important piloting guidance stays local to Android because the aircraft-to-controller feed already consumes much of the measured end-to-end latency budget. [DJI camera-stream API](https://developer.dji.com/api-reference-v5/android-api/Components/IMediaDataCenter/ICameraStreamManager.html) · [DJI Android sample](https://github.com/dji-sdk/Mobile-SDK-Android-V5)
 
+### 5.14 Outdoor field flight stack
+
+The outdoor demo uses a hand-drawn occupancy grid registered to a geofence polygon. The operator marks the tree line, fence, launch points, and other blocked cells before flight. A* rejects goals outside the polygon or inside blocked cells and produces GPS waypoint routes through free cells. A carrot-chasing controller converts each route into bounded Virtual Stick velocity commands.
+
+The fleet manager runs on the laptop and enforces the geofence, altitude floor and ceiling, battery behavior, and pairwise safety rules. ORCA filters candidate velocities at 10 Hz for 5 m horizontal separation. The three aircraft use fixed altitude offsets of 0, +3, and +6 m from the approved mission altitude. If any pair is inside both 3 m horizontal and 2 m vertical, the manager commands both aircraft to hover before any new translation.
+
+Formations are an anchor plus per-aircraft offsets. The first accepted set is triangle and line. Hungarian assignment maps aircraft to slots, and every transition routes each assigned slot through A* and ORCA. The route controller produces the initial speed-bounded candidate. Every downstream stage may reduce its magnitude or redirect it within the global cap; no stage may increase the magnitude it receives.
+
+The fake bridge proves the full stack with three simulated drones before outdoor hardware flight. The physical gate uses the same three Mini 3, RC-N1, and Android nodes accepted by the earlier one-node and scaling gates. Console buttons remain the reference producer. The final demo repeats the accepted mission through one language or gesture producer: take off, form a triangle, switch to a line, move the formation anchor, return home, and preserve the geofence and pairwise rules throughout.
+
 ---
 
 ## 6. Delivery milestones
@@ -363,13 +376,14 @@ Three guided phone photos have produced one Marble room world. Preserve the phot
 - Deliverables: expand the M2.0 selected-feed proof into three-node MediaMTX ingest, WebRTC/MJPEG serving, recording, detection events, and measured latency (Platform); add the live camera mosaic, focus-by-selection, telemetry and sensor state, detector, attention promotion, and operator confirmation in the console (Interaction); prove shared indoor localization and independent collision-clearance sensing before exposing `map_area`; then preview and confirm it through the operator console, navigate one drone and then two through approved room poses on a supplied occupancy map, partition known room targets, attach every completed capture bundle to the room catalog, and submit the final accepted run to private per-room World API jobs (Autonomy with Platform and Interaction support).
 - Known-map autonomous multi-room traversal and capture boundary: one floor, 3 to 5 rooms, open doors, static empty space, no stairs, no people or pets, guarded aircraft, known launch and return zone, Sweep operator present, and one physical RC safety operator per active aircraft. Before `map_area`, the operator imports or creates the occupancy map, marks and validates the room graph and approved capture poses, and approves the geofence. That supplied map and the positioning system drive pathfinding. Marble remains downstream of capture.
 - Exit: the control panel shows three live cameras, telemetry, and sensor events; the operator can focus a drone by selection; a detection promotes its feed within one second; every physical source meets the measured latency budget; and the known-map autonomous multi-room traversal and capture workflow passes five consecutive runs. Before those runs, shared localization holds p95 error at or below 0.25 m with no unhandled update gap over 500 ms across five mapped-route rehearsals, and clearance sensing detects every obstacle inside the stopping envelope with no false-clear result across 20 approaches per protected direction. Every reachable room receives one complete pose-anchored capture bundle, no path crosses an occupied cell or minimum-clearance boundary, no separation violation occurs, every aircraft returns or executes its configured fail-safe, no manual flight correction is needed, and the room catalog has no missing, duplicate, or cross-linked captures. For the final accepted run, each bundle becomes a successful private World API job linked to the same room and its returned room world.
+- Outdoor field gate: three fake-bridge drones first pass the geofence, altitude, A*, carrot-chasing, ORCA, altitude-offset, hard-stop, formation-assignment, and monotonic-speed-filter tests. The same stack then flies the bounded field on three accepted Mini 3 nodes for five consecutive runs without a fence crossing, blocked-cell command, separation breach, or failed return.
 
-### M4: Language completion and final proof of concept (provisional concurrent lane after M2.0)
+### M4: Language, gesture, and final proof of concept (provisional concurrent lane after M2.0)
 
 - Entry: M2.0 is green. Corpus authoring, cached eval work, speech fixtures, and M3 work may proceed concurrently; resolver and emission integration wait for the M1 plan and relay contracts.
-- Deliverables: `resolve_selection` and `resolve_location` with ambiguity handling (Autonomy); expansion to the responder-reviewed 200-utterance set, full cached eval, and local compiler fallback (Platform with team-contributed cases); offline transcription evaluation, noisy-room speech evaluation, retry and timeout hardening, plus final preview and confirmation polish (Interaction with Platform); hardware language acceptance when M2 is open; operator-assisted Studio Compose placement and doorway review for the room worlds generated from M3's final accepted drone run; a Studio Record MP4 that visits each room once and is stored in the same building project; room-world provenance, deletion, cost, and latency polish; failure drills, adversarial tests, documentation, build guide, release, demo script, and recorded reel (team).
+- Deliverables: `resolve_selection` and `resolve_location` with ambiguity handling (Autonomy); expansion to the responder-reviewed 200-utterance set, full cached eval, and local compiler fallback (Platform with team-contributed cases); speech hardening and a webcam gesture producer that passes the shared Intent v1 conformance suite (Interaction with Platform); hardware language acceptance when M2 is open; operator-assisted Studio Compose placement and doorway review for the room worlds generated from M3's final accepted drone run; a Studio Record MP4 that visits each room once and is stored in the same building project; room-world provenance, deletion, cost, and latency polish; failure drills, adversarial tests, documentation, build guide, release, demo script, and recorded reel (team).
 - Scheduling decision under review: Koby has directed M3 video and the full M4 language scope to run concurrently after M2.0, pending team confirmation that capacity covers both lanes. Contract and safety gates still serialize the plan schema, relay state, ordered emission, detection-event shape, shared console integration, and cross-review. Media setup beyond the selected feed, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation can proceed in parallel.
-- Exit: plan exact-match accuracy is at least 85% on the 200-item set; unsafe-intent count is zero; ambiguity produces clarification without emission; five consecutive scripted control and known-map capture runs pass when hardware is available; every doorway transition in the composed walkthrough is reviewed; the MP4 is stored before the Studio session ends; the public repository is tagged v0.1 and the demo reel is complete. Hardware claims require recorded hardware evidence.
+- Exit: plan exact-match accuracy is at least 85% on the 200-item set; unsafe-intent count is zero; ambiguity produces clarification without emission; the gesture producer completes one `capture_room` path with the shared `intent_id` lifecycle and emits fewer than one false intent during five minutes of random hand motion; five consecutive scripted control and known-map capture runs pass when hardware is available; every doorway transition in the composed walkthrough is reviewed; the MP4 is stored before the Studio session ends; the public repository is tagged v0.1 and the demo reel is complete. Hardware claims require recorded hardware evidence.
 
 ### Future: Optional inputs and vehicle portability
 
@@ -378,6 +392,8 @@ Three guided phone photos have produced one Marble room world. Preserve the phot
 - Spatial capture: add automatic multi-room registration, a branded Spark renderer, metric alignment through SLAM, photogrammetry, or LiDAR, time-indexed rescans, and Atlas integration.
 - Autonomous exploration: explore an initially unmapped area only after onboard VIO plus depth or LiDAR produces a conventional occupancy map with its own accuracy and safety acceptance. Marble remains a presentation layer.
 - Description-guided search: add one confirmed `search_area {area_id, query_id}` outcome intent backed by a stored, bounded `perception_query` for person or object attributes. Perception emits candidate, progress, and completion events with provenance; it never emits motion. Face identity, autonomous following, and autonomous approach remain excluded, and a person validates every candidate.
+- Outdoor mapping and perception, in priority order: replace the hand-drawn grid with an ODM survey, height map, and altitude-band occupancy grids; add a Depth Anything V2 forward brake that scales velocity to zero under the tested 8 m threshold; yaw toward travel before translation and point the gimbal down before descent; stop and climb 5 m when validated YOLO evidence places a person within about 10 m; then test one 40 m nadir-view aircraft projecting detections into the live grid.
+- Indoor AprilTag localization: evaluate tags as one candidate shared-pose source under the M3 localization and clearance gates.
 - Future work cannot change the rule that inputs emit intents, the planner alone produces per-drone commands, and the arbiter validates every intent and command.
 
 ---
@@ -446,7 +462,7 @@ Three guided phone photos have produced one Marble room world. Preserve the phot
 
 ### 8.1 Capability areas and dynamic claiming
 
-Interaction, Autonomy, and Platform are capability areas and module boundaries, not standing assignments to people. Any engineer may claim any ready task, and the claimant owns that task through review, integration, and evidence.
+Interaction, Autonomy, and Platform define module boundaries. Any engineer may claim a ready task and own it through review, integration, and evidence.
 
 | Capability area | Boundary | Typical work | Adjacent work |
 |---|---|---|---|
@@ -497,6 +513,8 @@ Engineers claim ready work from [the MVP delivery plan](mvp-plan.md). Contract, 
 | Manual room composition produces visible seams or wrong scale | high | medium | capture doorway overlap, store adjacency and a floor-plan reference, review every transition, and keep automatic metric registration in Future |
 | The Mini 3 stack lacks the required capture artifact | high | high | accept `pano_360` only after a full equirectangular result; otherwise use confirmed `reconstruct_8` with incomplete vertical coverage or retain phone capture |
 | The expanded known-map autonomy capstone exceeds the delivery window | high | high | preserve the completed human-capture fallback and land the M1 drone room-world slice plus the M2.0 safety skeleton first; if capacity slips, cut known-map multi-room autonomy before weakening either accepted slice |
+| The added outdoor field stack exceeds the delivery window | high | high | keep M1 room capture and the M2.0 safety skeleton as the cut line; prove the fake-bridge stack before booking three-aircraft field acceptance |
+| GPS error or radio delay breaks outdoor separation assumptions | high | severe | measure position and command latency in the demo field; inflate blocked cells and separation margins; hard-stop both aircraft on the 3 m horizontal and 2 m vertical threshold |
 | Generated room content is mistaken for measured evidence | medium | high | label every artifact class, keep source photos beside the result, and exclude Marble output from factual and flight-safety decisions |
 | Interior photos or worlds expose private spaces | medium | high | empty-room capture, explicit upload, private worlds by default, server-side credentials, access tests, and a retention/deletion decision before implementation |
 | Whisper API latency, rate limits, or outage block the later language path | medium | medium | keep the accepted button producer available; cap recordings at 30 seconds; test timeout and rate-limit handling; run the 20-utterance smoke set before integration |
@@ -532,7 +550,7 @@ The console assigns `intent_id` when it creates the draft. Preview, confirmation
 
 `source` is a registered identifier. M1 registers `console` and `keyboard`. Language, webcam gesture, and a Future Band identifier land only with their real producers and conformance runners.
 
-`capture_readiness` is console guidance, not an intent. It reports pose, clearance, camera, storage, and missing-coverage readiness. In `visual_advisory` mode, its optional suggestion is limited to yaw or gimbal. XYZ suggestions require accepted `registered_metric` localization and directional clearance. A Future `search_area` intent references a separately stored `perception_query`; detector candidates and search progress are events, not commands.
+`capture_readiness` is a guidance event. It reports pose, clearance, camera, storage, and missing-coverage readiness. In `visual_advisory` mode, its optional suggestion is limited to yaw or gimbal. XYZ suggestions require accepted `registered_metric` localization and directional clearance. A Future `search_area` intent references a separately stored `perception_query`; detector candidates and search progress are events, not commands.
 
 M2.0 exercises the existing `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop` names. The accepted M1 `capture_room` path remains available at an operator-approved hover pose. The relay returns `unsupported` for unearned names, including `map_area`, until their gates pass. This is a capability gate inside Intent v1, so the schema version stays unchanged. `come_home` remains planner behavior implemented through `goto`, while `land_all` uses `land`.
 
