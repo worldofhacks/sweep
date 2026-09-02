@@ -1,1 +1,1 @@
-"""crazyswarm2 (ROS 2 Crazyflie server) adapter, M2 hardware."""
+"""crazyswarm2 (ROS 2 Crazyflie server) adapter: inactive placeholder, not accepted hardware."""
