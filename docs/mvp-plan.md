@@ -1,6 +1,6 @@
 # Sweep MVP delivery plan
 
-This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. The complete initial MVP is the combined M1, M2, and M3 exit: an operator controls 4 to 6 indoor drones by webcam gesture or spoken natural language, every command passes the deterministic safety path, and the laptop console shows live cameras, telemetry, and sensor events. Hardware claims remain gated on recorded M2 evidence.
+This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M2.0 is the first checkpoint: two real indoor drones complete a bounded webcam-gesture workflow through the deterministic safety path while the console shows one selected live feed. The complete initial MVP remains the combined M1, M2, and M3 exit: 4 to 6 drones, webcam and spoken-language control, and the full camera, telemetry, and sensor console. Hardware claims remain gated on recorded M2 evidence.
 
 Interaction, Autonomy, and Platform are capability areas for coordination and module boundaries. They are not assigned to people for the capstone. Any engineer may claim a ready item and owns that item through review, integration, and acceptance evidence.
 
@@ -13,8 +13,8 @@ The older Phase 0 through Phase 6 labels are retired for delivery planning. They
 | Canonical milestone | Legacy scope absorbed | Outcome |
 |---|---|---|
 | M0: Scope and contracts | Phase 0 evidence and the Phase 1 contract freeze | MVP boundary, frozen contracts, capability-area boundaries, and CI skeleton |
-| M1: Sim control MVP | Phase 1 plus the narrow spoken-language slice formerly in Phase 5 | Webcam and live microphone speech traverse relay, planner, arbiter, and sim |
-| M2: Hardware control MVP | Phase 2 and the delivery-gated hardware lane | The same control paths run safely on 4 to 6 real drones |
+| M1: Sim control MVP | Phase 1 plus the narrow spoken-language slice formerly in Phase 5 | A two-drone sim gate feeds M2.0; the polished sim exit adds 4 to 6 drones and live microphone speech |
+| M2: Hardware control MVP | Phase 2 and the delivery-gated hardware lane | M2.0 proves the two-drone walking skeleton; later M2 work expands the same control paths to 4 to 6 real drones |
 | M3: Full MVP, video and sensor console | Phase 3 | Cameras, telemetry, sensor events, focus, and detection complete the initial MVP; provisionally runs beside M4 |
 | M4: Language completion and final proof of concept | Remaining Phase 5 language breadth plus Phase 6 hardening | Full eval corpus, resolvers, fallback, release evidence, and demo; provisionally runs beside M3 |
 | Future | Phase 4 glasses work, Band work, and vehicle portability | Optional registered inputs and additional vehicle adapters |
@@ -28,22 +28,26 @@ flowchart TD
     M0[M0 contracts and capability boundaries] --> C1[Relay, state, logging, and CI]
     M0 --> A1[Webcam producer and console boundary]
     M0 --> B1[Planner, arbiter, and sim]
-    C1 --> I1[Webcam-to-sim integration]
+    C1 --> I1[Two-drone webcam-to-sim gate]
     A1 --> I1
     B1 --> I1
-    I1 --> L1[Spoken-language vertical slice]
-    I1 --> H1[M2 hardware bring-up]
-    I1 --> V1[M3 video and sensor console]
-    L1 --> H2[Language acceptance on hardware]
-    H1 --> H2
+    I1 --> H1[One-drone hardware proof]
+    H1 --> H2[Two-drone hardware proof]
+    H2 --> V0[One selected live feed]
+    V0 --> W1[M2.0 walking-skeleton checkpoint]
+    W1 --> L1[Spoken-language vertical slice]
+    W1 --> S1[Full 4-to-6-drone sim and hardware scope]
+    W1 --> V1[M3 video and sensor console]
+    L1 --> H3[Language acceptance on hardware]
     L1 --> F1[M4 language completion]
     V1 --> R1[M4 final integration and release]
-    H2 --> R1
+    S1 --> R1
+    H3 --> R1
     F1 --> R1
     R1 --> X1[Future registered inputs and vehicle adapters]
 ```
 
-M2 may run beside the language half of M1 after the webcam-to-sim gate is green. Koby has provisionally directed M3 video and M4 language completion to run in parallel after that same gate, pending team confirmation of the capacity gap below. The complete MVP claim waits for both M2 hardware evidence and M3 console evidence.
+M2.0 follows one order: contracts, two-drone sim, one real drone, two real drones, then one selected live feed. Language work and the 4-to-6-drone expansion begin after that checkpoint. Koby's provisional direction to run M3 video and M4 language completion concurrently remains in place after M2.0, pending team confirmation of the capacity gap below. The complete MVP claim waits for both the full M2 hardware evidence and M3 console evidence.
 
 ## Work breakdown
 
@@ -65,36 +69,41 @@ Done when: webcam fixtures exercise the real validator, unknown sources and inva
 
 **M1.1: Build relay state, logging, and replay**
 Capability area: Platform. Dependencies: M0.2.
-Scope: authenticate registered sources, validate and stamp intents, maintain authoritative swarm state, fan out telemetry, append JSONL, and replay a session.
-Done when: a restarted relay reconstructs state from adapter telemetry and a session replay reproduces its ordered intent and state history.
+Scope: first establish one authenticated WebSocket session, canonical two-drone state, acknowledgements and refusals, append-only JSONL, and basic CI for M2.0. State fan-out and backend replay follow on the same contracts.
+Done when: the checkpoint path authenticates the webcam and keyboard sources, logs every accepted or refused intent and acknowledgement, and reconstructs canonical state from adapter telemetry. Backend replay later reproduces the ordered intent and state history; replay UI is outside M2.0.
 
 **M1.2: Build the deterministic autonomy and safety path**
 Capability area: Autonomy. Dependencies: M0.2.
-Scope: implement planner behaviors, the arbiter, the sim adapter, battery and link-loss behavior, and the scripted scenario suite.
-Done when: every intent and planned command is checked, unsafe requests are refused, and the sim scenarios pass deterministically.
+Scope: start with a two-drone sim and planner support for `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop`. Keep the full Intent v1 schema and return `unsupported` for its other names during M2.0. Implement the complete arbiter checks for state, confirmation, geofence, ceiling, spacing, battery, link loss, positioning loss, and e-stop.
+Done when: every checkpoint intent and planned command is checked, unsupported valid intents produce a typed refusal before planning, unsafe requests produce no adapter command, and the two-drone scenarios pass deterministically. `come_home` remains planner behavior expressed through the existing adapter methods.
 
 **M1.3: Connect the webcam console to Intent v1**
 Capability area: Interaction. Dependencies: M0.2, M1.1.
-Scope: isolate the real event-to-intent boundary, remove production use of the internal simulator, add ledger, health, and replay views, and run the shared conformance suite.
-Done when: webcam and keyboard events produce accepted Intent v1 payloads and disconnects or send failures are visible without substitute commands.
+Scope: isolate the real event-to-intent boundary and remove production use of the internal simulator. For M2.0, show connection, selection, two drone states, the last acknowledgement or refusal, keyboard e-stop, and a slot for one selected live feed. Ledger, health, and replay views follow after the checkpoint.
+Done when: webcam and keyboard events produce accepted Intent v1 payloads, the checkpoint state is visible, and disconnects or send failures are shown without substitute commands.
 
-**M1.4: Pass the webcam-to-sim gate**
+**M1.4: Pass the two-drone webcam-to-sim gate**
 Capability area: team. Dependencies: M1.1, M1.2, M1.3.
-Scope: run Appendix E through the production relay, planner, arbiter, and sim path.
-Done when: 4 to 6 simulated drones complete the mission in under three minutes, CI is green, and the log contains zero unsafe intents.
+Scope: run the M2.0 workflow through the production webcam, relay, planner, arbiter, and two-drone sim path: arm, select both, confirmed takeoff, translate together, hold, come home, confirmed land-all, with e-stop available throughout.
+Done when: the workflow passes in simulation, a deliberate geofence violation is refused before an adapter command, e-stop reaches both simulated drones, configured link loss produces the safe behavior, CI is green, and the JSONL log explains the run.
 
-**M1.5: Build the transcript-to-plan compiler path**
-Capability area: Platform. Dependencies: M1.1, M1.2, M1.4.
+**M1.5: Expand the sim path to the full scripted mission**
+Capability area: Autonomy with Interaction and Platform integration. Dependencies: M1.4, M2.0.
+Scope: add the formation, altitude, spacing, and sweep behaviors deferred by M2.0; expand the simulator and console from two drones to 4 to 6; run Appendix E through the production path.
+Done when: 4 to 6 simulated drones complete Appendix E in under three minutes and the log contains zero unsafe intents.
+
+**M1.6: Build the transcript-to-plan compiler path**
+Capability area: Platform. Dependencies: M1.1, M1.2, M1.5.
 Scope: use one pinned model to produce ordered Intent v1 plans from final speech transcripts and authoritative relay state; validate, log, and emit confirmed intents one at a time.
 Done when: models cannot emit adapter commands, invalid plans emit nothing, and compiler input, output, validation, operator decision, and usage are replayable.
 
-**M1.6: Capture speech and add preview, clarification, and confirmation**
-Capability area: Interaction. Dependencies: M1.3, M1.5.
+**M1.7: Capture speech and add preview, clarification, and confirmation**
+Capability area: Interaction. Dependencies: M1.3, M1.6.
 Scope: add one-shot push-to-talk recording to the pinned Chromium demo browser; upload recordings of at most 30 seconds to a relay endpoint; transcribe through the OpenAI Whisper API; show the final transcript; add plan preview, clarification, confirm, cancel, and explicit permission, capture, upload, timeout, rate-limit, service, and network error states. Keep `OPENAI_API_KEY` in the relay process environment.
 Done when: three live spoken multi-step orders reach plan preview, no language intent emits before confirmation, transcription failures emit nothing, the browser never receives the API key, and ambiguous requests present choices or a refusal.
 
-**M1.7: Establish the provisional language eval**
-Capability area: Platform, with team-contributed cases. Dependencies: M1.5, M1.6.
+**M1.8: Establish the provisional language eval**
+Capability area: Platform, with team-contributed cases. Dependencies: M1.6, M1.7.
 Scope: create 50 reviewed transcript-to-plan cases for the scripted mission, three multi-step orders, ambiguity, confirmation-sensitive requests, and unsafe requests; add a manual 20-utterance clean-room speech smoke run across two speakers; support cached CI and an explicit live compiler refresh.
 Done when: exact-match plan accuracy is at least 85%, the live speech smoke run reaches at least 85% exact transcript match, unsafe-intent count is zero, and three spoken multi-step orders pass through the complete sim path.
 
@@ -110,32 +119,65 @@ The 50 reviewed cases test transcript-to-plan behavior in CI. Microphone recogni
 
 ### M2: Hardware control MVP
 
+**M2.0: Pass the two-drone walking-skeleton checkpoint**
+M2.0 is the first exit gate across M1.1 through M1.4, M2.1 and M2.2, and the selected-feed slice of M3.1. It remains within the M0 through M4 milestone series.
+
+The checkpoint supports the eight existing Intent v1 names `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop`. Every other valid Intent v1 name returns `unsupported`; unknown names and invalid arguments keep their existing validation refusals. The workflow is:
+
+1. Arm.
+2. Select both drones.
+3. Take off after confirmation.
+4. Translate both together.
+5. Hold.
+6. Come home.
+7. Land both after confirmation.
+8. E-stop at any point.
+
+The one-drone proof selects the only connected drone and runs the same sequence and safety checks. The two-drone proof then replaces that selection with both connected drones and verifies coordinated translation and spacing.
+
+The checkpoint keeps the arbiter, e-stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and the two-person hardware rule. The formation library, altitude gesture, sweep planner, detector, mosaic, glasses, language and LLM work, replay UI, metrics dashboard, session report, and release polish start after this gate.
+
+M2.0 passes when:
+
+- the complete workflow passes in the two-drone simulator;
+- one real drone passes before the second is added;
+- two real drones complete the workflow without manual flight correction;
+- a deliberate geofence violation is refused before an adapter command is sent;
+- e-stop reaches both drones and link loss produces the configured safe behavior;
+- the selected live video feed stays visible; and
+- the JSONL log explains accepted commands, refusals, acknowledgements, state changes, and safety actions.
+
 **M2.1: Select and prove the hardware adapter**
 Capability area: Autonomy. Dependencies: M1.4, delivered hardware, positioning, and a guarded flight space.
-Scope: inventory the drones, choose the adapter, calibrate positioning, verify ground telemetry, and record the bring-up checklist.
-Done when: the selected adapter reports stable telemetry and the adapter choice and positioning evidence are recorded.
+Scope: inventory the drones, choose the adapter, calibrate positioning, verify ground telemetry, and run the M2.0 workflow on one real drone with a two-person crew.
+Done when: the selected adapter reports stable telemetry and one real drone completes the workflow with the expected refusals and safety behavior.
 
-**M2.2: Add hardware watchdog and session evidence**
-Capability area: Platform. Dependencies: M1.1, M2.1.
-Scope: add operator-presence enforcement, hardware log capture, and end-of-session reports. Schedule this after the M1 compiler-to-sim path if both compete for the same week.
+**M2.2: Prove two-drone hardware control**
+Capability area: Autonomy, with bounded Interaction and Platform support. Dependencies: M1.4, M2.1.
+Scope: add the second drone and run the eight-intent M2.0 workflow. Exercise spacing, geofence refusal, battery behavior, link and positioning loss, and e-stop without adding the deferred feature set.
+Done when: two real drones complete the workflow without manual correction, every deliberate unsafe request produces the expected refusal, and the JSONL evidence explains the run.
+
+**M2.3: Add hardware watchdog and session evidence**
+Capability area: Platform. Dependencies: M1.1, M2.0.
+Scope: add operator-presence enforcement, extended hardware log capture, and end-of-session reports. These are polished-MVP work after the checkpoint.
 Done when: stale operator presence triggers the configured safe behavior and the report contains commands, refusals, telemetry, and timing.
 
-**M2.3: Complete staged flight acceptance**
-Capability area: Autonomy, with bounded Interaction and Platform support. Dependencies: M1.4, M2.1, M2.2.
-Scope: accept one drone, then three, then 4 to 6; exercise arm, takeoff, hold, land, come home, e-stop, battery return, link loss, spacing, formation, sweep, and geofence refusal.
+**M2.4: Complete staged flight acceptance**
+Capability area: Autonomy, with bounded Interaction and Platform support. Dependencies: M1.5, M2.2, M2.3.
+Scope: expand from the accepted two-drone checkpoint to three, then 4 to 6; add altitude, formation, and sweep to the accepted checkpoint behaviors.
 Done when: 4 to 6 drones pass Appendix E five consecutive times and every deliberate unsafe request produces the expected refusal.
 
-**M2.4: Repeat language acceptance on hardware**
-Capability area: team. Dependencies: M1.7, M2.3.
+**M2.5: Repeat language acceptance on hardware**
+Capability area: team. Dependencies: M1.8, M2.4.
 Scope: run the three M1 multi-step language orders through the hardware adapter.
 Done when: plans, commands, refusals, and operator decisions match the sim acceptance within hardware tolerances.
 
 ### M3: Full MVP, video and sensor console
 
 **M3.1: Establish media ingest and recording**
-Capability area: Platform. Dependencies: M1.1 and one camera source.
-Scope: configure MediaMTX ingest, WebRTC and MJPEG serving, recording, stream naming, and latency measurement.
-Done when: one source streams and records reliably within the latency budget; 4-to-6-source claims remain blocked until hardware evidence exists.
+Capability area: Platform with Interaction integration. Dependencies: M1.1 and one camera source. The M2.0 slice also depends on M2.2.
+Scope: first keep one selected live feed visible through the M2.0 run. After the checkpoint, configure MediaMTX ingest, WebRTC and MJPEG serving, recording, stream naming, and latency measurement.
+Done when: M2.0 can display the selected feed throughout its run. Full M3.1 exits when one source also streams and records reliably within the latency budget; 4-to-6-source claims remain blocked until hardware evidence exists.
 
 **M3.2: Build the camera and sensor dashboard**
 Capability area: Interaction. Dependencies: M1.3, M3.1.
@@ -148,29 +190,29 @@ Scope: sample frames, run the detector, emit timestamped detection events, promo
 Done when: a qualifying detection promotes the selected feed within one second, all events are logged, and no detection emits a command.
 
 **M3.4: Earn the complete MVP exit**
-Capability area: team. Dependencies: M2.4, M3.2, M3.3.
+Capability area: team. Dependencies: M2.5, M3.2, M3.3.
 Scope: demonstrate webcam or spoken-language control with the camera, telemetry, and sensor console active.
 Done when: the complete operator workflow succeeds on 4 to 6 drones and the session evidence supports every control, safety, video, and sensor claim.
 
 ### M4: Language completion and final proof of concept
 
 **M4.1: Complete deterministic language resolution**
-Capability area: Autonomy. Dependencies: M1.7 and stable relay state.
+Capability area: Autonomy. Dependencies: M1.8 and stable relay state.
 Scope: implement bounded selection and location resolution with explicit ambiguity and refusal results.
 Done when: resolver tests cover IDs, current selection, supported relative phrases, stale state, ambiguity, and unresolved locations without bypassing the planner.
 
 **M4.2: Complete language evaluation and fallback**
-Capability area: Platform, with team-contributed cases. Dependencies: M1.7. Resolver-dependent cases also depend on M4.1.
+Capability area: Platform, with team-contributed cases. Dependencies: M1.8. Resolver-dependent cases also depend on M4.1.
 Scope: expand to the responder-reviewed 200-item set, complete cached and live eval paths, add the local compiler fallback, and close compiler failure cases. Corpus authoring, cached fixtures, and non-resolver cases proceed beside M4.1; resolver cases join after its result contract freezes.
 Done when: exact-match accuracy remains at least 85%, unsafe-intent count is zero, cached fixtures are produced by real compiler runs, and fallback uses the same validation path.
 
 **M4.3: Harden speech UX and evaluate offline transcription**
-Capability area: Interaction with Platform support. Dependencies: M1.6.
+Capability area: Interaction with Platform support. Dependencies: M1.7.
 Scope: evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it; polish transcript, preview, clarification, confirmation, and refusal behavior.
 Done when: the primary Whisper API path and any approved local fallback feed the same transcript-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
 
 **M4.4: Harden, document, and release**
-Capability area: team. Dependencies: M2.4, M3.4, M4.2, M4.3.
+Capability area: team. Dependencies: M2.5, M3.4, M4.2, M4.3.
 Scope: run failure drills and adversarial tests, finish the build guide and operator docs, cut the demo reel, and tag v0.1.
 Done when: all claimed hardware and software exits have recorded evidence, CI is green, and the public release is reproducible from the guide.
 
@@ -188,7 +230,7 @@ Done when: unsupported behavior returns a typed refusal and no input or model ca
 
 ## Concurrent M3 video and M4 language decision
 
-**Capacity analysis: the Sept 5 to 12 window is short by 3 to 8 person-days. Provisional decision: run both lanes concurrently pending team confirmation.** The two feature sets have no hard sequential dependency on each other after M1 establishes the relay, authoritative state, Intent v1, planner, arbiter, sim, and console shell. Dynamic claiming creates more scheduling options, but it does not reduce the total work or remove shared-file and review gates.
+**Capacity analysis: the Sept 5 to 12 window is short by 3 to 8 person-days. Provisional decision: run both lanes concurrently pending team confirmation.** The two feature sets have no hard sequential dependency on each other after M2.0 establishes the relay, authoritative state, Intent v1, safety path, two-drone hardware proof, and selected-feed shell. Dynamic claiming creates more scheduling options, but it does not reduce the total work or remove shared-file and review gates. The estimate below is unchanged; its calendar start assumes M2.0 passes in time.
 
 | Work package | Estimated team effort | Parallelization boundary |
 |---|---:|---|
@@ -200,13 +242,13 @@ Done when: unsupported behavior returns a typed refusal and no input or model ca
 
 The combined range remains 18 to 23 person-days because Whisper was already included in the full-language estimate; moving it into M1 changes sequencing rather than total scope. Sept 5 through Sept 12 contains five normal weekdays, or 15 gross person-days for three engineers. The capacity gap is 3 to 8 person-days before hardware support. Treating all eight calendar days as work provides 24 gross person-days before M1 carryover, review, and defects. Dynamic claiming helps isolated work start sooner, while the plan schema, relay state, ordered emission, safety-path review, detection-event shape, and shared console integrations still serialize part of the work.
 
-The freely parallelizable pieces are MediaMTX setup, detector prototyping, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
+After M2.0, the freely parallelizable pieces are MediaMTX recording and multi-stream setup, detector prototyping, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
 
-The provisional concurrent schedule is:
+The provisional concurrent schedule begins after M2.0:
 
-1. Sept 5: freeze the transcription request/response, plan result, detection-event, and stream-naming contracts. Each contract has one change owner and a different reviewer.
-2. Sept 5 to 9: complete M1 Whisper capture and compiler integration. In parallel, claim MediaMTX setup, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation.
-3. Sept 10 to 12: integrate the M3 console and detection path beside M4 resolvers, the 200-item eval, local compiler fallback, and speech hardening. Shared console changes merge through one owner at a time.
+1. Freeze the transcription request/response, plan result, detection-event, and stream-naming contracts. Each contract has one change owner and a different reviewer.
+2. Complete M1 Whisper capture and compiler integration. In parallel, claim MediaMTX recording and multi-stream work, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation.
+3. Integrate the M3 mosaic, sensor, and detection path beside M4 resolvers, the 200-item eval, local compiler fallback, and speech hardening. Shared console changes merge through one owner at a time.
 4. Continue delivery-gated M2 work in booked blocks. Hardware work reduces the capacity available to the concurrent lanes and increases the documented gap.
 5. Sept 12: the team confirms added capacity or records the revised exit date. Parallel scheduling leaves the 3-to-8-person-day gap in place.
 
