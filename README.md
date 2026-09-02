@@ -1,14 +1,14 @@
 # Sweep
 
-One person commands 4 to 6 indoor drones through webcam gestures or spoken natural language, and sees what the swarm sees on a laptop console.
+One person creates AI-generated room worlds from guided photos, commands four indoor DJI Mini 3 drones through button controls on a laptop console, cycles aircraft into and out of the live fleet, and sees what the swarm sees. Spoken language and gesture inputs join the same intent engine after the button-driven slice. The simulator retains the 4-to-6-drone expansion target.
 
-The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and 4 to 6 indoor drones; spoken natural language is the second control path, built right after the shared intent bus, planner, arbiter, and simulator. An EMG band is an optional Future input source outside the core MVP. Everything is open source.
+The first user is a responder who needs eyes inside a building before entry. The three-guided-phone-photo Marble flow is completed feasibility evidence and remains a fallback. The first pending user-visible slice is one end-to-end drone capture: the operator clicks Capture room, reviews the Intent v1 preview, confirms it, and one DJI Mini 3 holds an approved pose while its files create a private Marble room world. The north-star command is “Map this floor.” During the MVP, it sends an operator-present two-drone subset through approved room poses on a supplied occupancy map, then generates a room-by-room visual walkthrough. Physical bring-up uses four Mini 3 aircraft, four RC-N1 controllers, and four benchmarked Android bridge nodes, one node before two and four. The session registry supports live join, readiness, graceful leave, loss, and rejoin. Four to six drones remain in simulation. Spoken language, gestures, and an EMG band are later input sources outside the first slice. Everything is open source.
 
 Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the M0 through M4 delivery sequence.
 
 ## Read first
 
-- [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. The four frozen contracts are [Appendix A (intent)](docs/prd.md#appendix-a-intent-contract-v1), [Appendix B (telemetry)](docs/prd.md#appendix-b-telemetry-v1), [Appendix C (adapter interface)](docs/prd.md#appendix-c-adapter-interface), and [Appendix D (repository layout)](docs/prd.md#appendix-d-repository-layout).
+- [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. M0 freezes five contract groups: intent and WebSocket, telemetry, flight and camera adapters, repository layout, and room-world records.
 - [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped work breakdown.
 - [Decision records](docs/decisions/): why the scaffold and the architecture look the way they do. The [docs index](docs/README.md) lists everything else.
 - The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.
@@ -21,16 +21,17 @@ Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp
 | [`relay/`](relay/) | Platform | M1 | FastAPI WebSocket intent bus, state, JSONL logging, replay |
 | [`planner/`](planner/) | Autonomy | M1 | Deterministic formations, sweep lanes, allocation, clamping |
 | [`arbiter/`](arbiter/) | Autonomy | M1 | Safety rules, e-stop, battery return |
-| [`adapters/`](adapters/) | Autonomy | M1, M2 | `sim`, `crazyswarm2`, `mavlink` behind one interface |
+| [`adapters/`](adapters/) | Autonomy | M1, M2 | deterministic simulator and DJI Mini 3 bridge contract |
 | [`media/`](media/) | Platform | M3 | MediaMTX config and stream naming |
 | [`perception/`](perception/) | Interaction | M3 | Detector and world-position estimates |
-| [`language/`](language/) | Interaction, Platform | M1, M4 | Plan compiler, resolvers, prompts, local fallback |
+| [`language/`](language/) | Interaction, Platform | M4 | Plan compiler, resolvers, prompts, local fallback |
 | [`evals/`](evals/) | Platform | M1+ | Gesture, language, sim scenario, and hardware acceptance evals |
 | [`datasets/`](datasets/) | Interaction, all | M1+ | Recorded gesture sessions and utterances |
 | [`docs/`](docs/) | all | all | PRD, MVP plan, specs, plans, build guide, contract, demo script |
+| [`RESEARCH/`](RESEARCH/) | all | all | Source-backed feasibility notes that constrain product claims and planning |
 | [`tests/`](tests/) | Platform | all | Cross-cutting tests, starting with the layout contract test |
 
-Capability areas are module boundaries, not standing assignments: any engineer may claim a ready task (PRD section 8.1). Each directory has a README with its capability area, milestone, responsibility, and PRD sections.
+Capability areas define module boundaries. Any engineer may claim a ready task and own it through review (PRD section 8.1). Each runtime directory has a README with its capability area, milestone, responsibility, and PRD sections.
 
 ## Quickstart
 
@@ -50,13 +51,13 @@ just media      # MediaMTX via docker compose, in the foreground
 
 ## Start here
 
-Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter interface, repo layout (PRD section 8.2). The work order is PRD section 8.3 and the M0 to M2 items in [docs/mvp-plan.md](docs/mvp-plan.md): contracts, the two-drone sim path, one real drone, two real drones, one selected live feed. Language and the 4-to-6-drone expansion follow the M2.0 checkpoint. Any engineer may claim a ready item.
+Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter and camera-capability interfaces, live fleet membership, repo layout, and the room-world records (PRD section 8.2). M1 then proves one complete Mini 3 room capture and private Marble result through button-generated Intent v1. M2 adds the second through fourth matching bridge nodes and proves live membership; 4 to 6 remain in simulation. Known-map autonomous multi-room traversal and capture proves one drone before two only after indoor localization and collision-clearance sensing pass their gates. The complete dependency map is in [docs/mvp-plan.md](docs/mvp-plan.md), and any engineer may claim a ready item.
 
 ## Working agreement
 
 - No merge to `main` without CI green and one review (PRD section 8.2). `main` is protected accordingly: pull request, one approval, both CI checks.
 - No new intents without a contract change, a test, and every registered input updated. No model in the safety path. Nothing outside the M1 through M4 acceptance paths before M4 exits (PRD section 8.6).
-- Daily stand-up and integration. Two people present for any flight, one on the e-stop keyboard; nobody flies alone. Every hardware session ends with a session report committed to the repo (PRD section 8.5).
+- Daily stand-up and integration. Hardware flights follow the operator and physical-RC rule in PRD section 8.5. Every hardware session ends with a session report committed to the repo.
 
 ## Remotes
 
