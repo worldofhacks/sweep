@@ -21,6 +21,9 @@ class IntentName(StrEnum):
     SPACING = "spacing"
     COME_HOME = "come_home"
     SWEEP = "sweep"
+    CAPTURE_ROOM = "capture_room"
+    SURVEY_AREA = "survey_area"
+    MAP_AREA = "map_area"
 
 
 class Mode(StrEnum):
@@ -41,6 +44,8 @@ class IntentV1:
     v: Literal[1]
     t: int
     type: Literal["intent"]
+    intent_id: str
+    retry_of: str | None
     source: str
     session: str
     name: IntentName
@@ -78,7 +83,20 @@ M20_SUPPORTED_NAMES = frozenset(
 )
 
 _FIELDS = frozenset(
-    {"v", "t", "type", "source", "session", "name", "args", "selection", "mode", "confirm"}
+    {
+        "v",
+        "t",
+        "type",
+        "intent_id",
+        "retry_of",
+        "source",
+        "session",
+        "name",
+        "args",
+        "selection",
+        "mode",
+        "confirm",
+    }
 )
 
 
@@ -116,6 +134,8 @@ def validate_intent(raw: object) -> ValidationResult:
             v=1,
             t=raw["t"],
             type="intent",
+            intent_id=raw["intent_id"],
+            retry_of=raw["retry_of"],
             source=source,
             session=raw["session"],
             name=name,
@@ -141,6 +161,11 @@ def _has_valid_envelope(raw: Mapping[object, object]) -> bool:
         and not isinstance(raw["t"], bool)
         and raw["t"] >= 0
         and raw["type"] == "intent"
+        and isinstance(raw["intent_id"], str)
+        and bool(raw["intent_id"])
+        and (
+            raw["retry_of"] is None or (isinstance(raw["retry_of"], str) and bool(raw["retry_of"]))
+        )
         and isinstance(raw["source"], str)
         and bool(raw["source"])
         and isinstance(raw["session"], str)
@@ -205,6 +230,32 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         if "box" in value and not isinstance(value["box"], Mapping):
             raise ValueError
         return MappingProxyType({"box": _freeze_json(value["box"])} if "box" in value else {})
+
+    if name in {IntentName.SURVEY_AREA, IntentName.MAP_AREA}:
+        if (
+            set(value) != {"area_id"}
+            or not isinstance(value["area_id"], str)
+            or not value["area_id"]
+        ):
+            raise ValueError
+        return MappingProxyType({"area_id": value["area_id"]})
+
+    if name is IntentName.CAPTURE_ROOM:
+        if set(value) != {"room_id", "capture_id", "pattern"}:
+            raise ValueError
+        if not isinstance(value["room_id"], str) or not value["room_id"]:
+            raise ValueError
+        if not isinstance(value["capture_id"], str) or not value["capture_id"]:
+            raise ValueError
+        if value["pattern"] not in ("pano_360", "reconstruct_8"):
+            raise ValueError
+        return MappingProxyType(
+            {
+                "room_id": value["room_id"],
+                "capture_id": value["capture_id"],
+                "pattern": value["pattern"],
+            }
+        )
 
     raise ValueError
 

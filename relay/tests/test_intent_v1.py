@@ -16,6 +16,8 @@ def webcam_select_payload() -> dict[str, object]:
         "v": 1,
         "t": 1_756_700_000_000,
         "type": "intent",
+        "intent_id": "01J7FQ9M6A7Z3T2R8C4N5K1P0B",
+        "retry_of": None,
         "source": "webcam",
         "session": "2026-09-02T09-00-00Z",
         "name": "select",
@@ -93,6 +95,38 @@ def test_m20_webcam_intents_match_the_planner_contract(
     assert result.intent.name.value == name
     assert result.intent.args == args
     assert result.intent.selection == (1, 2)
+
+
+def test_intent_id_and_retry_of_pass_through(
+    webcam_select_payload: dict[str, object],
+) -> None:
+    webcam_select_payload["retry_of"] = "01J7FQ9M6A7Z3T2R8C4N5K1P0A"
+
+    result = validate_intent(webcam_select_payload)
+
+    assert isinstance(result, AcceptedIntent)
+    assert result.intent.intent_id == "01J7FQ9M6A7Z3T2R8C4N5K1P0B"
+    assert result.intent.retry_of == "01J7FQ9M6A7Z3T2R8C4N5K1P0A"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("intent_id", ""),
+        ("intent_id", 1),
+        ("retry_of", ""),
+        ("retry_of", 1),
+    ],
+)
+def test_invalid_intent_id_or_retry_of_is_rejected(
+    webcam_select_payload: dict[str, object], field: str, value: object
+) -> None:
+    webcam_select_payload[field] = value
+
+    result = validate_intent(webcam_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
 def test_unregistered_webcam_source_is_rejected(
@@ -191,6 +225,12 @@ def test_unknown_intent_name_is_rejected(
         ("formation_set", {"name": "line"}),
         ("spacing", {"delta": -1}),
         ("sweep", {"box": {"x": 0, "y": 0, "width": 4, "height": 3}}),
+        ("survey_area", {"area_id": "floor-1"}),
+        ("map_area", {"area_id": "floor-1"}),
+        (
+            "capture_room",
+            {"room_id": "room-1", "capture_id": "capture-1", "pattern": "pano_360"},
+        ),
     ],
 )
 def test_valid_intents_outside_m20_are_unsupported(
@@ -210,6 +250,20 @@ def test_malformed_gated_intent_is_invalid_before_capability_check(
     webcam_select_payload: dict[str, object],
 ) -> None:
     webcam_select_payload.update(name="altitude", args={"metres": 1})
+
+    result = validate_intent(webcam_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+def test_capture_room_rejects_unknown_pattern(
+    webcam_select_payload: dict[str, object],
+) -> None:
+    webcam_select_payload.update(
+        name="capture_room",
+        args={"room_id": "room-1", "capture_id": "capture-1", "pattern": "wide"},
+    )
 
     result = validate_intent(webcam_select_payload)
 
