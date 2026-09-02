@@ -10,7 +10,7 @@ Status: the webcam gesture prototype shipped Sept 1, 2026. M0 (scope and contrac
 
 - [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. The four frozen contracts are [Appendix A (intent)](docs/prd.md#appendix-a-intent-contract-v1), [Appendix B (telemetry)](docs/prd.md#appendix-b-telemetry-v1), [Appendix C (adapter interface)](docs/prd.md#appendix-c-adapter-interface), and [Appendix D (repository layout)](docs/prd.md#appendix-d-repository-layout).
 - [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped, issue-ready work breakdown, with the legacy Phase 0 through Phase 6 mapping.
-- [Scaffold design](docs/superpowers/specs/2026-09-01-sweep-scaffold-design.md), its [plan](docs/superpowers/plans/2026-09-01-sweep-scaffold.md), and the [docs index](docs/README.md).
+- [Decision records](docs/decisions/): why the scaffold and the architecture look the way they do. The [docs index](docs/README.md) lists everything else.
 - The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.
 
 ## Layout
