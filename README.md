@@ -1,36 +1,37 @@
 # Sweep
 
-One person commands a small drone swarm with their hands, their head, or a sentence, and sees what the swarm sees.
+One person commands 4 to 6 indoor drones through webcam gestures or typed natural language, and sees what the swarm sees on a laptop console.
 
-The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and six indoor drones; glasses and a Neural Band replace the webcam later, and natural language is the third input into the same intent bus. Everything is open source.
+The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and 4 to 6 indoor drones; typed natural language is the second control path, built right after the shared intent bus, planner, arbiter, and simulator. Glasses and an EMG band are optional Future input sources outside the core MVP, not part of the initial build. Everything is open source.
 
-Status: Phase 0 (webcam gesture console plus simulator) done; the Phase 0 page itself drops into `console/public/phase0/` (see [console/README.md](console/README.md)). Phase 1 (intent bus, planner, arbiter, sim adapter, CI) starts Sept 2, 2026.
+Status: the webcam gesture prototype shipped Sept 1, 2026. M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the full M0 through M4 delivery sequence and its mapping from the earlier Phase 0 through Phase 6 labels.
 
 ## Read first
 
-- [PRD](docs/prd.md): problem, architecture, contracts, phases, division of labor. The four frozen contracts are [Appendix A (intent)](docs/prd.md#appendix-a-intent-contract-v1), [Appendix B (telemetry)](docs/prd.md#appendix-b-telemetry-v1), [Appendix C (adapter interface)](docs/prd.md#appendix-c-adapter-interface), and [Appendix D (repository layout)](docs/prd.md#appendix-d-repository-layout).
+- [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. The four frozen contracts are [Appendix A (intent)](docs/prd.md#appendix-a-intent-contract-v1), [Appendix B (telemetry)](docs/prd.md#appendix-b-telemetry-v1), [Appendix C (adapter interface)](docs/prd.md#appendix-c-adapter-interface), and [Appendix D (repository layout)](docs/prd.md#appendix-d-repository-layout).
+- [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped, issue-ready work breakdown, with the legacy Phase 0 through Phase 6 mapping.
 - [Scaffold design](docs/superpowers/specs/2026-09-01-sweep-scaffold-design.md), its [plan](docs/superpowers/plans/2026-09-01-sweep-scaffold.md), and the [docs index](docs/README.md).
 - The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.
 
 ## Layout
 
-| Path | Owner | Phase | What lives here |
+| Path | Capability area | Milestone | What lives here |
 |---|---|---|---|
-| [`console/`](console/) | A | 0+ | Operator console: Vite + React + TypeScript |
-| [`glasses/`](glasses/) | A, C | 4 | Meta Ray-Ban Display web app |
-| [`relay/`](relay/) | C | 1 | FastAPI WebSocket intent bus, state, JSONL logging, replay |
-| [`planner/`](planner/) | B | 1 | Deterministic formations, sweep lanes, allocation, clamping |
-| [`arbiter/`](arbiter/) | B | 1 | Safety rules, e-stop, battery return |
-| [`adapters/`](adapters/) | B | 1, 2 | `sim`, `crazyswarm2`, `mavlink` behind one interface |
-| [`media/`](media/) | C | 3 | MediaMTX config and stream naming |
-| [`perception/`](perception/) | A | 3 | Detector and world-position estimates |
-| [`language/`](language/) | A, C | 5 | Plan compiler, resolvers, prompts, local fallback |
-| [`evals/`](evals/) | C | 1+ | Gesture, language, sim scenario, and hardware acceptance evals |
-| [`datasets/`](datasets/) | A, all | 1+ | Recorded gesture sessions and utterances |
-| [`docs/`](docs/) | all | all | PRD, specs, plans, build guide, contract, demo script |
-| [`tests/`](tests/) | C | all | Cross-cutting tests, starting with the layout contract test |
+| [`console/`](console/) | Interaction | M0+ | Operator console: Vite + React + TypeScript |
+| [`glasses/`](glasses/) | Interaction, Platform | Future | Meta Ray-Ban Display web app |
+| [`relay/`](relay/) | Platform | M1 | FastAPI WebSocket intent bus, state, JSONL logging, replay |
+| [`planner/`](planner/) | Autonomy | M1 | Deterministic formations, sweep lanes, allocation, clamping |
+| [`arbiter/`](arbiter/) | Autonomy | M1 | Safety rules, e-stop, battery return |
+| [`adapters/`](adapters/) | Autonomy | M1, M2 | `sim`, `crazyswarm2`, `mavlink` behind one interface |
+| [`media/`](media/) | Platform | M3 | MediaMTX config and stream naming |
+| [`perception/`](perception/) | Interaction | M3 | Detector and world-position estimates |
+| [`language/`](language/) | Interaction, Platform | M1, M4 | Plan compiler, resolvers, prompts, local fallback |
+| [`evals/`](evals/) | Platform | M1+ | Gesture, language, sim scenario, and hardware acceptance evals |
+| [`datasets/`](datasets/) | Interaction, all | M1+ | Recorded gesture sessions and utterances |
+| [`docs/`](docs/) | all | all | PRD, MVP plan, specs, plans, build guide, contract, demo script |
+| [`tests/`](tests/) | Platform | all | Cross-cutting tests, starting with the layout contract test |
 
-Owners: A is Interaction and perception, B is Autonomy and safety, C is Platform and data (PRD section 8.1). Each directory has a README with its owner, phase, responsibility, and PRD sections.
+Capability areas are module boundaries, not standing assignments: any engineer may claim a ready task (PRD section 8.1). Each directory has a README with its capability area, milestone, responsibility, and PRD sections.
 
 ## Quickstart
 
@@ -52,14 +53,14 @@ just media      # MediaMTX via docker compose, in the foreground
 
 Contracts freeze at 9:00: intent schema and WebSocket topics, telemetry schema, adapter interface, repo layout (PRD section 8.2). Then, from PRD section 8.3:
 
-- A: drop the Phase 0 page into `console/public/phase0/`, then wire the console to the relay and strip its internal sim.
-- B: planner and arbiter with tests, against the `sim` adapter.
-- C: relay with WebSocket, token, and JSONL logging; schemas.
+- Interaction: wire the webcam console to the relay and strip its internal sim; the prototype page lives at `console/public/phase0/` (see [console/README.md](console/README.md)).
+- Autonomy: planner and arbiter with tests, against the `sim` adapter.
+- Platform: relay with WebSocket, token, and JSONL logging; schemas.
 
 ## Working agreement
 
 - No merge to `main` without CI green and one review (PRD section 8.2). `main` is protected accordingly: pull request, one approval, both CI checks.
-- No new intents without a contract change, a test, and all three inputs updated. No model in the safety path. Nothing off the scripted mission path until Phase 6 (PRD section 8.6).
+- No new intents without a contract change, a test, and every registered input updated. No model in the safety path. Nothing outside the M1 through M4 acceptance paths before M4 exits (PRD section 8.6).
 - Stand-up 9:00, integration 16:00. Two people present for any flight, one on the e-stop keyboard; nobody flies alone. Every hardware session ends with a session report committed to the repo (PRD section 8.5).
 
 ## Remotes
