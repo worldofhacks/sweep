@@ -43,7 +43,7 @@ Conventions for every commit in this plan: run `git -c commit.gpgsign=false comm
 - Create: `tests/test_layout.py`
 - Create: `relay/__init__.py`, `planner/__init__.py`, `arbiter/__init__.py`, `adapters/__init__.py`, `adapters/sim/__init__.py`, `adapters/crazyswarm2/__init__.py`, `adapters/mavlink/__init__.py`, `perception/__init__.py`, `language/__init__.py`, `evals/__init__.py`
 
-- [ ] **Step 1: Write the project file, pin Python, and add .gitignore**
+- [x] **Step 1: Write the project file, pin Python, and add .gitignore**
 
 `pyproject.toml`:
 
@@ -111,12 +111,12 @@ node_modules/
 *.swp
 ```
 
-- [ ] **Step 2: Install the dev toolchain and create the lock file**
+- [x] **Step 2: Install the dev toolchain and create the lock file**
 
 Run: `uv sync`
 Expected: creates `.venv/` and `uv.lock`; output ends with `Installed N packages` listing pytest and ruff.
 
-- [ ] **Step 3: Write the failing layout test**
+- [x] **Step 3: Write the failing layout test**
 
 `tests/test_layout.py`:
 
@@ -162,12 +162,12 @@ def test_no_undeclared_top_level_packages() -> None:
     assert found == TOP_LEVEL
 ```
 
-- [ ] **Step 4: Run the test to verify it fails**
+- [x] **Step 4: Run the test to verify it fails**
 
 Run: `uv run pytest tests/test_layout.py -q`
 Expected: 11 failed: ten with `ModuleNotFoundError` (one per package) and `test_no_undeclared_top_level_packages`, because no package directory exists yet.
 
-- [ ] **Step 5: Create the packages**
+- [x] **Step 5: Create the packages**
 
 Each `__init__.py` holds one docstring line. Contents:
 
@@ -198,7 +198,7 @@ printf '%s\n' '"""Language module: plan compiler, resolvers, prompts, local fall
 printf '%s\n' '"""Eval harness: gesture, language, sim scenario, and hardware acceptance suites (owner C)."""' > evals/__init__.py
 ```
 
-- [ ] **Step 6: Run the test to verify it passes, then lint**
+- [x] **Step 6: Run the test to verify it passes, then lint**
 
 Run: `uv run pytest -q`
 Expected: `11 passed`.
@@ -206,7 +206,7 @@ Expected: `11 passed`.
 Run: `uv run ruff check . && uv run ruff format --check .`
 Expected: `All checks passed!` and `11 files already formatted` (Markdown is excluded).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add pyproject.toml .python-version .gitignore uv.lock tests relay planner arbiter adapters perception language evals
@@ -227,7 +227,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Create: `media/README.md`, `media/mediamtx.yml`
 - Create: `glasses/README.md`, `datasets/README.md`, `docs/README.md`
 
-- [ ] **Step 1: Write the Python package READMEs**
+- [x] **Step 1: Write the Python package READMEs**
 
 `relay/README.md`:
 
@@ -330,7 +330,7 @@ Four gold sets (PRD section 4.7):
 Sets 1 to 3 run in CI on every merge. Every bug becomes a scenario or a gold-set item before it is fixed.
 ```
 
-- [ ] **Step 2: Write the media config and README**
+- [x] **Step 2: Write the media config and README**
 
 `media/mediamtx.yml`:
 
@@ -365,7 +365,7 @@ Start it with `just media` (or `docker compose up mediamtx`). Config: `mediamtx.
 PRD: sections 5.7, 7.5.
 ```
 
-- [ ] **Step 3: Write the glasses, datasets, and docs READMEs**
+- [x] **Step 3: Write the glasses, datasets, and docs READMEs**
 
 `glasses/README.md`:
 
@@ -412,12 +412,12 @@ LFS is not configured yet; the first person to add a recording sets it up.
 Arriving in later phases: build guide (hardware bring-up, positioning calibration), the intent contract as generated schema docs, the demo script, and session reports from hardware runs.
 ```
 
-- [ ] **Step 4: Verify ruff still passes and the YAML parses**
+- [x] **Step 4: Verify ruff still passes and the YAML parses**
 
 Run: `uv run ruff check . && uv run --with pyyaml python -c "import yaml; yaml.safe_load(open('media/mediamtx.yml')); print('mediamtx.yml ok')"`
 Expected: `All checks passed!` then `mediamtx.yml ok`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add relay/README.md planner/README.md arbiter/README.md adapters/README.md perception/README.md language/README.md evals/README.md media glasses datasets docs/README.md
@@ -439,7 +439,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Create: `console/public/phase0/.gitkeep`
 - Create: `.node-version`
 
-- [ ] **Step 1: Generate the app**
+- [x] **Step 1: Generate the app**
 
 Run: `pnpm dlx create-vite@9.2.0 console --template react-ts --eslint --no-immediate --no-interactive`
 Expected: `Scaffolding project in /Users/quietguy/capystone/console...` then `Done.` The `--eslint` flag matters: create-vite 9 defaults React templates to Oxlint, and this plan expects `eslint.config.js` and an ESLint-based `pnpm lint`.
@@ -447,7 +447,7 @@ Expected: `Scaffolding project in /Users/quietguy/capystone/console...` then `Do
 Run: `ls console console/src`
 Expected: `eslint.config.js index.html package.json public README.md src tsconfig.app.json tsconfig.json tsconfig.node.json vite.config.ts` and `App.css App.tsx assets index.css main.tsx`. This template sets `"types": ["vite/client"]` in `tsconfig.app.json` instead of shipping `vite-env.d.ts`; `src/assets/` holds `hero.png react.svg vite.svg` and `public/` holds `favicon.svg icons.svg`.
 
-- [ ] **Step 2: Pin Node and pnpm**
+- [x] **Step 2: Pin Node and pnpm**
 
 `.node-version` (repo root):
 
@@ -461,7 +461,7 @@ In `console/package.json`, set `"name": "sweep-console"`, `"version": "0.0.1"`, 
 cd console && pnpm pkg set name=sweep-console version=0.0.1 packageManager=pnpm@10.2.1 && cd ..
 ```
 
-- [ ] **Step 3: Replace the template page**
+- [x] **Step 3: Replace the template page**
 
 `console/index.html`:
 
@@ -535,7 +535,7 @@ rm console/public/favicon.svg console/public/icons.svg
 mkdir -p console/public/phase0 && touch console/public/phase0/.gitkeep
 ```
 
-- [ ] **Step 4: Replace the template README**
+- [x] **Step 4: Replace the template README**
 
 `console/README.md`:
 
@@ -558,7 +558,7 @@ Phase 0's `swarm-gesture-console.html` (ten intents, dwell and confirmations, si
 PRD: sections 4.2, 5.8.
 ```
 
-- [ ] **Step 4b: Make ESLint cover plain JavaScript files**
+- [x] **Step 4b: Make ESLint cover plain JavaScript files**
 
 The template's only config object is scoped to `**/*.{ts,tsx}`, so `.js` files pass `pnpm lint` unlinted. In `console/eslint.config.js`, add this object as the last element of the array passed to `defineConfig([...])` (the `js` and `globals` imports already exist):
 
@@ -575,12 +575,12 @@ The template's only config object is scoped to `**/*.{ts,tsx}`, so `.js` files p
 
 Check the gate: a throwaway `console/src/lint-probe.js` containing `if (x = 2) { console.log(undefinedGlobalHere) }` must make `pnpm lint` fail with `no-cond-assign` and `no-undef`; delete it afterwards and confirm `pnpm lint` passes again.
 
-- [ ] **Step 5: Install, lint, build**
+- [x] **Step 5: Install, lint, build**
 
 Run: `cd console && pnpm install && pnpm lint && pnpm build && cd ..`
 Expected: install ends with `Done in Ns`; lint prints nothing; build ends with `✓ built in Nms` and lists `dist/index.html` and `dist/assets/*.js`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .node-version console
@@ -602,7 +602,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Create: `docker-compose.yml`, `justfile`, `.env.example`, `.editorconfig`
 - Modify: `.gitignore` (add `recordings/`), `media/README.md` (restart and shell-less image notes)
 
-- [ ] **Step 1: Write docker-compose.yml**
+- [x] **Step 1: Write docker-compose.yml**
 
 ```yaml
 # Ground-station services (PRD section 7.5). Start with: docker compose up
@@ -628,7 +628,7 @@ services:
       # Phase 3 (owner C): add ./recordings:/recordings and set recordPath in media/mediamtx.yml.
 ```
 
-- [ ] **Step 2: Write the justfile**
+- [x] **Step 2: Write the justfile**
 
 ```just
 # Sweep task runner. List recipes with: just --list
@@ -683,7 +683,7 @@ gitlab-remote:
     git push gitlab main
 ```
 
-- [ ] **Step 3: Write .env.example and .editorconfig**
+- [x] **Step 3: Write .env.example and .editorconfig**
 
 `.env.example`:
 
@@ -719,7 +719,7 @@ indent_size = 4
 trim_trailing_whitespace = false
 ```
 
-- [ ] **Step 3b: Ignore recordings and note MediaMTX operations**
+- [x] **Step 3b: Ignore recordings and note MediaMTX operations**
 
 Append to `.gitignore`, after `*.swp` and one blank line:
 
@@ -730,7 +730,7 @@ recordings/
 
 In `media/README.md`, replace the line `Start it with `just media` (or `docker compose up mediamtx`). Config: `mediamtx.yml`.` with `Start it with `just media` (or `docker compose up mediamtx`). Config: `mediamtx.yml`; edits need `docker compose restart mediamtx` because the bind mount does not hot-reload. The image is distroless (no shell), so debug with `docker compose logs mediamtx`.`
 
-- [ ] **Step 4: Verify compose parses and just lists recipes**
+- [x] **Step 4: Verify compose parses and just lists recipes**
 
 Run: `docker compose config --quiet && echo "compose ok" && docker compose config | grep '^name:' && just --list`
 Expected: `compose ok`, `name: sweep`, then a recipe list containing `ci`, `console`, `default`, `fmt`, `gitlab-remote`, `lint`, `media`, `setup`, `test`, each with its description (just uses only the comment line directly above a recipe).
@@ -738,7 +738,7 @@ Expected: `compose ok`, `name: sweep`, then a recipe list containing `ci`, `cons
 Run: `just test`
 Expected: `11 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docker-compose.yml justfile .env.example .editorconfig .gitignore media/README.md
@@ -754,7 +754,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" -- docker-compose.yml 
 **Files:**
 - Create: `.github/workflows/ci.yml`, `.gitlab-ci.yml`, `.github/pull_request_template.md`
 
-- [ ] **Step 1: Write the GitHub Actions workflow**
+- [x] **Step 1: Write the GitHub Actions workflow**
 
 `.github/workflows/ci.yml`:
 
@@ -811,7 +811,7 @@ jobs:
       - run: pnpm build
 ```
 
-- [ ] **Step 2: Write the GitLab CI mirror**
+- [x] **Step 2: Write the GitLab CI mirror**
 
 `.gitlab-ci.yml`:
 
@@ -857,7 +857,7 @@ console:
     - pnpm build
 ```
 
-- [ ] **Step 3: Write the PR template**
+- [x] **Step 3: Write the PR template**
 
 `.github/pull_request_template.md`:
 
@@ -876,12 +876,12 @@ console:
 - [ ] No change to a frozen contract (intent schema, telemetry schema, adapter interface, layout) without team agreement
 ```
 
-- [ ] **Step 4: Verify both CI files parse**
+- [x] **Step 4: Verify both CI files parse**
 
 Run: `uv run --with pyyaml python -c "import yaml; [yaml.safe_load(open(f)) for f in ('.github/workflows/ci.yml', '.gitlab-ci.yml')]; print('ci yaml ok')"`
 Expected: `ci yaml ok`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .github .gitlab-ci.yml
@@ -897,7 +897,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Files:**
 - Create: `README.md`
 
-- [ ] **Step 1: Write the README**
+- [x] **Step 1: Write the README**
 
 ````markdown
 # Sweep
@@ -970,12 +970,12 @@ Contracts freeze at 9:00: intent schema and WebSocket topics, telemetry schema, 
 - GitLab: a public mirror on labs.gauntletai.com (`gitlab`). It is created once with `just gitlab-remote` (needs `glab` and `glab auth login --hostname labs.gauntletai.com`); on a fresh clone, add it with `git remote add gitlab <url>` instead of re-running the recipe.
 ````
 
-- [ ] **Step 2: Verify the links resolve**
+- [x] **Step 2: Verify the links resolve**
 
 Run: `for f in console/README.md docs/prd.md docs/superpowers/specs/2026-09-01-sweep-scaffold-design.md docs/superpowers/plans/2026-09-01-sweep-scaffold.md docs/README.md .github/pull_request_template.md; do test -f "$f" && echo "ok $f"; done` and `grep -cE '^## Appendix [A-D]:' docs/prd.md`
 Expected: six `ok` lines and `4` (the appendix anchors).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md
@@ -992,7 +992,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 - [x] **Steps 1 and 2 done early** (2026-09-01, after Task 2, at the user's request): `gh repo create worldofhacks/sweep --public --source=. --remote=origin --push` created https://github.com/worldofhacks/sweep with `origin` tracking `main`. From here on, every task pushes with `git push origin main` right after its commit, so the remote never lags the local tree.
 
-- [ ] **Step 3: Wait for CI and confirm both jobs are green**
+- [x] **Step 3: Wait for CI and confirm both jobs are green**
 
 Run: `sleep 20; gh run list --branch main --limit 1 --json databaseId --jq '.[0].databaseId'` then `gh run watch <id> --exit-status`
 Expected: both `python` and `console` jobs end with `✓`, and the command exits 0. If a job fails, read `gh run view <id> --log-failed`, fix locally, commit, `git push`, and repeat this step.
@@ -1003,7 +1003,7 @@ Expected: both `python` and `console` jobs end with `✓`, and the command exits
 
 **Files:** none (GitHub API)
 
-- [ ] **Step 1: Protect main**
+- [x] **Step 1: Protect main**
 
 ```bash
 gh api -X PUT repos/worldofhacks/sweep/branches/main/protection --input - <<'JSON'
@@ -1021,7 +1021,7 @@ JSON
 Verify: `gh api repos/worldofhacks/sweep/branches/main/protection --jq '{checks: .required_status_checks.contexts, reviews: .required_pull_request_reviews.required_approving_review_count, admins: .enforce_admins.enabled}'`
 Expected: `{"checks":["python","console"],"reviews":1,"admins":false}`.
 
-- [ ] **Step 2: Create the six milestones**
+- [x] **Step 2: Create the six milestones**
 
 ```bash
 m() { gh api -X POST repos/worldofhacks/sweep/milestones -f title="$1" -f due_on="$2" -f description="$3" --jq '.number + 0 | tostring + " " + "'"$1"'"'; }
@@ -1034,7 +1034,7 @@ m "Phase 6: Hardening, demo, release" "2026-09-24T12:00:00Z" "Deliverables: fail
 ```
 
 Verify: `gh api repos/worldofhacks/sweep/milestones --jq '.[] | "\(.number) \(.due_on[:10]) \(.title)"'`
-Expected: six lines, numbers 1 to 6, due dates 09-04, 09-09, 09-12, 09-17, 09-19, 09-24.
+Expected: six lines, numbers 1 to 6, due dates 09-04, 09-09, 09-12, 09-17, 09-19, 09-24. GitHub stores `due_on` as midnight UTC and renders it as a calendar day, so the time of day in the command is irrelevant.
 
 ---
 
