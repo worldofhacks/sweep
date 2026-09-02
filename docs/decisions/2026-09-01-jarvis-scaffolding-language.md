@@ -14,7 +14,7 @@ universal command-primitive layer, and a semantic world-grounding layer.
 Two independent reviews (different models) converged: none of the four changes are
 free during the capstone. The universal primitive layer and semantic world model
 would compete with the planner/arbiter/hardware critical path for no
-scripted-mission benefit, and are deferred past Phase 6. See narrowed epic
+scripted-mission benefit, and are deferred past the capstone. See narrowed epic
 [worldofhacks/sweep#3](https://github.com/worldofhacks/sweep/issues/3).
 
 ## 2. Input scaffolding and capability-aware eval — approved, narrower scope
