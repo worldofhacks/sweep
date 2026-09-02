@@ -1,6 +1,6 @@
 # Sweep MVP delivery plan
 
-This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M2.0 is the first checkpoint: two real indoor drones complete a bounded webcam-gesture workflow through the deterministic safety path while the console shows one selected live feed. The complete initial MVP remains the combined M1, M2, and M3 exit: 4 to 6 drones, webcam and spoken-language control, and the full camera, telemetry, and sensor console. Hardware claims remain gated on recorded M2 evidence.
+This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 first proves the human room-world loop: three guided phone photos become one private Marble room world. M2.0 remains the first flight checkpoint, where two real indoor drones complete a bounded webcam-gesture workflow through the deterministic safety path while the console shows one selected live feed. Later gates add one-drone capture, known-map room collection by one and then two drones, and an operator-composed walkthrough. The complete MVP exits M4. Hardware claims remain gated on recorded evidence.
 
 Interaction, Autonomy, and Platform are capability areas for coordination and module boundaries. They are not assigned to people for the capstone. Any engineer may claim a ready item and owns that item through review, integration, and acceptance evidence.
 
@@ -11,6 +11,9 @@ Dynamic claiming has one safety exception. Changes to shared contracts or safety
 ```mermaid
 flowchart TD
     m0[M0 contracts and capability boundaries] --> relay[Relay, state, logging, and CI]
+    m0 --> worldapi[World API access gate]
+    worldapi --> phone[Three-photo room-world slice]
+    phone --> rooms[Persistent 3-to-5-room project]
     m0 --> webcam[Webcam producer and console boundary]
     m0 --> autonomy[Planner, arbiter, and sim]
     relay --> simgate[Two-drone webcam-to-sim gate]
@@ -20,19 +23,26 @@ flowchart TD
     hw1 --> hw2[Two-drone hardware proof]
     hw2 --> feed[One selected live feed]
     feed --> m20[M2.0 walking-skeleton checkpoint]
+    m20 --> dronecap[One-drone capture at approved hover pose]
+    rooms --> dronecap
     m20 --> speech[Spoken-language vertical slice]
     m20 --> scale[Full 4-to-6-drone sim and hardware scope]
     m20 --> video[M3 video and sensor console]
+    dronecap --> knownmap[Known-map capture: one drone, then two]
+    video --> knownmap
     speech --> hwlang[Language acceptance on hardware]
     speech --> langfull[M4 language completion]
+    knownmap --> compose[Operator-composed walkthrough]
+    rooms --> compose
     video --> release[M4 final integration and release]
+    compose --> release
     scale --> release
     hwlang --> release
     langfull --> release
     release --> future[Future registered inputs and vehicle adapters]
 ```
 
-M2.0 follows one order: contracts, two-drone sim, one real drone, two real drones, then one selected live feed. Language work and the 4-to-6-drone expansion begin after that checkpoint. Koby's provisional direction to run M3 video and M4 language completion concurrently remains in place after M2.0, pending team confirmation of capacity, discussed below. The complete MVP claim waits for both the full M2 hardware evidence and M3 console evidence.
+The room-world lane starts with contracts and one paid World API request, then proceeds to phone capture independently of flight. M2.0 keeps one control order: contracts, two-drone sim, one real drone, two real drones, then one selected live feed. Drone capture starts after that checkpoint and proves one aircraft before two. Language work and the 4-to-6-drone expansion also begin after M2.0. Koby's provisional direction to run M3 video and M4 language completion concurrently remains in place after M2.0, pending team confirmation of capacity, discussed below. The complete MVP claim waits for control, media, known-map capture, and composed-walkthrough evidence.
 
 ## Work breakdown
 
@@ -45,12 +55,22 @@ Capability area: team. Dependencies: none.
 Scope: approve the 4-to-6-drone core MVP, move the Band to Future, make spoken language the second control path, and adopt dynamic task claiming with the contract and safety exception above.
 Done when: the PRD has one milestone scheme, every core deliverable has a capability area and dependency boundary, and no optional input blocks M1 through M4.
 
-**M0.2: Freeze executable contracts**
+**M0.2: Draft and freeze executable contracts**
 Capability area: Platform, with Interaction and Autonomy review. Dependencies: M0.1.
-Scope: freeze Intent v1, telemetry, adapter, WebSocket, source-registry, and repository contracts; establish the shared input conformance runner and CI skeleton.
-Done when: webcam fixtures exercise the real validator, unknown sources and invalid payloads are rejected, and planner motion semantics match the intent schema.
+Scope: freeze Intent v1 including `capture_room` and `map_area`; telemetry, flight and camera adapters, pose-anchored capture-bundle, WebSocket, source-registry, repository, `building`, `room`, and `capture` contracts; draft the World API-dependent `generation_job` fields; establish the shared input conformance runner and CI skeleton. The flight interface includes acknowledged yaw control. The camera interface includes capability discovery, gimbal positioning, readiness, native panorama, component capture, media retrieval, and typed unsupported results.
+Done when: webcam fixtures exercise the real validator, unknown sources and invalid payloads are rejected, planner motion semantics match the intent schema, `capture_room` requires confirmation and exactly one selected aircraft, `map_area` requires confirmation and supplied map and room-graph inputs, every non-vendor state transition has one defined owner and terminal result, and the provisional World API fields are marked for M0.3 validation.
+
+**M0.3: Prove World API access**
+Capability area: Platform. Dependencies: M0.2, paid World API account and key.
+Scope: submit one real private `marble-1.1` multi-image request with three images, poll the operation, and record the upload, operation, result, asset, duration, and settled-credit shapes. Revise the provisional records to match that evidence and freeze the `generation_job` contract. The Marble web app and mocked responses provide development evidence only.
+Done when: the real job reaches `done=true` and returns a world ID, `world_marble_url`, and asset metadata; the observed fields have contract fixtures; and the reviewed record schema is frozen. If API access is unavailable, M1.0 remains blocked.
 
 ### M1: Sim control MVP
+
+**M1.0: Build the three-photo room-world vertical slice**
+Capability area: Interaction with Platform integration. Dependencies: M0.3.
+Scope: let a user create a building and room, capture exactly three overlapping photos from one standing area, validate and normalize the files, upload them server-side, submit a private `multi-image` request with `reconstruct_images: true`, poll asynchronously, persist provenance and actual credits, and open the returned Marble URL. Show `draft`, `uploading`, `queued`, `running`, `succeeded`, `failed`, and `timed_out` states; retry without losing the capture; allow the next room to be captured while jobs run.
+Done when: M1.0 first records the calibrated blur, exposure, and overlap fixtures and thresholds; five scripted real-API captures each preserve exactly three generation-source records and one terminal job record; invalid type, dimension, aspect ratio, size, blur, exposure, and overlap cases have visible recovery; no file exceeds 20 MB; normalized files have identical dimensions and aspect ratio with at least 1024 pixels on both axes; and the World API key never reaches the browser. Before each job, three source-visible anchors are recorded. Two reviewers independently recognize the room type, entrance, and all three anchors in every accepted result.
 
 **M1.1: Build relay state, logging, and replay**
 Capability area: Platform. Dependencies: M0.2.
@@ -91,6 +111,12 @@ Done when: three live spoken multi-step orders reach plan preview, no language i
 Capability area: Platform, with team-contributed cases. Dependencies: M1.6, M1.7.
 Scope: create 50 reviewed transcript-to-plan cases for the scripted mission, three multi-step orders, ambiguity, confirmation-sensitive requests, and unsafe requests; add a manual 20-utterance clean-room speech smoke run across two speakers; support cached CI and an explicit live compiler refresh.
 Done when: exact-match plan accuracy is at least 85%, the live speech smoke run reaches at least 85% exact transcript match, unsafe-intent count is zero, and three spoken multi-step orders pass through the complete sim path.
+
+#### M1 room-world scope
+
+The room-world slice uses human phone capture in an empty, static room. The guide asks for three viewing directions with visible overlap, stable lighting, and shared architectural features. Standard `marble-1.1` multi-image generation costs 1,600 API credits, currently $1.28 at $1 per 1,250 credits. A ten-room run costs $12.80 before retries. World Labs says accepted jobs usually take about five minutes, so every room is an asynchronous job. API billing and Marble web-app billing are separate. [World API pricing](https://docs.worldlabs.ai/api/pricing) · [World API rate limits](https://docs.worldlabs.ai/api/rate-limits)
+
+The output is an AI-generated room world. It carries no claim about hidden geometry, measurements, inventory, or safety. Generated worlds are private by default. The team must decide source-photo, vendor-asset, and project-record retention and deletion before implementation. People and pets remain outside the M1 capture set.
 
 #### M1 speech scope
 
@@ -157,7 +183,21 @@ Capability area: team. Dependencies: M1.8, M2.4.
 Scope: run the three M1 multi-step language orders through the hardware adapter.
 Done when: plans, commands, refusals, and operator decisions match the sim acceptance within hardware tolerances.
 
-### M3: Full MVP, video and sensor console
+**M2.6: Build the room-by-room project**
+Capability area: Interaction with Platform integration. Dependencies: M1.0.
+Scope: let the user name and capture 3 to 5 rooms in any order, see each job state, retry a room, open every successful room world, record both sides of doorways, and store explicit room adjacency plus an optional floor-plan reference. Store doorway and floor-plan evidence as composition references, separate from the exactly three generation inputs, so rooms with several exits remain representable.
+Done when: one scripted project continues capturing while prior jobs run, survives reload, exposes each room's three generation sources, any composition references, and Marble world, and has no orphaned or cross-linked room, capture, or job IDs.
+
+**M2.7: Prove one-drone room capture**
+Capability area: Autonomy with Platform and Interaction integration. Dependencies: M0.2, M2.0, M2.6, one supported camera and Android controller.
+Scope: build a small Android DJI Mobile SDK capture bridge and prove its relay boundary; do not route Mobile SDK calls through the Python, ROS 2, or MAVLink adapters. The bridge reads runtime panorama and photo capabilities, triggers the planner-selected operation, downloads the resulting panorama or component frames, and returns file acknowledgements for capture association. Then execute a confirmed `capture_room` with one aircraft hovering at an operator-approved pose. Require good link and positioning, enough battery and storage, no active motion mission, and a live e-stop. Prefer a native stitched equirectangular panorama when the bridge returns one; otherwise collect up to eight overlapping pose-anchored frames. The planner owns every yaw, gimbal, settle, camera-ready, capture, and file-created step.
+Done when: the relay reaches the bridge on one recorded aircraft, controller, camera, firmware, and Mobile SDK combination; the runtime probe reports the tested capabilities; and one real aircraft produces a complete capture bundle for the correct room. Every file records capture ID, pose, yaw, gimbal pitch, intrinsics, timestamp, and file ID. The exact supported input shape, either one valid equirectangular panorama or up to eight reconstruction frames, completes a real private World API job and returns the linked room world before that capture mode is accepted. Injected stale telemetry, timeout, camera error, unexpected translation, link loss, and position loss all command hold and leave visible failure evidence. Unsupported panorama capability returns a typed result instead of an assumed camera sequence.
+
+#### Drone capture geometry
+
+The component-frame pattern derives yaw spacing from `yaw_step <= horizontal_fov * (1 - overlap_fraction)`. Forty percent overlap is the first experiment. An 82-degree horizontal field of view yields about 49 degrees, so the first test uses eight headings at 45-degree increments. A level yaw ring leaves floor and ceiling unseen. Only a valid camera-produced equirectangular artifact is called a panorama; true spherical coverage otherwise needs multiple pitch rows. Three phone photos remain the sparse human onboarding flow rather than the drone's full-coverage pattern. [DJI Mobile SDK version differences](https://developer.dji.com/doc/mobile-sdk-tutorial/en/quick-start/version-differences.html) · [DJI panorama tutorial](https://developer.dji.com/mobile-sdk/documentation/ios-tutorials/PanoDemo.html)
+
+### M3: Video, sensor, and known-map capture
 
 **M3.1: Establish media ingest and recording**
 Capability area: Platform with Interaction integration. Dependencies: M1.1 and one camera source. The M2.0 slice also depends on M2.2.
@@ -174,10 +214,15 @@ Capability area: Interaction with Platform integration. Dependencies: M3.1, M3.2
 Scope: sample frames, run the detector, emit timestamped detection events, promote attention, and require operator confirmation before detections affect swarm behavior.
 Done when: a qualifying detection promotes the selected feed within one second, all events are logged, and no detection emits a command.
 
-**M3.4: Earn the complete MVP exit**
-Capability area: team. Dependencies: M2.5, M3.2, M3.3.
-Scope: demonstrate webcam or spoken-language control with the camera, telemetry, and sensor console active.
-Done when: the complete operator workflow succeeds on 4 to 6 drones and the session evidence supports every control, safety, video, and sensor claim.
+**M3.4: Prove known-map multi-room capture**
+Capability area: Autonomy with Platform and Interaction integration. Dependencies: M2.7, M3.1, a supplied occupancy map and approved room poses.
+Scope: start from an operator-console or language preview of `map_area {area_id}` and one explicit batch confirmation. Freeze the selected aircraft, map version, room assignments, approved poses, routes, and capture patterns into that authorization. Execute it through one drone in a fixed 3-to-5-room, single-floor test area, then let two selected drones partition the same known targets, maintain separation, collect complete bundles, and return home. The planner resolves the supplied occupancy map, room graph, and approved capture poses into collision-checked routes and internal room-capture tasks. Each route segment and capture is revalidated immediately before dispatch; a changed selection or plan invalidates confirmation, while stale or unsafe state fails closed to hold or the configured fail-safe. Use open doors, a static empty area, no stairs, no people or pets, guarded aircraft, a known launch and return zone, an operator present, and an independent e-stop. Marble receives media only after the flight path has completed its conventional safety checks.
+Done when: one-drone evidence passes before the two-drone trial, then the two-drone workflow passes five consecutive runs without manual flight correction. Every reachable room receives one complete pose-anchored bundle; no planned path crosses an occupied cell or minimum-clearance boundary; no separation violation occurs; every aircraft returns or executes its configured fail-safe; and the room catalog has no missing, duplicate, or cross-linked captures. Capture bundles from the final accepted run complete private per-room World API jobs, and every returned room world links to the same building, room, capture, and generation records.
+
+**M3.5: Earn the control and media exit**
+Capability area: team. Dependencies: M2.5, M3.2, M3.3, M3.4.
+Scope: demonstrate webcam or spoken-language control with the camera, telemetry, sensor console, and known-map room-capture path active.
+Done when: the complete operator workflow succeeds on 4 to 6 drones, known-map capture succeeds on the accepted two-drone configuration, and the session evidence supports every control, safety, video, sensor, and capture claim.
 
 ### M4: Language completion and final proof of concept
 
@@ -197,9 +242,9 @@ Scope: evaluate noisy-room speech, retries, timeouts, and a local transcription 
 Done when: the primary Whisper API path and any approved local fallback feed the same transcript-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
 
 **M4.4: Harden, document, and release**
-Capability area: team. Dependencies: M2.5, M3.4, M4.2, M4.3.
-Scope: run failure drills and adversarial tests, finish the build guide and operator docs, cut the demo reel, and tag v0.1.
-Done when: all claimed hardware and software exits have recorded evidence, CI is green, and the public release is reproducible from the guide.
+Capability area: team. Dependencies: M2.6, M3.5, M4.2, M4.3.
+Scope: add the room worlds generated from M3.4's final accepted drone run to Marble Studio Compose, manually place, rotate, and scale them against room adjacency and the floor-plan reference, align floors and doorways, review each transition, create a camera path in Studio Record, download the MP4 before leaving the page, and upload it to the same building project. Preserve and label captured, generated, composed, and enhanced artifacts. Polish provenance, deletion, cost, latency, failure handling, operator docs, the demo reel, and release.
+Done when: the confirmed “Map this floor” chain is traceable from its source through `map_area`, the accepted capture bundles and private World API jobs to a 3-to-5-room composition; every doorway transition is reviewed; and the stored MP4 visits each room once. All claimed control and capture exits have recorded evidence, CI is green, and the tagged v0.1 release is reproducible from the guide. Record paths and enhanced video are downloaded during the Studio session because World Labs says they do not persist after leaving the page.
 
 ### Future
 
@@ -213,6 +258,11 @@ Capability area: Autonomy with Platform eval support. Dependencies: working M2 e
 Scope: evolve capability contracts and add one evidence-backed vehicle adapter at a time.
 Done when: unsupported behavior returns a typed refusal and no input or model calls an adapter directly.
 
+**F.3: Automate spatial capture and exploration**
+Capability area: Autonomy with Platform and Interaction integration. Dependencies: M3.4, a conventional mapping stack, and measured accuracy gates.
+Scope: evaluate automatic room registration, a branded multi-room Spark renderer, metric alignment through SLAM, photogrammetry, or LiDAR, time-indexed rescans, Atlas integration, and autonomous exploration of an initially unmapped area. Onboard VIO plus depth or LiDAR must produce the occupancy map used by the planner. Marble remains a downstream presentation layer.
+Done when: each capability has its own measured geometry, localization, coverage, and safety acceptance. Generated Marble content never supplies occupancy, clearance, geofence, collision, or position truth.
+
 ## Concurrent M3 and M4 lanes
 
 **Provisional decision: run the M3 video lane and the M4 language lane concurrently after M2.0, pending team confirmation that capacity covers both.** The two feature sets have no hard sequential dependency on each other once M2.0 establishes the relay, authoritative state, Intent v1, safety path, two-drone hardware proof, and selected-feed shell. Dynamic claiming creates more scheduling options, but it does not reduce the total work or remove shared-file and review gates.
@@ -223,16 +273,19 @@ Done when: unsupported behavior returns a typed refusal and no input or model ca
 | Whisper API capture, language UI, full resolvers, corpus completion, offline evaluation, and speech hardening | Corpus writing and the live speech smoke run can fan out. Resolver and UI integration wait on frozen result envelopes. |
 | Media ingest, recording, stream naming, detection-event transport, and latency measurement | Media configuration can proceed independently. Detection and relay-state changes use one change owner and cross-review. |
 | Mosaic, focus, sensor state, detector, attention promotion, and confirmation | Detector experiments can run independently. Console integration overlaps the language UI files. |
+| Phone room capture, World API jobs, room catalog, and Studio composition | Human capture can proceed after the M0 API gate. Shared console and persistence changes merge through one owner. Studio composition stays operator-assisted. |
+| Drone capture and known-map traversal | Begins after M2.0, capability-probes the selected camera, and proves one aircraft before two. Every safety-relevant planner or adapter change receives cross-review. |
 | Cross-stack review, end-to-end acceptance, and defect margin | Safety-path and shared-contract reviews cannot be self-approved or merged concurrently. |
 
-After M2.0, the freely parallelizable pieces are MediaMTX recording and multi-stream setup, detector prototyping, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
+After M2.0, the freely parallelizable pieces are MediaMTX recording and multi-stream setup, detector prototyping, human room-project UX, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, camera capability and capture-bundle contracts, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
 
 The order after M2.0:
 
 1. Freeze the transcription request/response, plan result, detection-event, and stream-naming contracts. Each contract has one change owner and a different reviewer.
-2. Complete M1 Whisper capture and compiler integration. In parallel, claim MediaMTX recording and multi-stream work, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation.
-3. Integrate the M3 mosaic, sensor, and detection path beside M4 resolvers, the 200-item eval, local compiler fallback, and speech hardening. Shared console changes merge through one owner at a time.
-4. Continue delivery-gated M2 work in booked blocks. Hardware work reduces the capacity available to the concurrent lanes.
-5. Before the lanes start, the team confirms it has the capacity for both or drops the concurrency.
+2. Complete M1 Whisper capture and compiler integration. In parallel, claim the room project, MediaMTX recording and multi-stream work, detector prototyping, corpus authoring, cached eval fixtures, and speech smoke preparation.
+3. Prove one-drone room capture after the base hardware checkpoint. Then integrate known-map capture beside the M3 mosaic, sensor, and detection path.
+4. Integrate M4 resolvers, the 200-item eval, local compiler fallback, speech hardening, and the operator-composed walkthrough. Shared console changes merge through one owner at a time.
+5. Continue delivery-gated M2 work in booked blocks. Hardware work reduces the capacity available to the concurrent lanes.
+6. Before the lanes start, the team confirms it has the capacity for both or drops the concurrency.
 
 This preserves Koby's concurrent direction. It is provisional until the team confirms capacity.

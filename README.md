@@ -1,14 +1,14 @@
 # Sweep
 
-One person commands 4 to 6 indoor drones through webcam gestures or spoken natural language, and sees what the swarm sees on a laptop console.
+One person creates AI-generated room worlds from guided photos, commands 4 to 6 indoor drones through webcam gestures or spoken natural language, and sees what the swarm sees on a laptop console.
 
-The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first hardware is a laptop webcam and 4 to 6 indoor drones; spoken natural language is the second control path, built right after the shared intent bus, planner, arbiter, and simulator. An EMG band is an optional Future input source outside the core MVP. Everything is open source.
+The first user is a responder who needs eyes inside a building before entry and whose hands are already full. The first user-visible software slice lets a person take three guided, overlapping photos of one empty room and receive a private Marble room world. The north-star command is “Map this floor.” During the MVP, it sends an operator-present swarm through approved room poses on a supplied occupancy map, then generates a room-by-room visual walkthrough. The flight path starts with a laptop webcam and two indoor drones, expands to 4 to 6 drones, and adds spoken natural language after the shared intent bus, planner, arbiter, and simulator. An EMG band is an optional Future input source outside the core MVP. Everything is open source.
 
 Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the M0 through M4 delivery sequence.
 
 ## Read first
 
-- [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. The four frozen contracts are [Appendix A (intent)](docs/prd.md#appendix-a-intent-contract-v1), [Appendix B (telemetry)](docs/prd.md#appendix-b-telemetry-v1), [Appendix C (adapter interface)](docs/prd.md#appendix-c-adapter-interface), and [Appendix D (repository layout)](docs/prd.md#appendix-d-repository-layout).
+- [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. M0 freezes five contract groups: intent and WebSocket, telemetry, flight and camera adapters, repository layout, and room-world records.
 - [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped work breakdown.
 - [Decision records](docs/decisions/): why the scaffold and the architecture look the way they do. The [docs index](docs/README.md) lists everything else.
 - The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.
@@ -28,9 +28,10 @@ Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp
 | [`evals/`](evals/) | Platform | M1+ | Gesture, language, sim scenario, and hardware acceptance evals |
 | [`datasets/`](datasets/) | Interaction, all | M1+ | Recorded gesture sessions and utterances |
 | [`docs/`](docs/) | all | all | PRD, MVP plan, specs, plans, build guide, contract, demo script |
+| [`RESEARCH/`](RESEARCH/) | all | all | Source-backed feasibility notes that constrain product claims and planning |
 | [`tests/`](tests/) | Platform | all | Cross-cutting tests, starting with the layout contract test |
 
-Capability areas are module boundaries, not standing assignments: any engineer may claim a ready task (PRD section 8.1). Each directory has a README with its capability area, milestone, responsibility, and PRD sections.
+Capability areas are module boundaries, not standing assignments: any engineer may claim a ready task (PRD section 8.1). Each runtime directory has a README with its capability area, milestone, responsibility, and PRD sections.
 
 ## Quickstart
 
@@ -50,7 +51,7 @@ just media      # MediaMTX via docker compose, in the foreground
 
 ## Start here
 
-Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter interface, repo layout (PRD section 8.2). The work order is PRD section 8.3 and the M0 to M2 items in [docs/mvp-plan.md](docs/mvp-plan.md): contracts, the two-drone sim path, one real drone, two real drones, one selected live feed. Language and the 4-to-6-drone expansion follow the M2.0 checkpoint. Any engineer may claim a ready item.
+Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter and camera-capability interfaces, repo layout, and the room-world records (PRD section 8.2). After the World API access spike passes, the three-photo room-world slice can proceed beside the control path. The control work order remains contracts, the two-drone sim path, one real drone, two real drones, and one selected live feed. Language, the 4-to-6-drone expansion, and one-drone room capture follow the M2.0 checkpoint; known-map collection then proves one drone before two. The complete dependency map is in [docs/mvp-plan.md](docs/mvp-plan.md), and any engineer may claim a ready item.
 
 ## Working agreement
 
