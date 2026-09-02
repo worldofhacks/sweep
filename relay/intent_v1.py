@@ -130,6 +130,12 @@ def validate_intent(raw: object) -> ValidationResult:
             RejectionReason.INVALID_PAYLOAD, f"invalid selection or confirmation for {name}"
         )
 
+    mode = Mode(raw["mode"])
+    if mode is not Mode.INDOOR:
+        return RejectedIntent(
+            RejectionReason.UNSUPPORTED, f"{mode} is outside the M2.0 capability set"
+        )
+
     if name not in M20_SUPPORTED_NAMES:
         return RejectedIntent(
             RejectionReason.UNSUPPORTED, f"{name} is outside the M2.0 capability set"
@@ -147,7 +153,7 @@ def validate_intent(raw: object) -> ValidationResult:
             name=name,
             args=args,
             selection=tuple(raw["selection"]),
-            mode=Mode(raw["mode"]),
+            mode=mode,
             confirm=raw["confirm"],
         )
     )

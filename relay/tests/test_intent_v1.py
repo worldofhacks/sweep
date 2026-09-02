@@ -96,6 +96,40 @@ def test_m20_console_intents_match_the_planner_contract(
     assert result.intent.selection == (1, 2)
 
 
+@pytest.mark.parametrize("mode", ["outdoorC", "outdoorF"])
+@pytest.mark.parametrize(
+    ("name", "args", "confirm"),
+    [
+        ("takeoff", {}, True),
+        ("translate", {"dx": 2, "dy": -1}, False),
+        (
+            "capture_room",
+            {"room_id": "room-1", "capture_id": "capture-1", "pattern": "pano_360"},
+            True,
+        ),
+    ],
+)
+def test_outdoor_modes_are_reserved_until_future_capability(
+    console_select_payload: dict[str, object],
+    mode: str,
+    name: str,
+    args: dict[str, object],
+    confirm: bool,
+) -> None:
+    console_select_payload.update(
+        name=name,
+        args=args,
+        selection=[1],
+        mode=mode,
+        confirm=confirm,
+    )
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.UNSUPPORTED
+
+
 def test_intent_id_and_retry_of_pass_through(
     console_select_payload: dict[str, object],
 ) -> None:
