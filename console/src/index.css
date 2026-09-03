@@ -14,6 +14,7 @@
   --accent: oklch(80% 0.11 200);
   --accent-hover: oklch(86% 0.11 200);
   --accent-tint: oklch(80% 0.11 200 / 0.12);
+  --accent-tint-hover: oklch(80% 0.11 200 / 0.2);
   --accent-line: oklch(80% 0.11 200 / 0.45);
   --on-accent: oklch(10% 0.01 250);
 

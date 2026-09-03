@@ -778,7 +778,15 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 
 function RegistryEmptyState({ status }: { status: ControlState['connection']['status'] }) {
   if (status === 'connecting') {
-    return <EmptyState title="Connecting to relay" detail="The authenticated snapshot has not arrived yet." />
+    return (
+      <div className="skeleton-list" role="status" aria-label="Connecting to relay">
+        {[0, 1, 2].map((row) => (
+          <div className="skeleton-row" aria-hidden="true" key={row}>
+            <span /><span /><span /><span />
+          </div>
+        ))}
+      </div>
+    )
   }
   if (status === 'connected' || status === 'degraded') {
     return <EmptyState title="No aircraft registered" detail="The relay reports an empty roster for this session." />
