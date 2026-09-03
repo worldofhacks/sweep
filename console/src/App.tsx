@@ -380,8 +380,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
                     <p className="voice-error">{voice.detail}</p>
                   ) : (
                     <p>
-                      Hold the button, or hold <kbd>Space</kbd> anywhere outside a text field. Stops after{' '}
-                      {MAX_RECORDING_MS / 1000}s.
+                      Hold the button or <kbd>Space</kbd>. Stops after {MAX_RECORDING_MS / 1000}s.
                     </p>
                   )}
                 </div>
