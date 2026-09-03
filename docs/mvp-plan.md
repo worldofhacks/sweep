@@ -1,6 +1,6 @@
 # Sweep MVP delivery plan
 
-This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble. Language work may begin after M1.E. M2 scales real hardware control to four Mini 3 nodes with live session membership. After M2.0, gesture and real known-map autonomous indoor traversal become ready and may proceed concurrently; the input lane may land first. The lanes converge for the composed walkthrough and recorded demo.
+This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble while gesture work proceeds against the same frozen input contracts. The transcript-to-plan compiler begins against two-drone sim and relay state; push-to-talk capture may begin after M1.E. M2 scales real hardware control to four Mini 3 nodes with live session membership. Real known-map autonomous indoor traversal becomes ready after M2.0. The lanes converge for the composed walkthrough and recorded demo.
 
 The MVP targets a live technical demonstration. Production governance and operations move to F.6. All hardware-safety gates remain in the active milestones.
 
@@ -29,8 +29,14 @@ flowchart TD
     hw1 --> hw2[Two-drone hardware proof]
     hw2 --> feed[One selected live feed]
     feed --> m20[M2.0 walking-skeleton checkpoint]
-    m1e --> language[Language producer]
-    m20 --> gesture[Gesture producer]
+    relay --> compiler[Transcript-to-plan compiler]
+    autonomy --> compiler
+    m1e --> speech[Push-to-talk speech producer]
+    compiler --> language[Accepted language producer]
+    speech --> language
+    m0 --> gesturedev[Gesture implementation against frozen input interfaces]
+    gesturedev --> gesture[Integrated and accepted gesture producer]
+    controls --> gesture
     m20 --> scale[Four-node hardware and 4-to-6-drone sim scope]
     m20 --> video[M3 video and sensor console]
     m20 --> localization[Real indoor localization and clearance gate]
@@ -58,7 +64,7 @@ Subtask IDs are stable historical identifiers referenced by existing issues. Rem
 
 **M0.1: Freeze the MVP boundary and capability areas**
 Capability area: team. Dependencies: none.
-Scope: approve the four DJI Mini 3 and RC-N1 sets on hand, paired with four Android bridge nodes, as the physical core MVP; retain 4 to 6 drones in simulation; make console buttons the reference producer; stage spoken language and gestures afterward; move the Band to Future; and adopt dynamic task claiming with the contract and safety exception above.
+Scope: approve the four DJI Mini 3 and RC-N1 sets on hand, paired with four Android bridge nodes, as the physical core MVP; retain 4 to 6 drones in simulation; make console buttons the reference producer for early intent-to-action testing while webcam gesture work proceeds against the same contracts; build the transcript-to-plan compiler against two-drone sim and relay state; stage push-to-talk capture after M1.E; move the Band to Future; and adopt dynamic task claiming with the contract and safety exception above.
 Done when: the PRD has one milestone scheme, every core deliverable has a capability area and dependency boundary, and no optional input blocks M1 through M4.
 
 **M0.2: Draft and freeze executable contracts**
@@ -132,7 +138,7 @@ The output is an AI-generated room world. It carries no claim about hidden geome
 
 **The follow-on speech scope is bounded on purpose.** Whisper API capture and transcription sit on top of the accepted button-driven intent path and the reviewed transcript-to-plan slice. They add browser recording, relay upload, server-side key handling, error states, a manual smoke run, compiler integration, and preview and confirmation.
 
-That scope holds for one-shot push-to-talk in the pinned Chromium browser, `en-US`, a working microphone and network, recordings capped at 30 seconds, and the `whisper-1` transcription endpoint. The final transcript enters the same compiler path that typed fixtures exercise. The compiler targets the full Intent v1 vocabulary over time and enables each voice and intent pair only under the input channel coverage policy above. M4 owns offline transcription, multilingual support, and noisy-room hardening.
+That scope holds for one-shot push-to-talk in the pinned Chromium browser, `en-US`, a working microphone and network, recordings capped at 30 seconds, and the `whisper-1` transcription endpoint. The final transcript enters the same compiler path that typed fixtures exercise. The compiler starts against authoritative two-drone sim and relay state as soon as the M1.1 and M1.2 interfaces stabilize; M1.5, M2.0, and real hardware sit outside its readiness gate. It targets the full Intent v1 vocabulary over time and enables each voice and intent pair only under the input channel coverage policy above. M4 owns offline transcription, multilingual support, and noisy-room hardening.
 
 The Whisper path needs browser recording plus a relay endpoint because the API accepts an audio-file upload and the API key must stay off the client. OpenAI's [API key safety guidance](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safet) requires requests from browser clients to pass through a server that holds the key.
 
@@ -156,7 +162,7 @@ The checkpoint exercises the eight flight-control Intent v1 names `arm`, `select
 
 The one-drone proof selects the only connected drone and runs the same sequence and safety checks. The two-drone proof then replaces that selection with both connected drones and verifies coordinated translation and spacing.
 
-The checkpoint keeps the arbiter, network stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and independent physical RC safety path. Every active aircraft has an RC safety operator. Language work may already be active from M1.E. The formation library, altitude gesture, sweep planner, detector, mosaic, replay UI, metrics dashboard, session report, and release polish start after this gate.
+The checkpoint keeps the arbiter, network stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and independent physical RC safety path. Every active aircraft has an RC safety operator. Gesture and transcript-to-plan compiler work may already be active, with push-to-talk capture available after M1.E. The formation library, altitude gesture mapping, sweep planner, detector, mosaic, replay UI, metrics dashboard, session report, and release polish start after this gate.
 
 M2.0 passes when:
 
@@ -224,13 +230,13 @@ Done when: one-drone evidence passes before the two-drone trial, then the two-dr
 
 **M3.5: Earn the control and media exit**
 Capability area: team. Dependencies: M2.4, M3.2, M3.3, M3.4.
-Scope: demonstrate button control, plus each accepted later language or gesture producer, with the camera, telemetry, sensor console, and known-map autonomous multi-room traversal and capture path active.
+Scope: demonstrate button control, plus each accepted language or gesture producer, with the camera, telemetry, sensor console, and known-map autonomous multi-room traversal and capture path active.
 Done when: the complete operator workflow succeeds on four physical Mini 3 nodes and 4 to 6 simulated drones, known-map autonomous multi-room traversal and capture succeeds on the accepted two-drone configuration, and the session evidence supports every control, safety, video, sensor, membership, and capture claim.
 
 ### M4: Language completion and final proof of concept
 
 **M4.1: Complete deterministic language resolution**
-Capability area: Autonomy. Dependencies: M1.E and stable relay state. Coverage for each intent also depends on that capability's acceptance gate; formation, altitude, spacing, and sweep coverage depends on M1.5.
+Capability area: Autonomy. Dependencies: frozen Intent v1 plus the M1.1 relay-state and M1.2 two-drone sim interfaces. Coverage for each intent also depends on that capability's acceptance gate; formation, altitude, spacing, and sweep coverage depends on M1.5.
 Scope: compile voice into the full Intent v1 vocabulary as each voice and intent pair clears the input-channel accuracy gate. Start with `capture_room`, then expand through `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop` as their control and risk gates pass. Add `disarm`, `land`, `altitude`, `formation_next`, `formation_set`, `spacing`, `sweep`, `survey_area`, and `map_area` when their planner, capability, and channel-accuracy gates pass. Implement ordered plans plus bounded selection and location resolution with explicit ambiguity and refusal results. Use authoritative relay, selection, room, pose, camera, and capability state; validate and preview every plan before emission.
 Done when: reviewed utterances for every earned voice intent produce the exact ordered Intent v1 plans or explicit ambiguity and refusal results. Resolver tests cover IDs, current selection, supported relative phrases, stale state, unavailable capabilities, ambiguity, and unresolved locations without bypassing preview, confirmation, the planner, or the arbiter.
 
@@ -240,14 +246,18 @@ Scope: build the 20-utterance live set, complete its cached and live eval paths,
 Done when: the 20-utterance live set passes once on camera, unsafe-intent count is zero, cached fixtures are produced by real compiler runs, and fallback uses the same validation path.
 
 **M4.3: Harden speech UX and evaluate offline transcription**
-Capability area: Interaction with Platform support. Dependencies: M1.3, M4.1.
-Scope: add one-shot push-to-talk recording and server-side Whisper transcription, then evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it. Continuous listening is time-permitting stretch work after the push-to-talk path passes and does not gate M4.3 or the MVP. Polish transcript, preview, clarification, confirmation, and refusal behavior.
-Done when: the primary Whisper API path and any approved local fallback feed the same transcript-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
+Capability area: Interaction with Platform support. Dependencies: M0.2, M1.3, M1.E.
+Scope: add one-shot push-to-talk recording and server-side Whisper transcription, then evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it. Continuous listening is time-permitting stretch work after the push-to-talk path passes and does not gate M4.3 or the MVP. Polish transcript, preview, clarification, confirmation, and refusal behavior. M4.1's reviewed result interface gates compiler integration, not capture and transcription development.
+Done when: the primary Whisper API path and any approved local fallback feed M4.1's reviewed transcript-to-plan result interface and cannot bypass preview, confirmation, planner, or arbiter checks.
 
 **M4.4: Add the webcam gesture producer**
-Capability area: Interaction with Platform support. Dependencies: M1.3, M2.0, frozen Intent v1 and source-registry contracts.
-Scope: add camera selection, explicit gesture-tracking enablement, hand-landmark overlay, confidence and dwell feedback, candidate preview, confirmation, cancellation, duplicate suppression, and the shared `intent_id` lifecycle. Start with MediaPipe's built-in gesture classes for `capture_room`, `hold`, confirm, and cancel, then expand the bounded classifier vocabulary toward full Intent v1 coverage. Each gesture and intent pair ships only after clearing its risk-scaled accuracy gate. `estop`, `arm`, `takeoff`, and free-flight motion remain on console controls or the physical RC until their gesture-specific safety gates pass; those trusted fallbacks remain available afterward.
-Done when: one recorded browser session selects a camera, enables tracking, shows landmarks, proposes `capture_room`, confirms it, and observes the same `intent_id` through execution and terminal state. Cancellation, hold, timeout, camera unplug, low confidence, and duplicate suppression pass. Every enabled pair has measured evidence above its frozen threshold, and the gesture producer passes the same Intent v1 conformance suite as console buttons.
+Capability area: Interaction with Platform support. Development dependencies: frozen M0.2 and M1.3 interfaces. Integration and acceptance dependency: completed M1.3.
+Scope: build and test the second input channel beside the button-first path with a laptop webcam and simulated relay state while M1.3 is underway. Integrate it only after M1.3 completes. Add camera selection, explicit gesture-tracking enablement, hand-landmark overlay, confidence and dwell feedback, candidate preview, confirmation, cancellation, duplicate suppression, and the shared `intent_id` lifecycle. Start with MediaPipe's built-in gesture classes for `capture_room`, `hold`, confirm, and cancel, then expand the bounded classifier vocabulary toward full Intent v1 coverage. Each gesture and intent pair ships only after clearing its risk-scaled accuracy gate. `estop`, `arm`, `takeoff`, and free-flight motion remain on console controls or the physical RC until their gesture-specific safety gates pass; those trusted fallbacks remain available afterward.
+Done when: completed M1.3 supplies the accepted integration path, and one recorded browser session selects a camera, enables tracking, shows landmarks, proposes `capture_room`, confirms it, and observes the same `intent_id` through execution and terminal state. Cancellation, hold, timeout, camera unplug, low confidence, and duplicate suppression pass. Every enabled pair has measured evidence above its frozen threshold, and the gesture producer passes the same Intent v1 conformance suite as console buttons.
+
+Placement decision: this early-start work keeps its historical M4.4 identifier. Existing issues and plan references retain the stable ID.
+
+Readiness decision: gesture development begins against frozen M1.3 interfaces while M1.3 is underway. M1.3 completion gates integration and acceptance.
 
 **M4.5: Integrate and record the demo**
 Capability area: team. Dependencies: M2.4, M2.6, M3.5, M4.2, M4.3, M4.4.
@@ -286,9 +296,11 @@ Capability area: team. Dependencies: M4.5 and an owner decision to pursue real-u
 Scope: add access-control verification, retention and deletion policy, multi-user administration, operational and cost reporting, the 200-item language evaluation, extended random-motion gesture evaluation, five-run indoor hardware repeatability, parameter sweeps, RF and latency stress, broader failure campaigns, packaging, deployment automation, and rollback procedures.
 Done when: each selected production concern has an owner, a measurable gate, and evidence from the target deployment environment.
 
-## Confirmed post-M2.0 lanes
+## Confirmed parallel lanes
 
-**Confirmed decision: language work may begin after M1.E. Gesture and indoor-autonomy work become ready after M2.0 and proceed concurrently; the team may prioritize the input lane first.** M4.1, M4.3, and M4.4 have no M3 dependency. M4.5 is the convergence point after accepted input producers and the M3 indoor-autonomy exit are complete. Shared-file and review gates still serialize safety-critical and contract changes.
+**Confirmed decision: gesture work begins alongside the button-first path against frozen M1.3 input interfaces. M1.3 completion gates its integration and acceptance. The transcript-to-plan compiler begins against the M1.1 relay state and M1.2 two-drone sim interfaces. Push-to-talk capture may begin after M1.E, and indoor-autonomy work becomes ready after M2.0.** M4.1, M4.3, and M4.4 have no M3 dependency. M4.5 is the convergence point after accepted input producers and the M3 indoor-autonomy exit are complete. Shared-file and review gates still serialize safety-critical and contract changes.
+
+This development-versus-integration boundary applies throughout the plan: work may begin against a dependency's frozen interfaces while that dependency is underway, but integration and acceptance require the listed dependency to complete.
 
 | Work package | Parallelization boundary |
 |---|---|
@@ -300,12 +312,12 @@ Done when: each selected production concern has an owner, a measurable gate, and
 | Drone scaling and known-map autonomous multi-room traversal and capture | M1.E proves capture at one approved hover pose. Translation and fleet scaling proceed through M2.0; M3 proves known-map traversal on one aircraft before two. Every safety-relevant planner or adapter change receives cross-review. |
 | Cross-stack review, end-to-end acceptance, and defect margin | Safety-path and shared-contract reviews cannot be self-approved or merged concurrently. |
 
-After M2.0, the freely parallelizable pieces are MediaMTX recording and multi-stream setup, detector prototyping, human room-project UX, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, camera capability and capture-bundle contracts, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
+Before M2.0, the gesture producer, transcript-to-plan compiler, corpus authoring, and compiler evaluation fixtures may proceed as their input contracts freeze. MediaMTX recording and multi-stream setup, detector prototyping, and human room-project UX join the parallel work at their listed gates. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, camera capability and capture-bundle contracts, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
 
-The parallel lanes after M2.0:
+The parallel lanes:
 
 1. Freeze the transcription request/response, plan result, detection-event, and stream-naming contracts. Each contract has one change owner and a different reviewer.
-2. Claim M4.1 and M4.3 after M1.E and their listed dependencies pass. Claim M4.4 after M2.0 and its frozen contracts pass. The language and gesture lane may land before or alongside M3.0 and M3.4. Room-project UX, MediaMTX work, detector prototyping, corpus authoring, cached evaluation fixtures, and speech smoke preparation may proceed with their frozen input contracts.
+2. Begin the M4.1 compiler against the M1.1 and M1.2 sim contracts, and begin M4.4 beside M1.3 once its listed contracts freeze. Begin M4.3 push-to-talk capture after M1.E. These input lanes may land before or alongside M3.0 and M3.4. Room-project UX, MediaMTX work, detector prototyping, corpus authoring, cached evaluation fixtures, and speech smoke preparation may proceed with their frozen input contracts.
 3. Use the accepted M1 one-node capture as the hardware baseline. M3.0 earns shared indoor localization and directional clearance, then M3.4 proves known-map traversal on one aircraft before two. M3 mosaic, sensor, and detection work proceeds beside those gates.
 4. Begin M4.5 after the accepted input producers and M3.5 are complete. It joins the input path, the real indoor known-map mission, and the operator-composed walkthrough. Shared console changes merge through one owner at a time.
 5. Continue delivery-gated M2 work in booked blocks while the input lane advances independently. Hardware bookings define the autonomy lane's pace.
