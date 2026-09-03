@@ -6,8 +6,8 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
-from threading import RLock
+from dataclasses import dataclass, field
+from threading import Lock, RLock
 
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal, verify_event_signature
@@ -35,6 +35,28 @@ from relay.state import FleetRegistry, MembershipTransition, RegistryError
 
 Clock = Callable[[], int]
 EventIdFactory = Callable[[], str]
+
+
+@dataclass(frozen=True, slots=True)
+class IntentSinkResult:
+    status: LifecycleStatus
+    source: str
+    result: Mapping[str, object] = field(default_factory=dict)
+    selection_update: tuple[int, ...] | None = None
+    armed_update: bool | None = None
+    estop_update: bool | None = None
+    reason: str | None = None
+    detail: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status is LifecycleStatus.ACCEPTED:
+            raise ValueError("sink result must advance beyond relay acceptance")
+        if not self.source:
+            raise ValueError("sink result source must be non-empty")
+        if not isinstance(self.result, Mapping):
+            raise ValueError("sink result evidence must be a mapping")
+
+
 IntentSink = Callable[[IntentV1, dict[str, object]], object]
 LeaveAuthorizer = Callable[[int, int, dict[str, object]], bool]
 _UNSET = object()
@@ -68,6 +90,11 @@ class _IntentLedgerEntry:
     command_statuses: dict[str, LifecycleStatus]
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingIntent:
+    intent: IntentV1
+
+
 class RelaySession:
     """Own one authenticated session's ordering, state, audit, and replay."""
 
@@ -95,6 +122,8 @@ class RelaySession:
         self._seen_transport_event_ids: set[str] = set()
         self._last_transport_t: dict[tuple[str, int | None], int] = {}
         self._intents: dict[str, _IntentLedgerEntry] = {}
+        self._pending_intents: dict[str, _PendingIntent] = {}
+        self._execution_lock = Lock()
         self._metrics = {
             "accepted_intents": 0,
             "refused_intents": 0,
@@ -249,6 +278,9 @@ class RelaySession:
                 command_statuses={},
             )
             self._log_intent(intent, outcome=LifecycleStatus.ACCEPTED, reason=None, now=now)
+            self._pending_intents[intent.intent_id] = _PendingIntent(
+                intent=intent,
+            )
             event = acknowledgement_event(
                 t=now,
                 event_id=self.event_ids(),
@@ -260,35 +292,86 @@ class RelaySession:
             self._append_audit(event)
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
-            events = [event]
-            try:
-                process = getattr(self.intent_sink, "process_relay_intent", None)
-                if callable(process):
-                    delivered = process(intent, self.current_state(), self)
-                    downstream = delivered.execution
-                    events.extend(delivered.relay_events)
-                else:
-                    downstream = self.intent_sink(intent, self.current_state())
-            except Exception:
-                self._intents[intent.intent_id].status = LifecycleStatus.REFUSED
+            return [event]
+
+    def execute_pending_intent(self, intent_id: str) -> list[dict[str, object]]:
+        """Execute one relay-accepted intent after its acknowledgement was published."""
+        with self._lock:
+            pending = self._pending_intents.pop(intent_id, None)
+            sink = self.intent_sink
+        if pending is None:
+            return []
+        assert sink is not None
+        with self._execution_lock:
+            return self._execute_pending(pending, sink)
+
+    def _execute_pending(
+        self, pending: _PendingIntent, sink: IntentSink
+    ) -> list[dict[str, object]]:
+        intent_id = pending.intent.intent_id
+        now = self.clock()
+        events: list[dict[str, object]] = []
+        try:
+            process = getattr(sink, "process_relay_intent", None)
+            if callable(process):
+                delivered = process(pending.intent, self.current_state(), self)
+                sink_result = delivered.execution
+                events.extend(delivered.relay_events)
+            else:
+                sink_result = sink(pending.intent, self.current_state())
+        except Exception:
+            with self._lock:
+                self._intents[intent_id].status = LifecycleStatus.REFUSED
                 self._log_intent(
-                    intent,
+                    pending.intent,
                     outcome=LifecycleStatus.REFUSED,
                     reason="downstream_error",
                     now=now,
                 )
                 return [
-                    event,
                     self._refusal(
-                        intent_id=intent.intent_id,
+                        intent_id=intent_id,
                         reason="downstream_error",
                         detail="the downstream intent consumer did not accept the request",
                         now=now,
-                    ),
+                    )
                 ]
+        if sink_result is None:
+            return events
+
+        with self._lock:
             self._ensure_mutation_usable()
-            if downstream is not None:
-                events.extend(self._record_execution_result(intent, downstream))
+            if not isinstance(sink_result, IntentSinkResult):
+                events.extend(self._record_execution_result(pending.intent, sink_result))
+                return events
+            self._log_sink_result(pending.intent, sink_result, now=now)
+            if any(
+                value is not None
+                for value in (
+                    sink_result.selection_update,
+                    sink_result.armed_update,
+                    sink_result.estop_update,
+                )
+            ):
+                plan = sink_result.result.get("plan")
+                accepted_plan = dict(plan) if isinstance(plan, Mapping) else None
+                events.append(
+                    self.update_control_projection(
+                        selection=sink_result.selection_update,
+                        accepted_plan=accepted_plan,
+                        armed=sink_result.armed_update,
+                        estop=sink_result.estop_update,
+                    )
+                )
+            events.append(
+                self.record_lifecycle(
+                    intent_id=intent_id,
+                    status=sink_result.status,
+                    source=sink_result.source,
+                    reason=sink_result.reason,
+                    detail=sink_result.detail,
+                )
+            )
             return events
 
     def process_membership(self, raw: object, principal: Principal) -> list[dict[str, object]]:
@@ -929,6 +1012,21 @@ class RelaySession:
             "intent": _intent_to_dict(intent),
         }
         self._append_audit(event)
+
+    def _log_sink_result(self, intent: IntentV1, result: IntentSinkResult, *, now: int) -> None:
+        self.audit_log.append(
+            {
+                "v": 1,
+                "t": now,
+                "type": "autonomy_result",
+                "event_id": self.event_ids(),
+                "session": self.session_id,
+                "intent_id": intent.intent_id,
+                "status": result.status.value,
+                "source": result.source,
+                "result": dict(result.result),
+            }
+        )
 
     def _log_refused_intent(
         self,

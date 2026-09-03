@@ -52,7 +52,10 @@ own last authenticated activity in `NodeWatchdogState`; elapsed local time cause
 and then the configured adapter failsafe without depending on a relay loss callback or
 sending a central command to a disconnected node. Roster reconciliation's
 `LossResponse` is audit/integration metadata, while #17/M1.4 owns production runtime
-wiring. `SimCamera`
+wiring. Run `uvicorn adapters.sim.app:app` with the normal relay environment variables
+to exercise the deployable two-aircraft simulator composition. It binds the production
+relay, autonomy controller, arbiter, simulator, explicit safety enrichment, and the
+configured hold-then-failsafe watchdog without a test-only sink. `SimCamera`
 provides a full 2:1 equirectangular `pano_360`, an acknowledged-yaw `reconstruct_8`
 sequence whose retrieved files must match the eight requested headings in order within
 the plan's explicit measured yaw tolerance and measured overlap target. Completion also

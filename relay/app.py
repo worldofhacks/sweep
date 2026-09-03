@@ -9,7 +9,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from threading import Lock, RLock
@@ -27,7 +27,7 @@ from relay.auth import (
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import RelaySettings
 
-IntentSinkFactory = Callable[[str], IntentSink | None]
+IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,7 +38,14 @@ class _Subscription:
     principal: Principal
     initial_state: dict[str, object]
     roster_version: int
-    queue: asyncio.Queue[dict[str, object]] = field(default_factory=asyncio.Queue)
+    queue: asyncio.Queue[_Outbound] = field(default_factory=asyncio.Queue)
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+@dataclass(frozen=True, slots=True)
+class _Outbound:
+    event: dict[str, object]
+    delivered: asyncio.Event | None = None
 
 
 @dataclass(slots=True)
@@ -90,11 +97,6 @@ class RelayRuntime:
                         "persisted sessions are replay-only after a relay process restart; "
                         "use a new session ID",
                     )
-                sink = (
-                    None
-                    if self.intent_sink_factory is None
-                    else self.intent_sink_factory(session_id)
-                )
                 leave_authorizer = (
                     None
                     if self.leave_authorizer_factory is None
@@ -106,9 +108,10 @@ class RelayRuntime:
                     limits=self.settings.limits(),
                     clock=self.clock,
                     event_ids=self.event_ids,
-                    intent_sink=sink,
                     leave_authorizer=leave_authorizer,
                 )
+                if self.intent_sink_factory is not None:
+                    session.intent_sink = self.intent_sink_factory(session)
                 self.sessions[session_id] = session
             return session
 
@@ -224,9 +227,15 @@ class RelayRuntime:
         self,
         session_id: str,
         operation: Callable[[], list[dict[str, object]]],
+        *,
+        wait_for_connection_id: str | None = None,
     ) -> list[dict[str, object]]:
         """Caller cancellation leaves the ordered mutation and publication running."""
-        task = asyncio.create_task(self._process_and_publish(session_id, operation))
+        task = asyncio.create_task(
+            self._process_and_publish(
+                session_id, operation, wait_for_connection_id=wait_for_connection_id
+            )
+        )
         self._track_background_operation(task)
         return await asyncio.shield(task)
 
@@ -234,11 +243,21 @@ class RelayRuntime:
         self,
         session_id: str,
         operation: Callable[[], list[dict[str, object]]],
+        *,
+        wait_for_connection_id: str | None = None,
     ) -> list[dict[str, object]]:
+        deliveries: list[asyncio.Event] = []
         async with self._session_operation(session_id):
             events = await asyncio.to_thread(operation)
-            await self.publish(session_id, events)
-            return events
+            await self.publish(
+                session_id,
+                events,
+                wait_for_connection_id=wait_for_connection_id,
+                deferred_deliveries=deliveries,
+            )
+        for delivered in deliveries:
+            await delivered.wait()
+        return events
 
     def _track_background_operation(self, task: asyncio.Task[object]) -> None:
         self._background_operations.add(task)
@@ -290,12 +309,19 @@ class RelayRuntime:
                     if principal.source == "adapter":
                         assert principal.drone_id is not None
                         try:
+                            connection_epoch = session.registry.connection_epoch(principal.drone_id)
                             events = await asyncio.to_thread(
                                 session.handle_adapter_disconnect,
                                 drone_id=principal.drone_id,
-                                connection_epoch=session.registry.connection_epoch(
-                                    principal.drone_id
-                                ),
+                                connection_epoch=connection_epoch,
+                            )
+                            events.extend(
+                                await asyncio.to_thread(
+                                    self.adapter_disconnected,
+                                    session,
+                                    drone_id=principal.drone_id,
+                                    connection_epoch=connection_epoch,
+                                )
                             )
                             await self.publish(session_id, events)
                         except AuditLogError:
@@ -307,8 +333,16 @@ class RelayRuntime:
                 finally:
                     await self.unsubscribe(session_id, subscription)
 
-    async def publish(self, session_id: str, events: list[dict[str, object]]) -> None:
+    async def publish(
+        self,
+        session_id: str,
+        events: list[dict[str, object]],
+        *,
+        wait_for_connection_id: str | None = None,
+        deferred_deliveries: list[asyncio.Event] | None = None,
+    ) -> None:
         """Queue an event batch atomically with respect to subscription activation."""
+        deliveries: list[asyncio.Event] = []
         async with self._connection_lock:
             subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
             for subscription in subscriptions:
@@ -326,9 +360,22 @@ class RelayRuntime:
                 ):
                     continue
                 for event in events:
-                    subscription.queue.put_nowait(event)
+                    delivered = (
+                        asyncio.Event()
+                        if subscription.connection_id == wait_for_connection_id
+                        else None
+                    )
+                    if delivered is not None:
+                        deliveries.append(delivered)
+                    subscription.queue.put_nowait(_Outbound(event, delivered))
                 if batch_roster_version is not None:
                     subscription.roster_version = batch_roster_version
+
+        if deferred_deliveries is not None:
+            deferred_deliveries.extend(deliveries)
+        else:
+            for delivered in deliveries:
+                await delivered.wait()
 
     def connection_count(self) -> int:
         return sum(len(subscriptions) for subscriptions in self._subscriptions.values())
@@ -353,7 +400,7 @@ class RelayRuntime:
 
     async def _fanout_session(self, session_id: str, session: RelaySession) -> None:
         try:
-            await self.process_and_publish(session_id, session.periodic_events)
+            await self.process_and_publish(session_id, lambda: self.periodic_events(session))
         except AuditLogError:
             self._fanout_failed_sessions.add(session_id)
             _LOGGER.exception("session fan-out stopped after audit failure session=%s", session_id)
@@ -367,6 +414,48 @@ class RelayRuntime:
                 session_id,
                 exc_info=(type(error), error, error.__traceback__),
             )
+
+    def adapter_disconnected(
+        self,
+        session: RelaySession,
+        *,
+        drone_id: int,
+        connection_epoch: int | None,
+    ) -> list[dict[str, object]]:
+        sink = session.intent_sink
+        disconnected = getattr(sink, "adapter_disconnected", None)
+        if not callable(disconnected) or connection_epoch is None:
+            return []
+        try:
+            return disconnected(
+                drone_id=drone_id,
+                connection_epoch=connection_epoch,
+                relay_state=session.current_state(),
+            )
+        except Exception:
+            return [
+                session.protocol_refusal(
+                    reason="safety_runtime_error",
+                    detail="the configured safety runtime failed closed",
+                )
+            ]
+
+    def periodic_events(self, session: RelaySession) -> list[dict[str, object]]:
+        events = session.periodic_events()
+        periodic = getattr(session.intent_sink, "periodic_events", None)
+        if callable(periodic):
+            try:
+                events.extend(periodic(events[-1]))
+            except AuditLogError:
+                raise
+            except Exception:
+                events.append(
+                    session.protocol_refusal(
+                        reason="safety_runtime_error",
+                        detail="the configured safety runtime failed closed",
+                    )
+                )
+        return events
 
 
 def create_app(
@@ -457,7 +546,19 @@ def create_app(
                     await runtime.process_and_publish(
                         session_id,
                         lambda received=frame: session.process_frame(received, principal),
+                        wait_for_connection_id=subscription.connection_id,
                     )
+                    if (
+                        principal.source in {"console", "keyboard"}
+                        and isinstance(frame, Mapping)
+                        and frame.get("type") == "intent"
+                        and isinstance(frame.get("intent_id"), str)
+                    ):
+                        outcome = await asyncio.to_thread(
+                            session.execute_pending_intent,
+                            frame["intent_id"],
+                        )
+                        await runtime.publish(session_id, outcome)
         except WebSocketDisconnect:
             pass
         except AuditLogError:
@@ -511,8 +612,13 @@ def create_app(
 
 async def _send_events(websocket: WebSocket, subscription: _Subscription) -> None:
     while True:
-        event = await subscription.queue.get()
-        await websocket.send_json(event)
+        outbound = await subscription.queue.get()
+        try:
+            async with subscription.send_lock:
+                await websocket.send_json(outbound.event)
+        finally:
+            if outbound.delivered is not None:
+                outbound.delivered.set()
 
 
 def _log_background_failure(task: asyncio.Task[object]) -> None:

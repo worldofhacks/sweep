@@ -5,7 +5,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +14,8 @@ import relay.audit as audit_module
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal
 from relay.contracts import LifecycleStatus
-from relay.session import RelayLimits, RelaySession
+from relay.intent_v1 import IntentV1
+from relay.session import IntentSinkResult, RelayLimits, RelaySession
 from relay.tests.conftest import (
     ADAPTER_KEY,
     SESSION,
@@ -978,7 +979,8 @@ def test_downstream_failure_has_terminal_refused_record(
 
     session = _new_session(tmp_path, clock, event_ids, intent_sink=fail)
 
-    result = session.process_intent(intent_payload(), console_principal)
+    accepted = session.process_intent(intent_payload(), console_principal)
+    result = session.execute_pending_intent("intent-1")
     records = session.replay()["events"]
     intent_outcomes = [
         record["event"]["outcome"]
@@ -986,10 +988,56 @@ def test_downstream_failure_has_terminal_refused_record(
         if record["event"]["type"] == "intent_record"
     ]
 
-    assert [event["status"] for event in result] == ["accepted", "refused"]
-    assert result[1]["reason"] == "downstream_error"
+    assert accepted[0]["status"] == "accepted"
+    assert result[0]["reason"] == "downstream_error"
     assert intent_outcomes == ["accepted", "refused"]
     assert "do not expose this" not in str(records)
+
+
+def test_pending_execution_uses_live_state_and_serializes_intents(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    console_principal: Principal,
+) -> None:
+    first_started = Event()
+    release_first = Event()
+    second_started = Event()
+    observed_selections: list[list[int]] = []
+
+    def sink(intent: IntentV1, state: dict[str, object]) -> IntentSinkResult | None:
+        observed_selections.append(state["selection"])
+        if intent.intent_id == "intent-1":
+            first_started.set()
+            assert release_first.wait(timeout=2)
+            return IntentSinkResult(
+                status=LifecycleStatus.COMPLETED,
+                source="test",
+                selection_update=(2,),
+            )
+        else:
+            second_started.set()
+        return None
+
+    session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
+    session.process_intent(intent_payload(intent_id="intent-1"), console_principal)
+    estop = intent_payload(intent_id="intent-2")
+    estop.update(name="estop", selection=[])
+    session.process_intent(estop, console_principal)
+
+    first = Thread(target=session.execute_pending_intent, args=("intent-1",))
+    second = Thread(target=session.execute_pending_intent, args=("intent-2",))
+    first.start()
+    assert first_started.wait(timeout=1)
+    second.start()
+    assert not second_started.wait(timeout=0.05)
+    release_first.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert observed_selections == [[], [2]]
 
 
 def _contains_key(value: object, target: str) -> bool:

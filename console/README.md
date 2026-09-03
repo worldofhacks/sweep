@@ -148,3 +148,9 @@ name, ambiguity returns options, and the outcome card says the local fallback ra
 nothing: the intent leaves on the console connection only after the dock confirms it. Without a
 relay bootstrap, and in fixture mode, the module reports language disabled and still compiles typed
 text.
+
+The M2.0 control panel emits the production Intent v1 sequence for session arm, aircraft
+selection, confirmed takeoff, configured-step translation, hold, come home, and confirmed
+land-all. Takeoff and land-all stay in preview until the operator confirms the exact request,
+selection, and roster version. The network E-stop remains available from both its button and the
+separately authenticated keyboard connection.

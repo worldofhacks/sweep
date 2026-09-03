@@ -112,6 +112,34 @@ def test_first_frame_authentication_precedes_state_and_intent_results(
     assert CONSOLE_KEY.decode() not in replay.text
 
 
+def test_relay_publishes_acceptance_before_downstream_execution_finishes(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    started = Event()
+    release = Event()
+
+    def blocking_sink(_intent: object, _state: object) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+
+    app = create_app(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=lambda _session: blocking_sink,
+    )
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as socket:
+            _authenticate_console(socket)
+            socket.send_json(intent_payload())
+            acknowledgement = _receive_type(socket, "acknowledgement")
+            assert started.wait(timeout=1)
+            release.set()
+
+    assert acknowledgement["status"] == "accepted"
+
+
 def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:

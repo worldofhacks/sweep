@@ -291,6 +291,57 @@ describe('M1.1 wire compatibility', () => {
   })
 })
 
+describe('M1.4 production control intents', () => {
+  test.each([
+    ['arm', {}, [], false],
+    ['select', { ids: [1, 2] }, [], false],
+    ['takeoff', {}, [1, 2], true],
+    ['translate', { dx: 1, dy: 0 }, [1, 2], false],
+    ['hold', {}, [1, 2], false],
+    ['come_home', {}, [1, 2], false],
+    ['land_all', {}, [], true],
+    ['estop', {}, [], false],
+  ])('accepts the production %s envelope', (name, args, selection, confirm) => {
+    expect(
+      isConsoleIntentV1({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'intent',
+        intent_id: `intent-${name}`,
+        retry_of: null,
+        source: 'console',
+        session,
+        name,
+        args,
+        selection,
+        mode: 'indoor',
+        confirm,
+      }),
+    ).toBe(true)
+  })
+
+  test('keeps takeoff and land-all behind confirmation', () => {
+    for (const name of ['takeoff', 'land_all']) {
+      expect(
+        isConsoleIntentV1({
+          v: 1,
+          t: 1_756_700_000_000,
+          type: 'intent',
+          intent_id: `intent-${name}`,
+          retry_of: null,
+          source: 'console',
+          session,
+          name,
+          args: {},
+          selection: name === 'takeoff' ? [1, 2] : [],
+          mode: 'indoor',
+          confirm: false,
+        }),
+      ).toBe(false)
+    }
+  })
+})
+
 describe('console Intent v1 mirror', () => {
   test.each([
     ['console', 'hold', {}, [1], false],

@@ -40,6 +40,13 @@ class FailingFixtureRelayClient extends FixtureRelayClient {
   }
 }
 
+class DelayedSelectionFixtureRelayClient extends FixtureRelayClient {
+  override async sendIntent(intent: IntentV1): Promise<void> {
+    this.sent.push(intent)
+    await new Promise(() => undefined)
+  }
+}
+
 describe('Control / Capture console', () => {
   test('renders a four-source fixture mosaic and keeps media focus local to the console', async () => {
     const clients = fixtureClients()
@@ -228,6 +235,95 @@ describe('Control / Capture console', () => {
       selection: [],
     })
     expect(clients.console.sent).toHaveLength(0)
+  })
+
+  test('runs the two-drone flight workflow through production control actions', async () => {
+    const clients = {
+      console: new FixtureRelayClient(session, clock, 'console', 4, false),
+      keyboard: new FixtureRelayClient(session, clock, 'keyboard', 4, false),
+    }
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByText(/Development fixture active/i)
+
+    await openControlPane(user, 'Fleet')
+    await user.click(screen.getByRole('button', { name: 'Select D-02' }))
+    await openControlPane(user, 'Swarm')
+    await user.click(screen.getByRole('button', { name: 'Arm' }))
+    await user.click(screen.getByRole('button', { name: /^Takeoff/i }))
+    expect(clients.console.sent.map((intent) => intent.name)).toEqual(['select', 'arm'])
+    await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
+
+    await user.click(screen.getByRole('button', { name: 'Translate north' }))
+    await user.click(screen.getByRole('button', { name: 'Hold' }))
+    await user.click(screen.getByRole('button', { name: /^Come home/ }))
+    await user.click(screen.getByRole('button', { name: /^Land all/ }))
+    expect(clients.console.sent.map((intent) => intent.name)).toEqual([
+      'select',
+      'arm',
+      'takeoff',
+      'translate',
+      'hold',
+      'come_home',
+    ])
+    await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
+
+    expect(clients.console.sent.map((intent) => intent.name)).toEqual([
+      'select',
+      'arm',
+      'takeoff',
+      'translate',
+      'hold',
+      'come_home',
+      'land_all',
+    ])
+    expect(clients.console.sent.find((intent) => intent.name === 'takeoff')).toMatchObject({
+      selection: [1, 2],
+      confirm: true,
+    })
+    expect(clients.console.sent.find((intent) => intent.name === 'translate')).toMatchObject({
+      args: { dx: 0, dy: 2 },
+      selection: [1, 2],
+    })
+    expect(clients.console.sent.find((intent) => intent.name === 'land_all')).toMatchObject({
+      selection: [],
+      confirm: true,
+    })
+  })
+
+  test('invalidates a confirmed-flight preview when authoritative selection changes', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByText(/Development fixture active/i)
+
+    await user.click(screen.getByRole('button', { name: /^Takeoff/i }))
+    await openControlPane(user, 'Fleet')
+    await user.click(screen.getByRole('button', { name: 'Select D-02' }))
+    await openControlPane(user, 'Swarm')
+
+    expect(clients.console.sent.map((intent) => intent.name)).toEqual(['select'])
+    expect(screen.queryByRole('button', { name: 'Confirm and send' })).not.toBeInTheDocument()
+    expect(await screen.findAllByText('selection_change_requested')).not.toHaveLength(0)
+  })
+
+  test('invalidates a preview as soon as a new selection is requested', async () => {
+    const clients = {
+      console: new DelayedSelectionFixtureRelayClient(session, clock, 'console'),
+      keyboard: new FixtureRelayClient(session, clock, 'keyboard'),
+    }
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByText(/Development fixture active/i)
+
+    await user.click(screen.getByRole('button', { name: /^Takeoff/i }))
+    await openControlPane(user, 'Fleet')
+    await user.click(screen.getByRole('button', { name: 'Select D-02' }))
+    await openControlPane(user, 'Swarm')
+
+    expect(clients.console.sent.map((intent) => intent.name)).toEqual(['select'])
+    expect(screen.queryByRole('button', { name: 'Confirm and send' })).not.toBeInTheDocument()
+    expect(await screen.findAllByText('selection_change_requested')).not.toHaveLength(0)
   })
 
   test('shows send failure and does not retry or substitute a command', async () => {

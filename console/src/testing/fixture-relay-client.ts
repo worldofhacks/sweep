@@ -84,16 +84,19 @@ export class FixtureRelayClient implements RelayClient {
   private readonly sessionId: string
   private readonly now: () => number
   private readonly source: IntentSource
+  private armed: boolean
 
   constructor(
     sessionId: string,
     now: () => number = () => Date.now(),
     source: IntentSource = 'console',
     scenario: FixtureFleetSize | FixtureScenarioName = 4,
+    armed = true,
   ) {
     this.sessionId = sessionId
     this.now = now
     this.source = source
+    this.armed = armed
     this.scenario = typeof scenario === 'number' ? controlScenario(scenario) : fixtureScenario(scenario)
   }
 
@@ -171,6 +174,10 @@ export class FixtureRelayClient implements RelayClient {
     }
     if (intent.name === 'select' && 'ids' in intent.args) {
       this.selection = [...intent.args.ids]
+    } else if (intent.name === 'arm') {
+      this.armed = true
+    }
+    if (intent.name === 'select' || intent.name === 'arm') {
       this.emitState(t)
     }
     this.emitServer({
@@ -215,7 +222,7 @@ export class FixtureRelayClient implements RelayClient {
       type: 'state',
       session: this.sessionId,
       roster_version: this.scenario.rosterVersion,
-      armed: true,
+      armed: this.armed,
       estop: false,
       selection: this.selection,
       formation: this.scenario.formation,
