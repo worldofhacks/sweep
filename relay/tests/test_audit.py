@@ -205,3 +205,29 @@ def test_failed_rollback_permanently_fences_append_io(
 
     assert writes == writes_after_failure
     assert log.last_sequence == 0
+
+
+def test_close_failure_fences_writer_and_reopen_continues_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    real_close = os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("injected close failure")
+
+    monkeypatch.setattr(os, "close", close_then_fail)
+
+    with pytest.raises(AuditLogError, match="cannot close session log"):
+        log.append(_event("event-1"))
+    with pytest.raises(AuditLogError, match="unusable"):
+        log.append(_event("event-2"))
+    assert log.last_sequence == 0
+
+    monkeypatch.setattr(os, "close", real_close)
+    reopened = SessionAuditLog(tmp_path, "session-1")
+    second = reopened.append(_event("event-2"))
+
+    assert second["seq"] == 2
+    assert [record["seq"] for record in reopened.replay()] == [1, 2]

@@ -47,7 +47,7 @@ class SessionAuditLog:
         """Validate and durably append one safe JSON-native event."""
         with self._lock:
             if not self._append_usable:
-                raise AuditLogError("session log is unusable after a failed append rollback")
+                raise AuditLogError("session log is unusable after a failed append operation")
             _reject_sensitive_fields(event)
             if event.get("session") != self.session:
                 raise AuditLogError("event session does not match this log")
@@ -89,7 +89,11 @@ class SessionAuditLog:
                     ) from None
                 raise AuditLogError(f"cannot append session log: {error}") from None
             finally:
-                os.close(descriptor)
+                try:
+                    os.close(descriptor)
+                except OSError as error:
+                    self._append_usable = False
+                    raise AuditLogError(f"cannot close session log: {error}") from None
             self._next_sequence += 1
             return json.loads(encoded)
 
