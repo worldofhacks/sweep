@@ -149,4 +149,35 @@ describe('Control / Capture console', () => {
     expect(screen.getByRole('button', { name: /Capture room/ })).toBeDisabled()
     expect(screen.getByRole('radio', { name: /Pano 360/ })).toHaveAttribute('aria-checked', 'true')
   })
+
+  test('moves the capture pattern with arrow keys as a single tab stop', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByText(/Development fixture active/i)
+
+    const pano = screen.getByRole('radio', { name: /Pano 360/ })
+    const reconstruct = screen.getByRole('radio', { name: /Reconstruct 8/ })
+    expect(pano).toHaveAttribute('tabindex', '0')
+    expect(reconstruct).toHaveAttribute('tabindex', '-1')
+
+    pano.focus()
+    await user.keyboard('{ArrowRight}')
+    expect(reconstruct).toHaveAttribute('aria-checked', 'true')
+    expect(reconstruct).toHaveFocus()
+    expect(pano).toHaveAttribute('tabindex', '-1')
+  })
+
+  test('flags a blank room identifier beside the field', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByText(/Development fixture active/i)
+
+    const field = screen.getByLabelText('Room identifier')
+    await user.clear(field)
+    expect(field).toHaveAttribute('aria-invalid', 'true')
+    expect(field).toHaveAccessibleDescription('Enter a room identifier.')
+    expect(screen.getByRole('button', { name: /Capture room/ })).toBeDisabled()
+  })
 })

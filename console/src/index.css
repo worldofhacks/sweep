@@ -1,14 +1,14 @@
 :root {
   /* Carbon ladder: elevation is a lightness step plus a hairline, never a shadow. */
   --surface-0: oklch(14% 0.012 250);
-  --surface-1: oklch(17.5% 0.012 250);
-  --surface-2: oklch(21% 0.012 250);
-  --surface-3: oklch(25% 0.012 250);
-  --line: oklch(28% 0.012 250);
-  --line-strong: oklch(36% 0.014 250);
+  --surface-1: oklch(18.5% 0.012 250);
+  --surface-2: oklch(23% 0.012 250);
+  --surface-3: oklch(27.5% 0.012 250);
+  --line: oklch(31% 0.012 250);
+  --line-strong: oklch(39% 0.014 250);
   --text-1: oklch(93% 0.005 250);
-  --text-2: oklch(72% 0.01 250);
-  --text-3: oklch(56% 0.012 250);
+  --text-2: oklch(76% 0.01 250);
+  --text-3: oklch(64% 0.012 250);
 
   /* Phosphor cyan: kept away from the ready/warn/stop hues so an accent never reads as a status. */
   --accent: oklch(80% 0.11 200);
@@ -24,7 +24,8 @@
   --warn-tint: oklch(80% 0.13 85 / 0.12);
   --warn-line: oklch(80% 0.13 85 / 0.45);
   --danger: oklch(70% 0.17 25);
-  --danger-strong: oklch(58% 0.2 25);
+  --danger-strong: oklch(50% 0.19 25);
+  --danger-strong-hover: oklch(54% 0.2 25);
   --danger-tint: oklch(70% 0.17 25 / 0.14);
   --danger-line: oklch(70% 0.17 25 / 0.55);
   --on-danger: oklch(98% 0.01 25);

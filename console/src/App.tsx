@@ -10,6 +10,8 @@ import {
   type RequestRecord,
 } from './control/state'
 import type { CapturePattern, DroneId, RelayAircraftState } from './relay/contract'
+
+const CAPTURE_PATTERNS: readonly CapturePattern[] = ['pano_360', 'reconstruct_8']
 import { UnavailableTranscriptClient, type TranscriptClient, type VoiceOutcome } from './voice/client'
 import { MAX_RECORDING_MS, usePushToTalk, type UsePushToTalkOptions } from './voice/use-push-to-talk'
 import { usePushToTalkKey } from './voice/use-push-to-talk-key'
@@ -38,6 +40,8 @@ const unavailableTranscriptClient = new UnavailableTranscriptClient(
 export default function App({ sessionId, clients, intentDependencies, transcriptClient, voiceOptions }: AppProps) {
   const [roomId, setRoomId] = useState('room-01')
   const previewRef = useRef<HTMLElement>(null)
+  const captureButtonRef = useRef<HTMLButtonElement>(null)
+  const hadPendingRequest = useRef(false)
   const {
     state,
     pendingRequest,
@@ -59,6 +63,8 @@ export default function App({ sessionId, clients, intentDependencies, transcript
 
   useEffect(() => {
     if (pendingRequest) previewRef.current?.focus()
+    else if (hadPendingRequest.current) captureButtonRef.current?.focus()
+    hadPendingRequest.current = Boolean(pendingRequest)
   }, [pendingRequest])
 
   const aircraft = useMemo(
@@ -91,6 +97,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
 
   return (
     <div className="operator-shell">
+      <a className="skip-link" href="#workspace">Skip to workspace</a>
       <header className="topbar">
         <div className="brand-block">
           <span className="brand-mark" aria-hidden="true">SW</span>
@@ -163,7 +170,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
           </div>
         </aside>
 
-        <main className="workspace">
+        <main className="workspace" id="workspace" tabIndex={-1}>
           <header className="page-heading">
             <div>
               <h1>Control / Capture</h1>
@@ -263,10 +270,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
                 id="registry-title"
               />
               {aircraft.length === 0 ? (
-                <EmptyState
-                  title="No aircraft state"
-                  detail="Waiting for an authenticated relay snapshot. No local simulator is running."
-                />
+                <RegistryEmptyState status={state.connection.status} />
               ) : (
                 <ul className="aircraft-list">
                   {aircraft.map((drone) => {
@@ -302,7 +306,12 @@ export default function App({ sessionId, clients, intentDependencies, transcript
                           <span className="mono">{drone.adapter_id}</span>
                           <span>{formatReadiness(drone)}</span>
                           <span className="mono">{drone.battery === null ? 'batt —' : `batt ${Math.round(drone.battery * 100)}%`}</span>
-                          <button type="button" className="text-button" onClick={() => selectFeed(drone.drone_id)}>
+                          <button
+                            type="button"
+                            className="text-button"
+                            aria-label={`View feed for ${formatDroneId(drone.drone_id)}`}
+                            onClick={() => selectFeed(drone.drone_id)}
+                          >
                             View feed
                           </button>
                         </div>
@@ -319,19 +328,35 @@ export default function App({ sessionId, clients, intentDependencies, transcript
                 meta="Confirmation required"
                 id="capture-title"
               />
-              <label className="field-label" htmlFor="room-id">Room identifier</label>
-              <input
-                className="text-field mono"
-                id="room-id"
-                value={roomId}
-                onChange={(event) => setRoomId(event.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
+              <div className="control-stack">
+              <div className="field">
+                <label className="field-label" htmlFor="room-id">Room identifier</label>
+                <input
+                  className="text-field mono"
+                  id="room-id"
+                  value={roomId}
+                  onChange={(event) => setRoomId(event.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={roomId.trim() ? undefined : true}
+                  aria-describedby={roomId.trim() ? undefined : 'room-id-error'}
+                />
+                {!roomId.trim() && <p className="field-error" id="room-id-error">Enter a room identifier.</p>}
+              </div>
 
               <fieldset className="pattern-fieldset">
                 <legend>Capture pattern</legend>
-                <div className="pattern-options" role="radiogroup" aria-label="Capture pattern">
+                <div
+                  className="pattern-options"
+                  role="radiogroup"
+                  onKeyDown={(event) => {
+                    const next = nextCapturePattern(state.capturePattern, event.key)
+                    if (!next) return
+                    event.preventDefault()
+                    changeCapturePattern(next)
+                    document.getElementById(`pattern-${next}`)?.focus()
+                  }}
+                >
                   <PatternButton
                     pattern="pano_360"
                     active={state.capturePattern === 'pano_360'}
@@ -358,6 +383,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
               <button
                 type="button"
                 className="primary-action"
+                ref={captureButtonRef}
                 disabled={Boolean(captureBlockedReason)}
                 onClick={() => prepareCapture(roomId)}
               >
@@ -409,6 +435,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
                 </button>
               </div>
               {voice.outcome && <VoiceOutcomeCard outcome={voice.outcome} />}
+              </div>
             </section>
 
             <section className="panel active-panel" aria-labelledby="active-title">
@@ -439,7 +466,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
                 meta={selectedFeed ? formatDroneId(selectedFeed.drone_id) : 'No feed selected'}
                 id="feed-title"
               />
-              <FeedSlot drone={selectedFeed} />
+              <FeedSlot drone={selectedFeed} firstAircraft={aircraft[0] ?? null} onSelectFeed={selectFeed} />
             </section>
 
             <section className="panel request-panel" aria-labelledby="request-title">
@@ -610,9 +637,11 @@ function PatternButton({ pattern, active, onSelect, title, detail }: {
   return (
     <button
       type="button"
+      id={`pattern-${pattern}`}
       className={active ? 'pattern-button is-active' : 'pattern-button'}
       role="radio"
       aria-checked={active}
+      tabIndex={active ? 0 : -1}
       onClick={() => onSelect(pattern)}
     >
       <strong>{title}</strong>
@@ -655,13 +684,22 @@ function Metric({ label, value }: { label: string; value: number | null }) {
   )
 }
 
-function FeedSlot({ drone }: { drone: RelayAircraftState | null }) {
+function FeedSlot({ drone, firstAircraft, onSelectFeed }: {
+  drone: RelayAircraftState | null
+  firstAircraft: RelayAircraftState | null
+  onSelectFeed: (id: DroneId) => void
+}) {
   if (!drone) {
     return (
       <div className="feed-empty">
         <span className="reticle" aria-hidden="true"><i /></span>
-        <strong>Select “View feed” on an aircraft</strong>
-        <p>No stream is selected. Flight controls are unaffected.</p>
+        <strong>No feed selected</strong>
+        <p>Choose an aircraft to view its stream. Flight controls are unaffected.</p>
+        {firstAircraft && (
+          <button type="button" className="text-button" onClick={() => onSelectFeed(firstAircraft.drone_id)}>
+            Show {formatDroneId(firstAircraft.drone_id)} feed
+          </button>
+        )}
       </div>
     )
   }
@@ -719,6 +757,7 @@ function RequestItem({ request, state, onRetry }: {
         <button
           type="button"
           className="text-button retry-button"
+          aria-label={`Retry ${humanizeCode(request.intent.name)} ${shortId(request.intent.intent_id)} as new intent`}
           disabled={Boolean(retryReason)}
           title={retryReason ?? undefined}
           onClick={() => onRetry(request)}
@@ -735,6 +774,40 @@ function RequestItem({ request, state, onRetry }: {
 
 function EmptyState({ title, detail }: { title: string; detail: string }) {
   return <div className="empty-state"><strong>{title}</strong><p>{detail}</p></div>
+}
+
+function RegistryEmptyState({ status }: { status: ControlState['connection']['status'] }) {
+  if (status === 'connecting') {
+    return <EmptyState title="Connecting to relay" detail="The authenticated snapshot has not arrived yet." />
+  }
+  if (status === 'connected' || status === 'degraded') {
+    return <EmptyState title="No aircraft registered" detail="The relay reports an empty roster for this session." />
+  }
+  return (
+    <EmptyState
+      title="No aircraft state"
+      detail="Aircraft state arrives with an authenticated relay snapshot. Configure the relay bootstrap to connect."
+    />
+  )
+}
+
+function nextCapturePattern(current: CapturePattern, key: string): CapturePattern | null {
+  const index = CAPTURE_PATTERNS.indexOf(current)
+  const last = CAPTURE_PATTERNS.length - 1
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return CAPTURE_PATTERNS[index === last ? 0 : index + 1]
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return CAPTURE_PATTERNS[index <= 0 ? last : index - 1]
+    case 'Home':
+      return CAPTURE_PATTERNS[0]
+    case 'End':
+      return CAPTURE_PATTERNS[last]
+    default:
+      return null
+  }
 }
 
 function getCaptureBlockedReason(state: ControlState, roomId: string): string | null {
