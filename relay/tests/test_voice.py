@@ -888,6 +888,39 @@ def test_whisper_transport_retries_transient_provider_statuses_once(
     assert calls == 2
 
 
+def test_transcript_service_wraps_provider_decoding_errors_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def post(*args: object, **kwargs: object) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.DecodingError(
+            "malformed compressed response",
+            request=httpx.Request("POST", "https://api.openai.com/v1/audio/transcriptions"),
+        )
+
+    monkeypatch.setattr(voice.httpx, "post", post)
+    outcome = TranscriptService(
+        transcription=OpenAIWhisperTransport(api_key="server-only-key"),
+        compiler=SpyCompiler(),
+        duration_probe=fixed_audio_duration,
+    ).process(
+        session_id=SESSION,
+        correlation_id="voice-provider-decoding-error",
+        content_type="audio/webm",
+        body=b"audio",
+        relay_state=valid_relay_state(),
+        now_ms=1_756_700_000_001,
+    )
+
+    assert outcome.status == "refused"
+    assert outcome.reason == "transcription_unavailable"
+    assert outcome.emissions == ()
+    assert calls == 1
+
+
 def test_keyless_whisper_transport_never_starts_an_http_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

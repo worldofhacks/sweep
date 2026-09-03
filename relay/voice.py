@@ -117,6 +117,8 @@ class OpenAIWhisperTransport:
                 if attempt + 1 == MAX_TRANSCRIPTION_ATTEMPTS:
                     raise TranscriptionError("transcription provider request failed") from error
                 continue
+            except httpx.HTTPError as error:
+                raise TranscriptionError("transcription provider request failed") from error
             try:
                 body = response.json()
             except (TypeError, ValueError) as error:
