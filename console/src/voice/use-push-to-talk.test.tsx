@@ -89,6 +89,45 @@ describe('push-to-talk recording', () => {
     expect(client.transcribe).not.toHaveBeenCalled()
   })
 
+  test('discards partial audio when the recorder stops without a requested stop', async () => {
+    vi.useFakeTimers()
+    const recorder = new FakeRecorder()
+    const stopTrack = vi.fn()
+    const client: TranscriptClient = {
+      transcribe: vi.fn().mockResolvedValue({
+        status: 'transcribed',
+        source: 'whisper',
+        reason: null,
+        transcript: 'partial',
+        emissions: [],
+      }),
+    }
+    const { result } = renderHook(() =>
+      usePushToTalk({
+        sessionId: 'session-1',
+        client,
+        requestAudio: async () => ({ getTracks: () => [{ stop: stopTrack }] }) as unknown as MediaStream,
+        recorderFactory: (() => recorder) as RecorderFactory,
+      }),
+    )
+
+    await act(async () => result.current.start())
+    act(() => {
+      recorder.state = 'inactive'
+      recorder.ondataavailable?.({
+        data: new Blob(['partial'], { type: recorder.mimeType }),
+      } as BlobEvent)
+      recorder.onstop?.()
+    })
+    await act(async () => vi.advanceTimersByTimeAsync(MAX_RECORDING_MS))
+
+    expect(result.current.status).toBe('error')
+    expect(result.current.detail).toBe('Recording stopped unexpectedly. No audio was sent.')
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    expect(recorder.stop).not.toHaveBeenCalled()
+    expect(client.transcribe).not.toHaveBeenCalled()
+  })
+
   test('cleans up a recorder start failure without uploading audio', async () => {
     const recorder = new FakeRecorder()
     recorder.start.mockImplementation(() => {

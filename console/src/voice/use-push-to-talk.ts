@@ -49,6 +49,7 @@ export function usePushToTalk({
   const recorderRef = useRef<Recorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const recordingRequestedRef = useRef(false)
+  const stopRequestedRef = useRef(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const startedAtRef = useRef<number | null>(null)
 
@@ -61,7 +62,10 @@ export function usePushToTalk({
     recordingRequestedRef.current = false
     clearTimer()
     const recorder = recorderRef.current
-    if (recorder?.state === 'recording') recorder.stop()
+    if (recorder?.state === 'recording') {
+      stopRequestedRef.current = true
+      recorder.stop()
+    }
   }, [clearTimer])
 
   const start = useCallback(async () => {
@@ -96,18 +100,27 @@ export function usePushToTalk({
     }
     const chunks: Blob[] = []
     const correlationId = nextId()
+    stopRequestedRef.current = false
     streamRef.current = stream
     startedAtRef.current = Date.now()
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunks.push(event.data)
     }
     recorder.onstop = () => {
+      clearTimer()
+      const stopRequested = stopRequestedRef.current
+      stopRequestedRef.current = false
       stream.getTracks().forEach((track) => track.stop())
       streamRef.current = null
       recordingRequestedRef.current = false
       recorderRef.current = null
       const startedAt = startedAtRef.current
       startedAtRef.current = null
+      if (!stopRequested) {
+        setStatus('error')
+        setDetail('Recording stopped unexpectedly. No audio was sent.')
+        return
+      }
       const audio = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
       if (audio.size === 0) {
         setStatus('error')
@@ -135,6 +148,7 @@ export function usePushToTalk({
       recorder.onerror = null
       recorderRef.current = null
       recordingRequestedRef.current = false
+      stopRequestedRef.current = false
       startedAtRef.current = null
       stream.getTracks().forEach((track) => track.stop())
       streamRef.current = null
@@ -162,6 +176,7 @@ export function usePushToTalk({
     () => () => {
       clearTimer()
       recordingRequestedRef.current = false
+      stopRequestedRef.current = false
       const recorder = recorderRef.current
       recorderRef.current = null
       if (recorder) {

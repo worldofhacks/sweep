@@ -92,6 +92,37 @@ def opus_webm(seconds: int) -> bytes:
     return output.getvalue()
 
 
+def opus_webm_with_video() -> bytes:
+    output = io.BytesIO()
+    with av.open(output, mode="w", format="webm") as container:
+        video = container.add_stream("libvpx", rate=1)
+        video.width = 16
+        video.height = 16
+        video.pix_fmt = "yuv420p"
+        audio = container.add_stream("libopus", rate=48_000)
+        audio.layout = "mono"
+
+        video_frame = av.VideoFrame(16, 16, "yuv420p")
+        video_frame.pts = 0
+        video_frame.time_base = Fraction(1, 1)
+        for packet in video.encode(video_frame):
+            container.mux(packet)
+
+        audio_frame = av.AudioFrame(format="s16", layout="mono", samples=960)
+        audio_frame.sample_rate = 48_000
+        audio_frame.pts = 0
+        audio_frame.time_base = Fraction(1, 48_000)
+        for plane in audio_frame.planes:
+            plane.update(bytes(plane.buffer_size))
+        for packet in audio.encode(audio_frame):
+            container.mux(packet)
+        for packet in video.encode(None):
+            container.mux(packet)
+        for packet in audio.encode(None):
+            container.mux(packet)
+    return output.getvalue()
+
+
 def test_transcript_service_hands_only_valid_audio_to_the_compiler() -> None:
     transport = FixedTranscriptionTransport()
     compiler = SpyCompiler()
@@ -465,6 +496,44 @@ def test_transcript_service_rejects_decoded_audio_over_thirty_seconds_before_pro
     assert transport.calls == 0
 
 
+def test_transcript_endpoint_decodes_audio_when_video_is_the_first_stream(tmp_path: Path) -> None:
+    transport = FixedTranscriptionTransport()
+    settings = RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path)
+    app = create_app(settings)
+    runtime = RelayRuntime(settings)
+    runtime.session(SESSION)
+    app.state.relay_runtime = runtime
+    app.state.transcript_service = TranscriptService(
+        transcription=transport, compiler=SpyCompiler()
+    )
+    upload = opus_webm_with_video()
+
+    async def request() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                f"/api/sessions/{SESSION}/transcripts",
+                headers={
+                    "Authorization": f"Bearer {CONSOLE_KEY.decode()}",
+                    "Content-Type": "audio/webm",
+                    "X-Sweep-Correlation-Id": "voice-mixed-streams",
+                },
+                content=upload,
+            )
+
+    with av.open(io.BytesIO(upload)) as container:
+        assert [(stream.type, stream.index) for stream in container.streams] == [
+            ("video", 0),
+            ("audio", 1),
+        ]
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["reason"] is None
+    assert transport.calls == 1
+
+
 @pytest.mark.parametrize(
     "sample_rates,pts_values",
     [
@@ -768,6 +837,54 @@ def test_whisper_transport_stops_after_its_bounded_retry_budget(
         OpenAIWhisperTransport(api_key="server-only-key").transcribe(
             AudioUpload(content_type="audio/webm", body=b"audio")
         )
+    assert calls == 2
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 413])
+def test_whisper_transport_does_not_retry_permanent_provider_statuses(
+    monkeypatch: pytest.MonkeyPatch, status_code: int
+) -> None:
+    calls = 0
+
+    def post(*args: object, **kwargs: object) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            status_code,
+            request=httpx.Request("POST", "https://api.openai.com/v1/audio/transcriptions"),
+        )
+
+    monkeypatch.setattr(voice.httpx, "post", post)
+
+    with pytest.raises(TranscriptionError, match="provider request failed"):
+        OpenAIWhisperTransport(api_key="server-only-key").transcribe(
+            AudioUpload(content_type="audio/webm", body=b"audio")
+        )
+    assert calls == 1
+
+
+@pytest.mark.parametrize("status_code", [408, 409, 429, 500])
+def test_whisper_transport_retries_transient_provider_statuses_once(
+    monkeypatch: pytest.MonkeyPatch, status_code: int
+) -> None:
+    calls = 0
+
+    def post(*args: object, **kwargs: object) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        request = httpx.Request("POST", "https://api.openai.com/v1/audio/transcriptions")
+        if calls == 1:
+            return httpx.Response(status_code, request=request)
+        return httpx.Response(200, json={"text": "hold"}, request=request)
+
+    monkeypatch.setattr(voice.httpx, "post", post)
+
+    assert (
+        OpenAIWhisperTransport(api_key="server-only-key").transcribe(
+            AudioUpload(content_type="audio/webm", body=b"audio")
+        )
+        == "hold"
+    )
     assert calls == 2
 
 

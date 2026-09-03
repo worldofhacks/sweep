@@ -107,11 +107,20 @@ class OpenAIWhisperTransport:
                     timeout=self._timeout_s,
                 )
                 response.raise_for_status()
-                body = response.json()
-            except (httpx.HTTPError, TypeError, ValueError) as error:
+            except httpx.HTTPStatusError as error:
+                status = error.response.status_code
+                retryable = status in {408, 409, 429} or status >= 500
+                if not retryable or attempt + 1 == MAX_TRANSCRIPTION_ATTEMPTS:
+                    raise TranscriptionError("transcription provider request failed") from error
+                continue
+            except httpx.TransportError as error:
                 if attempt + 1 == MAX_TRANSCRIPTION_ATTEMPTS:
                     raise TranscriptionError("transcription provider request failed") from error
                 continue
+            try:
+                body = response.json()
+            except (TypeError, ValueError) as error:
+                raise TranscriptionError("transcription provider response is malformed") from error
             if not isinstance(body, Mapping):
                 raise TranscriptionError("transcription provider response is malformed")
             return _validated_transcript(body.get("text"))
@@ -506,7 +515,7 @@ def probe_audio_duration_ms(upload: AudioUpload) -> int:
                 raise ValueError("upload must contain one audio stream")
             decoded_duration = Fraction()
             previous_frame_start: Fraction | None = None
-            for frame in container.decode(audio=audio_streams[0].index):
+            for frame in container.decode(audio=0):
                 if not frame.sample_rate or frame.sample_rate < 0 or frame.samples <= 0:
                     raise ValueError("audio sample rate is unavailable")
                 if frame.pts is None or frame.time_base is None or frame.time_base <= 0:
