@@ -41,6 +41,7 @@ class _Subscription:
     roster_version: int
     queue: asyncio.Queue[_Outbound] = field(default_factory=asyncio.Queue)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    sender_failed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,6 +361,8 @@ class RelayRuntime:
         async with self._connection_lock:
             subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
             for subscription in subscriptions:
+                if subscription.sender_failed.is_set():
+                    continue
                 projection_versions = [
                     roster_version
                     for event in events
@@ -604,7 +607,8 @@ def create_app(
             sender = asyncio.create_task(_send_events(websocket, subscription))
             while True:
                 try:
-                    frame = await websocket.receive_json()
+                    assert sender is not None
+                    frame = await _receive_or_sender_failure(websocket, sender)
                 except json.JSONDecodeError:
                     await runtime.process_and_publish(
                         session_id,
@@ -689,16 +693,36 @@ def create_app(
 
 
 async def _send_events(websocket: WebSocket, subscription: _Subscription) -> None:
-    while True:
-        outbound = await subscription.queue.get()
-        sent = False
-        try:
-            async with subscription.send_lock:
-                await websocket.send_json(outbound.event)
-            sent = True
-        finally:
+    try:
+        while True:
+            outbound = await subscription.queue.get()
+            sent = False
+            try:
+                async with subscription.send_lock:
+                    await websocket.send_json(outbound.event)
+                sent = True
+            finally:
+                if outbound.delivered is not None and not outbound.delivered.done():
+                    outbound.delivered.set_result(sent)
+    finally:
+        subscription.sender_failed.set()
+        while not subscription.queue.empty():
+            outbound = subscription.queue.get_nowait()
             if outbound.delivered is not None and not outbound.delivered.done():
-                outbound.delivered.set_result(sent)
+                outbound.delivered.set_result(False)
+
+
+async def _receive_or_sender_failure(websocket: WebSocket, sender: asyncio.Task[None]) -> object:
+    receive = asyncio.create_task(websocket.receive_json())
+    done, _ = await asyncio.wait({receive, sender}, return_when=asyncio.FIRST_COMPLETED)
+    if sender in done:
+        receive.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await receive
+        with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
+            await sender
+        raise WebSocketDisconnect(code=1006)
+    return await receive
 
 
 def _log_background_failure(task: asyncio.Task[object]) -> None:

@@ -55,7 +55,8 @@ class SimFlightAdapter:
         self._aircraft = dict(sorted(aircraft.items()))
         self._timestamp_ms = timestamp_ms
         self._lock = RLock()
-        self._safety_latched: set[int] = set()
+        self._estop_latched: set[int] = set()
+        self._node_safety_latched: set[int] = set()
         self.calls: list[AdapterCall] = []
         self._failures: dict[tuple[int, CommandOperation], InjectedFlightFailure] = {}
         self._ack_epoch_overrides: dict[int, int] = {}
@@ -107,7 +108,7 @@ class SimFlightAdapter:
             changed = aircraft.connection_epoch != connection_epoch
             self._aircraft[drone_id] = replace(aircraft, connection_epoch=connection_epoch)
             if changed:
-                self._safety_latched.discard(drone_id)
+                self._node_safety_latched.discard(drone_id)
 
     def takeoff(self, ids: list[int], z: float) -> tuple[AdapterAcknowledgement, ...]:
         self.calls.append(AdapterCall(CommandOperation.TAKEOFF, tuple(ids), (("z", float(z)),)))
@@ -182,7 +183,7 @@ class SimFlightAdapter:
         for drone_id in ids:
             failure = self._take_failure(drone_id, CommandOperation.HOVER)
             with self._lock:
-                if drone_id in self._safety_latched:
+                if self._is_safety_latched(drone_id):
                     acknowledgements.append(
                         self._ack(
                             drone_id,
@@ -205,10 +206,6 @@ class SimFlightAdapter:
             self.calls.append(AdapterCall(CommandOperation.LAND, tuple(ids)))
             acknowledgements = []
             for drone_id in ids:
-                blocked = self._blocked_motion(drone_id, CommandOperation.LAND)
-                if blocked is not None:
-                    acknowledgements.append(blocked)
-                    continue
                 failure = self._take_failure(drone_id, CommandOperation.LAND)
                 if failure is not None:
                     acknowledgements.append(failure)
@@ -227,15 +224,26 @@ class SimFlightAdapter:
         ids = tuple(sorted(self._aircraft))
         with self._lock:
             self.calls.append(AdapterCall(CommandOperation.ESTOP, ids))
+            self._estop_latched.update(ids)
             acknowledgements = []
             for drone_id in ids:
-                self._safety_latched.add(drone_id)
-                failure = self._take_failure(drone_id, CommandOperation.ESTOP)
+                try:
+                    failure = self._take_failure(drone_id, CommandOperation.ESTOP)
+                except AdapterTimeout as error:
+                    acknowledgements.append(
+                        self._ack(
+                            drone_id,
+                            CommandOperation.ESTOP,
+                            status=LifecycleStatus.FAILED,
+                            detail=error.detail,
+                        )
+                    )
+                    continue
                 if failure is not None:
                     acknowledgements.append(failure)
                     continue
                 aircraft = self._require_aircraft(drone_id)
-                if aircraft.flight_state is not FlightState.LANDED:
+                if _is_airborne(aircraft.flight_state):
                     self._aircraft[drone_id] = replace(aircraft, flight_state=FlightState.HOVERING)
                 acknowledgements.append(self._ack(drone_id, CommandOperation.ESTOP))
             return tuple(acknowledgements)
@@ -270,7 +278,7 @@ class SimFlightAdapter:
             action = state.action_at(now_ms, config)
             if action is None:
                 return None
-            self._safety_latched.add(state.drone_id)
+            self._node_safety_latched.add(state.drone_id)
             if action is LossBehavior.HOLD:
                 if _is_airborne(aircraft.flight_state):
                     self._aircraft[state.drone_id] = replace(
@@ -289,7 +297,7 @@ class SimFlightAdapter:
     def _blocked_motion(
         self, drone_id: int, operation: CommandOperation
     ) -> AdapterAcknowledgement | None:
-        if drone_id not in self._safety_latched:
+        if not self._is_safety_latched(drone_id):
             return None
         return self._ack(
             drone_id,
@@ -297,6 +305,9 @@ class SimFlightAdapter:
             status=LifecycleStatus.FAILED,
             detail="node safety action invalidated the in-flight motion command",
         )
+
+    def _is_safety_latched(self, drone_id: int) -> bool:
+        return drone_id in self._estop_latched or drone_id in self._node_safety_latched
 
     def _take_failure(
         self, drone_id: int, operation: CommandOperation

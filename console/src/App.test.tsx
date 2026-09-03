@@ -262,8 +262,26 @@ describe('Control / Capture console', () => {
       action: 'failsafe',
       loss_behavior: 'failsafe',
     })
+    keyboard.emitServer({
+      v: 1,
+      t: clock() + 1,
+      type: 'state',
+      event_id: 'keyboard-state-after-estop',
+      session,
+      roster_version: 7,
+      armed: true,
+      estop: true,
+      selection: [1],
+      formation: 'none',
+      spacing: 0.8,
+      mode: 'indoor',
+      pending: null,
+      accepted_plan: null,
+      drones: fixtureAircraft(clock()),
+    })
 
     expect(await screen.findByText('Aircraft failsafe')).toBeInTheDocument()
+    expect(await screen.findByText('Network stop active')).toBeInTheDocument()
   })
 
   test('runs the two-drone flight workflow through production control actions', async () => {

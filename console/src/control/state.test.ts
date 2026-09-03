@@ -148,6 +148,41 @@ describe('control reducer fleet lifecycle', () => {
     expect(rosterMoved.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_roster' })
   })
 
+  test('keeps a fleet-wide land preview when the authoritative selection is nonempty', () => {
+    const intent: IntentV1 = {
+      v: 1,
+      t,
+      type: 'intent',
+      intent_id: 'land-all-after-stop',
+      retry_of: null,
+      source: 'console',
+      session,
+      name: 'land_all',
+      args: {},
+      selection: [],
+      mode: 'indoor',
+      confirm: false,
+    }
+    let state = withReadyState()
+    state = controlReducer(state, {
+      type: 'request_created',
+      request: createRequestRecord(intent, t + 2),
+    })
+    state = controlReducer(state, {
+      type: 'request_pending_confirmation',
+      intentId: intent.intent_id,
+      t: t + 3,
+      plan: { title: 'land all', steps: ['preview'], rosterVersion: 1 },
+    })
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: stateEvent('state-after-estop', 1, [drone()], [1]),
+    })
+
+    expect(state.requests[0].status).toBe('pending_confirmation')
+  })
+
   test('surfaces node-local hold and failsafe evidence without degrading transport', () => {
     const initial = withReadyState()
     const next = controlReducer(initial, {

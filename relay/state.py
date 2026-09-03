@@ -146,7 +146,6 @@ class FleetRegistry:
                 record.updated_at = request.t
                 record.identity_verified = True
                 record.readiness_declared = False
-                record.home_pose = None
                 record.control_authority = False
                 record.rc_safety_operator_present = False
                 record.telemetry = None
@@ -185,7 +184,11 @@ class FleetRegistry:
             record.readiness_declared = True
             record.control_authority = request.control_authority
             record.rc_safety_operator_present = request.rc_safety_operator_present
-            if request.home_pose_confirmed and self._has_current_telemetry(record):
+            if (
+                request.home_pose_confirmed
+                and record.home_pose is None
+                and self._has_current_telemetry(record)
+            ):
                 assert record.telemetry is not None
                 record.home_pose = {
                     "x": record.telemetry.x,

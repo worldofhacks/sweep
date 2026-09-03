@@ -83,7 +83,8 @@ export function useControlConsole({
           event.event.type === 'refusal' ||
           event.event.type === 'auth.accepted' ||
           event.event.type === 'auth.refused' ||
-          (connectionType === 'keyboard_connection_changed' && event.event.type === 'safety_action')
+          (connectionType === 'keyboard_connection_changed' &&
+            (event.event.type === 'safety_action' || event.event.type === 'state'))
         ) {
           dispatch({ type: 'relay_event', event: event.event })
         }

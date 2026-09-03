@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock, Timer
+from time import sleep
 
 import pytest
 from fastapi.testclient import TestClient
@@ -206,6 +207,47 @@ def test_failed_intent_acceptance_delivery_prevents_downstream_execution(
             socket.send_json(intent_payload())
             assert not executed.wait(timeout=0.2)
 
+    assert not executed.is_set()
+
+
+def test_dead_sender_cannot_leave_a_buffered_intent_accepted(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed = Event()
+    app = create_app(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=lambda _session: lambda _intent, _state: executed.set(),
+    )
+    original_send_json = WebSocket.send_json
+    state_sends = 0
+
+    async def fail_periodic_state(websocket: WebSocket, data: object, mode: str = "text") -> None:
+        nonlocal state_sends
+        if isinstance(data, dict) and data.get("type") == "state":
+            state_sends += 1
+            if state_sends == 2:
+                raise WebSocketDisconnect(code=1006)
+        await original_send_json(websocket, data, mode=mode)
+
+    monkeypatch.setattr(WebSocket, "send_json", fail_periodic_state)
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as socket:
+            _authenticate_console(socket)
+            sleep(0.2)
+            socket.send_json(intent_payload(intent_id="buffered-after-sender-failure"))
+        replay = app.state.relay_runtime.session(SESSION).replay()
+
+    recorded_ids = {
+        record["event"]["intent"]["intent_id"]
+        for record in replay["events"]
+        if record["event"].get("type") == "intent_record"
+    }
+    assert "buffered-after-sender-failure" not in recorded_ids
     assert not executed.is_set()
 
 

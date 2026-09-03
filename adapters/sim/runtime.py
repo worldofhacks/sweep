@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hmac
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from threading import Event, Lock, RLock, Thread
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.protocols import NodeSafetyAction, NodeWatchdogState, WatchdogConfig
@@ -138,6 +139,9 @@ class SimBridgeFactory:
     def silence_node(self, session_id: str, drone_id: int) -> None:
         self.nodes[session_id].silence(drone_id)
 
+    def resume_node(self, session_id: str, drone_id: int) -> None:
+        self.nodes[session_id].resume(drone_id)
+
     def disconnect_node(self, session_id: str, drone_id: int) -> list[dict[str, object]]:
         return self.nodes[session_id].disconnect(drone_id)
 
@@ -261,6 +265,12 @@ class _SimNodeIngress:
         with self._ingress_lock:
             self._require_active(drone_id)
             self._silent.add(drone_id)
+            self._activity_generation[drone_id] += 1
+
+    def resume(self, drone_id: int) -> None:
+        with self._ingress_lock:
+            self._require_active(drone_id)
+            self._silent.discard(drone_id)
             self._activity_generation[drone_id] += 1
 
     def disconnect(self, drone_id: int) -> list[dict[str, object]]:
@@ -422,7 +432,48 @@ def create_m14_sim_app(
         shutdown_callback=factory.close,
     )
     application.state.sim_bridge_factory = factory
+
+    @application.post("/sim/{session_id}/nodes/{drone_id}/silence")
+    def silence_simulator_node(
+        session_id: str,
+        drone_id: int,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        _authorize_simulator_control(authorization, active_settings.relay_token)
+        if session_id not in factory.nodes:
+            raise HTTPException(status_code=404, detail="unknown simulator session")
+        try:
+            factory.silence_node(session_id, drone_id)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        return {"status": "silenced", "session": session_id, "drone_id": drone_id}
+
+    @application.post("/sim/{session_id}/nodes/{drone_id}/resume")
+    def resume_simulator_node(
+        session_id: str,
+        drone_id: int,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        _authorize_simulator_control(authorization, active_settings.relay_token)
+        if session_id not in factory.nodes:
+            raise HTTPException(status_code=404, detail="unknown simulator session")
+        try:
+            factory.resume_node(session_id, drone_id)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        return {"status": "active", "session": session_id, "drone_id": drone_id}
+
     return application
+
+
+def _authorize_simulator_control(authorization: str | None, expected: bytes) -> None:
+    supplied = (
+        authorization.removeprefix("Bearer ").encode()
+        if authorization is not None and authorization.startswith("Bearer ")
+        else b""
+    )
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="authentication required")
 
 
 @dataclass(slots=True)
