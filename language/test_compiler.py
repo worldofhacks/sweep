@@ -6,7 +6,13 @@ from threading import Event
 
 import pytest
 
-from evals.language_corpus import StaticResponseTransport, load_corpus, load_synthetic_responses
+from evals.language_corpus import (
+    LEGACY_CORPUS_PATH,
+    LEGACY_SYNTHETIC_RESPONSES_PATH,
+    StaticResponseTransport,
+    load_corpus,
+    load_synthetic_responses,
+)
 from language.compiler import (
     ConfirmationError,
     ConfirmedPlan,
@@ -59,12 +65,16 @@ def _ack(case, intent_id: str, status: str = "accepted") -> dict[str, object]:
 
 
 def _case(case_id: str):
-    return next(case for case in load_corpus() if case.case_id == case_id)
+    return next(case for case in load_corpus(LEGACY_CORPUS_PATH) if case.case_id == case_id)
+
+
+def _response(case_id: str):
+    return load_synthetic_responses(LEGACY_SYNTHETIC_RESPONSES_PATH)[case_id]
 
 
 def _compile(case_id: str):
     case = _case(case_id)
-    response = load_synthetic_responses()[case_id]
+    response = _response(case_id)
     result = TranscriptCompiler(
         StaticResponseTransport(response), audit=InMemoryAuditSink()
     ).compile(
@@ -123,7 +133,7 @@ def test_trace_records_metadata_without_transcript() -> None:
     case = _case("hold-current-selection")
     tracer = RecordingTracer()
     TranscriptCompiler(
-        StaticResponseTransport(load_synthetic_responses()[case.case_id]),
+        StaticResponseTransport(_response(case.case_id)),
         audit=InMemoryAuditSink(),
         tracer=tracer,
     ).compile(
@@ -144,7 +154,7 @@ def test_trace_records_metadata_without_transcript() -> None:
 def test_trace_failure_cannot_abort_compilation() -> None:
     case = _case("hold-current-selection")
     outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(load_synthetic_responses()[case.case_id]),
+        StaticResponseTransport(_response(case.case_id)),
         audit=InMemoryAuditSink(),
         tracer=FailingTracer(),
     ).compile(
@@ -162,7 +172,7 @@ def test_compiled_plan_is_logged_without_transcript() -> None:
     case = _case("hold-current-selection")
     audit = InMemoryAuditSink()
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(load_synthetic_responses()[case.case_id]), audit=audit
+        StaticResponseTransport(_response(case.case_id)), audit=audit
     ).compile(
         case.transcript,
         case.relay_state,
@@ -183,7 +193,7 @@ def test_compiled_plan_can_use_durable_session_audit(tmp_path) -> None:
     audit = SessionCompilerAudit(log, lambda: next(counter))
 
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(load_synthetic_responses()[case.case_id]), audit=audit
+        StaticResponseTransport(_response(case.case_id)), audit=audit
     ).compile(
         case.transcript,
         case.relay_state,
