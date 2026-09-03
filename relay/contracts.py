@@ -117,7 +117,6 @@ class TelemetryV1:
     vx: float
     vy: float
     vz: float
-    heading_deg: float
     battery: float
     state: str
     link: float
@@ -138,7 +137,6 @@ class TelemetryV1:
             "vx": self.vx,
             "vy": self.vy,
             "vz": self.vz,
-            "heading_deg": self.heading_deg,
             "battery": self.battery,
             "state": self.state,
             "link": self.link,
@@ -158,7 +156,6 @@ class TelemetryV1:
             "vx": self.vx,
             "vy": self.vy,
             "vz": self.vz,
-            "heading_deg": self.heading_deg,
             "battery": self.battery,
             "state": self.state,
             "link": self.link,
@@ -308,7 +305,6 @@ def parse_telemetry(raw: object) -> TelemetryV1:
         "vx",
         "vy",
         "vz",
-        "heading_deg",
         "battery",
         "state",
         "link",
@@ -325,14 +321,11 @@ def parse_telemetry(raw: object) -> TelemetryV1:
             "vx",
             "vy",
             "vz",
-            "heading_deg",
             "battery",
             "link",
             "pos_quality",
         )
     }
-    if not 0 <= values["heading_deg"] < 360:
-        raise ContractError("invalid_telemetry", "heading_deg must be in [0, 360)")
     for field in ("battery", "link", "pos_quality"):
         if not 0 <= values[field] <= 1:
             raise ContractError("invalid_telemetry", f"{field} must be between 0 and 1")
@@ -350,7 +343,6 @@ def parse_telemetry(raw: object) -> TelemetryV1:
         values["vx"],
         values["vy"],
         values["vz"],
-        values["heading_deg"],
         values["battery"],
         _nonempty_string(value["state"], "state", "invalid_telemetry"),
         values["link"],

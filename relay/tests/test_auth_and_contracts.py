@@ -138,6 +138,15 @@ def test_telemetry_contract_rejects_non_finite_and_out_of_range_values() -> None
         parse_telemetry(raw)
 
 
+def test_telemetry_v1_remains_valid_without_heading_and_rejects_extensions() -> None:
+    raw = telemetry_payload(event_id="telemetry-v1")
+
+    assert parse_telemetry(raw).to_event() == raw
+    raw["heading_deg"] = 90.0
+    with pytest.raises(ContractError, match="fields"):
+        parse_telemetry(raw)
+
+
 def test_acknowledgement_contract_keeps_command_and_machine_reason() -> None:
     raw = acknowledgement_payload(
         event_id="ack-1",

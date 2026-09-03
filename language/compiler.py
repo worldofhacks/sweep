@@ -126,7 +126,18 @@ class CompiledPlan:
             event["model"] != PINNED_COMPILER_MODEL
             or event["prompt_schema_version"] != PROMPT_SCHEMA_VERSION
             or event["response_source"] not in {"anthropic", "replay", "synthetic"}
-            or event["response_origin"] not in {"anthropic", "synthetic"}
+            or event["response_origin"]
+            not in {
+                "anthropic",
+                "synthetic",
+                "unverified_replay",
+            }
+            or (event["response_source"] == "anthropic" and event["response_origin"] != "anthropic")
+            or (event["response_source"] == "synthetic" and event["response_origin"] != "synthetic")
+            or (
+                event["response_source"] == "replay"
+                and event["response_origin"] != "unverified_replay"
+            )
             or (event["response_source"] == "replay" and cassette_digest is None)
         ):
             raise ValueError("compiled plan provenance is unsupported")
@@ -442,8 +453,6 @@ class ConfirmedPlan:
             session=self._compiled.facts.session,
             intent_id=intent_id,
             timestamp_ms=now_ms,
-            translation_frame=self._compiled.facts.translation_frame,
-            translation_step_m=self._compiled.facts.translation_step_m,
         )
         validated = validate_intent(raw)
         if not isinstance(validated, AcceptedIntent):
@@ -508,13 +517,17 @@ class ConfirmedPlan:
         now_ms: int,
     ) -> None:
         with self._lock:
-            self._acknowledge(
-                outcome,
-                relay_state,
-                capability_version=capability_version,
-                rooms=rooms,
-                now_ms=now_ms,
-            )
+            try:
+                self._acknowledge(
+                    outcome,
+                    relay_state,
+                    capability_version=capability_version,
+                    rooms=rooms,
+                    now_ms=now_ms,
+                )
+            except ConfirmationError:
+                self._terminal = True
+                raise
 
     def _acknowledge(
         self,

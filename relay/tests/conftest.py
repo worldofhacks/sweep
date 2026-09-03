@@ -159,7 +159,6 @@ def telemetry_payload(
         "vx": 0.0,
         "vy": 0.0,
         "vz": 0.0,
-        "heading_deg": 0.0,
         "battery": 0.8,
         "state": state,
         "link": 0.9,

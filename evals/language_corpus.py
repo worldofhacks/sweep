@@ -35,6 +35,9 @@ LEGACY_SYNTHETIC_RESPONSES_PATH = (
     / "fixtures"
     / "transcript_plan_responses.synthetic.json"
 )
+REVIEWED_CORPUS_DIGEST = "d3b4ca32f06c0488fd54bce4f3ae7031d8bb514ff8d4173777915c5111d3ca80"
+REVIEWED_CORPUS_CASES = 50
+HOST_MINTED_SENTINEL = "__host_minted__"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +61,7 @@ class CorpusCase:
 class LoadedCorpus:
     cases: tuple[CorpusCase, ...]
     digest: str
+    reviewed: bool
 
     @property
     def case_ids(self) -> tuple[str, ...]:
@@ -143,7 +147,12 @@ def load_corpus(path: Path | None = None) -> LoadedCorpus:
     ids = [case.case_id for case in parsed]
     if len(ids) != len(set(ids)):
         raise ValueError("language corpus case IDs must be unique")
-    return LoadedCorpus(cases=parsed, digest=corpus_digest)
+    reviewed = selected.resolve() == DEFAULT_CORPUS_PATH.resolve()
+    if reviewed and (
+        corpus_digest != REVIEWED_CORPUS_DIGEST or len(parsed) != REVIEWED_CORPUS_CASES
+    ):
+        raise ValueError("default language corpus does not match the reviewed 50-case release")
+    return LoadedCorpus(cases=parsed, digest=corpus_digest, reviewed=reviewed)
 
 
 def load_synthetic_responses(
@@ -193,7 +202,7 @@ def evaluate_case(case: CorpusCase, transport: ModelTransport) -> CaseResult:
         now_ms=case.now_ms,
         correlation_id=case.case_id,
     )
-    actual_intents = tuple(intent.semantic_dict() for intent in outcome.intents)
+    actual_intents = tuple(_freeze_json(intent.semantic_dict()) for intent in outcome.intents)
     expected_kind = case.expected["kind"]
     expected_reason = case.expected.get("reason")
     expected_intents = _expected_intents(case.expected.get("intents", []), actual_intents)
@@ -241,6 +250,8 @@ def append_jsonl_run(
         raise ValueError("run ID must be non-empty")
     if not isinstance(corpus, LoadedCorpus):
         raise ValueError("eval manifest requires a loaded corpus")
+    if not corpus.reviewed or corpus.digest != REVIEWED_CORPUS_DIGEST:
+        raise ValueError("eval manifest requires the reviewed loaded corpus")
     if tuple(result.case_id for result in results) != corpus.case_ids:
         raise ValueError("eval results must cover every case exactly once in corpus order")
     if any(
@@ -397,14 +408,14 @@ def _parse_case(raw: object, *, corpus_digest: str) -> CorpusCase:
     return CorpusCase(
         case_id=case_id,
         transcript=transcript,
-        relay_state=state,
+        relay_state=_freeze_json(state),
         capability_version=capability_version,
         rooms=tuple(rooms),
         now_ms=now_ms,
         translation_frame=None if translation is None else "aircraft_relative",
         translation_step_m=None if translation is None else float(translation["step_m"]),
         qualified_voice_intents=tuple(qualified_voice_intents),
-        expected=dict(expected),
+        expected=_freeze_json(expected),
         category=category,
         live_demo=live_demo,
         corpus_digest=corpus_digest,
@@ -470,6 +481,55 @@ def _expected_intents(expected: object, actual: Sequence[Mapping[str, object]]) 
             and isinstance(intent.get("args"), dict)
         ):
             actual_args = actual[index].get("args")
-            if isinstance(actual_args, Mapping) and "capture_id" in actual_args:
+            expected_capture_id = intent["args"].get("capture_id")
+            actual_capture_id = (
+                actual_args.get("capture_id") if isinstance(actual_args, Mapping) else None
+            )
+            if (
+                expected_capture_id == HOST_MINTED_SENTINEL
+                and isinstance(actual_capture_id, str)
+                and actual_capture_id.startswith("capture-")
+                and len(actual_capture_id) == 40
+            ):
                 intent["args"]["capture_id"] = actual_args["capture_id"]
     return normalized
+
+
+class _FrozenDict(dict):
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("loaded corpus data is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable
+
+
+class _FrozenList(list):
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("loaded corpus data is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+
+def _freeze_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return _FrozenDict({str(key): _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return _FrozenList(_freeze_json(item) for item in value)
+    return value

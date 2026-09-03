@@ -3,16 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import Lock
+from types import MappingProxyType
 from typing import Literal, Protocol
 
 import httpx
 
 PINNED_COMPILER_MODEL = "claude-sonnet-5"
 PROMPT_SCHEMA_VERSION = "intent-v1-compiler-3"
+_CASSETTE_LOCK = Lock()
 _COMPILER_INTENT_NAMES = (
     "arm",
     "disarm",
@@ -45,7 +49,7 @@ class ModelRequest:
 class ModelResponse:
     payload: object
     source: Literal["anthropic", "replay", "synthetic"]
-    origin: Literal["anthropic", "synthetic"]
+    origin: Literal["anthropic", "synthetic", "unverified_replay"]
     model: str
     prompt_schema_version: str
     cassette_digest: str | None = None
@@ -67,9 +71,10 @@ def model_response_provenance_is_valid(response: ModelResponse) -> bool:
         response.model != PINNED_COMPILER_MODEL
         or response.prompt_schema_version != PROMPT_SCHEMA_VERSION
         or response.source not in {"anthropic", "replay", "synthetic"}
-        or response.origin not in {"anthropic", "synthetic"}
+        or response.origin not in {"anthropic", "synthetic", "unverified_replay"}
         or (response.source == "anthropic" and response.origin != "anthropic")
         or (response.source == "synthetic" and response.origin != "synthetic")
+        or (response.source == "replay" and response.origin != "unverified_replay")
         or (response.source == "replay" and response.cassette_digest is None)
     ):
         return False
@@ -118,23 +123,23 @@ class AnthropicTransport:
 class ReplayTransport:
     def __init__(self, cassette_path: Path) -> None:
         try:
-            raw = json.loads(cassette_path.read_text(encoding="utf-8"))
+            cassette_bytes = cassette_path.read_bytes()
+            raw = json.loads(cassette_bytes.decode("utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise TransportError(f"cannot load replay cassette: {error}") from None
-        if not isinstance(raw, Mapping) or raw.get("version") != 2:
+        if not isinstance(raw, Mapping) or raw.get("version") != 3:
             raise TransportError("replay cassette has an unsupported schema")
         if (
             raw.get("model") != PINNED_COMPILER_MODEL
             or raw.get("prompt_schema_version") != PROMPT_SCHEMA_VERSION
-            or raw.get("origin") not in {"anthropic", "synthetic"}
+            or raw.get("recorded_origin") not in {"anthropic", "synthetic"}
         ):
             raise TransportError("replay cassette provenance does not match this compiler")
         entries = raw.get("entries")
         if not isinstance(entries, Mapping):
             raise TransportError("replay cassette entries must be an object")
-        self._entries = entries
-        self._origin = raw["origin"]
-        self._digest = hashlib.sha256(cassette_path.read_bytes()).hexdigest()
+        self._entries = _freeze_json(entries)
+        self._digest = hashlib.sha256(cassette_bytes).hexdigest()
 
     def complete(self, request: ModelRequest) -> ModelResponse:
         key = request_key(request)
@@ -147,9 +152,9 @@ class ReplayTransport:
         }:
             raise TransportError(f"replay miss for {key}")
         return ModelResponse(
-            payload=entry["payload"],
+            payload=_thaw_json(entry["payload"]),
             source="replay",
-            origin=self._origin,
+            origin="unverified_replay",
             model=PINNED_COMPILER_MODEL,
             prompt_schema_version=PROMPT_SCHEMA_VERSION,
             cassette_digest=self._digest,
@@ -168,38 +173,58 @@ class RecordingTransport:
         response = self._transport.complete(request)
         if not model_response_provenance_is_valid(response):
             raise TransportError("response provenance does not match this compiler")
-        cassette = self._load()
-        if cassette["origin"] is None:
-            cassette["origin"] = response.origin
-        elif cassette["origin"] != response.origin:
-            raise TransportError("recording cassette cannot mix response origins")
-        entries = cassette["entries"]
-        assert isinstance(entries, dict)
-        entries[request_key(request)] = {
-            "payload": response.payload,
-            "input_units": response.input_units,
-            "output_units": response.output_units,
-            "latency_ms": response.latency_ms,
-        }
-        self._cassette_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._cassette_path.with_suffix(self._cassette_path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(cassette, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        recorded_origin = (
+            "anthropic" if type(self._transport) is AnthropicTransport else "synthetic"
         )
-        temporary.replace(self._cassette_path)
+        if response.origin != recorded_origin:
+            raise TransportError("response origin does not match the recording transport")
+        with _CASSETTE_LOCK:
+            cassette = self._load()
+            if cassette["recorded_origin"] is None:
+                cassette["recorded_origin"] = recorded_origin
+            elif cassette["recorded_origin"] != recorded_origin:
+                raise TransportError("recording cassette cannot mix response origins")
+            entries = cassette["entries"]
+            assert isinstance(entries, dict)
+            entries[request_key(request)] = {
+                "payload": _thaw_json(response.payload),
+                "input_units": response.input_units,
+                "output_units": response.output_units,
+                "latency_ms": response.latency_ms,
+            }
+            self._write(cassette)
+            cassette_digest = hashlib.sha256(self._cassette_path.read_bytes()).hexdigest()
         return replace(
             response,
-            cassette_digest=hashlib.sha256(self._cassette_path.read_bytes()).hexdigest(),
+            cassette_digest=cassette_digest,
         )
+
+    def _write(self, cassette: Mapping[str, object]) -> None:
+        self._cassette_path.parent.mkdir(parents=True, exist_ok=True)
+        data = (json.dumps(cassette, indent=2, sort_keys=True) + "\n").encode()
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=self._cassette_path.parent,
+                prefix=f".{self._cassette_path.name}.",
+                delete=False,
+            ) as stream:
+                temporary_path = Path(stream.name)
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, self._cassette_path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
 
     def _load(self) -> dict[str, object]:
         if not self._cassette_path.exists():
             return {
-                "version": 2,
+                "version": 3,
                 "model": PINNED_COMPILER_MODEL,
                 "prompt_schema_version": PROMPT_SCHEMA_VERSION,
-                "origin": None,
+                "recorded_origin": None,
                 "entries": {},
             }
         try:
@@ -208,10 +233,10 @@ class RecordingTransport:
             raise TransportError(f"cannot load recording cassette: {error}") from None
         if (
             not isinstance(raw, dict)
-            or raw.get("version") != 2
+            or raw.get("version") != 3
             or raw.get("model") != PINNED_COMPILER_MODEL
             or raw.get("prompt_schema_version") != PROMPT_SCHEMA_VERSION
-            or raw.get("origin") not in {"anthropic", "synthetic"}
+            or raw.get("recorded_origin") not in {"anthropic", "synthetic"}
             or not isinstance(raw.get("entries"), dict)
         ):
             raise TransportError("recording cassette has an unsupported schema")
@@ -255,7 +280,7 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
                 ),
             }
         ],
-        "tools": [_tool_schema()],
+        "tools": [_provider_tool_schema()],
         "tool_choice": {"type": "tool", "name": "submit_compiler_outcome"},
     }
 
@@ -266,7 +291,7 @@ def _tool_schema() -> dict[str, object]:
         "additionalProperties": False,
         "required": ["name", "args", "selection", "mode"],
         "properties": {
-            "name": {"enum": list(_COMPILER_INTENT_NAMES)},
+            "name": {"type": "string", "enum": list(_COMPILER_INTENT_NAMES)},
             "args": {
                 "type": "object",
                 "additionalProperties": False,
@@ -288,7 +313,7 @@ def _tool_schema() -> dict[str, object]:
                     },
                     "room_id": {"type": "string", "minLength": 1, "maxLength": 128},
                     "area_id": {"type": "string", "minLength": 1, "maxLength": 128},
-                    "pattern": {"enum": ["pano_360", "reconstruct_8"]},
+                    "pattern": {"type": "string", "enum": ["pano_360", "reconstruct_8"]},
                 },
             },
             "selection": {
@@ -297,7 +322,7 @@ def _tool_schema() -> dict[str, object]:
                 "maxItems": 32,
                 "uniqueItems": True,
             },
-            "mode": {"const": "indoor"},
+            "mode": {"type": "string", "enum": ["indoor"]},
         },
     }
     return {
@@ -309,7 +334,10 @@ def _tool_schema() -> dict[str, object]:
             "additionalProperties": False,
             "required": ["kind"],
             "properties": {
-                "kind": {"enum": ["plan", "cancel_pending", "clarify", "unsupported", "refuse"]},
+                "kind": {
+                    "type": "string",
+                    "enum": ["plan", "cancel_pending", "clarify", "unsupported", "refuse"],
+                },
                 "intents": {"type": "array", "items": intent, "minItems": 1, "maxItems": 12},
                 "reason": {"type": "string", "maxLength": 128},
                 "detail": {"type": "string", "maxLength": 500},
@@ -317,6 +345,76 @@ def _tool_schema() -> dict[str, object]:
             },
         },
     }
+
+
+def _provider_tool_schema() -> dict[str, object]:
+    tool = _tool_schema()
+    return {**tool, "input_schema": _transform_provider_schema(tool["input_schema"])}
+
+
+def _transform_provider_schema(raw: object) -> dict[str, object]:
+    if not isinstance(raw, Mapping):
+        raise ValueError("provider schema node must be an object")
+    transformed: dict[str, object] = {}
+    schema_type = raw.get("type")
+    if isinstance(schema_type, str):
+        transformed["type"] = schema_type
+    if isinstance(raw.get("enum"), list):
+        transformed["enum"] = list(raw["enum"])
+    if isinstance(raw.get("description"), str):
+        transformed["description"] = raw["description"]
+    if schema_type == "object":
+        properties = raw.get("properties", {})
+        if not isinstance(properties, Mapping):
+            raise ValueError("provider object properties must be an object")
+        transformed["properties"] = {
+            str(name): _transform_provider_schema(schema) for name, schema in properties.items()
+        }
+        transformed["additionalProperties"] = False
+        if isinstance(raw.get("required"), list):
+            transformed["required"] = list(raw["required"])
+    elif schema_type == "array":
+        if "items" in raw:
+            transformed["items"] = _transform_provider_schema(raw["items"])
+        if raw.get("minItems") in {0, 1}:
+            transformed["minItems"] = raw["minItems"]
+
+    unsupported = {
+        key: value
+        for key, value in raw.items()
+        if key
+        not in {
+            "type",
+            "enum",
+            "description",
+            "properties",
+            "additionalProperties",
+            "required",
+            "items",
+            "minItems",
+        }
+    }
+    if unsupported:
+        existing = transformed.get("description")
+        suffix = "{" + ", ".join(f"{key}: {value}" for key, value in unsupported.items()) + "}"
+        transformed["description"] = f"{existing}\n\n{suffix}" if existing else suffix
+    return transformed
+
+
+def _freeze_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
 
 
 def _extract_tool_input(body: object) -> object:

@@ -266,7 +266,6 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
         "membership",
         "readiness_reasons",
         "flight_state",
-        "heading_deg",
         "battery",
         "link",
         "pos_quality",

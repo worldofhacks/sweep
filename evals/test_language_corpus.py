@@ -23,7 +23,7 @@ from language.transport import ModelRequest, RecordingTransport, ReplayTransport
 def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) -> None:
     cases = load_corpus()
     responses = load_synthetic_responses(corpus=cases)
-    assert len(cases) >= 10
+    assert len(cases) == 50
     cassette = tmp_path / "language-replay.json"
     for case in cases:
         facts = build_grounding_facts(
@@ -65,7 +65,7 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
     selected_corpus = DEFAULT_CORPUS_PATH if DEFAULT_CORPUS_PATH.exists() else LEGACY_CORPUS_PATH
     assert rows[0]["corpus_digest"] == hashlib.sha256(selected_corpus.read_bytes()).hexdigest()
     assert len(rows[0]["cassette_digests"]) == 1
-    assert {row["origin"] for row in rows[1:]} <= {"synthetic", "template"}
+    assert {row["origin"] for row in rows[1:]} <= {"unverified_replay", "template"}
     assert {row["source"] for row in rows[1:]} <= {"replay", "template"}
     assert len(rows) == len(cases) + 1
     assert f"{len(cases)}/{len(cases)} cases passed" in dashboard_path.read_text()
@@ -121,6 +121,32 @@ def test_loader_and_eval_support_reviewed_grounding_contract(tmp_path) -> None:
     assert loaded[0].translation_step_m == 0.5
     assert loaded[0].qualified_voice_intents == ("estop",)
     assert result.passed
+
+
+def test_loaded_corpus_is_deeply_immutable() -> None:
+    case = load_corpus()[0]
+
+    with pytest.raises(TypeError, match="immutable"):
+        case.relay_state["armed"] = False
+    with pytest.raises(TypeError, match="immutable"):
+        case.relay_state["drones"][0]["selectable"] = False
+    with pytest.raises(TypeError, match="immutable"):
+        case.expected["kind"] = "refuse"
+
+
+def test_default_corpus_is_pinned_to_the_reviewed_50_case_release(tmp_path) -> None:
+    selected = DEFAULT_CORPUS_PATH
+    truncated = tmp_path / selected.name
+    truncated.write_text("\n".join(selected.read_text().splitlines()[:-1]) + "\n")
+
+    loaded = load_corpus(truncated)
+    assert not loaded.reviewed
+    responses = load_synthetic_responses(corpus=load_corpus())
+    result = evaluate_case(
+        load_corpus()[0], StaticResponseTransport(next(iter(responses.values())))
+    )
+    with pytest.raises(ValueError, match="reviewed loaded corpus"):
+        append_jsonl_run([result], tmp_path / "result.jsonl", run_id="truncated", corpus=loaded)
 
 
 def test_eval_compares_clarification_detail(tmp_path) -> None:
@@ -267,6 +293,25 @@ def test_synthetic_provider_response_does_not_repair_model_supplied_capture_id(t
 
     assert not result.passed
     assert result.actual_reason == "invalid_model_output"
+
+
+def test_wrong_gold_capture_id_is_not_replaced_during_grading() -> None:
+    cases = load_corpus()
+    responses = load_synthetic_responses(corpus=cases)
+    capture = next(
+        case
+        for case in cases
+        if any(intent["name"] == "capture_room" for intent in case.expected.get("intents", []))
+    )
+    wrong_expected = json.loads(json.dumps(capture.expected))
+    wrong_expected["intents"][0]["args"]["capture_id"] = "wrong-gold-id"
+
+    result = evaluate_case(
+        replace(capture, expected=wrong_expected),
+        StaticResponseTransport(responses[capture.case_id]),
+    )
+
+    assert not result.passed
 
 
 def test_loader_rejects_duplicate_case_ids(tmp_path) -> None:

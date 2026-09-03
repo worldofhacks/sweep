@@ -175,6 +175,8 @@ def make_intent(
 
 def make_stack(
     snapshot: FleetSnapshot,
+    *,
+    config: PlanningConfig | None = None,
 ) -> tuple[
     AutonomyController,
     DeterministicPlanner,
@@ -183,7 +185,7 @@ def make_stack(
     SimFlightAdapter,
     SimCamera,
 ]:
-    planner = DeterministicPlanner(planning_config())
+    planner = DeterministicPlanner(config or planning_config())
     arbiter = SafetyArbiter(safety_config())
     flight = SimFlightAdapter.from_snapshot(snapshot)
     camera = SimCamera(

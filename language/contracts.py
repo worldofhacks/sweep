@@ -398,7 +398,8 @@ def validate_model_outcome(
             if pending_intent_id != facts.pending["intent_id"]:
                 return _invalid(source)
             return CompilerOutcome(kind=kind, source=source, pending_intent_id=pending_intent_id)
-        if raw.get("intents") not in (None, []):
+        allowed_fields = {"kind", "reason"} | ({"detail"} if "detail" in raw else set())
+        if set(raw) != allowed_fields:
             return _invalid(source)
         try:
             reason = CompilerReason(raw.get("reason"))
@@ -410,7 +411,7 @@ def validate_model_outcome(
             )
         return CompilerOutcome(kind=kind, reason=reason, detail=detail, source=source)
 
-    if raw.get("reason") is not None:
+    if set(raw) != {"kind", "intents"}:
         return _invalid(source)
     items = raw.get("intents")
     if not isinstance(items, list) or not 1 <= len(items) <= MAX_PLAN_STEPS:
@@ -506,16 +507,9 @@ def intent_payload(
     session: str,
     intent_id: str,
     timestamp_ms: int,
-    translation_frame: str | None = None,
-    translation_step_m: float | None = None,
     source: str = "console",
 ) -> dict[str, object]:
     args = _thaw(proposal.args)
-    if proposal.name is IntentName.TRANSLATE:
-        if translation_frame is None or translation_step_m is None:
-            raise ValueError("translate intent requires grounded frame and step")
-        assert isinstance(args, dict)
-        args.update(frame=translation_frame, step_m=translation_step_m)
     return {
         "v": 1,
         "t": timestamp_ms,
@@ -533,18 +527,11 @@ def intent_payload(
 
 
 def plan_step_matches_facts(intent: ProposedIntent, facts: GroundingFacts) -> bool:
-    if intent.name in _SELECTION_TARGETED and intent.selection != facts.selection:
+    try:
+        restored = rehydrate_plan_intents([intent.semantic_dict()], facts)
+    except ValueError:
         return False
-    flight_states = {int(drone["drone_id"]): drone["flight_state"] for drone in facts.drones}
-    return (
-        _fold_semantic_state(
-            intent,
-            facts,
-            armed=facts.armed,
-            flight_states=flight_states,
-        )
-        is not None
-    )
+    return restored == (intent,)
 
 
 def _validate_proposed_intent(
