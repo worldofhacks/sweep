@@ -17,10 +17,19 @@ from language.contracts import (
     ProposedIntent,
     build_grounding_facts,
     intent_payload,
+    plan_step_matches_facts,
+    rehydrate_plan_intents,
     validate_model_outcome,
 )
 from language.telemetry import TraceSink, get_default_trace_sink
-from language.transport import PINNED_COMPILER_MODEL, ModelRequest, ModelTransport, TransportError
+from language.transport import (
+    PINNED_COMPILER_MODEL,
+    PROMPT_SCHEMA_VERSION,
+    ModelRequest,
+    ModelTransport,
+    TransportError,
+    model_response_provenance_is_valid,
+)
 from relay.audit import SessionAuditLog
 from relay.contracts import LifecycleStatus
 from relay.intent_v1 import AcceptedIntent, IntentV1, validate_intent
@@ -63,6 +72,93 @@ class CompiledPlan:
     expires_at_ms: int
     correlation_id: str
     state_max_age_ms: int
+    model: str
+    prompt_schema_version: str
+    response_source: str
+    response_origin: str
+    cassette_digest: str | None
+
+    def audit_record(self) -> dict[str, object]:
+        return {
+            "event": "plan_compiled",
+            "correlation_id": self.correlation_id,
+            "plan_digest": self.digest,
+            "expires_at_ms": self.expires_at_ms,
+            "state_max_age_ms": self.state_max_age_ms,
+            "facts": self.facts.record_dict(),
+            "intents": [intent.semantic_dict() for intent in self.intents],
+            "model": self.model,
+            "prompt_schema_version": self.prompt_schema_version,
+            "response_source": self.response_source,
+            "response_origin": self.response_origin,
+            "cassette_digest": self.cassette_digest,
+        }
+
+    @classmethod
+    def from_audit_event(cls, event: object) -> CompiledPlan:
+        if not isinstance(event, Mapping) or event.get("event") != "plan_compiled":
+            raise ValueError("audit event is not a compiled plan")
+        facts = GroundingFacts.from_record(event.get("facts"))
+        intents = rehydrate_plan_intents(event.get("intents"), facts)
+        required_strings = {
+            "correlation_id",
+            "plan_digest",
+            "model",
+            "prompt_schema_version",
+            "response_source",
+            "response_origin",
+        }
+        if any(
+            not isinstance(event.get(field), str) or not event[field] for field in required_strings
+        ):
+            raise ValueError("compiled plan provenance is invalid")
+        expires_at_ms = event.get("expires_at_ms")
+        state_max_age_ms = event.get("state_max_age_ms")
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in (expires_at_ms, state_max_age_ms)
+        ):
+            raise ValueError("compiled plan timing is invalid")
+        cassette_digest = event.get("cassette_digest")
+        if cassette_digest is not None and not _is_sha256(cassette_digest):
+            raise ValueError("compiled plan cassette digest is invalid")
+        if (
+            event["model"] != PINNED_COMPILER_MODEL
+            or event["prompt_schema_version"] != PROMPT_SCHEMA_VERSION
+            or event["response_source"] not in {"anthropic", "replay", "synthetic"}
+            or event["response_origin"] not in {"anthropic", "synthetic"}
+            or (event["response_source"] == "replay" and cassette_digest is None)
+        ):
+            raise ValueError("compiled plan provenance is unsupported")
+        restored = cls(
+            intents=intents,
+            facts=facts,
+            digest=event["plan_digest"],
+            expires_at_ms=expires_at_ms,
+            correlation_id=event["correlation_id"],
+            state_max_age_ms=state_max_age_ms,
+            model=event["model"],
+            prompt_schema_version=event["prompt_schema_version"],
+            response_source=event["response_source"],
+            response_origin=event["response_origin"],
+            cassette_digest=cassette_digest,
+        )
+        if event.get("session", restored.facts.session) != restored.facts.session:
+            raise ValueError("compiled plan session does not match its grounding facts")
+        if restored.digest != _plan_digest(
+            restored.facts,
+            restored.intents,
+            expires_at_ms=restored.expires_at_ms,
+            correlation_id=restored.correlation_id,
+            state_max_age_ms=restored.state_max_age_ms,
+            model=restored.model,
+            prompt_schema_version=restored.prompt_schema_version,
+            response_source=restored.response_source,
+            response_origin=restored.response_origin,
+            cassette_digest=restored.cassette_digest,
+        ):
+            raise ValueError("compiled plan digest does not match its contents")
+        return restored
 
 
 class TranscriptCompiler:
@@ -90,6 +186,8 @@ class TranscriptCompiler:
         *,
         capability_version: str,
         rooms: tuple[str, ...] = (),
+        translation: object = None,
+        qualified_voice_intents: tuple[str, ...] = (),
         now_ms: int,
         correlation_id: str | None = None,
         session_id: str | None = None,
@@ -106,8 +204,12 @@ class TranscriptCompiler:
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
+                translation=translation,
+                qualified_voice_intents=qualified_voice_intents,
             )
         except ValueError:
+            return self._refusal(correlation, CompilerReason.STALE_STATE)
+        if session_id is not None and session_id != facts.session:
             return self._refusal(correlation, CompilerReason.STALE_STATE)
         state_age_ms = now_ms - facts.state_time_ms
         if state_age_ms < 0 or state_age_ms > self._state_max_age_ms:
@@ -120,7 +222,7 @@ class TranscriptCompiler:
                 "correlation_id": correlation,
                 "model": PINNED_COMPILER_MODEL,
                 "state_digest": facts.state_digest,
-                "session_id": session_id,
+                "session_id": facts.session,
             }
         )
         started = time.monotonic()
@@ -128,17 +230,29 @@ class TranscriptCompiler:
             response = self._transport.complete(request)
         except TransportError:
             return self._refusal(correlation, CompilerReason.MODEL_UNAVAILABLE)
-        outcome = validate_model_outcome(response.payload, facts)
+        if not model_response_provenance_is_valid(response):
+            return self._refusal(correlation, CompilerReason.MODEL_UNAVAILABLE)
+        outcome = validate_model_outcome(
+            response.payload,
+            facts,
+            capture_id=lambda index: _capture_id(correlation, index),
+            source=response.source,
+            transcript=transcript.strip(),
+        )
         elapsed_ms = int((time.monotonic() - started) * 1_000)
         self._trace(
             {
                 "event": "compiler_completed",
                 "correlation_id": correlation,
-                "model": PINNED_COMPILER_MODEL,
+                "model": response.model,
+                "prompt_schema_version": response.prompt_schema_version,
                 "state_digest": facts.state_digest,
                 "outcome": outcome.kind.value,
                 "reason": None if outcome.reason is None else outcome.reason.value,
-                "source": outcome.source,
+                "pending_intent_id": outcome.pending_intent_id,
+                "source": response.source,
+                "origin": response.origin,
+                "cassette_digest": response.cassette_digest,
                 "grounded": int(outcome.kind is OutcomeKind.PLAN),
                 "input_units": response.input_units,
                 "output_units": response.output_units,
@@ -154,41 +268,42 @@ class TranscriptCompiler:
                     "state_digest": facts.state_digest,
                     "outcome": outcome.kind.value,
                     "reason": None if outcome.reason is None else outcome.reason.value,
+                    "pending_intent_id": outcome.pending_intent_id,
+                    "model": response.model,
+                    "prompt_schema_version": response.prompt_schema_version,
+                    "response_source": response.source,
+                    "response_origin": response.origin,
+                    "cassette_digest": response.cassette_digest,
                 }
             )
             return outcome, None
-        semantic = [intent.semantic_dict() for intent in outcome.intents]
-        digest = hashlib.sha256(
-            json.dumps(
-                {
-                    "facts": facts.state_digest,
-                    "capabilities": facts.capability_version,
-                    "intents": semantic,
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode()
-        ).hexdigest()
+        expires_at_ms = now_ms + self._plan_ttl_ms
+        digest = _plan_digest(
+            facts,
+            outcome.intents,
+            expires_at_ms=expires_at_ms,
+            correlation_id=correlation,
+            state_max_age_ms=self._state_max_age_ms,
+            model=response.model,
+            prompt_schema_version=response.prompt_schema_version,
+            response_source=response.source,
+            response_origin=response.origin,
+            cassette_digest=response.cassette_digest,
+        )
         compiled = CompiledPlan(
             intents=outcome.intents,
             facts=facts,
             digest=digest,
-            expires_at_ms=now_ms + self._plan_ttl_ms,
+            expires_at_ms=expires_at_ms,
             correlation_id=correlation,
             state_max_age_ms=self._state_max_age_ms,
+            model=response.model,
+            prompt_schema_version=response.prompt_schema_version,
+            response_source=response.source,
+            response_origin=response.origin,
+            cassette_digest=response.cassette_digest,
         )
-        self.audit.append(
-            {
-                "event": "plan_compiled",
-                "correlation_id": correlation,
-                "plan_digest": digest,
-                "state_digest": facts.state_digest,
-                "state_version": facts.state_version,
-                "capability_version": facts.capability_version,
-                "expires_at_ms": compiled.expires_at_ms,
-                "intents": semantic,
-            }
-        )
+        self.audit.append(compiled.audit_record())
         return outcome, compiled
 
     def _refusal(self, correlation_id: str, reason: CompilerReason) -> tuple[CompilerOutcome, None]:
@@ -197,9 +312,12 @@ class TranscriptCompiler:
                 "event": "compiler_completed",
                 "correlation_id": correlation_id,
                 "model": PINNED_COMPILER_MODEL,
+                "prompt_schema_version": PROMPT_SCHEMA_VERSION,
                 "outcome": OutcomeKind.REFUSE.value,
                 "reason": reason.value,
                 "source": "template",
+                "origin": "template",
+                "cassette_digest": None,
                 "grounded": 0,
             }
         )
@@ -238,6 +356,8 @@ class ConfirmedPlan:
     ) -> None:
         if not session:
             raise ValueError("session must be non-empty")
+        if session != compiled.facts.session:
+            raise ValueError("session must match the compiled authoritative state")
         self._compiled = compiled
         self._session = session
         self._next = 0
@@ -296,35 +416,72 @@ class ConfirmedPlan:
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
+                translation=(
+                    None
+                    if self._compiled.facts.translation_frame is None
+                    else {
+                        "frame": self._compiled.facts.translation_frame,
+                        "step_m": self._compiled.facts.translation_step_m,
+                    }
+                ),
+                qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
             raise ConfirmationError("current state is invalid") from None
-        if (
-            facts.state_digest != self._expected_facts.state_digest
-            or facts.capability_version != self._expected_facts.capability_version
-        ):
+        if _authorization_digest(facts) != _authorization_digest(self._expected_facts):
             raise ConfirmationError("state or capabilities changed after preview")
         state_age_ms = now_ms - facts.state_time_ms
         if state_age_ms < 0 or state_age_ms > self._compiled.state_max_age_ms:
             raise ConfirmationError("current state is stale")
+        proposal = self._compiled.intents[self._next]
+        if not plan_step_matches_facts(proposal, facts):
+            self._terminal = True
+            raise ConfirmationError("intent is incompatible with the current flight state")
         raw = intent_payload(
-            self._compiled.intents[self._next],
-            session=self._session,
+            proposal,
+            session=self._compiled.facts.session,
             intent_id=intent_id,
             timestamp_ms=now_ms,
+            translation_frame=self._compiled.facts.translation_frame,
+            translation_step_m=self._compiled.facts.translation_step_m,
         )
         validated = validate_intent(raw)
         if not isinstance(validated, AcceptedIntent):
             raise ConfirmationError("intent failed validation before emission")
+        try:
+            self.audit.append(
+                {
+                    "event": "intent_emission_started",
+                    "correlation_id": self._compiled.correlation_id,
+                    "plan_digest": self._compiled.digest,
+                    "intent_index": self._next,
+                    "intent_id": validated.intent.intent_id,
+                    "state_digest": facts.state_digest,
+                }
+            )
+        except Exception:
+            self._terminal = True
+            raise ConfirmationError("intent emission audit failed before relay send") from None
         self._awaiting_outcome = True
         self._awaiting_intent_id = validated.intent.intent_id
+        self._next += 1
         try:
             emit(validated.intent)
         except Exception:
-            self._awaiting_outcome = False
-            self._awaiting_intent_id = None
+            self._terminal = True
+            try:
+                self.audit.append(
+                    {
+                        "event": "intent_emission_unknown",
+                        "correlation_id": self._compiled.correlation_id,
+                        "plan_digest": self._compiled.digest,
+                        "intent_index": self._next - 1,
+                        "intent_id": validated.intent.intent_id,
+                    }
+                )
+            except Exception:
+                pass
             raise
-        self._next += 1
         try:
             self.audit.append(
                 {
@@ -374,10 +531,28 @@ class ConfirmedPlan:
             raise ConfirmationError("no emitted intent is awaiting a relay outcome")
         if not isinstance(outcome, Mapping):
             raise ConfirmationError("relay outcome must be an event")
+        lifecycle_fields = {
+            "v",
+            "t",
+            "type",
+            "event_id",
+            "session",
+            "intent_id",
+            "command_id",
+            "status",
+            "source",
+            "drone_id",
+            "connection_epoch",
+            "roster_version",
+            "reason",
+            "detail",
+        }
+        if not lifecycle_fields <= set(outcome):
+            raise ConfirmationError("relay outcome envelope is invalid")
         outcome_type = outcome.get("type")
         if (
             outcome_type not in {"acknowledgement", "refusal"}
-            or outcome.get("session") != self._session
+            or outcome.get("session") != self._compiled.facts.session
         ):
             raise ConfirmationError("relay outcome does not belong to this session")
         if outcome.get("intent_id") != self._awaiting_intent_id:
@@ -389,7 +564,6 @@ class ConfirmedPlan:
             or not isinstance(outcome.get("t"), int)
             or isinstance(outcome["t"], bool)
             or outcome["t"] < 0
-            or outcome.get("source") != "relay"
             or outcome.get("roster_version") != self._expected_facts.state_version
         ):
             raise ConfirmationError("relay outcome envelope is invalid")
@@ -401,30 +575,49 @@ class ConfirmedPlan:
             raise ConfirmationError("relay refusal status is invalid")
         if outcome_type == "acknowledgement" and status is LifecycleStatus.REFUSED:
             raise ConfirmationError("relay acknowledgement status is invalid")
-        if status not in {LifecycleStatus.ACCEPTED, LifecycleStatus.COMPLETED}:
-            self._terminal = True
-            self.audit.append(
-                {
-                    "event": "intent_rejected",
-                    "correlation_id": self._compiled.correlation_id,
-                    "plan_digest": self._compiled.digest,
-                    "intent_id": self._awaiting_intent_id,
-                    "status": status.value,
-                    "reason": outcome.get("reason"),
-                }
-            )
-            raise ConfirmationError(f"relay returned terminal status {status.value}")
+        if outcome.get("command_id") is not None:
+            raise ConfirmationError("command-scoped facts cannot advance the confirmed plan")
+        if outcome.get("drone_id") is not None or outcome.get("connection_epoch") is not None:
+            raise ConfirmationError("overall lifecycle outcome cannot name an adapter command")
+        progress_source = {
+            LifecycleStatus.ACCEPTED: "relay",
+            LifecycleStatus.EXECUTING: "autonomy",
+        }
+        terminal_statuses = {
+            LifecycleStatus.REFUSED,
+            LifecycleStatus.COMPLETED,
+            LifecycleStatus.FAILED,
+            LifecycleStatus.INVALIDATED,
+        }
+        valid_sources = (
+            {"relay", "autonomy"}
+            if status is LifecycleStatus.REFUSED
+            else {progress_source.get(status, "autonomy")}
+        )
+        if outcome.get("source") not in valid_sources:
+            raise ConfirmationError("relay outcome lifecycle owner is invalid")
         try:
             facts = build_grounding_facts(
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
+                translation=(
+                    None
+                    if self._compiled.facts.translation_frame is None
+                    else {
+                        "frame": self._compiled.facts.translation_frame,
+                        "step_m": self._compiled.facts.translation_step_m,
+                    }
+                ),
+                qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
             raise ConfirmationError("relay outcome state is invalid") from None
         state_age_ms = now_ms - facts.state_time_ms
         if state_age_ms < 0 or state_age_ms > self._compiled.state_max_age_ms:
             raise ConfirmationError("relay outcome state is stale")
+        if facts.session != self._compiled.facts.session:
+            raise ConfirmationError("relay outcome state belongs to another session")
         if facts.state_version != self._expected_facts.state_version:
             raise ConfirmationError("fleet roster changed during plan execution")
         old_drones = {
@@ -450,6 +643,32 @@ class ConfirmedPlan:
             or facts.capability_version != self._expected_facts.capability_version
         ):
             raise ConfirmationError("fleet capabilities changed during plan execution")
+        if status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}:
+            self.audit.append(
+                {
+                    "event": "intent_progress",
+                    "correlation_id": self._compiled.correlation_id,
+                    "plan_digest": self._compiled.digest,
+                    "intent_id": self._awaiting_intent_id,
+                    "status": status.value,
+                }
+            )
+            return
+        if status not in terminal_statuses:
+            raise ConfirmationError("relay outcome status is invalid")
+        if status is not LifecycleStatus.COMPLETED:
+            self._terminal = True
+            self.audit.append(
+                {
+                    "event": "intent_rejected",
+                    "correlation_id": self._compiled.correlation_id,
+                    "plan_digest": self._compiled.digest,
+                    "intent_id": self._awaiting_intent_id,
+                    "status": status.value,
+                    "reason": outcome.get("reason"),
+                }
+            )
+            raise ConfirmationError(f"relay returned terminal status {status.value}")
         emitted = self._compiled.intents[self._next - 1]
         expected_selection = self._expected_facts.selection
         if emitted.name.value == "select":
@@ -481,3 +700,56 @@ class ConfirmedPlan:
         self._expected_facts = facts
         self._awaiting_outcome = False
         self._awaiting_intent_id = None
+
+
+def _capture_id(correlation_id: str, index: int) -> str:
+    value = uuid.uuid5(uuid.NAMESPACE_URL, f"sweep:{correlation_id}:capture:{index}")
+    return f"capture-{value.hex}"
+
+
+def _authorization_digest(facts: GroundingFacts) -> str:
+    projection = facts.model_dict()
+    projection.pop("state_event_id")
+    projection.pop("state_time_ms")
+    return hashlib.sha256(
+        json.dumps(projection, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and set(value) <= set("0123456789abcdef")
+
+
+def _plan_digest(
+    facts: GroundingFacts,
+    intents: tuple[ProposedIntent, ...],
+    *,
+    expires_at_ms: int,
+    correlation_id: str,
+    state_max_age_ms: int,
+    model: str,
+    prompt_schema_version: str,
+    response_source: str,
+    response_origin: str,
+    cassette_digest: str | None,
+) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "facts": facts.state_digest,
+                "session": facts.session,
+                "capabilities": facts.capability_version,
+                "intents": [intent.semantic_dict() for intent in intents],
+                "expires_at_ms": expires_at_ms,
+                "correlation_id": correlation_id,
+                "state_max_age_ms": state_max_age_ms,
+                "model": model,
+                "prompt_schema_version": prompt_schema_version,
+                "response_source": response_source,
+                "response_origin": response_origin,
+                "cassette_digest": cassette_digest,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()

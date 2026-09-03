@@ -74,6 +74,7 @@ M20_SUPPORTED_NAMES = frozenset(
         IntentName.ARM,
         IntentName.SELECT,
         IntentName.TAKEOFF,
+        IntentName.LAND,
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
@@ -219,9 +220,19 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({"ids": tuple(value["ids"])})
 
     if name is IntentName.TRANSLATE:
-        if set(value) != {"dx", "dy"} or not all(_is_finite_number(value[key]) for key in value):
+        fields = set(value)
+        if fields not in ({"dx", "dy"}, {"dx", "dy", "frame", "step_m"}):
             raise ValueError
-        return MappingProxyType({"dx": value["dx"], "dy": value["dy"]})
+        if not _is_finite_number(value["dx"]) or not _is_finite_number(value["dy"]):
+            raise ValueError
+        parsed = {"dx": value["dx"], "dy": value["dy"]}
+        if "frame" in fields:
+            if value["frame"] not in {"world", "aircraft_relative"}:
+                raise ValueError
+            if not _is_finite_number(value["step_m"]) or value["step_m"] <= 0:
+                raise ValueError
+            parsed.update(frame=value["frame"], step_m=value["step_m"])
+        return MappingProxyType(parsed)
 
     if name in {
         IntentName.ARM,

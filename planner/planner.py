@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import cos, isfinite, radians, sin
 
 from planner.models import (
     Command,
@@ -25,6 +25,7 @@ SUPPORTED_INTENTS = frozenset(
         IntentName.ARM,
         IntentName.SELECT,
         IntentName.TAKEOFF,
+        IntentName.LAND,
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
@@ -36,6 +37,7 @@ SUPPORTED_INTENTS = frozenset(
 SELECTION_TARGETED_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
+        IntentName.LAND,
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
@@ -57,6 +59,7 @@ class PlanningConfig:
     capture_min_overlap_deg: float
     capture_gimbal_pitch_deg: float
     reconstruct_headings_deg: tuple[float, ...]
+    translation_frame: str = "world"
 
     def __post_init__(self) -> None:
         positive = {
@@ -114,6 +117,8 @@ class PlanningConfig:
             raise ValueError("reconstruct_8 headings must be finite values in [0, 360)")
         if len(set(self.reconstruct_headings_deg)) != 8:
             raise ValueError("reconstruct_8 headings must be unique")
+        if self.translation_frame not in {"world", "aircraft_relative"}:
+            raise ValueError("translation_frame must be world or aircraft_relative")
 
 
 class DeterministicPlanner:
@@ -173,8 +178,29 @@ class DeterministicPlanner:
                 )
 
         elif intent.name is IntentName.TRANSLATE:
-            dx = float(intent.args["dx"]) * self.config.translation_step_m
-            dy = float(intent.args["dy"]) * self.config.translation_step_m
+            translation_frame = intent.args.get("frame", self.config.translation_frame)
+            translation_step_m = float(intent.args.get("step_m", self.config.translation_step_m))
+            dx = float(intent.args["dx"]) * translation_step_m
+            dy = float(intent.args["dy"]) * translation_step_m
+            displacements: dict[int, tuple[float, float]] = {}
+            for drone_id in selected:
+                if translation_frame == "world":
+                    displacements[drone_id] = (dx, dy)
+                    continue
+                heading = snapshot.aircraft[drone_id].heading_deg
+                if heading is None:
+                    return _refusal(
+                        intent,
+                        snapshot,
+                        RefusalReason.INVALID_STATE,
+                        f"aircraft {drone_id} has no current heading",
+                        drone_id,
+                    )
+                angle = radians(heading)
+                displacements[drone_id] = (
+                    dx * cos(angle) - dy * sin(angle),
+                    dx * sin(angle) + dy * cos(angle),
+                )
             ordered = selected
             if dx != 0 or dy != 0:
                 ordered = tuple(
@@ -182,8 +208,8 @@ class DeterministicPlanner:
                         selected,
                         key=lambda drone_id: (
                             -(
-                                snapshot.aircraft[drone_id].pose.x * dx
-                                + snapshot.aircraft[drone_id].pose.y * dy
+                                snapshot.aircraft[drone_id].pose.x * displacements[drone_id][0]
+                                + snapshot.aircraft[drone_id].pose.y * displacements[drone_id][1]
                             ),
                             drone_id,
                         ),
@@ -191,16 +217,21 @@ class DeterministicPlanner:
                 )
             for drone_id in ordered:
                 pose = snapshot.aircraft[drone_id].pose
+                drone_dx, drone_dy = displacements[drone_id]
                 builder.add(
                     drone_id,
                     CommandOperation.GOTO,
                     {
-                        "x": pose.x + dx,
-                        "y": pose.y + dy,
+                        "x": pose.x + drone_dx,
+                        "y": pose.y + drone_dy,
                         "z": pose.z,
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
+
+        elif intent.name is IntentName.LAND:
+            for drone_id in selected:
+                builder.add(drone_id, CommandOperation.LAND)
 
         elif intent.name is IntentName.HOLD:
             hold_scope = HoldScope.OPERATOR_SELECTION

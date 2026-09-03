@@ -510,6 +510,7 @@ class FleetRegistry:
         battery = None if telemetry is None else telemetry["battery"]
         link = None if telemetry is None else telemetry["link"]
         pos_quality = None if telemetry is None else telemetry["pos_quality"]
+        heading_deg = None if telemetry is None else telemetry["heading_deg"]
         return {
             "drone_id": record.drone_id,
             "connection_epoch": record.connection_epoch,
@@ -519,6 +520,7 @@ class FleetRegistry:
             "battery": battery,
             "link": link,
             "pos_quality": pos_quality,
+            "heading_deg": heading_deg,
             "control_authority": record.control_authority,
             "last_seen_at": None if record.telemetry is None else record.telemetry.t,
             "camera_patterns": camera_patterns,
