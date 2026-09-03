@@ -34,6 +34,7 @@ describe('Control / Capture console', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Network controls unavailable')
     expect(screen.getByText('No aircraft state')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Network E-stop' })).toBeDisabled()
+    expect(screen.getByLabelText('Fleet safety state')).toHaveTextContent('Network stopUnavailable')
     expect(screen.queryByText(/simulator active/i)).not.toBeInTheDocument()
   })
 
