@@ -9,6 +9,7 @@ import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -484,26 +485,31 @@ def probe_audio_duration_ms(upload: AudioUpload) -> int:
             audio_streams = [stream for stream in container.streams if stream.type == "audio"]
             if len(audio_streams) != 1:
                 raise ValueError("upload must contain one audio stream")
-            duration_ms = 0
-            first_frame_start_ms: int | None = None
+            decoded_duration = Fraction()
+            previous_frame_start: Fraction | None = None
             for frame in container.decode(audio=audio_streams[0].index):
-                if not frame.sample_rate:
+                if not frame.sample_rate or frame.sample_rate < 0 or frame.samples <= 0:
                     raise ValueError("audio sample rate is unavailable")
-                frame_start_ms = round(float(frame.time or 0) * 1000)
-                frame_duration_ms = round(frame.samples / frame.sample_rate * 1000)
-                if first_frame_start_ms is None:
-                    first_frame_start_ms = frame_start_ms
-                duration_ms = max(
-                    duration_ms,
-                    frame_start_ms + frame_duration_ms - first_frame_start_ms,
-                )
-                if duration_ms > MAX_AUDIO_DURATION_MS:
-                    return duration_ms
+                if frame.pts is None or frame.time_base is None or frame.time_base <= 0:
+                    raise ValueError("audio frame timestamp is unavailable")
+                frame_start = Fraction(frame.pts) * Fraction(frame.time_base)
+                if frame_start < 0 or (
+                    previous_frame_start is not None and frame_start <= previous_frame_start
+                ):
+                    raise ValueError("audio frame timestamps are invalid")
+                previous_frame_start = frame_start
+                decoded_duration += Fraction(frame.samples, frame.sample_rate)
+                if decoded_duration * 1_000 > MAX_AUDIO_DURATION_MS:
+                    duration_ms = decoded_duration * 1_000
+                    return (
+                        duration_ms.numerator + duration_ms.denominator - 1
+                    ) // duration_ms.denominator
     except av.error.FFmpegError as error:
         raise ValueError("audio cannot be decoded") from error
-    if duration_ms <= 0:
+    if decoded_duration <= 0:
         raise ValueError("audio duration is unavailable")
-    return duration_ms
+    duration_ms = decoded_duration * 1_000
+    return (duration_ms.numerator + duration_ms.denominator - 1) // duration_ms.denominator
 
 
 def _extension(content_type: str) -> str:

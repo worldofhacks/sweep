@@ -5,8 +5,11 @@ import io
 import tracemalloc
 import wave
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
+import av
 import httpx
 import pytest
 
@@ -63,6 +66,30 @@ def fixed_audio_duration(_upload: AudioUpload) -> int:
 
 def fifteen_second_audio_duration(_upload: AudioUpload) -> int:
     return 15_000
+
+
+def opus_webm(seconds: int) -> bytes:
+    output = io.BytesIO()
+    with av.open(output, mode="w", format="webm") as container:
+        stream = container.add_stream("libopus", rate=48_000)
+        stream.layout = "mono"
+        pts = 0
+        samples_remaining = seconds * 48_000
+        while samples_remaining:
+            samples = min(960, samples_remaining)
+            frame = av.AudioFrame(format="s16", layout="mono", samples=samples)
+            frame.sample_rate = 48_000
+            frame.pts = pts
+            frame.time_base = Fraction(1, 48_000)
+            for plane in frame.planes:
+                plane.update(bytes(plane.buffer_size))
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            pts += samples
+            samples_remaining -= samples
+        for packet in stream.encode(None):
+            container.mux(packet)
+    return output.getvalue()
 
 
 def test_transcript_service_hands_only_valid_audio_to_the_compiler() -> None:
@@ -428,6 +455,46 @@ def test_transcript_service_rejects_decoded_audio_over_thirty_seconds_before_pro
     assert transport.calls == 0
 
 
+@pytest.mark.parametrize(
+    "sample_rates,pts_values",
+    [
+        ([0], [0]),
+        ([48_000], [-1]),
+        ([48_000, 48_000], [0, 0]),
+    ],
+)
+def test_audio_duration_probe_rejects_missing_rate_and_nonmonotonic_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_rates: list[int],
+    pts_values: list[int],
+) -> None:
+    frames = []
+    for sample_rate, pts in zip(sample_rates, pts_values, strict=True):
+        frame = av.AudioFrame(format="s16", layout="mono", samples=960)
+        frame.sample_rate = sample_rate
+        frame.pts = pts
+        frame.time_base = Fraction(1, 48_000)
+        frames.append(frame)
+
+    class Container:
+        streams = [SimpleNamespace(type="audio", index=0)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def decode(self, *, audio: int):
+            assert audio == 0
+            yield from frames
+
+    monkeypatch.setattr(voice.av, "open", lambda _source: Container())
+
+    with pytest.raises(ValueError):
+        voice.probe_audio_duration_ms(AudioUpload("audio/webm", b"audio"))
+
+
 def test_transcript_endpoint_rejects_declared_audio_over_thirty_seconds(tmp_path: Path) -> None:
     app = create_app(RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path))
     runtime = RelayRuntime(RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path))
@@ -453,6 +520,44 @@ def test_transcript_endpoint_rejects_declared_audio_over_thirty_seconds(tmp_path
 
     assert response.status_code == 413
     assert response.json()["reason"] == "audio_too_long"
+
+
+@pytest.mark.parametrize("declared_duration", [None, "0"])
+def test_transcript_endpoint_rejects_concatenated_audio_with_reset_timestamps_before_provider_io(
+    tmp_path: Path, declared_duration: str | None
+) -> None:
+    transport = FixedTranscriptionTransport()
+    settings = RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path)
+    app = create_app(settings)
+    runtime = RelayRuntime(settings)
+    runtime.session(SESSION)
+    app.state.relay_runtime = runtime
+    app.state.transcript_service = TranscriptService(
+        transcription=transport, compiler=SpyCompiler()
+    )
+    headers = {
+        "Authorization": f"Bearer {CONSOLE_KEY.decode()}",
+        "Content-Type": "audio/webm",
+        "X-Sweep-Correlation-Id": "voice-reset-timestamps",
+    }
+    if declared_duration is not None:
+        headers["X-Sweep-Audio-Duration-Ms"] = declared_duration
+    audio = opus_webm(16) + opus_webm(15)
+
+    async def request() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                f"/api/sessions/{SESSION}/transcripts", headers=headers, content=audio
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["reason"] == "invalid_audio"
+    assert response.json()["emissions"] == []
+    assert transport.calls == 0
 
 
 def test_transcript_endpoint_requires_authentication(tmp_path: Path) -> None:
