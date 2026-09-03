@@ -238,6 +238,8 @@ kbd {
   font-size: var(--text-md);
 }
 .text-field:hover { border-color: var(--text-3); }
+.text-field:focus-visible { border-color: var(--accent); outline-offset: 0; }
+.text-field:disabled { color: var(--text-3); border-color: var(--line); background: var(--surface-1); }
 .field { display: grid; gap: var(--space-2); }
 .field-error { color: var(--warn); font-size: var(--text-sm); }
 .text-field[aria-invalid='true'] { border-color: var(--warn); }
