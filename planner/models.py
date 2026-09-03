@@ -192,6 +192,7 @@ class AircraftState:
     physical_rc_available: bool
     storage_remaining_bytes: int
     camera_ready: bool
+    heading_deg: float | None = None
     active_task_id: str | None = None
     position_loss_since_ms: int | None = None
 
@@ -216,6 +217,10 @@ class AircraftState:
             raise ValueError("home must be a Position or null")
         if not isinstance(self.flight_state, FlightState):
             raise ValueError("flight_state must be a FlightState")
+        if self.heading_deg is not None and (
+            not _is_finite_number(self.heading_deg) or not 0 <= self.heading_deg < 360
+        ):
+            raise ValueError("heading_deg must be null or finite degrees in [0, 360)")
         for name, value in (
             ("armed", self.armed),
             ("control_authority", self.control_authority),
@@ -288,6 +293,7 @@ class AircraftState:
             physical_rc_available=_boolean(raw, "physical_rc_available"),
             storage_remaining_bytes=_nonnegative_int(raw, "storage_remaining_bytes"),
             camera_ready=_boolean(raw, "camera_ready"),
+            heading_deg=_optional_heading(raw.get("heading_deg")),
             active_task_id=_optional_string(raw.get("active_task_id")),
             position_loss_since_ms=_optional_nonnegative_int(raw.get("position_loss_since_ms")),
         )
@@ -311,6 +317,7 @@ class AircraftState:
             "physical_rc_available": self.physical_rc_available,
             "storage_remaining_bytes": self.storage_remaining_bytes,
             "camera_ready": self.camera_ready,
+            "heading_deg": self.heading_deg,
             "active_task_id": self.active_task_id,
             "position_loss_since_ms": self.position_loss_since_ms,
         }
@@ -498,6 +505,15 @@ class FleetSnapshot:
                     physical_rc_available=safety.physical_rc_available,
                     storage_remaining_bytes=safety.storage_remaining_bytes,
                     camera_ready=safety.camera_ready,
+                    heading_deg=_optional_heading(
+                        item.get("heading_deg")
+                        if item.get("heading_deg") is not None
+                        else (
+                            None
+                            if telemetry_mapping is None
+                            else telemetry_mapping.get("heading_deg")
+                        )
+                    ),
                     active_task_id=safety.active_task_id,
                     position_loss_since_ms=safety.position_loss_since_ms,
                 )
@@ -877,6 +893,14 @@ def _optional_nonnegative_int(value: object) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError("optional timestamp must be null or non-negative")
     return value
+
+
+def _optional_heading(value: object) -> float | None:
+    if value is None:
+        return None
+    if not _is_finite_number(value) or not 0 <= value < 360:
+        raise ValueError("heading_deg must be null or finite degrees in [0, 360)")
+    return float(value)
 
 
 def _relay_pose(
