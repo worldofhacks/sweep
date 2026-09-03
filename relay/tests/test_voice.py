@@ -266,6 +266,16 @@ def test_voice_trace_records_duration_and_provider_plus_combined_cost() -> None:
         "provider_cost_usd": 0.0015,
         "combined_cost_usd": 0.0015,
     }
+    assert events[1] == {
+        "event": "voice_completed",
+        "correlation_id": "voice-cost-1",
+        "session_id": SESSION,
+        "status": "transcribed",
+        "source": "whisper",
+        "reason": None,
+        "provider_cost_usd": 0.0015,
+        "combined_cost_usd": 0.0015,
+    }
 
 
 @pytest.mark.parametrize(

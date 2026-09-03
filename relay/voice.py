@@ -238,6 +238,7 @@ class TranscriptService:
             capability_version = compiler_capability_version(grounded_state)
         except ValueError:
             return VoiceOutcome("refused", "template", "invalid_relay_state", None)
+        cost_usd = _whisper_cost(measured_duration_ms)
         self._record(
             {
                 "event": "voice_started",
@@ -247,8 +248,8 @@ class TranscriptService:
                 "content_type": normalized_type,
                 "bytes": len(body),
                 "audio_duration_ms": measured_duration_ms,
-                "provider_cost_usd": _whisper_cost(measured_duration_ms),
-                "combined_cost_usd": _whisper_cost(measured_duration_ms),
+                "provider_cost_usd": cost_usd,
+                "combined_cost_usd": cost_usd,
             }
         )
         try:
@@ -258,12 +259,14 @@ class TranscriptService:
                 VoiceOutcome("refused", "template", "transcription_unavailable", None),
                 correlation_id=correlation_id,
                 session_id=session_id,
+                cost_usd=cost_usd,
             )
         except ValueError:
             return self._complete(
                 VoiceOutcome("refused", "template", "invalid_transcript", None),
                 correlation_id=correlation_id,
                 session_id=session_id,
+                cost_usd=cost_usd,
             )
         try:
             compiler_result = self._compiler.compile(
@@ -280,27 +283,36 @@ class TranscriptService:
                 VoiceOutcome("refused", "template", "compiler_unavailable", transcript),
                 correlation_id=correlation_id,
                 session_id=session_id,
+                cost_usd=cost_usd,
             )
         except Exception:
             return self._complete(
                 VoiceOutcome("refused", "template", "compiler_unavailable", transcript),
                 correlation_id=correlation_id,
                 session_id=session_id,
+                cost_usd=cost_usd,
             )
         if not isinstance(compiler_result, tuple) or len(compiler_result) != 2:
             return self._complete(
                 VoiceOutcome("refused", "template", "compiler_unavailable", transcript),
                 correlation_id=correlation_id,
                 session_id=session_id,
+                cost_usd=cost_usd,
             )
         return self._complete(
             VoiceOutcome("transcribed", "whisper", None, transcript),
             correlation_id=correlation_id,
             session_id=session_id,
+            cost_usd=cost_usd,
         )
 
     def _complete(
-        self, outcome: VoiceOutcome, *, correlation_id: str, session_id: str
+        self,
+        outcome: VoiceOutcome,
+        *,
+        correlation_id: str,
+        session_id: str,
+        cost_usd: float | None,
     ) -> VoiceOutcome:
         self._record(
             {
@@ -310,6 +322,8 @@ class TranscriptService:
                 "status": outcome.status,
                 "source": outcome.source,
                 "reason": outcome.reason,
+                "provider_cost_usd": cost_usd,
+                "combined_cost_usd": cost_usd,
             }
         )
         return outcome
@@ -474,9 +488,14 @@ def _whisper_cost(audio_duration_ms: int | None) -> float | None:
         return None
     if not isinstance(audio_duration_ms, int) or isinstance(audio_duration_ms, bool):
         return None
-    if audio_duration_ms < 0 or audio_duration_ms > 30_000:
+    if audio_duration_ms < 0 or audio_duration_ms > MAX_AUDIO_DURATION_MS:
         return None
     return round(audio_duration_ms / 60_000 * WHISPER_USD_PER_MINUTE, 8)
+
+
+def _ceil_ms(duration_seconds: Fraction) -> int:
+    duration_ms = duration_seconds * 1_000
+    return (duration_ms.numerator + duration_ms.denominator - 1) // duration_ms.denominator
 
 
 def probe_audio_duration_ms(upload: AudioUpload) -> int:
@@ -500,16 +519,12 @@ def probe_audio_duration_ms(upload: AudioUpload) -> int:
                 previous_frame_start = frame_start
                 decoded_duration += Fraction(frame.samples, frame.sample_rate)
                 if decoded_duration * 1_000 > MAX_AUDIO_DURATION_MS:
-                    duration_ms = decoded_duration * 1_000
-                    return (
-                        duration_ms.numerator + duration_ms.denominator - 1
-                    ) // duration_ms.denominator
+                    return _ceil_ms(decoded_duration)
     except av.error.FFmpegError as error:
         raise ValueError("audio cannot be decoded") from error
     if decoded_duration <= 0:
         raise ValueError("audio duration is unavailable")
-    duration_ms = decoded_duration * 1_000
-    return (duration_ms.numerator + duration_ms.denominator - 1) // duration_ms.denominator
+    return _ceil_ms(decoded_duration)
 
 
 def _extension(content_type: str) -> str:
