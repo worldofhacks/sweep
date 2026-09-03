@@ -47,7 +47,7 @@ SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 
 Browser uploads are allowed only from the explicit origins in `SWEEP_CONSOLE_ORIGINS`, which defaults to the local Vite development origins. Configure the deployed console origin rather than using a wildcard.
 
-The endpoint requires an existing live relay session. It derives the compiler capability profile from the authoritative state projection, hands the final transcript to `TranscriptCompiler.compile(transcript, relay_state, capability_profile, correlation_id, session_id)`, and returns a typed `voice_outcome`. The current compiler handoff is deliberately unavailable until the transcript compiler lands, so it returns `compiler_unavailable` with `emissions: []`. Upload, provider, and compiler failures use the same no-emission shape.
+The endpoint requires an existing live relay session. It derives the compiler capability version from the authoritative state projection, hands the final transcript to `TranscriptCompiler.compile(transcript, relay_state, capability_version=..., rooms=..., now_ms=..., correlation_id=..., session_id=...)`, and returns a typed `voice_outcome`. The current compiler handoff is deliberately unavailable until the transcript compiler lands, so it returns `compiler_unavailable` with `emissions: []`. Upload, provider, and compiler failures use the same no-emission shape.
 
 Langfuse telemetry starts only when both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. It records opaque correlation and session identifiers, content type, byte count, model, and outcome. Audio and transcript text stay out of telemetry.
 
