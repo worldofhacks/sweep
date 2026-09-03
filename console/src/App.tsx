@@ -10,11 +10,14 @@ import {
   type RequestRecord,
 } from './control/state'
 import type { CapturePattern, DroneId, RelayAircraftState } from './relay/contract'
+import { UnavailableTranscriptClient, type TranscriptClient } from './voice/client'
+import { MAX_RECORDING_MS, usePushToTalk } from './voice/use-push-to-talk'
 
 interface AppProps {
   sessionId: string
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
+  transcriptClient?: TranscriptClient
 }
 
 const MODULES = [
@@ -26,7 +29,11 @@ const MODULES = [
   ['Configuration', 'later'],
 ] as const
 
-export default function App({ sessionId, clients, intentDependencies }: AppProps) {
+const unavailableTranscriptClient = new UnavailableTranscriptClient(
+  'Voice relay bootstrap is not configured. No audio was sent.',
+)
+
+export default function App({ sessionId, clients, intentDependencies, transcriptClient }: AppProps) {
   const [roomId, setRoomId] = useState('room-01')
   const previewRef = useRef<HTMLElement>(null)
   const {
@@ -42,6 +49,10 @@ export default function App({ sessionId, clients, intentDependencies }: AppProps
     retryFailedRequest,
     selectFeed,
   } = useControlConsole({ sessionId, clients, intentDependencies })
+  const voice = usePushToTalk({
+    sessionId,
+    client: transcriptClient ?? unavailableTranscriptClient,
+  })
 
   useEffect(() => {
     if (pendingRequest) previewRef.current?.focus()
@@ -285,6 +296,54 @@ export default function App({ sessionId, clients, intentDependencies }: AppProps
               >
                 Hold selected <span>{formatSelection(state.selection)}</span>
               </button>
+              <div className="voice-control" aria-live="polite">
+                <div className="voice-copy">
+                  <span className="eyebrow">Voice plan input</span>
+                  <strong>
+                    {voice.status === 'recording'
+                      ? 'Listening'
+                      : voice.status === 'uploading'
+                        ? 'Transcribing'
+                        : 'Push to talk'}
+                  </strong>
+                  <p>
+                    {voice.detail ?? `Hold to record. Recording stops automatically after ${MAX_RECORDING_MS / 1000}s.`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={voice.isRecording ? 'voice-button is-recording' : 'voice-button'}
+                  aria-label={voice.isRecording ? 'Release to stop voice recording' : 'Hold to record a voice plan'}
+                  aria-pressed={voice.isRecording}
+                  disabled={
+                    isFixture ||
+                    state.connection.status !== 'connected' ||
+                    voice.status === 'requesting_microphone' ||
+                    voice.status === 'uploading'
+                  }
+                  onPointerDown={() => void voice.start()}
+                  onPointerUp={voice.stop}
+                  onPointerCancel={voice.stop}
+                  onPointerLeave={(event) => {
+                    if (event.buttons !== 0) voice.stop()
+                  }}
+                  onKeyDown={(event) => {
+                    if (!event.repeat && (event.key === ' ' || event.key === 'Enter')) {
+                      event.preventDefault()
+                      void voice.start()
+                    }
+                  }}
+                  onKeyUp={(event) => {
+                    if (event.key === ' ' || event.key === 'Enter') {
+                      event.preventDefault()
+                      voice.stop()
+                    }
+                  }}
+                >
+                  <span className="voice-glyph" aria-hidden="true">●</span>
+                  <span>{voice.isRecording ? 'Release' : 'Hold to talk'}</span>
+                </button>
+              </div>
             </section>
 
             <section className="panel active-panel" aria-labelledby="active-title">

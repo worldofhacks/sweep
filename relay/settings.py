@@ -7,9 +7,15 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from relay.auth import StaticCredentialResolver
 from relay.session import RelayLimits
+
+DEFAULT_CONSOLE_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+)
 
 
 class SettingsError(RuntimeError):
@@ -27,6 +33,7 @@ class RelaySettings:
     future_clock_skew_ms: int = 1_000
     telemetry_freshness_ms: int = 1_000
     fanout_hz: int = 10
+    console_origins: tuple[str, ...] = DEFAULT_CONSOLE_ORIGINS
 
     def __post_init__(self) -> None:
         if len(self.relay_token) < 32:
@@ -42,6 +49,7 @@ class RelaySettings:
             future_clock_skew_ms=self.future_clock_skew_ms,
             telemetry_freshness_ms=self.telemetry_freshness_ms,
         )
+        _validate_origins(self.console_origins)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> RelaySettings:
@@ -72,6 +80,12 @@ class RelaySettings:
             telemetry_freshness_ms=_positive_integer(
                 values.get("SWEEP_TELEMETRY_FRESHNESS_MS", "1000"),
                 "SWEEP_TELEMETRY_FRESHNESS_MS",
+            ),
+            console_origins=_origins(
+                values.get(
+                    "SWEEP_CONSOLE_ORIGINS",
+                    ",".join(DEFAULT_CONSOLE_ORIGINS),
+                )
             ),
         )
 
@@ -135,3 +149,32 @@ def _nonnegative_integer(raw: str, name: str) -> int:
     if value < 0 or str(value) != raw:
         raise SettingsError(f"{name} must be a canonical non-negative integer")
     return value
+
+
+def _origins(raw: str) -> tuple[str, ...]:
+    origins = tuple(origin.strip() for origin in raw.split(",") if origin.strip())
+    _validate_origins(origins)
+    return origins
+
+
+def _validate_origins(origins: tuple[str, ...]) -> None:
+    if not origins or any(not _is_origin(origin) for origin in origins):
+        raise SettingsError("SWEEP_CONSOLE_ORIGINS must contain explicit HTTP(S) origins")
+
+
+def _is_origin(origin: str) -> bool:
+    parsed = urlsplit(origin)
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def console_origins_from_env(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    values = os.environ if environ is None else environ
+    return _origins(values.get("SWEEP_CONSOLE_ORIGINS", ",".join(DEFAULT_CONSOLE_ORIGINS)))

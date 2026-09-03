@@ -278,6 +278,43 @@ kbd {
 .text-button:disabled { color: var(--text-faint); text-decoration: none; }
 
 .control-panel > :not(.panel-heading) { margin-right: 16px; margin-left: 16px; }
+.voice-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #0d1218;
+}
+.voice-copy { min-width: 0; }
+.voice-copy strong { display: block; margin-top: 4px; color: var(--text); font-size: 12px; }
+.voice-copy p { margin: 4px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.voice-button {
+  display: inline-flex;
+  min-width: 112px;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #355574;
+  border-radius: 4px;
+  color: #d4e7ff;
+  background: #132333;
+  font: 700 10px/1 var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  transition: border-color 150ms cubic-bezier(.25, 1, .5, 1), background 150ms cubic-bezier(.25, 1, .5, 1);
+}
+.voice-button:hover:not(:disabled) { border-color: var(--focus); background: #17304a; }
+.voice-button:disabled { border-color: var(--border); color: var(--text-faint); background: var(--surface); }
+.voice-button.is-recording { border-color: #a64d55; background: #32191f; color: #ffdce0; }
+.voice-glyph { color: var(--info); font-size: 12px; }
+.voice-button.is-recording .voice-glyph { color: var(--danger); animation: voice-pulse 1.1s ease-in-out infinite; }
+@keyframes voice-pulse { 50% { opacity: .35; transform: scale(.7); } }
 .field-label, .pattern-fieldset legend { display: block; margin-top: 16px; color: var(--text-secondary); font-size: 11px; font-weight: 600; }
 .text-field {
   width: calc(100% - 32px);

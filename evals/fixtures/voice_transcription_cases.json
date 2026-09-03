@@ -1,0 +1,14 @@
+[
+  {"id": "voice-01", "content_type": "audio/webm", "audio": "audio:hold selected", "transcript": "hold the selected aircraft"},
+  {"id": "voice-02", "content_type": "audio/webm", "audio": "audio:come home", "transcript": "bring the selected aircraft home"},
+  {"id": "voice-03", "content_type": "audio/webm", "audio": "audio:land all", "transcript": "land all aircraft"},
+  {"id": "voice-04", "content_type": "audio/webm", "audio": "audio:take off", "transcript": "take off"},
+  {"id": "voice-05", "content_type": "audio/webm", "audio": "audio:select one and two", "transcript": "select drones one and two"},
+  {"id": "voice-06", "content_type": "audio/webm", "audio": "audio:move east one meter", "transcript": "move east one meter"},
+  {"id": "voice-07", "content_type": "audio/ogg", "audio": "audio:hold now", "transcript": "hold now"},
+  {"id": "voice-08", "content_type": "audio/wav", "audio": "audio:arm the team", "transcript": "arm the team"},
+  {"id": "voice-09", "content_type": "audio/mpeg", "audio": "audio:stop", "transcript": "emergency stop"},
+  {"id": "voice-10", "content_type": "audio/webm", "audio": "audio:record the room", "transcript": "capture this room"},
+  {"id": "voice-11", "content_type": "audio/webm", "audio": "audio:go home please", "transcript": "return to home"},
+  {"id": "voice-12", "content_type": "audio/webm", "audio": "audio:cancel that", "transcript": "cancel that"}
+]
