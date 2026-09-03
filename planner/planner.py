@@ -17,6 +17,8 @@ from planner.models import (
     Position,
     Refusal,
     RefusalReason,
+    TranslationGrounding,
+    TranslationPolicy,
 )
 from relay.intent_v1 import IntentName, IntentV1
 
@@ -120,10 +122,20 @@ class PlanningConfig:
         if self.translation_frame not in {"world", "aircraft_relative"}:
             raise ValueError("translation_frame must be world or aircraft_relative")
 
-    def translation_grounding(self) -> dict[str, object] | None:
+    def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding | None:
         if self.translation_frame != "aircraft_relative":
             return None
-        return {"frame": self.translation_frame, "step_m": self.translation_step_m}
+        return TranslationGrounding(
+            policy=TranslationPolicy(
+                frame="aircraft_relative",
+                step_m=self.translation_step_m,
+            ),
+            headings={
+                drone_id: aircraft.heading_deg
+                for drone_id, aircraft in snapshot.aircraft.items()
+                if aircraft.heading_deg is not None
+            },
+        )
 
 
 class DeterministicPlanner:

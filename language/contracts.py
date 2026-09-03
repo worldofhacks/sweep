@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal
 
+from planner.models import TranslationGrounding, TranslationPolicy
 from relay.intent_v1 import AcceptedIntent, IntentName, Mode, validate_intent
 
 MAX_PLAN_STEPS = 12
@@ -184,7 +185,11 @@ class GroundingFacts:
             },
             capability_version=raw["capability_version"],
             rooms=tuple(raw["rooms"]) if isinstance(raw["rooms"], list) else (),
-            translation=raw["translation"],
+            translation=(
+                None
+                if raw["translation"] is None
+                else _translation_from_record(raw["translation"], drones)
+            ),
             qualified_voice_intents=(
                 tuple(raw["qualified_voice_intents"])
                 if isinstance(raw["qualified_voice_intents"], list)
@@ -241,17 +246,13 @@ def build_grounding_facts(
         raise ValueError("rooms must be unique safe identifiers")
     translation_frame: str | None = None
     translation_step_m: float | None = None
+    translation_headings: Mapping[int, float] = {}
     if translation is not None:
-        if (
-            not isinstance(translation, Mapping)
-            or set(translation) != {"frame", "step_m"}
-            or translation["frame"] != "aircraft_relative"
-            or not _is_finite_number(translation["step_m"])
-            or translation["step_m"] <= 0
-        ):
-            raise ValueError("translation must declare a positive aircraft-relative step")
-        translation_frame = "aircraft_relative"
-        translation_step_m = float(translation["step_m"])
+        if not isinstance(translation, TranslationGrounding):
+            raise ValueError("translation must come from the trusted planning policy")
+        translation_frame = translation.policy.frame
+        translation_step_m = translation.policy.step_m
+        translation_headings = translation.headings
     if any(not isinstance(value, str) for value in qualified_voice_intents):
         raise ValueError("qualified voice intents must be unique Intent v1 names")
     normalized_qualified = tuple(qualified_voice_intents)
@@ -273,7 +274,11 @@ def build_grounding_facts(
             normalized_pending = MappingProxyType(dict(pending_value))
 
     raw_drones = relay_state.get("drones")
-    if not isinstance(raw_drones, list) or len(raw_drones) > 32:
+    if (
+        not isinstance(raw_drones, Sequence)
+        or isinstance(raw_drones, str | bytes)
+        or len(raw_drones) > 32
+    ):
         raise ValueError("relay state requires a bounded drone list")
     drones: list[Mapping[str, object]] = []
     ids: set[int] = set()
@@ -293,7 +298,7 @@ def build_grounding_facts(
         selectable = raw.get("selectable")
         flight_state = raw.get("flight_state")
         patterns = raw.get("camera_patterns")
-        heading = raw.get("heading_deg")
+        heading = translation_headings.get(drone_id)
         if membership not in _MEMBERSHIPS or not isinstance(selectable, bool):
             raise ValueError("drone membership and selectable fields are required")
         if flight_state is not None and flight_state not in _FLIGHT_STATES:
@@ -316,7 +321,7 @@ def build_grounding_facts(
                     "flight_state": flight_state,
                     "camera_patterns": tuple(sorted(patterns)),
                     "flight_available": "flight" in capabilities,
-                    "heading_deg": None if heading is None else float(heading),
+                    "heading_deg": heading,
                 }
             )
         )
@@ -605,6 +610,17 @@ def _validate_proposed_intent(
         or any(known[drone_id]["heading_deg"] is None for drone_id in result.intent.selection)
     ):
         return None
+    if result.intent.name in {
+        IntentName.ARM,
+        IntentName.DISARM,
+        IntentName.TAKEOFF,
+        IntentName.LAND,
+        IntentName.LAND_ALL,
+        IntentName.HOLD,
+        IntentName.TRANSLATE,
+        IntentName.COME_HOME,
+    } and any(not known[drone_id]["flight_available"] for drone_id in result.intent.selection):
+        return None
     if expected_estop and result.intent.name not in {
         IntentName.ESTOP,
         IntentName.HOLD,
@@ -699,13 +715,30 @@ def _fold_semantic_state(
 
 
 def _positive_ids(value: object, field: str) -> tuple[int, ...]:
-    if not isinstance(value, list) or any(
-        not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in value
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, str | bytes)
+        or any(not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in value)
     ):
         raise ValueError(f"{field} must be a list of positive integer IDs")
     if len(set(value)) != len(value):
         raise ValueError(f"{field} must not contain duplicate IDs")
     return tuple(value)
+
+
+def _translation_from_record(
+    raw: object, drones: Sequence[Mapping[str, object]]
+) -> TranslationGrounding:
+    if not isinstance(raw, Mapping) or set(raw) != {"frame", "step_m"}:
+        raise ValueError("persisted translation policy is invalid")
+    return TranslationGrounding(
+        policy=TranslationPolicy(frame=raw["frame"], step_m=raw["step_m"]),
+        headings={
+            drone["drone_id"]: drone["heading_deg"]
+            for drone in drones
+            if drone["heading_deg"] is not None
+        },
+    )
 
 
 def _is_finite_number(value: object) -> bool:
@@ -719,7 +752,8 @@ def _is_finite_number(value: object) -> bool:
 
 def _string_list(value: object) -> bool:
     return (
-        isinstance(value, list)
+        isinstance(value, Sequence)
+        and not isinstance(value, str | bytes)
         and len(value) <= 64
         and all(isinstance(item, str) and 0 < len(item) <= 128 for item in value)
     )

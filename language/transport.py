@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -105,12 +106,16 @@ class AnthropicTransport:
             response.raise_for_status()
             body = response.json()
             payload = _extract_tool_input(body)
+            if not isinstance(body, Mapping) or body.get("model") != PINNED_COMPILER_MODEL:
+                raise TransportError("provider response model does not match the request")
             usage = body.get("usage", {})
+            if not isinstance(usage, Mapping):
+                raise TransportError("provider usage metadata is invalid")
             return ModelResponse(
                 payload=payload,
                 source="anthropic",
                 origin="anthropic",
-                model=PINNED_COMPILER_MODEL,
+                model=body["model"],
                 prompt_schema_version=PROMPT_SCHEMA_VERSION,
                 input_units=_non_negative_int(usage.get("input_tokens")),
                 output_units=_non_negative_int(usage.get("output_tokens")),
@@ -178,22 +183,28 @@ class RecordingTransport:
         )
         if response.origin != recorded_origin:
             raise TransportError("response origin does not match the recording transport")
-        with _CASSETTE_LOCK:
-            cassette = self._load()
-            if cassette["recorded_origin"] is None:
-                cassette["recorded_origin"] = recorded_origin
-            elif cassette["recorded_origin"] != recorded_origin:
-                raise TransportError("recording cassette cannot mix response origins")
-            entries = cassette["entries"]
-            assert isinstance(entries, dict)
-            entries[request_key(request)] = {
-                "payload": _thaw_json(response.payload),
-                "input_units": response.input_units,
-                "output_units": response.output_units,
-                "latency_ms": response.latency_ms,
-            }
-            self._write(cassette)
-            cassette_digest = hashlib.sha256(self._cassette_path.read_bytes()).hexdigest()
+        self._cassette_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self._cassette_path.with_name(f".{self._cassette_path.name}.lock")
+        with _CASSETTE_LOCK, lock_path.open("a+b") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            try:
+                cassette = self._load()
+                if cassette["recorded_origin"] is None:
+                    cassette["recorded_origin"] = recorded_origin
+                elif cassette["recorded_origin"] != recorded_origin:
+                    raise TransportError("recording cassette cannot mix response origins")
+                entries = cassette["entries"]
+                assert isinstance(entries, dict)
+                entries[request_key(request)] = {
+                    "payload": _thaw_json(response.payload),
+                    "input_units": response.input_units,
+                    "output_units": response.output_units,
+                    "latency_ms": response.latency_ms,
+                }
+                self._write(cassette)
+                cassette_digest = hashlib.sha256(self._cassette_path.read_bytes()).hexdigest()
+            finally:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
         return replace(
             response,
             cassette_digest=cassette_digest,

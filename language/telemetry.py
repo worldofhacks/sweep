@@ -47,6 +47,9 @@ class LangfuseTraceSink:
                 metadata={
                     "provider_latency_ms": event.get("provider_latency_ms", 0),
                     "elapsed_ms": event.get("elapsed_ms", 0),
+                    "origin": event.get("origin"),
+                    "prompt_schema_version": event.get("prompt_schema_version"),
+                    "cassette_digest": event.get("cassette_digest"),
                 },
             )
         score = getattr(observation, "score_trace", None)
