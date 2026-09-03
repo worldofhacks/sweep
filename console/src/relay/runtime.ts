@@ -1,4 +1,9 @@
 import { UnavailableRelayClient, WebSocketRelayClient, type RelayClient } from './client'
+import {
+  HttpTranscriptClient,
+  UnavailableTranscriptClient,
+  type TranscriptClient,
+} from '../voice/client'
 
 export interface SweepRelayRuntimeConfig {
   baseUrl: string
@@ -9,6 +14,7 @@ export interface SweepRelayRuntimeConfig {
 export interface ConsoleRuntime {
   client: RelayClient
   keyboardClient: RelayClient
+  transcriptClient: TranscriptClient
   sessionId: string
 }
 
@@ -28,6 +34,9 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       keyboardClient: new UnavailableRelayClient(
         'Relay bootstrap is not configured. Keyboard network stop is unavailable; use the physical RC safety path.',
       ),
+      transcriptClient: new UnavailableTranscriptClient(
+        'Voice relay bootstrap is not configured. No audio was sent.',
+      ),
     }
   }
 
@@ -45,5 +54,6 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       source: 'keyboard',
       token: config.token,
     }),
+    transcriptClient: new HttpTranscriptClient({ baseUrl: config.baseUrl, token: config.token }),
   }
 }
