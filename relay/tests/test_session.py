@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from relay.audit import SessionAuditLog
+import pytest
+
+from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal
 from relay.contracts import LifecycleStatus
 from relay.session import RelayLimits, RelaySession
@@ -99,6 +102,29 @@ def test_accepted_and_refused_intents_are_ordered_in_replay(
     empty_increment = relay_session.replay(after_sequence=4)
     assert empty_increment["events"] == []
     assert empty_increment["last_sequence"] == 4
+
+
+def test_replay_reports_durable_sequence_after_append_close_failure(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _new_session(tmp_path, clock, event_ids)
+    real_close = os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("injected close failure")
+
+    monkeypatch.setattr(os, "close", close_then_fail)
+
+    with pytest.raises(AuditLogError, match="cannot close session log"):
+        session.update_control_projection(selection=())
+
+    replay = session.replay()
+    assert [record["seq"] for record in replay["events"]] == [1]
+    assert replay["last_sequence"] == 1
 
 
 def test_authenticated_source_cannot_impersonate_another_registered_source(

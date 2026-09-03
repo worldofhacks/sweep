@@ -223,7 +223,8 @@ def test_close_failure_fences_writer_and_reopen_continues_sequence(
         log.append(_event("event-1"))
     with pytest.raises(AuditLogError, match="unusable"):
         log.append(_event("event-2"))
-    assert log.last_sequence == 0
+    assert log.last_sequence == 1
+    assert [record["seq"] for record in log.replay()] == [1]
 
     monkeypatch.setattr(os, "close", real_close)
     reopened = SessionAuditLog(tmp_path, "session-1")

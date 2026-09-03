@@ -78,6 +78,7 @@ class SessionAuditLog:
                         raise OSError("append made no progress")
                     remaining = remaining[written:]
                 os.fsync(descriptor)
+                self._next_sequence += 1
             except OSError as error:
                 try:
                     os.ftruncate(descriptor, original_size)
@@ -94,7 +95,6 @@ class SessionAuditLog:
                 except OSError as error:
                     self._append_usable = False
                     raise AuditLogError(f"cannot close session log: {error}") from None
-            self._next_sequence += 1
             return json.loads(encoded)
 
     def replay(self, *, after_sequence: int = 0) -> list[dict[str, object]]:
