@@ -78,6 +78,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
   const selectedFeed =
     state.selectedFeedId === null ? null : (state.aircraft[state.selectedFeedId] ?? null)
   const captureBlockedReason = getCaptureBlockedReason(state, roomId)
+  const relayUp = state.connection.status === 'connected'
   const readyCount = aircraft.filter((drone) => drone.membership === 'ready' && drone.selectable).length
   const isFixture =
     state.connection.transport === 'fixture' || state.keyboardConnection.transport === 'fixture'
@@ -171,10 +172,16 @@ export default function App({ sessionId, clients, intentDependencies, transcript
           </header>
 
           <div className="status-strip" aria-label="Fleet safety state">
-            <div className={state.estop ? 'status-tile is-hero is-danger' : 'status-tile is-hero'}>
+            <div className={state.estop || !relayUp ? 'status-tile is-hero is-danger' : 'status-tile is-hero'}>
               <span className="label">Network stop</span>
-              <strong>{state.estop ? 'Active' : 'Clear'}</strong>
-              <p>{state.estop ? 'All aircraft told to stop. Physical RC still governs.' : 'Shift+Esc or the red button sends stop to every aircraft.'}</p>
+              <strong>{state.estop ? 'Active' : relayUp ? 'Clear' : 'Unavailable'}</strong>
+              <p>
+                {state.estop
+                  ? 'All aircraft told to stop. Physical RC still governs.'
+                  : relayUp
+                    ? 'Shift+Esc or the red button sends stop to every aircraft.'
+                    : 'No relay link, so no network stop can be sent. Use the physical RC.'}
+              </p>
             </div>
             <div className="status-tile">
               <span className="label">Arming</span>
