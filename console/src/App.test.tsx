@@ -4,7 +4,7 @@ import { describe, expect, test } from 'vitest'
 import App from './App'
 import { UnavailableRelayClient } from './relay/client'
 import type { IntentV1 } from './relay/contract'
-import { FixtureRelayClient } from './testing/fixture-relay-client'
+import { FixtureRelayClient, fixtureAircraft } from './testing/fixture-relay-client'
 
 const session = 'component-test-session'
 const clock = () => 1_756_700_000_000
@@ -24,6 +24,85 @@ class FailingFixtureRelayClient extends FixtureRelayClient {
 }
 
 describe('Control / Capture console', () => {
+  test('renders a four-source fixture mosaic and keeps media focus local to the console', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+
+    expect(await screen.findByRole('heading', { name: 'Camera mosaic' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Focus D-/ })).toHaveLength(4)
+    expect(screen.getByRole('region', { name: 'Focused camera D-01' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Focus D-01' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Focus D-02' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'View feed D-01' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'View feed D-02' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getAllByText('Video offline')).not.toHaveLength(0)
+    expect(screen.getAllByText('Stream unreported')).not.toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: 'Focus D-02' }))
+    expect(screen.getByRole('region', { name: 'Focused camera D-02' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Focus D-02' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'View feed D-02' })).toHaveAttribute('aria-pressed', 'true')
+    expect(clients.console.sent).toHaveLength(0)
+  })
+
+  test('renders and focuses every source in the six-drone fixture', async () => {
+    const clients = {
+      console: new FixtureRelayClient(session, clock, 'console', 6),
+      keyboard: new FixtureRelayClient(session, clock, 'keyboard', 6),
+    }
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+
+    expect(await screen.findAllByRole('button', { name: /Focus D-/ })).toHaveLength(6)
+    await user.click(screen.getByRole('button', { name: 'Focus D-06' }))
+
+    expect(screen.getByRole('region', { name: 'Focused camera D-06' })).toHaveTextContent(
+      'Stream unreported',
+    )
+    expect(screen.getByRole('button', { name: 'Focus D-06' })).toHaveAttribute('aria-pressed', 'true')
+    expect(clients.console.sent).toHaveLength(0)
+  })
+
+  test('renders an authoritative last frame time for an unreported source', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    const lastFrameAt = clock() - 4_000
+    const formattedLastFrame = new Intl.DateTimeFormat(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(lastFrameAt)
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByRole('heading', { name: 'Camera mosaic' })
+
+    const drones = fixtureAircraft(clock())
+    drones[3] = { ...drones[3], video: { status: 'unreported', last_frame_at: lastFrameAt } }
+    clients.console.emitServer({
+      v: 1,
+      t: clock() + 1,
+      type: 'state',
+      event_id: 'state-unreported-last-frame',
+      session,
+      roster_version: 7,
+      armed: true,
+      estop: false,
+      selection: [1],
+      formation: 'none',
+      spacing: 0.8,
+      mode: 'indoor',
+      pending: null,
+      accepted_plan: null,
+      drones,
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Focus D-04' }))
+    expect(screen.getByRole('region', { name: 'Focused camera D-04' })).toHaveTextContent(
+      `Last frame ${formattedLastFrame}`,
+    )
+  })
+
   test('is honestly disconnected when no production relay bootstrap exists', async () => {
     const clients = {
       console: new UnavailableRelayClient('Console relay missing.', clock),

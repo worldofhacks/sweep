@@ -28,6 +28,36 @@ function aircraft(overrides: Record<string, unknown> = {}) {
 }
 
 describe('M1.1 wire compatibility', () => {
+  test('refuses an adapter-supplied media URL', () => {
+    expect(
+      parseRelayServerEvent({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'state',
+        event_id: 'state-media-url',
+        session,
+        roster_version: 4,
+        armed: true,
+        estop: false,
+        selection: [1],
+        formation: 'line',
+        spacing: 0.8,
+        mode: 'indoor',
+        pending: null,
+        accepted_plan: null,
+        drones: [
+          aircraft({
+            video: {
+              status: 'live',
+              last_frame_at: 1_756_700_000_000,
+              url: 'https://adapter.example.invalid/stream',
+            },
+          }),
+        ],
+      }),
+    ).toBeNull()
+  })
+
   test('accepts the exact authoritative state projection with forward-compatible fields', () => {
     const event = parseRelayServerEvent({
       v: 1,

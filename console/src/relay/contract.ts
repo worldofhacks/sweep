@@ -37,10 +37,11 @@ export interface IntentV1 {
   confirm: boolean
 }
 
-export interface VideoStreamState {
-  status: 'live' | 'offline'
-  url?: string
-  last_frame_at?: number
+export type MediaStreamStatus = 'live' | 'offline' | 'unreported'
+
+export interface MediaStreamState {
+  status: MediaStreamStatus
+  last_frame_at: number | null
 }
 
 export interface RelayAircraftState {
@@ -62,7 +63,7 @@ export interface RelayAircraftState {
   home_pose: unknown
   telemetry: unknown
   membership_history: unknown[]
-  video?: VideoStreamState
+  video?: MediaStreamState
 }
 
 export interface RelayStateEvent {
@@ -242,10 +243,6 @@ function isDroneIds(value: unknown): value is DroneId[] {
   return Array.isArray(value) && value.every(isDroneId) && new Set(value).size === value.length
 }
 
-function isOptionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === 'string'
-}
-
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string'
 }
@@ -307,13 +304,15 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
   )
 }
 
-function isVideoStreamState(value: unknown): value is VideoStreamState | undefined {
+function isVideoStreamState(value: unknown): value is MediaStreamState | undefined {
   if (value === undefined) return true
   if (!isRecord(value)) return false
   return (
-    (value.status === 'live' || value.status === 'offline') &&
-    isOptionalString(value.url) &&
-    (value.last_frame_at === undefined || isNonNegativeInteger(value.last_frame_at))
+    Object.keys(value).length === 2 &&
+    Object.hasOwn(value, 'status') &&
+    Object.hasOwn(value, 'last_frame_at') &&
+    (value.status === 'live' || value.status === 'offline' || value.status === 'unreported') &&
+    (value.last_frame_at === null || isNonNegativeInteger(value.last_frame_at))
   )
 }
 

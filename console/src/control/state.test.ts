@@ -100,6 +100,62 @@ function withPendingCapture(): ControlState {
 }
 
 describe('control reducer fleet lifecycle', () => {
+  test('focuses a single authoritative selection and retains explicit focus through video loss', () => {
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: stateEvent('state-single-selection', 1, [drone(), drone({ drone_id: 2 })], [1]),
+    })
+    expect(state.selectedFeedId).toBe(1)
+
+    state = controlReducer(state, { type: 'feed_selected', droneId: 2 })
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: stateEvent(
+        'state-video-offline',
+        1,
+        [
+          drone(),
+          drone({
+            drone_id: 2,
+            video: { status: 'offline', last_frame_at: t - 2_000 },
+          }),
+        ],
+        [1],
+      ),
+    })
+    expect(state.selectedFeedId).toBe(2)
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: stateEvent('state-selection-changed', 1, [drone(), drone({ drone_id: 2 })], [2]),
+    })
+    expect(state.selectedFeedId).toBe(2)
+  })
+
+  test('reflects recovered telemetry while a local focus remains with no selection', () => {
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: stateEvent(
+        'state-telemetry-stale',
+        1,
+        [drone({ membership: 'degraded', selectable: false, readiness_reasons: ['telemetry_stale'] })],
+        [],
+      ),
+    })
+    expect(state.selectedFeedId).toBeNull()
+    expect(state.aircraft[1].membership).toBe('degraded')
+
+    state = controlReducer(state, { type: 'feed_selected', droneId: 1 })
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: stateEvent('state-telemetry-recovered', 1, [drone()], []),
+    })
+
+    expect(state.selectedFeedId).toBe(1)
+    expect(state.selection).toEqual([])
+    expect(state.aircraft[1]).toMatchObject({ membership: 'ready', readiness_reasons: [] })
+  })
+
   test('clears a stale selection and invalidates its pending preview on degraded state', () => {
     const pending = withPendingCapture()
     const next = controlReducer(pending, {
@@ -284,6 +340,42 @@ describe('control reducer fleet lifecycle', () => {
       event: stateEvent('feed-removed', 2, [], []),
     })
     expect(state.selectedFeedId).toBeNull()
+  })
+
+  test('clears media state when an aircraft rejoins with a new membership epoch', () => {
+    const current = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: stateEvent(
+        'state-with-video',
+        1,
+        [drone({ video: { status: 'live', last_frame_at: t - 100 } })],
+        [1],
+      ),
+    })
+
+    const next = controlReducer(current, {
+      type: 'relay_event',
+      event: {
+        v: 1,
+        t: t + 10,
+        type: 'membership',
+        event_id: 'rejoin-new-epoch',
+        session,
+        action: 'join',
+        drone_id: 1,
+        connection_epoch: 2,
+        membership: 'registered',
+        roster_version: 2,
+        reason: 'adapter_connected',
+        readiness_reasons: ['awaiting_readiness'],
+        adapter_id: 'adapter-1',
+        capabilities: ['flight', 'camera:pano_360'],
+        provenance: 'relay_transport_attestation',
+      },
+    })
+
+    expect(next.aircraft[1].connection_epoch).toBe(2)
+    expect(next.aircraft[1].video).toBeUndefined()
   })
 
   test('preserves departed history and recognizes rejoin by a higher epoch', () => {

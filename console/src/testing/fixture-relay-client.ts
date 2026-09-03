@@ -7,6 +7,8 @@ import type {
   IntentSource,
 } from '../relay/contract'
 
+export type FixtureFleetSize = 4 | 6
+
 export class FixtureRelayClient implements RelayClient {
   readonly transport = 'fixture' as const
   readonly sent: IntentV1[] = []
@@ -17,15 +19,18 @@ export class FixtureRelayClient implements RelayClient {
   private readonly sessionId: string
   private readonly now: () => number
   private readonly source: IntentSource
+  private readonly fleetSize: FixtureFleetSize
 
   constructor(
     sessionId: string,
     now: () => number = () => Date.now(),
     source: IntentSource = 'console',
+    fleetSize: FixtureFleetSize = 4,
   ) {
     this.sessionId = sessionId
     this.now = now
     this.source = source
+    this.fleetSize = fleetSize
   }
 
   start(): void {
@@ -62,7 +67,7 @@ export class FixtureRelayClient implements RelayClient {
       mode: 'indoor',
       pending: null,
       accepted_plan: null,
-      drones: fixtureAircraft(this.now()),
+      drones: fixtureAircraft(this.now(), this.fleetSize),
     })
   }
 
@@ -93,7 +98,7 @@ export class FixtureRelayClient implements RelayClient {
         mode: 'indoor',
         pending: null,
         accepted_plan: null,
-        drones: fixtureAircraft(this.now()),
+        drones: fixtureAircraft(this.now(), this.fleetSize),
       })
     }
     this.emitServer({
@@ -140,8 +145,8 @@ export class FixtureRelayClient implements RelayClient {
   }
 }
 
-function fixtureAircraft(now: number): RelayAircraftState[] {
-  return [
+export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): RelayAircraftState[] {
+  const fleet: RelayAircraftState[] = [
     {
       drone_id: 1,
       connection_epoch: 3,
@@ -204,6 +209,72 @@ function fixtureAircraft(now: number): RelayAircraftState[] {
       telemetry: { fresh: false },
       membership_history: [],
       video: { status: 'offline', last_frame_at: now - 5_100 },
+    },
+    {
+      drone_id: 4,
+      connection_epoch: 1,
+      membership: 'ready',
+      readiness_reasons: [],
+      flight_state: 'hovering',
+      battery: 0.72,
+      link: 0.82,
+      pos_quality: 0.88,
+      last_seen_at: now - 240,
+      camera_patterns: ['pano_360'],
+      selectable: true,
+      adapter_id: 'fixture-dji-04',
+      adapter_capabilities: ['flight', 'camera'],
+      control_authority: true,
+      rc_safety_operator_present: true,
+      home_pose: { x: 2.4, y: 0, z: 0 },
+      telemetry: { fresh: true },
+      membership_history: [],
+    },
+  ]
+  if (fleetSize === 4) return fleet
+  return [
+    ...fleet,
+    {
+      drone_id: 5,
+      connection_epoch: 1,
+      membership: 'ready',
+      readiness_reasons: [],
+      flight_state: 'hovering',
+      battery: 0.69,
+      link: 0.8,
+      pos_quality: 0.86,
+      last_seen_at: now - 160,
+      camera_patterns: ['pano_360'],
+      selectable: true,
+      adapter_id: 'fixture-dji-05',
+      adapter_capabilities: ['flight', 'camera'],
+      control_authority: true,
+      rc_safety_operator_present: true,
+      home_pose: { x: 3.2, y: 0, z: 0 },
+      telemetry: { fresh: true },
+      membership_history: [],
+      video: { status: 'live', last_frame_at: now - 140 },
+    },
+    {
+      drone_id: 6,
+      connection_epoch: 1,
+      membership: 'ready',
+      readiness_reasons: [],
+      flight_state: 'landed',
+      battery: 0.87,
+      link: 0.9,
+      pos_quality: 0.91,
+      last_seen_at: now - 210,
+      camera_patterns: ['reconstruct_8'],
+      selectable: true,
+      adapter_id: 'fixture-dji-06',
+      adapter_capabilities: ['flight', 'camera'],
+      control_authority: true,
+      rc_safety_operator_present: true,
+      home_pose: { x: 4, y: 0, z: 0 },
+      telemetry: { fresh: true },
+      membership_history: [],
+      video: { status: 'unreported', last_frame_at: null },
     },
   ]
 }

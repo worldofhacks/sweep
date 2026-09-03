@@ -381,6 +381,13 @@ function reduceStateEvent(
   }
 
   if (
+    selection.length === 1 &&
+    (state.selectedFeedId === null || !sameDroneSet(state.selection, selection))
+  ) {
+    next = { ...next, selectedFeedId: selection[0] }
+  }
+
+  if (
     state.selectedFeedId !== null &&
     !aircraft[state.selectedFeedId]
   ) {
@@ -555,7 +562,7 @@ function projectMembershipEvent(
     rc_safety_operator_present: previous?.rc_safety_operator_present ?? false,
     telemetry: previous?.telemetry ?? null,
     membership_history: previous?.membership_history ?? [],
-    video: previous?.video,
+    video: previous?.connection_epoch === event.connection_epoch ? previous.video : undefined,
   }
 }
 

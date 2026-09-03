@@ -38,6 +38,14 @@ The token is sent only in the first WebSocket frame; it is never placed in a URL
 UI, or included in console logging. Without the full bootstrap, both sources remain visibly
 disconnected and network controls are unavailable.
 
+## Camera dashboard
+
+The camera mosaic and focus pane are fixture-first. They use the authoritative aircraft ID,
+connection epoch, telemetry, membership, readiness reasons, and a closed media status with a
+last-frame timestamp. The console derives the display name `drone{id}` and does not render
+adapter-provided media URLs. MediaMTX endpoints, credentials, recording, latency measurement,
+and browser playback remain held for M3.1.
+
 For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
 development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build
 cannot enable it. It is a UI/contract fixture, not acceptance evidence and not a flight simulator.
