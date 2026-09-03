@@ -34,7 +34,9 @@ flowchart TD
     m1e --> speech[Push-to-talk speech producer]
     compiler --> language[Accepted language producer]
     speech --> language
-    controls --> gesture[Gesture producer]
+    m0 --> gesturedev[Gesture implementation against frozen input interfaces]
+    gesturedev --> gesture[Integrated and accepted gesture producer]
+    controls --> gesture
     m20 --> scale[Four-node hardware and 4-to-6-drone sim scope]
     m20 --> video[M3 video and sensor console]
     m20 --> localization[Real indoor localization and clearance gate]
@@ -244,16 +246,18 @@ Scope: build the 20-utterance live set, complete its cached and live eval paths,
 Done when: the 20-utterance live set passes once on camera, unsafe-intent count is zero, cached fixtures are produced by real compiler runs, and fallback uses the same validation path.
 
 **M4.3: Harden speech UX and evaluate offline transcription**
-Capability area: Interaction with Platform support. Dependencies: M1.3, M4.1.
-Scope: add one-shot push-to-talk recording and server-side Whisper transcription, then evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it. Continuous listening is time-permitting stretch work after the push-to-talk path passes and does not gate M4.3 or the MVP. Polish transcript, preview, clarification, confirmation, and refusal behavior.
-Done when: the primary Whisper API path and any approved local fallback feed the same transcript-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
+Capability area: Interaction with Platform support. Dependencies: M0.2, M1.3, M1.E.
+Scope: add one-shot push-to-talk recording and server-side Whisper transcription, then evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it. Continuous listening is time-permitting stretch work after the push-to-talk path passes and does not gate M4.3 or the MVP. Polish transcript, preview, clarification, confirmation, and refusal behavior. M4.1's reviewed result interface gates compiler integration, not capture and transcription development.
+Done when: the primary Whisper API path and any approved local fallback feed M4.1's reviewed transcript-to-plan result interface and cannot bypass preview, confirmation, planner, or arbiter checks.
 
 **M4.4: Add the webcam gesture producer**
-Capability area: Interaction with Platform support. Dependencies: M1.3 plus frozen Intent v1 and source-registry contracts.
-Scope: build and test the second input channel beside the button-first path with a laptop webcam and simulated relay state. Add camera selection, explicit gesture-tracking enablement, hand-landmark overlay, confidence and dwell feedback, candidate preview, confirmation, cancellation, duplicate suppression, and the shared `intent_id` lifecycle. Start with MediaPipe's built-in gesture classes for `capture_room`, `hold`, confirm, and cancel, then expand the bounded classifier vocabulary toward full Intent v1 coverage. Each gesture and intent pair ships only after clearing its risk-scaled accuracy gate. `estop`, `arm`, `takeoff`, and free-flight motion remain on console controls or the physical RC until their gesture-specific safety gates pass; those trusted fallbacks remain available afterward.
-Done when: one recorded browser session selects a camera, enables tracking, shows landmarks, proposes `capture_room`, confirms it, and observes the same `intent_id` through execution and terminal state. Cancellation, hold, timeout, camera unplug, low confidence, and duplicate suppression pass. Every enabled pair has measured evidence above its frozen threshold, and the gesture producer passes the same Intent v1 conformance suite as console buttons.
+Capability area: Interaction with Platform support. Development dependencies: frozen M0.2 and M1.3 interfaces. Integration and acceptance dependency: completed M1.3.
+Scope: build and test the second input channel beside the button-first path with a laptop webcam and simulated relay state while M1.3 is underway. Integrate it only after M1.3 completes. Add camera selection, explicit gesture-tracking enablement, hand-landmark overlay, confidence and dwell feedback, candidate preview, confirmation, cancellation, duplicate suppression, and the shared `intent_id` lifecycle. Start with MediaPipe's built-in gesture classes for `capture_room`, `hold`, confirm, and cancel, then expand the bounded classifier vocabulary toward full Intent v1 coverage. Each gesture and intent pair ships only after clearing its risk-scaled accuracy gate. `estop`, `arm`, `takeoff`, and free-flight motion remain on console controls or the physical RC until their gesture-specific safety gates pass; those trusted fallbacks remain available afterward.
+Done when: completed M1.3 supplies the accepted integration path, and one recorded browser session selects a camera, enables tracking, shows landmarks, proposes `capture_room`, confirms it, and observes the same `intent_id` through execution and terminal state. Cancellation, hold, timeout, camera unplug, low confidence, and duplicate suppression pass. Every enabled pair has measured evidence above its frozen threshold, and the gesture producer passes the same Intent v1 conformance suite as console buttons.
 
-Placement decision: this work is ready alongside M1.3. Whether it keeps the historical M4.4 identifier as an early-start item or moves into the M1 series remains an open owner decision.
+Placement decision: this early-start work keeps its historical M4.4 identifier. Existing issues and plan references retain the stable ID.
+
+Readiness decision: gesture development begins against frozen M1.3 interfaces while M1.3 is underway. M1.3 completion gates integration and acceptance.
 
 **M4.5: Integrate and record the demo**
 Capability area: team. Dependencies: M2.4, M2.6, M3.5, M4.2, M4.3, M4.4.
@@ -294,7 +298,9 @@ Done when: each selected production concern has an owner, a measurable gate, and
 
 ## Confirmed parallel lanes
 
-**Confirmed decision: gesture work begins alongside the button-first path once M1.3 and its frozen input contracts are available. The transcript-to-plan compiler begins against the M1.1 relay state and M1.2 two-drone sim interfaces. Push-to-talk capture may begin after M1.E, and indoor-autonomy work becomes ready after M2.0.** M4.1, M4.3, and M4.4 have no M3 dependency. M4.5 is the convergence point after accepted input producers and the M3 indoor-autonomy exit are complete. Shared-file and review gates still serialize safety-critical and contract changes.
+**Confirmed decision: gesture work begins alongside the button-first path against frozen M1.3 input interfaces. M1.3 completion gates its integration and acceptance. The transcript-to-plan compiler begins against the M1.1 relay state and M1.2 two-drone sim interfaces. Push-to-talk capture may begin after M1.E, and indoor-autonomy work becomes ready after M2.0.** M4.1, M4.3, and M4.4 have no M3 dependency. M4.5 is the convergence point after accepted input producers and the M3 indoor-autonomy exit are complete. Shared-file and review gates still serialize safety-critical and contract changes.
+
+This development-versus-integration boundary applies throughout the plan: work may begin against a dependency's frozen interfaces while that dependency is underway, but integration and acceptance require the listed dependency to complete.
 
 | Work package | Parallelization boundary |
 |---|---|
