@@ -59,8 +59,8 @@ def test_loader_rejects_duplicate_case_ids(tmp_path) -> None:
         "context": {"capability_version": "v1", "rooms": [], "now_ms": 0},
         "expected": {"kind": "refuse", "reason": "stale_state"},
     }
-    path = tmp_path / "corpus.json"
-    path.write_text(json.dumps({"version": 1, "cases": [case, case]}), encoding="utf-8")
+    path = tmp_path / "corpus.jsonl"
+    path.write_text("\n".join(json.dumps(case) for _ in range(2)), encoding="utf-8")
 
     with pytest.raises(ValueError, match="unique"):
         load_corpus(path)
@@ -75,24 +75,19 @@ def test_loader_rejects_duplicate_case_ids(tmp_path) -> None:
     ],
 )
 def test_loader_rejects_malformed_expectations(tmp_path, expected) -> None:
-    path = tmp_path / "corpus.json"
+    path = tmp_path / "corpus.jsonl"
     path.write_text(
         json.dumps(
             {
-                "version": 1,
-                "cases": [
-                    {
-                        "id": "case-1",
-                        "transcript": "hold",
-                        "relay_state": {},
-                        "context": {
-                            "capability_version": "v1",
-                            "rooms": [],
-                            "now_ms": 0,
-                        },
-                        "expected": expected,
-                    }
-                ],
+                "id": "case-1",
+                "transcript": "hold",
+                "relay_state": {},
+                "context": {
+                    "capability_version": "v1",
+                    "rooms": [],
+                    "now_ms": 0,
+                },
+                "expected": expected,
             }
         ),
         encoding="utf-8",

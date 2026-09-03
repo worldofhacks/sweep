@@ -14,8 +14,9 @@ DEFAULT_CORPUS_PATH = (
     Path(__file__).resolve().parent.parent
     / "datasets"
     / "utterances"
-    / "transcript_plan_cases.json"
+    / "transcript_plan_cases.jsonl"
 )
+LEGACY_CORPUS_PATH = DEFAULT_CORPUS_PATH.with_suffix(".json")
 DEFAULT_SYNTHETIC_RESPONSES_PATH = (
     Path(__file__).resolve().parent.parent
     / "datasets"
@@ -33,6 +34,8 @@ class CorpusCase:
     rooms: tuple[str, ...]
     now_ms: int
     expected: Mapping[str, object]
+    category: str
+    live_demo: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,22 +68,26 @@ class StaticResponseTransport(ModelTransport):
         return ModelResponse(payload=self._payload)
 
 
-def load_corpus(path: Path = DEFAULT_CORPUS_PATH) -> tuple[CorpusCase, ...]:
+def load_corpus(path: Path | None = None) -> tuple[CorpusCase, ...]:
+    selected = path or (DEFAULT_CORPUS_PATH if DEFAULT_CORPUS_PATH.exists() else LEGACY_CORPUS_PATH)
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        if selected.suffix == ".jsonl":
+            cases = [
+                json.loads(line)
+                for line in selected.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        else:
+            raw = json.loads(selected.read_text(encoding="utf-8"))
+            if (
+                not isinstance(raw, Mapping)
+                or raw.get("version") != 1
+                or set(raw) != {"version", "cases"}
+            ):
+                raise ValueError("language corpus has an unsupported schema")
+            cases = raw["cases"]
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot load language corpus: {error}") from None
-    if (
-        not isinstance(raw, Mapping)
-        or raw.get("version") != 1
-        or set(raw)
-        != {
-            "version",
-            "cases",
-        }
-    ):
-        raise ValueError("language corpus has an unsupported schema")
-    cases = raw["cases"]
     if not isinstance(cases, list) or not cases:
         raise ValueError("language corpus requires at least one case")
     parsed = tuple(_parse_case(item) for item in cases)
@@ -209,6 +216,8 @@ def _parse_case(raw: object) -> CorpusCase:
         "relay_state",
         "context",
         "expected",
+        "category",
+        "live_demo",
     }
     required = {"id", "transcript", "relay_state", "context", "expected"}
     if not isinstance(raw, Mapping) or not required <= set(raw) or not set(raw) <= fields:
@@ -218,12 +227,16 @@ def _parse_case(raw: object) -> CorpusCase:
     state = raw["relay_state"]
     context = raw["context"]
     expected = raw["expected"]
+    category = raw.get("category", "synthetic")
+    live_demo = raw.get("live_demo", False)
     if not isinstance(case_id, str) or not case_id or len(case_id) > 128:
         raise ValueError("case ID must be a bounded non-empty string")
     if not isinstance(transcript, str) or not transcript or len(transcript) > 4_000:
         raise ValueError("case transcript must be a bounded non-empty string")
     if not isinstance(state, Mapping) or not isinstance(context, Mapping):
         raise ValueError("case state and context must be objects")
+    if not isinstance(category, str) or not category or not isinstance(live_demo, bool):
+        raise ValueError("case category and live-demo marker are invalid")
     if set(context) != {"capability_version", "rooms", "now_ms"}:
         raise ValueError("case context fields are invalid")
     capability_version = context["capability_version"]
@@ -244,6 +257,8 @@ def _parse_case(raw: object) -> CorpusCase:
         rooms=tuple(rooms),
         now_ms=now_ms,
         expected=dict(expected),
+        category=category,
+        live_demo=live_demo,
     )
 
 
