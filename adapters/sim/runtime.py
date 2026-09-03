@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from threading import Event, Lock, Thread
+from threading import Event, Lock, RLock, Thread
 
 from fastapi import FastAPI
 
@@ -161,8 +161,10 @@ class _SimNodeIngress:
         self.bridge: AutonomyRelayBridge | None = None
         self._active: set[int] = set()
         self._silent: set[int] = set()
+        self._activity_generation: dict[int, int] = {}
         self._sequence = 0
         self._last_frame_t = -1
+        self._ingress_lock = RLock()
         self._watchdogs: dict[int, _LocalWatchdog] = {}
         self._safety_actions: list[NodeSafetyAction] = []
         self._watchdog_lock = Lock()
@@ -228,51 +230,68 @@ class _SimNodeIngress:
                     )
 
     def start(self) -> None:
-        missing = sorted(set(self.flight.aircraft) - set(self.adapter_keys))
-        if missing:
-            joined = ", ".join(str(drone_id) for drone_id in missing)
-            raise ValueError(
-                f"simulator requires configured adapter credentials for drones {joined}"
-            )
-        for drone_id in self.flight.aircraft:
-            self._active.add(drone_id)
-            self._activate(drone_id)
+        with self._ingress_lock:
+            missing = sorted(set(self.flight.aircraft) - set(self.adapter_keys))
+            if missing:
+                joined = ", ".join(str(drone_id) for drone_id in missing)
+                raise ValueError(
+                    f"simulator requires configured adapter credentials for drones {joined}"
+                )
+            for drone_id in self.flight.aircraft:
+                self._active.add(drone_id)
+                self._activity_generation.setdefault(drone_id, 0)
+                self._activate(drone_id)
 
     def periodic_events(self) -> list[dict[str, object]]:
+        with self._ingress_lock:
+            frames = tuple(
+                (
+                    drone_id,
+                    self._telemetry(drone_id),
+                    self._activity_generation[drone_id],
+                )
+                for drone_id in sorted(self._active - self._silent)
+            )
         events: list[dict[str, object]] = []
-        for drone_id in sorted(self._active - self._silent):
-            events.extend(self._process(self._telemetry(drone_id), drone_id))
+        for drone_id, frame, generation in frames:
+            events.extend(self._process(frame, drone_id, activity_generation=generation))
         return events
 
     def silence(self, drone_id: int) -> None:
-        self._require_active(drone_id)
-        self._silent.add(drone_id)
+        with self._ingress_lock:
+            self._require_active(drone_id)
+            self._silent.add(drone_id)
+            self._activity_generation[drone_id] += 1
 
     def disconnect(self, drone_id: int) -> list[dict[str, object]]:
-        self._require_active(drone_id)
-        self._active.remove(drone_id)
-        self._silent.discard(drone_id)
-        bridge = self._bridge()
-        epoch = self.session.registry.connection_epoch(drone_id)
-        events = self.session.handle_adapter_disconnect(
-            drone_id=drone_id,
-            connection_epoch=epoch,
-        )
-        events.extend(
-            bridge.adapter_disconnected(
+        with self._ingress_lock:
+            self._require_active(drone_id)
+            self._active.remove(drone_id)
+            self._silent.discard(drone_id)
+            self._activity_generation[drone_id] += 1
+            bridge = self._bridge()
+            epoch = self.session.registry.connection_epoch(drone_id)
+            events = self.session.handle_adapter_disconnect(
                 drone_id=drone_id,
                 connection_epoch=epoch,
-                relay_state=self.session.current_state(),
             )
-        )
-        return events
+            events.extend(
+                bridge.adapter_disconnected(
+                    drone_id=drone_id,
+                    connection_epoch=epoch,
+                    relay_state=self.session.current_state(),
+                )
+            )
+            return events
 
     def rejoin(self, drone_id: int) -> list[dict[str, object]]:
-        if drone_id not in self.flight.aircraft:
-            raise ValueError(f"unknown simulated aircraft {drone_id}")
-        self._active.add(drone_id)
-        self._silent.discard(drone_id)
-        return self._activate(drone_id)
+        with self._bridge().execution_barrier(), self._ingress_lock:
+            if drone_id not in self.flight.aircraft:
+                raise ValueError(f"unknown simulated aircraft {drone_id}")
+            self._active.add(drone_id)
+            self._silent.discard(drone_id)
+            self._activity_generation[drone_id] = self._activity_generation.get(drone_id, 0) + 1
+            return self._activate(drone_id)
 
     def _activate(self, drone_id: int) -> list[dict[str, object]]:
         events = self._process(self._membership(drone_id, "join"), drone_id)
@@ -280,19 +299,32 @@ class _SimNodeIngress:
         events.extend(self._process(self._membership(drone_id, "readiness"), drone_id))
         return events
 
-    def _process(self, frame: dict[str, object], drone_id: int) -> list[dict[str, object]]:
+    def _process(
+        self,
+        frame: dict[str, object],
+        drone_id: int,
+        *,
+        activity_generation: int | None = None,
+    ) -> list[dict[str, object]]:
         key = self.adapter_keys[drone_id]
         events = self.session.process_frame(
             frame,
             Principal(source="adapter", drone_id=drone_id, signing_key=key),
         )
         if not any(event.get("type") == "refusal" for event in events):
-            events.extend(
-                self._bridge().adapter_activity(
-                    drone_id=drone_id,
-                    relay_state=self.session.current_state(),
+            with self._ingress_lock:
+                activity_is_current = activity_generation is None or (
+                    self._activity_generation.get(drone_id) == activity_generation
+                    and drone_id in self._active
+                    and drone_id not in self._silent
                 )
-            )
+                if activity_is_current:
+                    events.extend(
+                        self._bridge().adapter_activity(
+                            drone_id=drone_id,
+                            relay_state=self.session.current_state(),
+                        )
+                    )
         return events
 
     def _membership(self, drone_id: int, action: str) -> dict[str, object]:
@@ -340,12 +372,14 @@ class _SimNodeIngress:
         }
 
     def _event_id(self, drone_id: int, event_type: str) -> str:
-        self._sequence += 1
-        return f"sim-{drone_id}-{event_type}-{self._sequence}"
+        with self._ingress_lock:
+            self._sequence += 1
+            return f"sim-{drone_id}-{event_type}-{self._sequence}"
 
     def _next_frame_t(self) -> int:
-        self._last_frame_t = max(self.session.clock(), self._last_frame_t + 1)
-        return self._last_frame_t
+        with self._ingress_lock:
+            self._last_frame_t = max(self.session.clock(), self._last_frame_t + 1)
+            return self._last_frame_t
 
     def _bridge(self) -> AutonomyRelayBridge:
         if self.bridge is None:

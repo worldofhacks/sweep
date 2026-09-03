@@ -630,6 +630,7 @@ def create_app(
                         and events[0].get("type") == "acknowledgement"
                         and events[0].get("status") == "accepted"
                     ):
+                        session.mark_pending_intent_delivered(frame["intent_id"])
                         execution = asyncio.create_task(
                             _execute_and_publish(runtime, session_id, session, frame["intent_id"])
                         )

@@ -295,6 +295,9 @@ class RelaySession:
                 roster_version=self.registry.roster_version,
             )
             self._append_audit(event)
+            admit = getattr(self.intent_sink, "admit_intent", None)
+            if callable(admit):
+                admit(intent)
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
             return [event]
@@ -313,6 +316,14 @@ class RelaySession:
         with self._execution_lock:
             return self._execute_pending(pending, sink)
 
+    def mark_pending_intent_delivered(self, intent_id: str) -> None:
+        with self._lock:
+            if intent_id not in self._pending_intents:
+                return
+            delivered = getattr(self.intent_sink, "intent_delivered", None)
+            if callable(delivered):
+                delivered(intent_id)
+
     def fail_pending_intent(
         self, intent_id: str, *, reason: str, detail: str
     ) -> list[dict[str, object]]:
@@ -321,6 +332,9 @@ class RelaySession:
             pending = self._pending_intents.pop(intent_id, None)
             if pending is None:
                 return []
+            cancel = getattr(self.intent_sink, "cancel_intent", None)
+            if callable(cancel):
+                cancel(intent_id)
             self._intents[intent_id].status = LifecycleStatus.REFUSED
             self._log_intent(
                 pending.intent,

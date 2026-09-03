@@ -201,22 +201,27 @@ class SimFlightAdapter:
         return tuple(acknowledgements)
 
     def land(self, ids: list[int]) -> tuple[AdapterAcknowledgement, ...]:
-        self.calls.append(AdapterCall(CommandOperation.LAND, tuple(ids)))
-        acknowledgements = []
-        for drone_id in ids:
-            failure = self._take_failure(drone_id, CommandOperation.LAND)
-            if failure is not None:
-                acknowledgements.append(failure)
-                continue
-            aircraft = self._require_aircraft(drone_id)
-            self._aircraft[drone_id] = replace(
-                aircraft,
-                pose=Position(aircraft.pose.x, aircraft.pose.y, aircraft.home.z),
-                flight_state=FlightState.LANDED,
-                armed=False,
-            )
-            acknowledgements.append(self._ack(drone_id, CommandOperation.LAND))
-        return tuple(acknowledgements)
+        with self._lock:
+            self.calls.append(AdapterCall(CommandOperation.LAND, tuple(ids)))
+            acknowledgements = []
+            for drone_id in ids:
+                blocked = self._blocked_motion(drone_id, CommandOperation.LAND)
+                if blocked is not None:
+                    acknowledgements.append(blocked)
+                    continue
+                failure = self._take_failure(drone_id, CommandOperation.LAND)
+                if failure is not None:
+                    acknowledgements.append(failure)
+                    continue
+                aircraft = self._require_aircraft(drone_id)
+                self._aircraft[drone_id] = replace(
+                    aircraft,
+                    pose=Position(aircraft.pose.x, aircraft.pose.y, aircraft.home.z),
+                    flight_state=FlightState.LANDED,
+                    armed=False,
+                )
+                acknowledgements.append(self._ack(drone_id, CommandOperation.LAND))
+            return tuple(acknowledgements)
 
     def estop(self) -> tuple[AdapterAcknowledgement, ...]:
         ids = tuple(sorted(self._aircraft))
@@ -273,13 +278,12 @@ class SimFlightAdapter:
                     )
                 return LossBehavior.HOLD
 
-            if _is_airborne(aircraft.flight_state):
-                self._aircraft[state.drone_id] = replace(
-                    aircraft,
-                    pose=aircraft.home,
-                    flight_state=FlightState.LANDED,
-                    armed=False,
-                )
+            self._aircraft[state.drone_id] = replace(
+                aircraft,
+                pose=aircraft.home,
+                flight_state=FlightState.LANDED,
+                armed=False,
+            )
             return action
 
     def _blocked_motion(

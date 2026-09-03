@@ -237,6 +237,35 @@ describe('Control / Capture console', () => {
     expect(clients.console.sent).toHaveLength(0)
   })
 
+  test('surfaces keyboard safety actions when the console connection is unavailable', async () => {
+    const keyboard = new FixtureRelayClient(session, clock, 'keyboard')
+    render(
+      <App
+        sessionId={session}
+        clients={{
+          console: new UnavailableRelayClient('Console relay missing.', clock),
+          keyboard,
+        }}
+      />,
+    )
+    expect(await screen.findAllByText('Console relay missing.')).not.toHaveLength(0)
+
+    keyboard.emitServer({
+      v: 1,
+      t: clock(),
+      type: 'safety_action',
+      event_id: 'keyboard-safety-action',
+      session,
+      drone_id: 1,
+      connection_epoch: 3,
+      reason: 'link_loss',
+      action: 'failsafe',
+      loss_behavior: 'failsafe',
+    })
+
+    expect(await screen.findByText('Aircraft failsafe')).toBeInTheDocument()
+  })
+
   test('runs the two-drone flight workflow through production control actions', async () => {
     const clients = {
       console: new FixtureRelayClient(session, clock, 'console', 4, false),

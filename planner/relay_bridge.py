@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
-from threading import Event, Lock
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from threading import Condition, Lock, RLock
+from time import monotonic
 
 from adapters.protocols import NodeSafetyAction, WatchdogConfig
 from planner.controller import AutonomyController
-from planner.coordination import MOTION_INTENTS
+from planner.coordination import MOTION_INTENTS, resolve_intent_group
 from planner.models import (
     ExecutionResult,
     FleetSnapshot,
@@ -18,7 +20,7 @@ from planner.models import (
     LifecycleStatus as AutonomyStatus,
 )
 from relay.contracts import LifecycleStatus as RelayStatus
-from relay.intent_v1 import IntentV1
+from relay.intent_v1 import IntentName, IntentV1
 from relay.session import IntentSinkResult, RelaySession
 
 type EnrichmentProvider = Callable[[Mapping[str, object]], RelaySnapshotEnrichment]
@@ -26,6 +28,7 @@ type ConnectionEpochSynchronizer = Callable[[int, int], None]
 type AdapterIngress = Callable[[], list[dict[str, object]]]
 type NodeActivity = Callable[[int, int, int], None]
 type NodeSafetyEvents = Callable[[], list[NodeSafetyAction]]
+_COORDINATED_INTENTS = MOTION_INTENTS | {IntentName.HOLD}
 
 
 class AutonomyRelayBridge:
@@ -53,18 +56,47 @@ class AutonomyRelayBridge:
         self.synchronize_connection_epoch = synchronize_connection_epoch
         self.ingress = ingress
         self.post_execution_ingress = post_execution_ingress
-        self.concurrent_intents = MOTION_INTENTS
-        self._execution_lock = Lock()
-        self._motion_lock = Lock()
-        self._waiting_motion: _MotionWaiter | None = None
+        self.concurrent_intents = _COORDINATED_INTENTS
+        self._execution_lock = RLock()
+        self._connection_epochs: dict[int, int] = {}
+        self._coordination = Condition(Lock())
+        self._admissions: dict[str, _CoordinatedIntent] = {}
+        self._coordinator_active = False
 
     def __call__(self, intent: IntentV1, _relay_state: dict[str, object]) -> IntentSinkResult:
-        if intent.name in MOTION_INTENTS:
-            return self._coordinate_motion(intent)
+        if intent.name in _COORDINATED_INTENTS:
+            return self._coordinate_intent(intent)
         if intent.name.value == "estop":
             return self._execute_one(intent)
         with self._execution_lock:
             return self._execute_one(intent)
+
+    @contextmanager
+    def execution_barrier(self) -> Iterator[None]:
+        with self._execution_lock:
+            yield
+
+    def admit_intent(self, intent: IntentV1) -> None:
+        if intent.name not in _COORDINATED_INTENTS:
+            return
+        with self._coordination:
+            self._admissions.setdefault(
+                intent.intent_id,
+                _CoordinatedIntent(intent=intent, admitted_at=monotonic()),
+            )
+            self._coordination.notify_all()
+
+    def intent_delivered(self, intent_id: str) -> None:
+        with self._coordination:
+            admission = self._admissions.get(intent_id)
+            if admission is not None:
+                admission.delivered = True
+            self._coordination.notify_all()
+
+    def cancel_intent(self, intent_id: str) -> None:
+        with self._coordination:
+            self._admissions.pop(intent_id, None)
+            self._coordination.notify_all()
 
     def _execute_one(self, intent: IntentV1) -> IntentSinkResult:
         def snapshot() -> FleetSnapshot:
@@ -81,52 +113,77 @@ class AutonomyRelayBridge:
         )
         return self._sink_result(execution, events=self._post_execution_events())
 
-    def _coordinate_motion(self, intent: IntentV1) -> IntentSinkResult:
-        waiter = _MotionWaiter(intent=intent)
-        with self._motion_lock:
-            peer = self._waiting_motion
-            if peer is None:
-                self._waiting_motion = waiter
+    def _coordinate_intent(self, intent: IntentV1) -> IntentSinkResult:
+        self.admit_intent(intent)
+        with self._coordination:
+            admission = self._admissions[intent.intent_id]
+            admission.delivered = True
+            while admission.result is None and admission.error is None:
+                if not self._coordinator_active:
+                    self._coordinator_active = True
+                    coordinator = True
+                    break
+                self._coordination.wait()
             else:
-                self._waiting_motion = None
+                coordinator = False
 
-        if peer is not None:
-            try:
-                with self._execution_lock:
-                    results = self._execute_pair(peer.intent, intent)
-            except Exception as error:
-                peer.error = error
-                peer.done.set()
-                raise
-            peer.result = results[peer.intent.intent_id]
-            peer.done.set()
-            return results[intent.intent_id]
+        if coordinator:
+            group, results, error = self._resolve_admission_group(admission)
+            with self._coordination:
+                group_ids = {item.intent.intent_id for item in group}
+                if error is None and set(results) != group_ids:
+                    error = RuntimeError("coordinator returned incomplete intent results")
+                for item in group:
+                    current = self._admissions.get(item.intent.intent_id)
+                    if current is None:
+                        continue
+                    if error is not None:
+                        current.error = error
+                    else:
+                        current.result = results[item.intent.intent_id]
+                self._coordinator_active = False
+                self._coordination.notify_all()
 
-        timeout_s = self.controller.arbiter.config.motion_conflict_window_ms / 1_000
-        if waiter.done.wait(timeout=timeout_s):
-            if waiter.error is not None:
-                raise waiter.error
-            assert waiter.result is not None
-            return waiter.result
+        with self._coordination:
+            while admission.result is None and admission.error is None:
+                self._coordination.wait()
+            self._admissions.pop(intent.intent_id, None)
+            if admission.error is not None:
+                raise admission.error
+            assert admission.result is not None
+            return admission.result
 
-        with self._motion_lock:
-            if self._waiting_motion is waiter:
-                self._waiting_motion = None
-                execute_single = True
-            else:
-                execute_single = False
-        if execute_single:
+    def _resolve_admission_group(
+        self, seed: _CoordinatedIntent
+    ) -> tuple[
+        tuple[_CoordinatedIntent, ...],
+        dict[str, IntentSinkResult],
+        Exception | None,
+    ]:
+        window_s = self.controller.arbiter.config.motion_conflict_window_ms / 1_000
+        with self._coordination:
+            while True:
+                earliest_t = min(admission.intent.t for admission in self._admissions.values())
+                group = tuple(
+                    admission
+                    for admission in self._admissions.values()
+                    if admission.intent.t - earliest_t
+                    <= self.controller.arbiter.config.motion_conflict_window_ms
+                )
+                deadline = max(item.admitted_at for item in group) + window_s
+                remaining = deadline - monotonic()
+                if remaining > 0 or any(not item.delivered for item in group):
+                    self._coordination.wait(timeout=max(remaining, 0.05))
+                    continue
+                break
+        try:
             with self._execution_lock:
-                waiter.result = self._execute_one(intent)
-            waiter.done.set()
-        else:
-            waiter.done.wait()
-        if waiter.error is not None:
-            raise waiter.error
-        assert waiter.result is not None
-        return waiter.result
+                results = self._execute_group(tuple(item.intent for item in group))
+        except Exception as error:
+            return group, {}, error
+        return group, results, None
 
-    def _execute_pair(self, first: IntentV1, second: IntentV1) -> dict[str, IntentSinkResult]:
+    def _execute_group(self, intents: tuple[IntentV1, ...]) -> dict[str, IntentSinkResult]:
         def snapshot() -> FleetSnapshot:
             current = self.session.current_state()
             return FleetSnapshot.from_relay_state(
@@ -134,21 +191,37 @@ class AutonomyRelayBridge:
                 enrichment=self.enrichment(current),
             )
 
-        pair = self.controller.execute_pair(
-            first,
-            second,
-            snapshot(),
-            current_snapshot=snapshot,
+        current = snapshot()
+        resolution = resolve_intent_group(
+            intents,
+            current,
+            conflict_window_ms=self.controller.arbiter.config.motion_conflict_window_ms,
         )
+        executions = tuple(
+            self.controller.execute(intent, snapshot(), current_snapshot=snapshot)
+            for intent in resolution.accepted
+        )
+        safety_execution = None
+        if resolution.hold_required:
+            hold_plan = self.controller.planner.emergency_hold_plan(
+                intent_id="safety:motion-conflict:"
+                + ":".join(intent.intent_id for intent in intents),
+                snapshot=current,
+            )
+            safety_execution = self.controller.dispatcher.dispatch(
+                hold_plan,
+                current,
+                current_snapshot=snapshot,
+            )
         post_execution = self._post_execution_events()
         results = {}
-        for index, execution in enumerate(pair.executions):
+        for index, execution in enumerate(executions):
             results[execution.intent_id] = self._sink_result(
                 execution,
                 events=post_execution if index == 0 else (),
             )
-        safety = None if pair.safety_execution is None else pair.safety_execution.to_dict()
-        for index, refusal in enumerate(pair.resolution.refusals):
+        safety = None if safety_execution is None else safety_execution.to_dict()
+        for index, refusal in enumerate(resolution.refusals):
             results[refusal.intent_id] = IntentSinkResult(
                 status=RelayStatus.REFUSED,
                 source="autonomy",
@@ -157,7 +230,7 @@ class AutonomyRelayBridge:
                 reason=refusal.reason.value,
                 detail=refusal.detail,
             )
-        for intent_id in pair.resolution.invalidated_intent_ids:
+        for intent_id in resolution.invalidated_intent_ids:
             results[intent_id] = IntentSinkResult(
                 status=RelayStatus.INVALIDATED,
                 source="autonomy",
@@ -226,8 +299,13 @@ class AutonomyRelayBridge:
             or membership in {"disconnected", "leaving"}
         ):
             return []
-        if self.synchronize_connection_epoch is not None:
-            self.synchronize_connection_epoch(drone_id, connection_epoch)
+        if (
+            self.synchronize_connection_epoch is not None
+            and self._connection_epochs.get(drone_id) != connection_epoch
+        ):
+            with self._execution_lock:
+                self.synchronize_connection_epoch(drone_id, connection_epoch)
+                self._connection_epochs[drone_id] = connection_epoch
         self.node_activity(drone_id, connection_epoch, int(relay_state["t"]))
         return []
 
@@ -255,8 +333,9 @@ class AutonomyRelayBridge:
 
 
 @dataclass(slots=True)
-class _MotionWaiter:
+class _CoordinatedIntent:
     intent: IntentV1
-    done: Event = field(default_factory=Event)
+    admitted_at: float
+    delivered: bool = False
     result: IntentSinkResult | None = None
     error: Exception | None = None

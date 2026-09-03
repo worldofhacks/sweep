@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -641,6 +642,69 @@ def test_node_failsafe_cannot_be_overwritten_by_an_already_running_motion(
     assert harness.flight.aircraft[1].pose == harness.flight.aircraft[1].home
 
 
+def test_prior_epoch_motion_cannot_resume_after_estop_and_rejoin(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    initial = make_snapshot(
+        1,
+        selection=(),
+        flight_state=FlightState.DISARMED,
+        armed=False,
+        now_ms=Clock().value,
+    )
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+    entered = Event()
+    release = Event()
+
+    with TestClient(harness.app) as client, _connect(client, "console") as console:
+        assert _send_intent(console, harness.intent("arm", selection=[]))["status"] == "completed"
+        assert (
+            _send_intent(console, harness.intent("select", selection=[], args={"ids": [1]}))[
+                "status"
+            ]
+            == "completed"
+        )
+        assert (
+            _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))["status"]
+            == "completed"
+        )
+        original_goto = harness.flight.goto
+
+        def delayed_goto(*args, **kwargs):  # type: ignore[no-untyped-def]
+            entered.set()
+            assert release.wait(timeout=2)
+            return original_goto(*args, **kwargs)
+
+        monkeypatch.setattr(harness.flight, "goto", delayed_goto)
+        outcome: dict[str, dict[str, object]] = {}
+        motion = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
+        motion_thread = Thread(
+            target=lambda: outcome.setdefault("motion", _send_intent(console, motion))
+        )
+        motion_thread.start()
+        assert entered.wait(timeout=1)
+
+        with _connect(client, "keyboard") as keyboard:
+            stopped = _send_intent(
+                keyboard,
+                harness.intent("estop", selection=[], source="keyboard"),
+            )
+        harness.factory.disconnect_node(SESSION, 1)
+        rejoin = Thread(target=lambda: harness.factory.rejoin_node(SESSION, 1))
+        rejoin.start()
+        sleep(0.05)
+        assert rejoin.is_alive()
+        release.set()
+        motion_thread.join(timeout=2)
+        rejoin.join(timeout=2)
+
+    assert stopped["status"] == "completed"
+    assert outcome["motion"]["status"] != "completed"
+    assert harness.flight.aircraft[1].connection_epoch == 2
+    assert harness.flight.aircraft[1].pose.x == 0.0
+
+
 def test_back_to_back_websocket_motion_frames_trigger_conflict_hold(tmp_path: Path) -> None:
     initial = make_snapshot(2, selection=(), now_ms=Clock().value)
     harness = Harness(tmp_path, initial, auto_start_nodes=True)
@@ -679,6 +743,124 @@ def test_back_to_back_websocket_motion_frames_trigger_conflict_hold(tmp_path: Pa
 
     assert set(terminals) == {first["intent_id"], second["intent_id"]}
     assert {event["reason"] for event in terminals.values()} == {"conflicting_motion"}
+    assert all(call.operation.value != "goto" for call in harness.flight.calls)
+
+
+def test_three_motion_burst_refuses_every_intent_and_holds_once(tmp_path: Path) -> None:
+    initial = make_snapshot(2, selection=(), now_ms=Clock().value)
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+
+    with TestClient(harness.app) as client, _connect(client, "console") as console:
+        assert _send_intent(console, harness.intent("arm", selection=[]))["status"] == "completed"
+        assert (
+            _send_intent(console, harness.intent("select", selection=[], args={"ids": [1, 2]}))[
+                "status"
+            ]
+            == "completed"
+        )
+        motions = [
+            harness.intent("translate", selection=[1, 2], args={"dx": dx, "dy": dy})
+            for dx, dy in ((1, 0), (0, 1), (-1, 0))
+        ]
+        for motion in motions:
+            console.send_json(motion)
+        terminals = [
+            _receive_matching(
+                console,
+                lambda item: (
+                    item.get("intent_id") in {motion["intent_id"] for motion in motions}
+                    and item.get("type") == "refusal"
+                ),
+            )
+            for _ in motions
+        ]
+
+    assert {event["intent_id"] for event in terminals} == {
+        motion["intent_id"] for motion in motions
+    }
+    assert {event["reason"] for event in terminals} == {"conflicting_motion"}
+    assert all(call.operation.value != "goto" for call in harness.flight.calls)
+    assert [call.operation.value for call in harness.flight.calls].count("hover") == 2
+
+
+def test_hold_supersedes_timestamp_conflicting_motion_before_adapter_io(tmp_path: Path) -> None:
+    initial = make_snapshot(1, selection=(), now_ms=Clock().value)
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+
+    with TestClient(harness.app) as client, _connect(client, "console") as console:
+        assert _send_intent(console, harness.intent("arm", selection=[]))["status"] == "completed"
+        assert (
+            _send_intent(console, harness.intent("select", selection=[], args={"ids": [1]}))[
+                "status"
+            ]
+            == "completed"
+        )
+        motion = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
+        hold = harness.intent("hold", selection=[1])
+        console.send_json(motion)
+        console.send_json(hold)
+        terminals = {
+            event["intent_id"]: event
+            for event in (
+                _receive_matching(
+                    console,
+                    lambda item: (
+                        item.get("intent_id") in {motion["intent_id"], hold["intent_id"]}
+                        and item.get("status") in {"completed", "invalidated"}
+                    ),
+                ),
+                _receive_matching(
+                    console,
+                    lambda item: (
+                        item.get("intent_id") in {motion["intent_id"], hold["intent_id"]}
+                        and item.get("status") in {"completed", "invalidated"}
+                    ),
+                ),
+            )
+        }
+
+    assert terminals[motion["intent_id"]]["status"] == "invalidated"
+    assert terminals[hold["intent_id"]]["status"] == "completed"
+    assert all(call.operation.value != "goto" for call in harness.flight.calls)
+
+
+def test_conflict_uses_admission_time_even_when_second_acceptance_delivery_is_delayed(
+    tmp_path: Path,
+) -> None:
+    initial = make_snapshot(1, selection=(1,), now_ms=Clock().value)
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+
+    with TestClient(harness.app):
+        session = harness.app.state.relay_runtime.session(SESSION)
+        principal = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        first = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
+        second = harness.intent("translate", selection=[1], args={"dx": 0, "dy": 1})
+        assert session.process_frame(first, principal)[0]["status"] == "accepted"
+        assert session.process_frame(second, principal)[0]["status"] == "accepted"
+        session.mark_pending_intent_delivered(first["intent_id"])
+        outcomes: dict[str, list[dict[str, object]]] = {}
+        first_execution = Thread(
+            target=lambda: outcomes.setdefault(
+                "first", session.execute_pending_intent(first["intent_id"])
+            )
+        )
+        first_execution.start()
+        sleep(0.6)
+        assert first_execution.is_alive()
+
+        session.mark_pending_intent_delivered(second["intent_id"])
+        second_execution = Thread(
+            target=lambda: outcomes.setdefault(
+                "second", session.execute_pending_intent(second["intent_id"])
+            )
+        )
+        second_execution.start()
+        first_execution.join(timeout=2)
+        second_execution.join(timeout=2)
+
+    assert not first_execution.is_alive() and not second_execution.is_alive()
+    assert outcomes["first"][-1]["reason"] == "conflicting_motion"
+    assert outcomes["second"][-1]["reason"] == "conflicting_motion"
     assert all(call.operation.value != "goto" for call in harness.flight.calls)
 
 
@@ -732,6 +914,52 @@ def test_delayed_pre_command_telemetry_cannot_rollback_post_command_state(tmp_pa
 
     assert any(event.get("type") == "refusal" for event in events)
     assert state["drones"][0]["telemetry"]["x"] == 0.5
+
+
+def test_concurrent_simulator_frames_receive_unique_ordered_timestamps(tmp_path: Path) -> None:
+    harness = Harness(tmp_path, make_snapshot(1, now_ms=Clock().value), auto_start_nodes=True)
+
+    with TestClient(harness.app):
+        harness.app.state.relay_runtime.session(SESSION)
+        node = harness.factory.nodes[SESSION]
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            timestamps = list(executor.map(lambda _: node._telemetry(1)["t"], range(32)))
+
+    assert len(set(timestamps)) == 32
+    assert sorted(timestamps) == list(range(min(timestamps), min(timestamps) + 32))
+
+
+def test_frame_started_before_silence_cannot_refresh_the_watchdog_afterward(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    initial = make_snapshot(
+        1, selection=(), flight_state=FlightState.AIRBORNE, now_ms=Clock().value
+    )
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+
+    with TestClient(harness.app):
+        harness.app.state.relay_runtime.session(SESSION)
+        node = harness.factory.nodes[SESSION]
+        original = node.session.process_frame
+        entered = Event()
+        release = Event()
+
+        def delayed_process(frame, principal):  # type: ignore[no-untyped-def]
+            if frame.get("type") == "telemetry":
+                entered.set()
+                assert release.wait(timeout=2)
+            return original(frame, principal)
+
+        monkeypatch.setattr(node.session, "process_frame", delayed_process)
+        periodic = Thread(target=node.periodic_events)
+        periodic.start()
+        assert entered.wait(timeout=1)
+        node.silence(1)
+        harness.clock.advance(10_000)
+        release.set()
+        periodic.join(timeout=2)
+        assert not periodic.is_alive()
+        _wait_for_flight_state(harness, 1, FlightState.LANDED)
 
 
 def _wait_for_flight_state(
