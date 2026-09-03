@@ -1,1 +1,1 @@
-"""Swarm adapters behind one interface (PRD Appendix C)."""
+"""Flight and camera adapter package; protocols and dispatch remain separate seams."""
