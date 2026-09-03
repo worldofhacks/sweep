@@ -48,7 +48,7 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
         "passed": len(cases),
     }
     assert len(rows) == len(cases) + 1
-    assert "10/10 cases passed" in dashboard_path.read_text()
+    assert f"{len(cases)}/{len(cases)} cases passed" in dashboard_path.read_text()
 
 
 def test_loader_rejects_duplicate_case_ids(tmp_path) -> None:

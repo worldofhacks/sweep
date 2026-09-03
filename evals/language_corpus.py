@@ -23,6 +23,12 @@ DEFAULT_SYNTHETIC_RESPONSES_PATH = (
     / "utterances"
     / "transcript_plan_responses.synthetic.json"
 )
+LEGACY_SYNTHETIC_RESPONSES_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "language"
+    / "fixtures"
+    / "transcript_plan_responses.synthetic.json"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,10 +104,15 @@ def load_corpus(path: Path | None = None) -> tuple[CorpusCase, ...]:
 
 
 def load_synthetic_responses(
-    path: Path = DEFAULT_SYNTHETIC_RESPONSES_PATH,
+    path: Path | None = None,
 ) -> Mapping[str, object]:
+    selected = path or (
+        DEFAULT_SYNTHETIC_RESPONSES_PATH
+        if DEFAULT_SYNTHETIC_RESPONSES_PATH.exists()
+        else LEGACY_SYNTHETIC_RESPONSES_PATH
+    )
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(selected.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot load synthetic responses: {error}") from None
     if (
