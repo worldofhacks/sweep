@@ -1,0 +1,520 @@
+{
+  "version": 1,
+  "responses": {
+    "capture-this-room": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "capture_room",
+          "args": {
+            "room_id": "living-room",
+            "capture_id": "capture-living-room-1",
+            "pattern": "pano_360"
+          },
+          "selection": [
+            1
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "capture-the-room": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "capture_room",
+          "args": {
+            "room_id": "living-room",
+            "capture_id": "capture-living-room-2",
+            "pattern": "pano_360"
+          },
+          "selection": [
+            1
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "take-a-capture-here": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "capture_room",
+          "args": {
+            "room_id": "living-room",
+            "capture_id": "capture-living-room-3",
+            "pattern": "pano_360"
+          },
+          "selection": [
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "arm-the-drones": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "arm",
+          "args": {},
+          "selection": [],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "arm-up": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "arm",
+          "args": {},
+          "selection": [],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "prepare-the-aircraft": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "arm",
+          "args": {},
+          "selection": [],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "select-drone-one": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "select",
+          "args": {
+            "ids": [
+              1
+            ]
+          },
+          "selection": [
+            1
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "select-all-drones": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "select",
+          "args": {
+            "ids": [
+              1,
+              2
+            ]
+          },
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "select-both-aircraft": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "select",
+          "args": {
+            "ids": [
+              1,
+              2
+            ]
+          },
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "take-off": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "takeoff",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "launch": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "takeoff",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "lift-off-now": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "takeoff",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "move-right-half-meter": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "translate",
+          "args": {
+            "dx": 0.5,
+            "dy": 0
+          },
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "move-left-half-meter": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "translate",
+          "args": {
+            "dx": -0.5,
+            "dy": 0
+          },
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "move-forward-half-meter": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "translate",
+          "args": {
+            "dx": 0,
+            "dy": 0.5
+          },
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "hold-position": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "hold",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "stay-there": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "hold",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "freeze-in-place": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "hold",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "come-home": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "come_home",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "return-to-base": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "come_home",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "go-back-to-home": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "come_home",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "land-all-drones": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "land_all",
+          "args": {},
+          "selection": [],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "land-now": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "land_all",
+          "args": {},
+          "selection": [],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "bring-everyone-down": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "land_all",
+          "args": {},
+          "selection": [],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "voice-stop-pending": {
+      "kind": "unsupported",
+      "reason": "capability_unavailable"
+    },
+    "voice-emergency-stop-pending": {
+      "kind": "unsupported",
+      "reason": "capability_unavailable"
+    },
+    "voice-abort-pending": {
+      "kind": "unsupported",
+      "reason": "capability_unavailable"
+    },
+    "unknown-id-seven": {
+      "kind": "refuse",
+      "reason": "unknown_reference"
+    },
+    "unknown-id-nine": {
+      "kind": "refuse",
+      "reason": "unknown_reference"
+    },
+    "no-selection-capture": {
+      "kind": "refuse",
+      "reason": "no_selection"
+    },
+    "no-selection-move": {
+      "kind": "refuse",
+      "reason": "no_selection"
+    },
+    "relative-leftmost": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "select",
+          "args": {
+            "ids": [
+              1
+            ]
+          },
+          "selection": [
+            1
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "relative-current-selection": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "hold",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "stale-selected-command": {
+      "kind": "refuse",
+      "reason": "stale_state"
+    },
+    "stale-disconnected-drone": {
+      "kind": "refuse",
+      "reason": "stale_state"
+    },
+    "unavailable-panorama": {
+      "kind": "unsupported",
+      "reason": "capability_unavailable"
+    },
+    "unavailable-room-capture": {
+      "kind": "unsupported",
+      "reason": "capability_unavailable"
+    },
+    "unresolved-three-doors-down": {
+      "kind": "refuse",
+      "reason": "unknown_reference"
+    },
+    "unresolved-kitchen": {
+      "kind": "refuse",
+      "reason": "unknown_reference"
+    },
+    "ambiguous-that-room": {
+      "kind": "clarify",
+      "reason": "ambiguous_selection"
+    },
+    "ambiguous-by-the-door": {
+      "kind": "clarify",
+      "reason": "ambiguous_selection"
+    },
+    "select-drones-one-and-two": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "select",
+          "args": {
+            "ids": [
+              1,
+              2
+            ]
+          },
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "select-one-then-takeoff": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "select",
+          "args": {
+            "ids": [
+              1
+            ]
+          },
+          "selection": [
+            1
+          ],
+          "mode": "indoor"
+        },
+        {
+          "name": "takeoff",
+          "args": {},
+          "selection": [
+            1
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "select-all-then-translate": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "select",
+          "args": {
+            "ids": [
+              1,
+              2
+            ]
+          },
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        },
+        {
+          "name": "translate",
+          "args": {
+            "dx": 0.5,
+            "dy": 0.0
+          },
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
+    }
+  }
+}
