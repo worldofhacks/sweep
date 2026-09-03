@@ -1,1 +1,1 @@
-"""Deterministic planner: formations, sweep lanes, allocation, clamping."""
+"""Deterministic autonomy planning package; import public APIs from their modules."""

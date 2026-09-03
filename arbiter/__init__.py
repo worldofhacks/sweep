@@ -1,1 +1,1 @@
-"""Safety arbiter: validates every intent and command, owns e-stop and battery return."""
+"""Safety arbitration package; import ``arbiter.safety`` for the public API."""
