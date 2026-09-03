@@ -113,6 +113,21 @@ describe('Control / Capture console', () => {
     expect(clients.console.sent).toHaveLength(0)
   })
 
+  test('builds a confirmed sweep preview and emits no motion before confirmation', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByText(/Development fixture active/i)
+
+    await user.click(screen.getByRole('button', { name: /Sweep Build preview/ }))
+
+    expect(clients.console.sent).toHaveLength(0)
+    expect(screen.getByRole('heading', { name: 'Plan request preview' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    expect(clients.console.sent[0]).toMatchObject({ name: 'sweep', confirm: true, selection: [1] })
+  })
+
   test('shows send failure and does not retry or substitute a command', async () => {
     const consoleClient = new FailingFixtureRelayClient(session, clock, 'console')
     const keyboardClient = new FixtureRelayClient(session, clock, 'keyboard')

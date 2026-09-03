@@ -9,7 +9,16 @@
 export type DroneId = number
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard'
-export type ConsoleIntentName = 'capture_room' | 'estop' | 'hold' | 'select'
+export type ConsoleIntentName =
+  | 'altitude'
+  | 'capture_room'
+  | 'estop'
+  | 'formation_next'
+  | 'formation_set'
+  | 'hold'
+  | 'select'
+  | 'spacing'
+  | 'sweep'
 export type MembershipState =
   | 'registered'
   | 'ready'
@@ -20,6 +29,8 @@ export type MembershipState =
 export type IntentArgs =
   | Record<string, never>
   | { ids: DroneId[] }
+  | { delta: number }
+  | { name: string }
   | { room_id: string; capture_id: string; pattern: CapturePattern }
 
 export interface IntentV1 {
@@ -514,7 +525,17 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
     (value.source !== 'console' && value.source !== 'keyboard') ||
     typeof value.session !== 'string' ||
     value.session.length === 0 ||
-    !['capture_room', 'estop', 'hold', 'select'].includes(String(value.name)) ||
+    ![
+      'altitude',
+      'capture_room',
+      'estop',
+      'formation_next',
+      'formation_set',
+      'hold',
+      'select',
+      'spacing',
+      'sweep',
+    ].includes(String(value.name)) ||
     !isRecord(value.args) ||
     !isDroneIds(value.selection) ||
     value.mode !== 'indoor' ||
@@ -537,6 +558,22 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
       value.confirm &&
       value.selection.length === 1
     )
+  }
+  if (value.name === 'altitude' || value.name === 'spacing') {
+    return (
+      Object.keys(value.args).length === 1 &&
+      isFiniteNumber(value.args.delta)
+    )
+  }
+  if (value.name === 'formation_set') {
+    return (
+      Object.keys(value.args).length === 1 &&
+      typeof value.args.name === 'string' &&
+      value.args.name.length > 0
+    )
+  }
+  if (value.name === 'sweep') {
+    return Object.keys(value.args).length === 0 && value.confirm && value.selection.length > 0
   }
   return Object.keys(value.args).length === 0
 }
