@@ -20,6 +20,8 @@ from relay.intent_v1 import IntentV1
 from relay.session import IntentSinkResult, RelaySession
 
 type EnrichmentProvider = Callable[[Mapping[str, object]], RelaySnapshotEnrichment]
+type ConnectionEpochSynchronizer = Callable[[int, int], None]
+type AdapterIngress = Callable[[], list[dict[str, object]]]
 
 
 class AutonomyRelayBridge:
@@ -32,11 +34,15 @@ class AutonomyRelayBridge:
         controller: AutonomyController,
         enrichment: EnrichmentProvider,
         watchdog_config: WatchdogConfig,
+        synchronize_connection_epoch: ConnectionEpochSynchronizer | None = None,
+        ingress: AdapterIngress | None = None,
     ) -> None:
         self.session = session
         self.controller = controller
         self.enrichment = enrichment
         self.watchdog_config = watchdog_config
+        self.synchronize_connection_epoch = synchronize_connection_epoch
+        self.ingress = ingress
         self._watchdogs: dict[int, _WatchdogProgress] = {}
 
     def __call__(self, intent: IntentV1, _relay_state: dict[str, object]) -> IntentSinkResult:
@@ -73,6 +79,43 @@ class AutonomyRelayBridge:
         connection_epoch: int,
         relay_state: Mapping[str, object],
     ) -> list[dict[str, object]]:
+        progress = self._watchdogs.get(drone_id)
+        if progress is None or progress.state.connection_epoch != connection_epoch:
+            self._watchdogs[drone_id] = _WatchdogProgress(
+                state=NodeWatchdogState(
+                    drone_id=drone_id,
+                    connection_epoch=connection_epoch,
+                    last_activity_ms=int(relay_state["t"]),
+                )
+            )
+        return []
+
+    def adapter_activity(
+        self,
+        *,
+        drone_id: int,
+        relay_state: Mapping[str, object],
+    ) -> list[dict[str, object]]:
+        drone = next(
+            (
+                item
+                for item in relay_state.get("drones", [])
+                if isinstance(item, Mapping) and item.get("drone_id") == drone_id
+            ),
+            None,
+        )
+        if drone is None:
+            return []
+        connection_epoch = drone.get("connection_epoch")
+        membership = drone.get("membership")
+        if (
+            not isinstance(connection_epoch, int)
+            or isinstance(connection_epoch, bool)
+            or membership in {"disconnected", "leaving"}
+        ):
+            return []
+        if self.synchronize_connection_epoch is not None:
+            self.synchronize_connection_epoch(drone_id, connection_epoch)
         self._watchdogs[drone_id] = _WatchdogProgress(
             state=NodeWatchdogState(
                 drone_id=drone_id,
@@ -92,17 +135,16 @@ class AutonomyRelayBridge:
         events: list[dict[str, object]] = []
         for drone_id, progress in tuple(self._watchdogs.items()):
             drone = drones.get(drone_id)
-            if (
-                drone is None
-                or drone.get("membership") != "disconnected"
-                or drone.get("connection_epoch") != progress.state.connection_epoch
-            ):
+            if drone is None or drone.get("connection_epoch") != progress.state.connection_epoch:
                 self._watchdogs.pop(drone_id, None)
                 continue
             event = self._apply_node_watchdog(progress, now_ms=now_ms)
             if event is not None:
                 events.append(event)
         return events
+
+    def periodic_ingress(self) -> list[dict[str, object]]:
+        return [] if self.ingress is None else self.ingress()
 
     def _apply_node_watchdog(
         self, progress: _WatchdogProgress, *, now_ms: int

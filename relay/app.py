@@ -432,6 +432,8 @@ class RelayRuntime:
                 connection_epoch=connection_epoch,
                 relay_state=session.current_state(),
             )
+        except AuditLogError:
+            raise
         except Exception:
             return [
                 session.protocol_refusal(
@@ -441,8 +443,24 @@ class RelayRuntime:
             ]
 
     def periodic_events(self, session: RelaySession) -> list[dict[str, object]]:
-        events = session.periodic_events()
-        periodic = getattr(session.intent_sink, "periodic_events", None)
+        sink = session.intent_sink
+        ingress = getattr(sink, "periodic_ingress", None)
+        if callable(ingress):
+            try:
+                events = ingress()
+            except AuditLogError:
+                raise
+            except Exception:
+                events = [
+                    session.protocol_refusal(
+                        reason="safety_runtime_error",
+                        detail="the configured safety runtime failed closed",
+                    )
+                ]
+        else:
+            events = []
+        events.extend(session.periodic_events())
+        periodic = getattr(sink, "periodic_events", None)
         if callable(periodic):
             try:
                 events.extend(periodic(events[-1]))
@@ -456,6 +474,43 @@ class RelayRuntime:
                     )
                 )
         return events
+
+    def process_frame(
+        self,
+        session: RelaySession,
+        frame: object,
+        principal: Principal,
+    ) -> list[dict[str, object]]:
+        events = session.process_frame(frame, principal)
+        if (
+            principal.source == "adapter"
+            and principal.drone_id is not None
+            and not any(event.get("type") == "refusal" for event in events)
+        ):
+            events.extend(self.adapter_activity(session, drone_id=principal.drone_id))
+        return events
+
+    def adapter_activity(
+        self,
+        session: RelaySession,
+        *,
+        drone_id: int,
+    ) -> list[dict[str, object]]:
+        sink = session.intent_sink
+        activity = getattr(sink, "adapter_activity", None)
+        if not callable(activity):
+            return []
+        try:
+            return activity(drone_id=drone_id, relay_state=session.current_state())
+        except AuditLogError:
+            raise
+        except Exception:
+            return [
+                session.protocol_refusal(
+                    reason="safety_runtime_error",
+                    detail="the configured safety runtime failed closed",
+                )
+            ]
 
 
 def create_app(
@@ -545,7 +600,7 @@ def create_app(
                 else:
                     await runtime.process_and_publish(
                         session_id,
-                        lambda received=frame: session.process_frame(received, principal),
+                        lambda received=frame: runtime.process_frame(session, received, principal),
                         wait_for_connection_id=subscription.connection_id,
                     )
                     if (

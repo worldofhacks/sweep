@@ -42,7 +42,7 @@ class EventIds:
 
 
 class Harness:
-    def __init__(self, tmp_path: Path, snapshot) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, tmp_path: Path, snapshot, *, auto_start_nodes: bool = False) -> None:  # type: ignore[no-untyped-def]
         self.clock = Clock()
         self.event_ids = EventIds()
         settings = RelaySettings(
@@ -56,6 +56,7 @@ class Harness:
             clock=self.clock,
             event_ids=self.event_ids,
             initial_snapshot=snapshot,
+            auto_start_nodes=auto_start_nodes,
         )
         self.sequence = 0
 
@@ -109,7 +110,7 @@ class Harness:
             event.update(adapter_id=f"sim-{drone_id}", capabilities=["flight"])
         else:
             event.update(
-                connection_epoch=1,
+                connection_epoch=self.flight.aircraft[drone_id].connection_epoch,
                 home_pose_confirmed=True,
                 control_authority=True,
                 rc_safety_operator_present=True,
@@ -273,12 +274,22 @@ def test_keyboard_estop_and_epoch_bound_link_loss_fail_safe(tmp_path: Path) -> N
             ),
         )
         harness.clock.advance(2_000)
+        adapters[2].send_json(harness.telemetry(2))
+        _receive_matching(
+            adapters[2],
+            lambda event: event.get("type") == "telemetry" and event.get("drone") == 2,
+        )
         hold = _receive_matching(
             keyboard,
             lambda event: event.get("type") == "safety_action" and event.get("drone_id") == 1,
         )
         assert hold["action"] == "hold"
         harness.clock.advance(8_000)
+        adapters[2].send_json(harness.telemetry(2))
+        _receive_matching(
+            adapters[2],
+            lambda event: event.get("type") == "telemetry" and event.get("drone") == 2,
+        )
         failsafe = _receive_matching(
             keyboard,
             lambda event: (
@@ -298,6 +309,150 @@ def test_keyboard_estop_and_epoch_bound_link_loss_fail_safe(tmp_path: Path) -> N
     ]
     assert [event["action"] for event in safety] == ["hold", "failsafe"]
     assert all(event["connection_epoch"] == 1 for event in safety)
+
+
+def test_open_adapter_socket_link_loss_runs_watchdog_and_rejoin_uses_current_epoch(
+    tmp_path: Path,
+) -> None:
+    initial = make_snapshot(
+        2,
+        selection=(),
+        flight_state=FlightState.DISARMED,
+        armed=False,
+        now_ms=Clock().value,
+    )
+    harness = Harness(tmp_path, initial)
+
+    with TestClient(harness.app) as client, ExitStack() as stack:
+        console = stack.enter_context(_connect(client, "console"))
+        adapter = stack.enter_context(_connect(client, "adapter", drone_id=1))
+        _ready_aircraft(harness, {1: adapter})
+
+        assert _send_intent(console, harness.intent("arm", selection=[]))["status"] == "completed"
+        assert (
+            _send_intent(console, harness.intent("select", selection=[], args={"ids": [1]}))[
+                "status"
+            ]
+            == "completed"
+        )
+        assert (
+            _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))["status"]
+            == "completed"
+        )
+
+        # Keep the authenticated WebSocket open, then stop adapter activity.
+        harness.clock.advance(2_000)
+        hold = _periodic_safety_actions(harness)
+        assert any(event["drone_id"] == 1 and event["action"] == "hold" for event in hold)
+        assert harness.flight.aircraft[1].flight_state is FlightState.HOVERING
+
+        harness.clock.advance(8_000)
+        failsafe = _periodic_safety_actions(harness)
+        assert any(event["drone_id"] == 1 and event["action"] == "failsafe" for event in failsafe)
+        assert harness.flight.aircraft[1].flight_state is FlightState.LANDED
+
+        adapter.close()
+        replacement = stack.enter_context(_connect(client, "adapter", drone_id=1))
+        replacement.send_json(harness.membership(1, "join"))
+        rejoined = _receive_matching(
+            replacement,
+            lambda event: (
+                event.get("type") == "membership"
+                and event.get("action") == "join"
+                and event.get("drone_id") == 1
+            ),
+        )
+        assert rejoined["connection_epoch"] == 2
+        replacement.send_json(harness.telemetry(1))
+        _receive_matching(
+            replacement,
+            lambda event: event.get("type") == "telemetry" and event.get("drone") == 1,
+        )
+        replacement.send_json(harness.membership(1, "readiness"))
+        _receive_matching(
+            replacement,
+            lambda event: (
+                event.get("type") == "membership"
+                and event.get("action") == "readiness"
+                and event.get("membership") == "ready"
+            ),
+        )
+
+        assert (
+            _send_intent(console, harness.intent("select", selection=[], args={"ids": [1]}))[
+                "status"
+            ]
+            == "completed"
+        )
+        resumed = _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))
+
+    assert resumed["status"] == "completed"
+    assert harness.flight.calls[-1].operation.value == "takeoff"
+    assert harness.flight.aircraft[1].connection_epoch == 2
+
+
+def test_deployed_simulator_nodes_stream_and_rejoin_without_stale_epoch_io(tmp_path: Path) -> None:
+    initial = make_snapshot(
+        2,
+        selection=(),
+        flight_state=FlightState.DISARMED,
+        armed=False,
+        now_ms=Clock().value,
+    )
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+
+    with TestClient(harness.app) as client, ExitStack() as stack:
+        console = stack.enter_context(_connect(client, "console"))
+        state = harness.app.state.relay_runtime.session(SESSION).current_state()
+        assert [drone["membership"] for drone in state["drones"]] == ["ready", "ready"]
+
+        assert _send_intent(console, harness.intent("arm", selection=[]))["status"] == "completed"
+        assert (
+            _send_intent(console, harness.intent("select", selection=[], args={"ids": [1]}))[
+                "status"
+            ]
+            == "completed"
+        )
+        assert (
+            _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))["status"]
+            == "completed"
+        )
+
+        harness.factory.silence_node(SESSION, 1)
+        harness.clock.advance(2_000)
+        hold = _periodic_safety_actions(harness)
+        assert any(event.get("drone_id") == 1 and event.get("action") == "hold" for event in hold)
+        harness.clock.advance(8_000)
+        failsafe = _periodic_safety_actions(harness)
+        assert any(
+            event.get("drone_id") == 1 and event.get("action") == "failsafe" for event in failsafe
+        )
+
+        harness.factory.disconnect_node(SESSION, 1)
+        harness.factory.rejoin_node(SESSION, 1)
+        assert harness.flight.aircraft[1].connection_epoch == 2
+        assert (
+            _send_intent(console, harness.intent("select", selection=[], args={"ids": [1]}))[
+                "status"
+            ]
+            == "completed"
+        )
+        resumed = _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))
+        replay = harness.app.state.relay_runtime.session(SESSION).replay()
+
+    assert resumed["status"] == "completed"
+    assert harness.flight.calls[-1].operation.value == "takeoff"
+    assert not any(
+        event["event"].get("reason") == "stale_connection_epoch" for event in replay["events"]
+    )
+
+
+def _periodic_safety_actions(harness: Harness) -> list[dict[str, object]]:
+    session = harness.app.state.relay_runtime.session(SESSION)
+    ingress = harness.factory.bridges[SESSION].periodic_ingress()
+    relay_events = session.periodic_events()
+    state = relay_events[-1]
+    return ingress + harness.factory.bridges[SESSION].periodic_events(state)
 
 
 def _connect(client: TestClient, source: str, *, drone_id: int | None = None):  # type: ignore[no-untyped-def]
