@@ -26,7 +26,7 @@ ci:
     uv run ruff check .
     uv run ruff format --check .
     uv run pytest
-    cd console && pnpm install --frozen-lockfile && pnpm lint && pnpm build
+    cd console && pnpm install --frozen-lockfile && pnpm lint && pnpm test && pnpm build
 
 # Auto-format and auto-fix Python and the console
 fmt:
