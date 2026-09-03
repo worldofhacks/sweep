@@ -994,7 +994,7 @@ def test_downstream_failure_has_terminal_refused_record(
     assert "do not expose this" not in str(records)
 
 
-def test_pending_execution_uses_live_state_and_serializes_intents(
+def test_network_estop_preempts_blocked_normal_execution(
     tmp_path: Path,
     clock: MutableClock,
     event_ids: EventIds,
@@ -1030,14 +1030,14 @@ def test_pending_execution_uses_live_state_and_serializes_intents(
     first.start()
     assert first_started.wait(timeout=1)
     second.start()
-    assert not second_started.wait(timeout=0.05)
+    assert second_started.wait(timeout=0.2)
     release_first.set()
     first.join(timeout=1)
     second.join(timeout=1)
 
     assert not first.is_alive()
     assert not second.is_alive()
-    assert observed_selections == [[], [2]]
+    assert observed_selections == [[], []]
 
 
 def _contains_key(value: object, target: str) -> bool:

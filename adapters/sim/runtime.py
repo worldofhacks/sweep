@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
+from threading import Event, Lock, Thread
 
 from fastapi import FastAPI
 
 from adapters.dispatch import AdapterDispatcher
-from adapters.protocols import WatchdogConfig
+from adapters.protocols import NodeSafetyAction, NodeWatchdogState, WatchdogConfig
 from adapters.sim.camera import SimCamera, SimCameraConfig
 from adapters.sim.flight import SimFlightAdapter
 from arbiter.safety import SafetyArbiter, SafetyConfig
@@ -107,22 +109,31 @@ class SimBridgeFactory:
             session=session,
             flight=flight,
             adapter_keys=self.adapter_keys,
+            watchdog_config=self.watchdog,
         )
         bridge = AutonomyRelayBridge(
             session=session,
             controller=controller,
             enrichment=enrichment,
             watchdog_config=self.watchdog,
+            node_activity=nodes.watchdog_activity,
+            node_safety_events=nodes.drain_safety_actions,
             synchronize_connection_epoch=synchronize_connection_epoch,
             ingress=nodes.periodic_events if self.auto_start_nodes else None,
+            post_execution_ingress=nodes.periodic_events if self.auto_start_nodes else None,
         )
         nodes.bridge = bridge
+        nodes.start_watchdog()
         self.bridges[session.session_id] = bridge
         self.flights[session.session_id] = flight
         self.nodes[session.session_id] = nodes
         if self.auto_start_nodes:
             nodes.start()
         return bridge
+
+    def close(self) -> None:
+        for node in self.nodes.values():
+            node.close()
 
     def silence_node(self, session_id: str, drone_id: int) -> None:
         self.nodes[session_id].silence(drone_id)
@@ -141,14 +152,79 @@ class _SimNodeIngress:
         session: RelaySession,
         flight: SimFlightAdapter,
         adapter_keys: Mapping[int, bytes],
+        watchdog_config: WatchdogConfig,
     ) -> None:
         self.session = session
         self.flight = flight
         self.adapter_keys = adapter_keys
+        self.watchdog_config = watchdog_config
         self.bridge: AutonomyRelayBridge | None = None
         self._active: set[int] = set()
         self._silent: set[int] = set()
         self._sequence = 0
+        self._watchdogs: dict[int, _LocalWatchdog] = {}
+        self._safety_actions: list[NodeSafetyAction] = []
+        self._watchdog_lock = Lock()
+        self._watchdog_stop = Event()
+        self._watchdog_thread: Thread | None = None
+
+    def start_watchdog(self) -> None:
+        now_ms = self.session.clock()
+        with self._watchdog_lock:
+            for drone_id, aircraft in self.flight.aircraft.items():
+                self._watchdogs[drone_id] = _LocalWatchdog(
+                    state=NodeWatchdogState(drone_id, aircraft.connection_epoch, now_ms)
+                )
+        self._watchdog_thread = Thread(
+            target=self._watchdog_loop,
+            name=f"sim-watchdog-{self.session.session_id}",
+            daemon=True,
+        )
+        self._watchdog_thread.start()
+
+    def close(self) -> None:
+        self._watchdog_stop.set()
+        if self._watchdog_thread is not None:
+            self._watchdog_thread.join(timeout=1)
+
+    def watchdog_activity(
+        self, drone_id: int, connection_epoch: int, last_activity_ms: int
+    ) -> None:
+        with self._watchdog_lock:
+            self._watchdogs[drone_id] = _LocalWatchdog(
+                state=NodeWatchdogState(drone_id, connection_epoch, last_activity_ms)
+            )
+
+    def drain_safety_actions(self) -> list[NodeSafetyAction]:
+        with self._watchdog_lock:
+            actions = self._safety_actions
+            self._safety_actions = []
+        return actions
+
+    def _watchdog_loop(self) -> None:
+        while not self._watchdog_stop.wait(0.01):
+            now_ms = self.session.clock()
+            with self._watchdog_lock:
+                for progress in tuple(self._watchdogs.values()):
+                    try:
+                        action = self.flight.apply_node_watchdog(
+                            progress.state,
+                            now_ms=now_ms,
+                            config=self.watchdog_config,
+                        )
+                    except ValueError:
+                        continue
+                    if action is None or progress.action is action:
+                        continue
+                    progress.action = action
+                    self._safety_actions.append(
+                        NodeSafetyAction(
+                            drone_id=progress.state.drone_id,
+                            connection_epoch=progress.state.connection_epoch,
+                            t_ms=now_ms,
+                            action=action,
+                        )
+                    )
 
     def start(self) -> None:
         missing = sorted(set(self.flight.aircraft) - set(self.adapter_keys))
@@ -304,9 +380,16 @@ def create_m14_sim_app(
         clock=clock,
         event_ids=event_ids,
         intent_sink_factory=factory,
+        shutdown_callback=factory.close,
     )
     application.state.sim_bridge_factory = factory
     return application
+
+
+@dataclass(slots=True)
+class _LocalWatchdog:
+    state: NodeWatchdogState
+    action: LossBehavior | None = None
 
 
 def _initial_snapshot(now_ms: int) -> FleetSnapshot:

@@ -3,13 +3,15 @@ from __future__ import annotations
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Thread
+from time import monotonic, sleep
 from typing import Any
 
 from fastapi.testclient import TestClient
 
 from adapters.sim.runtime import SimBridgeFactory, create_m14_sim_app
 from planner.models import FlightState
-from relay.auth import sign_event
+from relay.auth import Principal, sign_event
 from relay.settings import RelaySettings
 from tests.autonomy_fixtures import make_snapshot, replace_aircraft
 
@@ -417,6 +419,14 @@ def test_deployed_simulator_nodes_stream_and_rejoin_without_stale_epoch_io(tmp_p
             _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))["status"]
             == "completed"
         )
+        state_after_takeoff = harness.app.state.relay_runtime.session(SESSION).current_state()
+        assert state_after_takeoff["drones"][0]["flight_state"] == "hovering"
+        translated = _send_intent(
+            console,
+            harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0}),
+        )
+        assert translated["status"] == "completed"
+        assert harness.flight.aircraft[1].pose.x == 0.5
 
         harness.factory.silence_node(SESSION, 1)
         harness.clock.advance(2_000)
@@ -447,12 +457,101 @@ def test_deployed_simulator_nodes_stream_and_rejoin_without_stale_epoch_io(tmp_p
     )
 
 
+def test_production_bridge_refuses_concurrent_motion_and_holds_the_fleet(tmp_path: Path) -> None:
+    initial = make_snapshot(
+        2,
+        selection=(),
+        flight_state=FlightState.HOVERING,
+        armed=True,
+        now_ms=Clock().value,
+    )
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+
+    with TestClient(harness.app) as client:
+        with _connect(client, "console") as console:
+            selected = _send_intent(
+                console,
+                harness.intent("select", selection=[], args={"ids": [1, 2]}),
+            )
+            assert selected["status"] == "completed"
+
+        session = harness.app.state.relay_runtime.session(SESSION)
+        principal = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        first = harness.intent("translate", selection=[1, 2], args={"dx": 1, "dy": 0})
+        second = harness.intent("translate", selection=[1, 2], args={"dx": 0, "dy": 1})
+        assert session.process_intent(first, principal)[0]["status"] == "accepted"
+        assert session.process_intent(second, principal)[0]["status"] == "accepted"
+        results: dict[str, list[dict[str, object]]] = {}
+
+        threads = [
+            Thread(
+                target=lambda intent_id=intent_id: results.setdefault(
+                    intent_id, session.execute_pending_intent(intent_id)
+                )
+            )
+            for intent_id in (first["intent_id"], second["intent_id"])
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert {events[-1]["reason"] for events in results.values()} == {"conflicting_motion"}
+    assert all(call.operation.value != "goto" for call in harness.flight.calls)
+    assert [call.operation.value for call in harness.flight.calls[-2:]] == ["hover", "hover"]
+    assert [call.drone_ids for call in harness.flight.calls[-2:]] == [(1,), (2,)]
+
+
+def test_simulator_node_watchdog_holds_then_failsafes_without_relay_fanout(
+    tmp_path: Path,
+) -> None:
+    initial = make_snapshot(
+        2,
+        selection=(),
+        flight_state=FlightState.AIRBORNE,
+        armed=True,
+        now_ms=Clock().value,
+    )
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+
+    with TestClient(harness.app) as client:
+        with _connect(client, "console"):
+            pass
+        runtime = harness.app.state.relay_runtime
+        assert client.portal is not None
+        client.portal.call(runtime.stop)
+        harness.factory.silence_node(SESSION, 1)
+
+        harness.clock.advance(2_000)
+        _wait_for_flight_state(harness, 1, FlightState.HOVERING)
+        harness.clock.advance(8_000)
+        _wait_for_flight_state(harness, 1, FlightState.LANDED)
+
+
+def _wait_for_flight_state(
+    harness: Harness, drone_id: int, expected: FlightState, *, timeout_s: float = 0.5
+) -> None:
+    deadline = monotonic() + timeout_s
+    while monotonic() < deadline:
+        if harness.flight.aircraft[drone_id].flight_state is expected:
+            return
+        sleep(0.01)
+    assert harness.flight.aircraft[drone_id].flight_state is expected
+
+
 def _periodic_safety_actions(harness: Harness) -> list[dict[str, object]]:
     session = harness.app.state.relay_runtime.session(SESSION)
     ingress = harness.factory.bridges[SESSION].periodic_ingress()
     relay_events = session.periodic_events()
     state = relay_events[-1]
-    return ingress + harness.factory.bridges[SESSION].periodic_events(state)
+    deadline = monotonic() + 0.5
+    while monotonic() < deadline:
+        safety = harness.factory.bridges[SESSION].periodic_events(state)
+        if safety:
+            return ingress + safety
+        sleep(0.01)
+    return ingress
 
 
 def _connect(client: TestClient, source: str, *, drone_id: int | None = None):  # type: ignore[no-untyped-def]

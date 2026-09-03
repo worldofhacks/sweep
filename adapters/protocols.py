@@ -154,6 +154,14 @@ class NodeWatchdogState:
         return config.loss_behavior
 
 
+@dataclass(frozen=True, slots=True)
+class NodeSafetyAction:
+    drone_id: int
+    connection_epoch: int
+    t_ms: int
+    action: LossBehavior
+
+
 class NodeWatchdog(Protocol):
     def apply_node_watchdog(
         self,

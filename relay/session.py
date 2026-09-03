@@ -42,6 +42,7 @@ class IntentSinkResult:
     status: LifecycleStatus
     source: str
     result: Mapping[str, object] = field(default_factory=dict)
+    events: tuple[Mapping[str, object], ...] = ()
     selection_update: tuple[int, ...] | None = None
     armed_update: bool | None = None
     estop_update: bool | None = None
@@ -55,6 +56,10 @@ class IntentSinkResult:
             raise ValueError("sink result source must be non-empty")
         if not isinstance(self.result, Mapping):
             raise ValueError("sink result evidence must be a mapping")
+        if not isinstance(self.events, tuple) or any(
+            not isinstance(event, Mapping) for event in self.events
+        ):
+            raise ValueError("sink result events must be a tuple of mappings")
 
 
 IntentSink = Callable[[IntentV1, dict[str, object]], object]
@@ -302,8 +307,28 @@ class RelaySession:
         if pending is None:
             return []
         assert sink is not None
+        concurrent_intents = getattr(sink, "concurrent_intents", ())
+        if pending.intent.name is IntentName.ESTOP or pending.intent.name in concurrent_intents:
+            return self._execute_pending(pending, sink)
         with self._execution_lock:
             return self._execute_pending(pending, sink)
+
+    def fail_pending_intent(
+        self, intent_id: str, *, reason: str, detail: str
+    ) -> list[dict[str, object]]:
+        now = self.clock()
+        with self._lock:
+            pending = self._pending_intents.pop(intent_id, None)
+            if pending is None:
+                return []
+            self._intents[intent_id].status = LifecycleStatus.REFUSED
+            self._log_intent(
+                pending.intent,
+                outcome=LifecycleStatus.REFUSED,
+                reason=reason,
+                now=now,
+            )
+            return [self._refusal(intent_id=intent_id, reason=reason, detail=detail, now=now)]
 
     def _execute_pending(
         self, pending: _PendingIntent, sink: IntentSink
@@ -345,6 +370,7 @@ class RelaySession:
                 events.extend(self._record_execution_result(pending.intent, sink_result))
                 return events
             self._log_sink_result(pending.intent, sink_result, now=now)
+            events.extend(dict(event) for event in sink_result.events)
             if any(
                 value is not None
                 for value in (

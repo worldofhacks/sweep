@@ -140,6 +140,75 @@ def test_relay_publishes_acceptance_before_downstream_execution_finishes(
     assert acknowledgement["status"] == "accepted"
 
 
+def test_duplicate_intent_from_another_console_cannot_execute_the_pending_owner(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    executed: list[str] = []
+
+    def sink(intent: object, _state: object) -> None:
+        executed.append(intent.intent_id)  # type: ignore[attr-defined]
+
+    app = create_app(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=lambda _session: sink,
+    )
+
+    with TestClient(app) as client:
+        session = app.state.relay_runtime.session(SESSION)
+        pending = intent_payload()
+        accepted = session.process_intent(
+            pending,
+            Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY),
+        )
+        assert accepted[0]["status"] == "accepted"
+
+        with client.websocket_connect(f"/ws/{SESSION}") as second_console:
+            _authenticate_console(second_console)
+            second_console.send_json(pending)
+            refusal = _receive_type(second_console, "refusal")
+
+        assert refusal["reason"] == "duplicate_intent"
+        assert executed == []
+
+
+def test_failed_intent_acceptance_delivery_prevents_downstream_execution(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed = Event()
+    app = create_app(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=lambda _session: lambda _intent, _state: executed.set(),
+    )
+    original_send_json = WebSocket.send_json
+
+    async def fail_intent_acceptance(
+        websocket: WebSocket, data: object, mode: str = "text"
+    ) -> None:
+        if (
+            isinstance(data, dict)
+            and data.get("type") == "acknowledgement"
+            and data.get("status") == "accepted"
+        ):
+            raise WebSocketDisconnect(code=1006)
+        await original_send_json(websocket, data, mode=mode)
+
+    monkeypatch.setattr(WebSocket, "send_json", fail_intent_acceptance)
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as socket:
+            _authenticate_console(socket)
+            socket.send_json(intent_payload())
+            assert not executed.wait(timeout=0.2)
+
+    assert not executed.is_set()
+
+
 def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:

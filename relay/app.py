@@ -30,6 +30,7 @@ from relay.settings import RelaySettings
 IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
 _LOGGER = logging.getLogger(__name__)
+ShutdownCallback = Callable[[], None]
 
 
 @dataclass(eq=False, slots=True)
@@ -45,7 +46,7 @@ class _Subscription:
 @dataclass(frozen=True, slots=True)
 class _Outbound:
     event: dict[str, object]
-    delivered: asyncio.Event | None = None
+    delivered: asyncio.Future[bool] | None = None
 
 
 @dataclass(slots=True)
@@ -246,7 +247,7 @@ class RelayRuntime:
         *,
         wait_for_connection_id: str | None = None,
     ) -> list[dict[str, object]]:
-        deliveries: list[asyncio.Event] = []
+        deliveries: list[asyncio.Future[bool]] = []
         async with self._session_operation(session_id):
             events = await asyncio.to_thread(operation)
             await self.publish(
@@ -255,8 +256,21 @@ class RelayRuntime:
                 wait_for_connection_id=wait_for_connection_id,
                 deferred_deliveries=deliveries,
             )
-        for delivered in deliveries:
-            await delivered.wait()
+        delivered = (
+            all(await asyncio.gather(*deliveries)) if deliveries else wait_for_connection_id is None
+        )
+        if not delivered:
+            if len(events) == 1 and events[0].get("status") == "accepted":
+                intent_id = events[0].get("intent_id")
+                if isinstance(intent_id, str):
+                    failed = await asyncio.to_thread(
+                        self.sessions[session_id].fail_pending_intent,
+                        intent_id,
+                        reason="acceptance_delivery_failed",
+                        detail="the accepting connection did not receive the acknowledgement",
+                    )
+                    await self.publish(session_id, failed)
+            raise WebSocketDisconnect(code=1006)
         return events
 
     def _track_background_operation(self, task: asyncio.Task[object]) -> None:
@@ -339,10 +353,10 @@ class RelayRuntime:
         events: list[dict[str, object]],
         *,
         wait_for_connection_id: str | None = None,
-        deferred_deliveries: list[asyncio.Event] | None = None,
-    ) -> None:
+        deferred_deliveries: list[asyncio.Future[bool]] | None = None,
+    ) -> bool:
         """Queue an event batch atomically with respect to subscription activation."""
-        deliveries: list[asyncio.Event] = []
+        deliveries: list[asyncio.Future[bool]] = []
         async with self._connection_lock:
             subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
             for subscription in subscriptions:
@@ -361,7 +375,7 @@ class RelayRuntime:
                     continue
                 for event in events:
                     delivered = (
-                        asyncio.Event()
+                        asyncio.get_running_loop().create_future()
                         if subscription.connection_id == wait_for_connection_id
                         else None
                     )
@@ -370,12 +384,12 @@ class RelayRuntime:
                     subscription.queue.put_nowait(_Outbound(event, delivered))
                 if batch_roster_version is not None:
                     subscription.roster_version = batch_roster_version
-
         if deferred_deliveries is not None:
             deferred_deliveries.extend(deliveries)
-        else:
-            for delivered in deliveries:
-                await delivered.wait()
+            return bool(deliveries) or wait_for_connection_id is None
+        if not deliveries:
+            return wait_for_connection_id is None
+        return all(await asyncio.gather(*deliveries))
 
     def connection_count(self) -> int:
         return sum(len(subscriptions) for subscriptions in self._subscriptions.values())
@@ -521,6 +535,7 @@ def create_app(
     event_ids: EventIdFactory | None = None,
     intent_sink_factory: IntentSinkFactory | None = None,
     leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
+    shutdown_callback: ShutdownCallback | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -539,6 +554,8 @@ def create_app(
             yield
         finally:
             await runtime.stop()
+            if shutdown_callback is not None:
+                shutdown_callback()
 
     application = FastAPI(title="Sweep relay", version="1", lifespan=lifespan)
 
@@ -598,7 +615,7 @@ def create_app(
                         ],
                     )
                 else:
-                    await runtime.process_and_publish(
+                    events = await runtime.process_and_publish(
                         session_id,
                         lambda received=frame: runtime.process_frame(session, received, principal),
                         wait_for_connection_id=subscription.connection_id,
@@ -608,6 +625,9 @@ def create_app(
                         and isinstance(frame, Mapping)
                         and frame.get("type") == "intent"
                         and isinstance(frame.get("intent_id"), str)
+                        and len(events) == 1
+                        and events[0].get("type") == "acknowledgement"
+                        and events[0].get("status") == "accepted"
                     ):
                         outcome = await asyncio.to_thread(
                             session.execute_pending_intent,
@@ -668,12 +688,14 @@ def create_app(
 async def _send_events(websocket: WebSocket, subscription: _Subscription) -> None:
     while True:
         outbound = await subscription.queue.get()
+        sent = False
         try:
             async with subscription.send_lock:
                 await websocket.send_json(outbound.event)
+            sent = True
         finally:
-            if outbound.delivered is not None:
-                outbound.delivered.set()
+            if outbound.delivered is not None and not outbound.delivered.done():
+                outbound.delivered.set_result(sent)
 
 
 def _log_background_failure(task: asyncio.Task[object]) -> None:
