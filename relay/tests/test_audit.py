@@ -204,7 +204,10 @@ def test_failed_rollback_permanently_fences_append_io(
         log.append(_event("event-2"))
 
     assert writes == writes_after_failure
-    assert log.last_sequence == 0
+    with pytest.raises(AuditLogError, match="cursor is uncertain"):
+        _ = log.last_sequence
+    with pytest.raises(AuditLogError, match="replay is uncertain"):
+        log.replay()
 
 
 def test_close_failure_fences_writer_and_reopen_continues_sequence(

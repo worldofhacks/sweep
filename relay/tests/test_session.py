@@ -127,6 +127,39 @@ def test_replay_reports_durable_sequence_after_append_close_failure(
     assert replay["last_sequence"] == 1
 
 
+def test_replay_fails_closed_after_complete_write_with_uncertain_rollback(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _new_session(tmp_path, clock, event_ids)
+    real_fsync = os.fsync
+    real_ftruncate = os.ftruncate
+
+    def failed_fsync(_descriptor: int) -> None:
+        raise OSError("injected fsync failure")
+
+    def failed_truncate(_descriptor: int, _length: int) -> None:
+        raise OSError("injected rollback failure")
+
+    monkeypatch.setattr(os, "fsync", failed_fsync)
+    monkeypatch.setattr(os, "ftruncate", failed_truncate)
+
+    with pytest.raises(AuditLogError, match="cannot append or restore"):
+        session.update_control_projection(selection=())
+    assert session.audit_log.path.read_bytes().endswith(b"\n")
+    with pytest.raises(AuditLogError, match="replay is uncertain"):
+        session.replay()
+
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    monkeypatch.setattr(os, "ftruncate", real_ftruncate)
+    reopened = _new_session(tmp_path, clock, event_ids)
+    replay = reopened.replay()
+    assert [record["seq"] for record in replay["events"]] == [1]
+    assert replay["last_sequence"] == 1
+
+
 def test_authenticated_source_cannot_impersonate_another_registered_source(
     relay_session: RelaySession, console_principal: Principal, keyboard_principal: Principal
 ) -> None:

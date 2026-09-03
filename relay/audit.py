@@ -33,6 +33,7 @@ class SessionAuditLog:
         self.path = self.root / f"{digest}.jsonl"
         self._lock = RLock()
         self._append_usable = True
+        self._replay_usable = True
         self.had_persisted_log = self.path.exists()
         self.recovered_tail_bytes = 0
         records = self.replay()
@@ -41,6 +42,8 @@ class SessionAuditLog:
     @property
     def last_sequence(self) -> int:
         with self._lock:
+            if not self._replay_usable:
+                raise AuditLogError("session log cursor is uncertain after a failed rollback")
             return self._next_sequence - 1
 
     def append(self, event: Mapping[str, object]) -> dict[str, object]:
@@ -85,6 +88,7 @@ class SessionAuditLog:
                     os.fsync(descriptor)
                 except OSError as rollback_error:
                     self._append_usable = False
+                    self._replay_usable = False
                     raise AuditLogError(
                         f"cannot append or restore session log: {rollback_error}"
                     ) from None
@@ -101,6 +105,8 @@ class SessionAuditLog:
         if after_sequence < 0:
             raise ValueError("after_sequence must be non-negative")
         with self._lock:
+            if not self._replay_usable:
+                raise AuditLogError("session log replay is uncertain after a failed rollback")
             if not self.path.exists():
                 return []
             self._recover_unterminated_tail()
