@@ -31,7 +31,8 @@ flowchart TD
     feed --> m20[M2.0 walking-skeleton checkpoint]
     m1e --> language[Language producer]
     m20 --> gesture[Gesture producer]
-    m20 --> scale[Four-node hardware and 4-to-6-drone sim scope]
+    m20 --> hardware4[Four-node hardware scope]
+    simgate --> sim46[4-to-6-drone sim scope]
     m20 --> video[M3 video and sensor console]
     m20 --> localization[Real indoor localization and clearance gate]
     rooms --> knownmap[Known-map autonomous traversal and capture]
@@ -43,7 +44,8 @@ flowchart TD
     rooms --> compose
     video --> release[M4 final integration and recorded demo]
     compose --> release
-    scale --> release
+    hardware4 --> release
+    sim46 --> release
     inputs --> release
     release --> future[Future registered inputs and vehicle adapters]
 ```
@@ -103,10 +105,10 @@ Capability area: team. Dependencies: M1.1, M1.2, M1.3.
 Scope: run the M2.0 workflow through the production button controls, relay, planner, arbiter, and two-drone sim path: arm, select both, confirmed takeoff, translate together, hold, come home, confirmed land-all, with the network stop available throughout.
 Done when: the workflow passes in simulation, a deliberate geofence violation is refused before an adapter command, e-stop reaches both simulated drones, configured link loss produces the safe behavior, CI is green, and the JSONL log explains the run.
 
-**M1.5: Expand the sim path to the full scripted mission**
-Capability area: Autonomy with Interaction and Platform integration. Dependencies: M1.4, M2.0.
-Scope: add the formation, altitude, spacing, and sweep behaviors deferred by M2.0; expand the simulator and console from two drones to 4 to 6; run Appendix E through the production path.
-Done when: 4 to 6 simulated drones complete Appendix E in under three minutes and the log contains zero unsafe intents.
+**M1.5: Expand the sim path through confirmed land-all**
+Capability area: Autonomy with Interaction and Platform integration. Dependencies: M1.4.
+Scope: add the formation, altitude, spacing, and sweep behaviors deferred by M2.0; expand the simulator and console from two drones to 4 to 6; run the scripted simulator sequence through confirmed `land_all`. Simulator and console work may proceed before M2.0 hardware acceptance. #17 gates the full production relay-to-autonomy exit. Appendix E's final disarm step remains an owner and acceptance hold outside this milestone's named behavior scope.
+Done when: 4 to 6 simulated drones complete the scripted sequence through confirmed `land_all` in under three minutes and the log contains zero unsafe intents. The full Appendix E/disarm acceptance and production-path acceptance remain held.
 
 **M1.9: Prove one DJI Mini 3 bridge node**
 Capability area: Autonomy with Platform support. Dependencies: M0.2, M1.1, M1.2, delivered Mini 3, RC-N1, and candidate Android phone.
@@ -156,7 +158,7 @@ The checkpoint exercises the eight flight-control Intent v1 names `arm`, `select
 
 The one-drone proof selects the only connected drone and runs the same sequence and safety checks. The two-drone proof then replaces that selection with both connected drones and verifies coordinated translation and spacing.
 
-The checkpoint keeps the arbiter, network stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and independent physical RC safety path. Every active aircraft has an RC safety operator. Language work may already be active from M1.E. The formation library, altitude gesture, sweep planner, detector, mosaic, replay UI, metrics dashboard, session report, and release polish start after this gate.
+The checkpoint keeps the arbiter, network stop, state and confirmation checks, geofence, ceiling, spacing, battery, link-loss and positioning-loss behavior, append-only JSONL audit log, and independent physical RC safety path. Every active aircraft has an RC safety operator. Language work may already be active from M1.E. M1.5's simulator-only formation, altitude, spacing, and sweep implementation may proceed before this hardware exit; its production relay-to-autonomy exit remains held until #17 merges. Altitude gesture mapping, detector, mosaic, replay UI, metrics dashboard, session report, and release polish start after this gate.
 
 M2.0 passes when:
 

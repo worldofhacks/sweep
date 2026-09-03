@@ -81,5 +81,7 @@ export function retryIntent(
 function cloneArgs(args: IntentArgs): IntentArgs {
   if ('ids' in args) return { ids: [...args.ids] }
   if ('room_id' in args) return { ...args }
+  if ('delta' in args) return { ...args }
+  if ('name' in args) return { ...args }
   return {}
 }

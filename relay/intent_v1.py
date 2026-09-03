@@ -69,7 +69,7 @@ class RejectedIntent:
 type ValidationResult = AcceptedIntent | RejectedIntent
 
 REGISTERED_SOURCES = frozenset({"console", "keyboard"})
-M20_SUPPORTED_NAMES = frozenset(
+M15_SUPPORTED_NAMES = frozenset(
     {
         IntentName.ARM,
         IntentName.SELECT,
@@ -80,6 +80,11 @@ M20_SUPPORTED_NAMES = frozenset(
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
+        IntentName.ALTITUDE,
+        IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
+        IntentName.SPACING,
+        IntentName.SWEEP,
     }
 )
 
@@ -136,7 +141,7 @@ def validate_intent(raw: object) -> ValidationResult:
             RejectionReason.UNSUPPORTED, f"{mode} is outside the M2.0 capability set"
         )
 
-    if name not in M20_SUPPORTED_NAMES:
+    if name not in M15_SUPPORTED_NAMES:
         return RejectedIntent(
             RejectionReason.UNSUPPORTED, f"{name} is outside the M2.0 capability set"
         )
@@ -205,6 +210,8 @@ def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
     if name is IntentName.SURVEY_AREA:
         return raw["confirm"] is True
     if name is IntentName.MAP_AREA:
+        return raw["confirm"] is True and bool(raw["selection"])
+    if name is IntentName.SWEEP:
         return raw["confirm"] is True and bool(raw["selection"])
     return True
 

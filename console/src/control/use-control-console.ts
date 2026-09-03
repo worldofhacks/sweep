@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useReducer, type Dispatch } from 'react'
 import type { RelayClient } from '../relay/client'
-import type { CapturePattern, DroneId, IntentSource, IntentV1 } from '../relay/contract'
+import type {
+  CapturePattern,
+  ConsoleIntentName,
+  DroneId,
+  IntentArgs,
+  IntentSource,
+  IntentV1,
+} from '../relay/contract'
 import { isConsoleIntentV1 } from '../relay/contract'
 import {
   browserIntentDependencies,
@@ -212,6 +219,49 @@ export function useControlConsole({
     sendNewIntent(intent, clients.console)
   }, [clients.console, intentDependencies, sendNewIntent, state.selection, state.sessionId])
 
+  const issueM15Intent = useCallback(
+    (name: Extract<ConsoleIntentName, 'altitude' | 'formation_next' | 'formation_set' | 'spacing'>, args: IntentArgs) => {
+      if (state.selection.length === 0) return
+      const intent = createIntent(
+        {
+          name,
+          args,
+          selection: state.selection,
+          source: 'console',
+          session: state.sessionId,
+        },
+        intentDependencies,
+      )
+      sendNewIntent(intent, clients.console)
+    },
+    [clients.console, intentDependencies, sendNewIntent, state.selection, state.sessionId],
+  )
+
+  const prepareSweep = useCallback(() => {
+    if (state.selection.length === 0) return
+    const intent = createIntent(
+      {
+        name: 'sweep',
+        args: {},
+        selection: state.selection,
+        source: 'console',
+        session: state.sessionId,
+      },
+      intentDependencies,
+    )
+    const t = intentDependencies.now()
+    dispatch({
+      type: 'request_created',
+      request: createRequestRecord(intent, t),
+    })
+    dispatch({
+      type: 'request_pending_confirmation',
+      intentId: intent.intent_id,
+      t,
+      plan: sweepPlanPreview(intent, state.rosterVersion),
+    })
+  }, [intentDependencies, state.rosterVersion, state.selection, state.sessionId])
+
   const issueNetworkStop = useCallback(
     (source: IntentSource) => {
       const intent = createIntent(
@@ -298,6 +348,8 @@ export function useControlConsole({
     confirmRequest,
     cancelRequest,
     issueHold,
+    issueM15Intent,
+    prepareSweep,
     issueNetworkStop,
     changeCapturePattern,
     retryFailedRequest,
@@ -345,6 +397,18 @@ function capturePlanPreview(intent: IntentV1, rosterVersion: number): PlanPrevie
       `Keep ${formatDroneId(intent.selection[0])} at its operator-approved hover pose.`,
       `Request ${intent.args.pattern}; never substitute a different capture pattern.`,
       'Planner and arbiter must revalidate safety and camera readiness before dispatch.',
+    ],
+  }
+}
+
+function sweepPlanPreview(intent: IntentV1, rosterVersion: number): PlanPreview {
+  return {
+    title: `Sweep · ${formatDroneId(intent.selection[0])} and ${intent.selection.length - 1} more`,
+    rosterVersion,
+    steps: [
+      'Submit one confirmed sweep outcome request.',
+      'Planner assigns deterministic lanes from the authoritative selection and spacing.',
+      'Arbiter revalidates geofence, spacing, telemetry, battery, and aircraft state before dispatch.',
     ],
   }
 }

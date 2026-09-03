@@ -37,7 +37,9 @@ export default function App({ sessionId, clients, intentDependencies }: AppProps
     confirmRequest,
     cancelRequest,
     issueHold,
+    issueM15Intent,
     issueNetworkStop,
+    prepareSweep,
     changeCapturePattern,
     retryFailedRequest,
     selectFeed,
@@ -285,6 +287,41 @@ export default function App({ sessionId, clients, intentDependencies }: AppProps
               >
                 Hold selected <span>{formatSelection(state.selection)}</span>
               </button>
+              <div className="m15-controls" aria-label="Simulated mission controls">
+                <span className="eyebrow">Simulated mission</span>
+                <button
+                  type="button"
+                  className="secondary-action"
+                  disabled={state.selection.length === 0 || state.connection.status !== 'connected'}
+                  onClick={() => issueM15Intent('formation_set', { name: 'circle' })}
+                >
+                  Circle formation
+                </button>
+                <button
+                  type="button"
+                  className="secondary-action"
+                  disabled={state.selection.length === 0 || state.connection.status !== 'connected'}
+                  onClick={() => issueM15Intent('altitude', { delta: 1 })}
+                >
+                  Increase altitude
+                </button>
+                <button
+                  type="button"
+                  className="secondary-action"
+                  disabled={state.selection.length === 0 || state.connection.status !== 'connected'}
+                  onClick={() => issueM15Intent('spacing', { delta: 1 })}
+                >
+                  Increase spacing
+                </button>
+                <button
+                  type="button"
+                  className="primary-action"
+                  disabled={state.selection.length === 0 || state.connection.status !== 'connected'}
+                  onClick={prepareSweep}
+                >
+                  Sweep <span>Build preview</span>
+                </button>
+              </div>
             </section>
 
             <section className="panel active-panel" aria-labelledby="active-title">

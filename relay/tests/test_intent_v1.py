@@ -96,6 +96,51 @@ def test_m20_console_intents_match_the_planner_contract(
     assert result.intent.selection == (1, 2)
 
 
+@pytest.mark.parametrize(
+    ("name", "args", "confirm"),
+    [
+        ("altitude", {"delta": 1}, False),
+        ("formation_next", {}, False),
+        ("formation_set", {"name": "circle"}, False),
+        ("spacing", {"delta": 1}, False),
+        ("sweep", {}, True),
+    ],
+)
+def test_m15_sim_intents_are_accepted_on_the_indoor_contract(
+    console_select_payload: dict[str, object],
+    name: str,
+    args: dict[str, object],
+    confirm: bool,
+) -> None:
+    console_select_payload.update(name=name, args=args, selection=[1, 2], confirm=confirm)
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, AcceptedIntent)
+    assert result.intent.name.value == name
+
+
+def test_sweep_requires_confirmation_before_planning() -> None:
+    result = validate_intent(
+        {
+            "v": 1,
+            "t": 1_756_700_000_000,
+            "type": "intent",
+            "intent_id": "sweep-unconfirmed",
+            "source": "console",
+            "session": "2026-09-02T09-00-00Z",
+            "name": "sweep",
+            "args": {},
+            "selection": [1, 2],
+            "mode": "indoor",
+            "confirm": False,
+        }
+    )
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
 @pytest.mark.parametrize("mode", ["outdoorC", "outdoorF"])
 @pytest.mark.parametrize(
     ("name", "args", "confirm"),
@@ -254,16 +299,11 @@ def test_unknown_intent_name_is_rejected(
     [
         ("disarm", {}),
         ("land", {}),
-        ("altitude", {"delta": 1}),
-        ("formation_next", {}),
-        ("formation_set", {"name": "line"}),
-        ("spacing", {"delta": -1}),
-        ("sweep", {"box": {"x": 0, "y": 0, "width": 4, "height": 3}}),
         ("survey_area", {"area_id": "floor-1"}),
         ("map_area", {"area_id": "floor-1"}),
     ],
 )
-def test_valid_intents_outside_m20_are_unsupported(
+def test_valid_intents_outside_m15_are_unsupported(
     console_select_payload: dict[str, object],
     name: str,
     args: dict[str, object],

@@ -136,6 +136,8 @@ def make_snapshot(
         operator_present=True,
         operator_last_seen_ms=now_ms,
         now_ms=now_ms,
+        formation="none",
+        spacing=0.8,
     )
     return replace(snapshot, **changes)
 

@@ -28,6 +28,26 @@ function aircraft(overrides: Record<string, unknown> = {}) {
 }
 
 describe('M1.1 wire compatibility', () => {
+  test('accepts the M1.5 console outcome requests and keeps sweep confirmed', () => {
+    const base = {
+      v: 1,
+      t: 1_756_700_000_000,
+      type: 'intent',
+      intent_id: 'm15-intent',
+      retry_of: null,
+      source: 'console',
+      session,
+      selection: [1, 2],
+      mode: 'indoor',
+    } as const
+
+    expect(isConsoleIntentV1({ ...base, name: 'altitude', args: { delta: 1 }, confirm: false })).toBe(true)
+    expect(isConsoleIntentV1({ ...base, name: 'formation_set', args: { name: 'circle' }, confirm: false })).toBe(true)
+    expect(isConsoleIntentV1({ ...base, name: 'spacing', args: { delta: 1 }, confirm: false })).toBe(true)
+    expect(isConsoleIntentV1({ ...base, name: 'sweep', args: {}, confirm: true })).toBe(true)
+    expect(isConsoleIntentV1({ ...base, name: 'sweep', args: {}, confirm: false })).toBe(false)
+  })
+
   test('accepts the exact authoritative state projection with forward-compatible fields', () => {
     const event = parseRelayServerEvent({
       v: 1,
