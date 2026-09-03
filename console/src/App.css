@@ -505,3 +505,15 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+
+.voice-outcome { margin-top: 8px; margin-bottom: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-raised); }
+.voice-outcome.is-transcribed { border-color: #32654f; }
+.voice-outcome.is-refused { border-color: #74363c; background: var(--danger-bg); }
+.voice-outcome-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.voice-transcript { margin: 8px 0 0; color: var(--text); font-size: 13px; line-height: 1.4; }
+.voice-no-transcript, .voice-plan { margin: 8px 0 0; color: var(--text-secondary); font-size: 10px; line-height: 1.4; }
+.voice-refusal { display: grid; gap: 4px; margin-top: 8px; }
+.voice-refusal strong { color: #ffd9da; font-size: 11px; line-height: 1.4; }
+.voice-refusal code { color: var(--danger); font-size: 10px; }
+.voice-source { display: block; margin-top: 8px; color: var(--text-faint); font-size: 9px; text-transform: uppercase; }
+.voice-error { color: var(--warn); }
