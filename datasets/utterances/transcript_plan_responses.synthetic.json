@@ -379,21 +379,8 @@
       "reason": "no_selection"
     },
     "relative-leftmost": {
-      "kind": "plan",
-      "intents": [
-        {
-          "name": "select",
-          "args": {
-            "ids": [
-              1
-            ]
-          },
-          "selection": [
-            1
-          ],
-          "mode": "indoor"
-        }
-      ]
+      "kind": "clarify",
+      "reason": "ambiguous_selection"
     },
     "relative-current-selection": {
       "kind": "plan",
