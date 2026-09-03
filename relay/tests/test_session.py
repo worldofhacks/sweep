@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import pytest
 
+import relay.audit as audit_module
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal
 from relay.contracts import LifecycleStatus
@@ -158,6 +161,48 @@ def test_replay_fails_closed_after_complete_write_with_uncertain_rollback(
     replay = reopened.replay()
     assert [record["seq"] for record in replay["events"]] == [1]
     assert replay["last_sequence"] == 1
+
+
+def test_replay_records_and_cursor_share_one_snapshot_during_append(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _new_session(tmp_path, clock, event_ids)
+    session.update_control_projection(selection=())
+    replay_reading = Event()
+    resume_replay = Event()
+    append_started = Event()
+    real_validate = audit_module._validate_record
+
+    def pause_during_validation(
+        record: object, expected: int, session_id: str, line_number: int
+    ) -> None:
+        real_validate(record, expected, session_id, line_number)
+        replay_reading.set()
+        assert resume_replay.wait(timeout=2)
+
+    def append_state() -> None:
+        append_started.set()
+        session.update_control_projection(selection=())
+
+    monkeypatch.setattr(audit_module, "_validate_record", pause_during_validation)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        replay_future = executor.submit(session.replay, after_sequence=1)
+        assert replay_reading.wait(timeout=2)
+        append_future = executor.submit(append_state)
+        assert append_started.wait(timeout=2)
+        resume_replay.set()
+        replay = replay_future.result(timeout=2)
+        append_future.result(timeout=2)
+
+    assert replay["events"] == []
+    assert replay["last_sequence"] == 1
+    next_replay = session.replay(after_sequence=1)
+    assert [record["seq"] for record in next_replay["events"]] == [2]
+    assert next_replay["last_sequence"] == 2
 
 
 def test_authenticated_source_cannot_impersonate_another_registered_source(

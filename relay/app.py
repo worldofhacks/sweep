@@ -98,7 +98,7 @@ class RelayRuntime:
             return session.replay(after_sequence=after_sequence)
 
         audit_log = SessionAuditLog(self.settings.log_dir, session_id)
-        records = audit_log.replay(after_sequence=after_sequence)
+        records, last_sequence = audit_log.replay_snapshot(after_sequence=after_sequence)
         return {
             "v": 1,
             "t": self.clock(),
@@ -106,7 +106,7 @@ class RelayRuntime:
             "event_id": self.event_ids(),
             "session": session_id,
             "after_sequence": after_sequence,
-            "last_sequence": audit_log.last_sequence,
+            "last_sequence": last_sequence,
             "events": records,
         }
 

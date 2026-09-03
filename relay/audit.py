@@ -102,13 +102,17 @@ class SessionAuditLog:
             return json.loads(encoded)
 
     def replay(self, *, after_sequence: int = 0) -> list[dict[str, object]]:
+        records, _ = self.replay_snapshot(after_sequence=after_sequence)
+        return records
+
+    def replay_snapshot(self, *, after_sequence: int = 0) -> tuple[list[dict[str, object]], int]:
         if after_sequence < 0:
             raise ValueError("after_sequence must be non-negative")
         with self._lock:
             if not self._replay_usable:
                 raise AuditLogError("session log replay is uncertain after a failed rollback")
             if not self.path.exists():
-                return []
+                return [], 0
             self._recover_unterminated_tail()
             records: list[dict[str, object]] = []
             expected = 1
@@ -122,7 +126,7 @@ class SessionAuditLog:
                         expected += 1
             except (OSError, UnicodeError, json.JSONDecodeError) as error:
                 raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
-            return records
+            return records, expected - 1
 
     def _recover_unterminated_tail(self) -> None:
         try:

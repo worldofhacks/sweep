@@ -516,7 +516,7 @@ class RelaySession:
             return state
 
     def replay(self, *, after_sequence: int = 0) -> dict[str, object]:
-        records = self.audit_log.replay(after_sequence=after_sequence)
+        records, last_sequence = self.audit_log.replay_snapshot(after_sequence=after_sequence)
         return {
             "v": 1,
             "t": self.clock(),
@@ -524,7 +524,7 @@ class RelaySession:
             "event_id": self.event_ids(),
             "session": self.session_id,
             "after_sequence": after_sequence,
-            "last_sequence": self.audit_log.last_sequence,
+            "last_sequence": last_sequence,
             "events": records,
         }
 
