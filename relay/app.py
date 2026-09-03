@@ -64,7 +64,7 @@ class RelayRuntime:
         session = self.sessions.get(session_id)
         if session is None:
             audit_log = SessionAuditLog(self.settings.log_dir, session_id)
-            if audit_log.last_sequence:
+            if audit_log.had_persisted_log:
                 raise AuthenticationError(
                     "session_closed",
                     "persisted sessions are replay-only after a relay process restart; "

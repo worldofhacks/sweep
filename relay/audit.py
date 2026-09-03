@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -12,6 +13,7 @@ from threading import RLock
 _FORBIDDEN_KEYS = frozenset(
     {"authorization", "credential", "password", "secret", "signature", "token"}
 )
+_LOGGER = logging.getLogger(__name__)
 
 
 class AuditLogError(RuntimeError):
@@ -30,6 +32,9 @@ class SessionAuditLog:
         digest = hashlib.sha256(session.encode()).hexdigest()
         self.path = self.root / f"{digest}.jsonl"
         self._lock = RLock()
+        self._append_usable = True
+        self.had_persisted_log = self.path.exists()
+        self.recovered_tail_bytes = 0
         records = self.replay()
         self._next_sequence = 1 if not records else records[-1]["seq"] + 1
 
@@ -41,6 +46,8 @@ class SessionAuditLog:
     def append(self, event: Mapping[str, object]) -> dict[str, object]:
         """Validate and durably append one safe JSON-native event."""
         with self._lock:
+            if not self._append_usable:
+                raise AuditLogError("session log is unusable after a failed append rollback")
             _reject_sensitive_fields(event)
             if event.get("session") != self.session:
                 raise AuditLogError("event session does not match this log")
@@ -59,11 +66,28 @@ class SessionAuditLog:
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             descriptor = os.open(self.path, flags, 0o600)
+            original_size = os.fstat(descriptor).st_size
             try:
-                written = os.write(descriptor, encoded)
-                if written != len(encoded):
-                    raise AuditLogError("short append to session log")
+                remaining = memoryview(encoded)
+                while remaining:
+                    try:
+                        written = os.write(descriptor, remaining)
+                    except InterruptedError:
+                        continue
+                    if written <= 0:
+                        raise OSError("append made no progress")
+                    remaining = remaining[written:]
                 os.fsync(descriptor)
+            except OSError as error:
+                try:
+                    os.ftruncate(descriptor, original_size)
+                    os.fsync(descriptor)
+                except OSError as rollback_error:
+                    self._append_usable = False
+                    raise AuditLogError(
+                        f"cannot append or restore session log: {rollback_error}"
+                    ) from None
+                raise AuditLogError(f"cannot append session log: {error}") from None
             finally:
                 os.close(descriptor)
             self._next_sequence += 1
@@ -75,6 +99,7 @@ class SessionAuditLog:
         with self._lock:
             if not self.path.exists():
                 return []
+            self._recover_unterminated_tail()
             records: list[dict[str, object]] = []
             expected = 1
             try:
@@ -88,6 +113,41 @@ class SessionAuditLog:
             except (OSError, UnicodeError, json.JSONDecodeError) as error:
                 raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
             return records
+
+    def _recover_unterminated_tail(self) -> None:
+        try:
+            data = self.path.read_bytes()
+        except OSError as error:
+            raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+        if not data or data.endswith(b"\n"):
+            return
+
+        prefix_end = data.rfind(b"\n") + 1
+        prefix = data[:prefix_end]
+        try:
+            text = prefix.decode("utf-8")
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                record = json.loads(line)
+                _validate_record(record, line_number, self.session, line_number)
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+
+        flags = os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(self.path, flags)
+            try:
+                os.ftruncate(descriptor, prefix_end)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as error:
+            raise AuditLogError(f"cannot repair {self.path.name}: {error}") from None
+
+        removed = len(data) - prefix_end
+        self.recovered_tail_bytes += removed
+        _LOGGER.warning("recovered unterminated audit tail removed_bytes=%d", removed)
 
 
 def _validate_record(record: object, expected: int, session: str, line_number: int) -> None:

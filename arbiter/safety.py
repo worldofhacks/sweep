@@ -32,6 +32,11 @@ _SAFE_WHILE_STOPPED: Final = frozenset({IntentName.ESTOP, IntentName.HOLD, Inten
 _SAFE_OPERATIONS: Final = frozenset(
     {CommandOperation.ESTOP, CommandOperation.HOVER, CommandOperation.LAND}
 )
+_STOPPED_OPERATION_BY_INTENT: Final = {
+    IntentName.HOLD: CommandOperation.HOVER,
+    IntentName.LAND_ALL: CommandOperation.LAND,
+    IntentName.ESTOP: CommandOperation.ESTOP,
+}
 _ARMED_INTENTS: Final = frozenset(
     {IntentName.TRANSLATE, IntentName.COME_HOME, IntentName.CAPTURE_ROOM}
 )
@@ -474,11 +479,7 @@ class SafetyArbiter:
         if membership_refusal is not None:
             return membership_refusal
 
-        if (
-            snapshot.estop_active
-            and not command.safety_action
-            and command.operation not in _SAFE_OPERATIONS
-        ):
+        if snapshot.estop_active and not self._is_allowed_while_stopped(plan, command):
             return self._command_refusal(
                 command,
                 snapshot,
@@ -1157,12 +1158,13 @@ class SafetyArbiter:
 
     @staticmethod
     def _is_legitimate_safety_action(plan: Plan, command: Command) -> bool:
-        expected = {
-            IntentName.HOLD: CommandOperation.HOVER,
-            IntentName.LAND_ALL: CommandOperation.LAND,
-            IntentName.ESTOP: CommandOperation.ESTOP,
-        }
-        return expected.get(plan.intent_name) is command.operation
+        return _STOPPED_OPERATION_BY_INTENT.get(plan.intent_name) is command.operation
+
+    @staticmethod
+    def _is_allowed_while_stopped(plan: Plan, command: Command) -> bool:
+        return _STOPPED_OPERATION_BY_INTENT.get(plan.intent_name) is command.operation and (
+            plan.intent_name is not IntentName.LAND_ALL or plan.confirmed is True
+        )
 
     def _intent_targets(
         self, intent: IntentV1, snapshot: FleetSnapshot

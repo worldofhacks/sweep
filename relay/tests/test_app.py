@@ -9,7 +9,8 @@ from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from relay.app import RelayRuntime, create_app
-from relay.auth import Principal
+from relay.audit import SessionAuditLog
+from relay.auth import AuthenticationError, Principal
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
     ADAPTER_KEY,
@@ -331,6 +332,55 @@ def test_restart_keeps_persisted_session_replay_only(
 
         assert authenticated["type"] == "auth.accepted"
         assert state["type"] == "state"
+
+
+def test_restart_recovers_torn_audit_tail_but_keeps_session_closed(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    log = SessionAuditLog(app_settings.log_dir, SESSION)
+    first = log.append(
+        {
+            "v": 1,
+            "t": clock.value,
+            "type": "state",
+            "event_id": "event-before-crash",
+            "session": SESSION,
+        }
+    )
+    log.path.write_bytes(log.path.read_bytes() + b'{"seq":2,"event":')
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client:
+        replay = client.get(f"/session/{SESSION}", headers=headers)
+
+    assert replay.status_code == 200
+    assert replay.json()["events"] == [first]
+    assert replay.json()["last_sequence"] == 1
+    with pytest.raises(AuthenticationError, match="persisted sessions") as refusal:
+        app.state.relay_runtime.session(SESSION)
+    assert refusal.value.code == "session_closed"
+
+
+def test_restart_keeps_torn_only_session_closed_after_replay_repair(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    log = SessionAuditLog(app_settings.log_dir, SESSION)
+    log.path.write_bytes(b'{"seq":1,"event":')
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client:
+        replay = client.get(f"/session/{SESSION}", headers=headers)
+        assert replay.status_code == 200
+        assert replay.json()["events"] == []
+        assert replay.json()["last_sequence"] == 0
+
+        with pytest.raises(AuthenticationError, match="persisted sessions") as refusal:
+            app.state.relay_runtime.session(SESSION)
+
+    assert refusal.value.code == "session_closed"
+    assert log.path.read_bytes() == b""
 
 
 def test_initial_send_failure_releases_adapter_binding_and_records_loss(

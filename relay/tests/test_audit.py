@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -73,3 +75,133 @@ def test_session_name_is_hashed_and_cannot_escape_log_root(tmp_path: Path) -> No
     assert log.path.parent == tmp_path
     assert log.path.name.endswith(".jsonl")
     assert ".." not in log.path.name
+
+
+def test_reopen_repairs_only_an_unterminated_tail(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    valid_prefix = log.path.read_bytes()
+    torn = json.dumps({"seq": 2, "event": _event("event-2")}).encode()[:19]
+    log.path.write_bytes(valid_prefix + torn)
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+
+    assert [record["seq"] for record in reopened.replay()] == [1]
+    assert reopened.last_sequence == 1
+    assert reopened.recovered_tail_bytes == len(torn)
+    assert reopened.path.read_bytes() == valid_prefix
+    assert stat.S_IMODE(reopened.path.stat().st_mode) == 0o600
+    assert f"removed_bytes={len(torn)}" in caplog.text
+    assert "event-2" not in caplog.text
+
+    replayed = SessionAuditLog(tmp_path, "session-1")
+    assert replayed.recovered_tail_bytes == 0
+    assert replayed.replay() == reopened.replay()
+
+
+def test_torn_first_record_remains_persisted_session_evidence(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.path.write_bytes(b'{"seq":1')
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+
+    assert reopened.last_sequence == 0
+    assert reopened.had_persisted_log is True
+    assert reopened.path.read_bytes() == b""
+
+
+def test_complete_corrupt_tail_fails_without_mutation(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    corrupted = log.path.read_bytes() + b'{"seq":2,not-json}\n'
+    log.path.write_bytes(corrupted)
+
+    with pytest.raises(AuditLogError):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert log.path.read_bytes() == corrupted
+
+
+def test_short_write_retries_until_record_is_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    real_write = os.write
+    calls = 0
+
+    def short_then_complete(descriptor: int, data: bytes | memoryview) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, data[:7])
+        if calls == 2:
+            raise InterruptedError
+        return real_write(descriptor, data)
+
+    monkeypatch.setattr(os, "write", short_then_complete)
+
+    record = log.append(_event("event-1"))
+
+    assert record["seq"] == 1
+    assert log.replay() == [record]
+
+
+def test_failed_partial_write_rolls_back_without_advancing_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    first = log.append(_event("event-1"))
+    original = log.path.read_bytes()
+    real_write = os.write
+    calls = 0
+
+    def partial_then_fail(descriptor: int, data: bytes | memoryview) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, data[:5])
+        raise OSError("injected append failure")
+
+    monkeypatch.setattr(os, "write", partial_then_fail)
+    with pytest.raises(AuditLogError, match="cannot append"):
+        log.append(_event("event-2"))
+
+    assert log.last_sequence == 1
+    assert log.path.read_bytes() == original
+
+    monkeypatch.setattr(os, "write", real_write)
+    second = log.append(_event("event-2"))
+    assert [first["seq"], second["seq"]] == [1, 2]
+    assert [record["seq"] for record in log.replay()] == [1, 2]
+
+
+def test_failed_rollback_permanently_fences_append_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    real_write = os.write
+    writes = 0
+
+    def partial_then_fail(descriptor: int, data: bytes | memoryview) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            return real_write(descriptor, data[:5])
+        raise OSError("injected append failure")
+
+    def failed_truncate(_descriptor: int, _length: int) -> None:
+        raise OSError("injected rollback failure")
+
+    monkeypatch.setattr(os, "write", partial_then_fail)
+    monkeypatch.setattr(os, "ftruncate", failed_truncate)
+
+    with pytest.raises(AuditLogError, match="cannot append or restore"):
+        log.append(_event("event-1"))
+    writes_after_failure = writes
+    with pytest.raises(AuditLogError, match="unusable"):
+        log.append(_event("event-2"))
+
+    assert writes == writes_after_failure
+    assert log.last_sequence == 0

@@ -231,6 +231,25 @@ def test_terminal_ack_resumes_without_resending_accepted_command() -> None:
     ]
 
 
+def test_estop_activation_before_resume_blocks_remaining_motion_without_resending() -> None:
+    snapshot = make_snapshot(2)
+    plan = translate_plan(snapshot)
+    _, _, arbiter, _, _, camera = make_stack(snapshot)
+    flight = ExecutingOnceFlight.from_snapshot(snapshot)
+    dispatcher = AdapterDispatcher(flight=flight, camera=camera, arbiter=arbiter)
+    pending = dispatcher.dispatch(plan, snapshot)
+    terminal = replace(pending.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
+    stopped = replace(snapshot, estop_active=True)
+
+    result = dispatcher.resume_after_completion(plan, pending, terminal, stopped)
+
+    assert result.status is LifecycleStatus.REFUSED
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.ESTOP_ACTIVE
+    assert sum(call.operation is CommandOperation.GOTO for call in flight.calls) == 1
+    assert all(call.drone_ids != (plan.commands[1].drone_id,) for call in flight.calls)
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -560,6 +579,21 @@ def test_translate_plan_cannot_smuggle_a_safety_land_command() -> None:
     _, _, _, dispatcher, flight, camera = make_stack(snapshot)
 
     result = dispatcher.dispatch(plan, snapshot)
+
+    assert result.status is LifecycleStatus.REFUSED
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.INVALID_PLAN
+    assert flight.calls == []
+    assert camera.calls == []
+
+
+def test_flagged_motion_during_estop_is_refused_before_all_adapter_io() -> None:
+    snapshot = replace(make_snapshot(1, selection=(1,)), estop_active=True)
+    plan = translate_plan(snapshot)
+    flagged = replace(plan.commands[0], safety_action=True)
+    _, _, _, dispatcher, flight, camera = make_stack(snapshot)
+
+    result = dispatcher.dispatch(replace(plan, commands=(flagged,)), snapshot)
 
     assert result.status is LifecycleStatus.REFUSED
     assert result.refusal is not None
