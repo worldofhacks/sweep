@@ -71,6 +71,12 @@ Capability area: Platform. Dependencies: M0.2, paid World API account and key.
 Scope: submit one real `marble-1.1` multi-image request with three images and explicitly set `public: false`. Poll the operation and record the observed upload, operation, result, asset, and duration shapes. Revise the provisional records to match that evidence and freeze the `generation_job` contract. The Marble web app and mocked responses provide development evidence only.
 Done when: the real job reaches `done=true` and returns a world ID, `world_marble_url`, and asset metadata; the observed fields have contract fixtures; and the reviewed record schema is frozen. If API access is unavailable, the M1 exit remains blocked.
 
+#### Input channel coverage policy
+
+Every current and future input channel targets full Intent v1 coverage over time. Coverage ships per channel and intent pair after measured accuracy for that pair clears a risk-scaled threshold. Lower-risk intents such as `select` and `capture_room` may qualify earlier. Safety-critical intents such as `estop`, `arm`, `takeoff`, and any intent that moves real hardware require a substantially higher threshold and may require redundant confirmation after they qualify. The numerical thresholds and redundant-confirmation rules are open owner decisions that must be frozen before accepting each pair. Console controls and the physical RC remain the trusted fallback for every safety-critical action.
+
+Channels with a small realistic input space should approach full coverage sooner. A bounded gesture classifier can expand toward nearly every intent as its classes qualify. Voice has a much larger phrase space, so each voice and intent pair qualifies independently. Future channels, including the EMG band, follow the same policy and cannot remain permanently limited to an initial subset.
+
 ### M1: One-drone room-world vertical slice
 
 #### Completed precursor: manual three-photo capture
@@ -126,7 +132,7 @@ The output is an AI-generated room world. It carries no claim about hidden geome
 
 **The follow-on speech scope is bounded on purpose.** Whisper API capture and transcription sit on top of the accepted button-driven intent path and the reviewed transcript-to-plan slice. They add browser recording, relay upload, server-side key handling, error states, a manual smoke run, compiler integration, and preview and confirmation.
 
-That scope holds for one-shot push-to-talk in the pinned Chromium browser, `en-US`, a working microphone and network, recordings capped at 30 seconds, and the `whisper-1` transcription endpoint. The final transcript enters the same compiler path that typed fixtures exercise. M4 owns offline transcription, continuous listening, multilingual support, and noisy-room hardening.
+That scope holds for one-shot push-to-talk in the pinned Chromium browser, `en-US`, a working microphone and network, recordings capped at 30 seconds, and the `whisper-1` transcription endpoint. The final transcript enters the same compiler path that typed fixtures exercise. The compiler targets the full Intent v1 vocabulary over time and enables each voice and intent pair only under the input channel coverage policy above. M4 owns offline transcription, multilingual support, and noisy-room hardening.
 
 The Whisper path needs browser recording plus a relay endpoint because the API accepts an audio-file upload and the API key must stay off the client. OpenAI's [API key safety guidance](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safet) requires requests from browser clients to pass through a server that holds the key.
 
@@ -224,9 +230,9 @@ Done when: the complete operator workflow succeeds on four physical Mini 3 nodes
 ### M4: Language completion and final proof of concept
 
 **M4.1: Complete deterministic language resolution**
-Capability area: Autonomy. Dependencies: M1.E and stable relay state.
-Scope: compile the bounded “Capture this room” utterance into `capture_room`, then implement ordered plans plus bounded selection and location resolution with explicit ambiguity and refusal results. Use authoritative relay, selection, room, pose, and camera state; validate and preview every plan before emission.
-Done when: resolver tests cover IDs, current selection, supported relative phrases, stale state, ambiguity, and unresolved locations without bypassing the planner.
+Capability area: Autonomy. Dependencies: M1.E and stable relay state. Coverage for each intent also depends on that capability's acceptance gate; formation, altitude, spacing, and sweep coverage depends on M1.5.
+Scope: compile voice into the full Intent v1 vocabulary as each voice and intent pair clears the input-channel accuracy gate. Start with `capture_room`, then expand through `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, and `estop` as their control and risk gates pass. Add `disarm`, `land`, `altitude`, `formation_next`, `formation_set`, `spacing`, `sweep`, `survey_area`, and `map_area` when their planner, capability, and channel-accuracy gates pass. Implement ordered plans plus bounded selection and location resolution with explicit ambiguity and refusal results. Use authoritative relay, selection, room, pose, camera, and capability state; validate and preview every plan before emission.
+Done when: reviewed utterances for every earned voice intent produce the exact ordered Intent v1 plans or explicit ambiguity and refusal results. Resolver tests cover IDs, current selection, supported relative phrases, stale state, unavailable capabilities, ambiguity, and unresolved locations without bypassing preview, confirmation, the planner, or the arbiter.
 
 **M4.2: Complete language evaluation and fallback**
 Capability area: Platform, with team-contributed cases. Dependencies: M4.1.
@@ -235,13 +241,13 @@ Done when: the 20-utterance live set passes once on camera, unsafe-intent count 
 
 **M4.3: Harden speech UX and evaluate offline transcription**
 Capability area: Interaction with Platform support. Dependencies: M1.3, M4.1.
-Scope: add one-shot push-to-talk recording and server-side Whisper transcription, then evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it. Polish transcript, preview, clarification, confirmation, and refusal behavior.
+Scope: add one-shot push-to-talk recording and server-side Whisper transcription, then evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it. Continuous listening is time-permitting stretch work after the push-to-talk path passes and does not gate M4.3 or the MVP. Polish transcript, preview, clarification, confirmation, and refusal behavior.
 Done when: the primary Whisper API path and any approved local fallback feed the same transcript-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
 
 **M4.4: Add the webcam gesture producer**
 Capability area: Interaction with Platform support. Dependencies: M1.3, M2.0, frozen Intent v1 and source-registry contracts.
-Scope: add camera selection, explicit gesture-tracking enablement, hand-landmark overlay, confidence and dwell feedback, candidate preview, confirmation, cancellation, duplicate suppression, and the shared `intent_id` lifecycle. Start with MediaPipe's built-in gesture classes for `capture_room`, `hold`, confirm, and cancel. Keep arm, takeoff, free-flight translation, and the trusted emergency path on console controls or the physical RC.
-Done when: one recorded browser session selects a camera, enables tracking, shows landmarks, proposes `capture_room`, confirms it, and observes the same `intent_id` through execution and terminal state. Cancellation, hold, timeout, camera unplug, low confidence, and duplicate suppression pass. The gesture producer passes the same Intent v1 conformance suite as console buttons.
+Scope: add camera selection, explicit gesture-tracking enablement, hand-landmark overlay, confidence and dwell feedback, candidate preview, confirmation, cancellation, duplicate suppression, and the shared `intent_id` lifecycle. Start with MediaPipe's built-in gesture classes for `capture_room`, `hold`, confirm, and cancel, then expand the bounded classifier vocabulary toward full Intent v1 coverage. Each gesture and intent pair ships only after clearing its risk-scaled accuracy gate. `estop`, `arm`, `takeoff`, and free-flight motion remain on console controls or the physical RC until their gesture-specific safety gates pass; those trusted fallbacks remain available afterward.
+Done when: one recorded browser session selects a camera, enables tracking, shows landmarks, proposes `capture_room`, confirms it, and observes the same `intent_id` through execution and terminal state. Cancellation, hold, timeout, camera unplug, low confidence, and duplicate suppression pass. Every enabled pair has measured evidence above its frozen threshold, and the gesture producer passes the same Intent v1 conformance suite as console buttons.
 
 **M4.5: Integrate and record the demo**
 Capability area: team. Dependencies: M2.4, M2.6, M3.5, M4.2, M4.3, M4.4.
@@ -252,8 +258,8 @@ Done when: the confirmed “Map this floor” chain is traceable from its source
 
 **F.1: Add optional input sources**
 Capability area: Interaction with Platform registration support. Dependencies: M4.5 and a concrete source with host access.
-Scope: add an EMG band through a source-specific producer, registry entry, and shared conformance runner.
-Done when: real source events pass Intent v1 conformance and the same safety path without relay, planner, arbiter, or adapter redesign.
+Scope: add an EMG band through a source-specific producer, registry entry, shared conformance runner, and per-intent accuracy gates. Begin with the most important reliable mappings, then expand toward full Intent v1 coverage as each pair qualifies.
+Done when: every enabled EMG and intent pair clears its frozen risk-scaled threshold, real source events pass Intent v1 conformance, and the same safety path works without relay, planner, arbiter, or adapter redesign.
 
 **F.2: Extend vehicle portability**
 Capability area: Autonomy with Platform eval support. Dependencies: working M2 evidence and the capability/action eval harness.
