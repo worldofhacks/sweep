@@ -132,7 +132,7 @@ The output is an AI-generated room world. It carries no claim about hidden geome
 
 **The follow-on speech scope is bounded on purpose.** Whisper API capture and transcription sit on top of the accepted button-driven intent path and the reviewed transcript-to-plan slice. They add browser recording, relay upload, server-side key handling, error states, a manual smoke run, compiler integration, and preview and confirmation.
 
-That scope holds for one-shot push-to-talk in the pinned Chromium browser, `en-US`, a working microphone and network, recordings capped at 30 seconds, and the `whisper-1` transcription endpoint. The final transcript enters the same compiler path that typed fixtures exercise. M4 owns offline transcription, continuous listening, multilingual support, and noisy-room hardening.
+That scope holds for one-shot push-to-talk in the pinned Chromium browser, `en-US`, a working microphone and network, recordings capped at 30 seconds, and the `whisper-1` transcription endpoint. The final transcript enters the same compiler path that typed fixtures exercise. The compiler targets the full Intent v1 vocabulary over time and enables each voice and intent pair only under the input channel coverage policy above. M4 owns offline transcription, multilingual support, and noisy-room hardening.
 
 The Whisper path needs browser recording plus a relay endpoint because the API accepts an audio-file upload and the API key must stay off the client. OpenAI's [API key safety guidance](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safet) requires requests from browser clients to pass through a server that holds the key.
 
@@ -241,7 +241,7 @@ Done when: the 20-utterance live set passes once on camera, unsafe-intent count 
 
 **M4.3: Harden speech UX and evaluate offline transcription**
 Capability area: Interaction with Platform support. Dependencies: M1.3, M4.1.
-Scope: add one-shot push-to-talk recording and server-side Whisper transcription, then evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it. Polish transcript, preview, clarification, confirmation, and refusal behavior.
+Scope: add one-shot push-to-talk recording and server-side Whisper transcription, then evaluate noisy-room speech, retries, timeouts, and a local transcription fallback if offline evidence requires it. Continuous listening is time-permitting stretch work after the push-to-talk path passes and does not gate M4.3 or the MVP. Polish transcript, preview, clarification, confirmation, and refusal behavior.
 Done when: the primary Whisper API path and any approved local fallback feed the same transcript-to-plan path and cannot bypass preview, confirmation, planner, or arbiter checks.
 
 **M4.4: Add the webcam gesture producer**
