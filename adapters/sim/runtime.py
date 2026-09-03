@@ -162,6 +162,7 @@ class _SimNodeIngress:
         self._active: set[int] = set()
         self._silent: set[int] = set()
         self._sequence = 0
+        self._last_frame_t = -1
         self._watchdogs: dict[int, _LocalWatchdog] = {}
         self._safety_actions: list[NodeSafetyAction] = []
         self._watchdog_lock = Lock()
@@ -297,7 +298,7 @@ class _SimNodeIngress:
     def _membership(self, drone_id: int, action: str) -> dict[str, object]:
         event: dict[str, object] = {
             "v": 1,
-            "t": self.session.clock(),
+            "t": self._next_frame_t(),
             "type": "membership",
             "event_id": self._event_id(drone_id, action),
             "session": self.session.session_id,
@@ -320,7 +321,7 @@ class _SimNodeIngress:
         aircraft = self.flight.aircraft[drone_id]
         return {
             "v": 1,
-            "t": self.session.clock(),
+            "t": self._next_frame_t(),
             "type": "telemetry",
             "event_id": self._event_id(drone_id, "telemetry"),
             "session": self.session.session_id,
@@ -341,6 +342,10 @@ class _SimNodeIngress:
     def _event_id(self, drone_id: int, event_type: str) -> str:
         self._sequence += 1
         return f"sim-{drone_id}-{event_type}-{self._sequence}"
+
+    def _next_frame_t(self) -> int:
+        self._last_frame_t = max(self.session.clock(), self._last_frame_t + 1)
+        return self._last_frame_t
 
     def _bridge(self) -> AutonomyRelayBridge:
         if self.bridge is None:

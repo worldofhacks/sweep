@@ -298,6 +298,20 @@ function reduceRelayEvent(state: ControlState, event: RelayServerEvent): Control
       // projection. Retain the event ID for dedupe, but do not build a second
       // client-side source of aircraft truth here.
       return stateWithEvent
+    case 'safety_action':
+      return {
+        ...stateWithEvent,
+        notices: prependNotice(
+          stateWithEvent.notices,
+          makeNotice(
+            `safety-action-${event.event_id}`,
+            'danger',
+            event.action === 'failsafe' ? 'Aircraft failsafe' : 'Aircraft hold',
+            `D-${String(event.drone_id).padStart(2, '0')} applied ${event.action} after ${event.reason}.`,
+            event.t,
+          ),
+        ),
+      }
     case 'acknowledgement':
       if (event.command_id !== null || event.source === 'adapter') {
         return reduceCommandAcknowledgement(stateWithEvent, event)

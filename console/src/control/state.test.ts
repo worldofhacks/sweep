@@ -148,6 +148,28 @@ describe('control reducer fleet lifecycle', () => {
     expect(rosterMoved.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_roster' })
   })
 
+  test('surfaces node-local hold and failsafe evidence without degrading transport', () => {
+    const initial = withReadyState()
+    const next = controlReducer(initial, {
+      type: 'relay_event',
+      event: {
+        v: 1,
+        t: t + 1,
+        type: 'safety_action',
+        event_id: 'safety-action-1',
+        session,
+        drone_id: 1,
+        connection_epoch: 1,
+        reason: 'link_loss',
+        action: 'failsafe',
+        loss_behavior: 'failsafe',
+      },
+    })
+
+    expect(next.connection.status).toBe(initial.connection.status)
+    expect(next.notices[0]).toMatchObject({ level: 'danger', title: 'Aircraft failsafe' })
+  })
+
   test('focuses a single authoritative selection and retains explicit focus through video loss', () => {
     let state = controlReducer(createInitialControlState(session, t), {
       type: 'relay_event',

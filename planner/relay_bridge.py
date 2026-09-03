@@ -200,7 +200,6 @@ class AutonomyRelayBridge:
         connection_epoch: int,
         relay_state: Mapping[str, object],
     ) -> list[dict[str, object]]:
-        self.node_activity(drone_id, connection_epoch, int(relay_state["t"]))
         return []
 
     def adapter_activity(

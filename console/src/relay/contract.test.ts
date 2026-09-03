@@ -166,6 +166,23 @@ describe('M1.1 wire compatibility', () => {
     })
   })
 
+  test('accepts node-local safety actions as operator-visible evidence', () => {
+    const event = parseRelayServerEvent({
+      v: 1,
+      t: 1_756_700_000_016,
+      type: 'safety_action',
+      event_id: 'safety-1',
+      session,
+      drone_id: 1,
+      connection_epoch: 2,
+      reason: 'link_loss',
+      action: 'failsafe',
+      loss_behavior: 'failsafe',
+    })
+
+    expect(event).toMatchObject({ type: 'safety_action', drone_id: 1, action: 'failsafe' })
+  })
+
   test('accepts intent-level and command-scoped acknowledgement variants', () => {
     const accepted = parseRelayServerEvent({
       v: 1,

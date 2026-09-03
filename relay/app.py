@@ -597,6 +597,7 @@ def create_app(
             return
 
         sender: asyncio.Task[None] | None = None
+        executions: set[asyncio.Task[None]] = set()
         try:
             await websocket.send_json(accepted)
             await websocket.send_json(subscription.initial_state)
@@ -629,11 +630,12 @@ def create_app(
                         and events[0].get("type") == "acknowledgement"
                         and events[0].get("status") == "accepted"
                     ):
-                        outcome = await asyncio.to_thread(
-                            session.execute_pending_intent,
-                            frame["intent_id"],
+                        execution = asyncio.create_task(
+                            _execute_and_publish(runtime, session_id, session, frame["intent_id"])
                         )
-                        await runtime.publish(session_id, outcome)
+                        executions.add(execution)
+                        execution.add_done_callback(executions.discard)
+                        runtime._track_background_operation(execution)
         except WebSocketDisconnect:
             pass
         except AuditLogError:
@@ -706,6 +708,16 @@ def _log_background_failure(task: asyncio.Task[object]) -> None:
             "cancellation-safe relay operation failed",
             exc_info=(type(error), error, error.__traceback__),
         )
+
+
+async def _execute_and_publish(
+    runtime: RelayRuntime,
+    session_id: str,
+    session: RelaySession,
+    intent_id: str,
+) -> None:
+    outcome = await asyncio.to_thread(session.execute_pending_intent, intent_id)
+    await runtime.publish(session_id, outcome)
 
 
 def _auth_accepted(

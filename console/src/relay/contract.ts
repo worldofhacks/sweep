@@ -359,6 +359,19 @@ export interface RelayTelemetryEvent {
   pos_quality: number
 }
 
+export interface RelaySafetyActionEvent {
+  v: 1
+  t: number
+  type: 'safety_action'
+  event_id: string
+  session: string
+  drone_id: DroneId
+  connection_epoch: number
+  reason: 'link_loss'
+  action: 'hold' | 'failsafe'
+  loss_behavior: 'hold' | 'failsafe'
+}
+
 export type RelayServerEvent =
   | RelayAcknowledgementEvent
   | RelayAuthAcceptedEvent
@@ -366,6 +379,7 @@ export type RelayServerEvent =
   | RelayMembershipEvent
   | RelayRefusalEvent
   | RelayStateEvent
+  | RelaySafetyActionEvent
   | RelayTelemetryEvent
 
 export interface RelayAuthFrame {
@@ -590,6 +604,19 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       return null
     }
     return value as unknown as RelayTelemetryEvent
+  }
+
+  if (value.type === 'safety_action') {
+    if (
+      !isDroneId(value.drone_id) ||
+      !isNonNegativeInteger(value.connection_epoch) ||
+      value.reason !== 'link_loss' ||
+      !['hold', 'failsafe'].includes(String(value.action)) ||
+      !['hold', 'failsafe'].includes(String(value.loss_behavior))
+    ) {
+      return null
+    }
+    return value as unknown as RelaySafetyActionEvent
   }
 
   if (value.type === 'acknowledgement') {
