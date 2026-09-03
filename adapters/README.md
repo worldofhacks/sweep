@@ -9,7 +9,7 @@ The accepted MVP has two concrete implementations (PRD Appendix C):
 | Package | Target | Milestone |
 |---|---|---|
 | `sim/` | Kinematic deterministic flight and camera fixtures for registry sizes 1–4 now, then 4–6; the first-class CI implementation before hardware | M1 |
-| DJI Mini 3 bridge | one Android node per Mini 3 and RC-N1 pair via the DJI Mobile SDK, proven on one exact hardware combination before duplication | M2 |
+| `dji_mini3/` | one Android node per Mini 3 and RC-N1 pair via the DJI Mobile SDK, proven on one exact hardware combination before duplication | M1.9 |
 
 ## Frozen protocols and dispatch
 

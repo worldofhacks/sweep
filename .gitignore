@@ -7,6 +7,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.gradle/
 
 # Node (console)
 node_modules/
@@ -15,6 +16,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+adapters/dji_mini3/pilot-app/local.properties
 
 # OS and editors
 .DS_Store

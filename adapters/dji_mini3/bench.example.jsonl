@@ -1,0 +1,9 @@
+{"type":"command","sent_at_ms":1000,"round_trip_ms":50}
+{"type":"command","sent_at_ms":1050,"round_trip_ms":50}
+{"type":"command_rejection","reason":"expired"}
+{"type":"command_drop","count":0}
+{"type":"telemetry","observed_at_ms":100}
+{"type":"telemetry","observed_at_ms":200}
+{"type":"video","captured_at_ms":100,"controller_at_ms":220,"decoded_at_ms":245,"delivered_at_ms":280}
+{"type":"video_drop","count":0}
+{"type":"phone","thermal_c":39.5,"throttled":false,"battery_draw_ma":1200}
