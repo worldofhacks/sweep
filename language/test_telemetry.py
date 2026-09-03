@@ -82,6 +82,9 @@ def test_langfuse_tracer_records_one_generation_and_score_without_text() -> None
             "state_digest": "state-1",
             "outcome": "plan",
             "source": "claude",
+            "origin": "anthropic",
+            "prompt_schema_version": "schema-1",
+            "cassette_digest": "a" * 64,
             "grounded": 1,
             "input_units": 20,
             "output_units": 8,
@@ -93,6 +96,13 @@ def test_langfuse_tracer_records_one_generation_and_score_without_text() -> None
 
     assert client.observation_calls[0]["trace_context"] == {"trace_id": "trace-trace-1"}
     assert client.observation.updates[0]["usage_details"] == {"input": 20, "output": 8}
+    assert client.observation.updates[0]["metadata"] == {
+        "provider_latency_ms": 12,
+        "elapsed_ms": 13,
+        "origin": "anthropic",
+        "prompt_schema_version": "schema-1",
+        "cassette_digest": "a" * 64,
+    }
     assert client.observation.scores[0] == {"name": "grounded", "value": 1, "comment": None}
     assert client.observation.ended is True
     assert client.flushes == 1

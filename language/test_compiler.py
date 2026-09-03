@@ -21,7 +21,11 @@ from language.compiler import (
     SessionCompilerAudit,
     TranscriptCompiler,
 )
-from language.contracts import CompilerReason, OutcomeKind, build_grounding_facts
+from language.contracts import (
+    CompilerReason,
+    OutcomeKind,
+    build_grounding_facts,
+)
 from language.transport import (
     PINNED_COMPILER_MODEL,
     PROMPT_SCHEMA_VERSION,
@@ -30,6 +34,7 @@ from language.transport import (
     ReplayTransport,
     TransportError,
 )
+from planner.models import TranslationGrounding, TranslationPolicy
 from relay.audit import SessionAuditLog
 from relay.intent_v1 import IntentName, IntentV1
 from tests.autonomy_fixtures import make_snapshot, make_stack, planning_config, replace_aircraft
@@ -57,6 +62,18 @@ class FailingTracer:
 class FailingAudit:
     def append(self, event: object) -> None:
         raise RuntimeError("disk unavailable")
+
+
+class FailOnEventAudit(InMemoryAuditSink):
+    def __init__(self, event_name: str) -> None:
+        super().__init__()
+        self._event_name = event_name
+
+    def append(self, event: object) -> None:
+        assert isinstance(event, dict)
+        if event.get("event") == self._event_name:
+            raise RuntimeError("disk unavailable")
+        super().append(event)
 
 
 def _ack(case, intent_id: str, status: str = "completed") -> dict[str, object]:
@@ -196,7 +213,10 @@ def test_grounding_round_trip_preserves_language_control_context() -> None:
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
-        translation={"frame": "aircraft_relative", "step_m": 0.5},
+        translation=TranslationGrounding(
+            policy=TranslationPolicy(frame="aircraft_relative", step_m=0.5),
+            headings={1: 90.0},
+        ),
         qualified_voice_intents=("estop",),
     )
 
@@ -382,13 +402,15 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
     state = _state(case)
     state["selection"] = [1, 2]
     state["drones"] = [
-        {**drone, "heading_deg": 0.0 if drone["drone_id"] == 1 else 90.0}
+        {key: value for key, value in drone.items() if key != "heading_deg"}
         for drone in state["drones"]
     ]
     config = replace(
         planning_config(translation_frame="aircraft_relative"),
         translation_step_m=0.75,
     )
+    snapshot = replace_aircraft(make_snapshot(2), 2, heading_deg=90.0)
+    translation = config.translation_grounding(snapshot)
     outcome, plan = TranscriptCompiler(
         StaticResponseTransport(
             {
@@ -409,13 +431,18 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
-        translation=config.translation_grounding(),
+        translation=translation,
         now_ms=case.now_ms,
     )
     assert outcome.kind is OutcomeKind.PLAN
     assert plan is not None
     emitted: list[IntentV1] = []
-    ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()).confirm_next(
+    ConfirmedPlan(
+        plan,
+        session="language-eval",
+        audit=InMemoryAuditSink(),
+        execution_translation=translation,
+    ).confirm_next(
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -424,7 +451,6 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
         emit=emitted.append,
     )
     assert emitted[0].args == {"dx": 1, "dy": 0}
-    snapshot = replace_aircraft(make_snapshot(2), 2, heading_deg=90.0)
     controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
 
     result = controller.execute(emitted[0], snapshot)
@@ -439,6 +465,18 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
     }
     assert targets == {1: (0.75, 0.0), 2: (2.0, 0.75)}
 
+    with pytest.raises(ValueError, match="execution translation policy"):
+        ConfirmedPlan(
+            plan,
+            session="language-eval",
+            audit=InMemoryAuditSink(),
+            execution_translation={
+                "frame": "aircraft_relative",
+                "step_m": 2.0,
+                "headings": {1: 0.0, 2: 90.0},
+            },
+        )
+
 
 @pytest.mark.parametrize("missing", ["translation", "heading"])
 def test_translate_requires_declared_frame_step_and_selected_aircraft_headings(missing) -> None:
@@ -448,11 +486,17 @@ def test_translate_requires_declared_frame_step_and_selected_aircraft_headings(m
     for drone in drones:
         drone["heading_deg"] = 0.0
     state["drones"] = drones
-    translation = {"frame": "aircraft_relative", "step_m": 0.5}
+    translation: object = TranslationGrounding(
+        policy=TranslationPolicy(frame="aircraft_relative", step_m=0.5),
+        headings={1: 0.0, 2: 0.0},
+    )
     if missing == "translation":
         translation = None
     else:
-        drones[0].pop("heading_deg")
+        translation = TranslationGrounding(
+            policy=TranslationPolicy(frame="aircraft_relative", step_m=0.5),
+            headings={2: 0.0},
+        )
     outcome, plan = TranscriptCompiler(
         StaticResponseTransport(
             {
@@ -474,6 +518,34 @@ def test_translate_requires_declared_frame_step_and_selected_aircraft_headings(m
         capability_version=case.capability_version,
         rooms=case.rooms,
         translation=translation,
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
+
+
+def test_flight_intent_requires_selected_aircraft_flight_capability() -> None:
+    case = _case("ordered-select-and-takeoff")
+    state = _state(case)
+    state["selection"] = [1]
+    state["drones"] = [
+        {**drone, "adapter_capabilities": []} if drone["drone_id"] == 1 else drone
+        for drone in state["drones"]
+    ]
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [{"name": "takeoff", "args": {}, "selection": [1], "mode": "indoor"}],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "Take off.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
         now_ms=case.now_ms,
     )
 
@@ -899,6 +971,16 @@ def test_state_change_blocks_confirmation_without_emission() -> None:
     assert emitted == []
     assert pending.remaining == 1
 
+    with pytest.raises(ConfirmationError, match="closed"):
+        pending.confirm_next(
+            case.relay_state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 2,
+            intent_id="confirmed-2",
+            emit=emitted.append,
+        )
+
 
 def test_newer_equivalent_state_allows_confirmation() -> None:
     case, (_outcome, plan) = _compile("hold-current-selection")
@@ -1096,7 +1178,7 @@ def test_compiler_rejects_incompatible_flight_sequences(names: tuple[str, str]) 
     assert plan is None
 
 
-def test_confirmation_revalidates_next_step_against_actual_terminal_flight_state() -> None:
+def test_confirmation_uses_actual_terminal_flight_state_for_next_step() -> None:
     case = _case("ordered-select-and-takeoff")
     state = {**case.relay_state, "armed": True, "selection": [1]}
     state["drones"] = [{**drone, "heading_deg": 0.0} for drone in state["drones"]]
@@ -1119,11 +1201,22 @@ def test_confirmation_revalidates_next_step_against_actual_terminal_flight_state
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
-        translation={"frame": "aircraft_relative", "step_m": 0.5},
+        translation=TranslationGrounding(
+            policy=TranslationPolicy(frame="aircraft_relative", step_m=0.5),
+            headings={1: 0.0},
+        ),
         now_ms=case.now_ms,
     )
     assert plan is not None
-    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    pending = ConfirmedPlan(
+        plan,
+        session="language-eval",
+        audit=InMemoryAuditSink(),
+        execution_translation=TranslationGrounding(
+            policy=TranslationPolicy(frame="aircraft_relative", step_m=0.5),
+            headings={1: 0.0},
+        ),
+    )
     pending.confirm_next(
         state,
         capability_version=case.capability_version,
@@ -1133,6 +1226,10 @@ def test_confirmation_revalidates_next_step_against_actual_terminal_flight_state
         emit=lambda _intent: None,
     )
     unchanged = {**state, "t": case.now_ms + 2, "event_id": "state-after-takeoff"}
+    unchanged["drones"] = [
+        {**drone, "flight_state": "hovering"} if drone["drone_id"] == 1 else drone
+        for drone in unchanged["drones"]
+    ]
     pending.acknowledge(
         _lifecycle(case, "takeoff-1", "completed", source="autonomy"),
         unchanged,
@@ -1141,15 +1238,16 @@ def test_confirmation_revalidates_next_step_against_actual_terminal_flight_state
         now_ms=case.now_ms + 2,
     )
 
-    with pytest.raises(ConfirmationError, match="current flight state"):
-        pending.confirm_next(
-            unchanged,
-            capability_version=case.capability_version,
-            rooms=case.rooms,
-            now_ms=case.now_ms + 3,
-            intent_id="translate-1",
-            emit=lambda _intent: None,
-        )
+    emitted: list[IntentV1] = []
+    pending.confirm_next(
+        unchanged,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 3,
+        intent_id="translate-1",
+        emit=emitted.append,
+    )
+    assert [intent.name for intent in emitted] == [IntentName.TRANSLATE]
 
 
 def test_capture_id_is_minted_outside_model_output() -> None:
@@ -1229,6 +1327,16 @@ def test_durable_plan_record_rejects_tampered_authorization_fields(field, tamper
     assert plan is not None
     record = plan.audit_record()
     record[field] = tampered_value
+
+    with pytest.raises(ValueError, match="digest does not match"):
+        CompiledPlan.from_audit_event(record)
+
+
+def test_durable_plan_record_rejects_tampered_original_state_time() -> None:
+    _case_value, (_outcome, plan) = _compile("hold-current-selection")
+    assert plan is not None
+    record = plan.audit_record()
+    record["facts"]["state_time_ms"] += 1
 
     with pytest.raises(ValueError, match="digest does not match"):
         CompiledPlan.from_audit_event(record)
@@ -1434,6 +1542,76 @@ def test_terminal_state_mismatch_closes_plan_before_retry() -> None:
     with pytest.raises(ConfirmationError, match="closed"):
         pending.acknowledge(
             _lifecycle(case, "select-1", "completed", source="autonomy"),
+            case.relay_state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 3,
+        )
+
+
+def test_takeoff_completion_requires_airborne_authoritative_state() -> None:
+    case = _case("ordered-select-and-takeoff")
+    state = {**_state(case), "selection": [1]}
+    response = {
+        "kind": "plan",
+        "intents": [{"name": "takeoff", "args": {}, "selection": [1], "mode": "indoor"}],
+    }
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(response), audit=InMemoryAuditSink()
+    ).compile(
+        "Take off.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    pending.confirm_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="takeoff-1",
+        emit=lambda _intent: None,
+    )
+
+    with pytest.raises(ConfirmationError, match="flight state"):
+        pending.acknowledge(
+            _lifecycle(case, "takeoff-1", "completed", source="autonomy"),
+            {**state, "t": case.now_ms + 2},
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 2,
+        )
+
+
+def test_progress_audit_failure_closes_plan() -> None:
+    case, (_outcome, plan) = _compile("hold-current-selection")
+    assert plan is not None
+    pending = ConfirmedPlan(
+        plan, session="language-eval", audit=FailOnEventAudit("intent_progress")
+    )
+    pending.confirm_next(
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="hold-1",
+        emit=lambda _intent: None,
+    )
+
+    with pytest.raises(ConfirmationError, match="audit"):
+        pending.acknowledge(
+            _lifecycle(case, "hold-1", "accepted", source="relay"),
+            case.relay_state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 2,
+        )
+    with pytest.raises(ConfirmationError, match="closed"):
+        pending.acknowledge(
+            _lifecycle(case, "hold-1", "completed", source="autonomy"),
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,

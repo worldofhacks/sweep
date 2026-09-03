@@ -18,6 +18,7 @@ from evals.language_corpus import (
 )
 from language.contracts import build_grounding_facts
 from language.transport import ModelRequest, RecordingTransport, ReplayTransport
+from planner.models import TranslationGrounding, TranslationPolicy
 
 
 def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) -> None:
@@ -33,7 +34,17 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
             translation=(
                 None
                 if case.translation_frame is None
-                else {"frame": case.translation_frame, "step_m": case.translation_step_m}
+                else TranslationGrounding(
+                    policy=TranslationPolicy(
+                        frame=case.translation_frame,
+                        step_m=case.translation_step_m,
+                    ),
+                    headings={
+                        drone["drone_id"]: drone["heading_deg"]
+                        for drone in case.relay_state["drones"]
+                        if "heading_deg" in drone
+                    },
+                )
             ),
             qualified_voice_intents=case.qualified_voice_intents,
         )
@@ -132,6 +143,30 @@ def test_loaded_corpus_is_deeply_immutable() -> None:
         case.relay_state["drones"][0]["selectable"] = False
     with pytest.raises(TypeError, match="immutable"):
         case.expected["kind"] = "refuse"
+    with pytest.raises(TypeError):
+        dict.__setitem__(case.expected, "kind", "refuse")
+
+
+def test_manifest_regrades_results_before_persisting(tmp_path) -> None:
+    cases = load_corpus()
+    responses = load_synthetic_responses(corpus=cases)
+    results = [
+        evaluate_case(case, StaticResponseTransport(responses[case.case_id])) for case in cases
+    ]
+    first = results[0]
+    tampered = replace(
+        first,
+        passed=True,
+        actual_intents=({"name": "estop", "args": {}, "selection": [], "mode": "indoor"},),
+    )
+    results[0] = tampered
+    output = tmp_path / "results.jsonl"
+
+    append_jsonl_run(results, output, run_id="tampered", corpus=cases)
+
+    rows = [json.loads(line) for line in output.read_text().splitlines()]
+    assert rows[0]["passed"] == 49
+    assert rows[1]["passed"] is False
 
 
 def test_default_corpus_is_pinned_to_the_reviewed_50_case_release(tmp_path) -> None:
@@ -295,7 +330,7 @@ def test_synthetic_provider_response_does_not_repair_model_supplied_capture_id(t
     assert result.actual_reason == "invalid_model_output"
 
 
-def test_wrong_gold_capture_id_is_not_replaced_during_grading() -> None:
+def test_generated_capture_id_is_compared_by_host_owned_shape() -> None:
     cases = load_corpus()
     responses = load_synthetic_responses(corpus=cases)
     capture = next(
@@ -303,15 +338,24 @@ def test_wrong_gold_capture_id_is_not_replaced_during_grading() -> None:
         for case in cases
         if any(intent["name"] == "capture_room" for intent in case.expected.get("intents", []))
     )
-    wrong_expected = json.loads(json.dumps(capture.expected))
-    wrong_expected["intents"][0]["args"]["capture_id"] = "wrong-gold-id"
-
+    semantic_expected = {
+        **capture.expected,
+        "intents": [
+            {
+                **capture.expected["intents"][0],
+                "args": {
+                    **capture.expected["intents"][0]["args"],
+                    "capture_id": "capture-semantic-reference",
+                },
+            }
+        ],
+    }
     result = evaluate_case(
-        replace(capture, expected=wrong_expected),
+        replace(capture, expected=semantic_expected),
         StaticResponseTransport(responses[capture.case_id]),
     )
 
-    assert not result.passed
+    assert result.passed
 
 
 def test_loader_rejects_duplicate_case_ids(tmp_path) -> None:

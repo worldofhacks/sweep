@@ -11,11 +11,46 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from math import dist, isfinite
 from types import MappingProxyType
+from typing import Literal
 
 from relay.intent_v1 import IntentName
 
 type JsonScalar = None | bool | int | float | str
 type JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationPolicy:
+    frame: Literal["aircraft_relative"]
+    step_m: float
+
+    def __post_init__(self) -> None:
+        if (
+            self.frame != "aircraft_relative"
+            or not _is_finite_number(self.step_m)
+            or self.step_m <= 0
+        ):
+            raise ValueError("translation policy requires a positive aircraft-relative step")
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationGrounding:
+    policy: TranslationPolicy
+    headings: Mapping[int, float]
+
+    def __post_init__(self) -> None:
+        normalized: dict[int, float] = {}
+        for drone_id, heading in self.headings.items():
+            if (
+                not isinstance(drone_id, int)
+                or isinstance(drone_id, bool)
+                or drone_id <= 0
+                or not _is_finite_number(heading)
+                or not 0 <= float(heading) < 360
+            ):
+                raise ValueError("translation headings must map aircraft IDs to degrees")
+            normalized[drone_id] = float(heading)
+        object.__setattr__(self, "headings", MappingProxyType(normalized))
 
 
 class MembershipState(StrEnum):

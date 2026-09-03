@@ -30,6 +30,7 @@ from language.transport import (
     TransportError,
     model_response_provenance_is_valid,
 )
+from planner.models import TranslationGrounding, TranslationPolicy
 from relay.audit import SessionAuditLog
 from relay.contracts import LifecycleStatus
 from relay.intent_v1 import AcceptedIntent, IntentV1, validate_intent
@@ -364,11 +365,19 @@ class ConfirmedPlan:
         *,
         session: str,
         audit: AuditSink,
+        execution_translation: object = None,
     ) -> None:
         if not session:
             raise ValueError("session must be non-empty")
         if session != compiled.facts.session:
             raise ValueError("session must match the compiled authoritative state")
+        if any(intent.name.value == "translate" for intent in compiled.intents):
+            if (
+                not isinstance(execution_translation, TranslationGrounding)
+                or execution_translation.policy.frame != compiled.facts.translation_frame
+                or execution_translation.policy.step_m != compiled.facts.translation_step_m
+            ):
+                raise ValueError("execution translation policy must match the compiled plan")
         self._compiled = compiled
         self._session = session
         self._next = 0
@@ -430,16 +439,24 @@ class ConfirmedPlan:
                 translation=(
                     None
                     if self._compiled.facts.translation_frame is None
-                    else {
-                        "frame": self._compiled.facts.translation_frame,
-                        "step_m": self._compiled.facts.translation_step_m,
-                    }
+                    else TranslationGrounding(
+                        policy=TranslationPolicy(
+                            frame=self._compiled.facts.translation_frame,
+                            step_m=self._compiled.facts.translation_step_m,
+                        ),
+                        headings={
+                            drone["drone_id"]: drone["heading_deg"]
+                            for drone in self._compiled.facts.drones
+                            if drone["heading_deg"] is not None
+                        },
+                    )
                 ),
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
             raise ConfirmationError("current state is invalid") from None
         if _authorization_digest(facts) != _authorization_digest(self._expected_facts):
+            self._terminal = True
             raise ConfirmationError("state or capabilities changed after preview")
         state_age_ms = now_ms - facts.state_time_ms
         if state_age_ms < 0 or state_age_ms > self._compiled.state_max_age_ms:
@@ -617,10 +634,17 @@ class ConfirmedPlan:
                 translation=(
                     None
                     if self._compiled.facts.translation_frame is None
-                    else {
-                        "frame": self._compiled.facts.translation_frame,
-                        "step_m": self._compiled.facts.translation_step_m,
-                    }
+                    else TranslationGrounding(
+                        policy=TranslationPolicy(
+                            frame=self._compiled.facts.translation_frame,
+                            step_m=self._compiled.facts.translation_step_m,
+                        ),
+                        headings={
+                            drone["drone_id"]: drone["heading_deg"]
+                            for drone in self._compiled.facts.drones
+                            if drone["heading_deg"] is not None
+                        },
+                    )
                 ),
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
@@ -657,15 +681,18 @@ class ConfirmedPlan:
         ):
             raise ConfirmationError("fleet capabilities changed during plan execution")
         if status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}:
-            self.audit.append(
-                {
-                    "event": "intent_progress",
-                    "correlation_id": self._compiled.correlation_id,
-                    "plan_digest": self._compiled.digest,
-                    "intent_id": self._awaiting_intent_id,
-                    "status": status.value,
-                }
-            )
+            try:
+                self.audit.append(
+                    {
+                        "event": "intent_progress",
+                        "correlation_id": self._compiled.correlation_id,
+                        "plan_digest": self._compiled.digest,
+                        "intent_id": self._awaiting_intent_id,
+                        "status": status.value,
+                    }
+                )
+            except Exception:
+                raise ConfirmationError("relay progress audit failed") from None
             return
         if status not in terminal_statuses:
             raise ConfirmationError("relay outcome status is invalid")
@@ -694,6 +721,8 @@ class ConfirmedPlan:
         expected_estop = True if emitted.name.value == "estop" else self._expected_facts.estop
         if facts.estop is not expected_estop:
             raise ConfirmationError("relay estop state does not match the accepted intent")
+        if not _terminal_postcondition_matches(emitted, self._expected_facts, facts):
+            raise ConfirmationError("relay flight state does not match the accepted intent")
         accepted_intent_id = self._awaiting_intent_id
         try:
             self.audit.append(
@@ -749,7 +778,7 @@ def _plan_digest(
     return hashlib.sha256(
         json.dumps(
             {
-                "facts": facts.state_digest,
+                "facts": facts.record_dict(),
                 "session": facts.session,
                 "capabilities": facts.capability_version,
                 "intents": [intent.semantic_dict() for intent in intents],
@@ -766,3 +795,22 @@ def _plan_digest(
             sort_keys=True,
         ).encode()
     ).hexdigest()
+
+
+def _terminal_postcondition_matches(
+    intent: ProposedIntent,
+    before: GroundingFacts,
+    after: GroundingFacts,
+) -> bool:
+    old = {int(drone["drone_id"]): drone["flight_state"] for drone in before.drones}
+    new = {int(drone["drone_id"]): drone["flight_state"] for drone in after.drones}
+    if intent.name.value == "takeoff":
+        return all(new.get(drone_id) in {"hovering", "moving"} for drone_id in intent.selection)
+    if intent.name.value in {"land", "land_all"}:
+        targets = intent.selection or tuple(old)
+        return all(new.get(drone_id) in {"landed", "disarmed"} for drone_id in targets)
+    if intent.name.value in {"translate", "come_home"}:
+        return all(new.get(drone_id) in {"hovering", "moving"} for drone_id in intent.selection)
+    if intent.name.value == "hold":
+        return all(new.get(drone_id) == "hovering" for drone_id in intent.selection)
+    return True

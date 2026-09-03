@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
+import time
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +34,13 @@ class StaticTransport:
             output_units=4,
             latency_ms=12,
         )
+
+
+def _record_in_process(cassette: str, transcript: str, start: object) -> None:
+    start.wait()
+    RecordingTransport(StaticTransport(), Path(cassette)).complete(
+        ModelRequest(transcript=transcript, facts={"selection": [1]})
+    )
 
 
 def test_replay_transport_returns_exact_recorded_response(tmp_path) -> None:
@@ -99,6 +109,36 @@ def test_recording_transport_round_trips_through_replay(tmp_path) -> None:
     assert replayed.cassette_digest == recorded.cassette_digest
 
 
+def test_recording_transport_serializes_writers_across_processes(tmp_path, monkeypatch) -> None:
+    cassette = tmp_path / "cassette.json"
+    original_load = RecordingTransport._load
+
+    def slow_load(self):
+        value = original_load(self)
+        time.sleep(0.05)
+        return value
+
+    monkeypatch.setattr(RecordingTransport, "_load", slow_load)
+    context = multiprocessing.get_context("fork")
+    start = context.Event()
+    workers = [
+        context.Process(target=_record_in_process, args=(str(cassette), transcript, start))
+        for transcript in ("hold", "land")
+    ]
+    for worker in workers:
+        worker.start()
+    start.set()
+    for worker in workers:
+        worker.join(timeout=5)
+        assert worker.exitcode == 0
+
+    body = json.loads(cassette.read_text())
+    assert set(body["entries"]) == {
+        request_key(ModelRequest(transcript="hold", facts={"selection": [1]})),
+        request_key(ModelRequest(transcript="land", facts={"selection": [1]})),
+    }
+
+
 def test_anthropic_transport_without_key_makes_no_request(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
@@ -119,6 +159,7 @@ def test_compiler_uses_active_pinned_model_and_strict_tool_schema(monkeypatch) -
 
         def json(self) -> dict[str, object]:
             return {
+                "model": PINNED_COMPILER_MODEL,
                 "stop_reason": "tool_use",
                 "content": [
                     {
@@ -181,6 +222,51 @@ def test_compiler_uses_active_pinned_model_and_strict_tool_schema(monkeypatch) -
         "maxItems",
         "uniqueItems",
     }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {
+            "model": "claude-opus-5",
+            "stop_reason": "tool_use",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "submit_compiler_outcome",
+                    "input": {"kind": "refuse", "reason": "unknown_reference"},
+                }
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+        {
+            "model": PINNED_COMPILER_MODEL,
+            "stop_reason": "tool_use",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "submit_compiler_outcome",
+                    "input": {"kind": "refuse", "reason": "unknown_reference"},
+                }
+            ],
+            "usage": [],
+        },
+    ],
+)
+def test_anthropic_transport_rejects_invalid_response_envelope(monkeypatch, body) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return body
+
+    monkeypatch.setattr("language.transport.httpx.post", lambda *_args, **_kwargs: Response())
+
+    with pytest.raises(TransportError):
+        AnthropicTransport(api_key="test-key").complete(
+            ModelRequest(transcript="hold", facts={"session": "test-session"})
+        )
 
 
 def test_replay_binds_payload_and_digest_to_one_immutable_read(tmp_path, monkeypatch) -> None:
