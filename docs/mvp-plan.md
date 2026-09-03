@@ -204,8 +204,8 @@ Done when: across five complete mapped-route rehearsals, every aircraft remains 
 
 **M3.1: Establish media ingest and recording**
 Capability area: Platform with Interaction integration. Dependencies: M1.1 and one camera source. The M2.0 slice also depends on M2.2.
-Scope: first keep one selected live feed visible through the M2.0 run. After the checkpoint, configure MediaMTX ingest, WebRTC and MJPEG serving, recording, stream naming, and latency measurement.
-Done when: M2.0 can display the selected feed throughout its run. Full M3.1 exits when one source also streams and records reliably within the latency budget, then four Mini 3 nodes meet the same gate together. Five-to-six-source hardware remains Future work.
+Scope: first keep one selected live feed visible through the M2.0 run. Configure authenticated MediaMTX ingest, WebRTC serving with an HLS fallback, recording and retention, stream naming, readiness projection, and latency measurement. Source-independent work starts with a deterministic RTSP source and a laptop webcam. DJI compatibility and physical multi-source evidence follow the hardware path.
+Done when: M2.0 can display the selected feed throughout its run. Full M3.1 exits when one source also streams and records reliably, WebRTC meets its latency budget, and HLS fallback latency is measured and reported. The HLS threshold is an open owner decision. Claims for four physical sources remain blocked until hardware evidence exists; five-to-six-source hardware remains Future work.
 
 **M3.2: Build the camera and sensor dashboard**
 Capability area: Interaction. Dependencies: M1.3, M3.1.
@@ -300,7 +300,7 @@ Done when: each selected production concern has an owner, a measurable gate, and
 | Drone scaling and known-map autonomous multi-room traversal and capture | M1.E proves capture at one approved hover pose. Translation and fleet scaling proceed through M2.0; M3 proves known-map traversal on one aircraft before two. Every safety-relevant planner or adapter change receives cross-review. |
 | Cross-stack review, end-to-end acceptance, and defect margin | Safety-path and shared-contract reviews cannot be self-approved or merged concurrently. |
 
-After M2.0, the freely parallelizable pieces are MediaMTX recording and multi-stream setup, detector prototyping, human room-project UX, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, camera capability and capture-bundle contracts, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
+Source-independent MediaMTX ingest, recording, and playback work starts after M1.1 with a deterministic RTSP source or laptop webcam. After M2.0, the other freely parallelizable pieces are multi-stream DJI integration, detector prototyping, human room-project UX, corpus authoring, and compiler evaluation fixtures after their input contracts freeze. Safety- or contract-gated pieces are Intent v1 and plan-schema changes, relay state and detection-event shapes, camera capability and capture-bundle contracts, `validate_plan` and ordered emission, arbiter or e-stop changes, and safety-relevant planner work. Each gated change has one named change owner and a different reviewer.
 
 The parallel lanes after M2.0:
 

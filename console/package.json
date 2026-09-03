@@ -8,9 +8,11 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "serve": "node scripts/serve-console.mjs",
     "test": "vitest run"
   },
   "dependencies": {
+    "hls.js": "1.6.13",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
@@ -28,6 +30,7 @@
     "eslint-plugin-react-refresh": "^0.5.4",
     "globals": "^17.11.0",
     "jsdom": "^30.0.1",
+    "playwright": "^1.62.1",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.67.0",
     "vite": "^8.2.2",

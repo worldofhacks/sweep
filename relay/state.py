@@ -80,6 +80,7 @@ class _AircraftRecord:
     telemetry: TelemetryV1 | None = None
     disconnected_at: int | None = None
     history: list[dict[str, object]] = field(default_factory=list)
+    video: dict[str, object] | None = None
 
 
 class FleetRegistry:
@@ -145,6 +146,7 @@ class FleetRegistry:
                 record.membership = Membership.REGISTERED
                 record.updated_at = request.t
                 record.identity_verified = True
+                record.video = None
                 record.readiness_declared = False
                 record.home_pose = None
                 record.control_authority = False
@@ -390,6 +392,28 @@ class FleetRegistry:
         with self._lock:
             self._armed = value
 
+    def set_media_projection(self, projection: dict[int, dict[str, object]]) -> None:
+        with self._lock:
+            for drone_id, video in projection.items():
+                record = self._aircraft.get(drone_id)
+                if record is None:
+                    continue
+                if set(video) != {"status", "last_frame_at"}:
+                    raise ValueError(
+                        "media projection must contain exactly status and last_frame_at"
+                    )
+                status = video["status"]
+                last_frame_at = video["last_frame_at"]
+                if status not in {"live", "offline", "unreported"}:
+                    raise ValueError("media status must be live, offline, or unreported")
+                if last_frame_at is not None and (
+                    isinstance(last_frame_at, bool)
+                    or not isinstance(last_frame_at, int)
+                    or last_frame_at < 0
+                ):
+                    raise ValueError("last_frame_at must be a non-negative integer or null")
+                record.video = {"status": status, "last_frame_at": last_frame_at}
+
     def state_event(self, *, session: str, t: int, event_id: str) -> dict[str, object]:
         with self._lock:
             drones = [self._aircraft_state(record, t) for record in self._aircraft.values()]
@@ -510,7 +534,7 @@ class FleetRegistry:
         battery = None if telemetry is None else telemetry["battery"]
         link = None if telemetry is None else telemetry["link"]
         pos_quality = None if telemetry is None else telemetry["pos_quality"]
-        return {
+        state: dict[str, object] = {
             "drone_id": record.drone_id,
             "connection_epoch": record.connection_epoch,
             "membership": record.membership.value,
@@ -530,6 +554,9 @@ class FleetRegistry:
             "telemetry": telemetry,
             "membership_history": _json_copy(record.history),
         }
+        if record.video is not None:
+            state["video"] = _json_copy(record.video)
+        return state
 
     @staticmethod
     def _remember(

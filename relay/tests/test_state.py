@@ -227,6 +227,24 @@ def test_graceful_leave_has_observable_leaving_then_disconnected_states() -> Non
     assert disconnected.membership is Membership.DISCONNECTED
 
 
+def test_media_projection_is_closed_and_resets_on_rejoin() -> None:
+    registry = FleetRegistry(telemetry_freshness_ms=1_000)
+    _join(registry, 1, "join-1")
+
+    registry.set_media_projection({1: {"status": "live", "last_frame_at": 1_000}})
+    live = registry.state_event(session=SESSION, t=1_001, event_id="state-live")
+    registry.disconnect(drone_id=1, connection_epoch=1, t=1_002, event_id="lost")
+    _join(registry, 1, "join-2")
+    rejoined = registry.state_event(session=SESSION, t=1_003, event_id="state-rejoined")
+
+    assert live["drones"][0]["video"] == {"status": "live", "last_frame_at": 1_000}
+    assert "video" not in rejoined["drones"][0]
+    with pytest.raises(ValueError, match="exactly status and last_frame_at"):
+        registry.set_media_projection(
+            {1: {"status": "live", "last_frame_at": 1_000, "url": "http://example.test"}}
+        )
+
+
 def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
     _join(registry, 1, "join-1")

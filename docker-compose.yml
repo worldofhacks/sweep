@@ -11,11 +11,25 @@ services:
     container_name: sweep-mediamtx
     ports:
       - "8554:8554"                 # RTSP ingest from drones and cameras
-      - "8000-8001:8000-8001/udp"   # RTSP RTP/RTCP for publishers that negotiate UDP (ffmpeg's default)
-      - "8889:8889"                 # WebRTC (WHIP publish, WHEP play) for the console
-      - "8189:8189/udp"             # WebRTC ICE
-      - "8888:8888"                 # HLS
+      - "127.0.0.1:8889:8889"       # local WHEP playback for the console
+      - "127.0.0.1:8189:8189/udp"   # local WebRTC ICE
+      - "127.0.0.1:8888:8888"       # local low-latency HLS fallback
+      - "127.0.0.1:9997:9997"       # local readiness and recording API
+      - "127.0.0.1:9998:9998"       # local Prometheus metrics
+    environment:
+      MTX_AUTHINTERNALUSERS_0_PASS: ${SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_1:?Set SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_1}
+      MTX_AUTHINTERNALUSERS_1_PASS: ${SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_2:?Set SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_2}
+      MTX_AUTHINTERNALUSERS_2_PASS: ${SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_3:?Set SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_3}
+      MTX_AUTHINTERNALUSERS_3_PASS: ${SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_4:?Set SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_4}
+      MTX_AUTHINTERNALUSERS_4_PASS: ${SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_5:?Set SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_5}
+      MTX_AUTHINTERNALUSERS_5_PASS: ${SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_6:?Set SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_6}
+      MTX_AUTHINTERNALUSERS_6_PASS: ${SWEEP_MEDIA_READ_PASSWORD:?Set SWEEP_MEDIA_READ_PASSWORD}
+      MTX_AUTHINTERNALUSERS_7_PASS: ${SWEEP_MEDIA_ADMIN_PASSWORD:?Set SWEEP_MEDIA_ADMIN_PASSWORD}
+      MTX_WEBRTCADDITIONALHOSTS: ${SWEEP_MEDIA_WEBRTC_HOSTS:-127.0.0.1}
+      MTX_WEBRTCALLOWORIGINS: ${SWEEP_CONSOLE_ORIGIN:-http://localhost:5173}
+      MTX_HLSALLOWORIGINS: ${SWEEP_CONSOLE_ORIGIN:-http://localhost:5173}
+      MTX_PATHDEFAULTS_RECORDSEGMENTDURATION: ${SWEEP_MEDIA_RECORD_SEGMENT_DURATION:-5s}
+      MTX_PATHDEFAULTS_RECORDDELETEAFTER: ${SWEEP_MEDIA_RECORD_RETENTION:-24h}
     volumes:
-      # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
       - ./media/mediamtx.yml:/mediamtx.yml:ro
-      # M3: add ./recordings:/recordings and set recordPath in media/mediamtx.yml.
+      - ./recordings:/recordings

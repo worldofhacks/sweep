@@ -49,3 +49,40 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
+
+  media:
+    name: media
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: console/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+      - name: Generate ephemeral credentials
+        run: |
+          for id in 1 2 3 4 5 6; do
+            echo "SWEEP_MEDIA_PUBLISH_PASSWORD_DRONE_${id}=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          done
+          echo "SWEEP_MEDIA_READ_PASSWORD=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "SWEEP_MEDIA_ADMIN_PASSWORD=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "SWEEP_MEDIA_RECORD_SEGMENT_DURATION=1s" >> "$GITHUB_ENV"
+          echo "SWEEP_MEDIA_RECORD_RETENTION=2s" >> "$GITHUB_ENV"
+      - run: uv sync --locked
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pnpm --dir console install --frozen-lockfile
+      - run: pnpm --dir console exec playwright install --with-deps chromium
+      - run: docker compose up -d mediamtx
+      - run: uv run python -m media.smoke --assert-retention
+      - name: Stop media services
+        if: always()
+        run: docker compose down --volumes

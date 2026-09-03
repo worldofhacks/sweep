@@ -27,6 +27,11 @@ class RelaySettings:
     future_clock_skew_ms: int = 1_000
     telemetry_freshness_ms: int = 1_000
     fanout_hz: int = 10
+    media_api_url: str | None = None
+    media_admin_username: str = "sweep-admin"
+    media_admin_password: str | None = field(default=None, repr=False)
+    media_stale_after_ms: int = 1_000
+    media_poll_interval_ms: int = 200
 
     def __post_init__(self) -> None:
         if len(self.relay_token) < 32:
@@ -36,6 +41,10 @@ class RelaySettings:
                 raise SettingsError("adapter IDs must be positive and keys at least 32 characters")
         if self.fanout_hz != 10:
             raise SettingsError("state fan-out is frozen at 10 Hz")
+        if (self.media_api_url is None) != (self.media_admin_password is None):
+            raise SettingsError("MediaMTX API URL and admin password must be configured together")
+        if self.media_stale_after_ms <= 0 or self.media_poll_interval_ms <= 0:
+            raise SettingsError("media freshness and polling intervals must be positive")
         RelayLimits(
             intent_max_age_ms=self.intent_max_age_ms,
             transport_event_max_age_ms=self.transport_event_max_age_ms,
@@ -50,6 +59,7 @@ class RelaySettings:
         if not token:
             raise SettingsError("SWEEP_RELAY_TOKEN is required")
         adapter_keys = _adapter_keys(values.get("SWEEP_ADAPTER_KEYS_JSON", "{}"))
+        media_password = values.get("SWEEP_MEDIA_ADMIN_PASSWORD") or None
         return cls(
             relay_token=token.encode(),
             adapter_keys=adapter_keys,
@@ -72,6 +82,21 @@ class RelaySettings:
             telemetry_freshness_ms=_positive_integer(
                 values.get("SWEEP_TELEMETRY_FRESHNESS_MS", "1000"),
                 "SWEEP_TELEMETRY_FRESHNESS_MS",
+            ),
+            media_api_url=(
+                values.get("SWEEP_MEDIA_API_URL", "http://127.0.0.1:9997")
+                if media_password
+                else None
+            ),
+            media_admin_username=values.get("SWEEP_MEDIA_ADMIN_USERNAME", "sweep-admin"),
+            media_admin_password=media_password,
+            media_stale_after_ms=_positive_integer(
+                values.get("SWEEP_MEDIA_STALE_AFTER_MS", "1000"),
+                "SWEEP_MEDIA_STALE_AFTER_MS",
+            ),
+            media_poll_interval_ms=_positive_integer(
+                values.get("SWEEP_MEDIA_POLL_INTERVAL_MS", "200"),
+                "SWEEP_MEDIA_POLL_INTERVAL_MS",
             ),
         )
 

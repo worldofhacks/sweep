@@ -10,6 +10,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from relay.app import RelayRuntime, create_app
 from relay.auth import Principal
+from relay.contracts import parse_membership_request
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
     ADAPTER_KEY,
@@ -103,6 +104,35 @@ def test_first_frame_authentication_precedes_state_and_intent_results(
     assert replay.status_code == 200
     assert all(record["event"]["type"] != "auth.accepted" for record in replay.json()["events"])
     assert CONSOLE_KEY.decode() not in replay.text
+
+
+def test_refresh_media_projection_updates_the_session_state_envelope(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    class Observer:
+        async def observe(self, *, observed_at_ms: int) -> dict[int, dict[str, object]]:
+            assert observed_at_ms == clock.value
+            return {1: {"status": "live", "last_frame_at": observed_at_ms}}
+
+    runtime = RelayRuntime(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        media_observer=Observer(),  # type: ignore[arg-type]
+    )
+    session = runtime.session(SESSION)
+    session.registry.apply_join(
+        parse_membership_request(membership_payload(action="join", event_id="join-media"))
+    )
+
+    asyncio.run(runtime.refresh_media_projection())
+
+    state = session.current_state()
+    assert state["type"] == "state"
+    assert state["drones"][0]["video"] == {
+        "status": "live",
+        "last_frame_at": clock.value,
+    }
 
 
 def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(

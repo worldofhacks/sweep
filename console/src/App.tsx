@@ -10,11 +10,15 @@ import {
   type RequestRecord,
 } from './control/state'
 import type { CapturePattern, DroneId, RelayAircraftState } from './relay/contract'
+import { LiveMedia, type MediaSession } from './media/LiveMedia'
+import type { MediaRuntimeConfiguration } from './media/playback'
 
 interface AppProps {
   sessionId: string
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
+  mediaConfiguration?: MediaRuntimeConfiguration
+  createMediaSession?: () => MediaSession
 }
 
 const MODULES = [
@@ -26,7 +30,13 @@ const MODULES = [
   ['Configuration', 'later'],
 ] as const
 
-export default function App({ sessionId, clients, intentDependencies }: AppProps) {
+export default function App({
+  sessionId,
+  clients,
+  intentDependencies,
+  mediaConfiguration,
+  createMediaSession,
+}: AppProps) {
   const [roomId, setRoomId] = useState('room-01')
   const previewRef = useRef<HTMLElement>(null)
   const {
@@ -360,7 +370,11 @@ export default function App({ sessionId, clients, intentDependencies }: AppProps
                 meta={selectedFeed ? formatDroneId(selectedFeed.drone_id) : 'No feed selected'}
                 id="feed-title"
               />
-              <FeedSlot drone={selectedFeed} />
+              <FeedSlot
+                drone={selectedFeed}
+                mediaConfiguration={mediaConfiguration}
+                createMediaSession={createMediaSession}
+              />
             </section>
 
             <section className="panel request-panel" aria-labelledby="request-title">
@@ -527,7 +541,15 @@ function Metric({ label, value }: { label: string; value: number | null }) {
   )
 }
 
-function FeedSlot({ drone }: { drone: RelayAircraftState | null }) {
+function FeedSlot({
+  drone,
+  mediaConfiguration,
+  createMediaSession,
+}: {
+  drone: RelayAircraftState | null
+  mediaConfiguration?: MediaRuntimeConfiguration
+  createMediaSession?: () => MediaSession
+}) {
   if (!drone) {
     return (
       <div className="feed-empty">
@@ -537,11 +559,13 @@ function FeedSlot({ drone }: { drone: RelayAircraftState | null }) {
       </div>
     )
   }
-  if (drone.video?.status === 'live' && drone.video.url) {
+  if (drone.video?.status === 'live' && mediaConfiguration) {
     return (
-      <video className="live-video" controls muted aria-label={`Live feed for ${formatDroneId(drone.drone_id)}`}>
-        <source src={drone.video.url} />
-      </video>
+      <LiveMedia
+        droneId={drone.drone_id}
+        configuration={mediaConfiguration}
+        createSession={createMediaSession}
+      />
     )
   }
   return (
@@ -551,6 +575,7 @@ function FeedSlot({ drone }: { drone: RelayAircraftState | null }) {
       <p>
         Stream {drone.video?.status ?? 'unreported'}
         {drone.video?.last_frame_at ? ` · last frame ${formatTime(drone.video.last_frame_at)}` : ''}
+        {drone.video?.status === 'live' && !mediaConfiguration ? ' · playback not configured' : ''}
       </p>
     </div>
   )

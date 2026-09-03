@@ -41,3 +41,30 @@ disconnected and network controls are unavailable.
 For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
 development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build
 cannot enable it. It is a UI/contract fixture, not acceptance evidence and not a flight simulator.
+
+## Media bootstrap
+
+The console fetches `/runtime-config.json` before rendering media. The response carries the WHEP
+and HLS origins plus the read-only MediaMTX credential; those values are never compiled into the
+Vite bundle. Build and serve the production assets with the runtime endpoint:
+
+```bash
+pnpm build
+SWEEP_MEDIA_WEBRTC_ORIGIN=http://127.0.0.1:8889 \
+SWEEP_MEDIA_HLS_ORIGIN=http://127.0.0.1:8888 \
+SWEEP_MEDIA_READ_USERNAME=sweep-reader \
+SWEEP_MEDIA_READ_PASSWORD="$SWEEP_MEDIA_READ_PASSWORD" \
+pnpm serve
+```
+
+The development server exposes the same endpoint contract from those environment variables. A
+missing or invalid endpoint leaves playback disabled while preserving the rest of the console. The
+production server returns 503 from the runtime endpoint when media is not configured and continues
+to serve the flight controls without exposing a partial credential.
+
+`SWEEP_CONSOLE_BIND_HOST` and `SWEEP_CONSOLE_PORT` select the local listener.
+`SWEEP_CONSOLE_ORIGIN` is the canonical browser-visible HTTP or HTTPS origin. Omit a protocol's
+default port (`:80` or `:443`) because browsers omit it from the `Origin` header. The production
+server accepts only that origin's Host authority and does not trust forwarded-host headers. Docker
+Compose gives the exact same origin to MediaMTX for WHEP and HLS CORS. A trusted TLS proxy may
+therefore preserve the public Host header while forwarding to a loopback listener on another port.

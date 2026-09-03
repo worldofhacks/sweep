@@ -515,6 +515,10 @@ class RelaySession:
             self.audit_log.append(state)
             return state
 
+    def update_media_projection(self, projection: dict[int, dict[str, object]]) -> None:
+        with self._lock:
+            self.registry.set_media_projection(projection)
+
     def replay(self, *, after_sequence: int = 0) -> dict[str, object]:
         records = self.audit_log.replay(after_sequence=after_sequence)
         return {

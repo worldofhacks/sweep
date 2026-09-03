@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "status": "pending",
+  "reason": "camera_unavailable_on_build_vps",
+  "created_at": null,
+  "source": "laptop_webcam",
+  "stream": "drone1",
+  "whep": {
+    "target_ms": 300,
+    "samples": [],
+    "report": null
+  },
+  "hls": {
+    "target_ms": null,
+    "samples": [],
+    "report": null
+  },
+  "recording": null
+}

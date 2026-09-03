@@ -42,6 +42,10 @@ console:
 media:
     docker compose up mediamtx
 
+# Exercise one authenticated deterministic source against a running MediaMTX instance
+media-smoke:
+    uv run python -m media.smoke
+
 # Requires a prior: glab auth login --hostname labs.gauntletai.com
 # Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main
 gitlab-remote:

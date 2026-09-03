@@ -1,27 +1,76 @@
-# MediaMTX configuration for Sweep (PRD section 5.7).
-# Streams are named by drone id, f"drone{id}": publish to rtsp://<ground-station>:8554/drone1 ... drone6.
-# The console plays them over WebRTC (WHEP) at http://<ground-station>:8889/<name>/whep
-# and over HLS at http://<ground-station>:8888/<name>/index.m3u8 (the bare /<name>/ URL is the built-in player).
-# Every parameter not listed here keeps the MediaMTX default.
+# Streams use drone1 through drone6. Start this configuration through Docker Compose so
+# environment-backed credentials replace the disabled placeholder password hashes.
 
 logLevel: info
+logStructured: true
 
-# Serve only what the console uses; every other protocol stays off.
 rtsp: yes
+rtspTransports: [tcp]
+rtspAuthMethods: [digest]
 webrtc: yes
+webrtcAllowOrigins: ["http://localhost:5173"]
 hls: yes
+hlsAllowOrigins: ["http://localhost:5173"]
+hlsAlwaysRemux: yes
+hlsVariant: lowLatency
 rtmp: no
 srt: no
 moq: no
 
-# Inside Docker, MediaMTX advertises its container IP as an ICE candidate. Set this to the
-# ground-station's LAN IP before WebRTC playback from another machine (M3).
-# webrtcAdditionalHosts: []
+api: yes
+metrics: yes
 
-# Recording is switched on in M3: pathDefaults.record plus a mounted recordings volume.
+authMethod: internal
+authInternalUsers:
+  - user: sweep-publisher-1
+    pass: sha256:disabled
+    permissions:
+      - action: publish
+        path: drone1
+  - user: sweep-publisher-2
+    pass: sha256:disabled
+    permissions:
+      - action: publish
+        path: drone2
+  - user: sweep-publisher-3
+    pass: sha256:disabled
+    permissions:
+      - action: publish
+        path: drone3
+  - user: sweep-publisher-4
+    pass: sha256:disabled
+    permissions:
+      - action: publish
+        path: drone4
+  - user: sweep-publisher-5
+    pass: sha256:disabled
+    permissions:
+      - action: publish
+        path: drone5
+  - user: sweep-publisher-6
+    pass: sha256:disabled
+    permissions:
+      - action: publish
+        path: drone6
+  - user: sweep-reader
+    pass: sha256:disabled
+    permissions:
+      - action: read
+        path: ~^drone[1-6]$
+  - user: sweep-admin
+    pass: sha256:disabled
+    permissions:
+      - action: api
+      - action: metrics
 
-# M3 prerequisite: set authInternalUsers so publishing and reading need credentials;
-# the MediaMTX default lets anyone on the LAN publish or read every path.
+pathDefaults:
+  overridePublisher: no
+  record: yes
+  recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 5s
+  recordDeleteAfter: 24h
 
 paths:
-  all_others:
+  ~^drone[1-6]$: {}

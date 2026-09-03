@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import App from './App'
 import { UnavailableRelayClient } from './relay/client'
 import type { IntentV1 } from './relay/contract'
@@ -24,6 +24,41 @@ class FailingFixtureRelayClient extends FixtureRelayClient {
 }
 
 describe('Control / Capture console', () => {
+  test('starts live playback for the selected relay source and tears it down', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    const close = vi.fn().mockResolvedValue(undefined)
+    const start = vi.fn(async (
+      _video: HTMLVideoElement,
+      _descriptor: unknown,
+      onState: (state: string) => void,
+    ) => onState('playing_whep'))
+
+    const view = render(
+      <App
+        sessionId={session}
+        clients={clients}
+        mediaConfiguration={{
+          webrtcOrigin: 'http://localhost:8889',
+          hlsOrigin: 'http://localhost:8888',
+          readerUsername: 'reader',
+          readerPassword: 'secret',
+        }}
+        createMediaSession={() => ({ start, close })}
+      />,
+    )
+
+    await screen.findByText(/Development fixture active/i)
+    await user.click(screen.getAllByRole('button', { name: 'View feed' })[0])
+    const video = await screen.findByLabelText('Live feed for D-01')
+    await waitFor(() => expect(start).toHaveBeenCalled())
+    expect(video).toBeInstanceOf(HTMLVideoElement)
+    expect(screen.getByText('Media playback playing_whep')).toBeInTheDocument()
+
+    view.unmount()
+    expect(close).toHaveBeenCalled()
+  })
+
   test('is honestly disconnected when no production relay bootstrap exists', async () => {
     const clients = {
       console: new UnavailableRelayClient('Console relay missing.', clock),

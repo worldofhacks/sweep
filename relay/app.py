@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
+from media.runtime import MediaMtxObserver
 from relay.audit import SessionAuditLog
 from relay.auth import (
     AuthenticationError,
@@ -46,6 +47,7 @@ class RelayRuntime:
         event_ids: EventIdFactory | None = None,
         intent_sink_factory: IntentSinkFactory | None = None,
         leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
+        media_observer: MediaMtxObserver | None = None,
     ) -> None:
         self.settings = settings
         self.credential_resolver = credential_resolver or settings.credential_resolver()
@@ -53,11 +55,13 @@ class RelayRuntime:
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
         self.intent_sink_factory = intent_sink_factory
         self.leave_authorizer_factory = leave_authorizer_factory
+        self.media_observer = media_observer or self._media_observer_from_settings(settings)
         self.sessions: dict[str, RelaySession] = {}
         self._subscriptions: dict[str, dict[str, _Subscription]] = {}
         self._adapter_connections: dict[tuple[str, int], str] = {}
         self._connection_lock = asyncio.Lock()
         self._fanout_task: asyncio.Task[None] | None = None
+        self._media_task: asyncio.Task[None] | None = None
 
     def session(self, session_id: str) -> RelaySession:
         _validate_session_id(session_id)
@@ -112,14 +116,18 @@ class RelayRuntime:
 
     async def start(self) -> None:
         self._fanout_task = asyncio.create_task(self._fanout_loop())
+        if self.media_observer is not None:
+            self._media_task = asyncio.create_task(self._media_loop())
 
     async def stop(self) -> None:
-        if self._fanout_task is None:
-            return
-        self._fanout_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._fanout_task
+        tasks = [task for task in (self._fanout_task, self._media_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         self._fanout_task = None
+        self._media_task = None
 
     async def subscribe(self, session_id: str, principal: Principal) -> _Subscription:
         """Freeze the initial snapshot at the same linearization point as activation."""
@@ -177,6 +185,32 @@ class RelayRuntime:
             await asyncio.sleep(delay)
             for session_id, session in tuple(self.sessions.items()):
                 await self.publish(session_id, session.periodic_events())
+
+    async def _media_loop(self) -> None:
+        assert self.media_observer is not None
+        delay = self.settings.media_poll_interval_ms / 1_000
+        while True:
+            await self.refresh_media_projection()
+            await asyncio.sleep(delay)
+
+    async def refresh_media_projection(self) -> dict[int, dict[str, object]]:
+        if self.media_observer is None:
+            raise RuntimeError("media observation is not configured")
+        projection = await self.media_observer.observe(observed_at_ms=self.clock())
+        for session in tuple(self.sessions.values()):
+            session.update_media_projection(projection)
+        return projection
+
+    @staticmethod
+    def _media_observer_from_settings(settings: RelaySettings) -> MediaMtxObserver | None:
+        if settings.media_api_url is None or settings.media_admin_password is None:
+            return None
+        return MediaMtxObserver(
+            api_url=settings.media_api_url,
+            username=settings.media_admin_username,
+            password=settings.media_admin_password,
+            stale_after_ms=settings.media_stale_after_ms,
+        )
 
 
 def create_app(

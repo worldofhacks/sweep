@@ -22,6 +22,23 @@ def test_environment_builds_per_aircraft_credentials(tmp_path: Path) -> None:
     assert settings.credential_resolver().resolve("adapter", 1) == ADAPTER_KEY
 
 
+def test_media_admin_credential_enables_production_observation() -> None:
+    settings = RelaySettings.from_env(
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_MEDIA_ADMIN_PASSWORD": "media-admin-secret",
+            "SWEEP_MEDIA_STALE_AFTER_MS": "1500",
+            "SWEEP_MEDIA_POLL_INTERVAL_MS": "250",
+        }
+    )
+
+    assert settings.media_api_url == "http://127.0.0.1:9997"
+    assert settings.media_admin_username == "sweep-admin"
+    assert settings.media_admin_password == "media-admin-secret"
+    assert settings.media_stale_after_ms == 1_500
+    assert settings.media_poll_interval_ms == 250
+
+
 def test_missing_or_short_relay_token_fails_startup() -> None:
     with pytest.raises(SettingsError, match="required"):
         RelaySettings.from_env({})
