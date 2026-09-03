@@ -78,6 +78,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
   const selectedFeed =
     state.selectedFeedId === null ? null : (state.aircraft[state.selectedFeedId] ?? null)
   const captureBlockedReason = getCaptureBlockedReason(state, roomId)
+  const readyCount = aircraft.filter((drone) => drone.membership === 'ready' && drone.selectable).length
   const isFixture =
     state.connection.transport === 'fixture' || state.keyboardConnection.transport === 'fixture'
   const voiceEnabled =
@@ -162,19 +163,35 @@ export default function App({ sessionId, clients, intentDependencies, transcript
         </aside>
 
         <main className="workspace">
-          <div className="page-heading">
+          <header className="page-heading">
             <div>
-              <p className="eyebrow">M2.0 checkpoint</p>
               <h1>Control / Capture</h1>
+              <p className="page-context">M2.0 checkpoint · indoor room capture · one confirmed request at a time</p>
             </div>
-            <div className="checkpoint-state" aria-label="Checkpoint state">
-              <span className={state.armed ? 'indicator is-ok' : 'indicator'}>
-                {state.armed ? 'Armed' : 'Disarmed'}
-              </span>
-              <span className={state.estop ? 'indicator is-danger' : 'indicator'}>
-                {state.estop ? 'Network stop active' : 'Network stop clear'}
-              </span>
-              <span className="indicator">Indoor</span>
+          </header>
+
+          <div className="status-strip" aria-label="Fleet safety state">
+            <div className={state.estop ? 'status-tile is-hero is-danger' : 'status-tile is-hero'}>
+              <span className="label">Network stop</span>
+              <strong>{state.estop ? 'Active' : 'Clear'}</strong>
+              <p>{state.estop ? 'All aircraft told to stop. Physical RC still governs.' : 'Shift+Esc or the red button sends stop to every aircraft.'}</p>
+            </div>
+            <div className="status-tile">
+              <span className="label">Arming</span>
+              <strong className={state.armed ? 'is-ok' : undefined}>{state.armed ? 'Armed' : 'Disarmed'}</strong>
+              <p>{state.armed ? 'Confirmed intents can dispatch.' : 'Nothing dispatches until armed.'}</p>
+            </div>
+            <div className="status-tile">
+              <span className="label">Aircraft ready</span>
+              <strong className="mono">{readyCount} <span>of {aircraft.length}</span></strong>
+              <p>{state.selection.length === 0 ? 'None selected.' : `${formatSelection(state.selection)} selected.`}</p>
+            </div>
+            <div className="status-tile">
+              <span className="label">Relay</span>
+              <strong className={state.connection.status === 'connected' ? 'is-ok' : 'is-danger'}>
+                {humanizeCode(state.connection.status)}
+              </strong>
+              <p>Keyboard producer {state.keyboardConnection.status} · roster v{state.rosterVersion}</p>
             </div>
           </div>
 
@@ -188,10 +205,52 @@ export default function App({ sessionId, clients, intentDependencies, transcript
             </div>
           )}
 
+          {pendingRequest && (
+            <section
+              className="panel preview-panel"
+              aria-labelledby="preview-title"
+              aria-live="polite"
+              tabIndex={-1}
+              ref={previewRef}
+            >
+              <PanelHeading
+                title="Plan request preview"
+                meta="Nothing sent"
+                id="preview-title"
+              />
+              <div className="preview-summary">
+                <strong>{pendingRequest.plan?.title}</strong>
+                <span className="mono">roster v{pendingRequest.plan?.rosterVersion}</span>
+              </div>
+              <ol className="preview-steps">
+                {pendingRequest.plan?.steps.map((step) => <li key={step}>{step}</li>)}
+              </ol>
+              <details>
+                <summary>Exact Intent v1 draft</summary>
+                <pre>{JSON.stringify(pendingRequest.intent, null, 2)}</pre>
+              </details>
+              <div className="preview-actions">
+                <button
+                  type="button"
+                  className="primary-action compact"
+                  onClick={() => confirmRequest(pendingRequest.intent.intent_id)}
+                >
+                  Confirm and send
+                </button>
+                <button
+                  type="button"
+                  className="secondary-action compact"
+                  onClick={() => cancelRequest(pendingRequest.intent.intent_id)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </section>
+          )}
+
           <div className="dashboard-grid">
             <section className="panel registry-panel" aria-labelledby="registry-title">
               <PanelHeading
-                eyebrow="Live session"
                 title="Aircraft registry"
                 meta={`${aircraft.length} known · ${state.selection.length} selected`}
                 id="registry-title"
@@ -235,6 +294,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
                         <div className="aircraft-detail">
                           <span className="mono">{drone.adapter_id}</span>
                           <span>{formatReadiness(drone)}</span>
+                          <span className="mono">{drone.battery === null ? 'batt —' : `batt ${Math.round(drone.battery * 100)}%`}</span>
                           <button type="button" className="text-button" onClick={() => selectFeed(drone.drone_id)}>
                             View feed
                           </button>
@@ -248,7 +308,6 @@ export default function App({ sessionId, clients, intentDependencies, transcript
 
             <section className="panel control-panel" aria-labelledby="capture-title">
               <PanelHeading
-                eyebrow="Outcome request"
                 title="Room capture"
                 meta="Confirmation required"
                 id="capture-title"
@@ -284,7 +343,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
               </fieldset>
 
               <div className={captureBlockedReason ? 'readiness-box is-blocked' : 'readiness-box'}>
-                <span className="eyebrow">Capture readiness</span>
+                <span className="label">Capture readiness</span>
                 <strong>{captureBlockedReason ? 'Blocked' : 'Ready to preview'}</strong>
                 <p>{captureBlockedReason ?? 'One ready aircraft and the requested camera pattern are available.'}</p>
               </div>
@@ -307,7 +366,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
               </button>
               <div className="voice-control" aria-live="polite">
                 <div className="voice-copy">
-                  <span className="eyebrow">Voice plan input</span>
+                  <span className="label">Voice plan input</span>
                   <strong>
                     {voice.status === 'recording'
                       ? 'Listening'
@@ -347,7 +406,7 @@ export default function App({ sessionId, clients, intentDependencies, transcript
             </section>
 
             <section className="panel active-panel" aria-labelledby="active-title">
-              <PanelHeading eyebrow="Authoritative state" title="Active aircraft" meta="First two" id="active-title" />
+              <PanelHeading title="Active aircraft" meta="First two" id="active-title" />
               <div className="active-state-grid">
                 {[0, 1].map((slot) => {
                   const drone = activeAircraft[slot]
@@ -368,53 +427,8 @@ export default function App({ sessionId, clients, intentDependencies, transcript
               </div>
             </section>
 
-            {pendingRequest && (
-              <section
-                className="panel preview-panel"
-                aria-labelledby="preview-title"
-                aria-live="polite"
-                tabIndex={-1}
-                ref={previewRef}
-              >
-                <PanelHeading
-                  eyebrow="Operator decision"
-                  title="Plan request preview"
-                  meta="Nothing sent"
-                  id="preview-title"
-                />
-                <div className="preview-summary">
-                  <strong>{pendingRequest.plan?.title}</strong>
-                  <span className="mono">roster v{pendingRequest.plan?.rosterVersion}</span>
-                </div>
-                <ol className="preview-steps">
-                  {pendingRequest.plan?.steps.map((step) => <li key={step}>{step}</li>)}
-                </ol>
-                <details>
-                  <summary>Exact Intent v1 draft</summary>
-                  <pre>{JSON.stringify(pendingRequest.intent, null, 2)}</pre>
-                </details>
-                <div className="preview-actions">
-                  <button
-                    type="button"
-                    className="primary-action compact"
-                    onClick={() => confirmRequest(pendingRequest.intent.intent_id)}
-                  >
-                    Confirm and send
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-action compact"
-                    onClick={() => cancelRequest(pendingRequest.intent.intent_id)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </section>
-            )}
-
             <section className="panel feed-panel" aria-labelledby="feed-title">
               <PanelHeading
-                eyebrow="One selected stream"
                 title="Live feed"
                 meta={selectedFeed ? formatDroneId(selectedFeed.drone_id) : 'No feed selected'}
                 id="feed-title"
@@ -424,14 +438,13 @@ export default function App({ sessionId, clients, intentDependencies, transcript
 
             <section className="panel request-panel" aria-labelledby="request-title">
               <PanelHeading
-                eyebrow="Visible lifecycle"
                 title="Requests"
                 meta={`${state.requests.length} this view`}
                 id="request-title"
               />
               {state.lastOutcome && (
                 <div className={`last-outcome outcome-${state.lastOutcome.kind}`}>
-                  <span className="eyebrow">Last acknowledgement / refusal</span>
+                  <span className="label">Last acknowledgement / refusal</span>
                   <strong>{humanizeCode(state.lastOutcome.status)}</strong>
                   <p>{state.lastOutcome.detail}</p>
                   {state.lastOutcome.reasonCode && <code>{state.lastOutcome.reasonCode}</code>}
@@ -455,7 +468,6 @@ export default function App({ sessionId, clients, intentDependencies, transcript
 
             <section className="panel notices-panel" aria-labelledby="notice-title">
               <PanelHeading
-                eyebrow="Operator attention"
                 title="Warnings and failures"
                 meta={`${state.notices.length} visible`}
                 id="notice-title"
@@ -479,7 +491,6 @@ export default function App({ sessionId, clients, intentDependencies, transcript
 
             <section className="panel departed-panel" aria-labelledby="departed-title">
               <PanelHeading
-                eyebrow="Session history"
                 title="Departed aircraft"
                 meta={`${state.departed.length} records`}
                 id="departed-title"
@@ -531,8 +542,8 @@ function VoiceOutcomeCard({ outcome }: { outcome: VoiceOutcome }) {
       data-testid="voice-outcome"
     >
       <div className="voice-outcome-head">
-        <span className="eyebrow">Last voice result</span>
-        <span className={`status-label status-${outcome.status}`}>{refused ? 'Refused' : 'Transcribed'}</span>
+        <span className="label">Last voice result</span>
+        <StatusLabel status={outcome.status} />
       </div>
       {outcome.transcript ? (
         <blockquote className="voice-transcript">“{outcome.transcript}”</blockquote>
@@ -556,15 +567,21 @@ function VoiceOutcomeCard({ outcome }: { outcome: VoiceOutcome }) {
   )
 }
 
-function PanelHeading({ eyebrow, title, meta, id }: { eyebrow: string; title: string; meta: string; id: string }) {
+function PanelHeading({ title, meta, id }: { title: string; meta: string; id: string }) {
   return (
     <header className="panel-heading">
-      <div>
-        <span className="eyebrow">{eyebrow}</span>
-        <h2 id={id}>{title}</h2>
-      </div>
+      <h2 id={id}>{title}</h2>
       <span className="panel-meta mono">{meta}</span>
     </header>
+  )
+}
+
+function StatusLabel({ status }: { status: string }) {
+  return (
+    <span className={`status-label status-${status}`}>
+      <span className="status-dot" aria-hidden="true" />
+      {humanizeCode(status)}
+    </span>
   )
 }
 
@@ -606,7 +623,7 @@ function AircraftStateCard({ drone, selected }: { drone: RelayAircraftState; sel
           <strong className="mono">{formatDroneId(drone.drone_id)}</strong>
           {selected && <span className="selected-tag">Selected</span>}
         </div>
-        <span className={`status-label status-${drone.membership}`}>{humanizeCode(drone.membership)}</span>
+        <StatusLabel status={drone.membership} />
       </header>
       <p className="flight-state">{drone.flight_state ?? 'Awaiting telemetry'}</p>
       <Metric label="Battery" value={drone.battery} />
@@ -636,7 +653,7 @@ function FeedSlot({ drone }: { drone: RelayAircraftState | null }) {
   if (!drone) {
     return (
       <div className="feed-empty">
-        <span className="reticle" aria-hidden="true" />
+        <span className="reticle" aria-hidden="true"><i /></span>
         <strong>Select “View feed” on an aircraft</strong>
         <p>No stream is selected. Flight controls are unaffected.</p>
       </div>
@@ -651,7 +668,7 @@ function FeedSlot({ drone }: { drone: RelayAircraftState | null }) {
   }
   return (
     <div className="feed-empty is-offline">
-      <span className="reticle" aria-hidden="true" />
+      <span className="reticle" aria-hidden="true"><i /></span>
       <strong>{formatDroneId(drone.drone_id)} · No video</strong>
       <p>
         Stream {drone.video?.status ?? 'unreported'}
@@ -672,7 +689,7 @@ function RequestItem({ request, state, onRetry }: {
       <div className="request-topline">
         <div>
           <strong>{humanizeCode(request.intent.name)}</strong>
-          <span className={`status-label status-${request.status}`}>{humanizeCode(request.status)}</span>
+          <StatusLabel status={request.status} />
         </div>
         <code title={request.intent.intent_id}>{shortId(request.intent.intent_id)}</code>
       </div>
