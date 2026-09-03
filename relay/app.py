@@ -31,7 +31,6 @@ IntentSinkFactory = Callable[[str], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
 TranscriptServiceFactory = Callable[["RelayRuntime"], TranscriptService]
 AuthoritativeRoomsFactory = Callable[[RelaySession], tuple[str, ...]]
-MAX_TRANSCRIPT_UPLOAD_CHUNKS = 128
 
 
 @dataclass(eq=False, slots=True)
@@ -408,11 +407,7 @@ def create_app(
 
 async def _bounded_request_body(request: Request) -> bytes:
     body = bytearray()
-    chunks = 0
     async for chunk in request.stream():
-        chunks += 1
-        if chunks > MAX_TRANSCRIPT_UPLOAD_CHUNKS:
-            raise ValueError("upload_too_many_chunks")
         if len(chunk) > MAX_AUDIO_BYTES - len(body):
             raise ValueError("upload_too_large")
         body.extend(chunk)

@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from relay import voice
-from relay.app import MAX_TRANSCRIPT_UPLOAD_CHUNKS, RelayRuntime, _bounded_request_body, create_app
+from relay.app import RelayRuntime, _bounded_request_body, create_app
 from relay.settings import RelaySettings
 from relay.tests.conftest import CONSOLE_KEY, SESSION
 from relay.voice import (
@@ -649,14 +649,15 @@ def test_transcript_endpoint_allows_configured_browser_preflight(tmp_path: Path)
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
 
-def test_streaming_upload_rejects_excessive_chunk_count_before_provider_io() -> None:
+def test_streaming_upload_accepts_fragmented_body_below_the_byte_limit() -> None:
     class ChunkedRequest:
         async def stream(self):
-            for _ in range(MAX_TRANSCRIPT_UPLOAD_CHUNKS + 1):
-                yield b"x"
+            for _ in range(1_024):
+                yield b"x" * 1_024
 
-    with pytest.raises(ValueError, match="upload_too_many_chunks"):
-        asyncio.run(_bounded_request_body(ChunkedRequest()))  # type: ignore[arg-type]
+    body = asyncio.run(_bounded_request_body(ChunkedRequest()))  # type: ignore[arg-type]
+
+    assert len(body) == 1_024 * 1_024
 
 
 def test_streaming_upload_rejects_one_oversized_chunk_before_copying_it() -> None:

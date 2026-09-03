@@ -49,6 +49,7 @@ export class HttpTranscriptClient implements TranscriptClient {
       },
       body: request.audio,
     })
+    if (!response.ok) throw new Error(responseFailure(response.status))
     let payload: unknown
     try {
       payload = await response.json()
@@ -60,6 +61,13 @@ export class HttpTranscriptClient implements TranscriptClient {
     }
     return payload
   }
+}
+
+function responseFailure(status: number): string {
+  if (status === 400) return 'Voice request was rejected by the relay.'
+  if (status === 401) return 'Voice relay authentication failed.'
+  if (status === 413) return 'Voice recording exceeds the relay upload limit.'
+  return 'Voice relay request failed.'
 }
 
 export class UnavailableTranscriptClient implements TranscriptClient {

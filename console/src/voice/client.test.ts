@@ -63,6 +63,29 @@ describe('transcript upload client', () => {
     ).rejects.toThrow('Voice relay returned an invalid response.')
   })
 
+  test.each([
+    [400, 'Voice request was rejected by the relay.'],
+    [401, 'Voice relay authentication failed.'],
+    [413, 'Voice recording exceeds the relay upload limit.'],
+    [500, 'Voice relay request failed.'],
+  ])('reports HTTP %i without retrying', async (status, message) => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{"detail":"refused"}', { status }))
+    const client = new HttpTranscriptClient(
+      { baseUrl: 'ws://relay.example', token: 'relay-token' },
+      fetcher,
+    )
+
+    await expect(
+      client.transcribe({
+        sessionId: 'session-1',
+        correlationId: 'voice-status',
+        audio: new Blob(['audio'], { type: 'audio/webm' }),
+        durationMs: 1_250,
+      }),
+    ).rejects.toThrow(message)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
   test('unconfigured runtime rejects before any upload attempt', async () => {
     await expect(
       new UnavailableTranscriptClient('Voice relay bootstrap is unavailable.').transcribe({
