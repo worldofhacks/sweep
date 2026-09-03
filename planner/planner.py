@@ -120,6 +120,11 @@ class PlanningConfig:
         if self.translation_frame not in {"world", "aircraft_relative"}:
             raise ValueError("translation_frame must be world or aircraft_relative")
 
+    def translation_grounding(self) -> dict[str, object] | None:
+        if self.translation_frame != "aircraft_relative":
+            return None
+        return {"frame": self.translation_frame, "step_m": self.translation_step_m}
+
 
 class DeterministicPlanner:
     def __init__(self, config: PlanningConfig) -> None:
@@ -178,10 +183,9 @@ class DeterministicPlanner:
                 )
 
         elif intent.name is IntentName.TRANSLATE:
-            translation_frame = intent.args.get("frame", self.config.translation_frame)
-            translation_step_m = float(intent.args.get("step_m", self.config.translation_step_m))
-            dx = float(intent.args["dx"]) * translation_step_m
-            dy = float(intent.args["dy"]) * translation_step_m
+            translation_frame = self.config.translation_frame
+            dx = float(intent.args["dx"]) * self.config.translation_step_m
+            dy = float(intent.args["dy"]) * self.config.translation_step_m
             displacements: dict[int, tuple[float, float]] = {}
             for drone_id in selected:
                 if translation_frame == "world":

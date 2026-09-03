@@ -2,7 +2,7 @@
 
 `transcript_plan_cases.jsonl` is the source for transcript-to-plan evaluation. Each line is one independently parseable case with an identifier, transcript, relay state, compiler context, expected outcome, category, and `live_demo` marker.
 
-The corpus has 50 cases. Twenty cases form the live-demo subset. `transcript_plan_responses.synthetic.json` is the matching cached provider-response map used for deterministic development runs. Capture responses omit `capture_id` because the trusted host mints that identifier; the JSONL expectations retain the resulting semantic identifier for comparison with the host-minted plan.
+The corpus has 50 cases. Twenty cases form the live-demo subset. `transcript_plan_responses.synthetic.json` is the matching cached provider-response map used for deterministic development runs. Capture responses omit `capture_id` because the trusted host mints that identifier. JSONL expectations use the `__host_minted__` sentinel, which requires a valid host-created identifier without coupling the gold corpus to a generated value.
 
 Room references require explicit grounding. “This room,” “the room,” “here,” “that room,” and a named room missing from the authoritative room catalog return `clarify` with `ambiguous_location`. A relative location the system cannot resolve, such as “three doors down,” returns `unsupported`. Missing aircraft selection remains a hard `refuse` result even when the location is also ambiguous.
 

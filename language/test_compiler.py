@@ -32,7 +32,7 @@ from language.transport import (
 )
 from relay.audit import SessionAuditLog
 from relay.intent_v1 import IntentName, IntentV1
-from tests.autonomy_fixtures import make_snapshot, make_stack, replace_aircraft
+from tests.autonomy_fixtures import make_snapshot, make_stack, planning_config, replace_aircraft
 
 
 class FailingTransport:
@@ -377,7 +377,7 @@ def test_selection_scoped_land_runs_from_compiler_confirmation_through_controlle
     assert [call.operation.value for call in flight.calls] == ["land", "land"]
 
 
-def test_compiled_translation_preserves_frame_and_step_through_default_planner() -> None:
+def test_compiled_translation_uses_planner_owned_policy_without_widening_intent() -> None:
     case = _case("translate-selected")
     state = _state(case)
     state["selection"] = [1, 2]
@@ -385,6 +385,10 @@ def test_compiled_translation_preserves_frame_and_step_through_default_planner()
         {**drone, "heading_deg": 0.0 if drone["drone_id"] == 1 else 90.0}
         for drone in state["drones"]
     ]
+    config = replace(
+        planning_config(translation_frame="aircraft_relative"),
+        translation_step_m=0.75,
+    )
     outcome, plan = TranscriptCompiler(
         StaticResponseTransport(
             {
@@ -405,7 +409,7 @@ def test_compiled_translation_preserves_frame_and_step_through_default_planner()
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
-        translation={"frame": "aircraft_relative", "step_m": 0.75},
+        translation=config.translation_grounding(),
         now_ms=case.now_ms,
     )
     assert outcome.kind is OutcomeKind.PLAN
@@ -419,8 +423,9 @@ def test_compiled_translation_preserves_frame_and_step_through_default_planner()
         intent_id="translate-relative-1",
         emit=emitted.append,
     )
+    assert emitted[0].args == {"dx": 1, "dy": 0}
     snapshot = replace_aircraft(make_snapshot(2), 2, heading_deg=90.0)
-    controller, _, _, _, flight, _ = make_stack(snapshot)
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
 
     result = controller.execute(emitted[0], snapshot)
 
@@ -727,7 +732,7 @@ def test_command_scoped_fact_cannot_unlock_or_close_plan() -> None:
             now_ms=case.now_ms + 2,
         )
 
-    with pytest.raises(ConfirmationError, match="awaiting"):
+    with pytest.raises(ConfirmationError, match="closed"):
         pending.confirm_next(
             case.relay_state,
             capability_version=case.capability_version,
@@ -795,7 +800,7 @@ def test_wrong_relay_outcome_cannot_unlock_next_intent() -> None:
             rooms=case.rooms,
             now_ms=case.now_ms + 2,
         )
-    with pytest.raises(ConfirmationError, match="awaiting"):
+    with pytest.raises(ConfirmationError, match="closed"):
         pending.confirm_next(
             case.relay_state,
             capability_version=case.capability_version,
@@ -1379,3 +1384,113 @@ def test_fleet_wide_intents_reject_model_supplied_ids(name: str) -> None:
     )
     assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
     assert plan is None
+
+
+@pytest.mark.parametrize("extra", [{"reason": None}, {"pending_intent_id": "pending-1"}])
+def test_plan_response_rejects_cross_variant_fields(extra: dict[str, object]) -> None:
+    case = _case("hold-current-selection")
+    response = {
+        "kind": "plan",
+        "intents": [{"name": "hold", "args": {}, "selection": [1, 2], "mode": "indoor"}],
+        **extra,
+    }
+
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(response), audit=InMemoryAuditSink()
+    ).compile(
+        case.transcript,
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
+
+
+def test_terminal_state_mismatch_closes_plan_before_retry() -> None:
+    case, (_outcome, plan) = _compile("ordered-select-and-takeoff")
+    assert plan is not None
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    pending.confirm_next(
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="select-1",
+        emit=lambda _intent: None,
+    )
+    wrong_state = {**case.relay_state, "selection": [2], "t": case.now_ms + 2}
+
+    with pytest.raises(ConfirmationError, match="selection"):
+        pending.acknowledge(
+            _lifecycle(case, "select-1", "completed", source="autonomy"),
+            wrong_state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 2,
+        )
+    with pytest.raises(ConfirmationError, match="closed"):
+        pending.acknowledge(
+            _lifecycle(case, "select-1", "completed", source="autonomy"),
+            case.relay_state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 3,
+        )
+
+
+def test_next_step_revalidates_removed_room_before_emission() -> None:
+    case = _case("capture-known-room")
+    response = {
+        "kind": "plan",
+        "intents": [
+            {"name": "hold", "args": {}, "selection": [2], "mode": "indoor"},
+            {
+                "name": "capture_room",
+                "args": {"room_id": "living-room", "pattern": "pano_360"},
+                "selection": [2],
+                "mode": "indoor",
+            },
+        ],
+    }
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(response), audit=InMemoryAuditSink()
+    ).compile(
+        case.transcript,
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+        correlation_id=case.case_id,
+    )
+    assert plan is not None
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    pending.confirm_next(
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="hold-1",
+        emit=lambda _intent: None,
+    )
+    pending.acknowledge(
+        _lifecycle(case, "hold-1", "completed", source="autonomy"),
+        {**case.relay_state, "t": case.now_ms + 2},
+        capability_version=case.capability_version,
+        rooms=(),
+        now_ms=case.now_ms + 2,
+    )
+    emitted: list[IntentV1] = []
+
+    with pytest.raises(ConfirmationError, match="incompatible"):
+        pending.confirm_next(
+            {**case.relay_state, "t": case.now_ms + 3},
+            capability_version=case.capability_version,
+            rooms=(),
+            now_ms=case.now_ms + 3,
+            intent_id="capture-1",
+            emit=emitted.append,
+        )
+    assert emitted == []

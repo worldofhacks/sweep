@@ -97,6 +97,18 @@ def test_m20_console_intents_match_the_planner_contract(
     assert result.intent.selection == (1, 2)
 
 
+def test_translate_rejects_source_owned_frame_and_step(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(
+        name="translate",
+        args={"dx": 1, "dy": 0, "frame": "world", "step_m": 9.0},
+        selection=[1],
+    )
+
+    assert isinstance(validate_intent(console_select_payload), RejectedIntent)
+
+
 @pytest.mark.parametrize("mode", ["outdoorC", "outdoorF"])
 @pytest.mark.parametrize(
     ("name", "args", "confirm"),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -39,10 +40,10 @@ def test_replay_transport_returns_exact_recorded_response(tmp_path) -> None:
     cassette.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "model": PINNED_COMPILER_MODEL,
                 "prompt_schema_version": PROMPT_SCHEMA_VERSION,
-                "origin": "anthropic",
+                "recorded_origin": "anthropic",
                 "entries": {
                     key: {
                         "payload": {"kind": "refuse", "reason": "unknown_reference"},
@@ -61,7 +62,7 @@ def test_replay_transport_returns_exact_recorded_response(tmp_path) -> None:
     assert response.payload == {"kind": "refuse", "reason": "unknown_reference"}
     assert response.input_units == 10
     assert response.source == "replay"
-    assert response.origin == "anthropic"
+    assert response.origin == "unverified_replay"
     assert response.cassette_digest is not None
 
 
@@ -70,10 +71,10 @@ def test_replay_transport_fails_closed_on_miss(tmp_path) -> None:
     cassette.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "model": PINNED_COMPILER_MODEL,
                 "prompt_schema_version": PROMPT_SCHEMA_VERSION,
-                "origin": "synthetic",
+                "recorded_origin": "synthetic",
                 "entries": {},
             }
         ),
@@ -90,7 +91,8 @@ def test_recording_transport_round_trips_through_replay(tmp_path) -> None:
     recorded = RecordingTransport(StaticTransport(), cassette).complete(request)
     replayed = ReplayTransport(cassette).complete(request)
     assert replayed.payload == recorded.payload
-    assert replayed.origin == recorded.origin == "synthetic"
+    assert recorded.origin == "synthetic"
+    assert replayed.origin == "unverified_replay"
     assert replayed.source == "replay"
     assert recorded.source == "synthetic"
     assert replayed.model == recorded.model == PINNED_COMPILER_MODEL
@@ -164,3 +166,41 @@ def test_compiler_uses_active_pinned_model_and_strict_tool_schema(monkeypatch) -
     outcome_schema = tools[0]["input_schema"]["properties"]
     assert "cancel_pending" in outcome_schema["kind"]["enum"]
     assert "pending_intent_id" in outcome_schema
+
+    def schema_keys(value: object) -> set[str]:
+        if isinstance(value, dict):
+            return set(value) | set().union(*(schema_keys(item) for item in value.values()))
+        if isinstance(value, list):
+            return set().union(*(schema_keys(item) for item in value))
+        return set()
+
+    assert not schema_keys(tools[0]["input_schema"]) & {
+        "minimum",
+        "minLength",
+        "maxLength",
+        "maxItems",
+        "uniqueItems",
+    }
+
+
+def test_replay_binds_payload_and_digest_to_one_immutable_read(tmp_path, monkeypatch) -> None:
+    request = ModelRequest(transcript="hold", facts={"selection": [1]})
+    cassette = tmp_path / "cassette.json"
+    RecordingTransport(StaticTransport(), cassette).complete(request)
+    original = cassette.read_bytes()
+    replacement = original.replace(b"unknown_reference", b"stale_state")
+    reads = iter((original, replacement))
+
+    monkeypatch.setattr(cassette.__class__, "read_bytes", lambda _path: next(reads))
+    replay = ReplayTransport(cassette)
+    response = replay.complete(request)
+    assert response.payload == {"kind": "refuse", "reason": "unknown_reference"}
+    assert response.cassette_digest == hashlib.sha256(original).hexdigest()
+
+    mutable = response.payload
+    assert isinstance(mutable, dict)
+    mutable["reason"] = "stale_state"
+    assert replay.complete(request).payload == {
+        "kind": "refuse",
+        "reason": "unknown_reference",
+    }
