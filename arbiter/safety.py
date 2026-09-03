@@ -1162,8 +1162,10 @@ class SafetyArbiter:
 
     @staticmethod
     def _is_allowed_while_stopped(plan: Plan, command: Command) -> bool:
-        return _STOPPED_OPERATION_BY_INTENT.get(plan.intent_name) is command.operation and (
-            plan.intent_name is not IntentName.LAND_ALL or plan.confirmed is True
+        return (
+            command.safety_action
+            and _STOPPED_OPERATION_BY_INTENT.get(plan.intent_name) is command.operation
+            and (plan.intent_name is not IntentName.LAND_ALL or plan.confirmed is True)
         )
 
     def _intent_targets(

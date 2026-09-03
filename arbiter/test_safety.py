@@ -176,6 +176,45 @@ def test_safe_operation_name_cannot_bypass_stop_under_an_unrelated_plan(
     assert refusal.reason is RefusalReason.ESTOP_ACTIVE
 
 
+@pytest.mark.parametrize(
+    ("intent_name", "operation"),
+    [
+        (IntentName.HOLD, CommandOperation.HOVER),
+        (IntentName.LAND_ALL, CommandOperation.LAND),
+        (IntentName.ESTOP, CommandOperation.ESTOP),
+    ],
+)
+def test_unflagged_safety_command_cannot_bypass_stop(
+    intent_name: IntentName, operation: CommandOperation
+) -> None:
+    snapshot = replace(make_snapshot(1, selection=(1,)), estop_active=True)
+    command = Command(
+        command_id="plan:unflagged:command:0001",
+        intent_id="unflagged",
+        roster_version=snapshot.roster_version,
+        drone_id=1,
+        connection_epoch=1,
+        operation=operation,
+    )
+    plan = Plan(
+        plan_id="plan:unflagged",
+        intent_id="unflagged",
+        intent_name=intent_name,
+        roster_version=snapshot.roster_version,
+        selection=(1,),
+        confirmed=True,
+        commands=(command,),
+        hold_scope=(HoldScope.OPERATOR_SELECTION if intent_name is IntentName.HOLD else None),
+        estop_update=True if intent_name is IntentName.ESTOP else None,
+    )
+    _, _, arbiter, _, _, _ = make_stack(snapshot)
+
+    refusal = arbiter.check_command(plan, command, snapshot)
+
+    assert refusal is not None
+    assert refusal.reason is RefusalReason.ESTOP_ACTIVE
+
+
 @pytest.mark.parametrize("operation", tuple(CommandOperation))
 def test_safety_action_flag_never_authorizes_an_unrelated_stopped_command(
     operation: CommandOperation,
