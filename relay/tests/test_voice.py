@@ -560,6 +560,41 @@ def test_transcript_endpoint_rejects_concatenated_audio_with_reset_timestamps_be
     assert transport.calls == 0
 
 
+def test_transcript_endpoint_accepts_browser_limit_with_opus_padding(tmp_path: Path) -> None:
+    transport = FixedTranscriptionTransport()
+    settings = RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path)
+    app = create_app(settings)
+    runtime = RelayRuntime(settings)
+    runtime.session(SESSION)
+    app.state.relay_runtime = runtime
+    app.state.transcript_service = TranscriptService(
+        transcription=transport, compiler=SpyCompiler()
+    )
+    browser_limit_ms = voice.MAX_AUDIO_DURATION_MS - 1_000
+    audio = opus_webm(browser_limit_ms // 1_000)
+
+    async def request() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                f"/api/sessions/{SESSION}/transcripts",
+                headers={
+                    "Authorization": f"Bearer {CONSOLE_KEY.decode()}",
+                    "Content-Type": "audio/webm",
+                    "X-Sweep-Audio-Duration-Ms": str(browser_limit_ms),
+                    "X-Sweep-Correlation-Id": "voice-browser-limit",
+                },
+                content=audio,
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["reason"] is None
+    assert transport.calls == 1
+
+
 def test_transcript_endpoint_requires_authentication(tmp_path: Path) -> None:
     app = create_app(RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path))
     app.state.relay_runtime = RelayRuntime(RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path))

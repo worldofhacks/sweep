@@ -1,7 +1,13 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { TranscriptClient } from './client'
-import { usePushToTalk, type RecorderFactory } from './use-push-to-talk'
+import {
+  MAX_RECORDING_MS,
+  RECORDING_ENCODING_MARGIN_MS,
+  RELAY_MAX_AUDIO_DURATION_MS,
+  usePushToTalk,
+  type RecorderFactory,
+} from './use-push-to-talk'
 
 afterEach(() => vi.useRealTimers())
 
@@ -23,7 +29,7 @@ class FakeRecorder {
 }
 
 describe('push-to-talk recording', () => {
-  test('stops and uploads once when the 30-second cap expires', async () => {
+  test('stops one encoding margin before the relay duration cap', async () => {
     vi.useFakeTimers()
     const recorder = new FakeRecorder()
     const stopTrack = vi.fn()
@@ -49,7 +55,9 @@ describe('push-to-talk recording', () => {
 
     await act(async () => result.current.start())
     expect(result.current.status).toBe('recording')
-    await act(async () => vi.advanceTimersByTimeAsync(30_000))
+    expect(MAX_RECORDING_MS).toBe(RELAY_MAX_AUDIO_DURATION_MS - RECORDING_ENCODING_MARGIN_MS)
+    expect(MAX_RECORDING_MS).toBe(29_000)
+    await act(async () => vi.advanceTimersByTimeAsync(MAX_RECORDING_MS))
 
     expect(recorder.stop).toHaveBeenCalledTimes(1)
     expect(stopTrack).toHaveBeenCalledTimes(1)

@@ -38,6 +38,7 @@ describe('Control / Capture console', () => {
     expect(screen.getByRole('button', { name: 'View feed D-02' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getAllByText('Video offline')).not.toHaveLength(0)
     expect(screen.getAllByText('Stream unreported')).not.toHaveLength(0)
+    expect(screen.getByText('Hold to record. Recording stops automatically after 29s.')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Focus D-02' }))
     expect(screen.getByRole('region', { name: 'Focused camera D-02' })).toBeInTheDocument()

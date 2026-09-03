@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TranscriptClient, VoiceOutcome } from './client'
 
-export const MAX_RECORDING_MS = 30_000
+export const RELAY_MAX_AUDIO_DURATION_MS = 30_000
+export const RECORDING_ENCODING_MARGIN_MS = 1_000
+export const MAX_RECORDING_MS = RELAY_MAX_AUDIO_DURATION_MS - RECORDING_ENCODING_MARGIN_MS
 
 type Recorder = {
   state: 'inactive' | 'recording' | 'paused'
