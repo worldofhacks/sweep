@@ -2,55 +2,16 @@
   "version": 1,
   "responses": {
     "capture-this-room": {
-      "kind": "plan",
-      "intents": [
-        {
-          "name": "capture_room",
-          "args": {
-            "room_id": "living-room",
-            "capture_id": "capture-living-room-1",
-            "pattern": "pano_360"
-          },
-          "selection": [
-            1
-          ],
-          "mode": "indoor"
-        }
-      ]
+      "kind": "clarify",
+      "reason": "ambiguous_location"
     },
     "capture-the-room": {
-      "kind": "plan",
-      "intents": [
-        {
-          "name": "capture_room",
-          "args": {
-            "room_id": "living-room",
-            "capture_id": "capture-living-room-2",
-            "pattern": "pano_360"
-          },
-          "selection": [
-            1
-          ],
-          "mode": "indoor"
-        }
-      ]
+      "kind": "clarify",
+      "reason": "ambiguous_location"
     },
     "take-a-capture-here": {
-      "kind": "plan",
-      "intents": [
-        {
-          "name": "capture_room",
-          "args": {
-            "room_id": "living-room",
-            "capture_id": "capture-living-room-3",
-            "pattern": "pano_360"
-          },
-          "selection": [
-            2
-          ],
-          "mode": "indoor"
-        }
-      ]
+      "kind": "clarify",
+      "reason": "ambiguous_location"
     },
     "arm-the-drones": {
       "kind": "plan",
@@ -188,7 +149,7 @@
         {
           "name": "translate",
           "args": {
-            "dx": 0.5,
+            "dx": 1.0,
             "dy": 0
           },
           "selection": [
@@ -205,7 +166,7 @@
         {
           "name": "translate",
           "args": {
-            "dx": -0.5,
+            "dx": -1.0,
             "dy": 0
           },
           "selection": [
@@ -223,7 +184,7 @@
           "name": "translate",
           "args": {
             "dx": 0,
-            "dy": 0.5
+            "dy": 1.0
           },
           "selection": [
             1,
@@ -332,9 +293,12 @@
       "kind": "plan",
       "intents": [
         {
-          "name": "land_all",
+          "name": "land",
           "args": {},
-          "selection": [],
+          "selection": [
+            1,
+            2
+          ],
           "mode": "indoor"
         }
       ]
@@ -351,16 +315,26 @@
       ]
     },
     "voice-stop-pending": {
-      "kind": "unsupported",
-      "reason": "capability_unavailable"
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "hold",
+          "args": {},
+          "selection": [
+            1,
+            2
+          ],
+          "mode": "indoor"
+        }
+      ]
     },
     "voice-emergency-stop-pending": {
       "kind": "unsupported",
       "reason": "capability_unavailable"
     },
     "voice-abort-pending": {
-      "kind": "unsupported",
-      "reason": "capability_unavailable"
+      "kind": "clarify",
+      "reason": "ambiguous_action"
     },
     "unknown-id-seven": {
       "kind": "refuse",
@@ -405,24 +379,25 @@
       "reason": "stale_state"
     },
     "unavailable-panorama": {
-      "kind": "unsupported",
-      "reason": "capability_unavailable"
+      "kind": "clarify",
+      "reason": "ambiguous_location"
     },
     "unavailable-room-capture": {
+      "kind": "clarify",
+      "reason": "capability_unavailable",
+      "detail": "pano_360 is unavailable. Use reconstruct_8 instead?"
+    },
+    "unresolved-three-doors-down": {
       "kind": "unsupported",
       "reason": "capability_unavailable"
     },
-    "unresolved-three-doors-down": {
-      "kind": "refuse",
-      "reason": "unknown_reference"
-    },
     "unresolved-kitchen": {
-      "kind": "refuse",
-      "reason": "unknown_reference"
+      "kind": "clarify",
+      "reason": "ambiguous_location"
     },
     "ambiguous-that-room": {
       "kind": "clarify",
-      "reason": "ambiguous_selection"
+      "reason": "ambiguous_location"
     },
     "ambiguous-by-the-door": {
       "kind": "clarify",
@@ -492,7 +467,7 @@
         {
           "name": "translate",
           "args": {
-            "dx": 0.5,
+            "dx": 1.0,
             "dy": 0.0
           },
           "selection": [
@@ -502,6 +477,73 @@
           "mode": "indoor"
         }
       ]
+    },
+    "capture-explicit-living-room": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "capture_room",
+          "args": {
+            "room_id": "living-room",
+            "pattern": "pano_360"
+          },
+          "selection": [
+            1
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "move-right-one-meter": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "translate",
+          "args": {
+            "dx": 2.0,
+            "dy": 0.0
+          },
+          "selection": [
+            1
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "voice-emergency-stop-qualified": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "estop",
+          "args": {},
+          "selection": [],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "abort-pending-takeoff": {
+      "kind": "cancel_pending",
+      "pending_intent_id": "pending-takeoff-1"
+    },
+    "capture-explicit-reconstruct-eight": {
+      "kind": "plan",
+      "intents": [
+        {
+          "name": "capture_room",
+          "args": {
+            "room_id": "living-room",
+            "pattern": "reconstruct_8"
+          },
+          "selection": [
+            1
+          ],
+          "mode": "indoor"
+        }
+      ]
+    },
+    "stop-pending-takeoff": {
+      "kind": "cancel_pending",
+      "pending_intent_id": "pending-takeoff-2"
     }
   }
 }

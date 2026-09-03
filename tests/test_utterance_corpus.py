@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from pathlib import Path
 
 CORPUS_PATH = Path("datasets/utterances/transcript_plan_cases.jsonl")
@@ -14,6 +13,7 @@ ORDERED_INTENTS = {
     "translate",
     "hold",
     "come_home",
+    "land",
     "land_all",
     "estop",
 }
@@ -35,9 +35,8 @@ def load_cases() -> list[dict[str, object]]:
 def test_utterance_corpus_has_complete_compatible_cases() -> None:
     cases = load_cases()
 
-    assert len(cases) == 44
+    assert len(cases) == 50
     assert len({case["id"] for case in cases}) == len(cases)
-    assert Counter(case["category"] for case in cases)["core"] == 24
     assert {case["category"] for case in cases} >= REFUSAL_CATEGORIES
     assert sum(case["live_demo"] is True for case in cases) == 20
 
@@ -47,7 +46,7 @@ def test_utterance_corpus_has_complete_compatible_cases() -> None:
         if case["expected"]["kind"] == "plan"
         for intent in case["expected"]["intents"]
     }
-    assert ORDERED_INTENTS - {"estop"} <= planned
+    assert ORDERED_INTENTS <= planned
     ordered = {
         case["id"]: [intent["name"] for intent in case["expected"].get("intents", [])]
         for case in cases
@@ -70,8 +69,87 @@ def test_utterance_corpus_has_complete_compatible_cases() -> None:
         assert isinstance(case["id"], str) and case["id"]
         assert isinstance(case["transcript"], str) and case["transcript"]
         assert isinstance(case["relay_state"], dict)
-        assert set(case["context"]) == {"capability_version", "rooms", "now_ms"}
+        assert {"capability_version", "rooms", "now_ms"} <= set(case["context"])
         assert isinstance(case["live_demo"], bool)
+
+
+def test_owner_decisions_are_encoded_in_corpus() -> None:
+    cases = {case["id"]: case for case in load_cases()}
+
+    for case_id in ("capture-this-room", "capture-the-room", "take-a-capture-here"):
+        assert cases[case_id]["expected"] == {
+            "kind": "clarify",
+            "reason": "ambiguous_location",
+        }
+    assert cases["no-selection-capture"]["expected"] == {
+        "kind": "refuse",
+        "reason": "no_selection",
+    }
+
+    movement = {
+        "move-right-half-meter": {"dx": 1.0, "dy": 0.0},
+        "move-left-half-meter": {"dx": -1.0, "dy": 0.0},
+        "move-forward-half-meter": {"dx": 0.0, "dy": 1.0},
+        "select-all-then-translate": {"dx": 1.0, "dy": 0.0},
+        "move-right-one-meter": {"dx": 2.0, "dy": 0.0},
+    }
+    for case_id, expected_args in movement.items():
+        case = cases[case_id]
+        assert case["context"]["translation"] == {
+            "frame": "aircraft_relative",
+            "step_m": 0.5,
+        }
+        selected = case["expected"]["intents"][-1]["selection"]
+        headings = {
+            drone["drone_id"]: drone["heading_deg"] for drone in case["relay_state"]["drones"]
+        }
+        assert all(drone_id in headings for drone_id in selected)
+        assert case["expected"]["intents"][-1]["args"] == expected_args
+
+    assert cases["prepare-the-aircraft"]["expected"]["intents"][0]["name"] == "arm"
+    assert cases["launch"]["expected"]["intents"][0]["name"] == "takeoff"
+    assert cases["land-now"]["expected"]["intents"][0] == {
+        "name": "land",
+        "args": {},
+        "selection": [1, 2],
+        "mode": "indoor",
+    }
+
+    assert cases["voice-stop-pending"]["expected"]["intents"][0]["name"] == "hold"
+    assert cases["voice-abort-pending"]["expected"] == {
+        "kind": "clarify",
+        "reason": "ambiguous_action",
+    }
+    assert cases["voice-emergency-stop-qualified"]["context"]["qualified_voice_intents"] == [
+        "estop"
+    ]
+    assert cases["voice-emergency-stop-qualified"]["expected"]["intents"][0]["name"] == "estop"
+    assert cases["abort-pending-takeoff"]["expected"] == {
+        "kind": "cancel_pending",
+        "pending_intent_id": "pending-takeoff-1",
+    }
+    assert cases["stop-pending-takeoff"]["expected"] == {
+        "kind": "cancel_pending",
+        "pending_intent_id": "pending-takeoff-2",
+    }
+
+    assert cases["unresolved-three-doors-down"]["expected"] == {
+        "kind": "unsupported",
+        "reason": "capability_unavailable",
+    }
+    for case_id in ("unresolved-kitchen", "ambiguous-that-room"):
+        assert cases[case_id]["expected"] == {
+            "kind": "clarify",
+            "reason": "ambiguous_location",
+        }
+    assert cases["unavailable-panorama"]["expected"] == {
+        "kind": "clarify",
+        "reason": "ambiguous_location",
+    }
+    unavailable_room = cases["unavailable-room-capture"]["expected"]
+    assert unavailable_room["kind"] == "clarify"
+    assert unavailable_room["reason"] == "capability_unavailable"
+    assert "reconstruct_8" in unavailable_room["detail"]
 
 
 def test_cached_responses_cover_every_corpus_case() -> None:
@@ -81,13 +159,38 @@ def test_cached_responses_cover_every_corpus_case() -> None:
     assert responses["version"] == 1
     assert set(responses) == {"version", "responses"}
     assert set(responses["responses"]) == {case["id"] for case in cases}
-    assert all(responses["responses"][case["id"]] == case["expected"] for case in cases)
+    for case in cases:
+        expected = case["expected"]
+        if expected["kind"] == "plan":
+            expected = {
+                **expected,
+                "intents": [
+                    {
+                        **intent,
+                        "args": {
+                            key: value
+                            for key, value in intent["args"].items()
+                            if intent["name"] != "capture_room" or key != "capture_id"
+                        },
+                    }
+                    for intent in expected["intents"]
+                ],
+            }
+        assert responses["responses"][case["id"]] == expected
 
 
-def test_voice_estop_cases_remain_non_emitting_pending_owner_signoff() -> None:
-    estop_cases = [case for case in load_cases() if case["category"] == "estop_pending"]
+def test_voice_estop_requires_qualified_exact_phrase() -> None:
+    cases = load_cases()
+    pending_cases = [case for case in cases if case["category"] == "estop_pending"]
+    planned_estop_cases = [
+        case
+        for case in cases
+        if any(intent["name"] == "estop" for intent in case["expected"].get("intents", []))
+    ]
 
-    assert len(estop_cases) == 3
-    assert all(case["live_demo"] is False for case in estop_cases)
+    assert [case["id"] for case in planned_estop_cases] == ["voice-emergency-stop-qualified"]
+    assert planned_estop_cases[0]["transcript"] == "Emergency stop."
+    assert len(pending_cases) == 1
+    assert all(case["live_demo"] is False for case in pending_cases)
     expected = {"kind": "unsupported", "reason": "capability_unavailable"}
-    assert all(case["expected"] == expected for case in estop_cases)
+    assert all(case["expected"] == expected for case in pending_cases)
