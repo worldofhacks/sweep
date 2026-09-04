@@ -301,6 +301,13 @@ class AdapterDispatcher:
                 degraded_aircraft=tuple(sorted(degraded)),
             )
 
+        completion_snapshot = None
+        if not plan.commands:
+            completion_snapshot = provider()
+            refusal = self.arbiter.check_plan(plan, completion_snapshot)
+            if refusal is not None:
+                return self._refused(plan, completion_snapshot, refusal)
+
         bundle = self._completed_bundle(plan, media_files)
         if isinstance(bundle, Refusal):
             if plan.commands:
@@ -316,7 +323,7 @@ class AdapterDispatcher:
             )
         return ExecutionResult(
             intent_id=plan.intent_id,
-            roster_version=provider().roster_version,
+            roster_version=(completion_snapshot or provider()).roster_version,
             status=LifecycleStatus.COMPLETED,
             plan=plan,
             acknowledgements=tuple(acknowledgements),
