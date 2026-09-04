@@ -735,6 +735,9 @@ class AutonomyController:
         self.planner = planner
         self.arbiter = arbiter
         self.dispatcher = dispatcher
+        self.dispatcher.current_altitude_grounding = lambda: (
+            self.planner.config.altitude_grounding()
+        )
 
     def execute(
         self,
@@ -799,6 +802,24 @@ class AutonomyController:
         *,
         current_snapshot: SnapshotProvider | None = None,
     ) -> ExecutionResult:
+        if prepared.intent.name is IntentName.ALTITUDE and (
+            prepared.plan.altitude_grounding is None
+            or prepared.plan.altitude_grounding != self.planner.config.altitude_grounding()
+        ):
+            current = current_snapshot() if current_snapshot else prepared.snapshot
+            return ExecutionResult(
+                intent_id=prepared.intent.intent_id,
+                roster_version=current.roster_version,
+                status=LifecycleStatus.REFUSED,
+                refusal=Refusal(
+                    intent_id=prepared.intent.intent_id,
+                    roster_version=current.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.INVALID_STATE,
+                    detail="altitude configuration changed; prepare and preview again",
+                ),
+            )
         return self.dispatcher.dispatch(
             prepared.plan,
             prepared.snapshot,

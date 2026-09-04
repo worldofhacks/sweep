@@ -266,7 +266,6 @@ def test_unknown_intent_name_is_rejected(
     ("name", "args"),
     [
         ("disarm", {}),
-        ("altitude", {"delta": 1}),
         ("formation_next", {}),
         ("formation_set", {"name": "line"}),
         ("spacing", {"delta": -1}),

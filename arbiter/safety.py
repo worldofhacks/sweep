@@ -9,6 +9,7 @@ from typing import Final
 
 from planner.models import (
     AircraftState,
+    AltitudeGrounding,
     Command,
     CommandOperation,
     FleetSnapshot,
@@ -40,7 +41,7 @@ _STOPPED_OPERATION_BY_INTENT: Final = {
     IntentName.ESTOP: CommandOperation.ESTOP,
 }
 _ARMED_INTENTS: Final = frozenset(
-    {IntentName.TRANSLATE, IntentName.COME_HOME, IntentName.CAPTURE_ROOM}
+    {IntentName.TRANSLATE, IntentName.ALTITUDE, IntentName.COME_HOME, IntentName.CAPTURE_ROOM}
 )
 _CAMERA_OPERATIONS: Final = frozenset(
     {
@@ -472,6 +473,8 @@ class SafetyArbiter:
         boundary = self._check_command_boundary(plan, command, snapshot)
         if boundary is not None:
             return boundary
+        if plan.intent_name is IntentName.ALTITUDE and not self._valid_altitude_command(command):
+            return self._invalid_plan_refusal(plan, snapshot, "malformed altitude command")
         if (
             plan.roster_version != snapshot.roster_version
             or command.roster_version != snapshot.roster_version
@@ -572,7 +575,9 @@ class SafetyArbiter:
             if armed_refusal is not None:
                 return armed_refusal
 
-        require_position = command.operation in _POSITION_REQUIRED
+        require_position = (
+            command.operation in _POSITION_REQUIRED or plan.intent_name is IntentName.ALTITUDE
+        )
         if not command.safety_action:
             telemetry_refusal = self._check_telemetry(
                 command.intent_id,
@@ -586,6 +591,19 @@ class SafetyArbiter:
 
         target = self.command_position(command, aircraft)
         if target is not None and not command.safety_action:
+            if plan.intent_name is IntentName.ALTITUDE:
+                if not isinstance(plan.altitude_grounding, AltitudeGrounding):
+                    return self._invalid_plan_refusal(plan, snapshot, "altitude requires grounding")
+                floor_z = plan.altitude_grounding.floor_z_m
+                if target.z <= (floor_z if floor_z is not None else 0.0):
+                    return self._invalid_plan_refusal(
+                        plan, snapshot, "altitude target must be above the configured floor"
+                    )
+                vertical_refusal = self._check_vertical_motion(
+                    command, snapshot, aircraft, target, projected_positions or {}
+                )
+                if vertical_refusal is not None:
+                    return vertical_refusal
             if not self.config.geofence.contains(target):
                 return self._command_refusal(
                     command,
@@ -681,6 +699,7 @@ class SafetyArbiter:
             IntentName.SELECT: frozenset(),
             IntentName.TAKEOFF: frozenset({CommandOperation.TAKEOFF}),
             IntentName.TRANSLATE: frozenset({CommandOperation.GOTO}),
+            IntentName.ALTITUDE: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
             IntentName.HOLD: frozenset({CommandOperation.HOVER}),
             IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
             IntentName.LAND: frozenset({CommandOperation.LAND}),
@@ -852,6 +871,29 @@ class SafetyArbiter:
         plan: Plan,
         snapshot: FleetSnapshot,
     ) -> Refusal | None:
+        if plan.intent_name is IntentName.ALTITUDE:
+            pairs = tuple(zip(plan.commands[::2], plan.commands[1::2], strict=False))
+            targets = tuple(goto.drone_id for goto, _ in pairs)
+            valid = (
+                isinstance(plan.altitude_grounding, AltitudeGrounding)
+                and bool(plan.selection)
+                and len(plan.commands) == 2 * len(plan.selection)
+                and sorted(targets) == sorted(plan.selection)
+                and all(
+                    goto.operation is CommandOperation.GOTO
+                    and hover.operation is CommandOperation.HOVER
+                    and goto.drone_id == hover.drone_id
+                    and self._valid_altitude_command(goto)
+                    and self._valid_altitude_command(hover)
+                    for goto, hover in pairs
+                )
+            )
+            if not valid:
+                return self._invalid_plan_refusal(
+                    plan,
+                    snapshot,
+                    "altitude requires one ordered goto/hover pair per selected aircraft",
+                )
         if plan.intent_name in {
             IntentName.TAKEOFF,
             IntentName.TRANSLATE,
@@ -876,6 +918,14 @@ class SafetyArbiter:
         if plan.intent_name is IntentName.CAPTURE_ROOM:
             return self._check_capture_plan_shape(plan, snapshot)
         return None
+
+    @staticmethod
+    def _valid_altitude_command(command: Command) -> bool:
+        if command.safety_action:
+            return False
+        if command.operation is CommandOperation.HOVER:
+            return not command.parameters
+        return SafetyArbiter._valid_normal_command(IntentName.TRANSLATE, command)
 
     @staticmethod
     def _valid_normal_command(intent_name: IntentName, command: Command) -> bool:
@@ -1419,6 +1469,7 @@ class SafetyArbiter:
             intent.name
             in {
                 IntentName.TRANSLATE,
+                IntentName.ALTITUDE,
                 IntentName.COME_HOME,
             }
             and aircraft.flight_state not in _STABLE_MOTION_STATES
@@ -1650,6 +1701,58 @@ class SafetyArbiter:
                 aircraft=aircraft,
                 command=command,
             )
+        return None
+
+    def _check_vertical_motion(
+        self,
+        command: Command,
+        snapshot: FleetSnapshot,
+        aircraft: AircraftState,
+        target: Position,
+        projected_positions: dict[int, Position],
+    ) -> Refusal | None:
+        start = aircraft.pose
+        if (target.x, target.y) != (start.x, start.y):
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.INVALID_PLAN,
+                "altitude target no longer preserves authoritative horizontal position",
+            )
+        if not self.config.geofence.contains(start):
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.GEOFENCE,
+                "vertical motion starts outside the configured geofence",
+            )
+        if start.z > self.config.ceiling_m:
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.CEILING,
+                "vertical motion starts above the configured ceiling",
+            )
+        low, high = sorted((start.z, target.z))
+        for other_id, other in sorted(snapshot.aircraft.items()):
+            if other_id == aircraft.drone_id or other.membership is not MembershipState.READY:
+                continue
+            if not other.airborne:
+                continue
+            telemetry_refusal = self._check_telemetry(
+                command.intent_id, snapshot, other, require_position=True, command=command
+            )
+            if telemetry_refusal is not None:
+                return telemetry_refusal
+            other_position = projected_positions.get(other_id, other.pose)
+            nearest = Position(start.x, start.y, min(high, max(low, other_position.z)))
+            if nearest.distance_to(other_position) < self.config.min_spacing_m:
+                return self._command_refusal(
+                    command,
+                    snapshot,
+                    RefusalReason.SPACING,
+                    f"vertical path violates spacing from aircraft {other_id}",
+                )
         return None
 
     def _check_spacing(
