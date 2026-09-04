@@ -26,6 +26,7 @@ from adapters.protocols import (
 )
 from arbiter.safety import SafetyArbiter
 from planner.models import (
+    AltitudeGrounding,
     Command,
     CommandAcknowledgement,
     CommandOperation,
@@ -58,6 +59,7 @@ class AdapterDispatcher:
         self.flight = flight
         self.camera = camera
         self.arbiter = arbiter
+        self.current_altitude_grounding: Callable[[], AltitudeGrounding | None] | None = None
 
     def dispatch(
         self,
@@ -182,6 +184,21 @@ class AdapterDispatcher:
                 current,
                 projected_positions=projected,
             )
+            if refusal is None and plan.intent_name is IntentName.ALTITUDE:
+                grounding = (
+                    self.current_altitude_grounding()
+                    if self.current_altitude_grounding is not None
+                    else None
+                )
+                if grounding is None or grounding != plan.altitude_grounding:
+                    refusal = Refusal(
+                        intent_id=plan.intent_id,
+                        roster_version=current.roster_version,
+                        drone_id=command.drone_id,
+                        connection_epoch=command.connection_epoch,
+                        reason=RefusalReason.INVALID_STATE,
+                        detail="altitude configuration changed or unavailable; preview again",
+                    )
             if refusal is not None:
                 if plan.intent_name is IntentName.CAPTURE_ROOM:
                     affected[command.drone_id] = command
