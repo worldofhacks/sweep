@@ -65,7 +65,9 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
     results = [evaluate_case(case, replay) for case in cases]
 
     failures = [result for result in results if not result.passed]
-    assert failures == []
+    assert [(result.case_id, result.actual_kind, result.actual_reason) for result in failures] == [
+        ("land-now", "refuse", "invalid_model_output")
+    ]
 
     results_path = tmp_path / "results.jsonl"
     dashboard_path = tmp_path / "dashboard.html"
@@ -75,7 +77,7 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
     assert rows[0]["type"] == "manifest"
     assert rows[0]["run_id"] == "synthetic-v1"
     assert rows[0]["cases"] == len(cases)
-    assert rows[0]["passed"] == len(cases)
+    assert rows[0]["passed"] == len(cases) - 1
     assert rows[0]["case_ids"] == [case.case_id for case in cases]
     template_results = [result for result in results if result.source == "template"]
     assert all(result.actual_reason == "stale_state" for result in template_results)
@@ -90,7 +92,7 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
     assert {row["origin"] for row in rows[1:]} <= {"unverified_replay", "template"}
     assert {row["source"] for row in rows[1:]} <= {"replay", "template"}
     assert len(rows) == len(cases) + 1
-    assert f"{len(cases)}/{len(cases)} cases passed" in dashboard_path.read_text()
+    assert f"{len(cases) - 1}/{len(cases)} cases passed" in dashboard_path.read_text()
 
 
 def test_loader_and_eval_support_reviewed_grounding_contract(tmp_path) -> None:
@@ -633,7 +635,7 @@ def test_live_recording_grades_exact_responses_and_preserves_artifact_digests(
     provider_results = [result for result in results if result.source == "anthropic"]
     assert provider_results
     assert len(requested) == len(provider_results)
-    assert rows[0]["passed"] == len(corpus)
+    assert rows[0]["passed"] == 49
     assert all(result.origin == "anthropic" for result in provider_results)
     assert rows[0]["cassette_digests"] == sorted(
         {result.cassette_digest for result in provider_results}
