@@ -8,7 +8,6 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
-
 import pytest
 
 import relay.audit as audit_module
@@ -262,8 +261,8 @@ def test_nested_sink_projection_commits_with_outer_intent_operation(
     records = SessionAuditLog(tmp_path, SESSION).replay()
     assert [record["event"]["type"] for record in records] == [
         "intent_record",
-        "state",
         "acknowledgement",
+        "state",
     ]
 
 

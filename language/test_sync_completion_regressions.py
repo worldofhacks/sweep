@@ -11,7 +11,7 @@ from language.compiler import (
 )
 from language.test_compiler import _hydrate_relay_from_snapshot
 from planner.controller import PreparedExecutionRouter
-from planner.models import FlightState, Position
+from planner.models import FlightState, LifecycleStatus, Position
 from relay.audit import SessionAuditLog
 from relay.auth import Principal
 from relay.session import RelayLimits, RelaySession
@@ -19,13 +19,23 @@ from tests.autonomy_fixtures import make_snapshot, make_stack, replace_aircraft
 
 
 @pytest.mark.parametrize("postcondition_matches", [True, False])
-def test_sync_takeoff_waits_for_telemetry_before_next_hold(tmp_path, postcondition_matches):
+@pytest.mark.parametrize("async_completion", [False, True])
+def test_takeoff_waits_for_telemetry_before_next_hold(
+    tmp_path, monkeypatch, postcondition_matches, async_completion
+):
     snapshot = make_snapshot(2, flight_state=FlightState.ARMED)
     for drone_id, aircraft in snapshot.aircraft.items():
         snapshot = replace_aircraft(snapshot, drone_id, pose=Position(aircraft.pose.x, 0.0, 0.0))
     current = [snapshot]
     now = [snapshot.now_ms]
     controller, _, _, _, flight, _ = make_stack(snapshot)
+    if async_completion:
+        takeoff = flight.takeoff
+
+        def accepted_takeoff(ids, z):
+            return tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in takeoff(ids, z))
+
+        monkeypatch.setattr(flight, "takeoff", accepted_takeoff)
     router = PreparedExecutionRouter(controller, current_snapshot=lambda: current[0])
     relay = RelaySession(
         session_id="language-eval",
@@ -77,6 +87,31 @@ def test_sync_takeoff_waits_for_telemetry_before_next_hold(tmp_path, postconditi
         emit=emitter,
         prepared=prepared,
     )
+    if async_completion:
+        for command in prepared.execution.plan.commands:
+            events = relay.process_frame(
+                {
+                    "v": 1,
+                    "t": now[0],
+                    "type": "acknowledgement",
+                    "event_id": f"completion-{command.drone_id}",
+                    "session": relay.session_id,
+                    "intent_id": "takeoff",
+                    "command_id": command.command_id,
+                    "status": "completed",
+                    "drone_id": command.drone_id,
+                    "connection_epoch": command.connection_epoch,
+                    "roster_version": snapshot.roster_version,
+                    "reason": None,
+                    "detail": None,
+                },
+                Principal(source="adapter", drone_id=command.drone_id, signing_key=b"x" * 32),
+            )
+        outcome = next(event for event in events if event.get("source") == "autonomy")
+        assert outcome["status"] == "completed"
+        pending.acknowledge(
+            outcome, relay.current_state(), capability_version="test", rooms=(), now_ms=now[0]
+        )
     assert [call.operation.value for call in flight.calls] == ["takeoff", "takeoff"]
     assert not any(event["event"] == "intent_accepted" for event in audit.records)
     with pytest.raises(ConfirmationError, match="awaiting"):

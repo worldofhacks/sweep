@@ -602,11 +602,6 @@ class ConfirmedPlan:
                     and event.get("status") in {"completed", "failed", "invalidated", "refused"}
                 ):
                     state = emit.current_state()
-                    if event.get("status") == "completed" and self._completion_needs_telemetry(
-                        state, capability_version=capability_version, rooms=rooms
-                    ):
-                        self._pending_completion = dict(event)
-                        break
                     self.acknowledge(
                         event,
                         state,
@@ -810,6 +805,11 @@ class ConfirmedPlan:
                 }
             )
             raise ConfirmationError(f"relay returned terminal status {status.value}")
+        if self._awaiting_plan is not None and self._completion_needs_telemetry(
+            relay_state, capability_version=capability_version, rooms=rooms
+        ):
+            self._pending_completion = dict(outcome)
+            return
         emitted = self._compiled.intents[self._next - 1]
         requires_post_dispatch_position = emitted.name.value in {"translate", "come_home"}
         if facts.state_time_ms < self._awaiting_emitted_at_ms or (

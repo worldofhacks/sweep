@@ -248,13 +248,15 @@ class RelaySession:
             self._append_audit(event)
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
+            events = [event]
             try:
                 process = getattr(self.intent_sink, "process_relay_intent", None)
-                downstream = (
-                    process(intent, self.current_state(), self)
-                    if callable(process)
-                    else self.intent_sink(intent, self.current_state())
-                )
+                if callable(process):
+                    delivered = process(intent, self.current_state(), self)
+                    downstream = delivered.execution
+                    events.extend(delivered.relay_events)
+                else:
+                    downstream = self.intent_sink(intent, self.current_state())
             except Exception:
                 self._intents[intent.intent_id].status = LifecycleStatus.REFUSED
                 self._log_intent(
@@ -272,7 +274,7 @@ class RelaySession:
                         now=now,
                     ),
                 ]
-            events = [event]
+            self._ensure_mutation_usable()
             if downstream is not None:
                 events.extend(self._record_execution_result(intent, downstream))
             return events
@@ -514,6 +516,7 @@ class RelaySession:
             LifecycleStatus.INVALIDATED,
         }
         if status in terminal:
+            active = self.current_state()["accepted_plan"]
             events.append(
                 self.update_control_projection(
                     selection=(
@@ -521,7 +524,11 @@ class RelaySession:
                         if status is LifecycleStatus.COMPLETED
                         else None
                     ),
-                    accepted_plan=None,
+                    accepted_plan=(
+                        None
+                        if active is None or active.get("intent_id") == intent.intent_id
+                        else _UNSET
+                    ),
                     armed=(
                         getattr(plan, "armed_update", None)
                         if status is LifecycleStatus.COMPLETED
