@@ -12,7 +12,9 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
-from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from relay.audit import SessionAuditLog
 from relay.auth import (
@@ -22,10 +24,13 @@ from relay.auth import (
     authenticate,
 )
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
-from relay.settings import RelaySettings
+from relay.settings import RelaySettings, console_origins_from_env
+from relay.voice import MAX_AUDIO_BYTES, MAX_AUDIO_DURATION_MS, TranscriptService, VoiceOutcome
 
 IntentSinkFactory = Callable[[str], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
+TranscriptServiceFactory = Callable[["RelayRuntime"], TranscriptService]
+AuthoritativeRoomsFactory = Callable[[RelaySession], tuple[str, ...]]
 
 
 @dataclass(eq=False, slots=True)
@@ -46,6 +51,7 @@ class RelayRuntime:
         event_ids: EventIdFactory | None = None,
         intent_sink_factory: IntentSinkFactory | None = None,
         leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
+        authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
     ) -> None:
         self.settings = settings
         self.credential_resolver = credential_resolver or settings.credential_resolver()
@@ -53,6 +59,7 @@ class RelayRuntime:
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
         self.intent_sink_factory = intent_sink_factory
         self.leave_authorizer_factory = leave_authorizer_factory
+        self.authoritative_rooms_factory = authoritative_rooms_factory
         self.sessions: dict[str, RelaySession] = {}
         self._subscriptions: dict[str, dict[str, _Subscription]] = {}
         self._adapter_connections: dict[tuple[str, int], str] = {}
@@ -109,6 +116,11 @@ class RelayRuntime:
             "last_sequence": audit_log.last_sequence,
             "events": records,
         }
+
+    def authoritative_rooms(self, session: RelaySession) -> tuple[str, ...]:
+        if self.authoritative_rooms_factory is None:
+            return ()
+        return self.authoritative_rooms_factory(session)
 
     async def start(self) -> None:
         self._fanout_task = asyncio.create_task(self._fanout_loop())
@@ -187,6 +199,8 @@ def create_app(
     event_ids: EventIdFactory | None = None,
     intent_sink_factory: IntentSinkFactory | None = None,
     leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
+    authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
+    transcript_service_factory: TranscriptServiceFactory | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -198,8 +212,14 @@ def create_app(
             event_ids=event_ids,
             intent_sink_factory=intent_sink_factory,
             leave_authorizer_factory=leave_authorizer_factory,
+            authoritative_rooms_factory=authoritative_rooms_factory,
         )
         application.state.relay_runtime = runtime
+        application.state.transcript_service = (
+            TranscriptService()
+            if transcript_service_factory is None
+            else transcript_service_factory(runtime)
+        )
         await runtime.start()
         try:
             yield
@@ -207,6 +227,19 @@ def create_app(
             await runtime.stop()
 
     application = FastAPI(title="Sweep relay", version="1", lifespan=lifespan)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(
+            settings.console_origins if settings is not None else console_origins_from_env()
+        ),
+        allow_methods=["POST"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-Sweep-Correlation-Id",
+            "X-Sweep-Audio-Duration-Ms",
+        ],
+    )
 
     @application.websocket("/ws/{session_id}")
     async def websocket_relay(websocket: WebSocket, session_id: str) -> None:
@@ -312,7 +345,93 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
 
+    @application.post("/api/sessions/{session_id}/transcripts", response_model=None)
+    async def transcript(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+        correlation_id: str | None = Header(default=None, alias="X-Sweep-Correlation-Id"),
+    ) -> dict[str, object] | JSONResponse:
+        runtime = authorized_runtime(authorization)
+        try:
+            _validate_session_id(session_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid session ID") from None
+        session = runtime.sessions.get(session_id)
+        if session is None:
+            outcome = VoiceOutcome("refused", "template", "session_unavailable", None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=409,
+            )
+        content_length = _content_length(request.headers.get("content-length"))
+        if content_length is not None and content_length > MAX_AUDIO_BYTES:
+            outcome = VoiceOutcome("refused", "template", "upload_too_large", None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=413,
+            )
+        declared_duration_ms = _nonnegative_header(request.headers.get("x-sweep-audio-duration-ms"))
+        if declared_duration_ms is not None and declared_duration_ms > MAX_AUDIO_DURATION_MS:
+            outcome = VoiceOutcome("refused", "template", "audio_too_long", None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=413,
+            )
+        try:
+            body = await _bounded_request_body(request)
+        except ValueError as error:
+            outcome = VoiceOutcome("refused", "template", str(error), None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=413,
+            )
+        outcome = await asyncio.to_thread(
+            application.state.transcript_service.process,
+            session_id=session_id,
+            correlation_id=correlation_id or "",
+            content_type=request.headers.get("content-type"),
+            body=body,
+            relay_state=session.current_state(),
+            rooms=runtime.authoritative_rooms(session),
+            now_ms=runtime.clock(),
+        )
+        status_code = 413 if outcome.reason == "audio_too_long" else 200
+        return JSONResponse(
+            outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+            status_code=status_code,
+        )
+
     return application
+
+
+async def _bounded_request_body(request: Request) -> bytes:
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(chunk) > MAX_AUDIO_BYTES - len(body):
+            raise ValueError("upload_too_large")
+        body.extend(chunk)
+    return bytes(body)
+
+
+def _content_length(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _nonnegative_header(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
 
 
 async def _send_events(websocket: WebSocket, subscription: _Subscription) -> None:

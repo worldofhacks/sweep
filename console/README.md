@@ -46,6 +46,10 @@ last-frame timestamp. The console derives the display name `drone{id}` and does 
 adapter-provided media URLs. MediaMTX endpoints, credentials, recording, latency measurement,
 and browser playback remain held for M3.1.
 
+## Voice plan input
+
+The Control / Capture panel includes a push-to-talk control. Hold it to record, then release to upload to the authenticated relay endpoint. Recording stops after 29 seconds, leaving one second for codec padding and timer jitter below the relay's 30-second decoded-audio limit. The browser sends a bounded audio blob and correlation ID; it does not receive the OpenAI credential or emit an Intent v1 request. The resulting transcript remains a no-emission compiler handoff until the compiler path is wired.
+
 For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
 development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build
 cannot enable it. It is a UI/contract fixture, not acceptance evidence and not a flight simulator.
