@@ -401,6 +401,7 @@ class ConfirmedPlan:
         self._awaiting_facts: GroundingFacts | None = None
         self._awaiting_plan: Plan | None = None
         self._awaiting_emitted_at_ms: int | None = None
+        self._pending_completion: dict[str, object] | None = None
         self._issued_preparation: PreparedConfirmation | None = None
         self._terminal = False
         self._expected_facts = compiled.facts
@@ -424,6 +425,16 @@ class ConfirmedPlan:
         snapshot: FleetSnapshot,
     ) -> PreparedConfirmation:
         with self._lock:
+            if self._pending_completion is not None and not self._completion_needs_telemetry(
+                relay_state, capability_version=capability_version, rooms=rooms
+            ):
+                self.acknowledge(
+                    self._pending_completion,
+                    relay_state,
+                    capability_version=capability_version,
+                    rooms=rooms,
+                    now_ms=now_ms,
+                )
             facts, proposal, intent = self._confirmation_candidate(
                 relay_state,
                 capability_version=capability_version,
@@ -591,6 +602,11 @@ class ConfirmedPlan:
                     and event.get("status") in {"completed", "failed", "invalidated", "refused"}
                 ):
                     state = emit.current_state()
+                    if event.get("status") == "completed" and self._completion_needs_telemetry(
+                        state, capability_version=capability_version, rooms=rooms
+                    ):
+                        self._pending_completion = dict(event)
+                        break
                     self.acknowledge(
                         event,
                         state,
@@ -852,6 +868,31 @@ class ConfirmedPlan:
         self._awaiting_facts = None
         self._awaiting_plan = None
         self._awaiting_emitted_at_ms = None
+        self._pending_completion = None
+
+    def _completion_needs_telemetry(
+        self, relay_state: object, *, capability_version: str, rooms: tuple[str, ...]
+    ) -> bool:
+        emitted = self._compiled.intents[self._next - 1]
+        if emitted.name.value not in {"takeoff", "translate", "come_home", "land", "land_all"}:
+            return False
+        facts = build_grounding_facts(
+            relay_state,
+            capability_version=capability_version,
+            rooms=rooms,
+            translation=_translation_grounding(self._compiled.facts),
+            qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
+        )
+        targets = (
+            {command.drone_id for command in self._awaiting_plan.commands}
+            if emitted.name.value == "land_all" and self._awaiting_plan is not None
+            else emitted.selection
+        )
+        return any(
+            _drone_position_time(facts, drone_id) is None
+            or _drone_position_time(facts, drone_id) <= self._awaiting_emitted_at_ms
+            for drone_id in targets
+        )
 
     def _validate_prepared_execution(
         self,
