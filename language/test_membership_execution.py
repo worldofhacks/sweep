@@ -1,5 +1,7 @@
 from dataclasses import replace
 
+import pytest
+
 from language.test_compiler import _hydrate_relay_from_snapshot
 from planner.controller import PreparedExecutionRouter
 from planner.models import LifecycleStatus, PreparedExecution
@@ -8,11 +10,12 @@ from relay.auth import Principal
 from relay.intent_v1 import IntentName
 from relay.session import RelayLimits, RelaySession
 from relay.tests.conftest import membership_payload
-from tests.autonomy_fixtures import make_intent, make_snapshot, make_stack
+from tests.autonomy_fixtures import make_aircraft, make_intent, make_snapshot, make_stack
 
 
+@pytest.mark.parametrize("unenriched_newcomer", [False, True])
 def test_rejoining_waiting_aircraft_retires_old_execution_without_resending_motion(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, unenriched_newcomer
 ):
     snapshot = make_snapshot(2, roster_version=4)
     controller, _, _, _, flight, _ = make_stack(snapshot)
@@ -37,6 +40,20 @@ def test_rejoining_waiting_aircraft_retires_old_execution_without_resending_moti
         relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
     )
     assert emitter(intent)[-1]["status"] == "executing"
+    if unenriched_newcomer:
+        newcomer = Principal(source="adapter", drone_id=3, signing_key=b"x" * 32)
+        relay.process_frame(
+            membership_payload(
+                action="join",
+                event_id="unenriched-join",
+                timestamp=snapshot.now_ms,
+                drone_id=3,
+                session=relay.session_id,
+                key=newcomer.signing_key,
+            ),
+            newcomer,
+        )
+        assert intent.intent_id in router._running
     first = prepared.plan.commands[0]
     principal = Principal(source="adapter", drone_id=first.drone_id, signing_key=b"x" * 32)
     events = relay.handle_adapter_disconnect(
@@ -81,6 +98,8 @@ def test_rejoining_waiting_aircraft_retires_old_execution_without_resending_moti
     assert [call.operation.value for call in flight.calls] == ["goto", "hover"]
     assert not router._running
     assert relay.current_state()["accepted_plan"] is None
+    if unenriched_newcomer:
+        return
     state = relay.current_state()
     select = replace(
         make_intent(IntentName.SELECT, args={"ids": (1,)}, selection=(1,)),
@@ -181,3 +200,78 @@ def test_membership_change_replaces_waiting_estop_with_owned_current_roster_stop
     assert events[-1]["status"] == "completed", events
     assert not router._running
     assert relay.current_state()["estop"] is True
+
+
+@pytest.mark.parametrize("enrich_newcomer", [False, True])
+def test_newcomer_join_preserves_running_motion_until_next_dispatch(
+    tmp_path, monkeypatch, enrich_newcomer
+):
+    snapshot = make_snapshot(2, roster_version=4)
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    goto = flight.goto
+    monkeypatch.setattr(
+        flight, "goto", lambda *a, **kw: replace(goto(*a, **kw), status=LifecycleStatus.ACCEPTED)
+    )
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    relay = RelaySession(
+        session_id="test-session",
+        audit_log=SessionAuditLog(tmp_path, "test-session"),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: snapshot.now_ms,
+        intent_sink=router,
+    )
+    _hydrate_relay_from_snapshot(relay, snapshot)
+    intent = make_intent(IntentName.TRANSLATE, args={"dx": 1, "dy": 0})
+    prepared = router.prepare(intent, snapshot)
+    assert isinstance(prepared, PreparedExecution)
+    router.bind(prepared)
+    emitter = router.relay_emitter(
+        relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+    )
+    assert emitter(intent)[-1]["status"] == "executing"
+    before = relay.current_state()
+    if enrich_newcomer:
+        snapshot = replace(snapshot, aircraft={**snapshot.aircraft, 3: make_aircraft(3)})
+    newcomer = Principal(source="adapter", drone_id=3, signing_key=b"x" * 32)
+    events = relay.process_frame(
+        membership_payload(
+            action="join",
+            event_id="benign-join",
+            timestamp=snapshot.now_ms,
+            drone_id=3,
+            session=relay.session_id,
+            key=newcomer.signing_key,
+        ),
+        newcomer,
+    )
+    after = relay.current_state()
+    assert after["roster_version"] > before["roster_version"]
+    assert after["accepted_plan"] == before["accepted_plan"]
+    assert after["selection"] == before["selection"]
+    assert [call.operation.value for call in flight.calls] == ["goto"]
+    assert not any(event.get("status") == "invalidated" for event in events)
+    first = prepared.plan.commands[0]
+    events = relay.process_frame(
+        {
+            "v": 1,
+            "type": "acknowledgement",
+            "t": snapshot.now_ms,
+            "event_id": "completion-after-join",
+            "session": relay.session_id,
+            "intent_id": intent.intent_id,
+            "command_id": first.command_id,
+            "status": "completed",
+            "drone_id": first.drone_id,
+            "connection_epoch": first.connection_epoch,
+            "roster_version": first.roster_version,
+            "reason": None,
+            "detail": None,
+        },
+        Principal(source="adapter", drone_id=first.drone_id, signing_key=b"x" * 32),
+    )
+    assert any(
+        event.get("intent_id") == intent.intent_id and event.get("status") == "invalidated"
+        for event in events
+    )
+    assert intent.intent_id not in router._running
+    assert sum(call.operation.value == "goto" for call in flight.calls) == 1

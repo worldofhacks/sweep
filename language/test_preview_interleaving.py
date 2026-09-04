@@ -124,15 +124,19 @@ def test_relay_rechecks_preview_after_interleaved_telemetry(tmp_path, monkeypatc
         assert [call.operation.value for call in flight.calls] == ["goto"]
 
 
-def test_geofence_invalid_motion_has_no_confirmation_preview_or_adapter_io(tmp_path):
+@pytest.mark.parametrize("unsafe_state", ["geofence", "battery"])
+def test_unsafe_live_snapshot_has_no_confirmation_preview_or_adapter_io(tmp_path, unsafe_state):
     case = _case("translate-selected")
     snapshot = replace_aircraft(
         _snapshot_at(make_snapshot(1, roster_version=2), case.now_ms),
         1,
-        pose=Position(9.75, 0.0, 1.0),
+        pose=Position(9.75 if unsafe_state == "geofence" else 0.0, 0.0, 1.0),
     )
     controller, _, _, _, flight, _ = make_stack(snapshot)
-    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    live_snapshot = (
+        replace_aircraft(snapshot, 1, battery=0.215) if unsafe_state == "battery" else snapshot
+    )
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: live_snapshot)
     relay = RelaySession(
         session_id="language-eval",
         audit_log=SessionAuditLog(tmp_path, "language-eval"),
@@ -149,7 +153,7 @@ def test_geofence_invalid_motion_has_no_confirmation_preview_or_adapter_io(tmp_p
                 "intents": [
                     {
                         "name": "translate",
-                        "args": {"dx": 1, "dy": 0},
+                        "args": {"dx": 2, "dy": 0},
                         "selection": [1],
                         "mode": "indoor",
                     }
@@ -167,7 +171,7 @@ def test_geofence_invalid_motion_has_no_confirmation_preview_or_adapter_io(tmp_p
     )
     assert plan is not None
     pending = ConfirmedPlan(plan, session=relay.session_id, audit=InMemoryAuditSink())
-    with pytest.raises(ConfirmationError, match="geofence"):
+    with pytest.raises(ConfirmationError, match="geofence|reserve"):
         pending.prepare_next(
             state,
             capability_version=case.capability_version,

@@ -453,7 +453,7 @@ class ConfirmedPlan:
                 self._terminal = True
                 raise ConfirmationError("actual planner refused the confirmed intent")
             self._validate_prepared_execution(planned, facts, router)
-            refusal = router.controller.arbiter.check_plan(planned.plan, snapshot)
+            refusal = router.controller.arbiter.check_plan(planned.plan, planned.snapshot)
             if refusal is not None:
                 self._terminal = True
                 raise ConfirmationError(f"actual planner failed safety checks: {refusal.detail}")
@@ -913,6 +913,10 @@ class ConfirmedPlan:
         return any(
             _drone_position_time(facts, drone_id) is None
             or _drone_position_time(facts, drone_id) < completed_at_ms
+            or (
+                emitted.name.value == "hold"
+                and _drone_position_time(facts, drone_id) == completed_at_ms
+            )
             or _drone_position_time(facts, drone_id) <= self._awaiting_emitted_at_ms
             for drone_id in targets
         )
