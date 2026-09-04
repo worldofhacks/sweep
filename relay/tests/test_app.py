@@ -176,36 +176,116 @@ def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
     assert state_rosters == sorted(state_rosters)
 
 
-def test_stale_membership_batch_cannot_regress_new_subscriber_snapshot(
-    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+def test_session_operations_publish_whole_batches_in_mutation_order(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def exercise_race() -> tuple[int, list[dict[str, object]]]:
+    async def exercise_race() -> tuple[list[int], int, int]:
         runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
         session = runtime.session(SESSION)
         first = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
         second_key = b"adapter-key-2"
         second = Principal(source="adapter", drone_id=2, signing_key=second_key)
-        stale_events = session.process_frame(
-            membership_payload(action="join", event_id="join-1"), first
+        console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        existing = await runtime.subscribe(SESSION, console)
+        publish_started = asyncio.Event()
+        resume_publish = asyncio.Event()
+        real_publish = runtime.publish
+        publish_count = 0
+
+        async def paused_first_publish(session_id: str, events: list[dict[str, object]]) -> None:
+            nonlocal publish_count
+            publish_count += 1
+            if publish_count == 1:
+                publish_started.set()
+                await resume_publish.wait()
+            await real_publish(session_id, events)
+
+        monkeypatch.setattr(runtime, "publish", paused_first_publish)
+        first_operation = asyncio.create_task(
+            runtime.process_and_publish(
+                SESSION,
+                lambda: session.process_frame(
+                    membership_payload(action="join", event_id="join-1"), first
+                ),
+            )
         )
-        session.process_frame(
-            membership_payload(action="join", event_id="join-2", drone_id=2, key=second_key),
-            second,
+        await publish_started.wait()
+        second_operation = asyncio.create_task(
+            runtime.process_and_publish(
+                SESSION,
+                lambda: session.process_frame(
+                    membership_payload(
+                        action="join", event_id="join-2", drone_id=2, key=second_key
+                    ),
+                    second,
+                ),
+            )
         )
+        await asyncio.sleep(0)
+        joining_subscription = asyncio.create_task(runtime.subscribe(SESSION, console))
+        resume_publish.set()
+        await asyncio.gather(first_operation, second_operation)
+        joined = await joining_subscription
+        queued_versions = [int(existing.queue.get_nowait()["roster_version"]) for _ in range(4)]
+        return (
+            queued_versions,
+            int(joined.initial_state["roster_version"]),
+            joined.queue.qsize(),
+        )
+
+    queued_versions, initial_roster, new_backlog = asyncio.run(exercise_race())
+
+    assert queued_versions == [1, 1, 2, 2]
+    assert (initial_roster, new_backlog) == (2, 0)
+
+
+def test_same_roster_operations_publish_in_mutation_order(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise_race() -> list[bool]:
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
         subscription = await runtime.subscribe(
             SESSION, Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
         )
+        publish_started = asyncio.Event()
+        resume_publish = asyncio.Event()
+        real_publish = runtime.publish
+        publish_count = 0
 
-        await runtime.publish(SESSION, stale_events)
-        queued = []
-        while not subscription.queue.empty():
-            queued.append(subscription.queue.get_nowait())
-        return int(subscription.initial_state["roster_version"]), queued
+        async def paused_first_publish(session_id: str, events: list[dict[str, object]]) -> None:
+            nonlocal publish_count
+            publish_count += 1
+            if publish_count == 1:
+                publish_started.set()
+                await resume_publish.wait()
+            await real_publish(session_id, events)
 
-    initial_roster, queued = asyncio.run(exercise_race())
+        monkeypatch.setattr(runtime, "publish", paused_first_publish)
+        older = asyncio.create_task(runtime.process_and_publish(SESSION, session.periodic_events))
+        await publish_started.wait()
+        newer = asyncio.create_task(
+            runtime.process_and_publish(
+                SESSION,
+                lambda: [session.update_control_projection(estop=True)],
+            )
+        )
+        await asyncio.sleep(0)
+        assert not newer.done()
+        resume_publish.set()
+        await asyncio.gather(older, newer)
+        return [
+            bool(subscription.queue.get_nowait()["estop"]),
+            bool(subscription.queue.get_nowait()["estop"]),
+        ]
 
-    assert initial_roster == 2
-    assert not [event for event in queued if event["type"] in {"membership", "state"}]
+    assert asyncio.run(exercise_race()) == [False, True]
 
 
 def test_bad_authentication_is_refused_without_creating_a_session_log(

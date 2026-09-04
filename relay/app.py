@@ -70,6 +70,7 @@ class RelayRuntime:
         self._session_gates_lock = Lock()
         self._activation_tasks: dict[str, asyncio.Task[RelaySession]] = {}
         self._activation_tasks_lock = Lock()
+        self._session_operations: dict[str, asyncio.Lock] = {}
         self._connection_lock = asyncio.Lock()
         self._fanout_failed_sessions: set[str] = set()
         self._fanout_task: asyncio.Task[None] | None = None
@@ -175,33 +176,50 @@ class RelayRuntime:
 
     async def subscribe(self, session_id: str, principal: Principal) -> _Subscription:
         """Freeze the initial snapshot at the same linearization point as activation."""
-        async with self._connection_lock:
-            if principal.source == "adapter":
-                assert principal.drone_id is not None
-                key = (session_id, principal.drone_id)
-                if key in self._adapter_connections:
-                    raise AuthenticationError(
-                        "adapter_already_connected",
-                        "an authenticated connection is already bound to this drone",
-                    )
-            session = self.sessions[session_id]
-            initial_state = session.current_state_if_available()
-            if initial_state is None:
-                initial_state = await asyncio.to_thread(session.current_state)
-            subscription = _Subscription(
-                connection_id=self.event_ids(),
-                principal=principal,
-                initial_state=initial_state,
-                roster_version=int(initial_state["roster_version"]),
-            )
-            if principal.source == "adapter":
-                assert principal.drone_id is not None
-                key = (session_id, principal.drone_id)
-                self._adapter_connections[key] = subscription.connection_id
-            self._subscriptions.setdefault(session_id, {})[subscription.connection_id] = (
-                subscription
-            )
+        async with self._session_operation(session_id):
+            async with self._connection_lock:
+                if principal.source == "adapter":
+                    assert principal.drone_id is not None
+                    key = (session_id, principal.drone_id)
+                    if key in self._adapter_connections:
+                        raise AuthenticationError(
+                            "adapter_already_connected",
+                            "an authenticated connection is already bound to this drone",
+                        )
+                session = self.sessions[session_id]
+                initial_state = session.current_state_if_available()
+                if initial_state is None:
+                    initial_state = await asyncio.to_thread(session.current_state)
+                subscription = _Subscription(
+                    connection_id=self.event_ids(),
+                    principal=principal,
+                    initial_state=initial_state,
+                    roster_version=int(initial_state["roster_version"]),
+                )
+                if principal.source == "adapter":
+                    assert principal.drone_id is not None
+                    key = (session_id, principal.drone_id)
+                    self._adapter_connections[key] = subscription.connection_id
+                self._subscriptions.setdefault(session_id, {})[subscription.connection_id] = (
+                    subscription
+                )
         return subscription
+
+    @asynccontextmanager
+    async def _session_operation(self, session_id: str):
+        lock = self._session_operations.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            yield
+
+    async def process_and_publish(
+        self,
+        session_id: str,
+        operation: Callable[[], list[dict[str, object]]],
+    ) -> list[dict[str, object]]:
+        async with self._session_operation(session_id):
+            events = await asyncio.to_thread(operation)
+            await self.publish(session_id, events)
+            return events
 
     async def unsubscribe(self, session_id: str, subscription: _Subscription) -> None:
         async with self._connection_lock:
@@ -222,18 +240,23 @@ class RelayRuntime:
         async with self._connection_lock:
             subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
             for subscription in subscriptions:
+                projection_versions = [
+                    roster_version
+                    for event in events
+                    if event.get("type") in {"membership", "state"}
+                    and isinstance((roster_version := event.get("roster_version")), int)
+                    and not isinstance(roster_version, bool)
+                ]
+                batch_roster_version = max(projection_versions) if projection_versions else None
+                if (
+                    batch_roster_version is not None
+                    and batch_roster_version < subscription.roster_version
+                ):
+                    continue
                 for event in events:
-                    event_type = event.get("type")
-                    roster_version = event.get("roster_version")
-                    if (
-                        event_type in {"membership", "state"}
-                        and isinstance(roster_version, int)
-                        and not isinstance(roster_version, bool)
-                    ):
-                        if roster_version < subscription.roster_version:
-                            continue
-                        subscription.roster_version = roster_version
                     subscription.queue.put_nowait(event)
+                if batch_roster_version is not None:
+                    subscription.roster_version = batch_roster_version
 
     def connection_count(self) -> int:
         return sum(len(subscriptions) for subscriptions in self._subscriptions.values())
@@ -246,14 +269,13 @@ class RelayRuntime:
                 if session_id in self._fanout_failed_sessions:
                     continue
                 try:
-                    events = await asyncio.to_thread(session.periodic_events)
+                    await self.process_and_publish(session_id, session.periodic_events)
                 except AuditLogError:
                     self._fanout_failed_sessions.add(session_id)
                     _LOGGER.exception(
                         "session fan-out stopped after audit failure session=%s", session_id
                     )
                     continue
-                await self.publish(session_id, events)
 
 
 def create_app(
@@ -331,16 +353,20 @@ def create_app(
                 try:
                     frame = await websocket.receive_json()
                 except json.JSONDecodeError:
-                    events = [
-                        await asyncio.to_thread(
-                            session.protocol_refusal,
-                            reason="invalid_json",
-                            detail="frame must contain valid JSON",
-                        )
-                    ]
+                    await runtime.process_and_publish(
+                        session_id,
+                        lambda: [
+                            session.protocol_refusal(
+                                reason="invalid_json",
+                                detail="frame must contain valid JSON",
+                            )
+                        ],
+                    )
                 else:
-                    events = await asyncio.to_thread(session.process_frame, frame, principal)
-                await runtime.publish(session_id, events)
+                    await runtime.process_and_publish(
+                        session_id,
+                        lambda received=frame: session.process_frame(received, principal),
+                    )
         except WebSocketDisconnect:
             pass
         except AuditLogError:

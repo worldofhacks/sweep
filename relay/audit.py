@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import sqlite3
 import tempfile
@@ -550,7 +551,19 @@ def _validate_record(record: object, expected: int, session: str, line_number: i
         raise AuditLogError(f"wrong event session at line {line_number}")
     if not isinstance(event.get("event_id"), str) or not event["event_id"]:
         raise AuditLogError(f"missing event_id at line {line_number}")
+    _reject_nonfinite_numbers(event)
     _reject_sensitive_fields(event)
+
+
+def _reject_nonfinite_numbers(value: object) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise AuditLogError("audit events cannot contain non-finite numbers")
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _reject_nonfinite_numbers(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _reject_nonfinite_numbers(item)
 
 
 def _reject_sensitive_fields(value: object) -> None:

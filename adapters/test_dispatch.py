@@ -873,6 +873,47 @@ def test_live_selection_change_is_rechecked_before_first_adapter_io() -> None:
     assert camera.calls == []
 
 
+@pytest.mark.parametrize(
+    ("intent_name", "snapshot_change", "aircraft_change", "reason"),
+    [
+        (IntentName.ARM, {"operator_present": False}, {}, RefusalReason.OPERATOR_ABSENT),
+        (IntentName.SELECT, {"operator_present": False}, {}, RefusalReason.OPERATOR_ABSENT),
+        (
+            IntentName.ARM,
+            {},
+            {"flight_state": FlightState.HOVERING, "armed": True},
+            RefusalReason.INVALID_STATE,
+        ),
+    ],
+)
+def test_zero_command_plan_rechecks_live_safety_state_before_projection_update(
+    intent_name: IntentName,
+    snapshot_change: dict[str, object],
+    aircraft_change: dict[str, object],
+    reason: RefusalReason,
+) -> None:
+    snapshot = make_snapshot(1, selection=(1,), flight_state=FlightState.DISARMED, armed=False)
+    _, planner, _, dispatcher, flight, camera = make_stack(snapshot)
+    intent = make_intent(
+        intent_name,
+        selection=() if intent_name is IntentName.ARM else (1,),
+        args={} if intent_name is IntentName.ARM else {"ids": (1,)},
+    )
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+    current = replace(snapshot, **snapshot_change)
+    if aircraft_change:
+        current = replace_aircraft(current, 1, **aircraft_change)
+
+    result = dispatcher.dispatch(plan, snapshot, current_snapshot=lambda: current)
+
+    assert result.status is LifecycleStatus.REFUSED
+    assert result.refusal is not None
+    assert result.refusal.reason is reason
+    assert flight.calls == []
+    assert camera.calls == []
+
+
 def test_takeoff_rechecks_explicit_ground_state_before_adapter_io() -> None:
     snapshot = make_snapshot(
         1,
