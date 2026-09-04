@@ -909,6 +909,7 @@ class ConfirmedPlan:
         if emitted.name.value not in {
             "takeoff",
             "translate",
+            "altitude",
             "come_home",
             "land",
             "land_all",
