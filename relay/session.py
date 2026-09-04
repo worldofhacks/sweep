@@ -378,6 +378,9 @@ class RelaySession:
             events.append(state)
             if transition is not None:
                 events.extend(self._reconcile_membership())
+            reconcile = getattr(self.intent_sink, "reconcile_landing", None)
+            if callable(reconcile):
+                events.extend(reconcile(self))
             return events
 
     def process_acknowledgement(self, raw: object, principal: Principal) -> list[dict[str, object]]:
@@ -561,6 +564,12 @@ class RelaySession:
             LifecycleStatus.INVALIDATED,
         }
         if status in terminal:
+            completion_pending = getattr(self.intent_sink, "completion_pending", None)
+            awaiting_landing = (
+                status is LifecycleStatus.COMPLETED
+                and callable(completion_pending)
+                and completion_pending(intent.intent_id)
+            )
             active = self.current_state()["accepted_plan"]
             events.append(
                 self.update_control_projection(
@@ -570,9 +579,13 @@ class RelaySession:
                         else None
                     ),
                     accepted_plan=(
-                        None
-                        if active is None or active.get("intent_id") == intent.intent_id
-                        else _UNSET
+                        plan_dict
+                        if awaiting_landing
+                        else (
+                            None
+                            if active is None or active.get("intent_id") == intent.intent_id
+                            else _UNSET
+                        )
                     ),
                     armed=(
                         getattr(plan, "armed_update", None)
