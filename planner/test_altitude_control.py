@@ -49,11 +49,15 @@ def wire(args, selection=(1, 2)):
     }
 
 
+def altitude_profile(**changes):
+    return DeterministicPlanner(config(**changes)).capability_profile
+
+
 @pytest.mark.parametrize(
     "args", [{"delta": -1}, {"delta": 0.6096}, {"delta": 0}, {"height_m": 1.524}]
 )
 def test_altitude_forms_validate_without_changing_step_units(args):
-    result = validate_intent(wire(args))
+    result = validate_intent(wire(args), capability_profile=altitude_profile())
     assert isinstance(result, AcceptedIntent)
     assert dict(result.intent.args) == args
 
@@ -75,7 +79,9 @@ def test_altitude_forms_validate_without_changing_step_units(args):
     ],
 )
 def test_malformed_altitude_forms_never_reach_planning(args):
-    assert isinstance(validate_intent(wire(args)), RejectedIntent)
+    assert isinstance(
+        validate_intent(wire(args), capability_profile=altitude_profile()), RejectedIntent
+    )
 
 
 @pytest.mark.parametrize("args", [{"delta": 1}, {"height_m": 1.524}])
@@ -108,7 +114,7 @@ def test_missing_floor_allows_relative_but_refuses_absolute():
 )
 def test_one_foot_relative_motion_preserves_starting_offsets_and_holds(delta, expected):
     snapshot = replace_aircraft(make_snapshot(3, selection=(1, 2)), 2, pose=Position(2, 0, 2))
-    accepted = validate_intent(wire({"delta": delta}))
+    accepted = validate_intent(wire({"delta": delta}), capability_profile=altitude_profile())
     assert isinstance(accepted, AcceptedIntent)
     controller, _, _, _, flight, _ = make_stack(snapshot, config=config())
     result = controller.execute(accepted.intent, snapshot)
@@ -130,7 +136,7 @@ def test_absolute_height_above_explicit_floor_converges_different_starting_heigh
     controller, _, _, _, flight, _ = make_stack(
         snapshot, config=replace(config(), altitude_floor_z_m=1)
     )
-    accepted = validate_intent(wire({"height_m": 1.524}))
+    accepted = validate_intent(wire({"height_m": 1.524}), capability_profile=altitude_profile())
     result = controller.execute(accepted.intent, snapshot)
     assert result.status is LifecycleStatus.COMPLETED
     assert [a.pose.z for a in flight.aircraft.values()] == [2.524, 2.524]

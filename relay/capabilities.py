@@ -1,5 +1,7 @@
 """Bounded intent capability profiles shared by relay validation and planning."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -34,7 +36,7 @@ class CapabilityProfile:
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("capability profile name must not be empty")
-        unsupported = self.enabled_intent_names - C1_IMPLEMENTED_INTENT_NAMES
+        unsupported = self.enabled_intent_names - C1_CONFIGURABLE_INTENT_NAMES
         if unsupported:
             names = ", ".join(sorted(name.value for name in unsupported))
             raise ValueError(f"capability profile enables unimplemented intents: {names}")

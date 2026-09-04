@@ -1,5 +1,6 @@
-import pytest
 from dataclasses import replace
+
+import pytest
 
 from arbiter.safety import SafetyArbiter
 from planner.controller import PreparedExecutionRouter
@@ -7,8 +8,8 @@ from planner.models import FlightState, Plan
 from planner.planner import DeterministicPlanner
 from relay.audit import SessionAuditLog
 from relay.capabilities import (
-    C1_CAPABILITY_PROFILE,
     C1_BASIC_CONTROL_INTENT_NAMES,
+    C1_CAPABILITY_PROFILE,
     CapabilityProfile,
     IntentName,
 )
@@ -60,6 +61,16 @@ def test_altitude_profile_tracks_disabled_relative_and_absolute_configurations(t
         )
     )
     limits = RelayLimits(5_000, 5_000, 1_000, 1_000)
+    snapshot = make_snapshot(1, selection=(1,))
+    controller, planner, _, _, _, _ = make_stack(
+        snapshot,
+        config=replace(
+            planning_config(),
+            altitude_step_m=0.25,
+            altitude_configuration_id="altitude-router-v1",
+        ),
+    )
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
 
     disabled_session = RelaySession(
         session_id="disabled-altitude",
@@ -83,13 +94,27 @@ def test_altitude_profile_tracks_disabled_relative_and_absolute_configurations(t
     relative_raw.update(name="altitude", args={"delta": 1})
     absolute_raw = intent_payload()
     absolute_raw.update(name="altitude", args={"height_m": 1})
+    relative_result = validate_intent(relative_raw, capability_profile=relative.capability_profile)
+    relative_absolute_result = validate_intent(
+        absolute_raw, capability_profile=relative.capability_profile
+    )
+    absolute_result = validate_intent(absolute_raw, capability_profile=absolute.capability_profile)
 
+    assert disabled.capability_profile is C1_CAPABILITY_PROFILE
+    assert planner.capability_profile is not C1_CAPABILITY_PROFILE
+    with pytest.raises(ValueError, match="different capability profiles"):
+        RelaySession(
+            session_id="relative-router-altitude",
+            audit_log=SessionAuditLog(tmp_path, "relative-router-altitude"),
+            limits=limits,
+            intent_sink=router,
+        )
     assert "altitude" not in disabled_session.current_state()["enabled_intent_names"]
     assert "altitude" in relative_session.current_state()["enabled_intent_names"]
     assert "altitude" in absolute_session.current_state()["enabled_intent_names"]
-    assert isinstance(validate_intent(relative_raw, capability_profile=relative.capability_profile), AcceptedIntent)
-    assert isinstance(validate_intent(absolute_raw, capability_profile=relative.capability_profile), RejectedIntent)
-    assert isinstance(validate_intent(absolute_raw, capability_profile=absolute.capability_profile), AcceptedIntent)
+    assert isinstance(relative_result, AcceptedIntent)
+    assert isinstance(relative_absolute_result, RejectedIntent)
+    assert isinstance(absolute_result, AcceptedIntent)
 
 
 def test_profile_rejects_unimplemented_intents() -> None:
