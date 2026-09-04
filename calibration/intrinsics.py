@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from hashlib import sha256
 from math import isfinite
@@ -13,6 +14,7 @@ import numpy as np
 _IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 _MINIMUM_DETECTIONS = 20
 _MAXIMUM_RMS_REPROJECTION_ERROR_PX = 0.5
+_MINIMUM_POSE_CONSTRAINT_RATIO = 0.005
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +66,7 @@ def calibrate(request: CalibrationRequest) -> dict[str, object]:
             "checkerboard inputs must be distinct; duplicate decoded images were supplied"
         )
 
+    _validate_pose_diversity(object_template, image_points, image_size)
     rms_error, camera_matrix, distortion, _, _ = cv2.calibrateCamera(
         object_points, image_points, image_size, None, None
     )
@@ -95,6 +98,51 @@ def calibrate(request: CalibrationRequest) -> dict[str, object]:
     }
 
 
+def _validate_pose_diversity(
+    object_points: np.ndarray, image_points: list[np.ndarray], image_size: tuple[int, int]
+) -> None:
+    def constraint(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        return np.array(
+            [
+                a[0] * b[0],
+                a[0] * b[1] + a[1] * b[0],
+                a[1] * b[1],
+                a[2] * b[0] + a[0] * b[2],
+                a[2] * b[1] + a[1] * b[2],
+                a[2] * b[2],
+            ]
+        )
+
+    constraints = []
+    center = np.asarray(image_size, dtype=float) / 2
+    scale = max(image_size)
+    for corners in image_points:
+        homography, _ = cv2.findHomography(
+            object_points[:, :2], (corners.reshape(-1, 2) - center) / scale
+        )
+        if homography is None or not np.isfinite(homography).all():
+            raise ValueError("checkerboard homography could not be estimated")
+
+        # Orthogonal, equal-length board axes constrain the intrinsic conic.
+        first, second = homography[:, 0], homography[:, 1]
+        for row in (
+            constraint(first, second),
+            constraint(first, first) - constraint(second, second),
+        ):
+            norm = np.linalg.norm(row)
+            if not np.isfinite(norm) or norm == 0:
+                raise ValueError("checkerboard homography is degenerate")
+            constraints.append(row / norm)
+
+    singular_values = np.linalg.svd(constraints, compute_uv=False)
+    # The conic has five degrees of freedom; its sixth singular value is the nullspace.
+    if singular_values[-2] / singular_values[0] < _MINIMUM_POSE_CONSTRAINT_RATIO:
+        raise ValueError(
+            "checkerboard poses are insufficiently varied; capture boards tilted "
+            "in different directions, not only translated or rotated in the image plane"
+        )
+
+
 def _validate_request(request: CalibrationRequest) -> None:
     if not request.images_dir.is_dir():
         raise ValueError(f"images directory does not exist: {request.images_dir}")
@@ -108,11 +156,11 @@ def _validate_request(request: CalibrationRequest) -> None:
         not isinstance(request.inner_corners, tuple)
         or len(request.inner_corners) != 2
         or any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 2
+            not isinstance(value, int) or isinstance(value, bool) or value < 3
             for value in request.inner_corners
         )
     ):
-        raise ValueError("inner corners must be a two-integer tuple, each value at least two")
+        raise ValueError("inner corners must be a two-integer tuple, each value at least three")
 
 
 def _image_paths(directory: Path) -> list[Path]:
@@ -156,7 +204,10 @@ def _pipeline(value: dict[str, object]) -> dict[str, object]:
         if not isinstance(item, str) or not item.strip():
             raise ValueError(f"pipeline {key} must be a non-empty string")
         result[key] = item
-    return result
+    try:
+        return json.loads(json.dumps({**value, **result}, allow_nan=False))
+    except (TypeError, ValueError) as error:
+        raise ValueError("pipeline must contain finite JSON values") from error
 
 
 def _validate_pipeline_resolution(pipeline: dict[str, object], image_size: tuple[int, int]) -> None:

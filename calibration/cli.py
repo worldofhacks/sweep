@@ -18,8 +18,10 @@ def _read_json(path: Path) -> object:
 
 
 def _write_artifact(path: Path, artifact: dict[str, object]) -> None:
+    content = json.dumps(artifact, indent=2, sort_keys=True) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(content)
 
 
 def _corners(value: str) -> tuple[int, int]:
@@ -29,8 +31,8 @@ def _corners(value: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError(
             "inner corners must be COLUMNSxROWS, for example 9x6"
         ) from error
-    if columns < 2 or rows < 2:
-        raise argparse.ArgumentTypeError("inner corners must be at least 2x2")
+    if columns < 3 or rows < 3:
+        raise argparse.ArgumentTypeError("inner corners must be at least 3x3")
     return columns, rows
 
 
@@ -99,5 +101,5 @@ def main() -> None:
     args = _parser().parse_args()
     try:
         args.handler(args)
-    except ValueError as error:
+    except (ValueError, OSError) as error:
         raise SystemExit(f"error: {error}") from error

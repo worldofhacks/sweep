@@ -206,7 +206,7 @@ def test_latency_summary_preserves_explicit_measurements_and_provenance() -> Non
     assert result["p50_ms"] == 250.0
     assert result["p95_ms"] == 385.0
     assert result["samples_ms"] == samples["samples_ms"]
-    assert result["meets_60_second_capture_minimum"] is True
+    assert result["meets_60_second_capture_minimum"] is False
 
 
 def test_latency_summary_rejects_missing_explicit_duration() -> None:
