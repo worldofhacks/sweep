@@ -19,9 +19,11 @@ from tests.autonomy_fixtures import make_snapshot, make_stack, replace_aircraft
 
 
 @pytest.mark.parametrize("postcondition_matches", [True, False])
-@pytest.mark.parametrize("async_completion", [False, True])
+@pytest.mark.parametrize(
+    "async_completion, same_ms_completion", [(False, False), (True, False), (True, True)]
+)
 def test_hold_waits_for_telemetry_before_land_all(
-    tmp_path, monkeypatch, postcondition_matches, async_completion
+    tmp_path, monkeypatch, postcondition_matches, async_completion, same_ms_completion
 ):
     snapshot = make_snapshot(2, flight_state=FlightState.AIRBORNE)
     for drone_id, aircraft in snapshot.aircraft.items():
@@ -113,7 +115,8 @@ def test_hold_waits_for_telemetry_before_land_all(
             current[0] = replace_aircraft(
                 current[0], drone_id, position_last_seen_ms=now[0], link_last_seen_ms=now[0]
             )
-        now[0] += 1
+        if not same_ms_completion:
+            now[0] += 1
         for command in prepared.execution.plan.commands:
             events = relay.process_frame(
                 {

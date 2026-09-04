@@ -378,6 +378,13 @@ class PreparedExecutionRouter:
                     session,
                 )
         events.extend(session.record_execution_result(safety_intent, safety))
+        if intent.name is IntentName.HOLD:
+            # The registered recovery owns every target even while its suffix is pending.
+            events.extend(
+                self._retire_held_motion(
+                    intent, replace(safety, status=LifecycleStatus.EXECUTING), session
+                )
+            )
         return tuple(events)
 
     def _safety_snapshot(self, session: object, fallback: FleetSnapshot) -> FleetSnapshot:
@@ -430,7 +437,7 @@ class PreparedExecutionRouter:
             for intent_id, (prepared, pending, owner) in tuple(self._running.items()):
                 if (
                     owner is session
-                    and intent_id != intent.intent_id
+                    and intent_id not in {intent.intent_id, result.intent_id}
                     and (
                         intent.name is IntentName.ESTOP
                         or held_aircraft.intersection(
@@ -546,11 +553,22 @@ class PreparedExecutionRouter:
         """Retire plans whose roster can no longer authenticate their waiting commands."""
         state = session.current_state()
         roster_version = state["roster_version"]
+        members = {drone["drone_id"]: drone for drone in state["drones"]}
         with self._lock:
             stale = [
                 (prepared, pending)
                 for prepared, pending, owner in self._running.values()
-                if owner is session and prepared.plan.roster_version != roster_version
+                if owner is session
+                and any(
+                    (member := members.get(command.drone_id)) is None
+                    or member["connection_epoch"] != command.connection_epoch
+                    or (
+                        member["membership"] in {"leaving", "disconnected", "degraded"}
+                        and member["membership"]
+                        != prepared.snapshot.aircraft[command.drone_id].membership.value
+                    )
+                    for command in prepared.plan.commands
+                )
             ]
         events: list[dict[str, object]] = []
         for prepared, pending in stale:
@@ -562,7 +580,7 @@ class PreparedExecutionRouter:
                 for drone in state["drones"]:
                     previous = prepared.snapshot.aircraft.get(drone["drone_id"])
                     if previous is None:
-                        break
+                        continue
                     aircraft[previous.drone_id] = replace(
                         previous,
                         connection_epoch=drone["connection_epoch"],
@@ -570,18 +588,17 @@ class PreparedExecutionRouter:
                         control_authority=drone["control_authority"],
                         rc_safety_operator_present=drone["rc_safety_operator_present"],
                     )
-                else:
-                    current = replace(
-                        prepared.snapshot,
-                        roster_version=roster_version,
-                        aircraft=aircraft,
-                        selection=tuple(state["selection"]),
-                        armed=state["armed"],
-                        estop_active=state["estop"],
-                        now_ms=state["t"],
-                    )
-                if len(aircraft) != len(state["drones"]):
-                    continue
+                current = replace(
+                    prepared.snapshot,
+                    roster_version=roster_version,
+                    aircraft=aircraft,
+                    selection=tuple(
+                        drone_id for drone_id in state["selection"] if drone_id in aircraft
+                    ),
+                    armed=state["armed"],
+                    estop_active=state["estop"],
+                    now_ms=state["t"],
+                )
             events.extend(
                 self._dispatch_safety_hold(
                     prepared.intent,

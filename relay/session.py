@@ -137,6 +137,17 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
+            public_id = _safe_string_field(raw, "intent_id")
+            if public_id is not None and public_id.startswith("safety:"):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="reserved_intent_id",
+                        detail="safety: intent IDs are reserved for controller-generated stops",
+                        now=now,
+                        add_to_ledger=False,
+                    )
+                ]
             if principal.source not in REGISTERED_SOURCES or principal.drone_id is not None:
                 return [
                     self._refuse_intent(
