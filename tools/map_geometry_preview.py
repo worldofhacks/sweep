@@ -118,9 +118,10 @@ def write_preview(path, report, grids, points, tags, inset_cells):
     route_status = (
         "clear within authored evidence" if report["route"]["geometry_clear"] else "blocked"
     )
+    atrium = next(f for f in report["formations"] if f["id"] == "atrium")
     atrium_status = (
         "candidate pending measurements"
-        if report["formations"][1]["candidate"]
+        if atrium["candidate"]
         else "rejected; kitchen fallback needs acceptance"
     )
     summary = (

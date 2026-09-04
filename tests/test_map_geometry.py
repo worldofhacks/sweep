@@ -79,6 +79,24 @@ def test_synthetic_pipeline_writes_pinned_grids_and_rejects_atrium(generated):
     )
 
 
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_preview_reports_rejected_atrium_in_either_formation_order(tmp_path, reverse_order):
+    request = read_document(FIXTURE / "geometry_authoring.json")
+    if reverse_order:
+        request["formations"].reverse()
+    path = tmp_path / "input.json"
+    write_document(path, request)
+    output = tmp_path / "output"
+    report = generate(FIXTURE, path, output, ["synthetic-geometry-v1"])
+    formations = {formation["id"]: formation for formation in report["formations"]}
+    assert formations["kitchen"]["candidate"] is True
+    assert formations["atrium"]["candidate"] is False
+    assert report["atrium_recommendation"] == "use_kitchen_only_if_accepted"
+    preview = (output / "preview.html").read_text()
+    assert "Atrium: rejected; kitchen fallback needs acceptance" in preview
+    assert "Atrium: candidate pending measurements" not in preview
+
+
 def domain():
     return [{"polygon": box(-3, -3, 3, 3), "z_min": 0, "z_max": 4, "eligible": True}]
 
@@ -265,6 +283,27 @@ def test_overlapping_drone_envelopes_and_wrong_named_zone_are_rejected(tmp_path)
     assert kitchen["candidate"] is False
     assert atrium["inside_named_zone"] is False
     assert atrium["candidate"] is False
+
+
+@pytest.mark.parametrize("point_count", [2, 3])
+def test_stationary_route_is_rejected_before_clearance_report(tmp_path, point_count):
+    request = read_document(FIXTURE / "geometry_authoring.json")
+    request["route"]["centerline"] = [[0, 0] for _ in range(point_count)]
+    path = tmp_path / "input.json"
+    write_document(path, request)
+    output = tmp_path / "output"
+    with pytest.raises(ValueError, match="route total length must be positive"):
+        generate(FIXTURE, path, output, ["synthetic-geometry-v1"])
+    assert not output.exists()
+
+
+def test_travel_route_can_include_a_repeated_waypoint(tmp_path):
+    request = read_document(FIXTURE / "geometry_authoring.json")
+    request["route"]["centerline"].insert(0, request["route"]["centerline"][0])
+    path = tmp_path / "input.json"
+    write_document(path, request)
+    report = generate(FIXTURE, path, tmp_path / "output", ["synthetic-geometry-v1"])
+    assert report["route"]["geometry_clear"] is True
 
 
 def test_huge_route_is_rejected_before_proximity_allocation(tmp_path):
