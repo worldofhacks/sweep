@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from hashlib import sha256
 from math import ceil, floor, isfinite
 
 from calibration.intrinsics import _pipeline
@@ -42,6 +44,10 @@ def summarize_latency(
         "pipeline": _pipeline(pipeline),
         "sample_count": len(numbers),
         "duration_ms": duration_ms,
+        "samples_ms": numbers,
+        "samples_sha256": sha256(
+            json.dumps(samples, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest(),
         "p50_ms": _percentile(numbers, 50),
         "p95_ms": _percentile(numbers, 95),
         "meets_60_second_capture_minimum": duration_ms >= 60_000,

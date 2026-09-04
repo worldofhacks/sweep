@@ -24,8 +24,11 @@ or network.
 }
 ```
 
-Capture at least five sharp, decoded PNG/JPEG frames at the same resolution, with the
-board tilted and located around the frame rather than repeated at one pose. Then run:
+Capture 20 to 30 sharp, decoded PNG/JPEG frames at the same resolution, with the
+board tilted and located around the frame rather than repeated at one pose. The Mini 3
+live-feed workflow uses 1280x720 images. Recalibrate when the camera serial, image
+resolution, codec, decoder, camera mode, Android device, or network pipeline changes.
+Then run:
 
 ```bash
 uv run python -m calibration intrinsics \
@@ -39,9 +42,9 @@ uv run python -m calibration intrinsics \
 ```
 
 The output is formatted as JSON, which is valid YAML. It records the source hashes,
-OpenCV camera matrix, distortion coefficients, and RMS reprojection error. Review the
-error and images before downstream use; the `offline` status is not an acceptance
-claim.
+OpenCV camera matrix, distortion coefficients, and RMS reprojection error. The tool
+requires at least 20 distinct detections and rejects an RMS error of 0.5 pixels or
+more. Passing that offline quality check is not a hardware or flight acceptance claim.
 
 For latency, provide explicit measured samples and the measured capture duration. Do
 not substitute image decode or file timestamps: they do not establish glass-to-glass
