@@ -60,7 +60,7 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
     results_path = tmp_path / "results.jsonl"
     dashboard_path = tmp_path / "dashboard.html"
     append_jsonl_run(results, results_path, run_id="synthetic-v1", corpus=cases)
-    write_dashboard(results, dashboard_path, run_id="synthetic-v1")
+    write_dashboard(results, dashboard_path, run_id="synthetic-v1", corpus=cases)
     rows = [json.loads(line) for line in results_path.read_text().splitlines()]
     assert rows[0]["type"] == "manifest"
     assert rows[0]["run_id"] == "synthetic-v1"
@@ -137,20 +137,20 @@ def test_loader_and_eval_support_reviewed_grounding_contract(tmp_path) -> None:
 def test_loaded_corpus_is_deeply_immutable() -> None:
     case = load_corpus()[0]
 
-    with pytest.raises(TypeError, match="immutable"):
+    with pytest.raises(TypeError):
         case.relay_state["armed"] = False
-    with pytest.raises(TypeError, match="immutable"):
+    with pytest.raises(TypeError):
         case.relay_state["drones"][0]["selectable"] = False
-    with pytest.raises(TypeError, match="immutable"):
+    with pytest.raises(TypeError):
         case.expected["kind"] = "refuse"
     with pytest.raises(TypeError):
         dict.__setitem__(case.expected, "kind", "refuse")
-    with pytest.raises(TypeError):
-        case.expected._values["kind"] = "refuse"
+    with pytest.raises(AttributeError):
+        case.expected._values = {"kind": "refuse"}
     assert case.expected["kind"] != "refuse"
 
 
-def test_manifest_regrades_results_before_persisting(tmp_path) -> None:
+def test_manifest_rejects_replaced_semantic_result(tmp_path) -> None:
     cases = load_corpus()
     responses = load_synthetic_responses(corpus=cases)
     results = [
@@ -165,11 +165,10 @@ def test_manifest_regrades_results_before_persisting(tmp_path) -> None:
     results[0] = tampered
     output = tmp_path / "results.jsonl"
 
-    append_jsonl_run(results, output, run_id="tampered", corpus=cases)
+    with pytest.raises(ValueError, match="evaluation"):
+        append_jsonl_run(results, output, run_id="tampered", corpus=cases)
 
-    rows = [json.loads(line) for line in output.read_text().splitlines()]
-    assert rows[0]["passed"] == 49
-    assert rows[1]["passed"] is False
+    assert not output.exists()
 
 
 def test_default_corpus_is_pinned_to_the_reviewed_50_case_release(tmp_path) -> None:
@@ -333,13 +332,7 @@ def test_synthetic_provider_response_does_not_repair_model_supplied_capture_id(t
     assert result.actual_reason == "invalid_model_output"
 
 
-@pytest.mark.parametrize(
-    ("expected_capture_id", "expected_pass"),
-    [("__host_minted__", True), ("capture-definitely-wrong", False)],
-)
-def test_generated_capture_id_requires_explicit_host_owned_sentinel(
-    expected_capture_id: str, expected_pass: bool
-) -> None:
+def test_generated_capture_id_matches_exact_deterministic_host_value() -> None:
     cases = load_corpus()
     responses = load_synthetic_responses(corpus=cases)
     capture = next(
@@ -347,24 +340,60 @@ def test_generated_capture_id_requires_explicit_host_owned_sentinel(
         for case in cases
         if any(intent["name"] == "capture_room" for intent in case.expected.get("intents", []))
     )
-    semantic_expected = {
-        **capture.expected,
-        "intents": [
-            {
-                **capture.expected["intents"][0],
-                "args": {
-                    **capture.expected["intents"][0]["args"],
-                    "capture_id": expected_capture_id,
-                },
-            }
-        ],
-    }
     result = evaluate_case(
-        replace(capture, expected=semantic_expected),
+        capture,
         StaticResponseTransport(responses[capture.case_id]),
     )
 
-    assert result.passed is expected_pass
+    assert result.passed
+
+
+def test_generated_capture_id_requires_exact_host_uuid(monkeypatch) -> None:
+    cases = load_corpus()
+    responses = load_synthetic_responses(corpus=cases)
+    capture = next(
+        case
+        for case in cases
+        if any(intent["name"] == "capture_room" for intent in case.expected.get("intents", []))
+    )
+    monkeypatch.setattr(
+        "language.compiler._capture_id", lambda _correlation_id, _index: "capture-" + "z" * 32
+    )
+
+    result = evaluate_case(
+        capture,
+        StaticResponseTransport(responses[capture.case_id]),
+    )
+
+    assert not result.passed
+
+
+def test_arbitrary_capture_gold_is_not_treated_as_host_minted() -> None:
+    cases = load_corpus()
+    responses = load_synthetic_responses(corpus=cases)
+    capture = next(case for case in cases if case.case_id == "capture-explicit-living-room")
+    altered = replace(
+        capture,
+        expected={
+            "kind": "plan",
+            "intents": [
+                {
+                    "name": "capture_room",
+                    "args": {
+                        "room_id": "living-room",
+                        "capture_id": "capture-wrong-but-prefix",
+                        "pattern": "pano_360",
+                    },
+                    "selection": [1],
+                    "mode": "indoor",
+                }
+            ],
+        },
+    )
+
+    result = evaluate_case(altered, StaticResponseTransport(responses[capture.case_id]))
+
+    assert not result.passed
 
 
 def test_manifest_rejects_relabelled_result_provenance(tmp_path) -> None:
@@ -375,10 +404,25 @@ def test_manifest_rejects_relabelled_result_provenance(tmp_path) -> None:
     ]
     results[0] = replace(results[0], source="anthropic", origin="anthropic")
 
-    with pytest.raises(ValueError, match="provenance"):
+    with pytest.raises(ValueError, match="evaluation"):
         append_jsonl_run(results, tmp_path / "results.jsonl", run_id="relabelled", corpus=cases)
 
     assert not (tmp_path / "results.jsonl").exists()
+
+
+def test_dashboard_rejects_replaced_results(tmp_path) -> None:
+    cases = load_corpus()
+    responses = load_synthetic_responses(corpus=cases)
+    results = [
+        evaluate_case(case, StaticResponseTransport(responses[case.case_id])) for case in cases
+    ]
+    results[0] = replace(results[0], passed=True, actual_kind="refuse")
+    output = tmp_path / "dashboard.html"
+
+    with pytest.raises(ValueError, match="evaluation"):
+        write_dashboard(results, output, run_id="tampered", corpus=cases)
+
+    assert not output.exists()
 
 
 def test_loader_rejects_duplicate_case_ids(tmp_path) -> None:

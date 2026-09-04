@@ -122,19 +122,21 @@ class PlanningConfig:
         if self.translation_frame not in {"world", "aircraft_relative"}:
             raise ValueError("translation_frame must be world or aircraft_relative")
 
-    def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding | None:
-        if self.translation_frame != "aircraft_relative":
-            return None
+    def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding:
         return TranslationGrounding(
             policy=TranslationPolicy(
-                frame="aircraft_relative",
+                frame=self.translation_frame,
                 step_m=self.translation_step_m,
             ),
-            headings={
-                drone_id: aircraft.heading_deg
-                for drone_id, aircraft in snapshot.aircraft.items()
-                if aircraft.heading_deg is not None
-            },
+            headings=(
+                {
+                    drone_id: aircraft.heading_deg
+                    for drone_id, aircraft in snapshot.aircraft.items()
+                    if aircraft.heading_deg is not None
+                }
+                if self.translation_frame == "aircraft_relative"
+                else {}
+            ),
         )
 
 
