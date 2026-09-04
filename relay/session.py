@@ -352,6 +352,10 @@ class RelaySession:
     ) -> list[dict[str, object]]:
         intent_id = pending.intent.intent_id
         now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            # Keep dispatch crash-visible without holding the session lock across adapter I/O.
+            operation_id = self.audit_log.begin_operation()
         events: list[dict[str, object]] = []
         try:
             process = getattr(sink, "process_relay_intent", None)
@@ -361,9 +365,11 @@ class RelaySession:
                 events.extend(delivered.relay_events)
             else:
                 sink_result = sink(pending.intent, self.current_state())
-        except Exception:
-            with self._lock, self._audit_operation():
+        except BaseException as error:
+            with self._lock, self._audit_operation(operation_id=operation_id):
                 self._ensure_mutation_usable()
+                if not isinstance(error, Exception):
+                    raise
                 self._intents[intent_id].status = LifecycleStatus.REFUSED
                 self._log_intent(
                     pending.intent,
@@ -379,7 +385,7 @@ class RelaySession:
                         now=now,
                     )
                 ]
-        with self._lock, self._audit_operation():
+        with self._lock, self._audit_operation(operation_id=operation_id):
             self._ensure_mutation_usable()
             if sink_result is None:
                 return events
@@ -1102,15 +1108,16 @@ class RelaySession:
         self._append_audit(event)
 
     @contextmanager
-    def _audit_operation(self) -> Iterator[None]:
+    def _audit_operation(self, *, operation_id: int | None = None) -> Iterator[None]:
         outermost = self._audit_batch is None
         if outermost:
             self._audit_batch = []
-            self._audit_operation_id = None
+            self._audit_operation_id = operation_id
         try:
             yield
             batch = self._audit_batch
-            if outermost and batch:
+            if outermost and (batch or self._audit_operation_id is not None):
+                assert batch is not None
                 self._commit_audit_batch(batch)
         except BaseException as error:
             if (

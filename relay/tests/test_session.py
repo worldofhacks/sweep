@@ -224,7 +224,7 @@ def test_reopen_rebuilds_membership_batch_after_partial_mirror_write(
     assert not reopened.pending_path.exists()
 
 
-def test_nested_sink_projection_commits_with_outer_intent_operation(
+def test_sink_projection_close_failure_leaves_dispatch_durably_incomplete(
     tmp_path: Path,
     clock: MutableClock,
     event_ids: EventIds,
@@ -238,6 +238,7 @@ def test_nested_sink_projection_commits_with_outer_intent_operation(
 
     session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
     holder["session"] = session
+    session.process_intent(intent_payload(), console_principal)
     real_close = os.close
     real_open = os.open
     mirror_descriptors: set[int] = set()
@@ -255,16 +256,14 @@ def test_nested_sink_projection_commits_with_outer_intent_operation(
 
     monkeypatch.setattr(os, "open", track_mirror_open)
     monkeypatch.setattr(os, "close", close_then_fail)
-    with pytest.raises(AuditLogError, match="cannot close session log"):
-        session.process_intent(intent_payload(), console_principal)
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.execute_pending_intent("intent-1")
 
     monkeypatch.setattr(os, "close", real_close)
-    records = SessionAuditLog(tmp_path, SESSION).replay()
-    assert [record["event"]["type"] for record in records] == [
-        "intent_record",
-        "acknowledgement",
-        "state",
-    ]
+    with pytest.raises(AuditLogError, match="incomplete operation"):
+        SessionAuditLog(tmp_path, SESSION).replay()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.current_state()
 
 
 def test_intent_operation_is_durably_pending_before_sink_dispatch(
@@ -289,8 +288,9 @@ def test_intent_operation_is_durably_pending_before_sink_dispatch(
 
     session = _new_session(tmp_path, clock, event_ids, intent_sink=stop_after_dispatch)
 
+    session.process_intent(intent_payload(), console_principal)
     with pytest.raises(AbruptStop):
-        session.process_intent(intent_payload(), console_principal)
+        session.execute_pending_intent("intent-1")
 
     assert observed == {"journal_mode": "wal", "pending": 1}
     assert not session.audit_log.pending_path.exists()
