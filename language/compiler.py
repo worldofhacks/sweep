@@ -6,6 +6,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from math import cos, dist, isfinite, radians, sin
 from threading import RLock
 from typing import Protocol
 
@@ -36,6 +37,7 @@ from relay.contracts import LifecycleStatus
 from relay.intent_v1 import AcceptedIntent, IntentV1, validate_intent
 
 MAX_TRANSCRIPT_CHARS = 4_000
+POSITION_TOLERANCE_M = 0.05
 
 
 class AuditSink(Protocol):
@@ -365,24 +367,21 @@ class ConfirmedPlan:
         *,
         session: str,
         audit: AuditSink,
-        execution_translation: object = None,
     ) -> None:
         if not session:
             raise ValueError("session must be non-empty")
         if session != compiled.facts.session:
             raise ValueError("session must match the compiled authoritative state")
-        if any(intent.name.value == "translate" for intent in compiled.intents):
-            if (
-                not isinstance(execution_translation, TranslationGrounding)
-                or execution_translation.policy.frame != compiled.facts.translation_frame
-                or execution_translation.policy.step_m != compiled.facts.translation_step_m
-            ):
-                raise ValueError("execution translation policy must match the compiled plan")
         self._compiled = compiled
+        self._requires_execution_translation = any(
+            intent.name.value == "translate" for intent in compiled.intents
+        )
         self._session = session
         self._next = 0
         self._awaiting_outcome = False
         self._awaiting_intent_id: str | None = None
+        self._awaiting_facts: GroundingFacts | None = None
+        self._awaiting_takeoff_altitude_m: float | None = None
         self._terminal = False
         self._expected_facts = compiled.facts
         self.audit = audit
@@ -399,6 +398,8 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
+        execution_translation: object = None,
+        execution_takeoff_altitude_m: object = None,
         now_ms: int,
         intent_id: str,
         emit: Callable[[IntentV1], None],
@@ -408,6 +409,8 @@ class ConfirmedPlan:
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
+                execution_translation=execution_translation,
+                execution_takeoff_altitude_m=execution_takeoff_altitude_m,
                 now_ms=now_ms,
                 intent_id=intent_id,
                 emit=emit,
@@ -419,6 +422,8 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
+        execution_translation: object,
+        execution_takeoff_altitude_m: object,
         now_ms: int,
         intent_id: str,
         emit: Callable[[IntentV1], None],
@@ -436,21 +441,7 @@ class ConfirmedPlan:
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
-                translation=(
-                    None
-                    if self._compiled.facts.translation_frame is None
-                    else TranslationGrounding(
-                        policy=TranslationPolicy(
-                            frame=self._compiled.facts.translation_frame,
-                            step_m=self._compiled.facts.translation_step_m,
-                        ),
-                        headings={
-                            drone["drone_id"]: drone["heading_deg"]
-                            for drone in self._compiled.facts.drones
-                            if drone["heading_deg"] is not None
-                        },
-                    )
-                ),
+                translation=self._current_translation(execution_translation),
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
@@ -462,6 +453,9 @@ class ConfirmedPlan:
         if state_age_ms < 0 or state_age_ms > self._compiled.state_max_age_ms:
             raise ConfirmationError("current state is stale")
         proposal = self._compiled.intents[self._next]
+        takeoff_altitude_m = self._execution_takeoff_altitude(
+            proposal, execution_takeoff_altitude_m
+        )
         if not plan_step_matches_facts(proposal, facts):
             self._terminal = True
             raise ConfirmationError("intent is incompatible with the current flight state")
@@ -490,6 +484,8 @@ class ConfirmedPlan:
             raise ConfirmationError("intent emission audit failed before relay send") from None
         self._awaiting_outcome = True
         self._awaiting_intent_id = validated.intent.intent_id
+        self._awaiting_facts = facts
+        self._awaiting_takeoff_altitude_m = takeoff_altitude_m
         self._next += 1
         try:
             emit(validated.intent)
@@ -531,6 +527,8 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
+        execution_translation: object = None,
+        execution_takeoff_altitude_m: object = None,
         now_ms: int,
     ) -> None:
         with self._lock:
@@ -540,6 +538,8 @@ class ConfirmedPlan:
                     relay_state,
                     capability_version=capability_version,
                     rooms=rooms,
+                    execution_translation=execution_translation,
+                    execution_takeoff_altitude_m=execution_takeoff_altitude_m,
                     now_ms=now_ms,
                 )
             except ConfirmationError:
@@ -553,6 +553,8 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
+        execution_translation: object,
+        execution_takeoff_altitude_m: object,
         now_ms: int,
     ) -> None:
         if self._terminal:
@@ -631,21 +633,7 @@ class ConfirmedPlan:
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
-                translation=(
-                    None
-                    if self._compiled.facts.translation_frame is None
-                    else TranslationGrounding(
-                        policy=TranslationPolicy(
-                            frame=self._compiled.facts.translation_frame,
-                            step_m=self._compiled.facts.translation_step_m,
-                        ),
-                        headings={
-                            drone["drone_id"]: drone["heading_deg"]
-                            for drone in self._compiled.facts.drones
-                            if drone["heading_deg"] is not None
-                        },
-                    )
-                ),
+                translation=self._current_translation(execution_translation),
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
@@ -710,6 +698,14 @@ class ConfirmedPlan:
             )
             raise ConfirmationError(f"relay returned terminal status {status.value}")
         emitted = self._compiled.intents[self._next - 1]
+        takeoff_altitude_m = self._execution_takeoff_altitude(emitted, execution_takeoff_altitude_m)
+        if takeoff_altitude_m != self._awaiting_takeoff_altitude_m:
+            self._terminal = True
+            raise ConfirmationError("execution takeoff altitude changed after dispatch")
+        dispatch_facts = self._awaiting_facts
+        if dispatch_facts is None:
+            self._terminal = True
+            raise ConfirmationError("dispatch grounding is unavailable")
         expected_selection = self._expected_facts.selection
         if emitted.name.value == "select":
             expected_selection = tuple(emitted.args["ids"])
@@ -721,8 +717,15 @@ class ConfirmedPlan:
         expected_estop = True if emitted.name.value == "estop" else self._expected_facts.estop
         if facts.estop is not expected_estop:
             raise ConfirmationError("relay estop state does not match the accepted intent")
-        if not _terminal_postcondition_matches(emitted, self._expected_facts, facts):
-            raise ConfirmationError("relay flight state does not match the accepted intent")
+        if not _terminal_postcondition_matches(
+            emitted,
+            dispatch_facts,
+            facts,
+            takeoff_altitude_m=takeoff_altitude_m,
+        ):
+            raise ConfirmationError(
+                "relay flight state or position does not match the accepted intent"
+            )
         accepted_intent_id = self._awaiting_intent_id
         try:
             self.audit.append(
@@ -742,6 +745,35 @@ class ConfirmedPlan:
         self._expected_facts = facts
         self._awaiting_outcome = False
         self._awaiting_intent_id = None
+        self._awaiting_facts = None
+        self._awaiting_takeoff_altitude_m = None
+
+    def _current_translation(self, execution_translation: object) -> TranslationGrounding | None:
+        expected = _translation_grounding(self._compiled.facts)
+        if not self._requires_execution_translation:
+            return expected
+        if (
+            not isinstance(execution_translation, TranslationGrounding)
+            or execution_translation != expected
+        ):
+            self._terminal = True
+            raise ConfirmationError("execution translation grounding changed after preview")
+        return execution_translation
+
+    def _execution_takeoff_altitude(
+        self, intent: ProposedIntent, execution_takeoff_altitude_m: object
+    ) -> float | None:
+        if intent.name.value != "come_home":
+            return None
+        if (
+            isinstance(execution_takeoff_altitude_m, bool)
+            or not isinstance(execution_takeoff_altitude_m, int | float)
+            or not isfinite(execution_takeoff_altitude_m)
+            or execution_takeoff_altitude_m <= 0
+        ):
+            self._terminal = True
+            raise ConfirmationError("execution takeoff altitude is required for come_home")
+        return float(execution_takeoff_altitude_m)
 
 
 def _capture_id(correlation_id: str, index: int) -> str:
@@ -801,16 +833,93 @@ def _terminal_postcondition_matches(
     intent: ProposedIntent,
     before: GroundingFacts,
     after: GroundingFacts,
+    *,
+    takeoff_altitude_m: float | None,
 ) -> bool:
-    old = {int(drone["drone_id"]): drone["flight_state"] for drone in before.drones}
     new = {int(drone["drone_id"]): drone["flight_state"] for drone in after.drones}
     if intent.name.value == "takeoff":
         return all(new.get(drone_id) in {"hovering", "moving"} for drone_id in intent.selection)
     if intent.name.value in {"land", "land_all"}:
-        targets = intent.selection or tuple(old)
+        targets = intent.selection
+        if intent.name.value == "land_all":
+            targets = tuple(
+                int(drone["drone_id"])
+                for drone in before.drones
+                if drone["membership"] in {"ready", "degraded"}
+                and drone["flight_state"] in {"taking_off", "airborne", "hovering", "landing"}
+            )
         return all(new.get(drone_id) in {"landed", "disarmed"} for drone_id in targets)
-    if intent.name.value in {"translate", "come_home"}:
+    if intent.name.value == "translate":
+        translation = _translation_grounding(before)
+        if translation is None:
+            return False
+        dx = float(intent.args["dx"]) * translation.policy.step_m
+        dy = float(intent.args["dy"]) * translation.policy.step_m
+        for drone_id in intent.selection:
+            start = _drone_position(before, drone_id, "position")
+            end = _drone_position(after, drone_id, "position")
+            heading = translation.headings.get(drone_id)
+            if start is None or end is None or heading is None:
+                return False
+            angle = radians(heading)
+            target = (
+                start[0] + dx * cos(angle) - dy * sin(angle),
+                start[1] + dx * sin(angle) + dy * cos(angle),
+                start[2],
+            )
+            if not _position_matches(end, target):
+                return False
+        return all(new.get(drone_id) in {"hovering", "moving"} for drone_id in intent.selection)
+    if intent.name.value == "come_home":
+        if takeoff_altitude_m is None:
+            return False
+        for drone_id in intent.selection:
+            start = _drone_position(before, drone_id, "position")
+            end = _drone_position(after, drone_id, "position")
+            home = _drone_position(before, drone_id, "home_position")
+            if (
+                start is None
+                or end is None
+                or home is None
+                or not _position_matches(
+                    end,
+                    (home[0], home[1], max(start[2], takeoff_altitude_m)),
+                )
+            ):
+                return False
         return all(new.get(drone_id) in {"hovering", "moving"} for drone_id in intent.selection)
     if intent.name.value == "hold":
         return all(new.get(drone_id) == "hovering" for drone_id in intent.selection)
     return True
+
+
+def _translation_grounding(facts: GroundingFacts) -> TranslationGrounding | None:
+    if facts.translation_frame is None or facts.translation_step_m is None:
+        return None
+    return TranslationGrounding(
+        policy=TranslationPolicy(
+            frame=facts.translation_frame,
+            step_m=facts.translation_step_m,
+        ),
+        headings={
+            int(drone["drone_id"]): float(drone["heading_deg"])
+            for drone in facts.drones
+            if drone["heading_deg"] is not None
+        },
+    )
+
+
+def _drone_position(
+    facts: GroundingFacts, drone_id: int, field: str
+) -> tuple[float, float, float] | None:
+    for drone in facts.drones:
+        if drone["drone_id"] == drone_id:
+            value = drone[field]
+            return value if isinstance(value, tuple) else None
+    return None
+
+
+def _position_matches(
+    actual: tuple[float, float, float], expected: tuple[float, float, float]
+) -> bool:
+    return dist(actual, expected) <= POSITION_TOLERANCE_M

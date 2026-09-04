@@ -108,7 +108,7 @@ class GroundingFacts:
             "armed": self.armed,
             "estop": self.estop,
             "selection": list(self.selection),
-            "drones": [_thaw(drone) for drone in self.drones],
+            "drones": [_model_drone(drone) for drone in self.drones],
             "rooms": list(self.rooms),
             "translation": (
                 None
@@ -120,7 +120,11 @@ class GroundingFacts:
         }
 
     def record_dict(self) -> dict[str, object]:
-        return {**self.model_dict(), "state_digest": self.state_digest}
+        return {
+            **self.model_dict(),
+            "drones": [_thaw(drone) for drone in self.drones],
+            "state_digest": self.state_digest,
+        }
 
     @classmethod
     def from_record(cls, raw: object) -> GroundingFacts:
@@ -154,6 +158,8 @@ class GroundingFacts:
                 "camera_patterns",
                 "flight_available",
                 "heading_deg",
+                "position",
+                "home_position",
             }:
                 raise ValueError("persisted grounding drone is invalid")
             if not isinstance(drone["flight_available"], bool):
@@ -167,6 +173,16 @@ class GroundingFacts:
                     "camera_patterns": drone["camera_patterns"],
                     "adapter_capabilities": ["flight"] if drone["flight_available"] else [],
                     "heading_deg": drone["heading_deg"],
+                    "telemetry": (
+                        None
+                        if drone["position"] is None
+                        else dict(zip(("x", "y", "z"), drone["position"], strict=True))
+                    ),
+                    "home_pose": (
+                        None
+                        if drone["home_position"] is None
+                        else dict(zip(("x", "y", "z"), drone["home_position"], strict=True))
+                    ),
                 }
             )
         facts = build_grounding_facts(
@@ -312,6 +328,8 @@ def build_grounding_facts(
         capabilities = raw.get("adapter_capabilities")
         if not _string_list(capabilities):
             raise ValueError("drone capabilities must be a string list")
+        position = _coordinates(raw.get("telemetry"), "telemetry")
+        home_position = _coordinates(raw.get("home_pose"), "home pose")
         drones.append(
             MappingProxyType(
                 {
@@ -322,6 +340,8 @@ def build_grounding_facts(
                     "camera_patterns": tuple(sorted(patterns)),
                     "flight_available": "flight" in capabilities,
                     "heading_deg": heading,
+                    "position": position,
+                    "home_position": home_position,
                 }
             )
         )
@@ -348,6 +368,7 @@ def build_grounding_facts(
         "qualified_voice_intents": list(normalized_qualified),
     }
     stable_facts = dict(model_facts)
+    stable_facts["drones"] = [_thaw(drone) for drone in drones]
     stable_facts.pop("state_time_ms")
     digest = hashlib.sha256(
         json.dumps(stable_facts, separators=(",", ":"), sort_keys=True).encode()
@@ -589,7 +610,7 @@ def _validate_proposed_intent(
     if not isinstance(result, AcceptedIntent):
         return None
     known = {drone["drone_id"]: drone for drone in facts.drones}
-    fleet_wide = result.intent.name in {IntentName.ESTOP, IntentName.LAND_ALL}
+    fleet_wide = result.intent.name in {IntentName.ARM, IntentName.ESTOP, IntentName.LAND_ALL}
     if fleet_wide and selection:
         return None
     if any(drone_id not in known or not known[drone_id]["selectable"] for drone_id in selection):
@@ -664,8 +685,6 @@ def _fold_semantic_state(
     if name in _SELECTION_TARGETED and not selected:
         return None
     if name is IntentName.ARM:
-        if any(states[drone_id] not in {"disarmed", "landed"} for drone_id in selected):
-            return None
         armed = True
     elif name is IntentName.TAKEOFF:
         if not armed or any(
@@ -748,6 +767,32 @@ def _is_finite_number(value: object) -> bool:
         and value == value
         and abs(value) != float("inf")
     )
+
+
+def _coordinates(value: object, field: str) -> tuple[float, float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"drone {field} must be an object or null")
+    coordinates = tuple(value.get(axis) for axis in ("x", "y", "z"))
+    if not all(_is_finite_number(coordinate) for coordinate in coordinates):
+        raise ValueError(f"drone {field} coordinates must be finite numbers")
+    return tuple(float(coordinate) for coordinate in coordinates)
+
+
+def _model_drone(drone: Mapping[str, object]) -> dict[str, object]:
+    return {
+        key: _thaw(drone[key])
+        for key in (
+            "drone_id",
+            "membership",
+            "selectable",
+            "flight_state",
+            "camera_patterns",
+            "flight_available",
+            "heading_deg",
+        )
+    }
 
 
 def _string_list(value: object) -> bool:
