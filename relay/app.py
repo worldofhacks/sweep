@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from threading import Lock, RLock
 
+from anyio import CancelScope
 from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from relay.audit import AuditLogError, SessionAuditLog
@@ -381,18 +382,22 @@ def create_app(
                 if principal.source == "adapter":
                     assert principal.drone_id is not None
                     try:
-                        events = session.handle_adapter_disconnect(
-                            drone_id=principal.drone_id,
-                            connection_epoch=session.registry.connection_epoch(principal.drone_id),
-                        )
+                        with CancelScope(shield=True):
+                            await runtime.process_and_publish(
+                                session_id,
+                                lambda: session.handle_adapter_disconnect(
+                                    drone_id=principal.drone_id,
+                                    connection_epoch=session.registry.connection_epoch(
+                                        principal.drone_id
+                                    ),
+                                ),
+                            )
                     except AuditLogError:
                         _LOGGER.exception(
                             "adapter disconnect audit failed session=%s drone=%s",
                             session_id,
                             principal.drone_id,
                         )
-                    else:
-                        await runtime.publish(session_id, events)
             finally:
                 await runtime.unsubscribe(session_id, subscription)
 
