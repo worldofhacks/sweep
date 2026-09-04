@@ -253,7 +253,7 @@ class RelaySession:
                 status=LifecycleStatus.ACCEPTED,
                 roster_version=self.registry.roster_version,
             )
-            self._append_audit(event)
+            self._append_audit(event, completes_projection=True)
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
             return [event]
@@ -341,7 +341,7 @@ class RelaySession:
                 self._metrics["membership_events"] += 1
                 events.append(transition_event)
             state = self._state_event(now)
-            self._append_audit(state)
+            self._append_audit(state, completes_projection=True)
             events.append(state)
             return events
 
@@ -373,7 +373,7 @@ class RelaySession:
 
             event = acknowledgement.to_event()
             self._record_adapter_ack_fact(acknowledgement)
-            self._append_audit(event)
+            self._append_audit(event, completes_projection=True)
             self._metrics["acknowledgements"] += 1
             return [event]
 
@@ -421,7 +421,7 @@ class RelaySession:
                 detail=detail,
             )
             self._transition_intent(entry, status)
-            self._append_audit(event)
+            self._append_audit(event, completes_projection=True)
             self._metrics["acknowledgements"] += 1
             return event
 
@@ -454,7 +454,7 @@ class RelaySession:
             )
             if intent_id is not None and intent_id in self._intents:
                 self._transition_intent(self._intents[intent_id], LifecycleStatus.REFUSED)
-            self._append_audit(event)
+            self._append_audit(event, completes_projection=True)
             self._metrics["refused_intents"] += 1
             return event
 
@@ -490,7 +490,7 @@ class RelaySession:
                 events.append(event)
             state = self._state_event(now)
             if transitions:
-                self._append_audit(state)
+                self._append_audit(state, completes_projection=True)
             events.append(state)
             return events
 
@@ -525,7 +525,7 @@ class RelaySession:
             if estop is not None:
                 self.registry.set_estop(estop)
             state = self._state_event(now)
-            self._append_audit(state)
+            self._append_audit(state, completes_projection=True)
             return state
 
     def replay(self, *, after_sequence: int = 0) -> dict[str, object]:
@@ -589,7 +589,7 @@ class RelaySession:
                 cleared_control_fields=list(transition.cleared_control_fields),
             )
         self._append_audit(event)
-        self._append_audit(state)
+        self._append_audit(state, completes_projection=True)
         self._metrics["membership_events"] += 1
         return [event, state]
 
@@ -702,7 +702,7 @@ class RelaySession:
             detail=detail,
             roster_version=self.registry.roster_version,
         )
-        self._append_audit(event)
+        self._append_audit(event, completes_projection=True)
         self._metrics["refused_intents"] += 1
         return event
 
@@ -727,7 +727,7 @@ class RelaySession:
             drone_id=drone_id,
             connection_epoch=connection_epoch,
         )
-        self._append_audit(event)
+        self._append_audit(event, completes_projection=True)
         return event
 
     def _log_intent(
@@ -782,7 +782,9 @@ class RelaySession:
         }
         self._append_audit(event)
 
-    def _append_audit(self, event: Mapping[str, object]) -> dict[str, object]:
+    def _append_audit(
+        self, event: Mapping[str, object], *, completes_projection: bool = False
+    ) -> dict[str, object]:
         self._ensure_mutation_usable()
         previous_sequence = self.audit_log.last_sequence
         try:
@@ -793,7 +795,7 @@ class RelaySession:
                 committed = self.audit_log.last_sequence > previous_sequence
             except AuditLogError:
                 committed = False
-            if not committed:
+            if not committed or not completes_projection:
                 self._projection_usable = False
             raise
 

@@ -456,6 +456,38 @@ def test_persisted_replay_cannot_race_live_session_activation(
     assert replay["last_sequence"] == 1
 
 
+def test_persisted_replay_gate_does_not_block_another_session(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructor_started = Event()
+    resume_constructor = Event()
+
+    class PausingAuditLog(SessionAuditLog):
+        def __init__(self, root: Path, session: str) -> None:
+            if session == "session-a":
+                constructor_started.set()
+                assert resume_constructor.wait(timeout=2)
+            super().__init__(root, session)
+
+    monkeypatch.setattr(app_module, "SessionAuditLog", PausingAuditLog)
+    runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        replay_future = executor.submit(runtime.replay, "session-a")
+        assert constructor_started.wait(timeout=2)
+        session_future = executor.submit(runtime.session, "session-b")
+        try:
+            session = session_future.result(timeout=0.5)
+        finally:
+            resume_constructor.set()
+        replay_future.result(timeout=2)
+
+    assert session.session_id == "session-b"
+
+
 def test_initial_send_failure_releases_adapter_binding_and_records_loss(
     app_settings: RelaySettings,
     clock: MutableClock,

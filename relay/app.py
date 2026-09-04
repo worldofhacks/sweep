@@ -8,10 +8,10 @@ import hmac
 import json
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from threading import RLock
+from threading import Lock, RLock
 
 from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
@@ -37,6 +37,12 @@ class _Subscription:
     queue: asyncio.Queue[dict[str, object]] = field(default_factory=asyncio.Queue)
 
 
+@dataclass(slots=True)
+class _SessionGate:
+    lock: RLock = field(default_factory=RLock)
+    users: int = 0
+
+
 class RelayRuntime:
     def __init__(
         self,
@@ -57,13 +63,14 @@ class RelayRuntime:
         self.sessions: dict[str, RelaySession] = {}
         self._subscriptions: dict[str, dict[str, _Subscription]] = {}
         self._adapter_connections: dict[tuple[str, int], str] = {}
-        self._session_lock = RLock()
+        self._session_gates: dict[str, _SessionGate] = {}
+        self._session_gates_lock = Lock()
         self._connection_lock = asyncio.Lock()
         self._fanout_task: asyncio.Task[None] | None = None
 
     def session(self, session_id: str) -> RelaySession:
         _validate_session_id(session_id)
-        with self._session_lock:
+        with self._session_gate(session_id):
             session = self.sessions.get(session_id)
             if session is None:
                 audit_log = SessionAuditLog(self.settings.log_dir, session_id)
@@ -98,7 +105,7 @@ class RelayRuntime:
     def replay(self, session_id: str, *, after_sequence: int = 0) -> dict[str, object]:
         """Read active or persisted history without reopening mutable live state."""
         _validate_session_id(session_id)
-        with self._session_lock:
+        with self._session_gate(session_id):
             session = self.sessions.get(session_id)
             if session is None:
                 audit_log = SessionAuditLog(self.settings.log_dir, session_id)
@@ -114,6 +121,20 @@ class RelayRuntime:
                     "events": records,
                 }
         return session.replay(after_sequence=after_sequence)
+
+    @contextlib.contextmanager
+    def _session_gate(self, session_id: str) -> Iterator[None]:
+        with self._session_gates_lock:
+            gate = self._session_gates.setdefault(session_id, _SessionGate())
+            gate.users += 1
+        try:
+            with gate.lock:
+                yield
+        finally:
+            with self._session_gates_lock:
+                gate.users -= 1
+                if gate.users == 0:
+                    del self._session_gates[session_id]
 
     async def start(self) -> None:
         self._fanout_task = asyncio.create_task(self._fanout_loop())

@@ -238,6 +238,42 @@ def test_session_fails_closed_after_rolled_back_audit_append(
         session.handle_adapter_disconnect(drone_id=1, connection_epoch=1)
 
 
+def test_session_fails_closed_when_committed_record_does_not_complete_batch(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    clock: MutableClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _join(relay_session, adapter_principal)
+    relay_session.process_telemetry(
+        telemetry_payload(event_id="telemetry-before-stale"), adapter_principal
+    )
+    relay_session.process_membership(
+        membership_payload(action="readiness", event_id="readiness-1"), adapter_principal
+    )
+    clock.advance(1_001)
+    relay_session.periodic_events()
+    real_close = os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("injected close failure")
+
+    monkeypatch.setattr(os, "close", close_then_fail)
+
+    with pytest.raises(AuditLogError, match="cannot close session log"):
+        relay_session.process_telemetry(
+            telemetry_payload(event_id="telemetry-recovery", timestamp=clock.value),
+            adapter_principal,
+        )
+
+    assert relay_session.audit_log.replay()[-1]["event"]["event_id"] == "telemetry-recovery"
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        relay_session.current_state()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        relay_session.replay()
+
+
 def test_authenticated_source_cannot_impersonate_another_registered_source(
     relay_session: RelaySession, console_principal: Principal, keyboard_principal: Principal
 ) -> None:
