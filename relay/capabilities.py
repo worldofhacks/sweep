@@ -58,6 +58,7 @@ class CapabilityProfile:
         return {
             "capability_profile": self.name,
             "enabled_intent_names": sorted(name.value for name in self.enabled_intent_names),
+            "altitude_absolute_enabled": self.altitude_absolute_enabled,
         }
 
 

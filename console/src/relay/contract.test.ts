@@ -45,6 +45,7 @@ describe('M1.1 wire compatibility', () => {
         mode: 'indoor',
         capability_profile: 'c1_basic_control',
         enabled_intent_names: ['hold'],
+        altitude_absolute_enabled: false,
         pending: null,
         accepted_plan: null,
         drones: [
@@ -76,6 +77,7 @@ describe('M1.1 wire compatibility', () => {
       mode: 'indoor',
       capability_profile: 'c1_basic_control',
       enabled_intent_names: ['hold'],
+      altitude_absolute_enabled: false,
       pending: null,
       accepted_plan: null,
       drones: [aircraft()],
@@ -102,6 +104,7 @@ describe('M1.1 wire compatibility', () => {
       mode: 'indoor',
       capability_profile: 'c1_basic_control',
       enabled_intent_names: ['hold'],
+      altitude_absolute_enabled: false,
       pending: null,
       accepted_plan: null,
       invalidated_intent_ids: ['intent-capture'],

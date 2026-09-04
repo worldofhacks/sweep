@@ -131,7 +131,7 @@ class PlanningConfig:
 
     def capability_profile(self, requested: CapabilityProfile) -> CapabilityProfile:
         grounding = self.altitude_grounding()
-        if requested is C1_CAPABILITY_PROFILE:
+        if requested == C1_CAPABILITY_PROFILE:
             if grounding is None:
                 return requested
             return requested.with_altitude(

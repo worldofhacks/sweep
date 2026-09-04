@@ -60,6 +60,18 @@ def test_altitude_profile_tracks_disabled_relative_and_absolute_configurations(t
             altitude_configuration_id="altitude-absolute-v1",
         )
     )
+    copied_default = CapabilityProfile(
+        C1_CAPABILITY_PROFILE.name,
+        C1_CAPABILITY_PROFILE.enabled_intent_names,
+    )
+    copied_default_enabled = DeterministicPlanner(
+        replace(
+            planning_config(),
+            altitude_step_m=0.25,
+            altitude_configuration_id="altitude-copied-default-v1",
+        ),
+        copied_default,
+    )
     limits = RelayLimits(5_000, 5_000, 1_000, 1_000)
     snapshot = make_snapshot(1, selection=(1,))
     controller, planner, _, _, _, _ = make_stack(
@@ -102,6 +114,7 @@ def test_altitude_profile_tracks_disabled_relative_and_absolute_configurations(t
 
     assert disabled.capability_profile is C1_CAPABILITY_PROFILE
     assert planner.capability_profile is not C1_CAPABILITY_PROFILE
+    assert copied_default_enabled.capability_profile.supports(IntentName.ALTITUDE)
     with pytest.raises(ValueError, match="different capability profiles"):
         RelaySession(
             session_id="relative-router-altitude",
@@ -112,6 +125,8 @@ def test_altitude_profile_tracks_disabled_relative_and_absolute_configurations(t
     assert "altitude" not in disabled_session.current_state()["enabled_intent_names"]
     assert "altitude" in relative_session.current_state()["enabled_intent_names"]
     assert "altitude" in absolute_session.current_state()["enabled_intent_names"]
+    assert relative_session.current_state()["altitude_absolute_enabled"] is False
+    assert absolute_session.current_state()["altitude_absolute_enabled"] is True
     assert isinstance(relative_result, AcceptedIntent)
     assert isinstance(relative_absolute_result, RejectedIntent)
     assert isinstance(absolute_result, AcceptedIntent)
