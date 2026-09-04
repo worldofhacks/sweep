@@ -914,7 +914,7 @@ class ConfirmedPlan:
             _drone_position_time(facts, drone_id) is None
             or _drone_position_time(facts, drone_id) < completed_at_ms
             or (
-                emitted.name.value == "hold"
+                emitted.name.value in {"hold", "land"}
                 and _drone_position_time(facts, drone_id) == completed_at_ms
             )
             or _drone_position_time(facts, drone_id) <= self._awaiting_emitted_at_ms
