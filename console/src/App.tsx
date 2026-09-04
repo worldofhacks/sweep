@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import GesturePanel from './gesture/GesturePanel'
 import type { IntentFactoryDependencies } from './control/intent'
 import type { ControlClients } from './control/use-control-console'
 import { useControlConsole } from './control/use-control-console'
@@ -34,6 +35,7 @@ export default function App({ sessionId, clients, intentDependencies }: AppProps
     pendingRequest,
     toggleAircraft,
     prepareCapture,
+    prepareHold,
     confirmRequest,
     cancelRequest,
     issueHold,
@@ -470,6 +472,11 @@ export default function App({ sessionId, clients, intentDependencies }: AppProps
               )}
             </section>
           </div>
+
+          <GesturePanel
+            control={{ state, pendingRequest, prepareCapture, prepareHold, confirmRequest, cancelRequest }}
+            roomId={roomId}
+          />
         </main>
       </div>
     </div>

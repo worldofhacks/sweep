@@ -1,0 +1,76 @@
+.gesture-panel { margin-top: 16px; }
+.gesture-panel > summary { list-style: none; cursor: pointer; }
+.gesture-panel > summary::-webkit-details-marker { display: none; }
+.gesture-panel > summary .panel-meta::before { content: '▸ '; }
+.gesture-panel[open] > summary .panel-meta::before { content: '▾ '; }
+.gesture-body {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 16px;
+  padding: 16px;
+}
+.gesture-column { display: grid; gap: 16px; align-content: start; min-width: 0; }
+.gesture-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.gesture-controls label { color: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.gesture-controls select {
+  min-height: 40px;
+  min-width: 200px;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text);
+  background: #0d1116;
+  font-size: 12px;
+}
+.gesture-controls .primary-action, .gesture-controls .secondary-action { width: auto; min-height: 40px; margin: 0; }
+.gesture-status { padding: 16px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-raised); }
+.gesture-status strong { display: block; margin-top: 4px; font-size: 12px; }
+.gesture-status p { margin: 4px 0 0; color: var(--text-secondary); font-size: 10px; line-height: 1.4; }
+.gesture-status.is-tracking { border-color: #275b49; }
+.gesture-status.is-tracking strong { color: var(--ok); }
+.gesture-status.is-model_failed_to_load, .gesture-status.is-webcam_dropped,
+.gesture-status.is-permission_denied, .gesture-status.is-camera_unavailable { border-color: #74363c; background: var(--danger-bg); }
+.gesture-status.is-model_failed_to_load strong, .gesture-status.is-webcam_dropped strong,
+.gesture-status.is-permission_denied strong, .gesture-status.is-camera_unavailable strong { color: var(--danger); }
+.gesture-safety { color: var(--warn) !important; font-weight: 600; }
+.gesture-stage {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  background: #000;
+}
+.gesture-stage video, .gesture-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.gesture-stage canvas { pointer-events: none; }
+.gesture-stage-label {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 2px 6px;
+  color: var(--text-secondary);
+  background: rgb(11 14 18 / 80%);
+  font: 600 9px/1.6 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.gesture-feedback { display: grid; gap: 8px; }
+.gesture-feedback .metric-row { grid-template-columns: 80px minmax(24px, 1fr) 56px; margin-top: 0; }
+.gesture-outcome { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 10px; }
+.status-duplicate_suppressed, .status-low_confidence, .status-dwell_timeout, .status-unmapped { border-color: #665126; color: var(--warn); }
+.gesture-preview { padding: 16px; border: 1px solid var(--border); border-radius: 4px; }
+.gesture-preview strong { display: block; margin-top: 4px; font-size: 12px; }
+.gesture-preview p { margin: 8px 0 0; color: var(--text-secondary); font-size: 10px; line-height: 1.4; }
+.gesture-preview pre { max-height: 200px; overflow: auto; margin: 8px 0 0; padding: 8px; border: 1px solid var(--border); color: var(--text-secondary); background: #0b0e12; font-size: 10px; line-height: 1.5; }
+.gesture-preview .is-blocked { color: var(--warn); }
+.gesture-pairs { width: 100%; border-collapse: collapse; font-size: 10px; }
+.gesture-pairs th, .gesture-pairs td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.gesture-pairs th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; font-size: 9px; }
+.gesture-pairs td { color: var(--text-secondary); }
+.gesture-never { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.45; }
+.gesture-never code { color: var(--danger); }
+.gesture-recording { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: 10px; }
+.gesture-recording div { display: flex; gap: 12px; }
+
+@media (max-width: 880px) {
+  .gesture-body { grid-template-columns: 1fr; }
+}
