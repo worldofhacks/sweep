@@ -27,6 +27,12 @@ export interface PlanPreview {
   title: string
   steps: string[]
   rosterVersion: number
+  /**
+   * Wall-clock deadline for confirming this preview. Set only when the relay
+   * reports a confirmation window; nothing sets it today, so the dock shows
+   * no countdown.
+   */
+  expiresAt?: number
 }
 
 export interface RequestRecord {

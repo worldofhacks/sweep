@@ -49,3 +49,17 @@ and browser playback remain held for M3.1.
 For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
 development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build
 cannot enable it. It is a UI/contract fixture, not acceptance evidence and not a flight simulator.
+
+## Shell and modules
+
+`src/tokens.css` holds the design tokens (colour, type, spacing, radii, shadows, motion,
+breakpoints). `src/shell/` is the persistent frame: header with the network stop, state tags,
+selection, control-authority line, connection pills and session sheet; rail and bottom tab bar;
+the working pane with its sub-tab strip; the fleet context column; and the footer dock that shows
+the one pending plan with its full Intent v1 envelope. `src/modules/registry.ts` declares each
+module (id, label, component, context renderer) in navigation order; module selection lives in the
+shell and a pending request survives switching. Modules the relay does not feed yet render an
+honest empty state.
+
+Fixture scenarios are data only: `/?fixture=control`, `pending4`, `six6`, or `down` select a
+`FixtureRelayClient` scenario for both the console and keyboard sources.
