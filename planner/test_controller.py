@@ -1,7 +1,14 @@
 from dataclasses import replace
 
-from planner.controller import AutonomyController
-from planner.models import FlightState, LifecycleStatus, PreparedExecution, RefusalReason
+from planner.controller import AutonomyController, PreparedExecutionRouter
+from planner.models import (
+    CommandAcknowledgement,
+    ExecutionResult,
+    FlightState,
+    LifecycleStatus,
+    PreparedExecution,
+    RefusalReason,
+)
 from planner.planner import DeterministicPlanner
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
@@ -71,6 +78,88 @@ def test_prepared_plan_dispatches_without_replanning() -> None:
         for call in flight.calls
     }
     assert targets == {1: (0.75, 0.0), 2: (2.0, 0.75)}
+
+
+def test_prepared_router_returns_executing_without_relabelling_it(monkeypatch) -> None:
+    snapshot = make_snapshot(2)
+    controller, _, _, dispatcher, _, _ = make_stack(snapshot)
+    intent = make_intent(IntentName.TRANSLATE, args={"dx": 1, "dy": 0})
+    prepared = controller.prepare(intent, snapshot)
+    assert isinstance(prepared, PreparedExecution)
+    monkeypatch.setattr(
+        dispatcher,
+        "dispatch",
+        lambda plan, _snapshot, *, current_snapshot=None: ExecutionResult(
+            intent_id=plan.intent_id,
+            roster_version=plan.roster_version,
+            status=LifecycleStatus.EXECUTING,
+            plan=plan,
+        ),
+    )
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    router.bind(prepared)
+
+    result = router(intent, {})
+
+    assert result.status is LifecycleStatus.EXECUTING
+    assert result.plan is prepared.plan
+
+
+def test_prepared_router_returns_relay_events_from_terminal_resume(monkeypatch) -> None:
+    snapshot = make_snapshot(2)
+    controller, _, _, dispatcher, _, _ = make_stack(snapshot)
+    intent = make_intent(IntentName.TRANSLATE, args={"dx": 1, "dy": 0})
+    prepared = controller.prepare(intent, snapshot)
+    assert isinstance(prepared, PreparedExecution)
+    pending = ExecutionResult(
+        intent_id=intent.intent_id,
+        roster_version=prepared.plan.roster_version,
+        status=LifecycleStatus.EXECUTING,
+        plan=prepared.plan,
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "dispatch",
+        lambda plan, _snapshot, *, current_snapshot=None: pending,
+    )
+    terminal = ExecutionResult(
+        intent_id=intent.intent_id,
+        roster_version=prepared.plan.roster_version,
+        status=LifecycleStatus.INVALIDATED,
+        plan=prepared.plan,
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "resume_after_completion",
+        lambda *args, **kwargs: terminal,
+    )
+
+    class RecordingSession:
+        def record_execution_result(self, actual_intent, result):  # type: ignore[no-untyped-def]
+            assert actual_intent is intent
+            assert result is terminal
+            return [{"type": "state", "accepted_plan": None}, {"status": "invalidated"}]
+
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    router.bind(prepared)
+    router._submitting_sessions[intent.intent_id] = RecordingSession()
+    assert router(intent, {}).status is LifecycleStatus.EXECUTING
+    acknowledgement = CommandAcknowledgement(
+        command_id="command-1",
+        intent_id=intent.intent_id,
+        roster_version=prepared.plan.roster_version,
+        drone_id=1,
+        connection_epoch=1,
+        status=LifecycleStatus.INVALIDATED,
+    )
+
+    resumed = router.resume(intent.intent_id, acknowledgement)
+
+    assert resumed.execution is terminal
+    assert resumed.relay_events == (
+        {"type": "state", "accepted_plan": None},
+        {"status": "invalidated"},
+    )
 
 
 def test_arm_is_global_and_does_not_depend_on_a_stale_selection() -> None:

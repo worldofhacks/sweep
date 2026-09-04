@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event
 
 import pytest
@@ -35,7 +37,19 @@ from language.transport import (
     TransportError,
 )
 from planner.controller import PreparedExecutionRouter
-from planner.models import FlightState, Position, TranslationGrounding, TranslationPolicy
+from planner.models import (
+    CommandAcknowledgement,
+    ExecutionResult,
+    FlightState,
+    Position,
+    Refusal,
+    RefusalReason,
+    TranslationGrounding,
+    TranslationPolicy,
+)
+from planner.models import (
+    LifecycleStatus as PlannerLifecycleStatus,
+)
 from relay.audit import SessionAuditLog
 from relay.auth import Principal
 from relay.intent_v1 import IntentName, IntentV1
@@ -223,7 +237,8 @@ def _prepare_and_confirm(
     snapshot,
     now_ms: int,
 ):
-    router = PreparedExecutionRouter(controller)
+    current_snapshot = [snapshot]
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: current_snapshot[0])
     prepared = pending.prepare_next(
         state,
         capability_version=case.capability_version,
@@ -233,15 +248,26 @@ def _prepare_and_confirm(
         router=router,
         snapshot=snapshot,
     )
-    return pending.confirm_next(
-        state,
-        capability_version=case.capability_version,
-        rooms=case.rooms,
-        now_ms=now_ms,
-        intent_id=intent_id,
-        emit=lambda intent: router(intent, state),
-        prepared=prepared,
-    )
+    with TemporaryDirectory() as directory:
+        relay = RelaySession(
+            session_id="language-eval",
+            audit_log=SessionAuditLog(Path(directory), "language-eval"),
+            limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+            clock=lambda: now_ms,
+            intent_sink=router,
+        )
+        emitter = router.relay_emitter(
+            relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+        )
+        return pending._confirm_next(
+            state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=now_ms,
+            intent_id=intent_id,
+            emit=emitter,
+            prepared=prepared,
+        )
 
 
 def _intent_dict(intent: IntentV1) -> dict[str, object]:
@@ -495,7 +521,7 @@ def test_selection_scoped_land_runs_from_compiler_confirmation_through_controlle
     assert outcome.kind is OutcomeKind.PLAN
     assert plan is not None
     emitted: list[IntentV1] = []
-    ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()).confirm_next(
+    ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())._confirm_unprepared(
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -614,7 +640,7 @@ def test_confirmation_rejects_changed_execution_translation_headings() -> None:
         ),
     )
 
-    with pytest.raises(ConfirmationError, match="translation differs"):
+    with pytest.raises(ConfirmationError, match="authoritative state|translation differs"):
         _prepare_and_confirm(
             ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()),
             state,
@@ -821,7 +847,7 @@ def test_confirmation_emits_one_valid_intent_then_waits_for_relay() -> None:
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
     emitted: list[IntentV1] = []
-    first = pending.confirm_next(
+    first = pending._confirm_unprepared(
         case.relay_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -835,7 +861,7 @@ def test_confirmation_emits_one_valid_intent_then_waits_for_relay() -> None:
     assert pending.remaining == 1
     assert [intent.name.value for intent in emitted] == ["select"]
     with pytest.raises(ConfirmationError, match="awaiting"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -854,7 +880,7 @@ def test_confirmation_emits_one_valid_intent_then_waits_for_relay() -> None:
         rooms=case.rooms,
         now_ms=case.now_ms + 2,
     )
-    pending.confirm_next(
+    pending._confirm_unprepared(
         updated_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -871,7 +897,7 @@ def test_admission_and_execution_progress_wait_for_terminal_autonomy_outcome() -
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
     emitted: list[IntentV1] = []
-    pending.confirm_next(
+    pending._confirm_unprepared(
         case.relay_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -895,7 +921,7 @@ def test_admission_and_execution_progress_wait_for_terminal_autonomy_outcome() -
         now_ms=case.now_ms + 2,
     )
     with pytest.raises(ConfirmationError, match="awaiting"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -914,7 +940,7 @@ def test_admission_and_execution_progress_wait_for_terminal_autonomy_outcome() -
         rooms=case.rooms,
         now_ms=case.now_ms + 3,
     )
-    pending.confirm_next(
+    pending._confirm_unprepared(
         updated,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -929,7 +955,7 @@ def test_command_scoped_fact_cannot_unlock_or_close_plan() -> None:
     case, (_outcome, plan) = _compile("ordered-select-and-takeoff")
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    pending.confirm_next(
+    pending._confirm_unprepared(
         case.relay_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -954,7 +980,7 @@ def test_command_scoped_fact_cannot_unlock_or_close_plan() -> None:
         )
 
     with pytest.raises(ConfirmationError, match="closed"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1032,7 +1058,8 @@ def test_previewed_plan_reaches_dispatch_through_relay_unchanged(tmp_path, monke
     )
     assert plan is not None
     controller, _, _, dispatcher, flight, _ = make_stack(snapshot, config=config)
-    router = PreparedExecutionRouter(controller)
+    current_snapshot = [snapshot]
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: current_snapshot[0])
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
     prepared = pending.prepare_next(
         state,
@@ -1051,10 +1078,13 @@ def test_previewed_plan_reaches_dispatch_through_relay_unchanged(tmp_path, monke
 
     def record_dispatch(actual_plan, actual_snapshot, *, current_snapshot=None):
         dispatched.append(actual_plan)
-        return original_dispatch(
-            actual_plan,
-            actual_snapshot,
-            current_snapshot=current_snapshot,
+        return replace(
+            original_dispatch(
+                actual_plan,
+                actual_snapshot,
+                current_snapshot=current_snapshot,
+            ),
+            status=PlannerLifecycleStatus.EXECUTING,
         )
 
     monkeypatch.setattr(dispatcher, "dispatch", record_dispatch)
@@ -1066,15 +1096,8 @@ def test_previewed_plan_reaches_dispatch_through_relay_unchanged(tmp_path, monke
         event_ids=lambda: "relay-event",
         intent_sink=router,
     )
-    relay_events = []
-
-    def emit_through_relay(intent: IntentV1) -> None:
-        relay_events.extend(
-            relay.process_intent(
-                _intent_dict(intent),
-                Principal(source="console", drone_id=None, signing_key=b"x" * 32),
-            )
-        )
+    principal = Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+    relay_emitter = router.relay_emitter(relay, principal)
 
     pending.confirm_next(
         state,
@@ -1082,14 +1105,357 @@ def test_previewed_plan_reaches_dispatch_through_relay_unchanged(tmp_path, monke
         rooms=case.rooms,
         now_ms=case.now_ms + 1,
         intent_id="relay-bound-translation",
-        emit=emit_through_relay,
+        emit=relay_emitter,
         prepared=prepared,
     )
 
-    assert relay_events[0]["status"] == "accepted"
+    assert relay.metrics()["accepted_intents"] == 1
+    assert relay.current_state()["accepted_plan"] == prepared.preview()
     assert dispatched == [prepared.execution.plan]
     assert dispatched[0] is prepared.execution.plan
     assert prepared.preview() == dispatched[0].to_dict()
+
+    terminal = ExecutionResult(
+        intent_id=prepared.intent.intent_id,
+        roster_version=prepared.execution.plan.roster_version,
+        status=PlannerLifecycleStatus.REFUSED,
+        plan=prepared.execution.plan,
+        refusal=Refusal(
+            intent_id=prepared.intent.intent_id,
+            roster_version=prepared.execution.plan.roster_version,
+            drone_id=None,
+            connection_epoch=None,
+            reason=RefusalReason.STALE_ROSTER,
+            detail="fleet changed during execution",
+        ),
+    )
+    monkeypatch.setattr(dispatcher, "resume_after_completion", lambda *args, **kwargs: terminal)
+    resumed = router.resume(
+        prepared.intent.intent_id,
+        CommandAcknowledgement(
+            command_id=prepared.execution.plan.commands[0].command_id,
+            intent_id=prepared.intent.intent_id,
+            roster_version=prepared.execution.plan.roster_version,
+            drone_id=prepared.execution.plan.commands[0].drone_id,
+            connection_epoch=1,
+            status=PlannerLifecycleStatus.REFUSED,
+        ),
+    )
+
+    assert resumed.execution is terminal
+    assert [event["type"] for event in resumed.relay_events] == [
+        "state",
+        "refusal",
+    ]
+    assert relay.current_state()["accepted_plan"] is None
+
+
+def test_come_home_preview_rejects_live_home_drift(tmp_path) -> None:
+    case = _case("hold-current-selection")
+    positions = {1: (2.0, 3.0, 1.5), 2: (4.0, 5.0, 1.5)}
+    homes = {1: (0.0, 0.0, 0.0), 2: (0.0, 0.0, 0.0)}
+    state = _with_execution_positions(
+        {**_state(case), "selection": [1]},
+        positions,
+        homes,
+    )
+    response = {
+        "kind": "plan",
+        "intents": [{"name": "come_home", "args": {}, "selection": [1], "mode": "indoor"}],
+    }
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(response), audit=InMemoryAuditSink()
+    ).compile(
+        "Come home.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    snapshot = _snapshot_with_positions(
+        _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms),
+        positions,
+        homes,
+    )
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    current_snapshot = [snapshot]
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: current_snapshot[0])
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    prepared = pending.prepare_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+        intent_id="come-home-drift",
+        router=router,
+        snapshot=snapshot,
+    )
+    current_snapshot[0] = replace_aircraft(
+        snapshot,
+        1,
+        home=Position(10.0, 10.0, 0.0),
+    )
+    relay = RelaySession(
+        session_id="language-eval",
+        audit_log=SessionAuditLog(tmp_path, "language-eval"),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: case.now_ms,
+        intent_sink=router,
+    )
+
+    with pytest.raises(ConfirmationError, match="planner"):
+        pending.confirm_next(
+            state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms,
+            intent_id="come-home-drift",
+            emit=router.relay_emitter(
+                relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+            ),
+            prepared=prepared,
+        )
+
+    assert flight.calls == []
+
+
+def test_motion_preview_survives_later_confirmation_timestamp() -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    positions = {
+        drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+        for drone_id, aircraft in snapshot.aircraft.items()
+    }
+    state = _with_execution_positions(_state(case), positions)
+    config = replace(planning_config(translation_frame="world"), translation_step_m=0.75)
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+    ).compile(
+        case.transcript,
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=config.translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
+    current_snapshot = [snapshot]
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: current_snapshot[0])
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    prepared = pending.prepare_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="delayed-confirmation",
+        router=router,
+        snapshot=snapshot,
+    )
+    refreshed = {**state, "t": case.now_ms + 2, "event_id": "refreshed-state"}
+    current_snapshot[0] = replace(snapshot, now_ms=case.now_ms + 2)
+
+    with TemporaryDirectory() as directory:
+        relay = RelaySession(
+            session_id="language-eval",
+            audit_log=SessionAuditLog(Path(directory), "language-eval"),
+            limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+            clock=lambda: case.now_ms + 2,
+            intent_sink=router,
+        )
+        emitted = pending.confirm_next(
+            refreshed,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 2,
+            intent_id="delayed-confirmation",
+            emit=router.relay_emitter(
+                relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+            ),
+            prepared=prepared,
+        )
+
+    assert emitted.t == case.now_ms + 2
+    assert [call.operation.value for call in flight.calls] == ["goto", "goto"]
+
+
+def test_motion_confirmation_rejects_forged_preparation_and_different_sink(tmp_path) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    positions = {
+        drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+        for drone_id, aircraft in snapshot.aircraft.items()
+    }
+    state = _with_execution_positions(_state(case), positions)
+    config = replace(planning_config(translation_frame="world"), translation_step_m=0.75)
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+    ).compile(
+        case.transcript,
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=config.translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
+    expected_router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    wrong_router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    prepared = pending.prepare_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="sink-bound",
+        router=expected_router,
+        snapshot=snapshot,
+    )
+    relay = RelaySession(
+        session_id="language-eval",
+        audit_log=SessionAuditLog(tmp_path, "language-eval"),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: case.now_ms + 1,
+        intent_sink=wrong_router,
+    )
+    wrong_emitter = wrong_router.relay_emitter(
+        relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+    )
+
+    with pytest.raises(ConfirmationError, match="issued planner result and sink"):
+        pending._confirm_next(
+            state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 1,
+            intent_id="sink-bound",
+            emit=wrong_emitter,
+            prepared=replace(prepared),
+        )
+
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    prepared = pending.prepare_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="wrong-sink",
+        router=expected_router,
+        snapshot=snapshot,
+    )
+    with pytest.raises(ConfirmationError, match="issued planner result and sink"):
+        pending._confirm_next(
+            state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 1,
+            intent_id="wrong-sink",
+            emit=wrong_emitter,
+            prepared=prepared,
+        )
+
+    assert flight.calls == []
+
+
+def test_global_arm_uses_exact_prepared_plan_and_projects_relay_state(tmp_path) -> None:
+    case = _case("hold-current-selection")
+    snapshot = replace(_snapshot_at(make_snapshot(2), case.now_ms), armed=False)
+    for drone_id in snapshot.aircraft:
+        snapshot = replace_aircraft(
+            snapshot,
+            drone_id,
+            armed=False,
+            flight_state=FlightState.LANDED,
+            pose=Position(snapshot.aircraft[drone_id].pose.x, 0.0, 0.0),
+        )
+    positions = {
+        drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+        for drone_id, aircraft in snapshot.aircraft.items()
+    }
+    state = _with_execution_positions({**_state(case), "armed": False}, positions)
+    state["drones"] = [{**drone, "flight_state": "landed"} for drone in state["drones"]]
+    response = {
+        "kind": "plan",
+        "intents": [{"name": "arm", "args": {}, "selection": [], "mode": "indoor"}],
+    }
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(response), audit=InMemoryAuditSink()
+    ).compile(
+        "Arm the fleet.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    prepared = pending.prepare_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="arm-global",
+        router=router,
+        snapshot=snapshot,
+    )
+    relay = RelaySession(
+        session_id="language-eval",
+        audit_log=SessionAuditLog(tmp_path, "language-eval"),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: case.now_ms + 1,
+        intent_sink=router,
+    )
+    emitter = router.relay_emitter(
+        relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+    )
+
+    pending.confirm_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="arm-global",
+        emit=emitter,
+        prepared=prepared,
+    )
+
+    assert relay.current_state()["armed"] is True
+    assert flight.calls == []
+
+
+def test_public_confirmation_requires_planner_preparation_for_arm() -> None:
+    case = _case("hold-current-selection")
+    response = {
+        "kind": "plan",
+        "intents": [{"name": "arm", "args": {}, "selection": [], "mode": "indoor"}],
+    }
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(response), audit=InMemoryAuditSink()
+    ).compile(
+        "Arm the fleet.",
+        {**_state(case), "armed": False},
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    emitted: list[IntentV1] = []
+
+    with pytest.raises(ConfirmationError, match="issued planner result"):
+        ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()).confirm_next(
+            {**_state(case), "armed": False},
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 1,
+            intent_id="unprepared-arm",
+            emit=emitted.append,
+        )
+
+    assert emitted == []
 
 
 def test_preparation_rejects_snapshot_older_than_relay_position_evidence() -> None:
@@ -1123,8 +1489,57 @@ def test_preparation_rejects_snapshot_older_than_relay_position_evidence() -> No
             rooms=case.rooms,
             now_ms=case.now_ms + 1,
             intent_id="stale-preparation",
-            router=PreparedExecutionRouter(controller),
+            router=PreparedExecutionRouter(controller, current_snapshot=lambda: stale),
             snapshot=stale,
+        )
+
+    assert flight.calls == []
+
+
+def test_preparation_compares_unselected_aircraft_used_by_spacing_safety() -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
+    positions = {
+        drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+        for drone_id, aircraft in snapshot.aircraft.items()
+    }
+    positions[2] = (0.5, 0.0, 1.0)
+    state = _with_execution_positions({**_state(case), "selection": [1]}, positions)
+    response = {
+        "kind": "plan",
+        "intents": [
+            {
+                "name": "translate",
+                "args": {"dx": 1, "dy": 0},
+                "selection": [1],
+                "mode": "indoor",
+            }
+        ],
+    }
+    config = replace(planning_config(translation_frame="world"), translation_step_m=0.5)
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(response), audit=InMemoryAuditSink()
+    ).compile(
+        "Move right.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=config.translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+
+    with pytest.raises(ConfirmationError, match="authoritative state"):
+        pending.prepare_next(
+            state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 1,
+            intent_id="unselected-spacing",
+            router=PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot),
+            snapshot=snapshot,
         )
 
     assert flight.calls == []
@@ -1170,7 +1585,7 @@ def test_wrong_relay_outcome_cannot_unlock_next_intent() -> None:
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
     emitted: list[IntentV1] = []
-    pending.confirm_next(
+    pending._confirm_unprepared(
         case.relay_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1188,7 +1603,7 @@ def test_wrong_relay_outcome_cannot_unlock_next_intent() -> None:
             now_ms=case.now_ms + 2,
         )
     with pytest.raises(ConfirmationError, match="closed"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1205,7 +1620,7 @@ def test_relay_refusal_is_logged_and_closes_plan() -> None:
     audit = InMemoryAuditSink()
     pending = ConfirmedPlan(plan, session="language-eval", audit=audit)
     emitted: list[IntentV1] = []
-    pending.confirm_next(
+    pending._confirm_unprepared(
         case.relay_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1226,7 +1641,7 @@ def test_relay_refusal_is_logged_and_closes_plan() -> None:
             now_ms=case.now_ms + 2,
         )
     with pytest.raises(ConfirmationError, match="closed"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1244,7 +1659,7 @@ def test_unexpected_selection_after_ack_cannot_unlock_next_intent() -> None:
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
     emitted: list[IntentV1] = []
-    pending.confirm_next(
+    pending._confirm_unprepared(
         case.relay_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1275,7 +1690,7 @@ def test_state_change_blocks_confirmation_without_emission() -> None:
     changed["selection"] = [1]
     emitted: list[IntentV1] = []
     with pytest.raises(ConfirmationError, match="changed after preview"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             changed,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1287,7 +1702,7 @@ def test_state_change_blocks_confirmation_without_emission() -> None:
     assert pending.remaining == 1
 
     with pytest.raises(ConfirmationError, match="closed"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1304,7 +1719,7 @@ def test_newer_equivalent_state_allows_confirmation() -> None:
     refreshed = dict(case.relay_state)
     refreshed["t"] = case.now_ms + 100
     emitted: list[IntentV1] = []
-    pending.confirm_next(
+    pending._confirm_unprepared(
         refreshed,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1315,13 +1730,39 @@ def test_newer_equivalent_state_allows_confirmation() -> None:
     assert len(emitted) == 1
 
 
+def test_relay_acceptance_may_share_the_emission_millisecond() -> None:
+    case, (_outcome, plan) = _compile("hold-current-selection")
+    assert plan is not None
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    emitted = pending._confirm_unprepared(
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="same-ms-accepted",
+        emit=lambda _intent: None,
+    )
+    accepted = _lifecycle(case, emitted.intent_id, "accepted", source="relay")
+    accepted["t"] = emitted.t
+
+    pending.acknowledge(
+        accepted,
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+    )
+
+    assert pending.remaining == 0
+
+
 def test_stale_state_blocks_confirmation_without_emission() -> None:
     case, (_outcome, plan) = _compile("hold-current-selection")
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
     emitted: list[IntentV1] = []
     with pytest.raises(ConfirmationError, match="stale"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1344,7 +1785,7 @@ def test_ambiguous_post_send_failure_closes_plan_without_duplicate_emission() ->
         raise RuntimeError("relay unavailable")
 
     with pytest.raises(RuntimeError, match="relay unavailable"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1353,7 +1794,7 @@ def test_ambiguous_post_send_failure_closes_plan_without_duplicate_emission() ->
             emit=fail,
         )
     with pytest.raises(ConfirmationError, match="closed"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1520,6 +1961,7 @@ def test_confirmation_uses_actual_terminal_flight_state_for_next_step() -> None:
     state = {**case.relay_state, "armed": True, "selection": [1]}
     state["drones"] = [{**drone, "heading_deg": 0.0} for drone in state["drones"]]
     execution_snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
+    execution_snapshot = replace_aircraft(execution_snapshot, 2, flight_state=FlightState.LANDED)
     state = _with_execution_positions(
         state,
         {
@@ -1555,7 +1997,7 @@ def test_confirmation_uses_actual_terminal_flight_state_for_next_step() -> None:
     )
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    pending.confirm_next(
+    pending._confirm_unprepared(
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1657,7 +2099,7 @@ def test_durable_plan_record_rehydrates_executable_preview(tmp_path) -> None:
 
     restored = CompiledPlan.from_audit_event(log.replay()[0]["event"])
     emitted: list[IntentV1] = []
-    ConfirmedPlan(restored, session="language-eval", audit=InMemoryAuditSink()).confirm_next(
+    ConfirmedPlan(restored, session="language-eval", audit=InMemoryAuditSink())._confirm_unprepared(
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1714,7 +2156,7 @@ def test_equivalent_newer_state_event_can_confirm_the_next_plan_step() -> None:
     )
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    pending.confirm_next(
+    pending._confirm_unprepared(
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1738,7 +2180,7 @@ def test_equivalent_newer_state_event_can_confirm_the_next_plan_step() -> None:
     periodic = {**after_select, "t": case.now_ms + 2, "event_id": "state-periodic"}
     emitted: list[IntentV1] = []
 
-    pending.confirm_next(
+    pending._confirm_unprepared(
         periodic,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1769,7 +2211,7 @@ def test_position_noise_does_not_invalidate_preview_authorization() -> None:
     )
     emitted: list[IntentV1] = []
 
-    ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()).confirm_next(
+    ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())._confirm_unprepared(
         periodic,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1788,7 +2230,7 @@ def test_audit_failure_before_emission_closes_plan_without_sending() -> None:
     emitted: list[IntentV1] = []
 
     with pytest.raises(ConfirmationError, match="audit failed before relay send"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1797,7 +2239,7 @@ def test_audit_failure_before_emission_closes_plan_without_sending() -> None:
             emit=emitted.append,
         )
     with pytest.raises(ConfirmationError, match="closed"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1822,7 +2264,7 @@ def test_concurrent_confirmation_emits_only_once() -> None:
         assert release.wait(timeout=2)
 
     def confirm(intent_id: str) -> IntentV1:
-        return pending.confirm_next(
+        return pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1852,7 +2294,7 @@ def test_expired_plan_blocks_confirmation() -> None:
         audit=InMemoryAuditSink(),
     )
     with pytest.raises(ConfirmationError, match="expired"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             case.relay_state,
             capability_version=case.capability_version,
             rooms=case.rooms,
@@ -1909,7 +2351,7 @@ def test_terminal_state_mismatch_closes_plan_before_retry() -> None:
     case, (_outcome, plan) = _compile("ordered-select-and-takeoff")
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    pending.confirm_next(
+    pending._confirm_unprepared(
         case.relay_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -1955,7 +2397,7 @@ def test_takeoff_completion_requires_airborne_authoritative_state() -> None:
     )
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    pending.confirm_next(
+    pending._confirm_unprepared(
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -2003,7 +2445,7 @@ def test_land_all_completion_ignores_disconnected_historical_aircraft() -> None:
     )
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    pending.confirm_next(
+    pending._confirm_unprepared(
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -2393,7 +2835,7 @@ def test_progress_audit_failure_closes_plan() -> None:
     pending = ConfirmedPlan(
         plan, session="language-eval", audit=FailOnEventAudit("intent_progress")
     )
-    pending.confirm_next(
+    pending._confirm_unprepared(
         case.relay_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -2446,7 +2888,7 @@ def test_next_step_revalidates_removed_room_before_emission() -> None:
     )
     assert plan is not None
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    pending.confirm_next(
+    pending._confirm_unprepared(
         case.relay_state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -2464,7 +2906,7 @@ def test_next_step_revalidates_removed_room_before_emission() -> None:
     emitted: list[IntentV1] = []
 
     with pytest.raises(ConfirmationError, match="incompatible"):
-        pending.confirm_next(
+        pending._confirm_unprepared(
             {**case.relay_state, "t": case.now_ms + 3},
             capability_version=case.capability_version,
             rooms=(),

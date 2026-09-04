@@ -8,15 +8,17 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from types import MappingProxyType
-from weakref import WeakKeyDictionary
+from weakref import ReferenceType, WeakKeyDictionary, ref
 
 from language.compiler import InMemoryAuditSink, TranscriptCompiler
 from language.contracts import OutcomeKind
 from language.transport import (
     PINNED_COMPILER_MODEL,
     PROMPT_SCHEMA_VERSION,
+    AnthropicTransport,
     ModelResponse,
     ModelTransport,
+    ReplayTransport,
 )
 from planner.models import TranslationGrounding, TranslationPolicy
 
@@ -47,7 +49,7 @@ _HOST_MINTED_EXPECTATIONS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
 class CorpusCase:
     case_id: str
     transcript: str
@@ -64,7 +66,7 @@ class CorpusCase:
     corpus_digest: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
 class LoadedCorpus:
     cases: tuple[CorpusCase, ...]
     digest: str
@@ -106,7 +108,15 @@ class CaseResult:
     latency_ms: int
 
 
-_ISSUED_RESULTS: WeakKeyDictionary[CaseResult, None] = WeakKeyDictionary()
+@dataclass(frozen=True, slots=True)
+class _EvaluationEvidence:
+    case: CorpusCase
+    result: tuple[object, ...]
+
+
+_ISSUED_CORPORA: WeakKeyDictionary[LoadedCorpus, tuple[CorpusCase, ...]] = WeakKeyDictionary()
+_ISSUED_CASES: WeakKeyDictionary[CorpusCase, ReferenceType[LoadedCorpus]] = WeakKeyDictionary()
+_ISSUED_RESULTS: WeakKeyDictionary[CaseResult, _EvaluationEvidence] = WeakKeyDictionary()
 
 
 class EvalTrace:
@@ -162,7 +172,12 @@ def load_corpus(path: Path | None = None) -> LoadedCorpus:
         corpus_digest != REVIEWED_CORPUS_DIGEST or len(parsed) != REVIEWED_CORPUS_CASES
     ):
         raise ValueError("default language corpus does not match the reviewed 50-case release")
-    return LoadedCorpus(cases=parsed, digest=corpus_digest, reviewed=reviewed)
+    loaded = LoadedCorpus(cases=parsed, digest=corpus_digest, reviewed=reviewed)
+    if reviewed:
+        _ISSUED_CORPORA[loaded] = parsed
+        for case in parsed:
+            _ISSUED_CASES[case] = ref(loaded)
+    return loaded
 
 
 def load_synthetic_responses(
@@ -237,8 +252,7 @@ def evaluate_case(case: CorpusCase, transport: ModelTransport) -> CaseResult:
         and ("detail" not in case.expected or outcome.detail == expected_detail)
         and outcome.pending_intent_id == expected_pending_intent_id
     )
-    source = outcome.source
-    origin = str(trace.completed.get("origin", "template"))
+    source, origin = _trusted_provenance(outcome.source, trace.completed, transport)
     model = str(trace.completed.get("model", PINNED_COMPILER_MODEL))
     prompt_schema_version = str(trace.completed.get("prompt_schema_version", PROMPT_SCHEMA_VERSION))
     cassette_digest = _optional_digest(trace.completed.get("cassette_digest"))
@@ -262,7 +276,7 @@ def evaluate_case(case: CorpusCase, transport: ModelTransport) -> CaseResult:
         output_units=_metric(trace.completed.get("output_units")),
         latency_ms=_metric(trace.completed.get("provider_latency_ms")),
     )
-    _ISSUED_RESULTS[result] = None
+    _ISSUED_RESULTS[result] = _EvaluationEvidence(case=case, result=_result_evidence(result))
     return result
 
 
@@ -275,30 +289,31 @@ def append_jsonl_run(
 ) -> None:
     if not run_id:
         raise ValueError("run ID must be non-empty")
-    regraded = _validate_and_regrade(results, corpus)
+    materialized = tuple(results)
+    regraded = _validate_and_regrade(materialized, corpus)
     path.parent.mkdir(parents=True, exist_ok=True)
     categories: dict[str, int] = {}
-    for result in results:
+    for result in materialized:
         categories[result.category] = categories.get(result.category, 0) + 1
     manifest = {
         "type": "manifest",
         "run_id": run_id,
-        "cases": len(results),
+        "cases": len(materialized),
         "case_ids": list(corpus.case_ids),
         "passed": sum(regraded),
         "corpus_digest": corpus.digest,
-        "models": sorted({result.model for result in results}),
-        "prompt_schema_versions": sorted({result.prompt_schema_version for result in results}),
-        "response_sources": sorted({result.source for result in results}),
-        "response_origins": sorted({result.origin for result in results}),
+        "models": sorted({result.model for result in materialized}),
+        "prompt_schema_versions": sorted({result.prompt_schema_version for result in materialized}),
+        "response_sources": sorted({result.source for result in materialized}),
+        "response_origins": sorted({result.origin for result in materialized}),
         "cassette_digests": sorted(
-            {result.cassette_digest for result in results if result.cassette_digest}
+            {result.cassette_digest for result in materialized if result.cassette_digest}
         ),
         "categories": categories,
-        "live_demo_cases": sum(result.live_demo for result in results),
+        "live_demo_cases": sum(result.live_demo for result in materialized),
     }
     rows = [json.dumps(manifest, separators=(",", ":"), sort_keys=True)]
-    for result, passed in zip(results, regraded, strict=True):
+    for result, passed in zip(materialized, regraded, strict=True):
         rows.append(
             json.dumps(
                 {
@@ -334,7 +349,8 @@ def append_jsonl_run(
 def write_dashboard(
     results: Sequence[CaseResult], path: Path, *, run_id: str, corpus: LoadedCorpus
 ) -> None:
-    regraded = _validate_and_regrade(results, corpus)
+    materialized = tuple(results)
+    regraded = _validate_and_regrade(materialized, corpus)
     passed_count = sum(regraded)
     rows = "".join(
         "<tr>"
@@ -345,13 +361,13 @@ def write_dashboard(
         f"<td>{result.input_units + result.output_units}</td>"
         f"<td>{result.latency_ms}</td>"
         "</tr>"
-        for result, passed in zip(results, regraded, strict=True)
+        for result, passed in zip(materialized, regraded, strict=True)
     )
     document = (
         '<!doctype html><meta charset="utf-8">'
         f"<title>Language eval {escape(run_id)}</title>"
         f"<h1>Language eval {escape(run_id)}</h1>"
-        f"<p>{passed_count}/{len(results)} cases passed.</p>"
+        f"<p>{passed_count}/{len(materialized)} cases passed.</p>"
         "<table><thead><tr><th>Case</th><th>Result</th><th>Outcome</th>"
         "<th>Reason</th><th>Units</th><th>Latency ms</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
@@ -543,19 +559,70 @@ def _result_matches_case(result: CaseResult, case: CorpusCase) -> bool:
 def _validate_and_regrade(results: Sequence[CaseResult], corpus: LoadedCorpus) -> tuple[bool, ...]:
     if not isinstance(corpus, LoadedCorpus):
         raise ValueError("eval output requires a loaded corpus")
-    if not corpus.reviewed or corpus.digest != REVIEWED_CORPUS_DIGEST:
+    issued_cases = _ISSUED_CORPORA.get(corpus)
+    if (
+        not corpus.reviewed
+        or corpus.digest != REVIEWED_CORPUS_DIGEST
+        or issued_cases is None
+        or corpus.cases is not issued_cases
+    ):
         raise ValueError("eval output requires the reviewed loaded corpus")
     if tuple(result.case_id for result in results) != corpus.case_ids:
         raise ValueError("eval results must cover every case exactly once in corpus order")
-    if any(result not in _ISSUED_RESULTS for result in results):
-        raise ValueError("eval results must be issued by evaluation")
     if any(
-        result.corpus_digest != corpus.digest
-        or result.category != case.category
-        or result.live_demo != case.live_demo
-        for result, case in zip(results, corpus, strict=True)
+        (evidence := _ISSUED_RESULTS.get(result)) is None
+        or evidence.case is not case
+        or (owner := _ISSUED_CASES.get(case)) is None
+        or owner() is not corpus
+        or evidence.result != _result_evidence(result)
+        for result, case in zip(results, issued_cases, strict=True)
     ):
-        raise ValueError("eval results do not match the loaded corpus")
+        raise ValueError("eval results must be issued by evaluation for the loaded corpus")
     return tuple(
-        _result_matches_case(result, case) for result, case in zip(results, corpus, strict=True)
+        _result_matches_case(result, case)
+        for result, case in zip(results, issued_cases, strict=True)
+    )
+
+
+def _trusted_provenance(
+    outcome_source: str,
+    trace: Mapping[str, object],
+    transport: ModelTransport,
+) -> tuple[str, str]:
+    if outcome_source == "template":
+        return "template", "template"
+    if type(transport) is StaticResponseTransport:
+        expected = ("synthetic", "synthetic")
+    elif type(transport) is ReplayTransport:
+        expected = ("replay", "unverified_replay")
+    elif type(transport) is AnthropicTransport:
+        expected = ("anthropic", "anthropic")
+    else:
+        raise ValueError("evaluation transport provenance is not trusted")
+    actual = (outcome_source, str(trace.get("origin", "")))
+    if actual != expected:
+        raise ValueError("evaluation response provenance does not match its transport")
+    return expected
+
+
+def _result_evidence(result: CaseResult) -> tuple[object, ...]:
+    return (
+        result.case_id,
+        result.passed,
+        result.actual_kind,
+        result.actual_reason,
+        result.actual_detail,
+        result.actual_pending_intent_id,
+        result.actual_intents,
+        result.source,
+        result.origin,
+        result.model,
+        result.prompt_schema_version,
+        result.cassette_digest,
+        result.category,
+        result.live_demo,
+        result.corpus_digest,
+        result.input_units,
+        result.output_units,
+        result.latency_ms,
     )

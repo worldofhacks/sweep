@@ -34,7 +34,7 @@ from relay.state import FleetRegistry, MembershipTransition, RegistryError
 
 Clock = Callable[[], int]
 EventIdFactory = Callable[[], str]
-IntentSink = Callable[[IntentV1, dict[str, object]], None]
+IntentSink = Callable[[IntentV1, dict[str, object]], object]
 LeaveAuthorizer = Callable[[int, int, dict[str, object]], bool]
 _UNSET = object()
 
@@ -237,24 +237,6 @@ class RelaySession:
                 command_statuses={},
             )
             self._log_intent(intent, outcome=LifecycleStatus.ACCEPTED, reason=None, now=now)
-            try:
-                self.intent_sink(intent, self.current_state())
-            except Exception:
-                self._intents[intent.intent_id].status = LifecycleStatus.REFUSED
-                self._log_intent(
-                    intent,
-                    outcome=LifecycleStatus.REFUSED,
-                    reason="downstream_error",
-                    now=now,
-                )
-                return [
-                    self._refusal(
-                        intent_id=intent.intent_id,
-                        reason="downstream_error",
-                        detail="the downstream intent consumer did not accept the request",
-                        now=now,
-                    )
-                ]
             event = acknowledgement_event(
                 t=now,
                 event_id=self.event_ids(),
@@ -266,7 +248,29 @@ class RelaySession:
             self._append_audit(event)
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
-            return [event]
+            try:
+                downstream = self.intent_sink(intent, self.current_state())
+            except Exception:
+                self._intents[intent.intent_id].status = LifecycleStatus.REFUSED
+                self._log_intent(
+                    intent,
+                    outcome=LifecycleStatus.REFUSED,
+                    reason="downstream_error",
+                    now=now,
+                )
+                return [
+                    event,
+                    self._refusal(
+                        intent_id=intent.intent_id,
+                        reason="downstream_error",
+                        detail="the downstream intent consumer did not accept the request",
+                        now=now,
+                    ),
+                ]
+            events = [event]
+            if downstream is not None:
+                events.extend(self._record_execution_result(intent, downstream))
+            return events
 
     def process_membership(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -467,6 +471,68 @@ class RelaySession:
             self._append_audit(event)
             self._metrics["refused_intents"] += 1
             return event
+
+    def record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:
+        with self._lock:
+            if intent.intent_id not in self._intents:
+                raise ValueError("unknown intent_id")
+            return self._record_execution_result(intent, result)
+
+    def _record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:
+        raw_status = getattr(getattr(result, "status", None), "value", None)
+        try:
+            status = LifecycleStatus(raw_status)
+        except (TypeError, ValueError):
+            raise ValueError("intent sink returned an invalid execution status") from None
+        if getattr(result, "intent_id", None) != intent.intent_id:
+            raise ValueError("intent sink returned an execution for another intent")
+        plan = getattr(result, "plan", None)
+        if plan is None:
+            raise ValueError("intent sink returned execution without its accepted plan")
+        plan_dict = plan.to_dict()
+        events: list[dict[str, object]] = []
+        terminal = {
+            LifecycleStatus.COMPLETED,
+            LifecycleStatus.REFUSED,
+            LifecycleStatus.FAILED,
+            LifecycleStatus.INVALIDATED,
+        }
+        if status in terminal:
+            events.append(
+                self.update_control_projection(
+                    selection=(
+                        getattr(plan, "selection_update", None)
+                        if status is LifecycleStatus.COMPLETED
+                        else None
+                    ),
+                    accepted_plan=None,
+                    armed=(
+                        getattr(plan, "armed_update", None)
+                        if status is LifecycleStatus.COMPLETED
+                        else None
+                    ),
+                    estop=(
+                        getattr(plan, "estop_update", None)
+                        if status is LifecycleStatus.COMPLETED
+                        else None
+                    ),
+                )
+            )
+        elif status is LifecycleStatus.EXECUTING:
+            events.append(self.update_control_projection(accepted_plan=plan_dict))
+        refusal = getattr(result, "refusal", None)
+        reason = getattr(getattr(refusal, "reason", None), "value", None)
+        detail = getattr(refusal, "detail", None)
+        events.append(
+            self.record_lifecycle(
+                intent_id=intent.intent_id,
+                status=status,
+                source="autonomy",
+                reason=reason,
+                detail=detail,
+            )
+        )
+        return events
 
     def handle_adapter_disconnect(
         self, *, drone_id: int, connection_epoch: int | None
