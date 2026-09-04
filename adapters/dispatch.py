@@ -208,21 +208,8 @@ class AdapterDispatcher:
                 current,
                 projected_positions=projected,
             )
-            if refusal is None and plan.intent_name is IntentName.ALTITUDE:
-                grounding = (
-                    self.current_altitude_grounding()
-                    if self.current_altitude_grounding is not None
-                    else None
-                )
-                if grounding is None or grounding != plan.altitude_grounding:
-                    refusal = Refusal(
-                        intent_id=plan.intent_id,
-                        roster_version=current.roster_version,
-                        drone_id=command.drone_id,
-                        connection_epoch=command.connection_epoch,
-                        reason=RefusalReason.INVALID_STATE,
-                        detail="altitude configuration changed or unavailable; preview again",
-                    )
+            if refusal is None:
+                refusal = self._altitude_grounding_refusal(plan, command, current)
             if refusal is not None:
                 if plan.intent_name is IntentName.CAPTURE_ROOM:
                     affected[command.drone_id] = command
@@ -338,13 +325,8 @@ class AdapterDispatcher:
                 acknowledgements.append(outcome)
                 latest = outcome
 
-            # Camera work does not intentionally change the aircraft pose or
-            # flight state. Re-run the complete live command gate after the I/O
-            # result so drift, authority loss, or stale telemetry that occurs
-            # during an adapter call cannot be certified as a completed mission.
-            # The completed acknowledgement/media stays in the audit trail, but
-            # dependent camera work never advances and the target is held.
-            if plan.intent_name is IntentName.CAPTURE_ROOM:
+            # Preserve completed I/O evidence while refusing stale mission completion.
+            if plan.intent_name in {IntentName.CAPTURE_ROOM, IntentName.ALTITUDE}:
                 after = provider()
                 post_io_refusal = self.arbiter.check_command(
                     plan,
@@ -352,6 +334,8 @@ class AdapterDispatcher:
                     after,
                     projected_positions=projected,
                 )
+                if post_io_refusal is None:
+                    post_io_refusal = self._altitude_grounding_refusal(plan, command, after)
                 if post_io_refusal is not None:
                     affected[command.drone_id] = command
                     acknowledgements.extend(
@@ -474,6 +458,27 @@ class AdapterDispatcher:
             plan=plan,
             acknowledgements=tuple(acknowledgements),
             capture_bundle=bundle,
+        )
+
+    def _altitude_grounding_refusal(
+        self, plan: Plan, command: Command, snapshot: FleetSnapshot
+    ) -> Refusal | None:
+        if plan.intent_name is not IntentName.ALTITUDE:
+            return None
+        grounding = (
+            self.current_altitude_grounding()
+            if self.current_altitude_grounding is not None
+            else None
+        )
+        if grounding is not None and grounding == plan.altitude_grounding:
+            return None
+        return Refusal(
+            intent_id=plan.intent_id,
+            roster_version=snapshot.roster_version,
+            drone_id=command.drone_id,
+            connection_epoch=command.connection_epoch,
+            reason=RefusalReason.INVALID_STATE,
+            detail="altitude configuration changed or unavailable; preview again",
         )
 
     def validate_acknowledgement(
@@ -774,6 +779,31 @@ class AdapterDispatcher:
             return self._invalid_resume(
                 plan, current, "camera media context cannot be reconstructed for resume"
             )
+
+        if plan.intent_name is IntentName.ALTITUDE:
+            projected = {}
+            for completed in completed_prefix:
+                target = self.arbiter.command_position(
+                    completed, current.aircraft[completed.drone_id]
+                )
+                if target is not None:
+                    projected[completed.drone_id] = target
+            refusal = self.arbiter.check_command(
+                plan, command, current, projected_positions=projected
+            )
+            if refusal is None:
+                refusal = self._altitude_grounding_refusal(plan, command, current)
+            if refusal is not None:
+                holds = self._hold_affected(
+                    plan, {done.drone_id: done for done in completed_prefix}, provider
+                )
+                return self._invalidated_resume(
+                    plan,
+                    provider(),
+                    refusal.reason,
+                    refusal.detail,
+                    acknowledgements=(*prior_acks, *holds),
+                )
 
         if command_index + 1 == len(plan.commands):
             return ExecutionResult(
