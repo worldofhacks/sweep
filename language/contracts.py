@@ -34,7 +34,7 @@ _STABLE_MOTION_STATES = frozenset({"airborne", "hovering"})
 _EXPLICIT_TRANSLATION = re.compile(
     r"\bfly\s+(?P<direction>forward|backward|left|right)"
     r"(?:\s+(?P<distance>\d+(?:\.\d+)?)\s*(?P<unit>foot|feet|metres?|meters?))?"
-    r"(?=$|[.!?,;:])",
+    r"(?=\s*(?:$|[.!?,;:]))",
     re.IGNORECASE,
 )
 _NAMED_TRANSLATION = re.compile(
