@@ -572,6 +572,11 @@ class RelaySession:
                 self._command_waiters.pop(command_id, None)
         return acknowledgement
 
+    def discard_command_waiter(self, command_id: str) -> None:
+        """Stop waking a caller for a command that could not reach the node."""
+        with self._lock:
+            self._command_waiters.pop(command_id, None)
+
     def media_files(self, drone_id: int, capture_id: str) -> tuple[MediaFileRecord, ...]:
         """Return media records the node reported for a capture in its current epoch."""
         with self._lock:

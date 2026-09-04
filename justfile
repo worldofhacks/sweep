@@ -42,6 +42,10 @@ console:
 media:
     docker compose up mediamtx
 
+# Connect a fake bridge node to a running relay (Ctrl-C stops it); reads .env credentials
+fake-node drone_id="1" session="demo" relay="ws://127.0.0.1:8000":
+    uv run python -m adapters.dji_mini3.fake_node --drone-id {{drone_id}} --session {{session}} --relay {{relay}}
+
 # Requires a prior: glab auth login --hostname labs.gauntletai.com
 # Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main
 gitlab-remote:
