@@ -590,7 +590,7 @@ def test_voice_estop_requires_exact_phrase_and_qualification(
     assert outcome.kind is expected_kind
 
 
-def test_selection_scoped_land_stays_behind_capability_gate() -> None:
+def test_selected_land_preserves_current_aircraft_selection() -> None:
     case = _case("hold-current-selection")
     state = _state(case)
     outcome, plan = TranscriptCompiler(
@@ -615,9 +615,11 @@ def test_selection_scoped_land_stays_behind_capability_gate() -> None:
         rooms=case.rooms,
         now_ms=case.now_ms,
     )
-    assert outcome.kind is OutcomeKind.REFUSE
-    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
-    assert plan is None
+    assert outcome.kind is OutcomeKind.PLAN
+    assert plan is not None
+    assert [intent.semantic_dict() for intent in outcome.intents] == [
+        {"name": "land", "args": {}, "selection": [1, 2], "mode": "indoor"}
+    ]
 
 
 def test_compiled_translation_uses_planner_owned_policy_without_widening_intent() -> None:

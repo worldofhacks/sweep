@@ -81,6 +81,7 @@ M20_SUPPORTED_NAMES = frozenset(
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
