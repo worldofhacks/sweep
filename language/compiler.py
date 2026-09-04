@@ -543,7 +543,7 @@ class ConfirmedPlan:
                 self._terminal = True
                 raise ConfirmationError("confirmation requires its issued planner result and sink")
             execution_plan = prepared.execution.plan
-        elif proposal.name.value in {"translate", "come_home"}:
+        elif proposal.name.value in {"translate", "altitude", "come_home"}:
             self._terminal = True
             raise ConfirmationError("motion confirmation requires the previewed planner result")
         try:
@@ -834,7 +834,11 @@ class ConfirmedPlan:
             self._pending_completion = dict(outcome)
             return
         emitted = self._compiled.intents[self._next - 1]
-        requires_post_dispatch_position = emitted.name.value in {"translate", "come_home"}
+        requires_post_dispatch_position = emitted.name.value in {
+            "translate",
+            "altitude",
+            "come_home",
+        }
         if facts.state_time_ms < self._awaiting_emitted_at_ms or (
             requires_post_dispatch_position and facts.state_time_ms == self._awaiting_emitted_at_ms
         ):
@@ -1151,7 +1155,7 @@ def _terminal_postcondition_matches(
                 and drone["flight_state"] in {"taking_off", "airborne", "hovering", "landing"}
             )
         return all(new.get(drone_id) in {"landed", "disarmed"} for drone_id in targets)
-    if intent.name.value in {"translate", "come_home"}:
+    if intent.name.value in {"translate", "altitude", "come_home"}:
         if execution_plan is None:
             return False
         targets = _goto_targets(execution_plan, intent.selection)

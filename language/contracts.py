@@ -25,6 +25,7 @@ _SELECTION_TARGETED = frozenset(
         IntentName.TAKEOFF,
         IntentName.LAND,
         IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
         IntentName.HOLD,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
@@ -748,7 +749,7 @@ def _fold_semantic_state(
             return None
         for drone_id in selected:
             states[drone_id] = "hovering"
-    elif name in {IntentName.TRANSLATE, IntentName.COME_HOME}:
+    elif name in {IntentName.TRANSLATE, IntentName.ALTITUDE, IntentName.COME_HOME}:
         if not armed or any(states[drone_id] not in _STABLE_MOTION_STATES for drone_id in selected):
             return None
         for drone_id in selected:
