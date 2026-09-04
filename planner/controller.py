@@ -165,7 +165,20 @@ class PreparedExecutionRouter:
             for drone_id, aircraft in current.aircraft.items()
         ):
             raise ValueError("safety enrichment belongs to another connection epoch")
-        return current
+        return replace(
+            current,
+            aircraft={
+                drone_id: replace(
+                    aircraft,
+                    heading_deg=(
+                        aircraft.heading_deg
+                        if aircraft.heading_deg is not None
+                        else enriched.aircraft[drone_id].heading_deg
+                    ),
+                )
+                for drone_id, aircraft in current.aircraft.items()
+            },
+        )
 
     def __call__(self, intent: IntentV1, relay_state: object) -> ExecutionResult:
         with self._lock:
@@ -183,6 +196,19 @@ class PreparedExecutionRouter:
         refusal = self.controller.arbiter.check_plan(prepared.plan, current)
         if refusal is None:
             refusal = self.controller.arbiter.check_intent(intent, current)
+        if refusal is None:
+            current_plan = self.controller.planner.plan(intent, current)
+            if isinstance(current_plan, Refusal):
+                refusal = current_plan
+            elif current_plan != prepared.plan:
+                refusal = Refusal(
+                    intent_id=intent.intent_id,
+                    roster_version=current.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.INVALID_PLAN,
+                    detail="authoritative state changed the confirmed plan; preview again",
+                )
         if refusal is not None:
             return ExecutionResult(
                 intent_id=intent.intent_id,

@@ -489,7 +489,8 @@ class AdapterDispatcher:
         if (
             terminal_ack.command_id != waiting.command_id
             or not self._ack_matches_command(terminal_ack, command)
-            or terminal_ack.status is not LifecycleStatus.COMPLETED
+            or terminal_ack.status
+            not in {LifecycleStatus.COMPLETED, LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
         ):
             return self._invalid_resume(plan, current, "terminal acknowledgement is mismatched")
 
@@ -525,6 +526,32 @@ class AdapterDispatcher:
                 RefusalReason.STALE_CONNECTION_EPOCH,
                 "plan was invalidated by an aircraft connection-epoch change",
                 acknowledgements=(*prior_acks, *holds),
+            )
+        if terminal_ack.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}:
+            holds = self._hold_affected(
+                plan,
+                {affected.drone_id: affected for affected in completed_prefix},
+                provider,
+            )
+            latest = provider()
+            reason = terminal_ack.reason or RefusalReason.ADAPTER_FAILURE
+            failure = Refusal(
+                intent_id=plan.intent_id,
+                roster_version=latest.roster_version,
+                drone_id=command.drone_id,
+                connection_epoch=command.connection_epoch,
+                reason=reason,
+                detail=terminal_ack.detail or reason.value,
+                status=terminal_ack.status,
+            )
+            return ExecutionResult(
+                intent_id=plan.intent_id,
+                roster_version=latest.roster_version,
+                status=terminal_ack.status,
+                plan=plan,
+                acknowledgements=(*prior_acks, *holds),
+                refusal=failure,
+                degraded_aircraft=(command.drone_id,),
             )
         completed_ids = frozenset(
             ack.command_id for ack in (*pending.acknowledgements[:-1], terminal_ack)
@@ -626,7 +653,8 @@ class AdapterDispatcher:
             return self._invalid_resume(plan, current, "estop completion is not pending")
         command = plan.commands[command_index]
         if (
-            terminal_ack.status is not LifecycleStatus.COMPLETED
+            terminal_ack.status
+            not in {LifecycleStatus.COMPLETED, LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
             or not self._ack_matches_command(terminal_ack, command)
             or current.aircraft.get(command.drone_id) is None
             or current.aircraft[command.drone_id].connection_epoch != command.connection_epoch
@@ -634,6 +662,25 @@ class AdapterDispatcher:
             return self._invalid_resume(plan, current, "estop completion is stale or mismatched")
         acknowledgements = list(pending.acknowledgements)
         acknowledgements[command_index] = terminal_ack
+        if terminal_ack.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}:
+            reason = terminal_ack.reason or RefusalReason.ADAPTER_FAILURE
+            return ExecutionResult(
+                intent_id=plan.intent_id,
+                roster_version=current.roster_version,
+                status=terminal_ack.status,
+                plan=plan,
+                acknowledgements=tuple(acknowledgements),
+                refusal=Refusal(
+                    intent_id=plan.intent_id,
+                    roster_version=current.roster_version,
+                    drone_id=command.drone_id,
+                    connection_epoch=command.connection_epoch,
+                    reason=reason,
+                    detail=terminal_ack.detail or reason.value,
+                    status=terminal_ack.status,
+                ),
+                degraded_aircraft=(command.drone_id,),
+            )
         status = (
             LifecycleStatus.EXECUTING
             if any(
@@ -656,7 +703,7 @@ class AdapterDispatcher:
         pending: ExecutionResult,
         terminal_ack: CommandAcknowledgement,
     ) -> int | None:
-        """Correlate a completed stop ack without trusting current roster state."""
+        """Correlate a terminal stop ack without trusting current roster state."""
         if len(pending.acknowledgements) != len(plan.commands) or any(
             not AdapterDispatcher._ack_matches_command(ack, command)
             for ack, command in zip(pending.acknowledgements, plan.commands, strict=True)
@@ -684,10 +731,11 @@ class AdapterDispatcher:
         if command_index is None:
             return None
         command = plan.commands[command_index]
-        if (
-            terminal_ack.status is not LifecycleStatus.COMPLETED
-            or not AdapterDispatcher._ack_matches_command(terminal_ack, command)
-        ):
+        if terminal_ack.status not in {
+            LifecycleStatus.COMPLETED,
+            LifecycleStatus.FAILED,
+            LifecycleStatus.INVALIDATED,
+        } or not AdapterDispatcher._ack_matches_command(terminal_ack, command):
             return None
         return command_index
 
