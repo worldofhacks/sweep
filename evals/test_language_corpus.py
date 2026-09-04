@@ -145,6 +145,9 @@ def test_loaded_corpus_is_deeply_immutable() -> None:
         case.expected["kind"] = "refuse"
     with pytest.raises(TypeError):
         dict.__setitem__(case.expected, "kind", "refuse")
+    with pytest.raises(TypeError):
+        case.expected._values["kind"] = "refuse"
+    assert case.expected["kind"] != "refuse"
 
 
 def test_manifest_regrades_results_before_persisting(tmp_path) -> None:
@@ -330,7 +333,13 @@ def test_synthetic_provider_response_does_not_repair_model_supplied_capture_id(t
     assert result.actual_reason == "invalid_model_output"
 
 
-def test_generated_capture_id_is_compared_by_host_owned_shape() -> None:
+@pytest.mark.parametrize(
+    ("expected_capture_id", "expected_pass"),
+    [("__host_minted__", True), ("capture-definitely-wrong", False)],
+)
+def test_generated_capture_id_requires_explicit_host_owned_sentinel(
+    expected_capture_id: str, expected_pass: bool
+) -> None:
     cases = load_corpus()
     responses = load_synthetic_responses(corpus=cases)
     capture = next(
@@ -345,7 +354,7 @@ def test_generated_capture_id_is_compared_by_host_owned_shape() -> None:
                 **capture.expected["intents"][0],
                 "args": {
                     **capture.expected["intents"][0]["args"],
-                    "capture_id": "capture-semantic-reference",
+                    "capture_id": expected_capture_id,
                 },
             }
         ],
@@ -355,7 +364,21 @@ def test_generated_capture_id_is_compared_by_host_owned_shape() -> None:
         StaticResponseTransport(responses[capture.case_id]),
     )
 
-    assert result.passed
+    assert result.passed is expected_pass
+
+
+def test_manifest_rejects_relabelled_result_provenance(tmp_path) -> None:
+    cases = load_corpus()
+    responses = load_synthetic_responses(corpus=cases)
+    results = [
+        evaluate_case(case, StaticResponseTransport(responses[case.case_id])) for case in cases
+    ]
+    results[0] = replace(results[0], source="anthropic", origin="anthropic")
+
+    with pytest.raises(ValueError, match="provenance"):
+        append_jsonl_run(results, tmp_path / "results.jsonl", run_id="relabelled", corpus=cases)
+
+    assert not (tmp_path / "results.jsonl").exists()
 
 
 def test_loader_rejects_duplicate_case_ids(tmp_path) -> None:

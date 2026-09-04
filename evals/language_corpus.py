@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import escape
 from pathlib import Path
+from types import MappingProxyType
 
 from language.compiler import InMemoryAuditSink, TranscriptCompiler
 from language.contracts import OutcomeKind
@@ -36,8 +37,9 @@ LEGACY_SYNTHETIC_RESPONSES_PATH = (
     / "fixtures"
     / "transcript_plan_responses.synthetic.json"
 )
-REVIEWED_CORPUS_DIGEST = "94da020a71522dbae39bd2257a1dcc60942c280661df8e3c77b6cc44b70adae3"
+REVIEWED_CORPUS_DIGEST = "d3b4ca32f06c0488fd54bce4f3ae7031d8bb514ff8d4173777915c5111d3ca80"
 REVIEWED_CORPUS_CASES = 50
+HOST_MINTED_SENTINEL = "__host_minted__"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +99,17 @@ class CaseResult:
     input_units: int
     output_units: int
     latency_ms: int
+    _evidence: _EvaluationEvidence | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluationEvidence:
+    case_id: str
+    source: str
+    origin: str
+    model: str
+    prompt_schema_version: str
+    cassette_digest: str | None
 
 
 class EvalTrace:
@@ -225,6 +238,11 @@ def evaluate_case(case: CorpusCase, transport: ModelTransport) -> CaseResult:
         and ("detail" not in case.expected or outcome.detail == expected_detail)
         and outcome.pending_intent_id == expected_pending_intent_id
     )
+    source = outcome.source
+    origin = str(trace.completed.get("origin", "template"))
+    model = str(trace.completed.get("model", PINNED_COMPILER_MODEL))
+    prompt_schema_version = str(trace.completed.get("prompt_schema_version", PROMPT_SCHEMA_VERSION))
+    cassette_digest = _optional_digest(trace.completed.get("cassette_digest"))
     return CaseResult(
         case_id=case.case_id,
         passed=passed,
@@ -233,19 +251,25 @@ def evaluate_case(case: CorpusCase, transport: ModelTransport) -> CaseResult:
         actual_detail=outcome.detail,
         actual_pending_intent_id=outcome.pending_intent_id,
         actual_intents=actual_intents,
-        source=outcome.source,
-        origin=str(trace.completed.get("origin", "template")),
-        model=str(trace.completed.get("model", PINNED_COMPILER_MODEL)),
-        prompt_schema_version=str(
-            trace.completed.get("prompt_schema_version", PROMPT_SCHEMA_VERSION)
-        ),
-        cassette_digest=_optional_digest(trace.completed.get("cassette_digest")),
+        source=source,
+        origin=origin,
+        model=model,
+        prompt_schema_version=prompt_schema_version,
+        cassette_digest=cassette_digest,
         category=case.category,
         live_demo=case.live_demo,
         corpus_digest=case.corpus_digest,
         input_units=_metric(trace.completed.get("input_units")),
         output_units=_metric(trace.completed.get("output_units")),
         latency_ms=_metric(trace.completed.get("provider_latency_ms")),
+        _evidence=_EvaluationEvidence(
+            case_id=case.case_id,
+            source=source,
+            origin=origin,
+            model=model,
+            prompt_schema_version=prompt_schema_version,
+            cassette_digest=cassette_digest,
+        ),
     )
 
 
@@ -271,6 +295,19 @@ def append_jsonl_run(
         for result, case in zip(results, corpus, strict=True)
     ):
         raise ValueError("eval results do not match the loaded corpus")
+    if any(
+        result._evidence
+        != _EvaluationEvidence(
+            case_id=result.case_id,
+            source=result.source,
+            origin=result.origin,
+            model=result.model,
+            prompt_schema_version=result.prompt_schema_version,
+            cassette_digest=result.cassette_digest,
+        )
+        for result in results
+    ):
+        raise ValueError("eval result provenance changed after evaluation")
     path.parent.mkdir(parents=True, exist_ok=True)
     categories: dict[str, int] = {}
     for result in results:
@@ -500,8 +537,7 @@ def _expected_intents(expected: object, actual: Sequence[Mapping[str, object]]) 
                 actual_args.get("capture_id") if isinstance(actual_args, Mapping) else None
             )
             if (
-                isinstance(expected_capture_id, str)
-                and expected_capture_id.startswith("capture-")
+                expected_capture_id == HOST_MINTED_SENTINEL
                 and isinstance(actual_capture_id, str)
                 and actual_capture_id.startswith("capture-")
                 and len(actual_capture_id) == 40
@@ -512,7 +548,7 @@ def _expected_intents(expected: object, actual: Sequence[Mapping[str, object]]) 
 
 class _FrozenDict(Mapping[str, object]):
     def __init__(self, values: Mapping[str, object]) -> None:
-        self._values = dict(values)
+        self._values = MappingProxyType(dict(values))
 
     def __getitem__(self, key: str) -> object:
         return self._values[key]
