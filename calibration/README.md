@@ -7,7 +7,7 @@ hardware or flight gate.
 `inner_corners` is the number of intersections inside the checkerboard, written as
 columns x rows. It is not the number of black-and-white squares. A board with 10 by 7
 squares has 9x6 inner corners. Measure one square edge in meters and provide that as
-`square_size_m`.
+`square_size_m`. This follows OpenCV's [camera calibration tutorial](https://docs.opencv.org/4.13.0/dc/dbb/tutorial_py_calibration.html).
 
 Create a pipeline declaration before processing decoded images. Use the actual values
 for recorded data; use `not_applicable` only where a synthetic fixture has no device
