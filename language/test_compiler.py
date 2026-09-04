@@ -696,6 +696,7 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
     ("transcript", "args", "selection"),
     [
         ("fly forward 5 feet", {"dx": 0.0, "dy": 3.048}, [1, 2]),
+        ("fly forward 5 feet .", {"dx": 0.0, "dy": 3.048}, [1, 2]),
         ("Drones one \tAND   two fly forward 2 feet!", {"dx": 0.0, "dy": 1.2192}, [1, 2]),
         ("fly forward 1.5 metres", {"dx": 0.0, "dy": 3.0}, [1, 2]),
         ("fly forward", {"dx": 0.0, "dy": 0.6096}, [1, 2]),
@@ -886,7 +887,8 @@ def test_aircraft_relative_fly_forward_uses_the_local_forward_axis() -> None:
     assert plan.intents[0].args == {"dx": 3.048, "dy": 0.0}
 
 
-def test_explicit_flight_phrase_rejects_synthetic_wrong_distance() -> None:
+@pytest.mark.parametrize("suffix", ["", ".", " .", "\t !"])
+def test_explicit_flight_phrase_rejects_synthetic_wrong_distance(suffix: str) -> None:
     case = _case("translate-selected")
     snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
     outcome, plan = TranscriptCompiler(
@@ -905,7 +907,7 @@ def test_explicit_flight_phrase_rejects_synthetic_wrong_distance() -> None:
         ),
         audit=InMemoryAuditSink(),
     ).compile(
-        "fly forward 5 feet",
+        "fly forward 5 feet" + suffix,
         _state(case),
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -920,7 +922,8 @@ def test_explicit_flight_phrase_rejects_synthetic_wrong_distance() -> None:
     assert plan is None
 
 
-def test_named_flight_phrase_rejects_synthetic_wrong_selection() -> None:
+@pytest.mark.parametrize("suffix", ["", ".", " .", "\t !"])
+def test_named_flight_phrase_rejects_synthetic_wrong_selection(suffix: str) -> None:
     case = _case("translate-selected")
     snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
     state = _state(case)
@@ -941,7 +944,7 @@ def test_named_flight_phrase_rejects_synthetic_wrong_selection() -> None:
         ),
         audit=InMemoryAuditSink(),
     ).compile(
-        "drones one and two fly forward 2 feet",
+        "drones one and two fly forward 2 feet" + suffix,
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
