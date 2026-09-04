@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from math import cos, isfinite, radians, sin
+from math import cos, isclose, isfinite, radians, sin
 from types import MappingProxyType
 from typing import Literal
 
@@ -31,6 +31,16 @@ _SELECTION_TARGETED = frozenset(
 )
 _AIRBORNE_STATES = frozenset({"taking_off", "airborne", "hovering", "landing"})
 _STABLE_MOTION_STATES = frozenset({"airborne", "hovering"})
+_EXPLICIT_TRANSLATION = re.compile(
+    r"\bfly\s+(?P<direction>forward|backward|left|right)"
+    r"(?:\s+(?P<distance>\d+(?:\.\d+)?)\s*(?P<unit>foot|feet|metres?|meters?))?"
+    r"(?=$|[.!?,;:])",
+    re.IGNORECASE,
+)
+_NAMED_TRANSLATION = re.compile(
+    r"\bdrones?\s+(?P<ids>[^.!?,;:]+?)\s+fly\b",
+    re.IGNORECASE,
+)
 type OutcomeSource = Literal["anthropic", "replay", "synthetic", "template"]
 
 
@@ -492,6 +502,8 @@ def validate_model_outcome(
             reason=CompilerReason.CAPABILITY_UNAVAILABLE,
             source=source,
         )
+    if not _explicit_translation_matches(intents, transcript, facts):
+        return _invalid(source)
     return CompilerOutcome(kind=kind, intents=tuple(intents), detail=detail, source=source)
 
 
@@ -791,6 +803,94 @@ def _translation_from_record(
             if drone["heading_deg"] is not None
         },
     )
+
+
+def _explicit_translation_matches(
+    intents: list[ProposedIntent], transcript: str, facts: GroundingFacts
+) -> bool:
+    matches = list(_EXPLICIT_TRANSLATION.finditer(transcript))
+    if len(matches) != 1:
+        return True
+    match = matches[0]
+    named_selection = _named_translation_selection(transcript)
+    prefix = transcript[: match.start()].strip()
+    suffix = transcript[match.end() :].strip(" \t\r\n.!?,;:")
+    if suffix or (prefix and named_selection is None):
+        return True
+    if facts.translation_step_m is None:
+        return False
+    if named_selection is None:
+        if len(intents) != 1 or intents[0].name is not IntentName.TRANSLATE:
+            return False
+        translate = intents[0]
+        if tuple(sorted(translate.selection)) != tuple(sorted(facts.selection)):
+            return False
+    else:
+        translate = intents[-1] if intents else None
+        if (
+            translate is None
+            or translate.name is not IntentName.TRANSLATE
+            or tuple(sorted(translate.selection)) != tuple(sorted(named_selection))
+            or not _named_translation_plan_shape(intents, named_selection)
+        ):
+            return False
+    if translate is None:
+        return False
+    distance = float(match["distance"]) if match["distance"] is not None else 1.0
+    if match["unit"] is None or match["unit"].casefold().startswith("f"):
+        distance *= 0.3048
+    steps = distance / facts.translation_step_m
+    direction = match["direction"].casefold()
+    expected = _translation_steps(direction, steps, facts.translation_frame)
+    args = translate.args
+    return isclose(float(args["dx"]), expected[0], rel_tol=0.0, abs_tol=1e-9) and isclose(
+        float(args["dy"]), expected[1], rel_tol=0.0, abs_tol=1e-9
+    )
+
+
+def _named_translation_selection(transcript: str) -> tuple[int, ...] | None:
+    match = _NAMED_TRANSLATION.search(transcript)
+    if match is None:
+        return None
+    ids = []
+    for raw in re.split(r"\s+and\s+", match["ids"].casefold().strip()):
+        drone_id = {"one": 1, "two": 2}.get(raw)
+        if drone_id is None:
+            try:
+                drone_id = int(raw)
+            except ValueError:
+                return ()
+        if drone_id <= 0 or drone_id in ids:
+            return ()
+        ids.append(drone_id)
+    return tuple(ids)
+
+
+def _named_translation_plan_shape(
+    intents: list[ProposedIntent], selection: tuple[int, ...]
+) -> bool:
+    if len(intents) == 1:
+        return True
+    if len(intents) != 2 or intents[0].name is not IntentName.SELECT:
+        return False
+    ids = tuple(intents[0].args["ids"])
+    return tuple(sorted(ids)) == tuple(sorted(selection))
+
+
+def _translation_steps(direction: str, steps: float, frame: str | None) -> tuple[float, float]:
+    if frame == "aircraft_relative":
+        return {
+            "forward": (steps, 0.0),
+            "backward": (-steps, 0.0),
+            "left": (0.0, steps),
+            "right": (0.0, -steps),
+        }[direction]
+    return {
+        "forward": (0.0, steps),
+        "backward": (0.0, -steps),
+        "left": (-steps, 0.0),
+        "right": (steps, 0.0),
+    }[direction]
 
 
 def _is_finite_number(value: object) -> bool:
