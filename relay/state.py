@@ -75,6 +75,7 @@ class _AircraftRecord:
     identity_verified: bool = True
     readiness_declared: bool = False
     home_pose: dict[str, float] | None = None
+    home_pose_confirmed: bool = False
     control_authority: bool = False
     rc_safety_operator_present: bool = False
     telemetry: TelemetryV1 | None = None
@@ -146,6 +147,7 @@ class FleetRegistry:
                 record.updated_at = request.t
                 record.identity_verified = True
                 record.readiness_declared = False
+                record.home_pose_confirmed = False
                 record.control_authority = False
                 record.rc_safety_operator_present = False
                 record.telemetry = None
@@ -182,6 +184,7 @@ class FleetRegistry:
                     f"cannot declare readiness while {record.membership.value}",
                 )
             record.readiness_declared = True
+            record.home_pose_confirmed = request.home_pose_confirmed
             record.control_authority = request.control_authority
             record.rc_safety_operator_present = request.rc_safety_operator_present
             if (
@@ -195,7 +198,7 @@ class FleetRegistry:
                     "y": record.telemetry.y,
                     "z": record.telemetry.z,
                 }
-            elif not request.home_pose_confirmed:
+            elif not request.home_pose_confirmed and self._is_grounded(record):
                 record.home_pose = None
             reasons = self._readiness_reasons(record, request.t)
             record.membership = Membership.READY if not reasons else Membership.DEGRADED
@@ -438,7 +441,7 @@ class FleetRegistry:
             reasons.append("telemetry_missing")
         elif now_ms - record.telemetry.t > self.telemetry_freshness_ms:
             reasons.append("telemetry_stale")
-        if record.home_pose is None:
+        if record.home_pose is None or not record.home_pose_confirmed:
             reasons.append("home_pose_missing")
         if not record.control_authority:
             reasons.append("control_authority_missing")
@@ -452,6 +455,17 @@ class FleetRegistry:
             record.telemetry is not None
             and record.telemetry.connection_epoch == record.connection_epoch
         )
+
+    @classmethod
+    def _is_grounded(cls, record: _AircraftRecord) -> bool:
+        if not cls._has_current_telemetry(record):
+            return False
+        assert record.telemetry is not None
+        return record.telemetry.state in {
+            "armed",
+            "disarmed",
+            "landed",
+        }
 
     def _transition(
         self,

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
 import App from './App'
@@ -45,6 +45,10 @@ class DelayedSelectionFixtureRelayClient extends FixtureRelayClient {
     this.sent.push(intent)
     await new Promise(() => undefined)
   }
+}
+
+class SilentFixtureRelayClient extends FixtureRelayClient {
+  override start(): void {}
 }
 
 describe('Control / Capture console', () => {
@@ -281,7 +285,63 @@ describe('Control / Capture console', () => {
     })
 
     expect(await screen.findByText('Aircraft failsafe')).toBeInTheDocument()
-    expect(await screen.findByText('Network stop active')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Network stop' })).toHaveClass('is-active')
+  })
+
+  test('ignores a delayed keyboard state older than the current console state', async () => {
+    const consoleClient = new SilentFixtureRelayClient(session, clock, 'console')
+    const keyboard = new SilentFixtureRelayClient(session, clock, 'keyboard')
+    render(<App sessionId={session} clients={{ console: consoleClient, keyboard }} />)
+    const user = userEvent.setup()
+    await openModule(user, 'Live')
+
+    act(() => {
+      consoleClient.emitServer({
+        v: 1,
+        t: clock() + 2,
+        type: 'state',
+        event_id: 'console-state-roster-2',
+        session,
+        roster_version: 2,
+        armed: true,
+        estop: true,
+        selection: [1],
+        formation: 'none',
+        spacing: 0.8,
+        mode: 'indoor',
+        pending: null,
+        accepted_plan: null,
+        drones: fixtureAircraft(clock()).slice(0, 2),
+      })
+    })
+
+    expect(await screen.findByText(/roster v2/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Network stop' })).toHaveClass('is-active')
+    expect(screen.getAllByRole('button', { name: /Focus D-/ })).toHaveLength(2)
+
+    act(() => {
+      keyboard.emitServer({
+        v: 1,
+        t: clock() + 1,
+        type: 'state',
+        event_id: 'keyboard-delayed-state-roster-1',
+        session,
+        roster_version: 1,
+        armed: true,
+        estop: false,
+        selection: [1],
+        formation: 'none',
+        spacing: 0.8,
+        mode: 'indoor',
+        pending: null,
+        accepted_plan: null,
+        drones: fixtureAircraft(clock()).slice(0, 1),
+      })
+    })
+
+    expect(screen.getByText(/roster v2/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Network stop' })).toHaveClass('is-active')
+    expect(screen.getAllByRole('button', { name: /Focus D-/ })).toHaveLength(2)
   })
 
   test('runs the two-drone flight workflow through production control actions', async () => {

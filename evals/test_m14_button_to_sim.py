@@ -347,14 +347,21 @@ def test_open_adapter_socket_link_loss_runs_watchdog_and_rejoin_uses_current_epo
 
         # Keep the authenticated WebSocket open, then stop adapter activity.
         harness.clock.advance(2_000)
-        hold = _periodic_safety_actions(harness)
-        assert any(event["drone_id"] == 1 and event["action"] == "hold" for event in hold)
+        _wait_for_safety_audit(harness, 1, "hold")
         assert harness.flight.aircraft[1].flight_state is FlightState.HOVERING
 
         harness.clock.advance(8_000)
-        failsafe = _periodic_safety_actions(harness)
-        assert any(event["drone_id"] == 1 and event["action"] == "failsafe" for event in failsafe)
+        _wait_for_safety_audit(harness, 1, "failsafe")
         assert harness.flight.aircraft[1].flight_state is FlightState.LANDED
+
+        replay = harness.app.state.relay_runtime.session(SESSION).replay()
+        audited_safety = [
+            record["event"]
+            for record in replay["events"]
+            if record["event"].get("type") == "safety_action"
+            and record["event"].get("drone_id") == 1
+        ]
+        assert [event["action"] for event in audited_safety] == ["hold", "failsafe"]
 
         adapter.close()
         replacement = stack.enter_context(_connect(client, "adapter", drone_id=1))
@@ -1160,20 +1167,6 @@ def _wait_for_flight_state(
             return
         sleep(0.01)
     assert harness.flight.aircraft[drone_id].flight_state is expected
-
-
-def _periodic_safety_actions(harness: Harness) -> list[dict[str, object]]:
-    session = harness.app.state.relay_runtime.session(SESSION)
-    ingress = harness.factory.bridges[SESSION].periodic_ingress()
-    relay_events = session.periodic_events()
-    state = relay_events[-1]
-    deadline = monotonic() + 0.5
-    while monotonic() < deadline:
-        safety = harness.factory.bridges[SESSION].periodic_events(state)
-        if safety:
-            return ingress + safety
-        sleep(0.01)
-    return ingress
 
 
 def _wait_for_safety_audit(

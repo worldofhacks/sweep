@@ -94,6 +94,7 @@ export interface ControlState {
   lastOutcome: OutcomeSummary | null
   notices: OperatorNotice[]
   seenEventIds: string[]
+  lastStateEvent: { rosterVersion: number; t: number } | null
 }
 
 export type ControlAction =
@@ -146,6 +147,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     lastOutcome: null,
     notices: [],
     seenEventIds: [],
+    lastStateEvent: null,
   }
 }
 
@@ -418,6 +420,15 @@ function reduceStateEvent(
   state: ControlState,
   event: Extract<RelayServerEvent, { type: 'state' }>,
 ): ControlState {
+  const lastStateEvent = state.lastStateEvent
+  if (
+    event.roster_version < state.rosterVersion ||
+    (lastStateEvent !== null &&
+      event.roster_version === lastStateEvent.rosterVersion &&
+      event.t < lastStateEvent.t)
+  ) {
+    return state
+  }
   const aircraft = Object.fromEntries(event.drones.map((drone) => [drone.drone_id, drone]))
   const staleSelection = event.selection.filter(
     (id) => aircraft[id]?.membership !== 'ready' || !aircraft[id]?.selectable,
@@ -434,6 +445,7 @@ function reduceStateEvent(
     spacing: event.spacing,
     armed: event.armed,
     estop: event.estop,
+    lastStateEvent: { rosterVersion: event.roster_version, t: event.t },
   }
 
   if (

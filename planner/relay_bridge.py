@@ -162,19 +162,23 @@ class AutonomyRelayBridge:
         window_s = self.controller.arbiter.config.motion_conflict_window_ms / 1_000
         with self._coordination:
             while True:
-                lower_bound = min(
-                    admission.intent.t
+                group = tuple(
+                    admission
                     for admission in self._admissions.values()
                     if abs(admission.intent.t - seed.intent.t)
                     <= self.controller.arbiter.config.motion_conflict_window_ms
                 )
-                group = tuple(
-                    admission
-                    for admission in self._admissions.values()
-                    if lower_bound
-                    <= admission.intent.t
-                    <= lower_bound + self.controller.arbiter.config.motion_conflict_window_ms
-                )
+                if any(item.delivered and item.intent.name is IntentName.ESTOP for item in group):
+                    earliest_delivered = min(item.intent.t for item in group if item.delivered)
+                    group = tuple(
+                        item
+                        for item in group
+                        if item.delivered
+                        or (
+                            item.intent.name is not IntentName.ESTOP
+                            and item.intent.t >= earliest_delivered
+                        )
+                    )
                 deadline = max(item.admitted_at for item in group) + window_s
                 remaining = deadline - monotonic()
                 safety_present = any(
