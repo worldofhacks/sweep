@@ -311,22 +311,17 @@ def test_takeoff_requires_confirmation_without_adapter_io() -> None:
     assert flight.calls == []
 
 
-def test_selection_scoped_land_requires_confirmation_and_executes_selected_aircraft() -> None:
+def test_selection_scoped_land_is_rejected_before_arbiter_can_dispatch() -> None:
     snapshot = make_snapshot(2, selection=(1,))
     controller, _, _, _, flight, _ = make_stack(snapshot)
 
-    refused = controller.execute(
-        make_intent(IntentName.LAND, selection=(1,), confirm=False), snapshot
-    )
-    accepted = controller.execute(
+    result = controller.execute(
         make_intent(IntentName.LAND, selection=(1,), confirm=True), snapshot
     )
 
-    assert refused.refusal is not None
-    assert refused.refusal.reason is RefusalReason.CONFIRMATION_REQUIRED
-    assert accepted.status is LifecycleStatus.COMPLETED
-    assert [call.drone_ids for call in flight.calls] == [(1,)]
-    assert flight.calls[0].operation is CommandOperation.LAND
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.UNSUPPORTED
+    assert flight.calls == []
 
 
 def test_geofence_and_ceiling_are_checked_on_planned_command() -> None:

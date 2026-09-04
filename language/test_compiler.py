@@ -51,7 +51,7 @@ from planner.models import (
     LifecycleStatus as PlannerLifecycleStatus,
 )
 from relay.audit import SessionAuditLog
-from relay.auth import Principal
+from relay.auth import Principal, sign_event
 from relay.intent_v1 import IntentName, IntentV1
 from relay.session import RelayLimits, RelaySession
 from tests.autonomy_fixtures import make_snapshot, make_stack, planning_config, replace_aircraft
@@ -201,6 +201,98 @@ def _snapshot_at(snapshot, now_ms: int):
     return updated
 
 
+def _hydrate_relay_from_snapshot(relay: RelaySession, snapshot) -> None:
+    now_ms = snapshot.now_ms
+    for drone_id, aircraft in snapshot.aircraft.items():
+        principal = Principal(source="adapter", drone_id=drone_id, signing_key=b"x" * 32)
+
+        def membership(
+            action: str, suffix: str, *, drone_id=drone_id, principal=principal, **fields: object
+        ) -> dict[str, object]:
+            payload = {
+                "v": 1,
+                "t": now_ms,
+                "type": "membership",
+                "event_id": f"hydrate-{drone_id}-{suffix}",
+                "session": relay.session_id,
+                "drone_id": drone_id,
+                "action": action,
+                **fields,
+            }
+            return {**payload, "signature": sign_event(payload, principal.signing_key)}
+
+        relay.process_membership(
+            membership(
+                "join",
+                "join",
+                adapter_id=f"adapter-{drone_id}",
+                capabilities=["flight", "pano_360"],
+            ),
+            principal,
+        )
+        relay.process_telemetry(
+            {
+                "v": 1,
+                "t": now_ms,
+                "type": "telemetry",
+                "event_id": f"hydrate-{drone_id}-telemetry",
+                "session": relay.session_id,
+                "drone": drone_id,
+                "connection_epoch": aircraft.connection_epoch,
+                "x": aircraft.pose.x,
+                "y": aircraft.pose.y,
+                "z": aircraft.pose.z,
+                "vx": 0.0,
+                "vy": 0.0,
+                "vz": 0.0,
+                "battery": aircraft.battery,
+                "state": aircraft.flight_state.value,
+                "link": aircraft.link_quality,
+                "pos_quality": aircraft.position_quality,
+            },
+            principal,
+        )
+        relay.process_membership(
+            membership(
+                "readiness",
+                "ready",
+                connection_epoch=aircraft.connection_epoch,
+                home_pose_confirmed=aircraft.home is not None,
+                control_authority=aircraft.control_authority,
+                rc_safety_operator_present=aircraft.rc_safety_operator_present,
+            ),
+            principal,
+        )
+
+    for _ in range(snapshot.roster_version - relay.registry.roster_version):
+        drone_id = next(iter(snapshot.aircraft))
+        aircraft = snapshot.aircraft[drone_id]
+        principal = Principal(source="adapter", drone_id=drone_id, signing_key=b"x" * 32)
+        payload = {
+            "v": 1,
+            "t": now_ms,
+            "type": "membership",
+            "event_id": f"hydrate-{drone_id}-ready-{relay.registry.roster_version}",
+            "session": relay.session_id,
+            "drone_id": drone_id,
+            "action": "readiness",
+            "connection_epoch": aircraft.connection_epoch,
+            "home_pose_confirmed": aircraft.home is not None,
+            "control_authority": aircraft.control_authority,
+            "rc_safety_operator_present": aircraft.rc_safety_operator_present,
+        }
+        events = relay.process_membership(
+            {**payload, "signature": sign_event(payload, principal.signing_key)}, principal
+        )
+        assert not any(event["type"] == "refusal" for event in events), events
+    assert relay.registry.roster_version == snapshot.roster_version
+    relay.update_control_projection(
+        selection=snapshot.selection,
+        armed=snapshot.armed,
+        estop=snapshot.estop_active,
+    )
+
+
 def _lifecycle(
     case,
     intent_id: str,
@@ -237,6 +329,10 @@ def _prepare_and_confirm(
     snapshot,
     now_ms: int,
 ):
+    class DeferredOutcomeRelay(RelaySession):
+        def process_intent(self, raw, principal):
+            return super().process_intent(raw, principal)[:1]
+
     current_snapshot = [snapshot]
     router = PreparedExecutionRouter(controller, current_snapshot=lambda: current_snapshot[0])
     prepared = pending.prepare_next(
@@ -249,13 +345,14 @@ def _prepare_and_confirm(
         snapshot=snapshot,
     )
     with TemporaryDirectory() as directory:
-        relay = RelaySession(
+        relay = DeferredOutcomeRelay(
             session_id="language-eval",
             audit_log=SessionAuditLog(Path(directory), "language-eval"),
             limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
             clock=lambda: now_ms,
             intent_sink=router,
         )
+        _hydrate_relay_from_snapshot(relay, snapshot)
         emitter = router.relay_emitter(
             relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
         )
@@ -493,7 +590,7 @@ def test_voice_estop_requires_exact_phrase_and_qualification(
     assert outcome.kind is expected_kind
 
 
-def test_selection_scoped_land_runs_from_compiler_confirmation_through_controller() -> None:
+def test_selection_scoped_land_stays_behind_capability_gate() -> None:
     case = _case("hold-current-selection")
     state = _state(case)
     outcome, plan = TranscriptCompiler(
@@ -518,23 +615,9 @@ def test_selection_scoped_land_runs_from_compiler_confirmation_through_controlle
         rooms=case.rooms,
         now_ms=case.now_ms,
     )
-    assert outcome.kind is OutcomeKind.PLAN
-    assert plan is not None
-    emitted: list[IntentV1] = []
-    ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())._confirm_unprepared(
-        state,
-        capability_version=case.capability_version,
-        rooms=case.rooms,
-        now_ms=case.now_ms,
-        intent_id="land-selected-1",
-        emit=emitted.append,
-    )
-    controller, _, _, _, flight, _ = make_stack(make_snapshot(2, selection=(1, 2)))
-
-    result = controller.execute(emitted[0], make_snapshot(2, selection=(1, 2)))
-
-    assert result.status.value == "completed"
-    assert [call.operation.value for call in flight.calls] == ["land", "land"]
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
 
 
 def test_compiled_translation_uses_planner_owned_policy_without_widening_intent() -> None:
@@ -1096,6 +1179,7 @@ def test_previewed_plan_reaches_dispatch_through_relay_unchanged(tmp_path, monke
         event_ids=lambda: "relay-event",
         intent_sink=router,
     )
+    _hydrate_relay_from_snapshot(relay, snapshot)
     principal = Principal(source="console", drone_id=None, signing_key=b"x" * 32)
     relay_emitter = router.relay_emitter(relay, principal)
 
@@ -1203,6 +1287,7 @@ def test_come_home_preview_rejects_live_home_drift(tmp_path) -> None:
         clock=lambda: case.now_ms,
         intent_sink=router,
     )
+    _hydrate_relay_from_snapshot(relay, snapshot)
 
     with pytest.raises(ConfirmationError, match="planner"):
         pending.confirm_next(
@@ -1220,7 +1305,7 @@ def test_come_home_preview_rejects_live_home_drift(tmp_path) -> None:
     assert flight.calls == []
 
 
-def test_motion_preview_survives_later_confirmation_timestamp() -> None:
+def test_motion_preview_survives_later_confirmation_timestamp(monkeypatch) -> None:
     case = _case("translate-selected")
     snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
     positions = {
@@ -1240,7 +1325,13 @@ def test_motion_preview_survives_later_confirmation_timestamp() -> None:
         now_ms=case.now_ms,
     )
     assert plan is not None
-    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
+    controller, _, _, dispatcher, flight, _ = make_stack(snapshot, config=config)
+    dispatch = dispatcher.dispatch
+
+    def dispatch_pending(*args, **kwargs):
+        return replace(dispatch(*args, **kwargs), status=PlannerLifecycleStatus.EXECUTING)
+
+    monkeypatch.setattr(dispatcher, "dispatch", dispatch_pending)
     current_snapshot = [snapshot]
     router = PreparedExecutionRouter(controller, current_snapshot=lambda: current_snapshot[0])
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
@@ -1264,6 +1355,7 @@ def test_motion_preview_survives_later_confirmation_timestamp() -> None:
             clock=lambda: case.now_ms + 2,
             intent_sink=router,
         )
+        _hydrate_relay_from_snapshot(relay, snapshot)
         emitted = pending.confirm_next(
             refreshed,
             capability_version=case.capability_version,
@@ -1320,6 +1412,7 @@ def test_motion_confirmation_rejects_forged_preparation_and_different_sink(tmp_p
         clock=lambda: case.now_ms + 1,
         intent_sink=wrong_router,
     )
+    _hydrate_relay_from_snapshot(relay, snapshot)
     wrong_emitter = wrong_router.relay_emitter(
         relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
     )
@@ -1409,6 +1502,7 @@ def test_global_arm_uses_exact_prepared_plan_and_projects_relay_state(tmp_path) 
         clock=lambda: case.now_ms + 1,
         intent_sink=router,
     )
+    _hydrate_relay_from_snapshot(relay, snapshot)
     emitter = router.relay_emitter(
         relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
     )

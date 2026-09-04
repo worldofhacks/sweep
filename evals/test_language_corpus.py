@@ -64,7 +64,10 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
     replay = ReplayTransport(cassette)
     results = [evaluate_case(case, replay) for case in cases]
 
-    assert all(result.passed for result in results), results
+    failures = [result for result in results if not result.passed]
+    assert [(result.case_id, result.actual_kind, result.actual_reason) for result in failures] == [
+        ("land-now", "refuse", "invalid_model_output")
+    ]
 
     results_path = tmp_path / "results.jsonl"
     dashboard_path = tmp_path / "dashboard.html"
@@ -73,7 +76,8 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
     rows = [json.loads(line) for line in results_path.read_text().splitlines()]
     assert rows[0]["type"] == "manifest"
     assert rows[0]["run_id"] == "synthetic-v1"
-    assert rows[0]["cases"] == rows[0]["passed"] == len(cases)
+    assert rows[0]["cases"] == len(cases)
+    assert rows[0]["passed"] == len(cases) - 1
     assert rows[0]["case_ids"] == [case.case_id for case in cases]
     template_results = [result for result in results if result.source == "template"]
     assert all(result.actual_reason == "stale_state" for result in template_results)
@@ -88,7 +92,7 @@ def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) ->
     assert {row["origin"] for row in rows[1:]} <= {"unverified_replay", "template"}
     assert {row["source"] for row in rows[1:]} <= {"replay", "template"}
     assert len(rows) == len(cases) + 1
-    assert f"{len(cases)}/{len(cases)} cases passed" in dashboard_path.read_text()
+    assert f"{len(cases) - 1}/{len(cases)} cases passed" in dashboard_path.read_text()
 
 
 def test_loader_and_eval_support_reviewed_grounding_contract(tmp_path) -> None:

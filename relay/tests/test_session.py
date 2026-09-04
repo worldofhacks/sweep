@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
+
 
 import pytest
 
@@ -825,6 +828,103 @@ def test_command_completion_does_not_terminalize_estop_intent(
     )
 
     assert retry[0]["reason"] == "invalid_retry"
+
+
+def test_authenticated_terminal_acknowledgement_resumes_the_bound_execution(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    adapter_principal: Principal,
+    console_principal: Principal,
+) -> None:
+    class ResumeSink:
+        def __init__(self) -> None:
+            self.acknowledgements: list[object] = []
+
+        def __call__(self, _intent: object, _state: object) -> None:
+            return None
+
+        def resume_after_acknowledgement(
+            self, session: RelaySession, acknowledgement: object
+        ) -> object:
+            assert session is relay
+            self.acknowledgements.append(acknowledgement)
+            return SimpleNamespace(relay_events=({"type": "state", "estop": False},))
+
+    sink = ResumeSink()
+    relay = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
+    _join(relay, adapter_principal)
+    relay.process_intent(intent_payload(), console_principal)
+
+    executing = relay.process_acknowledgement(
+        acknowledgement_payload(event_id="ack-executing"), adapter_principal
+    )
+    completed = relay.process_acknowledgement(
+        acknowledgement_payload(event_id="ack-completed", status="completed"),
+        adapter_principal,
+    )
+
+    assert len(sink.acknowledgements) == 1
+    assert asdict(sink.acknowledgements[0]) == {
+        "v": 1,
+        "t": clock.value,
+        "type": "acknowledgement",
+        "event_id": "ack-completed",
+        "session": SESSION,
+        "intent_id": "intent-1",
+        "command_id": "command-1",
+        "status": LifecycleStatus.COMPLETED,
+        "drone_id": 1,
+        "connection_epoch": 1,
+        "roster_version": 1,
+        "reason": None,
+        "detail": None,
+    }
+    assert [event["type"] for event in executing] == ["acknowledgement"]
+    assert [event["type"] for event in completed] == ["acknowledgement", "state"]
+
+
+def test_estop_latches_when_dispatch_is_still_executing_or_failed(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    console_principal: Principal,
+) -> None:
+    class EstopPlan:
+        estop_update = True
+        selection_update = None
+        armed_update = None
+
+        @staticmethod
+        def to_dict() -> dict[str, object]:
+            return {"intent_id": "intent-1", "plan_id": "estop-plan"}
+
+    for status in (LifecycleStatus.EXECUTING, LifecycleStatus.FAILED):
+        plan = EstopPlan()
+        result = SimpleNamespace(
+            intent_id="intent-1",
+            status=status,
+            plan=plan,
+            refusal=(
+                None
+                if status is LifecycleStatus.EXECUTING
+                else SimpleNamespace(
+                    reason=SimpleNamespace(value="adapter_failure"), detail="link lost"
+                )
+            ),
+        )
+        relay = _new_session(
+            tmp_path / status.value,
+            clock,
+            event_ids,
+            intent_sink=lambda _intent, _state, result=result: result,
+        )
+        estop = intent_payload()
+        estop.update(name="estop", selection=[])
+
+        relay.process_intent(estop, console_principal)
+
+        assert relay.current_state()["estop"] is True
 
 
 def test_control_projection_omissions_do_not_clear_plan_or_pending(

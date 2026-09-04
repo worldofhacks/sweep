@@ -582,6 +582,23 @@ class ConfirmedPlan:
         except Exception:
             self._terminal = True
             raise ConfirmationError("intent was emitted but its audit record failed") from None
+        if prepared is not None and isinstance(emission_result, list):
+            for event in emission_result:
+                if (
+                    isinstance(event, Mapping)
+                    and event.get("intent_id") == intent.intent_id
+                    and event.get("command_id") is None
+                    and event.get("status") in {"completed", "failed", "invalidated", "refused"}
+                ):
+                    state = emit.current_state()
+                    self.acknowledge(
+                        event,
+                        state,
+                        capability_version=capability_version,
+                        rooms=rooms,
+                        now_ms=state["t"],
+                    )
+                    break
         return intent
 
     def _confirm_unprepared(
@@ -795,7 +812,7 @@ class ConfirmedPlan:
             raise ConfirmationError("dispatch grounding is unavailable")
         expected_selection = self._expected_facts.selection
         if emitted.name.value == "select":
-            expected_selection = tuple(emitted.args["ids"])
+            expected_selection = tuple(sorted(emitted.args["ids"]))
         if facts.selection != expected_selection:
             raise ConfirmationError("relay selection does not match the accepted intent")
         expected_armed = True if emitted.name.value == "arm" else self._expected_facts.armed
@@ -1030,7 +1047,7 @@ def _terminal_postcondition_matches(
 ) -> bool:
     new = {int(drone["drone_id"]): drone["flight_state"] for drone in after.drones}
     if intent.name.value == "takeoff":
-        return all(new.get(drone_id) in {"hovering", "moving"} for drone_id in intent.selection)
+        return all(new.get(drone_id) in {"airborne", "hovering"} for drone_id in intent.selection)
     if intent.name.value in {"land", "land_all"}:
         targets = intent.selection
         if intent.name.value == "land_all":
@@ -1052,7 +1069,7 @@ def _terminal_postcondition_matches(
             target = targets[drone_id]
             if end is None or not _position_matches(end, (target.x, target.y, target.z)):
                 return False
-        return all(new.get(drone_id) in {"hovering", "moving"} for drone_id in intent.selection)
+        return all(new.get(drone_id) in {"airborne", "hovering"} for drone_id in intent.selection)
     if intent.name.value == "hold":
         return all(new.get(drone_id) == "hovering" for drone_id in intent.selection)
     return True
@@ -1114,7 +1131,7 @@ def _snapshot_matches_facts(
     if (
         snapshot.armed != facts.armed
         or snapshot.estop_active != facts.estop
-        or snapshot.now_ms != facts.state_time_ms
+        or snapshot.now_ms < facts.state_time_ms
     ):
         return False
     fact_drones = {int(drone["drone_id"]): drone for drone in facts.drones}
