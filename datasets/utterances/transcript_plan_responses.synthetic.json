@@ -290,18 +290,8 @@
       ]
     },
     "land-now": {
-      "kind": "plan",
-      "intents": [
-        {
-          "name": "land",
-          "args": {},
-          "selection": [
-            1,
-            2
-          ],
-          "mode": "indoor"
-        }
-      ]
+      "kind": "unsupported",
+      "reason": "capability_unavailable"
     },
     "bring-everyone-down": {
       "kind": "plan",
