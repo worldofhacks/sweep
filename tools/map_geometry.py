@@ -285,8 +285,10 @@ def _generate(bundle, authoring, output, accepted_versions):
     _require(low < high, "route altitude bounds must increase")
     route_reasons = grid(low, high)
     segments = list(zip(route["centerline"], route["centerline"][1:], strict=False))
+    route_length = sum(math.dist(a, b) for a, b in segments)
+    _require(route_length > 0, "route total length must be positive")
     _require(
-        sum(math.dist(a, b) for a, b in segments) <= 1000,
+        route_length <= 1000,
         "route exceeds 1000 m authoring sample budget",
     )
     route_cells = [

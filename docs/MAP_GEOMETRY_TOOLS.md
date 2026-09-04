@@ -87,6 +87,8 @@ Cloud cropping retains points just outside the flight box that could affect it.
 
 The route check covers every cell touched by its swept XY tube and checks the
 entire requested altitude interval. A route extending outside the grid fails.
+The centerline must have positive total length; repeated waypoints are allowed
+when the route includes travel.
 It may reject a narrow valid corridor because touching a blocked cell counts as
 collision. Route endpoints and the connecting graph still need operator review.
 
