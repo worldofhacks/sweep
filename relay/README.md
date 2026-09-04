@@ -105,6 +105,7 @@ State is fanned out at 10 Hz. Its required top-level keys are:
 ```text
 v, t, type="state", event_id, session, roster_version, armed, estop,
 selection, formation, spacing, mode, capability_profile, enabled_intent_names,
+altitude_absolute_enabled,
 pending, accepted_plan, drones
 ```
 
