@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
+from weakref import WeakSet
 
 from adapters.dispatch import AdapterDispatcher
 from arbiter.safety import SafetyArbiter
 from planner.coordination import ConflictResolution, resolve_intent_pair
 from planner.models import (
+    CommandAcknowledgement,
     ExecutionResult,
     FleetSnapshot,
     LifecycleStatus,
@@ -22,6 +24,7 @@ from planner.planner import DeterministicPlanner
 from relay.intent_v1 import IntentV1
 
 type SnapshotProvider = Callable[[], FleetSnapshot]
+type IntentEmitter = Callable[[IntentV1], object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +41,21 @@ class PositioningLossResult:
     execution: ExecutionResult | None
 
 
+@dataclass(frozen=True, slots=True)
+class ResumedExecution:
+    execution: ExecutionResult
+    relay_events: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
+class PreparedIntentEmitter:
+    router: PreparedExecutionRouter
+    _send: IntentEmitter
+
+    def __call__(self, intent: IntentV1) -> object:
+        return self._send(intent)
+
+
 class PreparedExecutionRouter:
     def __init__(
         self,
@@ -48,6 +66,9 @@ class PreparedExecutionRouter:
         self.controller = controller
         self.current_snapshot = current_snapshot
         self._prepared: dict[str, PreparedExecution] = {}
+        self._running: dict[str, tuple[PreparedExecution, ExecutionResult, object]] = {}
+        self._submitting_sessions: dict[str, object] = {}
+        self._emitters: WeakSet[PreparedIntentEmitter] = WeakSet()
         self._lock = RLock()
 
     def prepare(
@@ -71,17 +92,85 @@ class PreparedExecutionRouter:
         with self._lock:
             self._prepared.pop(intent_id, None)
 
-    def __call__(self, intent: IntentV1, _relay_state: object) -> None:
+    def relay_emitter(self, session: object, principal: object) -> PreparedIntentEmitter:
+        from relay.auth import Principal
+        from relay.session import RelaySession
+
+        if (
+            not isinstance(session, RelaySession)
+            or not isinstance(principal, Principal)
+            or session.intent_sink is not self
+        ):
+            raise ValueError("relay session is configured with a different intent sink")
+
+        def send(intent: IntentV1) -> object:
+            with self._lock:
+                self._submitting_sessions[intent.intent_id] = session
+            try:
+                return session.process_intent(_intent_payload(intent), principal)
+            finally:
+                with self._lock:
+                    self._submitting_sessions.pop(intent.intent_id, None)
+
+        emitter = PreparedIntentEmitter(self, send)
+        self._emitters.add(emitter)
+        return emitter
+
+    def owns_emitter(self, emitter: object) -> bool:
+        return isinstance(emitter, PreparedIntentEmitter) and emitter in self._emitters
+
+    def __call__(self, intent: IntentV1, _relay_state: object) -> ExecutionResult:
         with self._lock:
             prepared = self._prepared.pop(intent.intent_id, None)
+            session = self._submitting_sessions.get(intent.intent_id)
         if prepared is None or prepared.intent != intent:
             raise RuntimeError("intent has no matching prepared execution")
         result = self.controller.dispatch_prepared(
             prepared,
             current_snapshot=self.current_snapshot,
         )
-        if result.status is not LifecycleStatus.COMPLETED:
-            raise RuntimeError("prepared execution did not complete")
+        if result.status is LifecycleStatus.EXECUTING:
+            with self._lock:
+                self._running[intent.intent_id] = (prepared, result, session)
+        return result
+
+    def resume(self, intent_id: str, terminal_ack: CommandAcknowledgement) -> ResumedExecution:
+        with self._lock:
+            running = self._running.pop(intent_id, None)
+        if running is None:
+            raise RuntimeError("intent has no executing prepared plan")
+        prepared, pending, session = running
+        result = self.controller.dispatcher.resume_after_completion(
+            prepared.plan,
+            pending,
+            terminal_ack,
+            prepared.snapshot,
+            current_snapshot=self.current_snapshot,
+        )
+        if result.status is LifecycleStatus.EXECUTING:
+            with self._lock:
+                self._running[intent_id] = (prepared, result, session)
+        relay_events = ()
+        if session is not None:
+            relay_events = tuple(session.record_execution_result(prepared.intent, result))
+        return ResumedExecution(execution=result, relay_events=relay_events)
+
+
+def _intent_payload(intent: IntentV1) -> dict[str, object]:
+    return {
+        "v": intent.v,
+        "t": intent.t,
+        "type": intent.type,
+        "intent_id": intent.intent_id,
+        "retry_of": intent.retry_of,
+        "source": intent.source,
+        "session": intent.session,
+        "name": intent.name.value,
+        "args": dict(intent.args),
+        "selection": list(intent.selection),
+        "mode": intent.mode.value,
+        "confirm": intent.confirm,
+    }
 
 
 class AutonomyController:

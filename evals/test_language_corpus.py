@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
+import weakref
 from dataclasses import replace
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from evals.language_corpus import (
     DEFAULT_CORPUS_PATH,
     LEGACY_CORPUS_PATH,
+    LoadedCorpus,
     StaticResponseTransport,
     append_jsonl_run,
     evaluate_case,
@@ -17,7 +20,13 @@ from evals.language_corpus import (
     write_dashboard,
 )
 from language.contracts import build_grounding_facts
-from language.transport import ModelRequest, RecordingTransport, ReplayTransport
+from language.transport import (
+    AnthropicTransport,
+    ModelRequest,
+    ModelResponse,
+    RecordingTransport,
+    ReplayTransport,
+)
 from planner.models import TranslationGrounding, TranslationPolicy
 
 
@@ -423,6 +432,108 @@ def test_dashboard_rejects_replaced_results(tmp_path) -> None:
         write_dashboard(results, output, run_id="tampered", corpus=cases)
 
     assert not output.exists()
+
+
+def test_manifest_rejects_forged_reviewed_corpus(tmp_path) -> None:
+    corpus = load_corpus()
+    responses = load_synthetic_responses(corpus=corpus)
+    forged_case = replace(corpus[0], transcript="different reviewed input")
+    forged = LoadedCorpus(
+        cases=(forged_case, *corpus.cases[1:]),
+        digest=corpus.digest,
+        reviewed=True,
+    )
+    results = [
+        evaluate_case(case, StaticResponseTransport(responses[case.case_id])) for case in forged
+    ]
+
+    with pytest.raises(ValueError, match="reviewed loaded corpus"):
+        append_jsonl_run(results, tmp_path / "forged.jsonl", run_id="forged", corpus=forged)
+
+
+def test_eval_rejects_transport_that_self_attests_anthropic_provenance() -> None:
+    corpus = load_corpus()
+    responses = load_synthetic_responses(corpus=corpus)
+
+    class SpoofTransport:
+        def complete(self, _request):
+            return ModelResponse(
+                payload=responses[corpus[0].case_id],
+                source="anthropic",
+                origin="anthropic",
+                model="claude-sonnet-5",
+                prompt_schema_version="intent-v1-compiler-3",
+            )
+
+    result = evaluate_case(corpus[0], SpoofTransport())
+
+    assert (result.source, result.origin) == ("template", "template")
+
+
+def test_eval_does_not_trust_rebound_anthropic_transport(monkeypatch) -> None:
+    corpus = load_corpus()
+    responses = load_synthetic_responses(corpus=corpus)
+    transport = AnthropicTransport(api_key="unused")
+    monkeypatch.setattr(
+        transport,
+        "complete",
+        lambda _request: ModelResponse(
+            payload=responses[corpus[0].case_id],
+            source="anthropic",
+            origin="anthropic",
+            model="claude-sonnet-5",
+            prompt_schema_version="intent-v1-compiler-3",
+        ),
+    )
+
+    result = evaluate_case(corpus[0], transport)
+
+    assert (result.source, result.origin) == ("template", "template")
+
+
+def test_reviewed_corpus_registry_does_not_retain_discarded_loads() -> None:
+    corpus = load_corpus()
+    reference = weakref.ref(corpus)
+
+    del corpus
+    gc.collect()
+
+    assert reference() is None
+
+
+@pytest.mark.parametrize("writer", ["jsonl", "dashboard"])
+def test_eval_writers_materialize_stateful_results_once(tmp_path, writer) -> None:
+    corpus = load_corpus()
+    responses = load_synthetic_responses(corpus=corpus)
+    results = tuple(
+        evaluate_case(case, StaticResponseTransport(responses[case.case_id])) for case in corpus
+    )
+
+    class StatefulResults:
+        def __init__(self):
+            self.iterations = 0
+
+        def __len__(self):
+            return len(results)
+
+        def __getitem__(self, index):
+            if isinstance(index, slice):
+                return results[index]
+            return results[index]
+
+        def __iter__(self):
+            self.iterations += 1
+            return iter(results if self.iterations == 1 else tuple(reversed(results)))
+
+    stateful = StatefulResults()
+    output = tmp_path / ("results.jsonl" if writer == "jsonl" else "dashboard.html")
+    if writer == "jsonl":
+        append_jsonl_run(stateful, output, run_id="one-pass", corpus=corpus)
+    else:
+        write_dashboard(stateful, output, run_id="one-pass", corpus=corpus)
+
+    assert stateful.iterations == 1
+    assert output.exists()
 
 
 def test_loader_rejects_duplicate_case_ids(tmp_path) -> None:

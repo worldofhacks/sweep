@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import dist
 from threading import RLock
 from typing import Protocol
@@ -401,6 +401,7 @@ class ConfirmedPlan:
         self._awaiting_facts: GroundingFacts | None = None
         self._awaiting_plan: Plan | None = None
         self._awaiting_emitted_at_ms: int | None = None
+        self._issued_preparation: PreparedConfirmation | None = None
         self._terminal = False
         self._expected_facts = compiled.facts
         self.audit = audit
@@ -430,19 +431,22 @@ class ConfirmedPlan:
                 now_ms=now_ms,
                 intent_id=intent_id,
             )
-            if proposal.name.value not in {"translate", "come_home"}:
-                raise ConfirmationError("only motion intents require planner preparation")
+            if router.current_snapshot is None:
+                self._terminal = True
+                raise ConfirmationError("planner preparation requires a live snapshot provider")
             planned = router.prepare(intent, snapshot)
             if isinstance(planned, ExecutionResult):
                 self._terminal = True
                 raise ConfirmationError("actual planner refused the confirmed intent")
             self._validate_prepared_execution(planned, facts, router)
-            return PreparedConfirmation(
+            prepared = PreparedConfirmation(
                 intent=intent,
                 execution=planned,
-                state_digest=facts.state_digest,
+                state_digest=_execution_digest(facts),
                 router=router,
             )
+            self._issued_preparation = prepared
+            return prepared
 
     def confirm_next(
         self,
@@ -452,10 +456,13 @@ class ConfirmedPlan:
         rooms: tuple[str, ...],
         now_ms: int,
         intent_id: str,
-        emit: Callable[[IntentV1], None],
+        emit: Callable[[IntentV1], object],
         prepared: PreparedConfirmation | None = None,
     ) -> IntentV1:
         with self._lock:
+            if prepared is None:
+                self._terminal = True
+                raise ConfirmationError("confirmation requires an issued planner result")
             return self._confirm_next(
                 relay_state,
                 capability_version=capability_version,
@@ -474,8 +481,8 @@ class ConfirmedPlan:
         rooms: tuple[str, ...],
         now_ms: int,
         intent_id: str,
-        emit: Callable[[IntentV1], None],
-        prepared: PreparedConfirmation | None,
+        emit: Callable[[IntentV1], object],
+        prepared: PreparedConfirmation | None = None,
     ) -> IntentV1:
         facts, proposal, intent = self._confirmation_candidate(
             relay_state,
@@ -485,21 +492,30 @@ class ConfirmedPlan:
             intent_id=intent_id,
         )
         execution_plan: Plan | None = None
-        if proposal.name.value in {"translate", "come_home"}:
+        if prepared is not None:
+            provider = prepared.router.current_snapshot
+            current_snapshot = None if provider is None else provider()
             if (
-                prepared is None
-                or prepared.intent != intent
-                or prepared.state_digest != facts.state_digest
+                prepared is not self._issued_preparation
+                or not _same_intent_except_time(prepared.intent, intent)
+                or intent.t < prepared.intent.t
+                or prepared.state_digest != _execution_digest(facts)
+                or not prepared.router.owns_emitter(emit)
+                or current_snapshot is None
+                or not _snapshot_matches_facts(
+                    current_snapshot,
+                    facts,
+                    intent.selection,
+                    require_home=intent.name.value == "come_home",
+                )
             ):
-                if prepared is not None:
-                    prepared.router.discard(prepared.intent.intent_id)
+                prepared.router.discard(prepared.intent.intent_id)
                 self._terminal = True
-                raise ConfirmationError("motion confirmation requires the previewed planner result")
+                raise ConfirmationError("confirmation requires its issued planner result and sink")
             execution_plan = prepared.execution.plan
-        elif prepared is not None:
-            prepared.router.discard(prepared.intent.intent_id)
+        elif proposal.name.value in {"translate", "come_home"}:
             self._terminal = True
-            raise ConfirmationError("non-motion intent cannot carry a prepared execution")
+            raise ConfirmationError("motion confirmation requires the previewed planner result")
         try:
             self.audit.append(
                 {
@@ -518,7 +534,7 @@ class ConfirmedPlan:
             raise ConfirmationError("intent emission audit failed before relay send") from None
         if prepared is not None:
             try:
-                prepared.router.bind(prepared.execution)
+                prepared.router.bind(replace(prepared.execution, intent=intent))
             except Exception:
                 self._terminal = True
                 raise ConfirmationError("prepared execution could not be bound") from None
@@ -529,7 +545,7 @@ class ConfirmedPlan:
         self._awaiting_emitted_at_ms = intent.t
         self._next += 1
         try:
-            emit(intent)
+            emission_result = emit(intent)
         except Exception:
             if prepared is not None:
                 prepared.router.discard(prepared.intent.intent_id)
@@ -547,6 +563,11 @@ class ConfirmedPlan:
             except Exception:
                 pass
             raise
+        if prepared is not None and not _relay_admitted(emission_result):
+            prepared.router.discard(intent.intent_id)
+            self._terminal = True
+            raise ConfirmationError("relay did not admit the prepared intent")
+        self._issued_preparation = None
         try:
             self.audit.append(
                 {
@@ -562,6 +583,26 @@ class ConfirmedPlan:
             self._terminal = True
             raise ConfirmationError("intent was emitted but its audit record failed") from None
         return intent
+
+    def _confirm_unprepared(
+        self,
+        relay_state: object,
+        *,
+        capability_version: str,
+        rooms: tuple[str, ...],
+        now_ms: int,
+        intent_id: str,
+        emit: Callable[[IntentV1], object],
+    ) -> IntentV1:
+        with self._lock:
+            return self._confirm_next(
+                relay_state,
+                capability_version=capability_version,
+                rooms=rooms,
+                now_ms=now_ms,
+                intent_id=intent_id,
+                emit=emit,
+            )
 
     def acknowledge(
         self,
@@ -636,7 +677,7 @@ class ConfirmedPlan:
             or outcome.get("roster_version") != self._expected_facts.state_version
         ):
             raise ConfirmationError("relay outcome envelope is invalid")
-        if self._awaiting_emitted_at_ms is None or outcome["t"] <= self._awaiting_emitted_at_ms:
+        if self._awaiting_emitted_at_ms is None or outcome["t"] < self._awaiting_emitted_at_ms:
             raise ConfirmationError("relay outcome predates the emitted intent")
         try:
             status = LifecycleStatus(outcome.get("status"))
@@ -737,9 +778,12 @@ class ConfirmedPlan:
             )
             raise ConfirmationError(f"relay returned terminal status {status.value}")
         emitted = self._compiled.intents[self._next - 1]
-        if facts.state_time_ms <= self._awaiting_emitted_at_ms:
+        requires_post_dispatch_position = emitted.name.value in {"translate", "come_home"}
+        if facts.state_time_ms < self._awaiting_emitted_at_ms or (
+            requires_post_dispatch_position and facts.state_time_ms == self._awaiting_emitted_at_ms
+        ):
             raise ConfirmationError("relay outcome state predates the emitted intent")
-        if emitted.name.value in {"translate", "come_home"} and any(
+        if requires_post_dispatch_position and any(
             _drone_position_time(facts, drone_id) is None
             or _drone_position_time(facts, drone_id) <= self._awaiting_emitted_at_ms
             for drone_id in emitted.selection
@@ -804,18 +848,23 @@ class ConfirmedPlan:
             plan.intent_id != intent.intent_id
             or plan.intent_name is not intent.name
             or plan.roster_version != facts.state_version
-            or plan.selection != intent.selection
+            or plan.selection != prepared.snapshot.selection
             or prepared.snapshot.roster_version != facts.state_version
             or prepared.snapshot.selection != facts.selection
-            or not _snapshot_matches_facts(prepared.snapshot, facts, intent.selection)
+            or not _snapshot_matches_facts(
+                prepared.snapshot,
+                facts,
+                intent.selection,
+                require_home=intent.name.value == "come_home",
+            )
         ):
             self._terminal = True
             raise ConfirmationError("actual planner used different authoritative state")
-        targets = _goto_targets(plan, intent.selection)
-        if targets is None:
-            self._terminal = True
-            raise ConfirmationError("actual planner produced an invalid motion plan")
         if intent.name.value == "translate":
+            targets = _goto_targets(plan, intent.selection)
+            if targets is None:
+                self._terminal = True
+                raise ConfirmationError("actual planner produced an invalid motion plan")
             expected = _translation_grounding(self._compiled.facts)
             actual = router.controller.planner.config.translation_grounding(prepared.snapshot)
             if not _translation_matches_selection(expected, actual, intent.selection):
@@ -828,12 +877,17 @@ class ConfirmedPlan:
             ):
                 self._terminal = True
                 raise ConfirmationError("actual planner translation is below completion tolerance")
-        elif any(
-            _drone_position(facts, drone_id, "home_position") is None
-            for drone_id in intent.selection
-        ):
-            self._terminal = True
-            raise ConfirmationError("actual planner home target was not previewed")
+        elif intent.name.value == "come_home":
+            for drone_id in intent.selection:
+                home = _drone_position(facts, drone_id, "home_position")
+                aircraft_home = prepared.snapshot.aircraft[drone_id].home
+                if (
+                    home is None
+                    or aircraft_home is None
+                    or home != (aircraft_home.x, aircraft_home.y, aircraft_home.z)
+                ):
+                    self._terminal = True
+                    raise ConfirmationError("actual planner home target was not previewed")
 
     def _confirmation_candidate(
         self,
@@ -897,6 +951,35 @@ def _authorization_digest(facts: GroundingFacts) -> str:
     return hashlib.sha256(
         json.dumps(projection, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
+
+
+def _execution_digest(facts: GroundingFacts) -> str:
+    projection = facts.record_dict()
+    projection.pop("state_event_id")
+    projection.pop("state_time_ms")
+    projection.pop("state_digest")
+    for drone in projection["drones"]:
+        drone.pop("position_time_ms")
+    return hashlib.sha256(
+        json.dumps(projection, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
+
+
+def _same_intent_except_time(preview: IntentV1, confirmed: IntentV1) -> bool:
+    return replace(preview, t=confirmed.t) == confirmed
+
+
+def _relay_admitted(result: object) -> bool:
+    if isinstance(result, ExecutionResult):
+        return True
+    if not isinstance(result, list) or not result:
+        return False
+    return any(
+        isinstance(event, Mapping)
+        and event.get("type") == "acknowledgement"
+        and event.get("status") == "accepted"
+        for event in result
+    )
 
 
 def _is_sha256(value: object) -> bool:
@@ -1025,6 +1108,8 @@ def _snapshot_matches_facts(
     snapshot: FleetSnapshot,
     facts: GroundingFacts,
     selection: tuple[int, ...],
+    *,
+    require_home: bool = False,
 ) -> bool:
     if (
         snapshot.armed != facts.armed
@@ -1033,7 +1118,9 @@ def _snapshot_matches_facts(
     ):
         return False
     fact_drones = {int(drone["drone_id"]): drone for drone in facts.drones}
-    for drone_id in selection:
+    if set(snapshot.aircraft) != set(fact_drones):
+        return False
+    for drone_id in fact_drones:
         aircraft = snapshot.aircraft.get(drone_id)
         drone = fact_drones.get(drone_id)
         if aircraft is None or drone is None:
@@ -1041,12 +1128,22 @@ def _snapshot_matches_facts(
         position = _drone_position(facts, drone_id, "position")
         home = _drone_position(facts, drone_id, "home_position")
         position_time_ms = _drone_position_time(facts, drone_id)
+        heading = drone["heading_deg"]
         if (
             aircraft.membership.value != drone["membership"]
             or aircraft.flight_state.value != drone["flight_state"]
             or position != (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
             or position_time_ms != aircraft.position_last_seen_ms
-            or (home is not None and home != (aircraft.home.x, aircraft.home.y, aircraft.home.z))
+            or (heading is not None and aircraft.heading_deg != heading)
+            or (
+                require_home
+                and drone_id in selection
+                and (
+                    home is None
+                    or aircraft.home is None
+                    or home != (aircraft.home.x, aircraft.home.y, aircraft.home.z)
+                )
+            )
         ):
             return False
     return True

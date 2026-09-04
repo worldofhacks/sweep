@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
 from typing import Literal, Protocol
+from weakref import WeakKeyDictionary
 
 import httpx
 
@@ -46,7 +47,7 @@ class ModelRequest:
     facts: Mapping[str, object]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
 class ModelResponse:
     payload: object
     source: Literal["anthropic", "replay", "synthetic"]
@@ -67,6 +68,11 @@ class TransportError(RuntimeError):
     pass
 
 
+_ISSUED_PROVENANCE: WeakKeyDictionary[ModelResponse, tuple[str, str, str | None]] = (
+    WeakKeyDictionary()
+)
+
+
 def model_response_provenance_is_valid(response: ModelResponse) -> bool:
     if (
         response.model != PINNED_COMPILER_MODEL
@@ -79,7 +85,24 @@ def model_response_provenance_is_valid(response: ModelResponse) -> bool:
         or (response.source == "replay" and response.cassette_digest is None)
     ):
         return False
-    return response.cassette_digest is None or _is_sha256(response.cassette_digest)
+    if response.cassette_digest is not None and not _is_sha256(response.cassette_digest):
+        return False
+    if response.source in {"anthropic", "replay"}:
+        return _ISSUED_PROVENANCE.get(response) == (
+            response.source,
+            response.origin,
+            response.cassette_digest,
+        )
+    return True
+
+
+def _issue_response(response: ModelResponse) -> ModelResponse:
+    _ISSUED_PROVENANCE[response] = (
+        response.source,
+        response.origin,
+        response.cassette_digest,
+    )
+    return response
 
 
 class AnthropicTransport:
@@ -111,15 +134,17 @@ class AnthropicTransport:
             usage = body.get("usage", {})
             if not isinstance(usage, Mapping):
                 raise TransportError("provider usage metadata is invalid")
-            return ModelResponse(
-                payload=payload,
-                source="anthropic",
-                origin="anthropic",
-                model=body["model"],
-                prompt_schema_version=PROMPT_SCHEMA_VERSION,
-                input_units=_non_negative_int(usage.get("input_tokens")),
-                output_units=_non_negative_int(usage.get("output_tokens")),
-                latency_ms=int((time.monotonic() - started) * 1_000),
+            return _issue_response(
+                ModelResponse(
+                    payload=payload,
+                    source="anthropic",
+                    origin="anthropic",
+                    model=body["model"],
+                    prompt_schema_version=PROMPT_SCHEMA_VERSION,
+                    input_units=_non_negative_int(usage.get("input_tokens")),
+                    output_units=_non_negative_int(usage.get("output_tokens")),
+                    latency_ms=int((time.monotonic() - started) * 1_000),
+                )
             )
         except (httpx.HTTPError, TypeError, ValueError) as error:
             raise TransportError(str(error)) from None
@@ -156,16 +181,18 @@ class ReplayTransport:
             "latency_ms",
         }:
             raise TransportError(f"replay miss for {key}")
-        return ModelResponse(
-            payload=_thaw_json(entry["payload"]),
-            source="replay",
-            origin="unverified_replay",
-            model=PINNED_COMPILER_MODEL,
-            prompt_schema_version=PROMPT_SCHEMA_VERSION,
-            cassette_digest=self._digest,
-            input_units=_non_negative_int(entry["input_units"]),
-            output_units=_non_negative_int(entry["output_units"]),
-            latency_ms=_non_negative_int(entry["latency_ms"]),
+        return _issue_response(
+            ModelResponse(
+                payload=_thaw_json(entry["payload"]),
+                source="replay",
+                origin="unverified_replay",
+                model=PINNED_COMPILER_MODEL,
+                prompt_schema_version=PROMPT_SCHEMA_VERSION,
+                cassette_digest=self._digest,
+                input_units=_non_negative_int(entry["input_units"]),
+                output_units=_non_negative_int(entry["output_units"]),
+                latency_ms=_non_negative_int(entry["latency_ms"]),
+            )
         )
 
 
@@ -205,10 +232,8 @@ class RecordingTransport:
                 cassette_digest = hashlib.sha256(self._cassette_path.read_bytes()).hexdigest()
             finally:
                 fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
-        return replace(
-            response,
-            cassette_digest=cassette_digest,
-        )
+        recorded = replace(response, cassette_digest=cassette_digest)
+        return _issue_response(recorded) if recorded.source in {"anthropic", "replay"} else recorded
 
     def _write(self, cassette: Mapping[str, object]) -> None:
         self._cassette_path.parent.mkdir(parents=True, exist_ok=True)

@@ -863,7 +863,8 @@ def test_downstream_failure_has_terminal_refused_record(
         if record["event"]["type"] == "intent_record"
     ]
 
-    assert result[0]["reason"] == "downstream_error"
+    assert [event["status"] for event in result] == ["accepted", "refused"]
+    assert result[1]["reason"] == "downstream_error"
     assert intent_outcomes == ["accepted", "refused"]
     assert "do not expose this" not in str(records)
 
