@@ -1,5 +1,7 @@
 # Sweep (working name): PRD, architecture, and division of labor
 
+> **STATUS: STALE (2026-09-04).** This PRD is historical context only and is no longer maintained. The source of truth for scope, milestones, and acceptance is **`docs/mvp-plan.md` plus the open GitHub issues** (each carrying its prior-art directive comments). Where this document conflicts with them, the MVP plan and issues win.
+
 Version 0.6. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task; capability areas coordinate module boundaries and review. Status: M0 scope and contracts in progress.
 
 This document answers every item in the Pre-Search Checklist. Section headers carry the checklist numbers so nothing is skipped, and Appendix F is a crosswalk from each question to the section that answers it.
