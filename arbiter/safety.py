@@ -26,7 +26,7 @@ from planner.planner import SELECTION_TARGETED_INTENTS
 from relay.intent_v1 import IntentName, IntentV1
 
 _CONFIRMED_INTENTS: Final = frozenset(
-    {IntentName.TAKEOFF, IntentName.LAND, IntentName.LAND_ALL, IntentName.CAPTURE_ROOM}
+    {IntentName.TAKEOFF, IntentName.LAND_ALL, IntentName.CAPTURE_ROOM}
 )
 _SAFE_WHILE_STOPPED: Final = frozenset({IntentName.ESTOP, IntentName.HOLD, IntentName.LAND_ALL})
 _SAFE_OPERATIONS: Final = frozenset(
@@ -146,9 +146,8 @@ class SafetyArbiter:
 
     def check_intent(self, intent: IntentV1, snapshot: FleetSnapshot) -> Refusal | None:
         """Check intent-level state before the planner can create adapter work."""
-        if (
-            intent.name in SELECTION_TARGETED_INTENTS
-            and tuple(intent.selection) != snapshot.selection
+        if intent.name in SELECTION_TARGETED_INTENTS and tuple(sorted(intent.selection)) != tuple(
+            sorted(snapshot.selection)
         ):
             return self._intent_refusal(
                 intent,
@@ -675,7 +674,6 @@ class SafetyArbiter:
             IntentName.ARM: frozenset(),
             IntentName.SELECT: frozenset(),
             IntentName.TAKEOFF: frozenset({CommandOperation.TAKEOFF}),
-            IntentName.LAND: frozenset({CommandOperation.LAND}),
             IntentName.TRANSLATE: frozenset({CommandOperation.GOTO}),
             IntentName.HOLD: frozenset({CommandOperation.HOVER}),
             IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
@@ -849,7 +847,6 @@ class SafetyArbiter:
     ) -> Refusal | None:
         if plan.intent_name in {
             IntentName.TAKEOFF,
-            IntentName.LAND,
             IntentName.TRANSLATE,
             IntentName.COME_HOME,
         }:
@@ -880,8 +877,6 @@ class SafetyArbiter:
                 and set(command.parameters) == {"z"}
                 and _finite_positive(command.parameters.get("z"))
             )
-        if intent_name is IntentName.LAND:
-            return command.operation is CommandOperation.LAND and not command.parameters
         if intent_name in {IntentName.TRANSLATE, IntentName.COME_HOME}:
             return (
                 command.operation is CommandOperation.GOTO
@@ -1425,14 +1420,6 @@ class SafetyArbiter:
                 snapshot,
                 RefusalReason.INVALID_STATE,
                 "hold requires an airborne aircraft",
-                aircraft.drone_id,
-            )
-        elif intent.name is IntentName.LAND and not aircraft.airborne:
-            return self._intent_refusal(
-                intent,
-                snapshot,
-                RefusalReason.INVALID_STATE,
-                "land requires an airborne aircraft",
                 aircraft.drone_id,
             )
         elif intent.name is IntentName.LAND_ALL and not aircraft.airborne:

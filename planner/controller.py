@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from threading import RLock
 from weakref import WeakSet
 
@@ -19,9 +19,11 @@ from planner.models import (
     PreparedExecution,
     Refusal,
     RefusalReason,
+    RelayAircraftSafetyEnrichment,
+    RelaySnapshotEnrichment,
 )
 from planner.planner import DeterministicPlanner
-from relay.intent_v1 import IntentV1
+from relay.intent_v1 import IntentName, IntentV1
 
 type SnapshotProvider = Callable[[], FleetSnapshot]
 type IntentEmitter = Callable[[IntentV1], object]
@@ -51,6 +53,7 @@ class ResumedExecution:
 class PreparedIntentEmitter:
     router: PreparedExecutionRouter
     _send: IntentEmitter
+    current_state: Callable[[], dict[str, object]]
 
     def __call__(self, intent: IntentV1) -> object:
         return self._send(intent)
@@ -76,10 +79,16 @@ class PreparedExecutionRouter:
         intent: IntentV1,
         snapshot: FleetSnapshot,
     ) -> PreparedExecution | ExecutionResult:
+        provider = self.current_snapshot or (lambda: snapshot)
+
+        def at_confirmation_time() -> FleetSnapshot:
+            current = provider()
+            return replace(current, now_ms=max(intent.t, current.now_ms))
+
         return self.controller.prepare(
             intent,
             snapshot,
-            current_snapshot=self.current_snapshot,
+            current_snapshot=at_confirmation_time,
         )
 
     def bind(self, prepared: PreparedExecution) -> None:
@@ -112,27 +121,97 @@ class PreparedExecutionRouter:
                 with self._lock:
                     self._submitting_sessions.pop(intent.intent_id, None)
 
-        emitter = PreparedIntentEmitter(self, send)
+        emitter = PreparedIntentEmitter(self, send, session.current_state)
         self._emitters.add(emitter)
         return emitter
 
     def owns_emitter(self, emitter: object) -> bool:
         return isinstance(emitter, PreparedIntentEmitter) and emitter in self._emitters
 
-    def __call__(self, intent: IntentV1, _relay_state: object) -> ExecutionResult:
+    def _relay_snapshot(self, session: object, state: object = None) -> FleetSnapshot:
+        if self.current_snapshot is None:
+            raise ValueError("relay execution requires live safety enrichment")
+        raw = session.current_state() if state is None else state
+        if not isinstance(raw, Mapping) or raw.get("session") != session.session_id:
+            raise ValueError("execution state belongs to another relay session")
+        enriched = self.current_snapshot()
+        enrichment = RelaySnapshotEnrichment(
+            operator_present=enriched.operator_present,
+            operator_last_seen_ms=enriched.operator_last_seen_ms,
+            aircraft={
+                drone_id: RelayAircraftSafetyEnrichment(
+                    drone_id=drone_id,
+                    armed=aircraft.armed,
+                    physical_rc_available=aircraft.physical_rc_available,
+                    storage_remaining_bytes=aircraft.storage_remaining_bytes,
+                    camera_ready=aircraft.camera_ready,
+                    active_task_id=aircraft.active_task_id,
+                    position_loss_since_ms=aircraft.position_loss_since_ms,
+                    last_known_pose=aircraft.pose,
+                    last_known_home=aircraft.home,
+                    last_known_flight_state=aircraft.flight_state.value,
+                    last_known_battery=aircraft.battery,
+                    last_known_link_quality=aircraft.link_quality,
+                    last_known_position_quality=aircraft.position_quality,
+                    last_link_seen_ms=aircraft.link_last_seen_ms,
+                    last_position_seen_ms=aircraft.position_last_seen_ms,
+                )
+                for drone_id, aircraft in enriched.aircraft.items()
+            },
+        )
+        current = FleetSnapshot.from_relay_state(raw, enrichment=enrichment)
+        if any(
+            enriched.aircraft[drone_id].connection_epoch != aircraft.connection_epoch
+            for drone_id, aircraft in current.aircraft.items()
+        ):
+            raise ValueError("safety enrichment belongs to another connection epoch")
+        return current
+
+    def __call__(self, intent: IntentV1, relay_state: object) -> ExecutionResult:
         with self._lock:
             prepared = self._prepared.pop(intent.intent_id, None)
             session = self._submitting_sessions.get(intent.intent_id)
+        if session is None:
+            raise RuntimeError("intent has no matching prepared execution")
+        current = self._relay_snapshot(session, relay_state)
+        if prepared is None and intent.name is IntentName.ESTOP:
+            prepared = self.controller.prepare(intent, current)
+            if isinstance(prepared, ExecutionResult):
+                return prepared
         if prepared is None or prepared.intent != intent:
             raise RuntimeError("intent has no matching prepared execution")
+        refusal = self.controller.arbiter.check_plan(prepared.plan, current)
+        if refusal is None:
+            refusal = self.controller.arbiter.check_intent(intent, current)
+        if refusal is not None:
+            return ExecutionResult(
+                intent_id=intent.intent_id,
+                roster_version=current.roster_version,
+                status=LifecycleStatus.REFUSED,
+                plan=prepared.plan,
+                refusal=refusal,
+            )
         result = self.controller.dispatch_prepared(
             prepared,
-            current_snapshot=self.current_snapshot,
+            current_snapshot=lambda: self._relay_snapshot(session),
         )
         if result.status is LifecycleStatus.EXECUTING:
             with self._lock:
                 self._running[intent.intent_id] = (prepared, result, session)
         return result
+
+    def process_relay_intent(
+        self, intent: IntentV1, relay_state: object, session: object
+    ) -> ExecutionResult:
+        if intent.name is IntentName.ESTOP:
+            session.update_control_projection(estop=True)
+        with self._lock:
+            self._submitting_sessions[intent.intent_id] = session
+        try:
+            return self(intent, relay_state)
+        finally:
+            with self._lock:
+                self._submitting_sessions.pop(intent.intent_id, None)
 
     def resume(self, intent_id: str, terminal_ack: CommandAcknowledgement) -> ResumedExecution:
         with self._lock:
@@ -145,7 +224,11 @@ class PreparedExecutionRouter:
             pending,
             terminal_ack,
             prepared.snapshot,
-            current_snapshot=self.current_snapshot,
+            current_snapshot=(
+                (lambda: self._relay_snapshot(session))
+                if session is not None
+                else self.current_snapshot
+            ),
         )
         if result.status is LifecycleStatus.EXECUTING:
             with self._lock:
@@ -155,8 +238,78 @@ class PreparedExecutionRouter:
             relay_events = tuple(session.record_execution_result(prepared.intent, result))
         return ResumedExecution(execution=result, relay_events=relay_events)
 
+    def resume_after_acknowledgement(
+        self,
+        session: object,
+        acknowledgement: object,
+    ) -> ResumedExecution | None:
+        """Resume only the session-owned execution waiting for this terminal adapter ack."""
+        status_value = getattr(getattr(acknowledgement, "status", None), "value", None)
+        try:
+            status = LifecycleStatus(status_value)
+        except (TypeError, ValueError):
+            return None
+        if status not in {
+            LifecycleStatus.COMPLETED,
+            LifecycleStatus.FAILED,
+            LifecycleStatus.INVALIDATED,
+        }:
+            return None
+        intent_id = getattr(acknowledgement, "intent_id", None)
+        command_id = getattr(acknowledgement, "command_id", None)
+        if not isinstance(intent_id, str) or not isinstance(command_id, str):
+            return None
+        with self._lock:
+            running = self._running.get(intent_id)
+            if running is None:
+                return None
+            prepared, pending, retained_session = running
+            if retained_session is not session:
+                return None
+            matching_pending = next(
+                (
+                    pending_ack
+                    for pending_ack in pending.acknowledgements
+                    if pending_ack.command_id == command_id
+                    and pending_ack.status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}
+                ),
+                None,
+            )
+            if matching_pending is None:
+                return None
+            command = next(
+                (command for command in prepared.plan.commands if command.command_id == command_id),
+                None,
+            )
+            if command is None:
+                return None
+            try:
+                terminal_ack = CommandAcknowledgement(
+                    command_id=command_id,
+                    intent_id=intent_id,
+                    roster_version=acknowledgement.roster_version,
+                    drone_id=acknowledgement.drone_id,
+                    connection_epoch=acknowledgement.connection_epoch,
+                    status=status,
+                    reason=_refusal_reason(getattr(acknowledgement, "reason", None)),
+                    detail=getattr(acknowledgement, "detail", "") or "",
+                )
+            except (TypeError, ValueError):
+                return None
+            if (
+                terminal_ack.intent_id != command.intent_id
+                or terminal_ack.roster_version != command.roster_version
+                or terminal_ack.drone_id != command.drone_id
+                or terminal_ack.connection_epoch != command.connection_epoch
+            ):
+                return None
+        return self.resume(intent_id, terminal_ack)
+
 
 def _intent_payload(intent: IntentV1) -> dict[str, object]:
+    args = dict(intent.args)
+    if intent.name.value == "select":
+        args["ids"] = list(intent.args["ids"])
     return {
         "v": intent.v,
         "t": intent.t,
@@ -166,11 +319,18 @@ def _intent_payload(intent: IntentV1) -> dict[str, object]:
         "source": intent.source,
         "session": intent.session,
         "name": intent.name.value,
-        "args": dict(intent.args),
+        "args": args,
         "selection": list(intent.selection),
         "mode": intent.mode.value,
         "confirm": intent.confirm,
     }
+
+
+def _refusal_reason(value: object) -> RefusalReason | None:
+    try:
+        return RefusalReason(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class AutonomyController:

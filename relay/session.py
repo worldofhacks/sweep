@@ -249,7 +249,12 @@ class RelaySession:
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
             try:
-                downstream = self.intent_sink(intent, self.current_state())
+                process = getattr(self.intent_sink, "process_relay_intent", None)
+                downstream = (
+                    process(intent, self.current_state(), self)
+                    if callable(process)
+                    else self.intent_sink(intent, self.current_state())
+                )
             except Exception:
                 self._intents[intent.intent_id].status = LifecycleStatus.REFUSED
                 self._log_intent(
@@ -389,7 +394,18 @@ class RelaySession:
             self._record_adapter_ack_fact(acknowledgement)
             self._append_audit(event)
             self._metrics["acknowledgements"] += 1
-            return [event]
+            events = [event]
+            if acknowledgement.status in {
+                LifecycleStatus.COMPLETED,
+                LifecycleStatus.FAILED,
+                LifecycleStatus.INVALIDATED,
+            }:
+                resume = getattr(self.intent_sink, "resume_after_acknowledgement", None)
+                if callable(resume):
+                    resumed = resume(self, acknowledgement)
+                    if resumed is not None:
+                        events.extend(resumed.relay_events)
+            return events
 
     def record_lifecycle(
         self,
@@ -511,15 +527,16 @@ class RelaySession:
                         if status is LifecycleStatus.COMPLETED
                         else None
                     ),
-                    estop=(
-                        getattr(plan, "estop_update", None)
-                        if status is LifecycleStatus.COMPLETED
-                        else None
-                    ),
+                    estop=(True if getattr(plan, "estop_update", None) is True else None),
                 )
             )
         elif status is LifecycleStatus.EXECUTING:
-            events.append(self.update_control_projection(accepted_plan=plan_dict))
+            events.append(
+                self.update_control_projection(
+                    accepted_plan=plan_dict,
+                    estop=True if getattr(plan, "estop_update", None) is True else None,
+                )
+            )
         refusal = getattr(result, "refusal", None)
         reason = getattr(getattr(refusal, "reason", None), "value", None)
         detail = getattr(refusal, "detail", None)

@@ -27,7 +27,6 @@ SUPPORTED_INTENTS = frozenset(
         IntentName.ARM,
         IntentName.SELECT,
         IntentName.TAKEOFF,
-        IntentName.LAND,
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
@@ -39,7 +38,6 @@ SUPPORTED_INTENTS = frozenset(
 SELECTION_TARGETED_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
-        IntentName.LAND,
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
@@ -158,9 +156,8 @@ class DeterministicPlanner:
                 f"{intent.name.value} has no earned M2.0 planner capability",
             )
 
-        if (
-            intent.name in SELECTION_TARGETED_INTENTS
-            and tuple(intent.selection) != snapshot.selection
+        if intent.name in SELECTION_TARGETED_INTENTS and tuple(sorted(intent.selection)) != tuple(
+            sorted(snapshot.selection)
         ):
             return _refusal(
                 intent,
@@ -246,10 +243,6 @@ class DeterministicPlanner:
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
-
-        elif intent.name is IntentName.LAND:
-            for drone_id in selected:
-                builder.add(drone_id, CommandOperation.LAND)
 
         elif intent.name is IntentName.HOLD:
             hold_scope = HoldScope.OPERATOR_SELECTION

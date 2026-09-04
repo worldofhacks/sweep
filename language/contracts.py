@@ -627,9 +627,9 @@ def _validate_proposed_intent(
             return None
         if any(drone_id not in known or not known[drone_id]["selectable"] for drone_id in ids):
             return None
-    elif (
-        result.intent.name in _SELECTION_TARGETED and result.intent.selection != expected_selection
-    ):
+    elif result.intent.name in _SELECTION_TARGETED and tuple(
+        sorted(result.intent.selection)
+    ) != tuple(sorted(expected_selection)):
         return None
     if result.intent.name is IntentName.TRANSLATE and (
         facts.translation_frame not in {"world", "aircraft_relative"}
