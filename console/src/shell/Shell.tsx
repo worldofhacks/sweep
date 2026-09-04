@@ -8,9 +8,16 @@ import { DangerBanner } from './DangerBanner'
 import { Dock } from './Dock'
 import { Frame } from './Frame'
 import { Header } from './Header'
+import { NoticeLine } from './NoticeLine'
 import { Rail } from './Rail'
 import { TabBar } from './TabBar'
-import { STOP_CLEARED_NOTICE_MS, deriveInvalidation, newestDanger, type StopTimes } from './derive'
+import {
+  STOP_CLEARED_NOTICE_MS,
+  deriveInvalidation,
+  newestAdvisory,
+  newestDanger,
+  type StopTimes,
+} from './derive'
 
 export interface ShellProps {
   controller: ConsoleController
@@ -59,6 +66,7 @@ export function Shell({ controller, now = Date.now, initialModule = 'control', w
             </p>
           )}
           <DangerBanner notice={newestDanger(state.notices)} />
+          <NoticeLine notice={newestAdvisory(state.notices)} />
         </Header>
       }
       rail={<Rail modules={MODULES} active={activeId} onSelect={setActiveId} />}

@@ -56,7 +56,9 @@ cannot enable it. It is a UI/contract fixture, not acceptance evidence and not a
 breakpoints). `src/shell/` is the persistent frame: header with the network stop, state tags,
 selection, control-authority line, connection pills and session sheet; rail and bottom tab bar;
 the working pane with its sub-tab strip; the fleet context column; and the footer dock that shows
-the one pending plan with its full Intent v1 envelope. `src/modules/registry.ts` declares each
+the one pending plan with its full Intent v1 envelope. The newest warning or info notice stays on
+a line under the header row as a polite live region, the newest danger is the banner alert, and the
+session sheet keeps the capped history. `src/modules/registry.ts` declares each
 module (id, label, component, context renderer) in navigation order; module selection lives in the
 shell and a pending request survives switching. Modules the relay does not feed yet render an
 honest empty state.

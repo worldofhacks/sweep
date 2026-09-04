@@ -261,6 +261,19 @@
   color: var(--color-danger);
 }
 .sh-danger strong { font-weight: var(--weight-700); }
+.sh-notice-line {
+  margin: 0;
+  padding: 10px var(--gutter-header);
+  border-top: 1px solid var(--color-hairline);
+  background: var(--color-recovering-bg);
+  font-size: var(--text-12-5);
+  color: var(--color-ink);
+}
+.sh-notice-line strong { font-weight: var(--weight-700); color: var(--color-warn); }
+.sh-notice-line.is-info { background: var(--color-panel); }
+.sh-notice-line.is-info strong { color: var(--color-ink-2); }
+/* Stays mounted while empty so the live region exists before the first notice arrives. */
+.sh-notice-line.is-empty { padding: 0; border: 0; }
 .sh-fixture-line {
   margin: 0;
   padding: 6px var(--gutter-header);

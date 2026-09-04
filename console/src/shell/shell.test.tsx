@@ -205,6 +205,36 @@ describe('persistent shell', () => {
     expect(screen.getByRole('button', { name: 'Hide detail' })).toHaveAttribute('aria-expanded', 'true')
   })
 
+  test('warning notices stay visible and announced without opening the session sheet', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByText(/Development fixture active/i)
+
+    const line = screen.getByRole('status', { name: 'Latest notice' })
+    expect(line).toHaveAttribute('aria-live', 'polite')
+    expect(line).toBeEmptyDOMElement()
+
+    clients.console.emitConnection('degraded', 'Heartbeat late by 4 s.')
+    await waitFor(() =>
+      expect(line).toHaveTextContent('Warning — Relay degraded: Heartbeat late by 4 s.'),
+    )
+    expect(screen.getByRole('status', { name: 'Latest notice' })).toBe(line)
+    expect(screen.queryByLabelText('Session detail')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    clients.keyboard.emitConnection('disconnected', 'Keyboard socket closed.')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Danger — Keyboard stop unavailable: Keyboard socket closed.',
+    )
+    expect(line).toHaveTextContent('Relay degraded')
+    expect(line).not.toHaveTextContent('Keyboard socket closed')
+
+    await user.click(screen.getByRole('button', { name: 'Session detail' }))
+    const sheet = within(screen.getByLabelText('Session detail'))
+    expect(sheet.getByText('Notices — 1 danger · 1 warning · 0 info')).toBeInTheDocument()
+  })
+
   test('stop disabled reason follows a live socket loss', async () => {
     const clients = fixtureClients()
     render(<App sessionId={session} clients={clients} />)

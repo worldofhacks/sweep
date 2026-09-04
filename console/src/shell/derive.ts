@@ -172,6 +172,11 @@ export function newestDanger(notices: OperatorNotice[]): OperatorNotice | null {
   return notices.find((notice) => notice.level === 'danger') ?? null
 }
 
+/** The newest warning or info notice; danger notices belong to the banner instead. */
+export function newestAdvisory(notices: OperatorNotice[]): OperatorNotice | null {
+  return notices.find((notice) => notice.level !== 'danger') ?? null
+}
+
 export function noticeSummary(notices: OperatorNotice[]): string {
   const count = (level: OperatorNotice['level']) =>
     notices.filter((notice) => notice.level === level).length

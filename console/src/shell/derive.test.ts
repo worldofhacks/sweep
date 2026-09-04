@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest'
-import { createInitialControlState, createRequestRecord, type ControlState, type RequestRecord } from '../control/state'
+import {
+  createInitialControlState,
+  createRequestRecord,
+  type ControlState,
+  type OperatorNotice,
+  type RequestRecord,
+} from '../control/state'
 import type { IntentV1, RelayAircraftState } from '../relay/contract'
 import {
   deriveInvalidation,
@@ -9,6 +15,8 @@ import {
   deriveSelectionLabel,
   deriveStateTags,
   deriveStop,
+  newestAdvisory,
+  newestDanger,
 } from './derive'
 import { formatTime } from './format'
 
@@ -197,5 +205,33 @@ describe('invalidation line', () => {
     expect(deriveInvalidation([createRequestRecord(intent('b'), t), invalidated('a', false)], null)).toBeNull()
     const pending: RequestRecord = { ...createRequestRecord(intent('c'), t), status: 'pending_confirmation' }
     expect(deriveInvalidation([invalidated('a', false)], pending)).toBeNull()
+  })
+})
+
+describe('header notices', () => {
+  const notice = (id: string, level: OperatorNotice['level']): OperatorNotice => ({
+    id,
+    level,
+    title: `${level} ${id}`,
+    detail: 'detail',
+    t,
+  })
+
+  test('the banner takes the newest danger and the line the newest warning or info', () => {
+    const notices = [
+      notice('d2', 'danger'),
+      notice('w1', 'warning'),
+      notice('i1', 'info'),
+      notice('d1', 'danger'),
+    ]
+    expect(newestDanger(notices)?.id).toBe('d2')
+    expect(newestAdvisory(notices)?.id).toBe('w1')
+    expect(newestAdvisory([notice('i1', 'info'), notice('w1', 'warning')])?.id).toBe('i1')
+  })
+
+  test('nothing surfaces when only danger notices, or none, are kept', () => {
+    expect(newestAdvisory([])).toBeNull()
+    expect(newestAdvisory([notice('d1', 'danger')])).toBeNull()
+    expect(newestDanger([notice('w1', 'warning')])).toBeNull()
   })
 })
