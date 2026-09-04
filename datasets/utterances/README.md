@@ -8,7 +8,7 @@ Room references require explicit grounding. “This room,” “the room,” “
 
 Translation values are planner-owned steps in the declared `aircraft_relative` frame. Each movement case supplies the configured `step_m` and a current telemetry `heading_deg` for every selected aircraft. Metric language converts through that step size; an unstated distance means one step. The compiler never invents a heading or step size.
 
-Indirect but established flight verbs map to their intents. “Prepare the aircraft for flight” maps to `arm`, and “Launch” maps to `takeoff`; the existing preview and confirmation path remains the safety gate. “Land now” maps to `land` for the current selection, while explicit fleet-wide language maps to `land_all`.
+Indirect but established flight verbs map to their intents. “Prepare the aircraft for flight” maps to `arm`, and “Launch” maps to `takeoff`; the existing preview and confirmation path remains the safety gate. “Land now” returns `unsupported` with `capability_unavailable` because selected-aircraft LAND is outside the current planner capability contract. Explicit fleet-wide language maps to `land_all`. Koby approved this correction on 2026-09-04; case IDs and the 50-case coverage remain unchanged.
 
 Voice `estop` is reserved for the exact phrase “Emergency stop.” It can produce `estop` only when `estop` appears in the case's `qualified_voice_intents`. “Stop” maps to `hold` when aircraft are selected. “Stop” or “Abort” cancels one authoritative pending preview through `cancel_pending`; without enough state to choose safely, the compiler returns `clarify` with `ambiguous_action`.
 
