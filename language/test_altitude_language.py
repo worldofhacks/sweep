@@ -10,7 +10,14 @@ from language.compiler import (
     TranscriptCompiler,
 )
 from language.contracts import OutcomeKind, intent_payload
-from language.test_compiler import _case, _snapshot_at, _state, _with_execution_positions
+from language.test_compiler import (
+    _case,
+    _lifecycle,
+    _prepare_and_confirm,
+    _snapshot_at,
+    _state,
+    _with_execution_positions,
+)
 from planner.controller import PreparedExecutionRouter
 from planner.models import LifecycleStatus
 from planner.planner import DeterministicPlanner
@@ -224,3 +231,93 @@ def test_altitude_configuration_change_invalidates_compiler_preview() -> None:
             router=PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot),
             snapshot=snapshot,
         )
+
+
+@pytest.mark.parametrize("completed_z,completed_x", [(1.524, 0.0), (1.4, 0.0), (1.524, 0.2)])
+@pytest.mark.parametrize("stale_first", [False, True])
+def test_confirmed_altitude_requires_fresh_target_position(
+    completed_z: float, completed_x: float, stale_first: bool
+) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    config = _config()
+    state = _with_execution_positions(
+        _state(case),
+        {
+            drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+            for drone_id, aircraft in snapshot.aircraft.items()
+        },
+    )
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "altitude",
+                        "args": {"height_m": 1.524},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "hover at 5 feet",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        altitude=config.altitude_grounding(),
+        now_ms=case.now_ms,
+    )
+    assert outcome.kind is OutcomeKind.PLAN and plan is not None
+    controller, _, _, _, _, _ = make_stack(snapshot, config=config)
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    _prepare_and_confirm(
+        pending,
+        state,
+        case,
+        controller=controller,
+        snapshot=snapshot,
+        now_ms=case.now_ms,
+        intent_id="confirmed-altitude",
+        capability_profile=controller.planner.capability_profile,
+    )
+    completed = _with_execution_positions(
+        {**state, "t": case.now_ms + 2, "event_id": "altitude-completed"},
+        {1: (completed_x, 0, completed_z), 2: (2, 0, completed_z)},
+    )
+    outcome = _lifecycle(case, "confirmed-altitude", "completed", source="autonomy")
+    if stale_first:
+        stale = {
+            **completed,
+            "drones": [
+                {**drone, "telemetry": {**drone["telemetry"], "t": case.now_ms}}
+                for drone in completed["drones"]
+            ],
+        }
+        pending.acknowledge(
+            outcome,
+            stale,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 2,
+        )
+        assert pending.audit.records[-1]["event"] != "intent_accepted"
+
+    def acknowledge() -> None:
+        pending.acknowledge(
+            outcome,
+            completed,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 2,
+        )
+
+    if (completed_z, completed_x) == (1.524, 0.0):
+        acknowledge()
+        assert pending.audit.records[-1]["event"] == "intent_accepted"
+    else:
+        with pytest.raises(ConfirmationError, match="position"):
+            acknowledge()

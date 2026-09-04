@@ -1297,12 +1297,25 @@ def _snapshot_matches_facts(
 
 
 def _goto_targets(plan: Plan, selection: tuple[int, ...]) -> dict[int, Position] | None:
+    expected_count = len(plan.commands)
+    if plan.intent_name.value == "altitude":
+        if len(plan.commands) != 2 * len(selection):
+            return None
+        for goto, hover in zip(plan.commands[::2], plan.commands[1::2], strict=True):
+            if (
+                goto.operation is not CommandOperation.GOTO
+                or hover.operation is not CommandOperation.HOVER
+                or goto.drone_id != hover.drone_id
+                or hover.parameters
+            ):
+                return None
+        expected_count = len(selection)
     commands = {
         command.drone_id: command
         for command in plan.commands
         if command.operation is CommandOperation.GOTO
     }
-    if set(commands) != set(selection) or len(commands) != len(plan.commands):
+    if set(commands) != set(selection) or len(commands) != expected_count:
         return None
     try:
         return {

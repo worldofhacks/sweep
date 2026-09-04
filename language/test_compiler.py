@@ -329,6 +329,7 @@ def _prepare_and_confirm(
     controller,
     snapshot,
     now_ms: int,
+    capability_profile=None,
 ):
     class DeferredOutcomeRelay(RelaySession):
         def process_intent(self, raw, principal):
@@ -352,6 +353,7 @@ def _prepare_and_confirm(
             limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
             clock=lambda: now_ms,
             intent_sink=router,
+            **({} if capability_profile is None else {"capability_profile": capability_profile}),
         )
         _hydrate_relay_from_snapshot(relay, snapshot)
         emitter = router.relay_emitter(
