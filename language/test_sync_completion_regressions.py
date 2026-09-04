@@ -88,6 +88,27 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
         prepared=prepared,
     )
     if async_completion:
+        now[0] += 1
+        current[0] = replace(current[0], now_ms=now[0])
+        for drone in relay.current_state()["drones"]:
+            drone_id = drone["drone_id"]
+            telemetry = {
+                **drone["telemetry"],
+                "v": 1,
+                "t": now[0],
+                "type": "telemetry",
+                "session": relay.session_id,
+                "drone": drone_id,
+                "connection_epoch": 1,
+                "event_id": f"before-completion-{drone_id}",
+            }
+            relay.process_frame(
+                telemetry, Principal(source="adapter", drone_id=drone_id, signing_key=b"x" * 32)
+            )
+            current[0] = replace_aircraft(
+                current[0], drone_id, position_last_seen_ms=now[0], link_last_seen_ms=now[0]
+            )
+        now[0] += 1
         for command in prepared.execution.plan.commands:
             events = relay.process_frame(
                 {

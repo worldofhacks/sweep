@@ -384,7 +384,7 @@ class PreparedExecutionRouter:
                 prepared.snapshot,
                 current_snapshot=live_snapshot,
             )
-        except ResumeSnapshotUnavailable:
+        except Exception as error:
             status = (
                 terminal_ack.status
                 if terminal_ack.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
@@ -407,6 +407,8 @@ class PreparedExecutionRouter:
                     reason=terminal_ack.reason or RefusalReason.INVALID_PLAN,
                     detail=(
                         "live safety state unavailable during resume; remaining dispatch cancelled"
+                        if isinstance(error, ResumeSnapshotUnavailable)
+                        else "resume raised after possible adapter I/O; dispatch cancelled"
                     ),
                     status=status,
                 ),

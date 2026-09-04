@@ -12,10 +12,11 @@ from relay.session import RelayLimits, RelaySession
 from tests.autonomy_fixtures import make_intent, make_snapshot, make_stack
 
 
+@pytest.mark.parametrize("failure_stage", ["enrichment", "after_dispatch"])
 @pytest.mark.parametrize("publication_fails", [False, True])
 @pytest.mark.parametrize("status", ["completed", "failed", "invalidated"])
-def test_terminal_ack_cancels_remainder_when_live_enrichment_fails(
-    tmp_path, monkeypatch, status, publication_fails
+def test_terminal_ack_cannot_redispatch_after_resume_failure(
+    tmp_path, monkeypatch, status, publication_fails, failure_stage
 ):
     snapshot = make_snapshot(2, roster_version=4)
     controller, _, _, _, flight, _ = make_stack(snapshot)
@@ -51,7 +52,16 @@ def test_terminal_ack_cancels_remainder_when_live_enrichment_fails(
     assert events[-1]["status"] == "executing"
     assert len(flight.calls) == 1
     command = prepared.plan.commands[0]
-    unavailable = True
+    unavailable = failure_stage == "enrichment"
+    if failure_stage == "after_dispatch":
+        resume = controller.dispatcher.resume_after_completion
+
+        def resume_then_raise(*args, **kwargs):
+            resume(*args, **kwargs)
+            raise RuntimeError("dispatcher failed after adapter I/O")
+
+        monkeypatch.setattr(controller.dispatcher, "resume_after_completion", resume_then_raise)
+    expected_calls = 2 if failure_stage == "after_dispatch" and status == "completed" else 1
     raw = {
         "v": 1,
         "t": snapshot.now_ms,
@@ -77,19 +87,24 @@ def test_terminal_ack_cancels_remainder_when_live_enrichment_fails(
         with pytest.raises(OSError, match="audit unavailable"):
             relay.process_frame(raw, principal)
         assert intent.intent_id in router._running
-        assert len(flight.calls) == 1
+        assert len(flight.calls) == expected_calls
         return
 
     events = relay.process_frame(raw, principal)
     terminal = [event for event in events if event.get("source") == "autonomy"]
     assert len(terminal) == 1
     assert terminal[0]["status"] == ("invalidated" if status == "completed" else status)
-    assert "live safety state unavailable" in terminal[0]["detail"]
+    detail = (
+        "live safety state unavailable"
+        if failure_stage == "enrichment"
+        else "resume raised after possible adapter I/O"
+    )
+    assert detail in terminal[0]["detail"]
     assert relay.current_state()["accepted_plan"] is None
     assert events[0]["status"] == status
-    assert len(flight.calls) == 1
+    assert len(flight.calls) == expected_calls
 
     unavailable = False
     repeated = relay.process_frame({**raw, "event_id": "terminal-ack-retry"}, principal)
     assert not any(event.get("source") == "autonomy" for event in repeated)
-    assert len(flight.calls) == 1
+    assert len(flight.calls) == expected_calls
