@@ -70,7 +70,11 @@ decision as audit metadata. A disconnected aircraft does not wait for that relay
 result: its node-local activity clock independently enters hold and then its configured
 adapter failsafe; #17/M1.4 owns production runtime wiring.
 
-Later formation, altitude, sweep, `map_area`, and route-allocation behavior remains
+The opt-in altitude path and its floor-reference contract are described in
+[Altitude controls](../docs/ALTITUDE_CONTROLS.md). It is disabled by default and
+requires explicit deployment configuration plus the existing live acceptance gates.
+
+Later formation, sweep, `map_area`, and route-allocation behavior remains
 future scope and must earn a capability before planning.
 
 PRD: sections 5.3 and 5.4 (modes: indoor constrained is the capstone mode).
