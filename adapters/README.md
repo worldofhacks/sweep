@@ -9,7 +9,7 @@ The accepted MVP has two concrete implementations (PRD Appendix C):
 | Package | Target | Milestone |
 |---|---|---|
 | `sim/` | Kinematic deterministic flight and camera fixtures for registry sizes 1–4 now, then 4–6; the first-class CI implementation before hardware | M1 |
-| DJI Mini 3 bridge | one Android node per Mini 3 and RC-N1 pair via the DJI Mobile SDK, proven on one exact hardware combination before duplication | M2 |
+| `dji_mini3/` | one Android node per Mini 3 and RC-N1 pair via the DJI Mobile SDK, proven on one exact hardware combination before duplication; the relay-side remote adapter and a fake node land first | M2 |
 
 ## Frozen protocols and dispatch
 
@@ -64,6 +64,37 @@ configuration rather than claimed hardware defaults.
 
 Hardware is a configuration choice behind these protocols; every earned feature is
 built and tested against `sim` first.
+
+## Remote bridge adapter
+
+`adapters.dji_mini3.remote.RemoteBridgeAdapter` implements the same `SwarmAdapter` and
+`CameraCapture` protocols as the simulator over a small `NodeLink`: the link reports a
+node's live connection epoch, sends a `CommandRequest`, awaits the acknowledgements for
+a `command_id` with a timeout, and retains the node's latest `capabilities` frame and
+`media_file` records. The link owns the wire envelope, the per-node sequence, and the
+signature; `relay.bridge.RelayNodeLink` is the implementation over a live relay runtime
+and must be driven from a worker thread, never the relay event loop. The relay setting
+`SWEEP_ADAPTER_BACKEND` selects `sim` or `remote` for dispatch; `relay/README.md`
+documents the node protocol the adapter speaks.
+
+Wrap dispatch in `adapter.for_intent(intent_id, roster_version)` so every command in
+the block carries the intent and roster it belongs to; the wire `command_id` is
+generated per request. Flight arguments travel as integer millimetre and millidegree
+units. Before sending, the adapter compares the connection epoch it was given (from the
+snapshot, or `update_connection_epoch`) with the link's live epoch and refuses without
+sending when they differ; the dispatcher then reports `stale_connection_epoch`. Silence
+for the configured timeout raises `AdapterTimeout`. A nonterminal `accepted` or
+`executing` acknowledgement followed by silence is returned as is so the dispatcher stops
+dependent work and resumes on the later terminal fact. A `failed` acknowledgement keeps
+the node's reason in `detail` (for example `out_of_order_command`) and is never resent.
+Camera capabilities, captures, and retrievals require the node's `capabilities` or
+`media_file` frame to have arrived before the terminal acknowledgement; otherwise the
+adapter fails closed. `telemetry()` yields nothing because node telemetry reaches the
+relay registry directly over the node socket.
+
+`adapters.dji_mini3.fake_node` behaves like the phone on the wire without hardware:
+`just fake-node` connects one to a running relay so the console shows a real registry
+entry, and `relay/tests/test_bridge_roundtrip.py` drives it end to end.
 
 The existing `crazyswarm2/` and `mavlink/` packages remain inactive placeholder stubs. They are not accepted hardware implementations and do not drive an abstraction change until a concrete second hardware integration is specified and proven.
 

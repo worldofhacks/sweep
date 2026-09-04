@@ -123,7 +123,53 @@ camera_capabilities, node_status
 
 Top-level `armed` is the authoritative session arm authorization, initially false and updated only through `RelaySession.update_control_projection(armed=...)` after the planner/arbiter accepts that control-state change. It is not inferred from aircraft flight-state strings. Join and rejoin leave it unchanged; a new session after process restart begins disarmed. Per-aircraft physical armed/disarmed evidence remains an explicit autonomy enrichment used by graceful-removal safety.
 
-Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, `state`, `telemetry`, `acknowledgement`, and `refusal`; every one carries `event_id`. A refusal always includes all of `intent_id`, `command_id`, `drone_id`, `connection_epoch`, `roster_version`, `reason`, and `detail`; context fields are deliberately present as null when they do not apply. Acknowledgements use the same always-present context fields; `command_id` is non-null for adapter facts and nullable for relay/orchestrator intent-level lifecycle events.
+Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, `state`, `telemetry`, `acknowledgement`, `refusal`, and the node-authored `capabilities`, `capture_readiness`, and `node_status`; a node's socket additionally receives `command`. Every one carries `event_id`. A refusal always includes all of `intent_id`, `command_id`, `drone_id`, `connection_epoch`, `roster_version`, `reason`, and `detail`; context fields are deliberately present as null when they do not apply. Acknowledgements use the same always-present context fields; `command_id` is non-null for adapter facts and nullable for relay/orchestrator intent-level lifecycle events.
+
+## Node protocol
+
+A bridge node (the phone app, or `adapters.dji_mini3.fake_node` before hardware exists) is an adapter connection. It authenticates with its drone ID and per-aircraft key, sends the signed `join` and `readiness` frames above, streams telemetry, and then speaks the command wire described here. `adapters/README.md` describes the relay-side `RemoteBridgeAdapter` that drives it.
+
+`auth.accepted` carries a `node` object for adapter connections and null for consoles. It distributes the relay-configured thresholds so no node invents its own:
+
+```json
+{"v":1,"t":1756700000000,"type":"auth.accepted","event_id":"...","session":"demo","source":"adapter","drone_id":1,"node":{"command_ttl_ms":2000,"virtual_stick_hz":10,"watchdog_hold_ms":2000,"watchdog_failsafe_ms":10000}}
+```
+
+```dotenv
+SWEEP_ADAPTER_BACKEND=sim
+SWEEP_COMMAND_TTL_MS=2000
+SWEEP_VIRTUAL_STICK_HZ=10
+SWEEP_NODE_WATCHDOG_HOLD_MS=2000
+SWEEP_NODE_WATCHDOG_FAILSAFE_MS=10000
+```
+
+`SWEEP_ADAPTER_BACKEND` selects `sim` (the deterministic simulator) or `remote` (the bridge wire) for dispatch. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
+
+### Command frame (relay to node)
+
+```json
+{"v":1,"t":1756700000000,"type":"command","event_id":"...","session":"demo","command_id":"...","intent_id":"intent-1","roster_version":4,"drone_id":1,"connection_epoch":2,"seq":7,"issued_at":1756700000000,"ttl_ms":2000,"operation":"goto","args":{"x_mm":1200,"y_mm":-400,"z_mm":1000,"speed_mm_s":500},"signature":"..."}
+```
+
+- `operation` is the planner operation set: `takeoff`, `goto`, `rotate_to`, `hover`, `land`, `estop`, `camera_capabilities`, `set_gimbal_pitch`, `camera_ready`, `capture_panorama`, `capture_photo`, `retrieve_media`.
+- `args` is exact per operation and contains integers and IDs only: `takeoff` `{z_mm}`; `goto` `{x_mm, y_mm, z_mm, speed_mm_s}`; `rotate_to` `{yaw_mdeg, speed_mdeg_s}`; `set_gimbal_pitch` `{pitch_mdeg}`; `capture_panorama` and `capture_photo` `{capture_id}`; `retrieve_media` `{file_id}`; every other operation `{}`. Speeds are positive. Integer millimetre and millidegree units keep the signed canonical JSON free of floats, the same rule signed membership claims follow.
+- `signature` is the HMAC-SHA256 described above, computed with that aircraft's configured key over the frame with `signature` omitted, so the node can verify the relay authored the command. `relay.contracts.command_event` builds the unsigned frame and `relay.auth.sign_event` signs it.
+- `seq` is monotonic per node per connection epoch, starting at 1. `issued_at` plus `ttl_ms` is the local deadline. The node admits a command only when its signature verifies, `connection_epoch` is the node's current epoch, `roster_version` matches the last state it received, the deadline has not passed, and `seq` exceeds the last admitted `seq`; otherwise it acknowledges `failed` with `stale_command` or `out_of_order_command` and never resends.
+- The relay audits every issued command without its signature and delivers the signed frame only to the socket bound to that drone; consoles do not receive commands. The wire `command_id` is generated by the remote adapter for each request; the planner's command IDs stay in the autonomy layer. A command whose `intent_id` the session has not seen (an autonomy-originated safety plan) registers that intent as executing so the node's acknowledgements correlate; a terminal intent cannot receive new commands.
+
+The node answers with the adapter acknowledgement frame above, echoing `intent_id`, `command_id`, `drone_id`, `connection_epoch`, and `roster_version`: `accepted` on admission, `executing` when work starts, then `completed` or `failed`. A failure names one of the machine-readable reasons the node may return, `stale_command`, `out_of_order_command`, `authority_lost`, `watchdog_hold`, and `watchdog_failsafe`, or another snake_case reason. `RelaySession.await_command_acknowledgement` hands each acknowledgement to the waiting remote adapter and releases the wait after a terminal status or a timeout; later acknowledgements remain audited facts.
+
+### Node-authored frames
+
+All node-authored frames carry `drone_id` and `connection_epoch`, rely on the authenticated drone binding like telemetry, and pass the same session, freshness, replay, ordering, and current-epoch checks. They are not signed.
+
+- `capabilities`: the `CameraCapabilities` fields (`native_panorama_modes`, `photo_capture`, `gimbal_pitch_min_deg`, `gimbal_pitch_max_deg`, `horizontal_fov_deg`, `storage_remaining_bytes`, `media_retrieval`) plus the probed hardware profile (`aircraft_model`, `aircraft_firmware`, `rc_firmware`, `phone_model`, `android_version`, `sdk_version`, nullable `measured_hfov_deg`). Fanned out to consoles and projected into the drone's `camera_capabilities`.
+- `node_status`: `virtual_stick_enabled`, `control_authority`, nullable snake_case `authority_change_reason`, `watchdog_state` (`nominal`, `hold`, `failsafe`), `video_publish_state` (`stopped`, `connecting`, `publishing`, `failed`), `phone_battery_percent`, and `phone_thermal_state` (`none`, `light`, `moderate`, `severe`, `critical`, `emergency`, `shutdown`). Fanned out and projected into the drone's `node_status`; informational only.
+- `capture_readiness`: nullable `room_id` and `capture_id`, `guidance_mode` (`visual_advisory` or `registered_metric`), `pose_source`, the `pose_ok`, `clearance_ok`, `camera_ok`, `storage_ok`, `motion_ok`, and `image_quality_ok` gates, `coverage_missing` azimuths in degrees, nullable `next_heading_deg`, and nullable `suggested_delta` `{kind: yaw|gimbal, degrees}`. Fanned out unchanged and not projected into state.
+- `media_file`: the `MediaFile` fields (`capture_id`, `file_id`, `timestamp_ms`, `drone_id`, `connection_epoch`, `pose`, `actual_yaw_deg`, `gimbal_pitch_deg`, `intrinsics`, 64-character lowercase hex `checksum_sha256`, `storage_ref`, `retrieval_status`). Audited and retained for the command wire, not fanned out. A node sends the `media_file` before the terminal acknowledgement of the capture or retrieval command that produced it.
+- `capture_bundle`: `room_id`, `capture_id`, `pattern`, `coverage`, `status`, nested `media` records, and nullable `reason` and `detail`; a `failed` or `unsupported` bundle requires a machine-readable reason. Audited and retained, not fanned out.
+
+The fake node runs against a live relay with `just fake-node` or `uv run python -m adapters.dji_mini3.fake_node --drone-id 1`; it reads its credential from `--token`, `SWEEP_ADAPTER_KEYS_JSON`, or `SWEEP_RELAY_TOKEN`. `relay/tests/test_bridge_roundtrip.py` starts the relay in-process, connects the fake node, and dispatches a hover through the remote adapter end to end.
 
 ## Audit and replay
 

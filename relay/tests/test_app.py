@@ -346,6 +346,36 @@ def test_bad_authentication_is_refused_without_creating_a_session_log(
     assert not list(app_settings.log_dir.glob("*.jsonl"))
 
 
+def test_auth_accepted_distributes_node_thresholds_to_adapters_only(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as console:
+            console_accepted, _ = _authenticate_console(console)
+        with client.websocket_connect(f"/ws/{SESSION}") as adapter:
+            adapter_accepted, _ = _authenticate_adapter(adapter)
+
+    assert console_accepted["node"] is None
+    assert adapter_accepted["node"] == {
+        "command_ttl_ms": app_settings.command_ttl_ms,
+        "virtual_stick_hz": app_settings.virtual_stick_hz,
+        "watchdog_hold_ms": app_settings.node_watchdog_hold_ms,
+        "watchdog_failsafe_ms": app_settings.node_watchdog_failsafe_ms,
+    }
+    assert set(adapter_accepted) == {
+        "v",
+        "t",
+        "type",
+        "event_id",
+        "session",
+        "source",
+        "drone_id",
+        "node",
+    }
+
+
 def test_second_adapter_connection_for_same_id_is_refused(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:
