@@ -40,6 +40,7 @@ class SessionAuditLog:
         self._lock = RLock()
         self._append_usable = True
         self._replay_usable = True
+        self._mirror_fingerprint: tuple[int, int, int, int, int] | None = None
         self.recovered_tail_bytes = 0
         self.had_persisted_log = (
             self.path.exists() or self.database_path.exists() or self.pending_path.exists()
@@ -49,6 +50,7 @@ class SessionAuditLog:
         if self.database_path.exists():
             self._initialize_database()
             self._recover_mirror_from_database()
+            self._mirror_fingerprint = self._current_mirror_fingerprint()
         elif self.path.exists():
             records = self._read_jsonl(repair_tail=True)
             self._migrate_legacy_records(records)
@@ -110,7 +112,7 @@ class SessionAuditLog:
                 return []
             encoded_records = [self._encode_record(record) for record in records]
             encoded = b"".join(encoded_records)
-            self._verify_mirror(self._database_records())
+            self._verify_mirror_for_append()
             self._complete_operation(operation_id, records)
             self._next_sequence += len(records)
             try:
@@ -386,6 +388,33 @@ class SessionAuditLog:
                 f"cannot replay {self.path.name}: mirror differs from committed audit"
             )
 
+    @staticmethod
+    def _fingerprint(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+
+    def _current_mirror_fingerprint(self) -> tuple[int, int, int, int, int] | None:
+        try:
+            return self._fingerprint(self.path.stat(follow_symlinks=False))
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise AuditLogError(f"cannot inspect session log: {error}") from None
+
+    def _verify_mirror_for_append(self) -> None:
+        fingerprint = self._current_mirror_fingerprint()
+        if fingerprint != self._mirror_fingerprint:
+            # ctime catches same-size edits even when the writer restores mtime.
+            self._verify_mirror(self._database_records())
+            if self._current_mirror_fingerprint() != fingerprint:
+                raise AuditLogError("audit mirror changed during verification")
+            self._mirror_fingerprint = fingerprint
+
     def _append_mirror(self, content: bytes) -> None:
         flags = os.O_APPEND | os.O_WRONLY
         if hasattr(os, "O_NOFOLLOW"):
@@ -402,9 +431,13 @@ class SessionAuditLog:
                 except FileExistsError:
                     descriptor = os.open(self.path, flags)
             try:
-                os.fstat(descriptor)
+                before = self._fingerprint(os.fstat(descriptor))
             except OSError as error:
                 raise AuditLogError(f"cannot inspect session log: {error}") from None
+            if (created and self._mirror_fingerprint is not None) or (
+                not created and before != self._mirror_fingerprint
+            ):
+                raise AuditLogError("audit mirror changed before append")
             remaining = memoryview(content)
             while remaining:
                 try:
@@ -417,6 +450,12 @@ class SessionAuditLog:
             os.fsync(descriptor)
             if created:
                 self._fsync_root()
+            after = self._fingerprint(os.fstat(descriptor))
+            if after[2] != before[2] + len(content) or (
+                self._current_mirror_fingerprint() != after
+            ):
+                raise AuditLogError("audit mirror changed during append")
+            self._mirror_fingerprint = after
         except AuditLogError:
             raise
         except OSError as error:

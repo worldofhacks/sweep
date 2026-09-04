@@ -339,6 +339,60 @@ def test_reopen_rebuilds_committed_state_after_mirror_fsync_failure(
     assert [record["seq"] for record in reopened.replay()] == [1]
 
 
+@pytest.mark.parametrize("field", ["accepted_plan", "pending"])
+@pytest.mark.parametrize("bad_value", [object(), float("nan")], ids=["object", "nan"])
+def test_projection_copy_failure_cannot_publish_unaudited_selection(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    field: str,
+    bad_value: object,
+) -> None:
+    session = _new_session(tmp_path, clock, event_ids)
+    session.update_control_projection(selection=(1,))
+    committed = session.audit_log.path.read_bytes()
+
+    with pytest.raises((TypeError, ValueError)):
+        session.update_control_projection(selection=(2,), **{field: {"bad": bad_value}})
+
+    assert session.audit_log.path.read_bytes() == committed
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.update_control_projection(estop=True)
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.current_state()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.replay()
+    reopened = SessionAuditLog(tmp_path, SESSION)
+    with pytest.raises(AuditLogError, match="incomplete operation"):
+        reopened.replay()
+
+
+def test_sink_cannot_catch_projection_failure_and_publish_partial_state(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    console_principal: Principal,
+) -> None:
+    def sink(_intent: object, _state: object) -> None:
+        try:
+            session.update_control_projection(selection=(2,), pending={"bad": object()})
+        except TypeError:
+            pass
+
+    session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
+    session.update_control_projection(selection=(1,))
+    committed = session.audit_log.path.read_bytes()
+
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.process_intent(intent_payload(), console_principal)
+
+    assert session.audit_log.path.read_bytes() == committed
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.current_state()
+    with pytest.raises(AuditLogError, match="incomplete operation"):
+        SessionAuditLog(tmp_path, SESSION).replay()
+
+
 def test_replay_records_and_cursor_share_one_snapshot_during_append(
     tmp_path: Path,
     clock: MutableClock,

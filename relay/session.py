@@ -522,10 +522,12 @@ class RelaySession:
         armed: bool | None = None,
         estop: bool | None = None,
     ) -> dict[str, object]:
-        """Apply state already accepted by the planner/arbiter and log its projection."""
+        """Apply accepted control state; failure after the durable marker disables the session."""
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
+            if self._audit_operation_id is None:
+                self._audit_operation_id = self.audit_log.begin_operation()
             if selection is not None:
                 self.registry.set_selection(selection)
             if accepted_plan is not _UNSET:
@@ -801,19 +803,20 @@ class RelaySession:
     @contextmanager
     def _audit_operation(self) -> Iterator[None]:
         outermost = self._audit_batch is None
-        if not outermost:
-            yield
-            return
-
-        self._audit_batch = []
-        self._audit_operation_id = None
+        if outermost:
+            self._audit_batch = []
+            self._audit_operation_id = None
         try:
             yield
             batch = self._audit_batch
-            if batch:
+            if outermost and batch:
                 self._commit_audit_batch(batch)
-        except BaseException:
-            if self._audit_batch:
+        except BaseException as error:
+            if (
+                self._audit_batch
+                or self._audit_operation_id is not None
+                or isinstance(error, AuditLogError)
+            ):
                 self._mutation_usable = False
                 self._projection_usable = False
                 self._replay_usable = False
@@ -821,8 +824,9 @@ class RelaySession:
                     self.audit_log.abandon_operation(self._audit_operation_id)
             raise
         finally:
-            self._audit_batch = None
-            self._audit_operation_id = None
+            if outermost:
+                self._audit_batch = None
+                self._audit_operation_id = None
 
     def _append_audit(self, event: Mapping[str, object]) -> dict[str, object]:
         self._ensure_mutation_usable()

@@ -50,6 +50,66 @@ def test_operation_batch_preserves_one_jsonl_record_per_event(tmp_path: Path) ->
     assert SessionAuditLog(tmp_path, "session-1").replay() == records
 
 
+@pytest.mark.parametrize("reopen", [False, True])
+def test_live_append_does_not_read_or_reencode_existing_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reopen: bool
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append_batch(_event(f"event-{index}") for index in range(1000))
+    if reopen:
+        log = SessionAuditLog(tmp_path, "session-1")
+    encode_record = log._encode_record
+    encoded_sequences: list[int] = []
+
+    def reject_history_read(*_args: object) -> None:
+        pytest.fail("live append read existing history")
+
+    def record_encoding(record: dict[str, object]) -> bytes:
+        encoded_sequences.append(record["seq"])
+        return encode_record(record)
+
+    with monkeypatch.context() as live:
+        live.setattr(log, "_database_records", reject_history_read)
+        live.setattr(Path, "read_bytes", reject_history_read)
+        live.setattr(log, "_encode_record", record_encoding)
+        records = []
+        for index in range(50):
+            encoded_sequences.clear()
+            batch = log.append_batch([_event(f"telemetry-{index}"), _event(f"state-{index}")])
+            assert set(encoded_sequences) == {1001 + 2 * index, 1002 + 2 * index}
+            records.extend(batch)
+
+    assert [record["seq"] for record in records] == list(range(1001, 1101))
+    assert log.replay(after_sequence=1000) == records
+
+
+@pytest.mark.parametrize("mutation", ["same-size", "replace", "truncate", "remove"])
+def test_live_append_detects_mirror_changes_before_committing_new_records(
+    tmp_path: Path, mutation: str
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    original = log.path.read_bytes()
+    metadata = log.path.stat()
+    if mutation == "same-size":
+        log.path.write_bytes(original.replace(b"event-1", b"event-2"))
+        os.utime(log.path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    elif mutation == "replace":
+        replacement = tmp_path / "replacement.jsonl"
+        replacement.write_bytes(original.replace(b"event-1", b"event-2"))
+        os.replace(replacement, log.path)
+    elif mutation == "truncate":
+        log.path.write_bytes(original[:-5])
+    else:
+        log.path.unlink()
+
+    with pytest.raises(AuditLogError):
+        log.append(_event("new-record"))
+
+    with sqlite3.connect(log.database_path) as database:
+        assert database.execute("SELECT COUNT(*) FROM records").fetchone() == (1,)
+
+
 def test_initial_database_and_jsonl_creation_sync_the_log_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
