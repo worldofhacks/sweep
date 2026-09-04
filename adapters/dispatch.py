@@ -573,7 +573,7 @@ class AdapterDispatcher:
                 and (
                     aircraft.membership is MembershipState.READY
                     or (
-                        plan.intent_name is IntentName.LAND
+                        plan.intent_name in {IntentName.LAND, IntentName.LAND_ALL}
                         and aircraft.membership is MembershipState.DEGRADED
                         and snapshot.aircraft.get(completed.drone_id) is not None
                         and snapshot.aircraft[completed.drone_id].membership
