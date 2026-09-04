@@ -6,7 +6,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from math import dist
+from math import atan2, degrees, dist, hypot
 from threading import RLock
 from typing import Protocol
 
@@ -33,6 +33,7 @@ from language.transport import (
 )
 from planner.controller import PreparedExecutionRouter
 from planner.models import (
+    AltitudeGrounding,
     CommandOperation,
     ExecutionResult,
     FleetSnapshot,
@@ -43,6 +44,7 @@ from planner.models import (
     TranslationPolicy,
 )
 from relay.audit import SessionAuditLog
+from relay.capabilities import C1_CAPABILITY_PROFILE
 from relay.contracts import LifecycleStatus
 from relay.intent_v1 import AcceptedIntent, IntentV1, validate_intent
 
@@ -211,6 +213,7 @@ class TranscriptCompiler:
         capability_version: str,
         rooms: tuple[str, ...] = (),
         translation: object = None,
+        altitude: object = None,
         qualified_voice_intents: tuple[str, ...] = (),
         now_ms: int,
         correlation_id: str | None = None,
@@ -229,6 +232,7 @@ class TranscriptCompiler:
                 capability_version=capability_version,
                 rooms=rooms,
                 translation=translation,
+                altitude=altitude,
                 qualified_voice_intents=qualified_voice_intents,
             )
         except ValueError:
@@ -376,9 +380,16 @@ class PreparedConfirmation:
     execution: PreparedExecution
     state_digest: str
     router: PreparedExecutionRouter
+    translation: TranslationGrounding | None = None
 
     def preview(self) -> dict[str, object]:
-        return self.execution.plan.to_dict()
+        preview = self.execution.plan.to_dict()
+        if self.intent.name.value == "translate" and self.translation is not None:
+            preview["translation"] = _resolved_translation_preview(
+                self.execution,
+                self.translation,
+            )
+        return preview
 
 
 class ConfirmedPlan:
@@ -462,6 +473,7 @@ class ConfirmedPlan:
                 execution=planned,
                 state_digest=_execution_digest(facts),
                 router=router,
+                translation=_translation_grounding(facts),
             )
             self._issued_preparation = prepared
             return prepared
@@ -531,7 +543,7 @@ class ConfirmedPlan:
                 self._terminal = True
                 raise ConfirmationError("confirmation requires its issued planner result and sink")
             execution_plan = prepared.execution.plan
-        elif proposal.name.value in {"translate", "come_home"}:
+        elif proposal.name.value in {"translate", "altitude", "come_home"}:
             self._terminal = True
             raise ConfirmationError("motion confirmation requires the previewed planner result")
         try:
@@ -749,6 +761,7 @@ class ConfirmedPlan:
                 capability_version=capability_version,
                 rooms=rooms,
                 translation=_translation_grounding(self._compiled.facts),
+                altitude=_altitude_grounding(self._compiled.facts),
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
@@ -821,7 +834,11 @@ class ConfirmedPlan:
             self._pending_completion = dict(outcome)
             return
         emitted = self._compiled.intents[self._next - 1]
-        requires_post_dispatch_position = emitted.name.value in {"translate", "come_home"}
+        requires_post_dispatch_position = emitted.name.value in {
+            "translate",
+            "altitude",
+            "come_home",
+        }
         if facts.state_time_ms < self._awaiting_emitted_at_ms or (
             requires_post_dispatch_position and facts.state_time_ms == self._awaiting_emitted_at_ms
         ):
@@ -892,6 +909,7 @@ class ConfirmedPlan:
         if emitted.name.value not in {
             "takeoff",
             "translate",
+            "altitude",
             "come_home",
             "land",
             "land_all",
@@ -903,6 +921,7 @@ class ConfirmedPlan:
             capability_version=capability_version,
             rooms=rooms,
             translation=_translation_grounding(self._compiled.facts),
+            altitude=_altitude_grounding(self._compiled.facts),
             qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
         )
         targets = (
@@ -962,6 +981,12 @@ class ConfirmedPlan:
             ):
                 self._terminal = True
                 raise ConfirmationError("actual planner translation is below completion tolerance")
+        elif intent.name.value == "altitude":
+            expected = _altitude_grounding(self._compiled.facts)
+            actual = router.controller.planner.config.altitude_grounding()
+            if expected is None or plan.altitude_grounding != expected or actual != expected:
+                self._terminal = True
+                raise ConfirmationError("planner altitude configuration differs from preview")
         elif intent.name.value == "come_home":
             for drone_id in intent.selection:
                 home = _drone_position(facts, drone_id, "home_position")
@@ -997,6 +1022,7 @@ class ConfirmedPlan:
                 capability_version=capability_version,
                 rooms=rooms,
                 translation=_translation_grounding(self._compiled.facts),
+                altitude=_altitude_grounding(self._compiled.facts),
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
@@ -1017,7 +1043,11 @@ class ConfirmedPlan:
                 session=self._compiled.facts.session,
                 intent_id=intent_id,
                 timestamp_ms=now_ms,
-            )
+            ),
+            capability_profile=C1_CAPABILITY_PROFILE.with_altitude(
+                enabled=facts.altitude is not None,
+                absolute=facts.altitude is not None and facts.altitude.floor_z_m is not None,
+            ),
         )
         if not isinstance(result, AcceptedIntent):
             raise ConfirmationError("intent failed validation before emission")
@@ -1126,7 +1156,7 @@ def _terminal_postcondition_matches(
                 and drone["flight_state"] in {"taking_off", "airborne", "hovering", "landing"}
             )
         return all(new.get(drone_id) in {"landed", "disarmed"} for drone_id in targets)
-    if intent.name.value in {"translate", "come_home"}:
+    if intent.name.value in {"translate", "altitude", "come_home"}:
         if execution_plan is None:
             return False
         targets = _goto_targets(execution_plan, intent.selection)
@@ -1159,6 +1189,10 @@ def _translation_grounding(facts: GroundingFacts) -> TranslationGrounding | None
     )
 
 
+def _altitude_grounding(facts: GroundingFacts) -> AltitudeGrounding | None:
+    return facts.altitude
+
+
 def _translation_matches_selection(
     expected: TranslationGrounding | None,
     actual: TranslationGrounding | None,
@@ -1169,6 +1203,35 @@ def _translation_matches_selection(
     return expected.policy == actual.policy and all(
         expected.headings.get(drone_id) == actual.headings.get(drone_id) for drone_id in selection
     )
+
+
+def _resolved_translation_preview(
+    execution: PreparedExecution,
+    grounding: TranslationGrounding,
+) -> dict[str, object]:
+    directions = []
+    for command in execution.plan.commands:
+        if command.operation is not CommandOperation.GOTO:
+            continue
+        pose = execution.snapshot.aircraft[command.drone_id].pose
+        target = Position.from_mapping(command.parameters)
+        dx_m = target.x - pose.x
+        dy_m = target.y - pose.y
+        directions.append(
+            {
+                "drone_id": command.drone_id,
+                "dx_m": dx_m,
+                "dy_m": dy_m,
+                "heading_deg": degrees(atan2(dy_m, dx_m)) % 360,
+            }
+        )
+    distance_m = hypot(directions[0]["dx_m"], directions[0]["dy_m"]) if directions else 0.0
+    return {
+        "frame": grounding.policy.frame,
+        "selection": list(execution.plan.selection),
+        "distance_m": distance_m,
+        "directions": directions,
+    }
 
 
 def _drone_position(
@@ -1235,12 +1298,25 @@ def _snapshot_matches_facts(
 
 
 def _goto_targets(plan: Plan, selection: tuple[int, ...]) -> dict[int, Position] | None:
+    expected_count = len(plan.commands)
+    if plan.intent_name.value == "altitude":
+        if len(plan.commands) != 2 * len(selection):
+            return None
+        for goto, hover in zip(plan.commands[::2], plan.commands[1::2], strict=True):
+            if (
+                goto.operation is not CommandOperation.GOTO
+                or hover.operation is not CommandOperation.HOVER
+                or goto.drone_id != hover.drone_id
+                or hover.parameters
+            ):
+                return None
+        expected_count = len(selection)
     commands = {
         command.drone_id: command
         for command in plan.commands
         if command.operation is CommandOperation.GOTO
     }
-    if set(commands) != set(selection) or len(commands) != len(plan.commands):
+    if set(commands) != set(selection) or len(commands) != expected_count:
         return None
     try:
         return {
