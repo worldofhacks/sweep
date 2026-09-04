@@ -453,6 +453,10 @@ class ConfirmedPlan:
                 self._terminal = True
                 raise ConfirmationError("actual planner refused the confirmed intent")
             self._validate_prepared_execution(planned, facts, router)
+            refusal = router.controller.arbiter.check_plan(planned.plan, snapshot)
+            if refusal is not None:
+                self._terminal = True
+                raise ConfirmationError(f"actual planner failed safety checks: {refusal.detail}")
             prepared = PreparedConfirmation(
                 intent=intent,
                 execution=planned,
@@ -885,7 +889,14 @@ class ConfirmedPlan:
         completed_at_ms: int,
     ) -> bool:
         emitted = self._compiled.intents[self._next - 1]
-        if emitted.name.value not in {"takeoff", "translate", "come_home", "land", "land_all"}:
+        if emitted.name.value not in {
+            "takeoff",
+            "translate",
+            "come_home",
+            "land",
+            "land_all",
+            "hold",
+        }:
             return False
         facts = build_grounding_facts(
             relay_state,

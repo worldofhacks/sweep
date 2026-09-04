@@ -474,7 +474,8 @@ def test_eval_rejects_transport_that_self_attests_anthropic_provenance() -> None
     assert (result.source, result.origin) == ("template", "template")
 
 
-def test_eval_does_not_trust_rebound_anthropic_transport(monkeypatch) -> None:
+@pytest.mark.parametrize("record", [False, True])
+def test_eval_does_not_trust_rebound_anthropic_transport(monkeypatch, tmp_path, record) -> None:
     corpus = load_corpus()
     responses = load_synthetic_responses(corpus=corpus)
     transport = AnthropicTransport(api_key="unused")
@@ -490,6 +491,8 @@ def test_eval_does_not_trust_rebound_anthropic_transport(monkeypatch) -> None:
         ),
     )
 
+    if record:
+        transport = RecordingTransport(transport, tmp_path / "forged.json")
     result = evaluate_case(corpus[0], transport)
 
     assert (result.source, result.origin) == ("template", "template")
@@ -584,3 +587,69 @@ def test_loader_rejects_malformed_expectations(tmp_path, expected) -> None:
 
     with pytest.raises(ValueError):
         load_corpus(path)
+
+
+def test_live_recording_grades_exact_responses_and_preserves_artifact_digests(
+    tmp_path, monkeypatch
+) -> None:
+    corpus = load_corpus()
+    responses = load_synthetic_responses(corpus=corpus)
+    requested = []
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "model": "claude-sonnet-5",
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "submit_compiler_outcome",
+                        "input": self.payload,
+                    }
+                ],
+                "usage": {"input_tokens": 7, "output_tokens": 3},
+            }
+
+    def post(_url, **kwargs):
+        body = json.loads(kwargs["json"]["messages"][0]["content"])
+        requested.append(body)
+        return Response(responses[case.case_id])
+
+    monkeypatch.setattr("language.transport.httpx.post", post)
+    cassette = tmp_path / "live.json"
+    transport = RecordingTransport(AnthropicTransport(api_key="test-key"), cassette)
+    results = []
+    for case in corpus:
+        results.append(evaluate_case(case, transport))
+    artifact = tmp_path / "live-results.jsonl"
+    append_jsonl_run(results, artifact, run_id="live", corpus=corpus)
+    write_dashboard(results, tmp_path / "live.html", run_id="live", corpus=corpus)
+    rows = [json.loads(line) for line in artifact.read_text().splitlines()]
+    provider_results = [result for result in results if result.source == "anthropic"]
+    assert provider_results
+    assert len(requested) == len(provider_results)
+    assert rows[0]["passed"] == 49
+    assert all(result.origin == "anthropic" for result in provider_results)
+    assert rows[0]["cassette_digests"] == sorted(
+        {result.cassette_digest for result in provider_results}
+    )
+    for result, request in zip(provider_results, requested, strict=True):
+        snapshot = tmp_path / "live.json.snapshots" / f"{result.cassette_digest}.json"
+        assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == result.cassette_digest
+        replayed = ReplayTransport(snapshot).complete(
+            ModelRequest(
+                transcript=request["operator_transcript"],
+                facts=request["authoritative_facts"],
+            )
+        )
+        assert replayed.payload == responses[result.case_id]
+        assert result.input_units == 7
+        assert result.output_units == 3
+        assert replayed.origin == "unverified_replay"

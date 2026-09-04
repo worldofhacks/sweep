@@ -11,11 +11,11 @@ from language.compiler import (
 )
 from language.test_compiler import _case, _hydrate_relay_from_snapshot, _snapshot_at
 from planner.controller import PreparedExecutionRouter
-from planner.models import LifecycleStatus
+from planner.models import LifecycleStatus, Position
 from relay.audit import SessionAuditLog
 from relay.auth import Principal
 from relay.session import RelayLimits, RelaySession
-from tests.autonomy_fixtures import make_snapshot, make_stack
+from tests.autonomy_fixtures import make_snapshot, make_stack, replace_aircraft
 
 
 @pytest.mark.parametrize("position_drift", [False, True])
@@ -122,3 +122,60 @@ def test_relay_rechecks_preview_after_interleaved_telemetry(tmp_path, monkeypatc
     else:
         confirm()
         assert [call.operation.value for call in flight.calls] == ["goto"]
+
+
+def test_geofence_invalid_motion_has_no_confirmation_preview_or_adapter_io(tmp_path):
+    case = _case("translate-selected")
+    snapshot = replace_aircraft(
+        _snapshot_at(make_snapshot(1, roster_version=2), case.now_ms),
+        1,
+        pose=Position(9.75, 0.0, 1.0),
+    )
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    relay = RelaySession(
+        session_id="language-eval",
+        audit_log=SessionAuditLog(tmp_path, "language-eval"),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: case.now_ms,
+        intent_sink=router,
+    )
+    _hydrate_relay_from_snapshot(relay, snapshot)
+    state = relay.current_state()
+    _, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": {"dx": 1, "dy": 0},
+                        "selection": [1],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "Move right.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+        translation=controller.planner.config.translation_grounding(snapshot),
+    )
+    assert plan is not None
+    pending = ConfirmedPlan(plan, session=relay.session_id, audit=InMemoryAuditSink())
+    with pytest.raises(ConfirmationError, match="geofence"):
+        pending.prepare_next(
+            state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms,
+            intent_id="outside-geofence",
+            router=router,
+            snapshot=snapshot,
+        )
+    assert flight.calls == []
+    assert relay.current_state()["accepted_plan"] is None
