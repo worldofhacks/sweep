@@ -95,7 +95,7 @@ export interface ControlState {
   lastOutcome: OutcomeSummary | null
   notices: OperatorNotice[]
   seenEventIds: string[]
-  lastStateEvent: { rosterVersion: number; t: number; source: IntentSource | null } | null
+  lastStateEvent: { rosterVersion: number; t: number; source: IntentSource | null; sequence?: number } | null
 }
 
 export type ControlAction =
@@ -427,16 +427,19 @@ function reduceStateEvent(
   source: IntentSource,
 ): ControlState {
   const lastStateEvent = state.lastStateEvent
+  const sequenced = event.state_sequence !== undefined
+  if (lastStateEvent?.sequence !== undefined &&
+    (event.state_sequence === undefined || event.state_sequence <= lastStateEvent.sequence)) return state
   if (
     event.roster_version < state.rosterVersion ||
-    (lastStateEvent !== null &&
+    (!sequenced && lastStateEvent !== null &&
       event.roster_version === lastStateEvent.rosterVersion &&
       event.t < lastStateEvent.t)
   ) {
     return state
   }
   // Equal timestamps order one socket, but cannot order competing socket snapshots.
-  const ambiguousOrder = lastStateEvent !== null &&
+  const ambiguousOrder = !sequenced && lastStateEvent !== null &&
     event.roster_version === lastStateEvent.rosterVersion &&
     event.t === lastStateEvent.t && lastStateEvent.source !== source
   const aircraft = Object.fromEntries(event.drones.map((drone) => [drone.drone_id, drone]))
@@ -459,6 +462,7 @@ function reduceStateEvent(
       rosterVersion: event.roster_version,
       t: event.t,
       source: ambiguousOrder ? null : source,
+      sequence: event.state_sequence,
     },
   }
 

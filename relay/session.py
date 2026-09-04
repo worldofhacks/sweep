@@ -95,9 +95,12 @@ class _IntentLedgerEntry:
     command_statuses: dict[str, LifecycleStatus]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _PendingIntent:
     intent: IntentV1
+    executing: bool = False
+    operation_id: int | None = None
+    events: list[dict[str, object]] | None = None
 
 
 class RelaySession:
@@ -303,19 +306,75 @@ class RelaySession:
             return [event]
 
     def execute_pending_intent(self, intent_id: str) -> list[dict[str, object]]:
-        """Execute one relay-accepted intent after its acknowledgement was published."""
+        """Execute accepted work or return a group outcome already committed for it."""
         with self._lock:
             self._ensure_mutation_usable()
-            pending = self._pending_intents.pop(intent_id, None)
+            pending = self._pending_intents.get(intent_id)
+            if pending is None:
+                return []
+            if pending.events is not None:
+                self._pending_intents.pop(intent_id)
+                return pending.events
+            if pending.executing:
+                return []
+            pending.executing = True
             sink = self.intent_sink
-        if pending is None:
-            return []
         assert sink is not None
         concurrent_intents = getattr(sink, "concurrent_intents", ())
         if pending.intent.name is IntentName.ESTOP or pending.intent.name in concurrent_intents:
-            return self._execute_pending(pending, sink)
-        with self._execution_lock:
-            return self._execute_pending(pending, sink)
+            events = self._execute_pending(pending, sink)
+        else:
+            with self._execution_lock:
+                events = self._execute_pending(pending, sink)
+        with self._lock:
+            self._pending_intents.pop(intent_id, None)
+        return events
+
+    def execute_coordinated_group(
+        self,
+        delivered_intent_ids: tuple[str, ...],
+        dispatch: Callable[[], dict[str, IntentSinkResult]],
+    ) -> dict[str, IntentSinkResult]:
+        """Commit all group outcomes; any dispatch or commit failure poisons the session."""
+        with self._lock:
+            pending = [self._pending_intents[intent_id] for intent_id in delivered_intent_ids]
+            for item in pending:
+                self._begin_pending_operation(item)
+        try:
+            results = dispatch()
+            with self._lock:
+                outcomes: dict[str, list[dict[str, object]]] = {}
+                for intent_id, result in results.items():
+                    item = self._pending_intents.get(intent_id)
+                    if item is None and self._intents[intent_id].status is LifecycleStatus.REFUSED:
+                        continue
+                    if item is None:
+                        raise RuntimeError("coordinated intent has no pending execution")
+                    outcomes[intent_id] = self._complete_pending(item, result)
+                for intent_id, own_events in outcomes.items():
+                    item = self._pending_intents[intent_id]
+                    item.events = [
+                        event
+                        for sibling_id, events in outcomes.items()
+                        if sibling_id != intent_id
+                        for event in events
+                    ] + own_events
+            return results
+        except BaseException:
+            with self._lock:
+                self._mutation_usable = False
+                self._projection_usable = False
+                self._replay_usable = False
+                for item in pending:
+                    if item.operation_id is not None:
+                        self.audit_log.abandon_operation(item.operation_id)
+            raise
+
+    def _begin_pending_operation(self, pending: _PendingIntent) -> None:
+        with self._audit_operation():
+            self._ensure_mutation_usable()
+            if pending.events is None and pending.operation_id is None:
+                pending.operation_id = self.audit_log.begin_operation()
 
     def mark_pending_intent_delivered(self, intent_id: str) -> None:
         with self._lock:
@@ -332,9 +391,15 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            pending = self._pending_intents.pop(intent_id, None)
+            pending = self._pending_intents.get(intent_id)
             if pending is None:
                 return []
+            if pending.events is not None:
+                self._pending_intents.pop(intent_id)
+                return pending.events
+            if pending.executing or pending.operation_id is not None:
+                return []
+            self._pending_intents.pop(intent_id)
             cancel = getattr(self.intent_sink, "cancel_intent", None)
             if callable(cancel):
                 cancel(intent_id)
@@ -352,10 +417,10 @@ class RelaySession:
     ) -> list[dict[str, object]]:
         intent_id = pending.intent.intent_id
         now = self.clock()
-        with self._lock, self._audit_operation():
-            self._ensure_mutation_usable()
-            # Keep dispatch crash-visible without holding the session lock across adapter I/O.
-            operation_id = self.audit_log.begin_operation()
+        with self._lock:
+            if pending.events is not None:
+                return pending.events
+            self._begin_pending_operation(pending)
         events: list[dict[str, object]] = []
         try:
             process = getattr(sink, "process_relay_intent", None)
@@ -366,7 +431,7 @@ class RelaySession:
             else:
                 sink_result = sink(pending.intent, self.current_state())
         except BaseException as error:
-            with self._lock, self._audit_operation(operation_id=operation_id):
+            with self._lock, self._audit_operation(operation_id=pending.operation_id):
                 self._ensure_mutation_usable()
                 if not isinstance(error, Exception):
                     raise
@@ -385,43 +450,56 @@ class RelaySession:
                         now=now,
                     )
                 ]
-        with self._lock, self._audit_operation(operation_id=operation_id):
-            self._ensure_mutation_usable()
-            if sink_result is None:
-                return events
-            if not isinstance(sink_result, IntentSinkResult):
+        with self._lock:
+            return self._complete_pending(pending, sink_result, relay_events=events)
+
+    def _complete_pending(
+        self,
+        pending: _PendingIntent,
+        sink_result: object,
+        *,
+        relay_events: list[dict[str, object]] | None = None,
+    ) -> list[dict[str, object]]:
+        self._ensure_mutation_usable()
+        if pending.events is not None:
+            return pending.events
+        self._begin_pending_operation(pending)
+        with self._audit_operation(operation_id=pending.operation_id):
+            events = [] if relay_events is None else list(relay_events)
+            if sink_result is not None and not isinstance(sink_result, IntentSinkResult):
                 events.extend(self._record_execution_result(pending.intent, sink_result))
-                return events
-            self._log_sink_result(pending.intent, sink_result, now=now)
-            events.extend(dict(event) for event in sink_result.events)
-            if any(
-                value is not None
-                for value in (
-                    sink_result.selection_update,
-                    sink_result.armed_update,
-                    sink_result.estop_update,
-                )
-            ):
-                plan = sink_result.result.get("plan")
-                accepted_plan = dict(plan) if isinstance(plan, Mapping) else None
+            elif isinstance(sink_result, IntentSinkResult):
+                self._log_sink_result(pending.intent, sink_result, now=self.clock())
+                events.extend(dict(event) for event in sink_result.events)
+                if any(
+                    value is not None
+                    for value in (
+                        sink_result.selection_update,
+                        sink_result.armed_update,
+                        sink_result.estop_update,
+                    )
+                ):
+                    plan = sink_result.result.get("plan")
+                    accepted_plan = dict(plan) if isinstance(plan, Mapping) else None
+                    events.append(
+                        self.update_control_projection(
+                            selection=sink_result.selection_update,
+                            accepted_plan=accepted_plan,
+                            armed=sink_result.armed_update,
+                            estop=sink_result.estop_update,
+                        )
+                    )
                 events.append(
-                    self.update_control_projection(
-                        selection=sink_result.selection_update,
-                        accepted_plan=accepted_plan,
-                        armed=sink_result.armed_update,
-                        estop=sink_result.estop_update,
+                    self.record_lifecycle(
+                        intent_id=pending.intent.intent_id,
+                        status=sink_result.status,
+                        source=sink_result.source,
+                        reason=sink_result.reason,
+                        detail=sink_result.detail,
                     )
                 )
-            events.append(
-                self.record_lifecycle(
-                    intent_id=intent_id,
-                    status=sink_result.status,
-                    source=sink_result.source,
-                    reason=sink_result.reason,
-                    detail=sink_result.detail,
-                )
-            )
-            return events
+        pending.events = events
+        return events
 
     def process_membership(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()

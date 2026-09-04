@@ -229,6 +229,7 @@ export interface RelayStateEvent {
   event_id: string
   session: string
   roster_version: number
+  state_sequence?: number
   armed: boolean
   estop: boolean
   selection: DroneId[]
@@ -506,6 +507,8 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
   if (value.type === 'state') {
     if (
       !isNonNegativeInteger(value.roster_version) ||
+      (value.state_sequence !== undefined &&
+        (!Number.isSafeInteger(value.state_sequence) || Number(value.state_sequence) < 1)) ||
       typeof value.armed !== 'boolean' ||
       typeof value.estop !== 'boolean' ||
       !isDroneIds(value.selection) ||

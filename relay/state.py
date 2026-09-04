@@ -92,6 +92,7 @@ class FleetRegistry:
         self.telemetry_freshness_ms = telemetry_freshness_ms
         self._aircraft: dict[int, _AircraftRecord] = {}
         self._roster_version = 0
+        self._state_sequence = 0
         self._selection: tuple[int, ...] = ()
         self._armed = False
         self._estop = False
@@ -400,6 +401,7 @@ class FleetRegistry:
         with self._lock:
             drones = [self._aircraft_state(record, t) for record in self._aircraft.values()]
             drones.sort(key=lambda drone: drone["drone_id"])
+            self._state_sequence += 1
             return {
                 "v": 1,
                 "t": t,
@@ -407,6 +409,7 @@ class FleetRegistry:
                 "event_id": event_id,
                 "session": session,
                 "roster_version": self._roster_version,
+                "state_sequence": self._state_sequence,
                 "armed": self._armed,
                 "estop": self._estop,
                 "selection": list(self._selection),

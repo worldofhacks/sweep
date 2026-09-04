@@ -52,6 +52,72 @@ def _new_session(
     )
 
 
+@pytest.mark.parametrize("cancelled_result_first", [False, True])
+def test_safety_completion_survives_undelivered_group_member_cancellation(
+    relay_session: RelaySession,
+    console_principal: Principal,
+    cancelled_result_first: bool,
+) -> None:
+    motion = intent_payload(intent_id="motion")
+    motion.update(name="translate", args={"dx": 1.0, "dy": 0.0})
+    stop = intent_payload(intent_id="stop")
+    stop.update(name="estop", selection=[])
+    assert relay_session.process_intent(motion, console_principal)[0]["status"] == "accepted"
+    assert relay_session.process_intent(stop, console_principal)[0]["status"] == "accepted"
+    relay_session.mark_pending_intent_delivered("stop")
+    calls: list[str] = []
+
+    def dispatch() -> dict[str, IntentSinkResult]:
+        calls.append("estop")
+        cancellation = relay_session.fail_pending_intent(
+            "motion", reason="acceptance_delivery_failed", detail="socket failed"
+        )
+        assert cancellation[0]["reason"] == "acceptance_delivery_failed"
+        outcomes = [
+            (
+                "stop",
+                IntentSinkResult(
+                    status=LifecycleStatus.COMPLETED,
+                    source="autonomy",
+                    result={},
+                    estop_update=True,
+                ),
+            ),
+            (
+                "motion",
+                IntentSinkResult(
+                    status=LifecycleStatus.INVALIDATED,
+                    source="autonomy",
+                    result={},
+                    reason="superseded",
+                ),
+            ),
+        ]
+        return dict(reversed(outcomes) if cancelled_result_first else outcomes)
+
+    relay_session.execute_coordinated_group(("stop",), dispatch)
+    outcome = relay_session.execute_pending_intent("stop")
+    assert any(event.get("status") == "completed" for event in outcome)
+    assert relay_session.execute_pending_intent("motion") == []
+    assert relay_session.execute_pending_intent("stop") == []
+    assert calls == ["estop"]
+    assert relay_session.current_state()["estop"] is True
+    events = [record["event"] for record in relay_session.replay()["events"]]
+    assert any(
+        event.get("intent_id") == "stop" and event.get("status") == "completed" for event in events
+    )
+    assert any(
+        event.get("intent_id") == "motion" and event.get("reason") == "acceptance_delivery_failed"
+        for event in events
+    )
+    assert not any(
+        event.get("intent_id") == "motion" and event.get("status") == "invalidated"
+        for event in events
+    )
+    reopened = SessionAuditLog(relay_session.audit_log.root, SESSION)
+    assert reopened.replay() == relay_session.audit_log.replay()
+
+
 def test_missing_downstream_refuses_instead_of_false_acknowledgement(
     tmp_path: Path,
     clock: MutableClock,

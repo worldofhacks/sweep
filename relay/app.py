@@ -363,20 +363,16 @@ class RelayRuntime:
             for subscription in subscriptions:
                 if subscription.sender_failed.is_set():
                     continue
-                projection_versions = [
-                    roster_version
-                    for event in events
-                    if event.get("type") in {"membership", "state"}
-                    and isinstance((roster_version := event.get("roster_version")), int)
-                    and not isinstance(roster_version, bool)
-                ]
-                batch_roster_version = max(projection_versions) if projection_versions else None
-                if (
-                    batch_roster_version is not None
-                    and batch_roster_version < subscription.roster_version
-                ):
-                    continue
                 for event in events:
+                    roster_version = event.get("roster_version")
+                    if (
+                        event.get("type") in {"membership", "state"}
+                        and isinstance(roster_version, int)
+                        and not isinstance(roster_version, bool)
+                    ):
+                        if roster_version < subscription.roster_version:
+                            continue
+                        subscription.roster_version = roster_version
                     delivered = (
                         asyncio.get_running_loop().create_future()
                         if subscription.connection_id == wait_for_connection_id
@@ -385,8 +381,6 @@ class RelayRuntime:
                     if delivered is not None:
                         deliveries.append(delivered)
                     subscription.queue.put_nowait(_Outbound(event, delivered))
-                if batch_roster_version is not None:
-                    subscription.roster_version = batch_roster_version
         if deferred_deliveries is not None:
             deferred_deliveries.extend(deliveries)
             return bool(deliveries) or wait_for_connection_id is None

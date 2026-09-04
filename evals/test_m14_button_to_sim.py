@@ -8,6 +8,7 @@ from threading import Event, Thread
 from time import monotonic, sleep
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from adapters.sim.runtime import SimBridgeFactory, create_m14_sim_app
@@ -316,6 +317,151 @@ def test_keyboard_estop_and_epoch_bound_link_loss_fail_safe(tmp_path: Path) -> N
     assert all(event["connection_epoch"] == 1 for event in safety)
 
 
+@pytest.mark.parametrize(
+    ("name", "selection", "args", "confirm", "operation"),
+    [
+        ("hold", [1, 2], {}, False, "hover"),
+        ("land_all", [], {}, True, "land"),
+    ],
+)
+def test_delivered_recovery_action_survives_undelivered_estop(
+    tmp_path: Path,
+    name: str,
+    selection: list[int],
+    args: dict[str, object],
+    confirm: bool,
+    operation: str,
+) -> None:
+    harness = Harness(
+        tmp_path,
+        make_snapshot(2, selection=(1, 2), now_ms=Clock().value),
+        auto_start_nodes=False,
+    )
+    with TestClient(harness.app) as client, ExitStack() as stack:
+        console = stack.enter_context(_connect(client, "console"))
+        adapters = {
+            drone_id: stack.enter_context(_connect(client, "adapter", drone_id=drone_id))
+            for drone_id in (1, 2)
+        }
+        _ready_aircraft(harness, adapters)
+        assert (
+            _send_intent(
+                console,
+                harness.intent("select", selection=[], args={"ids": [1, 2]}),
+            )["status"]
+            == "completed"
+        )
+        session = harness.app.state.relay_runtime.session(SESSION)
+        recovery = harness.intent(name, selection=selection, args=args, confirm=confirm)
+        session.process_intent(recovery, Principal("console", None, CONSOLE_KEY))
+        harness.clock.advance(100)
+        estop = harness.intent("estop", selection=[], source="keyboard")
+        session.process_intent(estop, Principal("keyboard", None, CONSOLE_KEY))
+
+        session.mark_pending_intent_delivered(recovery["intent_id"])
+        completed = session.execute_pending_intent(recovery["intent_id"])
+        session.fail_pending_intent(
+            estop["intent_id"],
+            reason="acceptance_delivery_failed",
+            detail="the acknowledgement socket closed before delivery",
+        )
+
+    assert completed[-1]["status"] == "completed"
+    assert any(call.operation.value == operation for call in harness.flight.calls)
+    assert session.current_state()["estop"] is False
+
+
+def test_delivered_hold_tombstones_older_undelivered_motion(tmp_path: Path) -> None:
+    harness = Harness(
+        tmp_path,
+        make_snapshot(2, selection=(1, 2), now_ms=Clock().value),
+        auto_start_nodes=False,
+    )
+    with TestClient(harness.app) as client, ExitStack() as stack:
+        console = stack.enter_context(_connect(client, "console"))
+        adapters = {
+            drone_id: stack.enter_context(_connect(client, "adapter", drone_id=drone_id))
+            for drone_id in (1, 2)
+        }
+        _ready_aircraft(harness, adapters)
+        assert (
+            _send_intent(
+                console,
+                harness.intent("select", selection=[], args={"ids": [1, 2]}),
+            )["status"]
+            == "completed"
+        )
+        session = harness.app.state.relay_runtime.session(SESSION)
+        motion = harness.intent("translate", selection=[1, 2], args={"dx": 0.5, "dy": 0})
+        session.process_intent(motion, Principal("console", None, CONSOLE_KEY))
+        harness.clock.advance(600)
+        hold = harness.intent("hold", selection=[1, 2])
+        session.process_intent(hold, Principal("console", None, CONSOLE_KEY))
+
+        session.mark_pending_intent_delivered(hold["intent_id"])
+        hold_events = session.execute_pending_intent(hold["intent_id"])
+        session.mark_pending_intent_delivered(motion["intent_id"])
+        motion_events = session.execute_pending_intent(motion["intent_id"])
+
+    assert hold_events[-1]["status"] == "completed"
+    assert motion_events[-1]["status"] == "invalidated"
+    assert [call.operation.value for call in harness.flight.calls] == ["hover", "hover"]
+
+
+@pytest.mark.parametrize(
+    ("coordinator_index", "deliver_all_before_execution"),
+    [(index, delivered) for index in range(3) for delivered in (False, True)],
+)
+def test_chained_motion_conflict_is_independent_of_delivery_coordinator(
+    tmp_path: Path, coordinator_index: int, deliver_all_before_execution: bool
+) -> None:
+    harness = Harness(
+        tmp_path,
+        make_snapshot(2, selection=(1, 2), now_ms=Clock().value),
+        auto_start_nodes=False,
+    )
+    with TestClient(harness.app) as client, ExitStack() as stack:
+        console = stack.enter_context(_connect(client, "console"))
+        adapters = {
+            drone_id: stack.enter_context(_connect(client, "adapter", drone_id=drone_id))
+            for drone_id in (1, 2)
+        }
+        _ready_aircraft(harness, adapters)
+        assert (
+            _send_intent(
+                console,
+                harness.intent("select", selection=[], args={"ids": [1, 2]}),
+            )["status"]
+            == "completed"
+        )
+        session = harness.app.state.relay_runtime.session(SESSION)
+        principal = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        motions = []
+        for dx, dy in ((1, 0), (0, 1), (-1, 0)):
+            motion = harness.intent("translate", selection=[1, 2], args={"dx": dx, "dy": dy})
+            assert session.process_frame(motion, principal)[0]["status"] == "accepted"
+            motions.append(motion)
+            if len(motions) < 3:
+                harness.clock.advance(400)
+
+        coordinator = motions[coordinator_index]
+        delivered = motions if deliver_all_before_execution else (coordinator,)
+        for motion in delivered:
+            session.mark_pending_intent_delivered(motion["intent_id"])
+        outcomes = {
+            coordinator["intent_id"]: session.execute_pending_intent(coordinator["intent_id"])
+        }
+        for motion in motions:
+            if motion is coordinator:
+                continue
+            session.mark_pending_intent_delivered(motion["intent_id"])
+            outcomes[motion["intent_id"]] = session.execute_pending_intent(motion["intent_id"])
+
+    assert {events[-1]["reason"] for events in outcomes.values()} == {"conflicting_motion"}
+    assert all(call.operation.value != "goto" for call in harness.flight.calls)
+    assert [call.operation.value for call in harness.flight.calls] == ["hover", "hover"]
+
+
 def test_open_adapter_socket_link_loss_runs_watchdog_and_rejoin_uses_current_epoch(
     tmp_path: Path,
 ) -> None:
@@ -563,6 +709,7 @@ def test_estop_cannot_be_overwritten_by_an_already_running_motion(
     )
     harness = Harness(tmp_path, initial, auto_start_nodes=True)
     entered = Event()
+    estop_entered = Event()
     release = Event()
 
     with TestClient(harness.app) as client, _connect(client, "console") as console:
@@ -585,7 +732,14 @@ def test_estop_cannot_be_overwritten_by_an_already_running_motion(
             assert release.wait(timeout=2)
             return original_goto(*args, **kwargs)
 
+        original_estop = harness.flight.estop
+
+        def observed_estop(*args, **kwargs):  # type: ignore[no-untyped-def]
+            estop_entered.set()
+            return original_estop(*args, **kwargs)
+
         monkeypatch.setattr(harness.flight, "goto", delayed_goto)
+        monkeypatch.setattr(harness.flight, "estop", observed_estop)
         outcomes: dict[str, dict[str, object]] = {}
         motion = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
         motion_thread = Thread(
@@ -599,6 +753,7 @@ def test_estop_cannot_be_overwritten_by_an_already_running_motion(
                 keyboard,
                 harness.intent("estop", selection=[], source="keyboard"),
             )
+        assert estop_entered.is_set()
         release.set()
         motion_thread.join(timeout=2)
 

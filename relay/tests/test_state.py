@@ -349,6 +349,7 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
         "event_id",
         "session",
         "roster_version",
+        "state_sequence",
         "armed",
         "estop",
         "selection",
@@ -382,3 +383,14 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
     assert drone["flight_state"] == drone["telemetry"]["state"]
     assert drone["battery"] == drone["telemetry"]["battery"]
     assert drone["camera_patterns"] == ["pano_360"]
+
+
+def test_state_sequence_orders_equal_time_control_snapshots() -> None:
+    registry = FleetRegistry(telemetry_freshness_ms=1_000)
+    first = registry.state_event(session=SESSION, t=100, event_id="older")
+    registry.set_armed(True)
+    second = registry.state_event(session=SESSION, t=100, event_id="newer")
+    third = registry.state_event(session=SESSION, t=99, event_id="clock-backward")
+    assert [event["state_sequence"] for event in (first, second, third)] == [1, 2, 3]
+    assert first["armed"] is False
+    assert second["armed"] is True

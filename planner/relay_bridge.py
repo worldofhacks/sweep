@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Condition, Lock, RLock
 from time import monotonic
 
@@ -121,14 +121,27 @@ class AutonomyRelayBridge:
             with self._coordination:
                 admission = self._admissions[intent.intent_id]
                 admission.delivered = True
-                if admission.result is not None or admission.error is not None:
+                if (
+                    self._coordinator_active
+                    and intent.name is IntentName.ESTOP
+                    and not admission.claimed
+                ):
+                    self._admissions.pop(intent.intent_id)
+                    bypass = True
+                else:
+                    bypass = False
+                if not bypass and (admission.result is not None or admission.error is not None):
                     break
-                if not self._coordinator_active:
+                if bypass:
+                    coordinator = False
+                elif not self._coordinator_active:
                     self._coordinator_active = True
                     coordinator = True
                 else:
                     coordinator = False
                     self._coordination.wait()
+            if bypass:
+                return self._execute_one(intent)
             if not coordinator:
                 continue
 
@@ -162,20 +175,16 @@ class AutonomyRelayBridge:
         window_s = self.controller.arbiter.config.motion_conflict_window_ms / 1_000
         with self._coordination:
             while True:
-                group = tuple(
+                active = tuple(
                     admission
                     for admission in self._admissions.values()
-                    if admission.result is None
-                    and admission.error is None
-                    and abs(admission.intent.t - seed.intent.t)
-                    <= self.controller.arbiter.config.motion_conflict_window_ms
+                    if admission.result is None and admission.error is None
                 )
+                group = self._conflict_neighborhood(active, seed)
                 safety = tuple(
                     admission
-                    for admission in self._admissions.values()
-                    if admission.result is None
-                    and admission.error is None
-                    and admission.intent.name in {IntentName.ESTOP, IntentName.HOLD}
+                    for admission in active
+                    if admission.intent.name in {IntentName.ESTOP, IntentName.HOLD}
                     and any(
                         item.delivered
                         and abs(admission.intent.t - item.intent.t)
@@ -193,13 +202,28 @@ class AutonomyRelayBridge:
                             item.intent.intent_id,
                         ),
                     )
+                    group = self._conflict_neighborhood(
+                        tuple(
+                            admission
+                            for admission in active
+                            if admission.intent.name in MOTION_INTENTS
+                            or admission.intent.name in {IntentName.ESTOP, IntentName.HOLD}
+                        ),
+                        anchor,
+                    )
+                delivered_holds = tuple(
+                    item for item in group if item.delivered and item.intent.name is IntentName.HOLD
+                )
+                if delivered_holds:
+                    oldest_hold = max(delivered_holds, key=lambda item: item.intent.t)
                     group = tuple(
-                        admission
-                        for admission in self._admissions.values()
-                        if admission.result is None
-                        and admission.error is None
-                        and abs(admission.intent.t - anchor.intent.t)
-                        <= self.controller.arbiter.config.motion_conflict_window_ms
+                        item
+                        for item in active
+                        if item in group
+                        or (
+                            item.intent.name in MOTION_INTENTS
+                            and item.intent.t < oldest_hold.intent.t
+                        )
                     )
                 if any(item.delivered and item.intent.name is IntentName.ESTOP for item in group):
                     earliest_delivered = min(item.intent.t for item in group if item.delivered)
@@ -220,12 +244,36 @@ class AutonomyRelayBridge:
                 if remaining > 0 and not safety_present:
                     self._coordination.wait(timeout=remaining)
                     continue
+                for item in group:
+                    if item.delivered:
+                        item.claimed = True
+                group = tuple(replace(item) for item in group)
                 break
         try:
             results = self._execute_group(group)
         except Exception as error:
             return group, {}, error
         return group, results, None
+
+    def _conflict_neighborhood(
+        self,
+        admissions: tuple[_CoordinatedIntent, ...],
+        seed: _CoordinatedIntent,
+    ) -> tuple[_CoordinatedIntent, ...]:
+        """Return the timestamp-connected component containing ``seed``."""
+        ordered = tuple(sorted(admissions, key=lambda item: (item.intent.t, item.intent.intent_id)))
+        index = ordered.index(seed)
+        window_ms = self.controller.arbiter.config.motion_conflict_window_ms
+        first = index
+        while first and ordered[first].intent.t - ordered[first - 1].intent.t <= window_ms:
+            first -= 1
+        last = index
+        while (
+            last + 1 < len(ordered)
+            and ordered[last + 1].intent.t - ordered[last].intent.t <= window_ms
+        ):
+            last += 1
+        return ordered[first : last + 1]
 
     def _execute_group(
         self, admissions: tuple[_CoordinatedIntent, ...]
@@ -245,14 +293,137 @@ class AutonomyRelayBridge:
             current,
             conflict_window_ms=self.controller.arbiter.config.motion_conflict_window_ms,
         )
+        resolution = self._preserve_delivered_safety_action(
+            admissions,
+            resolution,
+            current,
+            self.controller.arbiter.config.motion_conflict_window_ms,
+        )
+        resolution = self._retire_motion_preceding_delivered_hold(admissions, resolution)
+        resolution = self._prioritize_delivered_estop(admissions, resolution)
         bypass_execution_lock = any(
             intent.name is IntentName.ESTOP and intent.intent_id in delivered
             for intent in resolution.accepted
         )
-        if bypass_execution_lock:
-            return self._execute_resolution(admissions, resolution, delivered, current, snapshot)
-        with self._execution_lock:
-            return self._execute_resolution(admissions, resolution, delivered, current, snapshot)
+
+        def dispatch() -> dict[str, IntentSinkResult]:
+            if bypass_execution_lock:
+                return self._execute_resolution(
+                    admissions, resolution, delivered, current, snapshot
+                )
+            with self._execution_lock:
+                return self._execute_resolution(
+                    admissions, resolution, delivered, current, snapshot
+                )
+
+        return self.session.execute_coordinated_group(
+            tuple(sorted(delivered)),
+            dispatch,
+        )
+
+    @staticmethod
+    def _preserve_delivered_safety_action(
+        admissions: tuple[_CoordinatedIntent, ...],
+        resolution: ConflictResolution,
+        snapshot: FleetSnapshot,
+        conflict_window_ms: int,
+    ) -> ConflictResolution:
+        undelivered_estop = any(
+            item.intent.name is IntentName.ESTOP and not item.delivered for item in admissions
+        )
+        if not undelivered_estop:
+            return resolution
+        fallback = resolve_intent_group(
+            tuple(
+                item.intent
+                for item in admissions
+                if item.delivered or item.intent.name is not IntentName.ESTOP
+            ),
+            snapshot,
+            conflict_window_ms=conflict_window_ms,
+        )
+        fallback_accepted = {intent.intent_id for intent in fallback.accepted}
+        protected = tuple(
+            item.intent
+            for item in admissions
+            if item.delivered
+            and item.intent.name in {IntentName.ESTOP, IntentName.HOLD, IntentName.LAND_ALL}
+            and item.intent.intent_id in resolution.invalidated_intent_ids
+            and item.intent.intent_id in fallback_accepted
+        )
+        if not protected:
+            return resolution
+        restored_ids = {intent.intent_id for intent in protected}
+        return replace(
+            resolution,
+            accepted=tuple(
+                sorted(
+                    (*resolution.accepted, *protected),
+                    key=lambda intent: (intent.t, intent.intent_id),
+                )
+            ),
+            invalidated_intent_ids=tuple(
+                intent_id
+                for intent_id in resolution.invalidated_intent_ids
+                if intent_id not in restored_ids
+            ),
+        )
+
+    @staticmethod
+    def _retire_motion_preceding_delivered_hold(
+        admissions: tuple[_CoordinatedIntent, ...],
+        resolution: ConflictResolution,
+    ) -> ConflictResolution:
+        delivered_holds = tuple(
+            item.intent
+            for item in admissions
+            if item.delivered and item.intent.name is IntentName.HOLD
+        )
+        if not delivered_holds:
+            return resolution
+        hold_t = max(intent.t for intent in delivered_holds)
+        retired_ids = {
+            item.intent.intent_id
+            for item in admissions
+            if item.intent.name in MOTION_INTENTS and item.intent.t < hold_t
+        }
+        if not retired_ids:
+            return resolution
+        return replace(
+            resolution,
+            accepted=tuple(
+                intent for intent in resolution.accepted if intent.intent_id not in retired_ids
+            ),
+            refusals=tuple(
+                refusal for refusal in resolution.refusals if refusal.intent_id not in retired_ids
+            ),
+            invalidated_intent_ids=tuple(
+                dict.fromkeys((*resolution.invalidated_intent_ids, *sorted(retired_ids)))
+            ),
+        )
+
+    @staticmethod
+    def _prioritize_delivered_estop(
+        admissions: tuple[_CoordinatedIntent, ...],
+        resolution: ConflictResolution,
+    ) -> ConflictResolution:
+        if not any(item.delivered and item.intent.name is IntentName.ESTOP for item in admissions):
+            return resolution
+        retired_ids = {
+            item.intent.intent_id for item in admissions if item.intent.name in MOTION_INTENTS
+        }
+        return replace(
+            resolution,
+            accepted=tuple(
+                intent for intent in resolution.accepted if intent.intent_id not in retired_ids
+            ),
+            refusals=tuple(
+                refusal for refusal in resolution.refusals if refusal.intent_id not in retired_ids
+            ),
+            invalidated_intent_ids=tuple(
+                dict.fromkeys((*resolution.invalidated_intent_ids, *sorted(retired_ids)))
+            ),
+        )
 
     def _execute_resolution(
         self,
@@ -404,5 +575,6 @@ class _CoordinatedIntent:
     intent: IntentV1
     admitted_at: float
     delivered: bool = False
+    claimed: bool = False
     result: IntentSinkResult | None = None
     error: Exception | None = None

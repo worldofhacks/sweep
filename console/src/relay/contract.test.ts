@@ -28,6 +28,20 @@ function aircraft(overrides: Record<string, unknown> = {}) {
 }
 
 describe('M1.1 wire compatibility', () => {
+  test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
+    const event = parseRelayServerEvent({
+      v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,
+      roster_version: 1, state_sequence: sequence, armed: false, estop: false,
+      selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      pending: null, accepted_plan: null, drones: [aircraft()],
+    })
+    if (sequence === undefined || sequence === 1 || sequence === 2) {
+      expect(event).not.toBeNull()
+    } else {
+      expect(event).toBeNull()
+    }
+  })
+
   test('refuses an adapter-supplied media URL', () => {
     expect(
       parseRelayServerEvent({

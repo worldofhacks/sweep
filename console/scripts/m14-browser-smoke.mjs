@@ -13,6 +13,7 @@ const relayToken = 'm14-browser-console-key-32-bytes'
 const logDirectory = await mkdtemp(join(tmpdir(), 'sweep-m14-browser-'))
 const processes = []
 let browser
+let page
 
 try {
   processes.push(
@@ -43,7 +44,7 @@ try {
     waitForHttp(`http://127.0.0.1:${consolePort}/`),
   ])
   browser = await chromium.launch({ headless: true })
-  const page = await browser.newPage()
+  page = await browser.newPage()
   await page.addInitScript(
     ({ baseUrl, sessionId, token }) => {
       window.__SWEEP_RELAY_CONFIG__ = { baseUrl, sessionId, token }
@@ -130,10 +131,51 @@ try {
     .split('\n')
     .map((line) => JSON.parse(line))
   assertRunEvidence(records)
+} catch (error) {
+  await reportFailure()
+  throw error
 } finally {
   await browser?.close()
   for (const child of processes.reverse()) await stop(child)
   await rm(logDirectory, { recursive: true, force: true })
+}
+
+async function reportFailure() {
+  const diagnostics = await Promise.allSettled([
+    page?.locator('.request-item').evaluateAll((requests) => requests.map((request) => ({
+      intentId: request.querySelector('.request-topline code')?.getAttribute('title'),
+      name: request.querySelector('.request-topline strong')?.textContent,
+      status: request.querySelector('.status-label')?.textContent,
+      reason: request.querySelector('.request-reason code')?.textContent,
+    }))),
+    page?.locator('.checkpoint-state, .drone-state, .session-strip').allTextContents(),
+    (async () => {
+      const response = await fetch(`http://127.0.0.1:${relayPort}/session/${sessionId}`, {
+        headers: { Authorization: `Bearer ${relayToken}` },
+        signal: AbortSignal.timeout(3_000),
+      })
+      if (!response.ok) throw new Error('replay unavailable')
+      const replay = await response.json()
+      return replay.events
+        .map((record) => record.event)
+        .filter((event) => ['intent_record', 'acknowledgement', 'refusal'].includes(event.type))
+        .map((event) => ({
+          type: event.type,
+          t: event.t,
+          intentId: event.intent_id ?? event.intent?.intent_id,
+          name: event.intent?.name,
+          status: event.status ?? event.outcome,
+          reason: event.reason,
+          rosterVersion: event.roster_version,
+        }))
+    })(),
+  ])
+  for (const [index, label] of ['requests', 'fleet', 'replay'].entries()) {
+    const result = diagnostics[index]
+    console.error(`Browser failure ${label}: ${result.status === 'fulfilled'
+      ? JSON.stringify(result.value ?? null)
+      : 'unavailable'}`)
+  }
 }
 
 async function waitForRequest(page, name, status) {

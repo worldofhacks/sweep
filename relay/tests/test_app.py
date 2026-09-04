@@ -1118,3 +1118,38 @@ def test_initial_send_failure_releases_adapter_binding_and_records_loss(
             rejoined = _receive_type(retry_socket, "membership")
 
         assert rejoined["connection_epoch"] == 2
+
+
+def test_new_membership_does_not_discard_committed_arm_completion(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    from relay.contracts import LifecycleStatus
+    from relay.session import IntentSinkResult
+
+    async def exercise_race() -> None:
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        subscription = await runtime.subscribe(SESSION, console)
+        session.intent_sink = lambda _intent, _state: IntentSinkResult(
+            status=LifecycleStatus.COMPLETED, source="planner", armed_update=True
+        )
+        raw = {**intent_payload(), "name": "arm", "selection": []}
+        session.process_intent(raw, console)
+        completed_batch = session.execute_pending_intent("intent-1")
+        assert [event["type"] for event in completed_batch] == ["state", "acknowledgement"]
+        assert completed_batch[-1]["status"] == "completed"
+        membership = session.process_membership(
+            membership_payload(action="join", event_id="join-before-publish"), adapter
+        )
+        await runtime.publish(SESSION, membership)
+        assert await runtime.publish(SESSION, completed_batch)
+        queued = []
+        while not subscription.queue.empty():
+            queued.append(subscription.queue.get_nowait().event)
+        assert completed_batch[-1] in queued
+        assert completed_batch[0] not in queued
+        assert [event["roster_version"] for event in queued if event["type"] == "state"] == [1]
+
+    asyncio.run(exercise_race())

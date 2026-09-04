@@ -82,17 +82,21 @@ def resolve_intent_group(
             + rest.invalidated_intent_ids,
             rest.hold_required,
         )
-    if later.t - earlier.t > conflict_window_ms:
-        return ConflictResolution(intents, (), (), False)
-
     if all(intent.name is IntentName.SELECT for intent in ordered):
+        if later.t - earlier.t > conflict_window_ms:
+            return ConflictResolution(intents, (), (), False)
         return ConflictResolution(
             (later,), (), tuple(intent.intent_id for intent in ordered[:-1]), False
         )
     motions = tuple(intent for intent in ordered if intent.name in MOTION_INTENTS)
-    if len(motions) > 1:
+    if any(
+        later_motion.t - earlier_motion.t <= conflict_window_ms
+        for earlier_motion, later_motion in zip(motions, motions[1:], strict=False)
+    ):
         refusals = tuple(_motion_refusal(intent, snapshot) for intent in motions)
         return ConflictResolution((), refusals, (), True)
+    if later.t - earlier.t > conflict_window_ms:
+        return ConflictResolution(intents, (), (), False)
     return ConflictResolution(intents, (), (), False)
 
 

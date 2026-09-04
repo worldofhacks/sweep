@@ -148,6 +148,27 @@ describe('control reducer fleet lifecycle', () => {
     expect(rosterMoved.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_roster' })
   })
 
+  test.each(['console', 'keyboard'] as const)('orders all tied projection fields when %s delivers newer first', (source) => {
+    const newer = {
+      ...stateEvent('newer', 1, [drone(), drone({ drone_id: 2 })], [2]),
+      state_sequence: 2,
+      armed: true,
+    }
+    let state = controlReducer(createInitialControlState(session, t), { type: 'relay_event', source, event: newer })
+    state = controlReducer(state, {
+      type: 'relay_event', source: source === 'console' ? 'keyboard' : 'console',
+      event: { ...stateEvent('older', 1, [drone()], [1]), state_sequence: 1, armed: false },
+    })
+    expect(state.selection).toEqual([2])
+    expect(state.armed).toBe(true)
+    expect(Object.keys(state.aircraft)).toEqual(['1', '2'])
+    state = controlReducer(state, {
+      type: 'relay_event', source,
+      event: { ...newer, event_id: 'clock-backward', state_sequence: 3, t: t - 1, armed: false },
+    })
+    expect(state.armed).toBe(false)
+  })
+
   test('accepts ordered same-socket E-stop transitions within one millisecond', () => {
     let state = createInitialControlState(session, t)
     for (const [index, estop] of [false, true, false].entries()) {

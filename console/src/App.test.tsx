@@ -326,6 +326,30 @@ describe('Control / Capture console', () => {
     expect(screen.getByText('Network stop clear')).toBeInTheDocument()
   })
 
+  test.each(['console', 'keyboard'] as const)('preserves tied fleet projection when %s delivers newer first', async (newerSource) => {
+    const clients = {
+      console: new SilentFixtureRelayClient(session, clock, 'console'),
+      keyboard: new SilentFixtureRelayClient(session, clock, 'keyboard'),
+    }
+    render(<App sessionId={session} clients={clients} />)
+    const snapshot = {
+      v: 1 as const, t: clock(), type: 'state' as const, session,
+      roster_version: 2, armed: true, estop: false, selection: [2],
+      formation: 'none', spacing: 0.8, mode: 'indoor', pending: null,
+      accepted_plan: null, drones: fixtureAircraft(clock()).slice(0, 2),
+    }
+    act(() => {
+      clients[newerSource].emitServer({ ...snapshot, event_id: 'newer', state_sequence: 2 })
+      clients[newerSource === 'console' ? 'keyboard' : 'console'].emitServer({
+        ...snapshot, event_id: 'older', state_sequence: 1, armed: false,
+        selection: [1], drones: snapshot.drones.slice(0, 1),
+      })
+    })
+    expect(await screen.findByText('Armed')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Focus D-/ })).toHaveLength(2)
+    expect(screen.getByRole('button', { name: /D-02 ready epoch 1 Selected/i })).toBeInTheDocument()
+  })
+
   test('ignores a delayed keyboard state older than the current console state', async () => {
     const consoleClient = new SilentFixtureRelayClient(session, clock, 'console')
     const keyboard = new SilentFixtureRelayClient(session, clock, 'keyboard')
