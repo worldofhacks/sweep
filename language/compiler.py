@@ -426,7 +426,10 @@ class ConfirmedPlan:
     ) -> PreparedConfirmation:
         with self._lock:
             if self._pending_completion is not None and not self._completion_needs_telemetry(
-                relay_state, capability_version=capability_version, rooms=rooms
+                relay_state,
+                capability_version=capability_version,
+                rooms=rooms,
+                completed_at_ms=self._pending_completion["t"],
             ):
                 self.acknowledge(
                     self._pending_completion,
@@ -806,7 +809,10 @@ class ConfirmedPlan:
             )
             raise ConfirmationError(f"relay returned terminal status {status.value}")
         if self._awaiting_plan is not None and self._completion_needs_telemetry(
-            relay_state, capability_version=capability_version, rooms=rooms
+            relay_state,
+            capability_version=capability_version,
+            rooms=rooms,
+            completed_at_ms=outcome["t"],
         ):
             self._pending_completion = dict(outcome)
             return
@@ -871,7 +877,12 @@ class ConfirmedPlan:
         self._pending_completion = None
 
     def _completion_needs_telemetry(
-        self, relay_state: object, *, capability_version: str, rooms: tuple[str, ...]
+        self,
+        relay_state: object,
+        *,
+        capability_version: str,
+        rooms: tuple[str, ...],
+        completed_at_ms: int,
     ) -> bool:
         emitted = self._compiled.intents[self._next - 1]
         if emitted.name.value not in {"takeoff", "translate", "come_home", "land", "land_all"}:
@@ -890,6 +901,7 @@ class ConfirmedPlan:
         )
         return any(
             _drone_position_time(facts, drone_id) is None
+            or _drone_position_time(facts, drone_id) < completed_at_ms
             or _drone_position_time(facts, drone_id) <= self._awaiting_emitted_at_ms
             for drone_id in targets
         )
