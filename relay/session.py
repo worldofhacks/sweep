@@ -11,6 +11,7 @@ from threading import RLock
 
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal, verify_event_signature
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import (
     AdapterAcknowledgement,
     ContractError,
@@ -74,6 +75,7 @@ class RelaySession:
         event_ids: EventIdFactory | None = None,
         intent_sink: IntentSink | None = None,
         leave_authorizer: LeaveAuthorizer | None = None,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -84,7 +86,14 @@ class RelaySession:
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
         self.intent_sink = intent_sink
         self.leave_authorizer = leave_authorizer
-        self.registry = FleetRegistry(telemetry_freshness_ms=limits.telemetry_freshness_ms)
+        sink_profile = getattr(intent_sink, "capability_profile", capability_profile)
+        if sink_profile is not capability_profile:
+            raise ValueError("relay session and planner use different capability profiles")
+        self.capability_profile = capability_profile
+        self.registry = FleetRegistry(
+            telemetry_freshness_ms=limits.telemetry_freshness_ms,
+            capability_profile=capability_profile,
+        )
         self._seen_transport_event_ids: set[str] = set()
         self._last_transport_t: dict[tuple[str, int | None], int] = {}
         self._intents: dict[str, _IntentLedgerEntry] = {}
@@ -151,7 +160,7 @@ class RelaySession:
                     )
                 ]
 
-            result = validate_intent(raw)
+            result = validate_intent(raw, capability_profile=self.capability_profile)
             if isinstance(result, RejectedIntent):
                 return [
                     self._refuse_intent(

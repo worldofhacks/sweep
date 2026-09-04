@@ -79,6 +79,8 @@ export interface RelayStateEvent {
   formation: string
   spacing: number
   mode: string
+  capability_profile: string
+  enabled_intent_names: string[]
   pending: Record<string, unknown> | null
   accepted_plan: Record<string, unknown> | null
   drones: RelayAircraftState[]
@@ -340,6 +342,8 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       typeof value.formation !== 'string' ||
       !isFiniteNumber(value.spacing) ||
       typeof value.mode !== 'string' ||
+      typeof value.capability_profile !== 'string' ||
+      !isStringArray(value.enabled_intent_names) ||
       !isNullableRecord(value.pending) ||
       !isNullableRecord(value.accepted_plan) ||
       !Array.isArray(value.drones) ||

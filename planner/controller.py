@@ -24,6 +24,7 @@ from planner.models import (
     RelaySnapshotEnrichment,
 )
 from planner.planner import DeterministicPlanner
+from relay.capabilities import CapabilityProfile
 from relay.intent_v1 import IntentName, IntentV1
 
 type SnapshotProvider = Callable[[], FleetSnapshot]
@@ -75,6 +76,10 @@ class PreparedExecutionRouter:
         self._landing_completed_at: dict[str, int] = {}
         self._emitters: WeakSet[PreparedIntentEmitter] = WeakSet()
         self._lock = RLock()
+
+    @property
+    def capability_profile(self) -> CapabilityProfile:
+        return self.controller.planner.capability_profile
 
     def prepare(
         self,
@@ -875,7 +880,10 @@ class AutonomyController:
                 drone_id=None,
                 connection_epoch=None,
                 reason=RefusalReason.UNSUPPORTED,
-                detail=f"{intent.name.value} has no earned M2.0 planner capability",
+                detail=(
+                    f"{intent.name.value} is outside capability profile "
+                    f"{self.planner.capability_profile.name}"
+                ),
             )
             return ExecutionResult(
                 intent_id=intent.intent_id,

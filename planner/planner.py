@@ -22,23 +22,9 @@ from planner.models import (
     TranslationGrounding,
     TranslationPolicy,
 )
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import IntentName, IntentV1
 
-SUPPORTED_INTENTS = frozenset(
-    {
-        IntentName.ARM,
-        IntentName.SELECT,
-        IntentName.TAKEOFF,
-        IntentName.TRANSLATE,
-        IntentName.ALTITUDE,
-        IntentName.HOLD,
-        IntentName.COME_HOME,
-        IntentName.LAND,
-        IntentName.LAND_ALL,
-        IntentName.ESTOP,
-        IntentName.CAPTURE_ROOM,
-    }
-)
 SELECTION_TARGETED_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
@@ -143,6 +129,22 @@ class PlanningConfig:
             self.altitude_step_m, self.altitude_floor_z_m, self.altitude_configuration_id
         )
 
+    def capability_profile(self, requested: CapabilityProfile) -> CapabilityProfile:
+        grounding = self.altitude_grounding()
+        if requested is C1_CAPABILITY_PROFILE:
+            if grounding is None:
+                return requested
+            return requested.with_altitude(
+                enabled=True,
+                absolute=grounding.floor_z_m is not None,
+            )
+        if requested.supports(IntentName.ALTITUDE):
+            return requested.with_altitude(
+                enabled=grounding is not None,
+                absolute=grounding is not None and grounding.floor_z_m is not None,
+            )
+        return requested
+
     def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding:
         return TranslationGrounding(
             policy=TranslationPolicy(
@@ -162,17 +164,23 @@ class PlanningConfig:
 
 
 class DeterministicPlanner:
-    def __init__(self, config: PlanningConfig) -> None:
+    def __init__(
+        self,
+        config: PlanningConfig,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+    ) -> None:
         self.config = config
+        self.capability_profile = config.capability_profile(capability_profile)
 
     def supports(self, intent: IntentV1) -> bool:
-        """Return the earned M2.0 capability before any state-dependent check."""
+        if not self.capability_profile.supports(intent.name):
+            return False
         if intent.name is IntentName.ALTITUDE:
             grounding = self.config.altitude_grounding()
             return grounding is not None and (
                 "height_m" not in intent.args or grounding.floor_z_m is not None
             )
-        return intent.name in SUPPORTED_INTENTS
+        return True
 
     def plan(self, intent: IntentV1, snapshot: FleetSnapshot) -> PlanResult:
         if not self.supports(intent):
@@ -180,7 +188,7 @@ class DeterministicPlanner:
                 intent,
                 snapshot,
                 RefusalReason.UNSUPPORTED,
-                f"{intent.name.value} has no earned M2.0 planner capability",
+                f"{intent.name.value} is outside capability profile {self.capability_profile.name}",
             )
 
         if intent.name in SELECTION_TARGETED_INTENTS and tuple(sorted(intent.selection)) != tuple(
