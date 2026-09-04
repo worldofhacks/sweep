@@ -13,6 +13,7 @@ ORDERED_INTENTS = {
     "translate",
     "hold",
     "come_home",
+    "land",
     "land_all",
     "estop",
 }
@@ -107,9 +108,11 @@ def test_owner_decisions_are_encoded_in_corpus() -> None:
 
     assert cases["prepare-the-aircraft"]["expected"]["intents"][0]["name"] == "arm"
     assert cases["launch"]["expected"]["intents"][0]["name"] == "takeoff"
-    assert cases["land-now"]["expected"] == {
-        "kind": "unsupported",
-        "reason": "capability_unavailable",
+    assert cases["land-now"]["expected"]["intents"][0] == {
+        "name": "land",
+        "args": {},
+        "selection": [1, 2],
+        "mode": "indoor",
     }
 
     assert cases["voice-stop-pending"]["expected"]["intents"][0]["name"] == "hold"
