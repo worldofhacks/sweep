@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock, Timer
@@ -499,8 +500,9 @@ def test_same_session_recovery_does_not_block_websocket_event_loop(
 
     class PausingAuditLog(SessionAuditLog):
         def __init__(self, root: Path, session: str) -> None:
-            constructor_started.set()
-            assert resume_constructor.wait(timeout=2)
+            if session == SESSION:
+                constructor_started.set()
+                assert resume_constructor.wait(timeout=2)
             super().__init__(root, session)
 
     monkeypatch.setattr(app_module, "SessionAuditLog", PausingAuditLog)
@@ -533,30 +535,43 @@ def test_same_session_recovery_does_not_block_websocket_event_loop(
         async def send_json(self, _data: dict[str, object]) -> None:
             return None
 
-    async def exercise() -> int:
+    async def exercise() -> tuple[float, int]:
         ticks = 0
+        unrelated_finished = asyncio.Event()
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=20))
 
         async def ticker() -> None:
             nonlocal ticks
-            while not resume_constructor.is_set():
+            while not unrelated_finished.is_set():
                 ticks += 1
                 await asyncio.sleep(0.01)
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             replay_future = executor.submit(runtime.replay, SESSION)
             assert await asyncio.to_thread(constructor_started.wait, 2)
-            timer = Timer(0.2, resume_constructor.set)
+            timer = Timer(0.3, resume_constructor.set)
             timer.start()
             ticker_task = asyncio.create_task(ticker())
-            await asyncio.sleep(0)
-            before = ticks
-            await route.endpoint(AuthenticatingWebSocket(), SESSION)
+            waiters = [
+                asyncio.create_task(route.endpoint(AuthenticatingWebSocket(), SESSION))
+                for _ in range(20)
+            ]
+            await asyncio.sleep(0.05)
+            started = time.monotonic()
+            await route.endpoint(AuthenticatingWebSocket(), "session-b")
+            elapsed = time.monotonic() - started
+            unrelated_finished.set()
             await ticker_task
+            resume_constructor.set()
+            await asyncio.gather(*waiters)
             replay_future.result(timeout=2)
             timer.join(timeout=2)
-        return ticks - before
+            assert runtime._activation_tasks == {}
+        return elapsed, ticks
 
-    assert asyncio.run(exercise()) >= 5
+    elapsed, ticks = asyncio.run(exercise())
+    assert elapsed < 0.2
+    assert ticks >= 5
 
 
 def test_join_close_failure_closes_socket_and_fences_live_projection(
@@ -569,18 +584,18 @@ def test_join_close_failure_closes_socket_and_fences_live_projection(
     real_close = os.close
     closes = 0
 
-    def fail_second_close(descriptor: int) -> None:
+    def fail_first_close(descriptor: int) -> None:
         nonlocal closes
         closes += 1
         real_close(descriptor)
-        if closes == 2:
+        if closes == 1:
             raise OSError("injected close failure")
 
     with TestClient(app) as client:
         runtime = app.state.relay_runtime
         with client.websocket_connect(f"/ws/{SESSION}") as adapter:
             _authenticate_adapter(adapter)
-            monkeypatch.setattr(os, "close", fail_second_close)
+            monkeypatch.setattr(os, "close", fail_first_close)
             adapter.send_json(membership_payload(action="join", event_id="join-close-error"))
             with pytest.raises(WebSocketDisconnect) as closed:
                 adapter.receive_json()
@@ -598,6 +613,62 @@ def test_join_close_failure_closes_socket_and_fences_live_projection(
         session.current_state()
     with pytest.raises(AuditLogError, match="session is unusable"):
         session.metrics()
+
+
+@pytest.mark.parametrize("failure_point", ["recovery", "subscription"])
+def test_handshake_audit_failure_closes_socket_without_success_frames(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+    if failure_point == "recovery":
+
+        class FailingAuditLog(SessionAuditLog):
+            def __init__(self, root: Path, session: str) -> None:
+                raise AuditLogError("injected recovery failure")
+
+        monkeypatch.setattr(app_module, "SessionAuditLog", FailingAuditLog)
+    else:
+        runtime.session(SESSION)._projection_usable = False
+
+    application = create_app(app_settings, clock=clock, event_ids=event_ids)
+    application.state.relay_runtime = runtime
+    route = next(
+        route for route in application.routes if getattr(route, "path", None) == "/ws/{session_id}"
+    )
+
+    class HandshakeWebSocket:
+        def __init__(self) -> None:
+            self.app = application
+            self.sent: list[dict[str, object]] = []
+            self.closed: list[int] = []
+
+        async def accept(self) -> None:
+            return None
+
+        async def receive_json(self) -> dict[str, object]:
+            return {
+                "v": 1,
+                "type": "auth",
+                "source": "console",
+                "token": CONSOLE_KEY.decode(),
+            }
+
+        async def send_json(self, data: dict[str, object]) -> None:
+            self.sent.append(data)
+
+        async def close(self, code: int) -> None:
+            self.closed.append(code)
+
+    socket = HandshakeWebSocket()
+    asyncio.run(route.endpoint(socket, SESSION))
+
+    assert socket.sent == []
+    assert socket.closed == [1011]
+    assert runtime.connection_count() == 0
 
 
 def test_initial_send_failure_releases_adapter_binding_and_records_loss(

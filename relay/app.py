@@ -65,6 +65,8 @@ class RelayRuntime:
         self._adapter_connections: dict[tuple[str, int], str] = {}
         self._session_gates: dict[str, _SessionGate] = {}
         self._session_gates_lock = Lock()
+        self._activation_tasks: dict[str, asyncio.Task[RelaySession]] = {}
+        self._activation_tasks_lock = Lock()
         self._connection_lock = asyncio.Lock()
         self._fanout_task: asyncio.Task[None] | None = None
 
@@ -122,6 +124,19 @@ class RelayRuntime:
                 }
         return session.replay(after_sequence=after_sequence)
 
+    async def activate_session(self, session_id: str) -> RelaySession:
+        with self._activation_tasks_lock:
+            task = self._activation_tasks.get(session_id)
+            if task is None:
+                task = asyncio.create_task(asyncio.to_thread(self.session, session_id))
+                self._activation_tasks[session_id] = task
+                task.add_done_callback(
+                    lambda completed, session=session_id: self._clear_activation_task(
+                        session, completed
+                    )
+                )
+        return await asyncio.shield(task)
+
     @contextlib.contextmanager
     def _session_gate(self, session_id: str) -> Iterator[None]:
         with self._session_gates_lock:
@@ -135,6 +150,13 @@ class RelayRuntime:
                 gate.users -= 1
                 if gate.users == 0:
                     del self._session_gates[session_id]
+
+    def _clear_activation_task(
+        self, session_id: str, completed: asyncio.Task[RelaySession]
+    ) -> None:
+        with self._activation_tasks_lock:
+            if self._activation_tasks.get(session_id) is completed:
+                del self._activation_tasks[session_id]
 
     async def start(self) -> None:
         self._fanout_task = asyncio.create_task(self._fanout_loop())
@@ -242,7 +264,7 @@ def create_app(
             _validate_session_id(session_id)
             raw_auth = await asyncio.wait_for(websocket.receive_json(), timeout=5)
             principal = authenticate(raw_auth, runtime.credential_resolver)
-            session = await asyncio.to_thread(runtime.session, session_id)
+            session = await runtime.activate_session(session_id)
             accepted = _auth_accepted(runtime, session_id, principal)
             subscription = await runtime.subscribe(session_id, principal)
         except (AuthenticationError, ValueError, json.JSONDecodeError) as error:
@@ -265,6 +287,10 @@ def create_app(
             await websocket.close(code=1008)
             return
         except WebSocketDisconnect:
+            return
+        except AuditLogError:
+            with contextlib.suppress(WebSocketDisconnect, RuntimeError):
+                await websocket.close(code=1011)
             return
 
         sender: asyncio.Task[None] | None = None

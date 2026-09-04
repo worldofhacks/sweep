@@ -38,6 +38,16 @@ def test_append_replay_and_reopen_preserve_contiguous_order(tmp_path: Path) -> N
     assert reopened.last_sequence == 3
 
 
+def test_operation_batch_preserves_one_jsonl_record_per_event(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+
+    records = log.append_batch([_event("event-1", "membership"), _event("event-2", "state")])
+
+    assert [record["seq"] for record in records] == [1, 2]
+    assert len(log.path.read_text(encoding="utf-8").splitlines()) == 2
+    assert SessionAuditLog(tmp_path, "session-1").replay() == records
+
+
 @pytest.mark.parametrize("field", ["token", "signature", "authorization", "secret"])
 def test_sensitive_fields_are_refused_at_any_depth(tmp_path: Path, field: str) -> None:
     log = SessionAuditLog(tmp_path, "session-1")

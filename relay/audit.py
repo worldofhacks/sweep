@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from threading import RLock
 
@@ -21,7 +21,7 @@ class AuditLogError(RuntimeError):
 
 
 class SessionAuditLog:
-    """One JSON event per O_APPEND write, wrapped with a monotonic sequence."""
+    """Append durable event batches with monotonic per-event sequences."""
 
     def __init__(self, root: Path, session: str) -> None:
         if not session or len(session) > 512:
@@ -31,11 +31,13 @@ class SessionAuditLog:
         self.root.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(session.encode()).hexdigest()
         self.path = self.root / f"{digest}.jsonl"
+        self.pending_path = self.root / f"{digest}.pending"
         self._lock = RLock()
         self._append_usable = True
         self._replay_usable = True
-        self.had_persisted_log = self.path.exists()
+        self.had_persisted_log = self.path.exists() or self.pending_path.exists()
         self.recovered_tail_bytes = 0
+        self._recover_incomplete_operation()
         records = self.replay()
         self._next_sequence = 1 if not records else records[-1]["seq"] + 1
 
@@ -48,20 +50,37 @@ class SessionAuditLog:
 
     def append(self, event: Mapping[str, object]) -> dict[str, object]:
         """Validate and durably append one safe JSON-native event."""
+        return self.append_batch([event])[0]
+
+    def append_batch(self, events: Iterable[Mapping[str, object]]) -> list[dict[str, object]]:
+        """Durably append one complete relay operation."""
         with self._lock:
             if not self._append_usable:
                 raise AuditLogError("session log is unusable after a failed append operation")
-            _reject_sensitive_fields(event)
-            if event.get("session") != self.session:
-                raise AuditLogError("event session does not match this log")
-            if not isinstance(event.get("event_id"), str) or not event["event_id"]:
-                raise AuditLogError("logged events require event_id")
-            record = {"seq": self._next_sequence, "event": dict(event)}
+            records: list[dict[str, object]] = []
+            for offset, event in enumerate(events):
+                _reject_sensitive_fields(event)
+                if event.get("session") != self.session:
+                    raise AuditLogError("event session does not match this log")
+                if not isinstance(event.get("event_id"), str) or not event["event_id"]:
+                    raise AuditLogError("logged events require event_id")
+                records.append({"seq": self._next_sequence + offset, "event": dict(event)})
+            if not records:
+                return []
             try:
-                encoded = (
-                    json.dumps(record, allow_nan=False, separators=(",", ":"), sort_keys=True)
-                    + "\n"
-                ).encode()
+                encoded_records = [
+                    (
+                        json.dumps(
+                            record,
+                            allow_nan=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    ).encode()
+                    for record in records
+                ]
+                encoded = b"".join(encoded_records)
             except (TypeError, ValueError) as error:
                 raise AuditLogError(f"event is not JSON-native: {error}") from None
 
@@ -82,6 +101,7 @@ class SessionAuditLog:
                     raise AuditLogError(f"cannot close session log: {close_error}") from None
                 raise AuditLogError(f"cannot inspect session log: {error}") from None
             try:
+                self._mark_operation_pending(original_size)
                 remaining = memoryview(encoded)
                 while remaining:
                     try:
@@ -92,11 +112,13 @@ class SessionAuditLog:
                         raise OSError("append made no progress")
                     remaining = remaining[written:]
                 os.fsync(descriptor)
-                self._next_sequence += 1
+                self._clear_pending_operation()
+                self._next_sequence += len(records)
             except OSError as error:
                 try:
                     os.ftruncate(descriptor, original_size)
                     os.fsync(descriptor)
+                    self._clear_pending_operation()
                 except OSError as rollback_error:
                     self._append_usable = False
                     self._replay_usable = False
@@ -110,7 +132,7 @@ class SessionAuditLog:
                 except OSError as error:
                     self._append_usable = False
                     raise AuditLogError(f"cannot close session log: {error}") from None
-            return json.loads(encoded)
+            return [json.loads(encoded_record) for encoded_record in encoded_records]
 
     def replay(self, *, after_sequence: int = 0) -> list[dict[str, object]]:
         records, _ = self.replay_snapshot(after_sequence=after_sequence)
@@ -173,6 +195,56 @@ class SessionAuditLog:
         removed = len(data) - prefix_end
         self.recovered_tail_bytes += removed
         _LOGGER.warning("recovered unterminated audit tail removed_bytes=%d", removed)
+
+    def _mark_operation_pending(self, original_size: int) -> None:
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(self.pending_path, flags, 0o600)
+            with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+                stream.write(f"{original_size}\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as error:
+            raise AuditLogError(f"cannot mark pending audit operation: {error}") from None
+
+    def _clear_pending_operation(self) -> None:
+        self.pending_path.unlink()
+
+    def _recover_incomplete_operation(self) -> None:
+        if not self.pending_path.exists():
+            return
+        try:
+            flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(self.pending_path, flags)
+            with os.fdopen(descriptor, encoding="ascii") as stream:
+                text = stream.read()
+            original_size = int(text)
+            if original_size < 0 or text != f"{original_size}\n":
+                raise ValueError
+            if not self.path.exists():
+                if original_size != 0:
+                    raise AuditLogError("pending audit cursor exceeds missing session log")
+            else:
+                flags = os.O_WRONLY
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                descriptor = os.open(self.path, flags)
+                try:
+                    if os.fstat(descriptor).st_size < original_size:
+                        raise AuditLogError("pending audit cursor exceeds session log")
+                    os.ftruncate(descriptor, original_size)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            self.pending_path.unlink()
+        except (UnicodeError, ValueError):
+            raise AuditLogError("invalid pending audit operation") from None
+        except OSError as error:
+            raise AuditLogError(f"cannot recover pending audit operation: {error}") from None
 
 
 def _validate_record(record: object, expected: int, session: str, line_number: int) -> None:

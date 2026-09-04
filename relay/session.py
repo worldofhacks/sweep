@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock
 
@@ -97,6 +98,7 @@ class RelaySession:
         self._mutation_usable = True
         self._projection_usable = True
         self._replay_usable = True
+        self._audit_batch: list[dict[str, object]] | None = None
         self._lock = RLock()
 
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
@@ -119,13 +121,13 @@ class RelaySession:
         ]
 
     def protocol_refusal(self, *, reason: str, detail: str) -> dict[str, object]:
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             return self._protocol_refusal(reason=reason, detail=detail, now=self.clock())
 
     def process_intent(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             if principal.source not in {"console", "keyboard"} or principal.drone_id is not None:
                 return [
@@ -254,14 +256,14 @@ class RelaySession:
                 status=LifecycleStatus.ACCEPTED,
                 roster_version=self.registry.roster_version,
             )
-            self._append_audit(event, completes_projection=True)
+            self._append_audit(event)
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
             return [event]
 
     def process_membership(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             if principal.source != "adapter" or principal.drone_id is None:
                 return [
@@ -300,7 +302,7 @@ class RelaySession:
 
     def process_telemetry(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             if principal.source != "adapter" or principal.drone_id is None:
                 return [
@@ -342,13 +344,13 @@ class RelaySession:
                 self._metrics["membership_events"] += 1
                 events.append(transition_event)
             state = self._state_event(now)
-            self._append_audit(state, completes_projection=True)
+            self._append_audit(state)
             events.append(state)
             return events
 
     def process_acknowledgement(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             if principal.source != "adapter" or principal.drone_id is None:
                 return [
@@ -374,7 +376,7 @@ class RelaySession:
 
             event = acknowledgement.to_event()
             self._record_adapter_ack_fact(acknowledgement)
-            self._append_audit(event, completes_projection=True)
+            self._append_audit(event)
             self._metrics["acknowledgements"] += 1
             return [event]
 
@@ -402,7 +404,7 @@ class RelaySession:
                 detail=detail or "request refused",
             )
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             entry = self._intents.get(intent_id)
             if entry is None:
@@ -422,7 +424,7 @@ class RelaySession:
                 detail=detail,
             )
             self._transition_intent(entry, status)
-            self._append_audit(event, completes_projection=True)
+            self._append_audit(event)
             self._metrics["acknowledgements"] += 1
             return event
 
@@ -438,7 +440,7 @@ class RelaySession:
         connection_epoch: int | None = None,
     ) -> dict[str, object]:
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             event = refusal_event(
                 t=now,
@@ -455,7 +457,7 @@ class RelaySession:
             )
             if intent_id is not None and intent_id in self._intents:
                 self._transition_intent(self._intents[intent_id], LifecycleStatus.REFUSED)
-            self._append_audit(event, completes_projection=True)
+            self._append_audit(event)
             self._metrics["refused_intents"] += 1
             return event
 
@@ -464,7 +466,7 @@ class RelaySession:
     ) -> list[dict[str, object]]:
         """Turn an authenticated socket loss into a relay-attested membership event."""
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             transition = self.registry.disconnect(
                 drone_id=drone_id,
@@ -479,7 +481,7 @@ class RelaySession:
     def periodic_events(self) -> list[dict[str, object]]:
         """Return the 10 Hz projection and log only actual staleness transitions."""
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             possible_ids = [self.event_ids() for _ in range(4)]
             transitions = self.registry.expire_stale_telemetry(now_ms=now, event_ids=possible_ids)
@@ -491,7 +493,7 @@ class RelaySession:
                 events.append(event)
             state = self._state_event(now)
             if transitions:
-                self._append_audit(state, completes_projection=True)
+                self._append_audit(state)
             events.append(state)
             return events
 
@@ -511,7 +513,7 @@ class RelaySession:
     ) -> dict[str, object]:
         """Apply state already accepted by the planner/arbiter and log its projection."""
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             if selection is not None:
                 self.registry.set_selection(selection)
@@ -526,7 +528,7 @@ class RelaySession:
             if estop is not None:
                 self.registry.set_estop(estop)
             state = self._state_event(now)
-            self._append_audit(state, completes_projection=True)
+            self._append_audit(state)
             return state
 
     def replay(self, *, after_sequence: int = 0) -> dict[str, object]:
@@ -590,7 +592,7 @@ class RelaySession:
                 cleared_control_fields=list(transition.cleared_control_fields),
             )
         self._append_audit(event)
-        self._append_audit(state, completes_projection=True)
+        self._append_audit(state)
         self._metrics["membership_events"] += 1
         return [event, state]
 
@@ -703,7 +705,7 @@ class RelaySession:
             detail=detail,
             roster_version=self.registry.roster_version,
         )
-        self._append_audit(event, completes_projection=True)
+        self._append_audit(event)
         self._metrics["refused_intents"] += 1
         return event
 
@@ -728,7 +730,7 @@ class RelaySession:
             drone_id=drone_id,
             connection_epoch=connection_epoch,
         )
-        self._append_audit(event, completes_projection=True)
+        self._append_audit(event)
         return event
 
     def _log_intent(
@@ -783,13 +785,39 @@ class RelaySession:
         }
         self._append_audit(event)
 
-    def _append_audit(
-        self, event: Mapping[str, object], *, completes_projection: bool = False
-    ) -> dict[str, object]:
+    @contextmanager
+    def _audit_operation(self) -> Iterator[None]:
+        outermost = self._audit_batch is None
+        if not outermost:
+            yield
+            return
+
+        self._audit_batch = []
+        try:
+            yield
+            batch = self._audit_batch
+            if batch:
+                self._commit_audit_batch(batch)
+        except BaseException:
+            if self._audit_batch:
+                self._mutation_usable = False
+                self._projection_usable = False
+            raise
+        finally:
+            self._audit_batch = None
+
+    def _append_audit(self, event: Mapping[str, object]) -> dict[str, object]:
         self._ensure_mutation_usable()
+        if self._audit_batch is None:
+            raise RuntimeError("audit append requires an active relay operation")
+        buffered = dict(event)
+        self._audit_batch.append(buffered)
+        return buffered
+
+    def _commit_audit_batch(self, events: list[dict[str, object]]) -> None:
         previous_sequence = self.audit_log.last_sequence
         try:
-            return self.audit_log.append(event)
+            self.audit_log.append_batch(events)
         except AuditLogError:
             self._mutation_usable = False
             self._projection_usable = False
@@ -797,7 +825,7 @@ class RelaySession:
                 committed = self.audit_log.last_sequence > previous_sequence
             except AuditLogError:
                 committed = False
-            if not committed or not completes_projection:
+            if not committed:
                 self._replay_usable = False
             raise
 

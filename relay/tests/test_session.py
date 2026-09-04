@@ -130,6 +130,102 @@ def test_replay_reports_durable_sequence_after_append_close_failure(
     assert replay["last_sequence"] == 1
 
 
+def test_membership_operation_reopens_as_a_complete_batch_after_close_failure(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    adapter_principal: Principal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _new_session(tmp_path, clock, event_ids)
+    real_close = os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("injected close failure")
+
+    monkeypatch.setattr(os, "close", close_then_fail)
+    with pytest.raises(AuditLogError, match="cannot close session log"):
+        _join(session, adapter_principal)
+
+    monkeypatch.setattr(os, "close", real_close)
+    records = SessionAuditLog(tmp_path, SESSION).replay()
+    assert [record["event"]["type"] for record in records] == ["membership", "state"]
+
+
+def test_reopen_discards_complete_prefix_of_incomplete_membership_operation(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    adapter_principal: Principal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _new_session(tmp_path, clock, event_ids)
+    real_write = os.write
+    real_truncate = os.ftruncate
+    writes = 0
+
+    def write_first_record_then_fail(descriptor: int, data: bytes | memoryview) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            encoded = bytes(data)
+            first_record_end = encoded.index(b"\n") + 1
+            return real_write(descriptor, encoded[:first_record_end])
+        raise OSError("injected write failure")
+
+    def fail_rollback(_descriptor: int, _length: int) -> None:
+        raise OSError("injected rollback failure")
+
+    monkeypatch.setattr(os, "write", write_first_record_then_fail)
+    monkeypatch.setattr(os, "ftruncate", fail_rollback)
+    with pytest.raises(AuditLogError, match="cannot append or restore"):
+        _join(session, adapter_principal)
+
+    assert len(session.audit_log.path.read_text(encoding="utf-8").splitlines()) == 1
+    with pytest.raises(AuditLogError, match="uncertain after a failed rollback"):
+        session.replay()
+
+    monkeypatch.setattr(os, "write", real_write)
+    monkeypatch.setattr(os, "ftruncate", real_truncate)
+    reopened = SessionAuditLog(tmp_path, SESSION)
+    assert reopened.replay() == []
+    assert not reopened.pending_path.exists()
+
+
+def test_nested_sink_projection_commits_with_outer_intent_operation(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    console_principal: Principal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder: dict[str, RelaySession] = {}
+
+    def sink(_intent: object, _state: object) -> None:
+        holder["session"].update_control_projection(selection=())
+
+    session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
+    holder["session"] = session
+    real_close = os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("injected close failure")
+
+    monkeypatch.setattr(os, "close", close_then_fail)
+    with pytest.raises(AuditLogError, match="cannot close session log"):
+        session.process_intent(intent_payload(), console_principal)
+
+    monkeypatch.setattr(os, "close", real_close)
+    records = SessionAuditLog(tmp_path, SESSION).replay()
+    assert [record["event"]["type"] for record in records] == [
+        "intent_record",
+        "state",
+        "acknowledgement",
+    ]
+
+
 def test_replay_fails_closed_after_complete_write_with_uncertain_rollback(
     tmp_path: Path,
     clock: MutableClock,
@@ -140,8 +236,14 @@ def test_replay_fails_closed_after_complete_write_with_uncertain_rollback(
     real_fsync = os.fsync
     real_ftruncate = os.ftruncate
 
-    def failed_fsync(_descriptor: int) -> None:
-        raise OSError("injected fsync failure")
+    fsync_calls = 0
+
+    def failed_fsync(descriptor: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls >= 2:
+            raise OSError("injected fsync failure")
+        real_fsync(descriptor)
 
     def failed_truncate(_descriptor: int, _length: int) -> None:
         raise OSError("injected rollback failure")
@@ -159,8 +261,8 @@ def test_replay_fails_closed_after_complete_write_with_uncertain_rollback(
     monkeypatch.setattr(os, "ftruncate", real_ftruncate)
     reopened = _new_session(tmp_path, clock, event_ids)
     replay = reopened.replay()
-    assert [record["seq"] for record in replay["events"]] == [1]
-    assert replay["last_sequence"] == 1
+    assert replay["events"] == []
+    assert replay["last_sequence"] == 0
 
 
 def test_replay_records_and_cursor_share_one_snapshot_during_append(
@@ -219,7 +321,7 @@ def test_session_fails_closed_after_rolled_back_audit_append(
     def fail_once(descriptor: int) -> None:
         nonlocal calls
         calls += 1
-        if calls == 1:
+        if calls == 2:
             raise OSError("injected fsync failure")
         real_fsync(descriptor)
 
@@ -238,7 +340,7 @@ def test_session_fails_closed_after_rolled_back_audit_append(
         session.handle_adapter_disconnect(drone_id=1, connection_epoch=1)
 
 
-def test_session_fails_closed_when_committed_record_does_not_complete_batch(
+def test_complete_durable_batch_remains_replayable_after_close_failure(
     relay_session: RelaySession,
     adapter_principal: Principal,
     clock: MutableClock,
@@ -267,11 +369,12 @@ def test_session_fails_closed_when_committed_record_does_not_complete_batch(
             adapter_principal,
         )
 
-    assert relay_session.audit_log.replay()[-1]["event"]["event_id"] == "telemetry-recovery"
+    durable_events = [record["event"] for record in relay_session.audit_log.replay()[-3:]]
+    assert [event["type"] for event in durable_events] == ["telemetry", "membership", "state"]
+    assert durable_events[0]["event_id"] == "telemetry-recovery"
     with pytest.raises(AuditLogError, match="session is unusable"):
         relay_session.current_state()
-    with pytest.raises(AuditLogError, match="session is unusable"):
-        relay_session.replay()
+    assert relay_session.replay()["events"][-3:] == relay_session.audit_log.replay()[-3:]
 
 
 def test_authenticated_source_cannot_impersonate_another_registered_source(
