@@ -132,9 +132,11 @@ class PlanningConfig:
     def capability_profile(self, requested: CapabilityProfile) -> CapabilityProfile:
         grounding = self.altitude_grounding()
         if requested is C1_CAPABILITY_PROFILE:
+            if grounding is None:
+                return requested
             return requested.with_altitude(
-                enabled=grounding is not None,
-                absolute=grounding is not None and grounding.floor_z_m is not None,
+                enabled=True,
+                absolute=grounding.floor_z_m is not None,
             )
         if requested.supports(IntentName.ALTITUDE):
             return requested.with_altitude(
