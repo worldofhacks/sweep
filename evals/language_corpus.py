@@ -18,6 +18,7 @@ from language.transport import (
     AnthropicTransport,
     ModelResponse,
     ModelTransport,
+    RecordingTransport,
     ReplayTransport,
 )
 from planner.models import TranslationGrounding, TranslationPolicy
@@ -597,6 +598,8 @@ def _trusted_provenance(
         expected = ("replay", "unverified_replay")
     elif type(transport) is AnthropicTransport:
         expected = ("anthropic", "anthropic")
+    elif type(transport) is RecordingTransport:
+        expected = (transport.recorded_origin, transport.recorded_origin)
     else:
         raise ValueError("evaluation transport provenance is not trusted")
     actual = (outcome_source, str(trace.get("origin", "")))

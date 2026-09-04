@@ -12,9 +12,10 @@ from relay.session import RelayLimits, RelaySession
 from tests.autonomy_fixtures import make_intent, make_snapshot, make_stack
 
 
+@pytest.mark.parametrize("enrichment_fails", [False, True])
 @pytest.mark.parametrize("hold_status", [LifecycleStatus.COMPLETED, LifecycleStatus.ACCEPTED])
 def test_public_hold_invalidates_retained_translate_before_late_completion(
-    tmp_path, monkeypatch, hold_status
+    tmp_path, monkeypatch, hold_status, enrichment_fails
 ):
     snapshot = make_snapshot(2, roster_version=4)
     controller, _, _, _, flight, _ = make_stack(snapshot)
@@ -23,12 +24,21 @@ def test_public_hold_invalidates_retained_translate_before_late_completion(
     monkeypatch.setattr(
         flight, "goto", lambda *a, **kw: replace(goto(*a, **kw), status=LifecycleStatus.ACCEPTED)
     )
-    monkeypatch.setattr(
-        flight,
-        "hover",
-        lambda *a, **kw: tuple(replace(ack, status=hold_status) for ack in hover(*a, **kw)),
-    )
-    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    unavailable = False
+
+    def holding(*args, **kwargs):
+        nonlocal unavailable
+        result = tuple(replace(ack, status=hold_status) for ack in hover(*args, **kwargs))
+        unavailable = enrichment_fails
+        return result
+
+    def live_snapshot():
+        if unavailable:
+            raise RuntimeError("enrichment lost after HOLD I/O")
+        return snapshot
+
+    monkeypatch.setattr(flight, "hover", holding)
+    router = PreparedExecutionRouter(controller, current_snapshot=live_snapshot)
     relay = RelaySession(
         session_id="language-eval",
         audit_log=SessionAuditLog(tmp_path, "language-eval"),
@@ -173,3 +183,134 @@ def test_public_motion_cannot_replace_an_executing_plan(tmp_path, monkeypatch, c
     else:
         assert not any(event.get("status") == "invalidated" for event in events)
         assert relay.current_state()["accepted_plan"] == active_plan
+
+
+def test_selection_cannot_redirect_hold_away_from_active_motion(tmp_path, monkeypatch):
+    snapshot = make_snapshot(3, selection=(1, 2), roster_version=6)
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    goto = flight.goto
+    monkeypatch.setattr(
+        flight, "goto", lambda *a, **kw: replace(goto(*a, **kw), status=LifecycleStatus.ACCEPTED)
+    )
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    relay = RelaySession(
+        session_id="language-eval",
+        audit_log=SessionAuditLog(tmp_path, "language-eval"),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: snapshot.now_ms,
+        intent_sink=router,
+    )
+    _hydrate_relay_from_snapshot(relay, snapshot)
+    emitter = router.relay_emitter(
+        relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+    )
+
+    def emit(name, intent_id, args=None, selection=(1, 2)):
+        intent = replace(
+            make_intent(name, intent_id=intent_id, args=args, selection=selection),
+            session=relay.session_id,
+        )
+        prepared = router.prepare(intent, snapshot)
+        assert isinstance(prepared, PreparedExecution)
+        router.bind(prepared)
+        return emitter(intent)
+
+    events = emit(IntentName.TRANSLATE, "active-motion", {"dx": 1, "dy": 0})
+    assert events[-1]["status"] == "executing"
+    active = relay.current_state()["accepted_plan"]
+    command = active["commands"][0]
+    events = emit(IntentName.SELECT, "unrelated-selection", {"ids": (3,)}, selection=(3,))
+    assert events[-1]["status"] == "refused"
+    assert events[-1]["reason"] == "active_task"
+    assert relay.current_state()["selection"] == [1, 2]
+    assert relay.current_state()["accepted_plan"] == active
+    assert len(flight.calls) == 1
+
+    events = emit(IntentName.HOLD, "hold-active-selection")
+    assert events[-1]["status"] == "completed"
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
+        ("goto", (command["drone_id"],)),
+        ("hover", (1,)),
+        ("hover", (2,)),
+    ]
+    calls_after_hold = list(flight.calls)
+    relay.process_frame(
+        {
+            "v": 1,
+            "t": snapshot.now_ms,
+            "type": "acknowledgement",
+            "event_id": "late-active-motion",
+            "session": relay.session_id,
+            "intent_id": "active-motion",
+            "command_id": command["command_id"],
+            "status": "completed",
+            "drone_id": command["drone_id"],
+            "connection_epoch": command["connection_epoch"],
+            "roster_version": snapshot.roster_version,
+            "reason": None,
+            "detail": None,
+        },
+        Principal(source="adapter", drone_id=command["drone_id"], signing_key=b"x" * 32),
+    )
+    assert flight.calls == calls_after_hold
+
+
+def test_hold_cannot_retire_an_executing_estop(tmp_path, monkeypatch):
+    snapshot = make_snapshot(2, roster_version=4)
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    estop = flight.estop
+    monkeypatch.setattr(
+        flight,
+        "estop",
+        lambda *a, **kw: tuple(
+            replace(ack, status=LifecycleStatus.ACCEPTED) for ack in estop(*a, **kw)
+        ),
+    )
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    relay = RelaySession(
+        session_id="test-session",
+        audit_log=SessionAuditLog(tmp_path, "test-session"),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: snapshot.now_ms,
+        intent_sink=router,
+    )
+    _hydrate_relay_from_snapshot(relay, snapshot)
+    emitter = router.relay_emitter(
+        relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+    )
+    for name in (IntentName.ESTOP, IntentName.HOLD):
+        intent = make_intent(name, intent_id=name.value)
+        prepared = router.prepare(intent, snapshot)
+        assert isinstance(prepared, PreparedExecution)
+        router.bind(prepared)
+        events = emitter(intent)
+        if name is IntentName.ESTOP:
+            assert events[-1]["status"] == "executing", events
+            active = relay.current_state()["accepted_plan"]
+        else:
+            assert events[-1]["reason"] == "active_task", events
+            assert relay.current_state()["accepted_plan"] == active
+    assert [call.operation.value for call in flight.calls] == ["estop"]
+    for index, command in enumerate(active["commands"]):
+        events = relay.process_frame(
+            {
+                "v": 1,
+                "type": "acknowledgement",
+                "t": snapshot.now_ms,
+                "event_id": f"stop-complete-{index}",
+                "session": relay.session_id,
+                "intent_id": active["intent_id"],
+                "command_id": command["command_id"],
+                "status": "completed",
+                "drone_id": command["drone_id"],
+                "connection_epoch": command["connection_epoch"],
+                "roster_version": snapshot.roster_version,
+                "reason": None,
+                "detail": None,
+            },
+            Principal(source="adapter", drone_id=command["drone_id"], signing_key=b"x" * 32),
+        )
+        assert events[-1]["status"] == ("executing" if index == 0 else "completed"), events
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [("estop", (1, 2))]
+    assert relay.current_state()["accepted_plan"] is None
+    assert relay.current_state()["estop"] is True

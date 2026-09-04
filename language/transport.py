@@ -201,13 +201,15 @@ class RecordingTransport:
         self._transport = transport
         self._cassette_path = cassette_path
 
+    @property
+    def recorded_origin(self) -> Literal["anthropic", "synthetic"]:
+        return "anthropic" if type(self._transport) is AnthropicTransport else "synthetic"
+
     def complete(self, request: ModelRequest) -> ModelResponse:
         response = self._transport.complete(request)
         if not model_response_provenance_is_valid(response):
             raise TransportError("response provenance does not match this compiler")
-        recorded_origin = (
-            "anthropic" if type(self._transport) is AnthropicTransport else "synthetic"
-        )
+        recorded_origin = self.recorded_origin
         if response.origin != recorded_origin:
             raise TransportError("response origin does not match the recording transport")
         self._cassette_path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,7 +231,16 @@ class RecordingTransport:
                     "latency_ms": response.latency_ms,
                 }
                 self._write(cassette)
-                cassette_digest = hashlib.sha256(self._cassette_path.read_bytes()).hexdigest()
+                cassette_bytes = self._cassette_path.read_bytes()
+                cassette_digest = hashlib.sha256(cassette_bytes).hexdigest()
+                snapshots = self._cassette_path.with_name(f"{self._cassette_path.name}.snapshots")
+                snapshots.mkdir(exist_ok=True)
+                snapshot = snapshots / f"{cassette_digest}.json"
+                try:
+                    os.link(self._cassette_path, snapshot)
+                except FileExistsError:
+                    if snapshot.read_bytes() != cassette_bytes:
+                        raise TransportError("recording snapshot digest does not match") from None
             finally:
                 fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
         recorded = replace(response, cassette_digest=cassette_digest)

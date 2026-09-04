@@ -93,8 +93,60 @@ class AdapterDispatcher:
         start_index: int = 0,
         prior_affected: tuple[Command, ...] = (),
     ) -> ExecutionResult:
-        """Run a structurally preflighted plan from an explicit command cursor."""
+        """Keep possible I/O owned even when live state fails between adapter calls."""
+        last_snapshot = initial
+        attempted = list(prior_affected)
 
+        def tracked_snapshot() -> FleetSnapshot:
+            nonlocal last_snapshot
+            last_snapshot = provider()
+            return last_snapshot
+
+        try:
+            return self._dispatch_checked_commands(
+                plan,
+                tracked_snapshot,
+                initial,
+                start_index=start_index,
+                prior_affected=prior_affected,
+                attempted=attempted,
+            )
+        except Exception as error:
+            acknowledgements = []
+            stop_commands = plan.commands if plan.intent_name is IntentName.HOLD else attempted
+            targets = {command.drone_id: command for command in stop_commands}
+            for command in targets.values():
+                acknowledgements.extend(
+                    self._best_effort_hold(plan, command, lambda: last_snapshot)
+                )
+            return ExecutionResult(
+                intent_id=plan.intent_id,
+                roster_version=last_snapshot.roster_version,
+                status=LifecycleStatus.FAILED,
+                plan=plan,
+                acknowledgements=tuple(acknowledgements),
+                refusal=Refusal(
+                    intent_id=plan.intent_id,
+                    roster_version=last_snapshot.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.ADAPTER_FAILURE,
+                    detail=f"dispatch interrupted after possible I/O: {type(error).__name__}",
+                    status=LifecycleStatus.FAILED,
+                ),
+                degraded_aircraft=tuple(sorted(targets)),
+            )
+
+    def _dispatch_checked_commands(
+        self,
+        plan: Plan,
+        provider: SnapshotProvider,
+        initial: FleetSnapshot,
+        *,
+        start_index: int,
+        prior_affected: tuple[Command, ...],
+        attempted: list[Command],
+    ) -> ExecutionResult:
         acknowledgements: list[CommandAcknowledgement] = []
         captures: dict[str, CaptureResult] = {}
         media_files: list[MediaFile] = []
@@ -142,6 +194,7 @@ class AdapterDispatcher:
                     degraded=degraded,
                 )
 
+            attempted.append(command)
             try:
                 outcome = self._execute(command, captures, provider)
             except AdapterTimeout as error:
@@ -155,7 +208,9 @@ class AdapterDispatcher:
                 degraded.add(command.drone_id)
                 projected.pop(command.drone_id, None)
                 acknowledgements.append(self._failed_ack(command, failure))
-                acknowledgements.extend(self._best_effort_hold(plan, command, provider))
+                acknowledgements.extend(
+                    self._best_effort_hold(plan, command, provider, fallback_snapshot=current)
+                )
                 continue
             except Exception as error:  # adapter exceptions never cross this boundary
                 failure = self._failure_for(
@@ -168,7 +223,9 @@ class AdapterDispatcher:
                 degraded.add(command.drone_id)
                 projected.pop(command.drone_id, None)
                 acknowledgements.append(self._failed_ack(command, failure))
-                acknowledgements.extend(self._best_effort_hold(plan, command, provider))
+                acknowledgements.extend(
+                    self._best_effort_hold(plan, command, provider, fallback_snapshot=current)
+                )
                 continue
 
             if isinstance(outcome, Refusal):
@@ -1074,9 +1131,20 @@ class AdapterDispatcher:
         )
 
     def _best_effort_hold(
-        self, plan: Plan, failed_command: Command, provider: SnapshotProvider
+        self,
+        plan: Plan,
+        failed_command: Command,
+        provider: SnapshotProvider,
+        *,
+        fallback_snapshot: FleetSnapshot | None = None,
     ) -> list[CommandAcknowledgement]:
-        current = provider()
+        try:
+            current = provider()
+        except Exception:
+            if fallback_snapshot is None:
+                raise
+            # Enrichment failure after I/O must not prevent stopping that same aircraft.
+            current = fallback_snapshot
         aircraft = current.aircraft.get(failed_command.drone_id)
         if aircraft is None or not aircraft.airborne:
             return []
@@ -1123,7 +1191,13 @@ class AdapterDispatcher:
                     detail="best-effort safety hold failed",
                 )
             ]
-        return [self.validate_acknowledgement(hold, raw, provider())]
+        try:
+            after = provider()
+        except Exception:
+            if fallback_snapshot is None:
+                raise
+            after = current
+        return [self.validate_acknowledgement(hold, raw, after)]
 
     def _hold_affected(
         self,

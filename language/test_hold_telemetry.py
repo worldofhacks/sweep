@@ -20,22 +20,22 @@ from tests.autonomy_fixtures import make_snapshot, make_stack, replace_aircraft
 
 @pytest.mark.parametrize("postcondition_matches", [True, False])
 @pytest.mark.parametrize("async_completion", [False, True])
-def test_takeoff_waits_for_telemetry_before_next_hold(
+def test_hold_waits_for_telemetry_before_land_all(
     tmp_path, monkeypatch, postcondition_matches, async_completion
 ):
-    snapshot = make_snapshot(2, flight_state=FlightState.ARMED)
+    snapshot = make_snapshot(2, flight_state=FlightState.AIRBORNE)
     for drone_id, aircraft in snapshot.aircraft.items():
-        snapshot = replace_aircraft(snapshot, drone_id, pose=Position(aircraft.pose.x, 0.0, 0.0))
+        snapshot = replace_aircraft(snapshot, drone_id, pose=Position(aircraft.pose.x, 0.0, 1.0))
     current = [snapshot]
     now = [snapshot.now_ms]
     controller, _, _, _, flight, _ = make_stack(snapshot)
     if async_completion:
-        takeoff = flight.takeoff
+        hover = flight.hover
 
-        def accepted_takeoff(ids, z):
-            return tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in takeoff(ids, z))
+        def accepted_hover(ids):
+            return tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids))
 
-        monkeypatch.setattr(flight, "takeoff", accepted_takeoff)
+        monkeypatch.setattr(flight, "hover", accepted_hover)
     router = PreparedExecutionRouter(controller, current_snapshot=lambda: current[0])
     relay = RelaySession(
         session_id="language-eval",
@@ -50,14 +50,19 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
             {
                 "kind": "plan",
                 "intents": [
-                    {"name": name, "args": {}, "selection": [1, 2], "mode": "indoor"}
-                    for name in ("takeoff", "hold")
+                    {
+                        "name": name,
+                        "args": {},
+                        "selection": [1, 2] if name == "hold" else [],
+                        "mode": "indoor",
+                    }
+                    for name in ("hold", "land_all")
                 ],
             }
         ),
         audit=InMemoryAuditSink(),
     ).compile(
-        "Take off, then hold.",
+        "Hold, then land all.",
         relay.current_state(),
         capability_version="test",
         rooms=(),
@@ -74,7 +79,7 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
         capability_version="test",
         rooms=(),
         now_ms=now[0],
-        intent_id="takeoff",
+        intent_id="hold",
         router=router,
         snapshot=current[0],
     )
@@ -83,7 +88,7 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
         capability_version="test",
         rooms=(),
         now_ms=now[0],
-        intent_id="takeoff",
+        intent_id="hold",
         emit=emitter,
         prepared=prepared,
     )
@@ -117,7 +122,7 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
                     "type": "acknowledgement",
                     "event_id": f"completion-{command.drone_id}",
                     "session": relay.session_id,
-                    "intent_id": "takeoff",
+                    "intent_id": "hold",
                     "command_id": command.command_id,
                     "status": "completed",
                     "drone_id": command.drone_id,
@@ -133,7 +138,7 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
         pending.acknowledge(
             outcome, relay.current_state(), capability_version="test", rooms=(), now_ms=now[0]
         )
-    assert [call.operation.value for call in flight.calls] == ["takeoff", "takeoff"]
+    assert [call.operation.value for call in flight.calls] == ["hover", "hover"]
     assert not any(event["event"] == "intent_accepted" for event in audit.records)
     with pytest.raises(ConfirmationError, match="awaiting"):
         pending.prepare_next(
@@ -141,7 +146,7 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
             capability_version="test",
             rooms=(),
             now_ms=now[0],
-            intent_id="hold",
+            intent_id="land_all",
             router=router,
             snapshot=current[0],
         )
@@ -153,8 +158,8 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
                 drone for drone in relay.current_state()["drones"] if drone["drone_id"] == drone_id
             )["telemetry"]
         )
-        state = "hovering" if postcondition_matches else "armed"
-        z = 1.0 if postcondition_matches else 0.0
+        state = "hovering" if postcondition_matches else "airborne"
+        z = 1.0
         telemetry.update(
             v=1,
             t=now[0],
@@ -186,7 +191,7 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
                 capability_version="test",
                 rooms=(),
                 now_ms=now[0],
-                intent_id="hold",
+                intent_id="land_all",
                 router=router,
                 snapshot=current[0],
             )
@@ -196,7 +201,7 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
                 capability_version="test",
                 rooms=(),
                 now_ms=now[0],
-                intent_id="hold",
+                intent_id="land_all",
                 router=router,
                 snapshot=current[0],
             )
@@ -207,7 +212,7 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
         capability_version="test",
         rooms=(),
         now_ms=now[0],
-        intent_id="hold",
+        intent_id="land_all",
         router=router,
         snapshot=current[0],
     )
@@ -216,46 +221,16 @@ def test_takeoff_waits_for_telemetry_before_next_hold(
         capability_version="test",
         rooms=(),
         now_ms=now[0],
-        intent_id="hold",
+        intent_id="land_all",
         emit=emitter,
         prepared=prepared,
     )
     assert [call.operation.value for call in flight.calls] == [
-        "takeoff",
-        "takeoff",
         "hover",
         "hover",
+        "land",
+        "land",
     ]
     assert [
         event["intent_id"] for event in audit.records if event["event"] == "intent_accepted"
-    ] == ["takeoff"]
-    now[0] += 1
-    for drone in relay.current_state()["drones"]:
-        drone_id = drone["drone_id"]
-        relay.process_frame(
-            {
-                **drone["telemetry"],
-                "v": 1,
-                "t": now[0],
-                "type": "telemetry",
-                "session": relay.session_id,
-                "drone": drone_id,
-                "connection_epoch": 1,
-                "event_id": f"hold-fresh-{drone_id}",
-            },
-            Principal(source="adapter", drone_id=drone_id, signing_key=b"x" * 32),
-        )
-    pending.acknowledge(
-        next(
-            record["event"]
-            for record in reversed(relay.audit_log.replay())
-            if record["event"].get("source") == "autonomy"
-        ),
-        relay.current_state(),
-        capability_version="test",
-        rooms=(),
-        now_ms=now[0],
-    )
-    assert [
-        event["intent_id"] for event in audit.records if event["event"] == "intent_accepted"
-    ] == ["takeoff", "hold"]
+    ] == ["hold"]

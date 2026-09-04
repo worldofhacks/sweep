@@ -61,7 +61,8 @@ def test_terminal_ack_cannot_redispatch_after_resume_failure(
             raise RuntimeError("dispatcher failed after adapter I/O")
 
         monkeypatch.setattr(controller.dispatcher, "resume_after_completion", resume_then_raise)
-    expected_calls = 2 if failure_stage == "after_dispatch" and status == "completed" else 1
+    expected_calls = 3 if failure_stage == "after_dispatch" and status == "completed" else 2
+    safety_id = f"safety:resume:{intent.intent_id}"
     raw = {
         "v": 1,
         "t": snapshot.now_ms,
@@ -88,10 +89,20 @@ def test_terminal_ack_cannot_redispatch_after_resume_failure(
             relay.process_frame(raw, principal)
         assert intent.intent_id in router._running
         assert len(flight.calls) == expected_calls
+        safety_prepared, safety_pending, safety_owner = router._running[safety_id]
+        assert safety_owner is relay
+        assert safety_pending.status is LifecycleStatus.EXECUTING
+        assert safety_prepared.intent.name is IntentName.HOLD
+        assert flight.calls[-1].operation.value == "hover"
+        assert flight.calls[-1].drone_ids == (safety_prepared.plan.commands[0].drone_id,)
         return
 
     events = relay.process_frame(raw, principal)
-    terminal = [event for event in events if event.get("source") == "autonomy"]
+    terminal = [
+        event
+        for event in events
+        if event.get("source") == "autonomy" and event.get("intent_id") == intent.intent_id
+    ]
     assert len(terminal) == 1
     assert terminal[0]["status"] == ("invalidated" if status == "completed" else status)
     detail = (
@@ -100,11 +111,20 @@ def test_terminal_ack_cannot_redispatch_after_resume_failure(
         else "resume raised after possible adapter I/O"
     )
     assert detail in terminal[0]["detail"]
-    assert relay.current_state()["accepted_plan"] is None
+    safety_prepared, safety_pending, safety_owner = router._running[safety_id]
+    assert safety_owner is relay
+    assert safety_pending.status is LifecycleStatus.EXECUTING
+    assert safety_prepared.intent.name is IntentName.HOLD
+    assert relay.current_state()["accepted_plan"]["intent_id"] == safety_id
+    assert intent.intent_id not in router._running
+    assert all(call.operation.value == "hover" for call in flight.calls)
+    assert flight.calls[-1].drone_ids == (safety_prepared.plan.commands[0].drone_id,)
     assert events[0]["status"] == status
     assert len(flight.calls) == expected_calls
+    retained_safety = router._running[safety_id]
 
     unavailable = False
     repeated = relay.process_frame({**raw, "event_id": "terminal-ack-retry"}, principal)
     assert not any(event.get("source") == "autonomy" for event in repeated)
     assert len(flight.calls) == expected_calls
+    assert router._running[safety_id] == retained_safety

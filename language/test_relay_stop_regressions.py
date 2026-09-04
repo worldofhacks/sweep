@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from language.test_compiler import _hydrate_relay_from_snapshot
@@ -6,7 +8,7 @@ from planner.models import CommandOperation
 from relay.audit import SessionAuditLog
 from relay.auth import Principal
 from relay.session import RelayLimits, RelaySession
-from tests.autonomy_fixtures import make_snapshot, make_stack
+from tests.autonomy_fixtures import make_snapshot, make_stack, replace_aircraft
 
 
 @pytest.mark.parametrize("source", ["keyboard", "console"])
@@ -108,6 +110,40 @@ def test_synchronous_hold_completion_unlocks_next_public_confirmation(tmp_path):
             intent_id=f"hold-{index}",
             emit=emitter,
             prepared=prepared,
+        )
+        outcome = next(
+            record["event"]
+            for record in reversed(relay.audit_log.replay())
+            if record["event"].get("source") == "autonomy"
+        )
+        snapshot = replace(snapshot, now_ms=snapshot.now_ms + 1)
+        for drone in relay.current_state()["drones"]:
+            drone_id = drone["drone_id"]
+            telemetry = {
+                **drone["telemetry"],
+                "v": 1,
+                "t": snapshot.now_ms,
+                "type": "telemetry",
+                "session": relay.session_id,
+                "drone": drone_id,
+                "connection_epoch": 1,
+                "event_id": f"hover-{index}-{drone_id}",
+            }
+            relay.process_frame(
+                telemetry, Principal(source="adapter", drone_id=drone_id, signing_key=b"x" * 32)
+            )
+            snapshot = replace_aircraft(
+                snapshot,
+                drone_id,
+                position_last_seen_ms=snapshot.now_ms,
+                link_last_seen_ms=snapshot.now_ms,
+            )
+        pending.acknowledge(
+            outcome,
+            relay.current_state(),
+            capability_version="test",
+            rooms=(),
+            now_ms=snapshot.now_ms,
         )
     assert len(flight.calls) == 4
     assert all(call.operation is CommandOperation.HOVER for call in flight.calls)

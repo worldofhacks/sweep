@@ -26,6 +26,7 @@ from relay.contracts import (
 from relay.intent_v1 import (
     REGISTERED_SOURCES,
     AcceptedIntent,
+    IntentName,
     IntentV1,
     RejectedIntent,
     validate_intent,
@@ -364,6 +365,8 @@ class RelaySession:
             state = self._state_event(now)
             self._append_audit(state)
             events.append(state)
+            if transition is not None:
+                events.extend(self._reconcile_membership())
             return events
 
     def process_acknowledgement(self, raw: object, principal: Principal) -> list[dict[str, object]]:
@@ -490,6 +493,37 @@ class RelaySession:
             self._metrics["refused_intents"] += 1
             return event
 
+    def admit_safety_stop(self, intent: IntentV1) -> dict[str, object]:
+        """Register a controller-generated safety stop before adapter I/O."""
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if (
+                intent.name not in {IntentName.HOLD, IntentName.ESTOP}
+                or intent.session != self.session_id
+            ):
+                raise ValueError("expected a safety stop for this session")
+            if intent.intent_id in self._intents:
+                raise ValueError("duplicate safety intent_id")
+            self._intents[intent.intent_id] = _IntentLedgerEntry(
+                status=LifecycleStatus.ACCEPTED,
+                selection=intent.selection,
+                command_statuses={},
+            )
+            now = self.clock()
+            self._log_intent(intent, outcome=LifecycleStatus.ACCEPTED, reason=None, now=now)
+            event = acknowledgement_event(
+                t=now,
+                event_id=self.event_ids(),
+                session=self.session_id,
+                intent_id=intent.intent_id,
+                status=LifecycleStatus.ACCEPTED,
+                roster_version=self.registry.roster_version,
+            )
+            self._append_audit(event)
+            self._metrics["accepted_intents"] += 1
+            self._metrics["acknowledgements"] += 1
+            return event
+
     def record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:
         with self._lock:
             if intent.intent_id not in self._intents:
@@ -592,6 +626,8 @@ class RelaySession:
             if transitions:
                 self._append_audit(state)
             events.append(state)
+            if transitions:
+                events.extend(self._reconcile_membership())
             return events
 
     def current_state(self) -> dict[str, object]:
@@ -705,7 +741,11 @@ class RelaySession:
         self._append_audit(event)
         self._append_audit(state)
         self._metrics["membership_events"] += 1
-        return [event, state]
+        return [event, state, *self._reconcile_membership()]
+
+    def _reconcile_membership(self) -> tuple[dict[str, object], ...]:
+        reconcile = getattr(self.intent_sink, "reconcile_membership", None)
+        return tuple(reconcile(self)) if callable(reconcile) else ()
 
     def _check_acknowledgement(
         self, acknowledgement: AdapterAcknowledgement, principal: Principal, now: int
