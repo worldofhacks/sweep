@@ -96,6 +96,7 @@ class RelaySession:
         }
         self._mutation_usable = True
         self._projection_usable = True
+        self._replay_usable = True
         self._lock = RLock()
 
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
@@ -531,7 +532,7 @@ class RelaySession:
     def replay(self, *, after_sequence: int = 0) -> dict[str, object]:
         with self._lock:
             records, last_sequence = self.audit_log.replay_snapshot(after_sequence=after_sequence)
-            self._ensure_projection_usable()
+            self._ensure_replay_usable()
             return {
                 "v": 1,
                 "t": self.clock(),
@@ -791,12 +792,13 @@ class RelaySession:
             return self.audit_log.append(event)
         except AuditLogError:
             self._mutation_usable = False
+            self._projection_usable = False
             try:
                 committed = self.audit_log.last_sequence > previous_sequence
             except AuditLogError:
                 committed = False
             if not committed or not completes_projection:
-                self._projection_usable = False
+                self._replay_usable = False
             raise
 
     def _ensure_mutation_usable(self) -> None:
@@ -805,6 +807,10 @@ class RelaySession:
 
     def _ensure_projection_usable(self) -> None:
         if not self._projection_usable:
+            raise AuditLogError("relay session is unusable after an audit failure")
+
+    def _ensure_replay_usable(self) -> None:
+        if not self._replay_usable:
             raise AuditLogError("relay session is unusable after an audit failure")
 
     def _state_event(self, now: int) -> dict[str, object]:

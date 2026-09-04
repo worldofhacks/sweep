@@ -15,7 +15,7 @@ from threading import Lock, RLock
 
 from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-from relay.audit import SessionAuditLog
+from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import (
     AuthenticationError,
     CredentialResolver,
@@ -242,7 +242,7 @@ def create_app(
             _validate_session_id(session_id)
             raw_auth = await asyncio.wait_for(websocket.receive_json(), timeout=5)
             principal = authenticate(raw_auth, runtime.credential_resolver)
-            session = runtime.session(session_id)
+            session = await asyncio.to_thread(runtime.session, session_id)
             accepted = _auth_accepted(runtime, session_id, principal)
             subscription = await runtime.subscribe(session_id, principal)
         except (AuthenticationError, ValueError, json.JSONDecodeError) as error:
@@ -286,6 +286,9 @@ def create_app(
                 await runtime.publish(session_id, events)
         except WebSocketDisconnect:
             pass
+        except AuditLogError:
+            with contextlib.suppress(WebSocketDisconnect, RuntimeError):
+                await websocket.close(code=1011)
         finally:
             if sender is not None:
                 sender.cancel()
@@ -294,11 +297,15 @@ def create_app(
             try:
                 if principal.source == "adapter":
                     assert principal.drone_id is not None
-                    events = session.handle_adapter_disconnect(
-                        drone_id=principal.drone_id,
-                        connection_epoch=session.registry.connection_epoch(principal.drone_id),
-                    )
-                    await runtime.publish(session_id, events)
+                    try:
+                        events = session.handle_adapter_disconnect(
+                            drone_id=principal.drone_id,
+                            connection_epoch=session.registry.connection_epoch(principal.drone_id),
+                        )
+                    except AuditLogError:
+                        pass
+                    else:
+                        await runtime.publish(session_id, events)
             finally:
                 await runtime.unsubscribe(session_id, subscription)
 

@@ -4,7 +4,7 @@ import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, Timer
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,7 +13,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import relay.app as app_module
 from relay.app import RelayRuntime, create_app
-from relay.audit import SessionAuditLog
+from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
@@ -486,6 +486,118 @@ def test_persisted_replay_gate_does_not_block_another_session(
         replay_future.result(timeout=2)
 
     assert session.session_id == "session-b"
+
+
+def test_same_session_recovery_does_not_block_websocket_event_loop(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructor_started = Event()
+    resume_constructor = Event()
+
+    class PausingAuditLog(SessionAuditLog):
+        def __init__(self, root: Path, session: str) -> None:
+            constructor_started.set()
+            assert resume_constructor.wait(timeout=2)
+            super().__init__(root, session)
+
+    monkeypatch.setattr(app_module, "SessionAuditLog", PausingAuditLog)
+    runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+    application = create_app(app_settings, clock=clock, event_ids=event_ids)
+    application.state.relay_runtime = runtime
+    route = next(
+        route for route in application.routes if getattr(route, "path", None) == "/ws/{session_id}"
+    )
+
+    class AuthenticatingWebSocket:
+        def __init__(self) -> None:
+            self.app = application
+            self.receives = 0
+
+        async def accept(self) -> None:
+            return None
+
+        async def receive_json(self) -> dict[str, object]:
+            self.receives += 1
+            if self.receives == 1:
+                return {
+                    "v": 1,
+                    "type": "auth",
+                    "source": "console",
+                    "token": CONSOLE_KEY.decode(),
+                }
+            raise WebSocketDisconnect(code=1000)
+
+        async def send_json(self, _data: dict[str, object]) -> None:
+            return None
+
+    async def exercise() -> int:
+        ticks = 0
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while not resume_constructor.is_set():
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            replay_future = executor.submit(runtime.replay, SESSION)
+            assert await asyncio.to_thread(constructor_started.wait, 2)
+            timer = Timer(0.2, resume_constructor.set)
+            timer.start()
+            ticker_task = asyncio.create_task(ticker())
+            await asyncio.sleep(0)
+            before = ticks
+            await route.endpoint(AuthenticatingWebSocket(), SESSION)
+            await ticker_task
+            replay_future.result(timeout=2)
+            timer.join(timeout=2)
+        return ticks - before
+
+    assert asyncio.run(exercise()) >= 5
+
+
+def test_join_close_failure_closes_socket_and_fences_live_projection(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    real_close = os.close
+    closes = 0
+
+    def fail_second_close(descriptor: int) -> None:
+        nonlocal closes
+        closes += 1
+        real_close(descriptor)
+        if closes == 2:
+            raise OSError("injected close failure")
+
+    with TestClient(app) as client:
+        runtime = app.state.relay_runtime
+        with client.websocket_connect(f"/ws/{SESSION}") as adapter:
+            _authenticate_adapter(adapter)
+            monkeypatch.setattr(os, "close", fail_second_close)
+            adapter.send_json(membership_payload(action="join", event_id="join-close-error"))
+            with pytest.raises(WebSocketDisconnect) as closed:
+                adapter.receive_json()
+
+        session = runtime.sessions[SESSION]
+        replay = session.replay()
+        assert runtime.connection_count() == 0
+
+    assert closed.value.code == 1011
+    assert [record["event"]["type"] for record in replay["events"]] == [
+        "membership",
+        "state",
+    ]
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.current_state()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.metrics()
 
 
 def test_initial_send_failure_releases_adapter_binding_and_records_loss(
