@@ -396,7 +396,7 @@ class PreparedExecutionRouter:
         command_ids = (
             {command.command_id for command in result.plan.commands} if result.plan else set()
         )
-        if not any(
+        if intent.name is not IntentName.HOLD and not any(
             ack.command_id not in command_ids
             and ack.status
             in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING, LifecycleStatus.FAILED}
@@ -531,9 +531,10 @@ class PreparedExecutionRouter:
         relay_events = safety_events
         if session is not None:
             relay_events += tuple(session.record_execution_result(prepared.intent, result))
-            relay_events += self._retain_ambiguous_stop(
-                prepared.intent, result, session, prepared.snapshot
-            )
+            if not safety_events:
+                relay_events += self._retain_ambiguous_stop(
+                    prepared.intent, result, session, prepared.snapshot
+                )
         with self._lock:
             if result.status is LifecycleStatus.EXECUTING:
                 self._running[intent_id] = (prepared, result, session)
