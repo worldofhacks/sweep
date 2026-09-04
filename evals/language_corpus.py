@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from types import MappingProxyType
+from weakref import WeakKeyDictionary
 
 from language.compiler import InMemoryAuditSink, TranscriptCompiler
 from language.contracts import OutcomeKind
@@ -37,9 +39,12 @@ LEGACY_SYNTHETIC_RESPONSES_PATH = (
     / "fixtures"
     / "transcript_plan_responses.synthetic.json"
 )
-REVIEWED_CORPUS_DIGEST = "d3b4ca32f06c0488fd54bce4f3ae7031d8bb514ff8d4173777915c5111d3ca80"
+REVIEWED_CORPUS_DIGEST = "94da020a71522dbae39bd2257a1dcc60942c280661df8e3c77b6cc44b70adae3"
 REVIEWED_CORPUS_CASES = 50
-HOST_MINTED_SENTINEL = "__host_minted__"
+_HOST_MINTED_EXPECTATIONS = {
+    "capture-explicit-living-room": "capture-living-room-4",
+    "capture-explicit-reconstruct-eight": "capture-living-room-5",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +84,7 @@ class LoadedCorpus:
         return self.cases[index]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
 class CaseResult:
     case_id: str
     passed: bool
@@ -99,17 +104,9 @@ class CaseResult:
     input_units: int
     output_units: int
     latency_ms: int
-    _evidence: _EvaluationEvidence | None = field(default=None, repr=False, compare=False)
 
 
-@dataclass(frozen=True, slots=True)
-class _EvaluationEvidence:
-    case_id: str
-    source: str
-    origin: str
-    model: str
-    prompt_schema_version: str
-    cassette_digest: str | None
+_ISSUED_RESULTS: WeakKeyDictionary[CaseResult, None] = WeakKeyDictionary()
 
 
 class EvalTrace:
@@ -228,13 +225,15 @@ def evaluate_case(case: CorpusCase, transport: ModelTransport) -> CaseResult:
     actual_intents = tuple(_freeze_json(intent.semantic_dict()) for intent in outcome.intents)
     expected_kind = case.expected["kind"]
     expected_reason = case.expected.get("reason")
-    expected_intents = _expected_intents(case.expected.get("intents", []), actual_intents)
+    expected_intents = _expected_intents(
+        case.expected.get("intents", []), actual_intents, case_id=case.case_id
+    )
     expected_detail = case.expected.get("detail")
     expected_pending_intent_id = case.expected.get("pending_intent_id")
     passed = (
         outcome.kind.value == expected_kind
         and (None if outcome.reason is None else outcome.reason.value) == expected_reason
-        and list(actual_intents) == expected_intents
+        and _thaw_json(actual_intents) == expected_intents
         and ("detail" not in case.expected or outcome.detail == expected_detail)
         and outcome.pending_intent_id == expected_pending_intent_id
     )
@@ -243,7 +242,7 @@ def evaluate_case(case: CorpusCase, transport: ModelTransport) -> CaseResult:
     model = str(trace.completed.get("model", PINNED_COMPILER_MODEL))
     prompt_schema_version = str(trace.completed.get("prompt_schema_version", PROMPT_SCHEMA_VERSION))
     cassette_digest = _optional_digest(trace.completed.get("cassette_digest"))
-    return CaseResult(
+    result = CaseResult(
         case_id=case.case_id,
         passed=passed,
         actual_kind=outcome.kind.value,
@@ -262,15 +261,9 @@ def evaluate_case(case: CorpusCase, transport: ModelTransport) -> CaseResult:
         input_units=_metric(trace.completed.get("input_units")),
         output_units=_metric(trace.completed.get("output_units")),
         latency_ms=_metric(trace.completed.get("provider_latency_ms")),
-        _evidence=_EvaluationEvidence(
-            case_id=case.case_id,
-            source=source,
-            origin=origin,
-            model=model,
-            prompt_schema_version=prompt_schema_version,
-            cassette_digest=cassette_digest,
-        ),
     )
+    _ISSUED_RESULTS[result] = None
+    return result
 
 
 def append_jsonl_run(
@@ -282,39 +275,11 @@ def append_jsonl_run(
 ) -> None:
     if not run_id:
         raise ValueError("run ID must be non-empty")
-    if not isinstance(corpus, LoadedCorpus):
-        raise ValueError("eval manifest requires a loaded corpus")
-    if not corpus.reviewed or corpus.digest != REVIEWED_CORPUS_DIGEST:
-        raise ValueError("eval manifest requires the reviewed loaded corpus")
-    if tuple(result.case_id for result in results) != corpus.case_ids:
-        raise ValueError("eval results must cover every case exactly once in corpus order")
-    if any(
-        result.corpus_digest != corpus.digest
-        or result.category != case.category
-        or result.live_demo != case.live_demo
-        for result, case in zip(results, corpus, strict=True)
-    ):
-        raise ValueError("eval results do not match the loaded corpus")
-    if any(
-        result._evidence
-        != _EvaluationEvidence(
-            case_id=result.case_id,
-            source=result.source,
-            origin=result.origin,
-            model=result.model,
-            prompt_schema_version=result.prompt_schema_version,
-            cassette_digest=result.cassette_digest,
-        )
-        for result in results
-    ):
-        raise ValueError("eval result provenance changed after evaluation")
+    regraded = _validate_and_regrade(results, corpus)
     path.parent.mkdir(parents=True, exist_ok=True)
     categories: dict[str, int] = {}
     for result in results:
         categories[result.category] = categories.get(result.category, 0) + 1
-    regraded = [
-        _result_matches_case(result, case) for result, case in zip(results, corpus, strict=True)
-    ]
     manifest = {
         "type": "manifest",
         "run_id": run_id,
@@ -366,24 +331,27 @@ def append_jsonl_run(
         stream.write("\n".join(rows) + "\n")
 
 
-def write_dashboard(results: Sequence[CaseResult], path: Path, *, run_id: str) -> None:
-    passed = sum(result.passed for result in results)
+def write_dashboard(
+    results: Sequence[CaseResult], path: Path, *, run_id: str, corpus: LoadedCorpus
+) -> None:
+    regraded = _validate_and_regrade(results, corpus)
+    passed_count = sum(regraded)
     rows = "".join(
         "<tr>"
         f"<td>{escape(result.case_id)}</td>"
-        f"<td>{'pass' if result.passed else 'fail'}</td>"
+        f"<td>{'pass' if passed else 'fail'}</td>"
         f"<td>{escape(result.actual_kind)}</td>"
         f"<td>{escape(result.actual_reason or '')}</td>"
         f"<td>{result.input_units + result.output_units}</td>"
         f"<td>{result.latency_ms}</td>"
         "</tr>"
-        for result in results
+        for result, passed in zip(results, regraded, strict=True)
     )
     document = (
         '<!doctype html><meta charset="utf-8">'
         f"<title>Language eval {escape(run_id)}</title>"
         f"<h1>Language eval {escape(run_id)}</h1>"
-        f"<p>{passed}/{len(results)} cases passed.</p>"
+        f"<p>{passed_count}/{len(results)} cases passed.</p>"
         "<table><thead><tr><th>Case</th><th>Result</th><th>Outcome</th>"
         "<th>Reason</th><th>Units</th><th>Latency ms</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
@@ -520,7 +488,12 @@ def _optional_digest(value: object) -> str | None:
     return value
 
 
-def _expected_intents(expected: object, actual: Sequence[Mapping[str, object]]) -> object:
+def _expected_intents(
+    expected: object,
+    actual: Sequence[Mapping[str, object]],
+    *,
+    case_id: str,
+) -> object:
     if not isinstance(expected, Sequence) or isinstance(expected, str | bytes):
         return expected
     normalized = _thaw_json(expected)
@@ -530,61 +503,19 @@ def _expected_intents(expected: object, actual: Sequence[Mapping[str, object]]) 
             index < len(actual)
             and intent.get("name") == "capture_room"
             and isinstance(intent.get("args"), dict)
+            and intent["args"].get("capture_id") == _HOST_MINTED_EXPECTATIONS.get(case_id)
         ):
-            actual_args = actual[index].get("args")
-            expected_capture_id = intent["args"].get("capture_id")
-            actual_capture_id = (
-                actual_args.get("capture_id") if isinstance(actual_args, Mapping) else None
+            intent["args"]["capture_id"] = (
+                "capture-" + uuid.uuid5(uuid.NAMESPACE_URL, f"sweep:{case_id}:capture:{index}").hex
             )
-            if (
-                expected_capture_id == HOST_MINTED_SENTINEL
-                and isinstance(actual_capture_id, str)
-                and actual_capture_id.startswith("capture-")
-                and len(actual_capture_id) == 40
-            ):
-                intent["args"]["capture_id"] = actual_args["capture_id"]
     return normalized
-
-
-class _FrozenDict(Mapping[str, object]):
-    def __init__(self, values: Mapping[str, object]) -> None:
-        self._values = MappingProxyType(dict(values))
-
-    def __getitem__(self, key: str) -> object:
-        return self._values[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
-
-    def __setitem__(self, _key: str, _value: object) -> None:
-        raise TypeError("loaded corpus data is immutable")
-
-
-class _FrozenList(Sequence[object]):
-    def __init__(self, values: Sequence[object]) -> None:
-        self._values = tuple(values)
-
-    def __getitem__(self, index: int) -> object:
-        return self._values[index]
-
-    def __len__(self) -> int:
-        return len(self._values)
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, Sequence) and list(self) == list(other)
-
-    def __setitem__(self, _index: int, _value: object) -> None:
-        raise TypeError("loaded corpus data is immutable")
 
 
 def _freeze_json(value: object) -> object:
     if isinstance(value, Mapping):
-        return _FrozenDict({str(key): _freeze_json(item) for key, item in value.items()})
+        return MappingProxyType({str(key): _freeze_json(item) for key, item in value.items()})
     if isinstance(value, list | tuple):
-        return _FrozenList(tuple(_freeze_json(item) for item in value))
+        return tuple(_freeze_json(item) for item in value)
     return value
 
 
@@ -597,11 +528,34 @@ def _thaw_json(value: object) -> object:
 
 
 def _result_matches_case(result: CaseResult, case: CorpusCase) -> bool:
-    expected_intents = _expected_intents(case.expected.get("intents", []), result.actual_intents)
+    expected_intents = _expected_intents(
+        case.expected.get("intents", []), result.actual_intents, case_id=case.case_id
+    )
     return (
         result.actual_kind == case.expected["kind"]
         and result.actual_reason == case.expected.get("reason")
-        and list(result.actual_intents) == expected_intents
+        and _thaw_json(result.actual_intents) == expected_intents
         and ("detail" not in case.expected or result.actual_detail == case.expected.get("detail"))
         and result.actual_pending_intent_id == case.expected.get("pending_intent_id")
+    )
+
+
+def _validate_and_regrade(results: Sequence[CaseResult], corpus: LoadedCorpus) -> tuple[bool, ...]:
+    if not isinstance(corpus, LoadedCorpus):
+        raise ValueError("eval output requires a loaded corpus")
+    if not corpus.reviewed or corpus.digest != REVIEWED_CORPUS_DIGEST:
+        raise ValueError("eval output requires the reviewed loaded corpus")
+    if tuple(result.case_id for result in results) != corpus.case_ids:
+        raise ValueError("eval results must cover every case exactly once in corpus order")
+    if any(result not in _ISSUED_RESULTS for result in results):
+        raise ValueError("eval results must be issued by evaluation")
+    if any(
+        result.corpus_digest != corpus.digest
+        or result.category != case.category
+        or result.live_demo != case.live_demo
+        for result, case in zip(results, corpus, strict=True)
+    ):
+        raise ValueError("eval results do not match the loaded corpus")
+    return tuple(
+        _result_matches_case(result, case) for result, case in zip(results, corpus, strict=True)
     )

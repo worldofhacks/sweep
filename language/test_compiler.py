@@ -34,9 +34,12 @@ from language.transport import (
     ReplayTransport,
     TransportError,
 )
-from planner.models import TranslationGrounding, TranslationPolicy
+from planner.controller import PreparedExecutionRouter
+from planner.models import FlightState, Position, TranslationGrounding, TranslationPolicy
 from relay.audit import SessionAuditLog
+from relay.auth import Principal
 from relay.intent_v1 import IntentName, IntentV1
+from relay.session import RelayLimits, RelaySession
 from tests.autonomy_fixtures import make_snapshot, make_stack, planning_config, replace_aircraft
 
 
@@ -140,7 +143,10 @@ def _with_execution_positions(
             "telemetry": (
                 None
                 if drone["drone_id"] not in positions
-                else dict(zip(("x", "y", "z"), positions[drone["drone_id"]], strict=True))
+                else {
+                    **dict(zip(("x", "y", "z"), positions[drone["drone_id"]], strict=True)),
+                    "t": updated["t"],
+                }
             ),
             "home_pose": (
                 None
@@ -150,6 +156,34 @@ def _with_execution_positions(
         }
         for drone in state["drones"]
     ]
+    return updated
+
+
+def _snapshot_with_positions(
+    snapshot,
+    positions: dict[int, tuple[float, float, float]],
+    homes: dict[int, tuple[float, float, float]] | None = None,
+    *,
+    now_ms: int | None = None,
+):
+    updated = snapshot if now_ms is None else _snapshot_at(snapshot, now_ms)
+    for drone_id, coordinates in positions.items():
+        changes = {"pose": Position(*coordinates)}
+        if homes is not None and drone_id in homes:
+            changes["home"] = Position(*homes[drone_id])
+        updated = replace_aircraft(updated, drone_id, **changes)
+    return updated
+
+
+def _snapshot_at(snapshot, now_ms: int):
+    updated = replace(snapshot, now_ms=now_ms, operator_last_seen_ms=now_ms)
+    for drone_id in updated.aircraft:
+        updated = replace_aircraft(
+            updated,
+            drone_id,
+            link_last_seen_ms=now_ms,
+            position_last_seen_ms=now_ms,
+        )
     return updated
 
 
@@ -176,6 +210,54 @@ def _lifecycle(
         "roster_version": 7,
         "reason": "test_failure" if status in {"refused", "failed", "invalidated"} else None,
         "detail": None,
+    }
+
+
+def _prepare_and_confirm(
+    pending: ConfirmedPlan,
+    state: dict[str, object],
+    case,
+    *,
+    intent_id: str,
+    controller,
+    snapshot,
+    now_ms: int,
+):
+    router = PreparedExecutionRouter(controller)
+    prepared = pending.prepare_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=now_ms,
+        intent_id=intent_id,
+        router=router,
+        snapshot=snapshot,
+    )
+    return pending.confirm_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=now_ms,
+        intent_id=intent_id,
+        emit=lambda intent: router(intent, state),
+        prepared=prepared,
+    )
+
+
+def _intent_dict(intent: IntentV1) -> dict[str, object]:
+    return {
+        "v": intent.v,
+        "t": intent.t,
+        "type": intent.type,
+        "intent_id": intent.intent_id,
+        "retry_of": intent.retry_of,
+        "source": intent.source,
+        "session": intent.session,
+        "name": intent.name.value,
+        "args": dict(intent.args),
+        "selection": list(intent.selection),
+        "mode": intent.mode.value,
+        "confirm": intent.confirm,
     }
 
 
@@ -441,7 +523,15 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
         planning_config(translation_frame="aircraft_relative"),
         translation_step_m=0.75,
     )
-    snapshot = replace_aircraft(make_snapshot(2), 2, heading_deg=90.0)
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    snapshot = replace_aircraft(snapshot, 2, heading_deg=90.0)
+    state = _with_execution_positions(
+        state,
+        {
+            drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+            for drone_id, aircraft in snapshot.aircraft.items()
+        },
+    )
     translation = config.translation_grounding(snapshot)
     outcome, plan = TranscriptCompiler(
         StaticResponseTransport(
@@ -468,22 +558,16 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
     )
     assert outcome.kind is OutcomeKind.PLAN
     assert plan is not None
-    emitted: list[IntentV1] = []
-    ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()).confirm_next(
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
+    _prepare_and_confirm(
+        ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()),
         state,
-        capability_version=case.capability_version,
-        rooms=case.rooms,
-        execution_translation=translation,
+        case,
+        controller=controller,
+        snapshot=snapshot,
         now_ms=case.now_ms,
         intent_id="translate-relative-1",
-        emit=emitted.append,
     )
-    assert emitted[0].args == {"dx": 1, "dy": 0}
-    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
-
-    result = controller.execute(emitted[0], snapshot)
-
-    assert result.status.value == "completed"
     targets = {
         call.drone_ids[0]: (
             dict(call.parameters)["x"],
@@ -492,20 +576,6 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
         for call in flight.calls
     }
     assert targets == {1: (0.75, 0.0), 2: (2.0, 0.75)}
-
-    with pytest.raises(ConfirmationError, match="execution translation"):
-        ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()).confirm_next(
-            state,
-            capability_version=case.capability_version,
-            rooms=case.rooms,
-            execution_translation=TranslationGrounding(
-                policy=TranslationPolicy(frame="aircraft_relative", step_m=2.0),
-                headings={1: 0.0, 2: 90.0},
-            ),
-            now_ms=case.now_ms,
-            intent_id="translate-wrong-policy",
-            emit=lambda _intent: None,
-        )
 
 
 def test_confirmation_rejects_changed_execution_translation_headings() -> None:
@@ -526,23 +596,35 @@ def test_confirmation_rejects_changed_execution_translation_headings() -> None:
         now_ms=case.now_ms,
     )
     assert plan is not None
-    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    emitted: list[IntentV1] = []
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    snapshot = replace_aircraft(snapshot, 1, heading_deg=180.0)
+    snapshot = replace_aircraft(snapshot, 2, heading_deg=270.0)
+    state = _with_execution_positions(
+        state,
+        {
+            drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+            for drone_id, aircraft in snapshot.aircraft.items()
+        },
+    )
+    controller, _, _, _, flight, _ = make_stack(
+        snapshot,
+        config=replace(
+            planning_config(translation_frame="aircraft_relative"),
+            translation_step_m=0.5,
+        ),
+    )
 
-    with pytest.raises(ConfirmationError, match="execution translation"):
-        pending.confirm_next(
+    with pytest.raises(ConfirmationError, match="translation differs"):
+        _prepare_and_confirm(
+            ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()),
             state,
-            capability_version=case.capability_version,
-            rooms=case.rooms,
-            execution_translation=TranslationGrounding(
-                policy=compiled_translation.policy,
-                headings={1: 180.0, 2: 270.0},
-            ),
+            case,
+            controller=controller,
+            snapshot=snapshot,
             now_ms=case.now_ms + 1,
             intent_id="translate-drifted",
-            emit=emitted.append,
         )
-    assert emitted == []
+    assert flight.calls == []
 
 
 @pytest.mark.parametrize("missing", ["translation", "heading"])
@@ -880,6 +962,172 @@ def test_command_scoped_fact_cannot_unlock_or_close_plan() -> None:
             intent_id="confirmed-2",
             emit=lambda _intent: None,
         )
+
+
+def test_confirmation_rejects_mismatched_actual_planner_before_dispatch() -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    state = _with_execution_positions(
+        _state(case),
+        {
+            drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+            for drone_id, aircraft in snapshot.aircraft.items()
+        },
+    )
+    preview = TranslationGrounding(
+        policy=TranslationPolicy(frame="aircraft_relative", step_m=0.75),
+        headings={
+            drone_id: aircraft.heading_deg for drone_id, aircraft in snapshot.aircraft.items()
+        },
+    )
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+    ).compile(
+        case.transcript,
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=preview,
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    actual_config = replace(
+        planning_config(translation_frame="world"),
+        translation_step_m=2.0,
+    )
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=actual_config)
+
+    with pytest.raises(ConfirmationError, match="planner"):
+        _prepare_and_confirm(
+            ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()),
+            state,
+            case,
+            controller=controller,
+            snapshot=snapshot,
+            now_ms=case.now_ms + 1,
+            intent_id="translate-mismatched-planner",
+        )
+
+    assert flight.calls == []
+
+
+def test_previewed_plan_reaches_dispatch_through_relay_unchanged(tmp_path, monkeypatch) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    positions = {
+        drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+        for drone_id, aircraft in snapshot.aircraft.items()
+    }
+    state = _with_execution_positions(_state(case), positions)
+    config = replace(planning_config(translation_frame="world"), translation_step_m=0.75)
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+    ).compile(
+        case.transcript,
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=config.translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    controller, _, _, dispatcher, flight, _ = make_stack(snapshot, config=config)
+    router = PreparedExecutionRouter(controller)
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    prepared = pending.prepare_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="relay-bound-translation",
+        router=router,
+        snapshot=snapshot,
+    )
+    with pytest.raises(RuntimeError, match="no matching prepared execution"):
+        router(prepared.intent, state)
+    assert flight.calls == []
+    dispatched = []
+    original_dispatch = dispatcher.dispatch
+
+    def record_dispatch(actual_plan, actual_snapshot, *, current_snapshot=None):
+        dispatched.append(actual_plan)
+        return original_dispatch(
+            actual_plan,
+            actual_snapshot,
+            current_snapshot=current_snapshot,
+        )
+
+    monkeypatch.setattr(dispatcher, "dispatch", record_dispatch)
+    relay = RelaySession(
+        session_id="language-eval",
+        audit_log=SessionAuditLog(tmp_path, "language-eval"),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: case.now_ms + 1,
+        event_ids=lambda: "relay-event",
+        intent_sink=router,
+    )
+    relay_events = []
+
+    def emit_through_relay(intent: IntentV1) -> None:
+        relay_events.extend(
+            relay.process_intent(
+                _intent_dict(intent),
+                Principal(source="console", drone_id=None, signing_key=b"x" * 32),
+            )
+        )
+
+    pending.confirm_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms + 1,
+        intent_id="relay-bound-translation",
+        emit=emit_through_relay,
+        prepared=prepared,
+    )
+
+    assert relay_events[0]["status"] == "accepted"
+    assert dispatched == [prepared.execution.plan]
+    assert dispatched[0] is prepared.execution.plan
+    assert prepared.preview() == dispatched[0].to_dict()
+
+
+def test_preparation_rejects_snapshot_older_than_relay_position_evidence() -> None:
+    case = _case("translate-selected")
+    current = _snapshot_at(make_snapshot(2), case.now_ms)
+    positions = {
+        drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+        for drone_id, aircraft in current.aircraft.items()
+    }
+    state = _with_execution_positions(_state(case), positions)
+    stale = _snapshot_at(make_snapshot(2), case.now_ms - 1)
+    config = replace(planning_config(translation_frame="world"), translation_step_m=0.5)
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+    ).compile(
+        case.transcript,
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=config.translation_grounding(current),
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    controller, _, _, _, flight, _ = make_stack(stale, config=config)
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+
+    with pytest.raises(ConfirmationError, match="authoritative state"):
+        pending.prepare_next(
+            state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=case.now_ms + 1,
+            intent_id="stale-preparation",
+            router=PreparedExecutionRouter(controller),
+            snapshot=stale,
+        )
+
+    assert flight.calls == []
 
 
 def test_compiled_preview_is_bound_to_authoritative_state_session() -> None:
@@ -1271,6 +1519,14 @@ def test_confirmation_uses_actual_terminal_flight_state_for_next_step() -> None:
     case = _case("ordered-select-and-takeoff")
     state = {**case.relay_state, "armed": True, "selection": [1]}
     state["drones"] = [{**drone, "heading_deg": 0.0} for drone in state["drones"]]
+    execution_snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
+    state = _with_execution_positions(
+        state,
+        {
+            drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+            for drone_id, aircraft in execution_snapshot.aircraft.items()
+        },
+    )
     response = {
         "kind": "plan",
         "intents": [
@@ -1303,7 +1559,6 @@ def test_confirmation_uses_actual_terminal_flight_state_for_next_step() -> None:
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
-        execution_translation=translation,
         now_ms=case.now_ms + 1,
         intent_id="takeoff-1",
         emit=lambda _intent: None,
@@ -1313,26 +1568,43 @@ def test_confirmation_uses_actual_terminal_flight_state_for_next_step() -> None:
         {**drone, "flight_state": "hovering"} if drone["drone_id"] == 1 else drone
         for drone in unchanged["drones"]
     ]
+    unchanged = _with_execution_positions(
+        unchanged,
+        {
+            drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+            for drone_id, aircraft in execution_snapshot.aircraft.items()
+        },
+    )
     pending.acknowledge(
         _lifecycle(case, "takeoff-1", "completed", source="autonomy"),
         unchanged,
         capability_version=case.capability_version,
         rooms=case.rooms,
-        execution_translation=translation,
         now_ms=case.now_ms + 2,
     )
 
-    emitted: list[IntentV1] = []
-    pending.confirm_next(
+    execution_snapshot = replace_aircraft(
+        _snapshot_at(execution_snapshot, case.now_ms + 2),
+        1,
+        flight_state=FlightState.HOVERING,
+    )
+    controller, _, _, _, flight, _ = make_stack(
+        execution_snapshot,
+        config=replace(
+            planning_config(translation_frame="aircraft_relative"),
+            translation_step_m=0.5,
+        ),
+    )
+    _prepare_and_confirm(
+        pending,
         unchanged,
-        capability_version=case.capability_version,
-        rooms=case.rooms,
-        execution_translation=translation,
+        case,
+        controller=controller,
+        snapshot=execution_snapshot,
         now_ms=case.now_ms + 3,
         intent_id="translate-1",
-        emit=emitted.append,
     )
-    assert [intent.name for intent in emitted] == [IntentName.TRANSLATE]
+    assert [call.operation.value for call in flight.calls] == ["goto"]
 
 
 def test_capture_id_is_minted_outside_model_output() -> None:
@@ -1779,15 +2051,26 @@ def test_translate_completion_rejects_unchanged_authoritative_position() -> None
         now_ms=case.now_ms,
     )
     assert plan is not None
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    snapshot = replace_aircraft(snapshot, 2, heading_deg=90.0)
+    snapshot = _snapshot_with_positions(
+        snapshot,
+        {1: (0.0, 0.0, 1.0), 2: (2.0, 0.0, 1.0)},
+    )
+    config = replace(
+        planning_config(translation_frame="aircraft_relative"),
+        translation_step_m=0.5,
+    )
+    controller, _, _, _, _, _ = make_stack(snapshot, config=config)
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    pending.confirm_next(
+    _prepare_and_confirm(
+        pending,
         state,
-        capability_version=case.capability_version,
-        rooms=case.rooms,
-        execution_translation=translation,
+        case,
+        controller=controller,
+        snapshot=snapshot,
         now_ms=case.now_ms + 1,
         intent_id="translate-unchanged",
-        emit=lambda _intent: None,
     )
 
     with pytest.raises(ConfirmationError, match="position"):
@@ -1796,7 +2079,6 @@ def test_translate_completion_rejects_unchanged_authoritative_position() -> None
             {**state, "t": case.now_ms + 2, "event_id": "state-unchanged"},
             capability_version=case.capability_version,
             rooms=case.rooms,
-            execution_translation=translation,
             now_ms=case.now_ms + 2,
         )
 
@@ -1808,22 +2090,27 @@ def test_translate_completion_rejects_unchanged_authoritative_position() -> None
         {**state, "t": case.now_ms + 1, "event_id": "state-at-translation-dispatch"},
         {1: (0.1, 0.0, 1.0), 2: (2.1, 0.1, 1.0)},
     )
+    dispatch_snapshot = _snapshot_with_positions(
+        snapshot,
+        {1: (0.1, 0.0, 1.0), 2: (2.1, 0.1, 1.0)},
+        now_ms=case.now_ms + 1,
+    )
+    successful_controller, _, _, _, _, _ = make_stack(dispatch_snapshot, config=config)
     successful = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    successful.confirm_next(
+    _prepare_and_confirm(
+        successful,
         dispatch_state,
-        capability_version=case.capability_version,
-        rooms=case.rooms,
-        execution_translation=translation,
+        case,
+        controller=successful_controller,
+        snapshot=dispatch_snapshot,
         now_ms=case.now_ms + 1,
         intent_id="translate-completed",
-        emit=lambda _intent: None,
     )
     successful.acknowledge(
         _lifecycle(case, "translate-completed", "completed", source="autonomy"),
         completed,
         capability_version=case.capability_version,
         rooms=case.rooms,
-        execution_translation=translation,
         now_ms=case.now_ms + 2,
     )
     assert successful.remaining == 0
@@ -1851,15 +2138,22 @@ def test_come_home_completion_rejects_unchanged_authoritative_position() -> None
         now_ms=case.now_ms,
     )
     assert plan is not None
+    config = replace(planning_config(), takeoff_altitude_m=1.0)
+    snapshot = _snapshot_with_positions(
+        _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms),
+        {1: (2.0, 3.0, 1.5), 2: (4.0, 5.0, 1.5)},
+        {1: (0.0, 0.0, 0.0), 2: (0.0, 0.0, 0.0)},
+    )
+    controller, _, _, _, _, _ = make_stack(snapshot, config=config)
     pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    pending.confirm_next(
+    _prepare_and_confirm(
+        pending,
         state,
-        capability_version=case.capability_version,
-        rooms=case.rooms,
-        execution_takeoff_altitude_m=1.0,
+        case,
+        controller=controller,
+        snapshot=snapshot,
         now_ms=case.now_ms + 1,
         intent_id="come-home-unchanged",
-        emit=lambda _intent: None,
     )
 
     with pytest.raises(ConfirmationError, match="position"):
@@ -1868,7 +2162,6 @@ def test_come_home_completion_rejects_unchanged_authoritative_position() -> None
             {**state, "t": case.now_ms + 2, "event_id": "state-unchanged"},
             capability_version=case.capability_version,
             rooms=case.rooms,
-            execution_takeoff_altitude_m=1.0,
             now_ms=case.now_ms + 2,
         )
 
@@ -1878,14 +2171,15 @@ def test_come_home_completion_rejects_unchanged_authoritative_position() -> None
         {1: (0.0, 0.0, 0.0), 2: (0.0, 0.0, 0.0)},
     )
     wrong_altitude_plan = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    wrong_altitude_plan.confirm_next(
+    wrong_altitude_controller, _, _, _, _, _ = make_stack(snapshot, config=config)
+    _prepare_and_confirm(
+        wrong_altitude_plan,
         state,
-        capability_version=case.capability_version,
-        rooms=case.rooms,
-        execution_takeoff_altitude_m=1.0,
+        case,
+        controller=wrong_altitude_controller,
+        snapshot=snapshot,
         now_ms=case.now_ms + 1,
         intent_id="come-home-wrong-altitude",
-        emit=lambda _intent: None,
     )
     with pytest.raises(ConfirmationError, match="position"):
         wrong_altitude_plan.acknowledge(
@@ -1893,7 +2187,6 @@ def test_come_home_completion_rejects_unchanged_authoritative_position() -> None
             wrong_altitude,
             capability_version=case.capability_version,
             rooms=case.rooms,
-            execution_takeoff_altitude_m=1.0,
             now_ms=case.now_ms + 2,
         )
 
@@ -1907,25 +2200,191 @@ def test_come_home_completion_rejects_unchanged_authoritative_position() -> None
         {1: (2.0, 3.0, 1.6), 2: (4.0, 5.0, 1.5)},
         {1: (0.0, 0.0, 0.0), 2: (0.0, 0.0, 0.0)},
     )
+    dispatch_snapshot = _snapshot_with_positions(
+        snapshot,
+        {1: (2.0, 3.0, 1.6), 2: (4.0, 5.0, 1.5)},
+        {1: (0.0, 0.0, 0.0), 2: (0.0, 0.0, 0.0)},
+        now_ms=case.now_ms + 1,
+    )
+    successful_controller, _, _, _, _, _ = make_stack(dispatch_snapshot, config=config)
     successful = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
-    successful.confirm_next(
+    _prepare_and_confirm(
+        successful,
         dispatch_state,
-        capability_version=case.capability_version,
-        rooms=case.rooms,
-        execution_takeoff_altitude_m=1.0,
+        case,
+        controller=successful_controller,
+        snapshot=dispatch_snapshot,
         now_ms=case.now_ms + 1,
         intent_id="come-home-completed",
-        emit=lambda _intent: None,
     )
     successful.acknowledge(
         _lifecycle(case, "come-home-completed", "completed", source="autonomy"),
         completed,
         capability_version=case.capability_version,
         rooms=case.rooms,
-        execution_takeoff_altitude_m=1.0,
         now_ms=case.now_ms + 2,
     )
     assert successful.remaining == 0
+
+
+@pytest.mark.parametrize("dx, step_m", [(0, 0.5), (1, 0.025), (1, 0.05)])
+def test_translate_below_completion_tolerance_is_rejected_before_dispatch(
+    dx: int, step_m: float
+) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    positions = {
+        drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+        for drone_id, aircraft in snapshot.aircraft.items()
+    }
+    state = _with_execution_positions(_state(case), positions)
+    config = replace(
+        planning_config(translation_frame="aircraft_relative"), translation_step_m=step_m
+    )
+    translation = config.translation_grounding(snapshot)
+    response = {
+        "kind": "plan",
+        "intents": [
+            {
+                "name": "translate",
+                "args": {"dx": dx, "dy": 0},
+                "selection": [1, 2],
+                "mode": "indoor",
+            }
+        ],
+    }
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(response), audit=InMemoryAuditSink()
+    ).compile(
+        "Move by a tiny amount.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=translation,
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+
+    with pytest.raises(ConfirmationError, match="completion tolerance"):
+        _prepare_and_confirm(
+            pending,
+            state,
+            case,
+            controller=controller,
+            snapshot=snapshot,
+            now_ms=case.now_ms + 1,
+            intent_id=f"tiny-translate-{dx}-{step_m}",
+        )
+
+    assert flight.calls == []
+    with pytest.raises(ConfirmationError, match="closed"):
+        _prepare_and_confirm(
+            pending,
+            state,
+            case,
+            controller=controller,
+            snapshot=snapshot,
+            now_ms=case.now_ms + 1,
+            intent_id="retry-tiny-translate",
+        )
+
+
+@pytest.mark.parametrize("intent_name", ["translate", "come_home"])
+@pytest.mark.parametrize("stale_evidence", ["outcome", "position"])
+def test_motion_completion_requires_post_dispatch_evidence(
+    intent_name: str, stale_evidence: str
+) -> None:
+    case = _case("translate-selected")
+    selection = (1,) if intent_name == "come_home" else (1, 2)
+    snapshot = _snapshot_at(make_snapshot(2, selection=selection), case.now_ms)
+    positions = {
+        drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+        for drone_id, aircraft in snapshot.aircraft.items()
+    }
+    homes = {
+        drone_id: (aircraft.home.x, aircraft.home.y, aircraft.home.z)
+        for drone_id, aircraft in snapshot.aircraft.items()
+    }
+    state = {**_state(case), "selection": list(selection)}
+    state = _with_execution_positions(state, positions, homes)
+    args = {"dx": 1, "dy": 0} if intent_name == "translate" else {}
+    response = {
+        "kind": "plan",
+        "intents": [
+            {"name": intent_name, "args": args, "selection": list(selection), "mode": "indoor"}
+        ],
+    }
+    config = replace(
+        planning_config(translation_frame="aircraft_relative"),
+        translation_step_m=0.5,
+        takeoff_altitude_m=3.0,
+    )
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(response), audit=InMemoryAuditSink()
+    ).compile(
+        "Execute the motion.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=config.translation_grounding(snapshot) if intent_name == "translate" else None,
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    controller, _, _, _, _, _ = make_stack(snapshot, config=config)
+    pending = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    emitted = _prepare_and_confirm(
+        pending,
+        state,
+        case,
+        controller=controller,
+        snapshot=snapshot,
+        now_ms=case.now_ms + 1,
+        intent_id=f"causal-{intent_name}",
+    )
+    target_positions = (
+        {1: (0.0, 0.0, 3.0)}
+        if intent_name == "come_home"
+        else {1: (0.5, 0.0, 1.0), 2: (2.5, 0.0, 1.0)}
+    )
+    stale_state = _with_execution_positions(
+        {**state, "t": emitted.t + 1, "event_id": f"stale-{intent_name}"},
+        {**positions, **target_positions},
+        homes,
+    )
+    if stale_evidence == "position":
+        stale_state["drones"] = [
+            {
+                **drone,
+                "telemetry": {**drone["telemetry"], "t": emitted.t - 1},
+            }
+            if drone["drone_id"] in selection
+            else drone
+            for drone in stale_state["drones"]
+        ]
+    stale_outcome = {
+        **_lifecycle(case, emitted.intent_id, "completed", source="autonomy"),
+        "t": emitted.t - 1 if stale_evidence == "outcome" else emitted.t + 1,
+    }
+
+    with pytest.raises(ConfirmationError, match="predates"):
+        pending.acknowledge(
+            stale_outcome,
+            stale_state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=emitted.t + 1,
+        )
+
+    with pytest.raises(ConfirmationError, match="closed"):
+        pending.acknowledge(
+            stale_outcome,
+            stale_state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=emitted.t + 1,
+        )
 
 
 def test_progress_audit_failure_closes_plan() -> None:

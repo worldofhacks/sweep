@@ -159,6 +159,7 @@ class GroundingFacts:
                 "flight_available",
                 "heading_deg",
                 "position",
+                "position_time_ms",
                 "home_position",
             }:
                 raise ValueError("persisted grounding drone is invalid")
@@ -176,7 +177,10 @@ class GroundingFacts:
                     "telemetry": (
                         None
                         if drone["position"] is None
-                        else dict(zip(("x", "y", "z"), drone["position"], strict=True))
+                        else {
+                            **dict(zip(("x", "y", "z"), drone["position"], strict=True)),
+                            "t": drone["position_time_ms"],
+                        }
                     ),
                     "home_pose": (
                         None
@@ -329,6 +333,7 @@ def build_grounding_facts(
         if not _string_list(capabilities):
             raise ValueError("drone capabilities must be a string list")
         position = _coordinates(raw.get("telemetry"), "telemetry")
+        position_time_ms = _telemetry_time(raw.get("telemetry"))
         home_position = _coordinates(raw.get("home_pose"), "home pose")
         drones.append(
             MappingProxyType(
@@ -341,6 +346,7 @@ def build_grounding_facts(
                     "flight_available": "flight" in capabilities,
                     "heading_deg": heading,
                     "position": position,
+                    "position_time_ms": position_time_ms,
                     "home_position": home_position,
                 }
             )
@@ -626,9 +632,12 @@ def _validate_proposed_intent(
     ):
         return None
     if result.intent.name is IntentName.TRANSLATE and (
-        facts.translation_frame != "aircraft_relative"
+        facts.translation_frame not in {"world", "aircraft_relative"}
         or facts.translation_step_m is None
-        or any(known[drone_id]["heading_deg"] is None for drone_id in result.intent.selection)
+        or (
+            facts.translation_frame == "aircraft_relative"
+            and any(known[drone_id]["heading_deg"] is None for drone_id in result.intent.selection)
+        )
     ):
         return None
     if result.intent.name in {
@@ -778,6 +787,18 @@ def _coordinates(value: object, field: str) -> tuple[float, float, float] | None
     if not all(_is_finite_number(coordinate) for coordinate in coordinates):
         raise ValueError(f"drone {field} coordinates must be finite numbers")
     return tuple(float(coordinate) for coordinate in coordinates)
+
+
+def _telemetry_time(value: object) -> int | None:
+    if value is None:
+        return None
+    assert isinstance(value, Mapping)
+    timestamp = value.get("t")
+    if timestamp is None:
+        return None
+    if not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp < 0:
+        raise ValueError("drone telemetry requires a non-negative timestamp")
+    return timestamp
 
 
 def _model_drone(drone: Mapping[str, object]) -> dict[str, object]:

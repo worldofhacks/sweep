@@ -6,7 +6,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from math import cos, dist, isfinite, radians, sin
+from math import dist
 from threading import RLock
 from typing import Protocol
 
@@ -31,7 +31,17 @@ from language.transport import (
     TransportError,
     model_response_provenance_is_valid,
 )
-from planner.models import TranslationGrounding, TranslationPolicy
+from planner.controller import PreparedExecutionRouter
+from planner.models import (
+    CommandOperation,
+    ExecutionResult,
+    FleetSnapshot,
+    Plan,
+    Position,
+    PreparedExecution,
+    TranslationGrounding,
+    TranslationPolicy,
+)
 from relay.audit import SessionAuditLog
 from relay.contracts import LifecycleStatus
 from relay.intent_v1 import AcceptedIntent, IntentV1, validate_intent
@@ -360,6 +370,17 @@ class ConfirmationError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedConfirmation:
+    intent: IntentV1
+    execution: PreparedExecution
+    state_digest: str
+    router: PreparedExecutionRouter
+
+    def preview(self) -> dict[str, object]:
+        return self.execution.plan.to_dict()
+
+
 class ConfirmedPlan:
     def __init__(
         self,
@@ -373,15 +394,13 @@ class ConfirmedPlan:
         if session != compiled.facts.session:
             raise ValueError("session must match the compiled authoritative state")
         self._compiled = compiled
-        self._requires_execution_translation = any(
-            intent.name.value == "translate" for intent in compiled.intents
-        )
         self._session = session
         self._next = 0
         self._awaiting_outcome = False
         self._awaiting_intent_id: str | None = None
         self._awaiting_facts: GroundingFacts | None = None
-        self._awaiting_takeoff_altitude_m: float | None = None
+        self._awaiting_plan: Plan | None = None
+        self._awaiting_emitted_at_ms: int | None = None
         self._terminal = False
         self._expected_facts = compiled.facts
         self.audit = audit
@@ -392,28 +411,59 @@ class ConfirmedPlan:
         with self._lock:
             return len(self._compiled.intents) - self._next
 
+    def prepare_next(
+        self,
+        relay_state: object,
+        *,
+        capability_version: str,
+        rooms: tuple[str, ...],
+        now_ms: int,
+        intent_id: str,
+        router: PreparedExecutionRouter,
+        snapshot: FleetSnapshot,
+    ) -> PreparedConfirmation:
+        with self._lock:
+            facts, proposal, intent = self._confirmation_candidate(
+                relay_state,
+                capability_version=capability_version,
+                rooms=rooms,
+                now_ms=now_ms,
+                intent_id=intent_id,
+            )
+            if proposal.name.value not in {"translate", "come_home"}:
+                raise ConfirmationError("only motion intents require planner preparation")
+            planned = router.prepare(intent, snapshot)
+            if isinstance(planned, ExecutionResult):
+                self._terminal = True
+                raise ConfirmationError("actual planner refused the confirmed intent")
+            self._validate_prepared_execution(planned, facts, router)
+            return PreparedConfirmation(
+                intent=intent,
+                execution=planned,
+                state_digest=facts.state_digest,
+                router=router,
+            )
+
     def confirm_next(
         self,
         relay_state: object,
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        execution_translation: object = None,
-        execution_takeoff_altitude_m: object = None,
         now_ms: int,
         intent_id: str,
         emit: Callable[[IntentV1], None],
+        prepared: PreparedConfirmation | None = None,
     ) -> IntentV1:
         with self._lock:
             return self._confirm_next(
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
-                execution_translation=execution_translation,
-                execution_takeoff_altitude_m=execution_takeoff_altitude_m,
                 now_ms=now_ms,
                 intent_id=intent_id,
                 emit=emit,
+                prepared=prepared,
             )
 
     def _confirm_next(
@@ -422,52 +472,34 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        execution_translation: object,
-        execution_takeoff_altitude_m: object,
         now_ms: int,
         intent_id: str,
         emit: Callable[[IntentV1], None],
+        prepared: PreparedConfirmation | None,
     ) -> IntentV1:
-        if self._terminal:
-            raise ConfirmationError("plan is closed")
-        if self._next >= len(self._compiled.intents):
-            raise ConfirmationError("plan is complete")
-        if self._awaiting_outcome:
-            raise ConfirmationError("previous intent is awaiting a relay outcome")
-        if now_ms > self._compiled.expires_at_ms:
-            raise ConfirmationError("plan confirmation expired")
-        try:
-            facts = build_grounding_facts(
-                relay_state,
-                capability_version=capability_version,
-                rooms=rooms,
-                translation=self._current_translation(execution_translation),
-                qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
-            )
-        except ValueError:
-            raise ConfirmationError("current state is invalid") from None
-        if _authorization_digest(facts) != _authorization_digest(self._expected_facts):
-            self._terminal = True
-            raise ConfirmationError("state or capabilities changed after preview")
-        state_age_ms = now_ms - facts.state_time_ms
-        if state_age_ms < 0 or state_age_ms > self._compiled.state_max_age_ms:
-            raise ConfirmationError("current state is stale")
-        proposal = self._compiled.intents[self._next]
-        takeoff_altitude_m = self._execution_takeoff_altitude(
-            proposal, execution_takeoff_altitude_m
-        )
-        if not plan_step_matches_facts(proposal, facts):
-            self._terminal = True
-            raise ConfirmationError("intent is incompatible with the current flight state")
-        raw = intent_payload(
-            proposal,
-            session=self._compiled.facts.session,
+        facts, proposal, intent = self._confirmation_candidate(
+            relay_state,
+            capability_version=capability_version,
+            rooms=rooms,
+            now_ms=now_ms,
             intent_id=intent_id,
-            timestamp_ms=now_ms,
         )
-        validated = validate_intent(raw)
-        if not isinstance(validated, AcceptedIntent):
-            raise ConfirmationError("intent failed validation before emission")
+        execution_plan: Plan | None = None
+        if proposal.name.value in {"translate", "come_home"}:
+            if (
+                prepared is None
+                or prepared.intent != intent
+                or prepared.state_digest != facts.state_digest
+            ):
+                if prepared is not None:
+                    prepared.router.discard(prepared.intent.intent_id)
+                self._terminal = True
+                raise ConfirmationError("motion confirmation requires the previewed planner result")
+            execution_plan = prepared.execution.plan
+        elif prepared is not None:
+            prepared.router.discard(prepared.intent.intent_id)
+            self._terminal = True
+            raise ConfirmationError("non-motion intent cannot carry a prepared execution")
         try:
             self.audit.append(
                 {
@@ -475,21 +507,32 @@ class ConfirmedPlan:
                     "correlation_id": self._compiled.correlation_id,
                     "plan_digest": self._compiled.digest,
                     "intent_index": self._next,
-                    "intent_id": validated.intent.intent_id,
+                    "intent_id": intent.intent_id,
                     "state_digest": facts.state_digest,
                 }
             )
         except Exception:
+            if prepared is not None:
+                prepared.router.discard(prepared.intent.intent_id)
             self._terminal = True
             raise ConfirmationError("intent emission audit failed before relay send") from None
+        if prepared is not None:
+            try:
+                prepared.router.bind(prepared.execution)
+            except Exception:
+                self._terminal = True
+                raise ConfirmationError("prepared execution could not be bound") from None
         self._awaiting_outcome = True
-        self._awaiting_intent_id = validated.intent.intent_id
+        self._awaiting_intent_id = intent.intent_id
         self._awaiting_facts = facts
-        self._awaiting_takeoff_altitude_m = takeoff_altitude_m
+        self._awaiting_plan = execution_plan
+        self._awaiting_emitted_at_ms = intent.t
         self._next += 1
         try:
-            emit(validated.intent)
+            emit(intent)
         except Exception:
+            if prepared is not None:
+                prepared.router.discard(prepared.intent.intent_id)
             self._terminal = True
             try:
                 self.audit.append(
@@ -498,7 +541,7 @@ class ConfirmedPlan:
                         "correlation_id": self._compiled.correlation_id,
                         "plan_digest": self._compiled.digest,
                         "intent_index": self._next - 1,
-                        "intent_id": validated.intent.intent_id,
+                        "intent_id": intent.intent_id,
                     }
                 )
             except Exception:
@@ -511,14 +554,14 @@ class ConfirmedPlan:
                     "correlation_id": self._compiled.correlation_id,
                     "plan_digest": self._compiled.digest,
                     "intent_index": self._next - 1,
-                    "intent_id": validated.intent.intent_id,
+                    "intent_id": intent.intent_id,
                     "state_digest": facts.state_digest,
                 }
             )
         except Exception:
             self._terminal = True
             raise ConfirmationError("intent was emitted but its audit record failed") from None
-        return validated.intent
+        return intent
 
     def acknowledge(
         self,
@@ -527,8 +570,6 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        execution_translation: object = None,
-        execution_takeoff_altitude_m: object = None,
         now_ms: int,
     ) -> None:
         with self._lock:
@@ -538,8 +579,6 @@ class ConfirmedPlan:
                     relay_state,
                     capability_version=capability_version,
                     rooms=rooms,
-                    execution_translation=execution_translation,
-                    execution_takeoff_altitude_m=execution_takeoff_altitude_m,
                     now_ms=now_ms,
                 )
             except ConfirmationError:
@@ -553,8 +592,6 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        execution_translation: object,
-        execution_takeoff_altitude_m: object,
         now_ms: int,
     ) -> None:
         if self._terminal:
@@ -599,6 +636,8 @@ class ConfirmedPlan:
             or outcome.get("roster_version") != self._expected_facts.state_version
         ):
             raise ConfirmationError("relay outcome envelope is invalid")
+        if self._awaiting_emitted_at_ms is None or outcome["t"] <= self._awaiting_emitted_at_ms:
+            raise ConfirmationError("relay outcome predates the emitted intent")
         try:
             status = LifecycleStatus(outcome.get("status"))
         except (TypeError, ValueError):
@@ -633,7 +672,7 @@ class ConfirmedPlan:
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
-                translation=self._current_translation(execution_translation),
+                translation=_translation_grounding(self._compiled.facts),
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
@@ -698,10 +737,14 @@ class ConfirmedPlan:
             )
             raise ConfirmationError(f"relay returned terminal status {status.value}")
         emitted = self._compiled.intents[self._next - 1]
-        takeoff_altitude_m = self._execution_takeoff_altitude(emitted, execution_takeoff_altitude_m)
-        if takeoff_altitude_m != self._awaiting_takeoff_altitude_m:
-            self._terminal = True
-            raise ConfirmationError("execution takeoff altitude changed after dispatch")
+        if facts.state_time_ms <= self._awaiting_emitted_at_ms:
+            raise ConfirmationError("relay outcome state predates the emitted intent")
+        if emitted.name.value in {"translate", "come_home"} and any(
+            _drone_position_time(facts, drone_id) is None
+            or _drone_position_time(facts, drone_id) <= self._awaiting_emitted_at_ms
+            for drone_id in emitted.selection
+        ):
+            raise ConfirmationError("relay position evidence predates the emitted intent")
         dispatch_facts = self._awaiting_facts
         if dispatch_facts is None:
             self._terminal = True
@@ -721,7 +764,7 @@ class ConfirmedPlan:
             emitted,
             dispatch_facts,
             facts,
-            takeoff_altitude_m=takeoff_altitude_m,
+            execution_plan=self._awaiting_plan,
         ):
             raise ConfirmationError(
                 "relay flight state or position does not match the accepted intent"
@@ -746,34 +789,100 @@ class ConfirmedPlan:
         self._awaiting_outcome = False
         self._awaiting_intent_id = None
         self._awaiting_facts = None
-        self._awaiting_takeoff_altitude_m = None
+        self._awaiting_plan = None
+        self._awaiting_emitted_at_ms = None
 
-    def _current_translation(self, execution_translation: object) -> TranslationGrounding | None:
-        expected = _translation_grounding(self._compiled.facts)
-        if not self._requires_execution_translation:
-            return expected
+    def _validate_prepared_execution(
+        self,
+        prepared: PreparedExecution,
+        facts: GroundingFacts,
+        router: PreparedExecutionRouter,
+    ) -> None:
+        plan = prepared.plan
+        intent = prepared.intent
         if (
-            not isinstance(execution_translation, TranslationGrounding)
-            or execution_translation != expected
+            plan.intent_id != intent.intent_id
+            or plan.intent_name is not intent.name
+            or plan.roster_version != facts.state_version
+            or plan.selection != intent.selection
+            or prepared.snapshot.roster_version != facts.state_version
+            or prepared.snapshot.selection != facts.selection
+            or not _snapshot_matches_facts(prepared.snapshot, facts, intent.selection)
         ):
             self._terminal = True
-            raise ConfirmationError("execution translation grounding changed after preview")
-        return execution_translation
-
-    def _execution_takeoff_altitude(
-        self, intent: ProposedIntent, execution_takeoff_altitude_m: object
-    ) -> float | None:
-        if intent.name.value != "come_home":
-            return None
-        if (
-            isinstance(execution_takeoff_altitude_m, bool)
-            or not isinstance(execution_takeoff_altitude_m, int | float)
-            or not isfinite(execution_takeoff_altitude_m)
-            or execution_takeoff_altitude_m <= 0
+            raise ConfirmationError("actual planner used different authoritative state")
+        targets = _goto_targets(plan, intent.selection)
+        if targets is None:
+            self._terminal = True
+            raise ConfirmationError("actual planner produced an invalid motion plan")
+        if intent.name.value == "translate":
+            expected = _translation_grounding(self._compiled.facts)
+            actual = router.controller.planner.config.translation_grounding(prepared.snapshot)
+            if not _translation_matches_selection(expected, actual, intent.selection):
+                self._terminal = True
+                raise ConfirmationError("actual planner translation differs from preview")
+            if all(
+                prepared.snapshot.aircraft[drone_id].pose.distance_to(targets[drone_id])
+                <= POSITION_TOLERANCE_M
+                for drone_id in intent.selection
+            ):
+                self._terminal = True
+                raise ConfirmationError("actual planner translation is below completion tolerance")
+        elif any(
+            _drone_position(facts, drone_id, "home_position") is None
+            for drone_id in intent.selection
         ):
             self._terminal = True
-            raise ConfirmationError("execution takeoff altitude is required for come_home")
-        return float(execution_takeoff_altitude_m)
+            raise ConfirmationError("actual planner home target was not previewed")
+
+    def _confirmation_candidate(
+        self,
+        relay_state: object,
+        *,
+        capability_version: str,
+        rooms: tuple[str, ...],
+        now_ms: int,
+        intent_id: str,
+    ) -> tuple[GroundingFacts, ProposedIntent, IntentV1]:
+        if self._terminal:
+            raise ConfirmationError("plan is closed")
+        if self._next >= len(self._compiled.intents):
+            raise ConfirmationError("plan is complete")
+        if self._awaiting_outcome:
+            raise ConfirmationError("previous intent is awaiting a relay outcome")
+        if now_ms > self._compiled.expires_at_ms:
+            raise ConfirmationError("plan confirmation expired")
+        try:
+            facts = build_grounding_facts(
+                relay_state,
+                capability_version=capability_version,
+                rooms=rooms,
+                translation=_translation_grounding(self._compiled.facts),
+                qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
+            )
+        except ValueError:
+            raise ConfirmationError("current state is invalid") from None
+        if _authorization_digest(facts) != _authorization_digest(self._expected_facts):
+            self._terminal = True
+            raise ConfirmationError("state or capabilities changed after preview")
+        state_age_ms = now_ms - facts.state_time_ms
+        if state_age_ms < 0 or state_age_ms > self._compiled.state_max_age_ms:
+            raise ConfirmationError("current state is stale")
+        proposal = self._compiled.intents[self._next]
+        if not plan_step_matches_facts(proposal, facts):
+            self._terminal = True
+            raise ConfirmationError("intent is incompatible with the current flight state")
+        result = validate_intent(
+            intent_payload(
+                proposal,
+                session=self._compiled.facts.session,
+                intent_id=intent_id,
+                timestamp_ms=now_ms,
+            )
+        )
+        if not isinstance(result, AcceptedIntent):
+            raise ConfirmationError("intent failed validation before emission")
+        return facts, proposal, result.intent
 
 
 def _capture_id(correlation_id: str, index: int) -> str:
@@ -834,7 +943,7 @@ def _terminal_postcondition_matches(
     before: GroundingFacts,
     after: GroundingFacts,
     *,
-    takeoff_altitude_m: float | None,
+    execution_plan: Plan | None,
 ) -> bool:
     new = {int(drone["drone_id"]): drone["flight_state"] for drone in after.drones}
     if intent.name.value == "takeoff":
@@ -849,43 +958,16 @@ def _terminal_postcondition_matches(
                 and drone["flight_state"] in {"taking_off", "airborne", "hovering", "landing"}
             )
         return all(new.get(drone_id) in {"landed", "disarmed"} for drone_id in targets)
-    if intent.name.value == "translate":
-        translation = _translation_grounding(before)
-        if translation is None:
+    if intent.name.value in {"translate", "come_home"}:
+        if execution_plan is None:
             return False
-        dx = float(intent.args["dx"]) * translation.policy.step_m
-        dy = float(intent.args["dy"]) * translation.policy.step_m
-        for drone_id in intent.selection:
-            start = _drone_position(before, drone_id, "position")
-            end = _drone_position(after, drone_id, "position")
-            heading = translation.headings.get(drone_id)
-            if start is None or end is None or heading is None:
-                return False
-            angle = radians(heading)
-            target = (
-                start[0] + dx * cos(angle) - dy * sin(angle),
-                start[1] + dx * sin(angle) + dy * cos(angle),
-                start[2],
-            )
-            if not _position_matches(end, target):
-                return False
-        return all(new.get(drone_id) in {"hovering", "moving"} for drone_id in intent.selection)
-    if intent.name.value == "come_home":
-        if takeoff_altitude_m is None:
+        targets = _goto_targets(execution_plan, intent.selection)
+        if targets is None:
             return False
         for drone_id in intent.selection:
-            start = _drone_position(before, drone_id, "position")
             end = _drone_position(after, drone_id, "position")
-            home = _drone_position(before, drone_id, "home_position")
-            if (
-                start is None
-                or end is None
-                or home is None
-                or not _position_matches(
-                    end,
-                    (home[0], home[1], max(start[2], takeoff_altitude_m)),
-                )
-            ):
+            target = targets[drone_id]
+            if end is None or not _position_matches(end, (target.x, target.y, target.z)):
                 return False
         return all(new.get(drone_id) in {"hovering", "moving"} for drone_id in intent.selection)
     if intent.name.value == "hold":
@@ -909,6 +991,18 @@ def _translation_grounding(facts: GroundingFacts) -> TranslationGrounding | None
     )
 
 
+def _translation_matches_selection(
+    expected: TranslationGrounding | None,
+    actual: TranslationGrounding | None,
+    selection: tuple[int, ...],
+) -> bool:
+    if expected is None or actual is None:
+        return expected is actual
+    return expected.policy == actual.policy and all(
+        expected.headings.get(drone_id) == actual.headings.get(drone_id) for drone_id in selection
+    )
+
+
 def _drone_position(
     facts: GroundingFacts, drone_id: int, field: str
 ) -> tuple[float, float, float] | None:
@@ -917,6 +1011,61 @@ def _drone_position(
             value = drone[field]
             return value if isinstance(value, tuple) else None
     return None
+
+
+def _drone_position_time(facts: GroundingFacts, drone_id: int) -> int | None:
+    for drone in facts.drones:
+        if drone["drone_id"] == drone_id:
+            value = drone["position_time_ms"]
+            return value if isinstance(value, int) else None
+    return None
+
+
+def _snapshot_matches_facts(
+    snapshot: FleetSnapshot,
+    facts: GroundingFacts,
+    selection: tuple[int, ...],
+) -> bool:
+    if (
+        snapshot.armed != facts.armed
+        or snapshot.estop_active != facts.estop
+        or snapshot.now_ms != facts.state_time_ms
+    ):
+        return False
+    fact_drones = {int(drone["drone_id"]): drone for drone in facts.drones}
+    for drone_id in selection:
+        aircraft = snapshot.aircraft.get(drone_id)
+        drone = fact_drones.get(drone_id)
+        if aircraft is None or drone is None:
+            return False
+        position = _drone_position(facts, drone_id, "position")
+        home = _drone_position(facts, drone_id, "home_position")
+        position_time_ms = _drone_position_time(facts, drone_id)
+        if (
+            aircraft.membership.value != drone["membership"]
+            or aircraft.flight_state.value != drone["flight_state"]
+            or position != (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+            or position_time_ms != aircraft.position_last_seen_ms
+            or (home is not None and home != (aircraft.home.x, aircraft.home.y, aircraft.home.z))
+        ):
+            return False
+    return True
+
+
+def _goto_targets(plan: Plan, selection: tuple[int, ...]) -> dict[int, Position] | None:
+    commands = {
+        command.drone_id: command
+        for command in plan.commands
+        if command.operation is CommandOperation.GOTO
+    }
+    if set(commands) != set(selection) or len(commands) != len(plan.commands):
+        return None
+    try:
+        return {
+            drone_id: Position.from_mapping(commands[drone_id].parameters) for drone_id in selection
+        }
+    except ValueError:
+        return None
 
 
 def _position_matches(

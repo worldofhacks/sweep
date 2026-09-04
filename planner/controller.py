@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from threading import RLock
 
 from adapters.dispatch import AdapterDispatcher
 from arbiter.safety import SafetyArbiter
@@ -13,6 +14,7 @@ from planner.models import (
     FleetSnapshot,
     LifecycleStatus,
     Plan,
+    PreparedExecution,
     Refusal,
     RefusalReason,
 )
@@ -36,6 +38,52 @@ class PositioningLossResult:
     execution: ExecutionResult | None
 
 
+class PreparedExecutionRouter:
+    def __init__(
+        self,
+        controller: AutonomyController,
+        *,
+        current_snapshot: SnapshotProvider | None = None,
+    ) -> None:
+        self.controller = controller
+        self.current_snapshot = current_snapshot
+        self._prepared: dict[str, PreparedExecution] = {}
+        self._lock = RLock()
+
+    def prepare(
+        self,
+        intent: IntentV1,
+        snapshot: FleetSnapshot,
+    ) -> PreparedExecution | ExecutionResult:
+        return self.controller.prepare(
+            intent,
+            snapshot,
+            current_snapshot=self.current_snapshot,
+        )
+
+    def bind(self, prepared: PreparedExecution) -> None:
+        with self._lock:
+            if prepared.intent.intent_id in self._prepared:
+                raise ValueError("intent already has a prepared execution")
+            self._prepared[prepared.intent.intent_id] = prepared
+
+    def discard(self, intent_id: str) -> None:
+        with self._lock:
+            self._prepared.pop(intent_id, None)
+
+    def __call__(self, intent: IntentV1, _relay_state: object) -> None:
+        with self._lock:
+            prepared = self._prepared.pop(intent.intent_id, None)
+        if prepared is None or prepared.intent != intent:
+            raise RuntimeError("intent has no matching prepared execution")
+        result = self.controller.dispatch_prepared(
+            prepared,
+            current_snapshot=self.current_snapshot,
+        )
+        if result.status is not LifecycleStatus.COMPLETED:
+            raise RuntimeError("prepared execution did not complete")
+
+
 class AutonomyController:
     def __init__(
         self,
@@ -55,6 +103,18 @@ class AutonomyController:
         *,
         current_snapshot: SnapshotProvider | None = None,
     ) -> ExecutionResult:
+        prepared = self.prepare(intent, snapshot, current_snapshot=current_snapshot)
+        if isinstance(prepared, ExecutionResult):
+            return prepared
+        return self.dispatch_prepared(prepared, current_snapshot=current_snapshot)
+
+    def prepare(
+        self,
+        intent: IntentV1,
+        snapshot: FleetSnapshot,
+        *,
+        current_snapshot: SnapshotProvider | None = None,
+    ) -> PreparedExecution | ExecutionResult:
         provider = current_snapshot or (lambda: snapshot)
         current = provider()
         if not self.planner.supports(intent):
@@ -91,10 +151,18 @@ class AutonomyController:
                 status=LifecycleStatus.REFUSED,
                 refusal=planned,
             )
+        return PreparedExecution(intent=intent, plan=planned, snapshot=current)
+
+    def dispatch_prepared(
+        self,
+        prepared: PreparedExecution,
+        *,
+        current_snapshot: SnapshotProvider | None = None,
+    ) -> ExecutionResult:
         return self.dispatcher.dispatch(
-            planned,
-            current,
-            current_snapshot=provider,
+            prepared.plan,
+            prepared.snapshot,
+            current_snapshot=current_snapshot,
         )
 
     def execute_pair(

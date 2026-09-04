@@ -1,7 +1,7 @@
 from dataclasses import replace
 
 from planner.controller import AutonomyController
-from planner.models import FlightState, LifecycleStatus, RefusalReason
+from planner.models import FlightState, LifecycleStatus, PreparedExecution, RefusalReason
 from planner.planner import DeterministicPlanner
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
@@ -47,6 +47,30 @@ def test_arm_select_takeoff_documented_workflow() -> None:
         FlightState.HOVERING,
         FlightState.HOVERING,
     ]
+
+
+def test_prepared_plan_dispatches_without_replanning() -> None:
+    snapshot = replace_aircraft(make_snapshot(2), 2, heading_deg=90.0)
+    config = replace(
+        planning_config(translation_frame="aircraft_relative"),
+        translation_step_m=0.75,
+    )
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
+    intent = make_intent(IntentName.TRANSLATE, args={"dx": 1, "dy": 0})
+
+    prepared = controller.prepare(intent, snapshot)
+    assert isinstance(prepared, PreparedExecution)
+    controller.planner = DeterministicPlanner(
+        replace(planning_config(translation_frame="world"), translation_step_m=2.0)
+    )
+    result = controller.dispatch_prepared(prepared)
+
+    assert result.status is LifecycleStatus.COMPLETED
+    targets = {
+        call.drone_ids[0]: (dict(call.parameters)["x"], dict(call.parameters)["y"])
+        for call in flight.calls
+    }
+    assert targets == {1: (0.75, 0.0), 2: (2.0, 0.75)}
 
 
 def test_arm_is_global_and_does_not_depend_on_a_stale_selection() -> None:

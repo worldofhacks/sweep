@@ -13,7 +13,7 @@ from math import dist, isfinite
 from types import MappingProxyType
 from typing import Literal
 
-from relay.intent_v1 import IntentName
+from relay.intent_v1 import IntentName, IntentV1
 
 type JsonScalar = None | bool | int | float | str
 type JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -21,16 +21,16 @@ type JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
 @dataclass(frozen=True, slots=True)
 class TranslationPolicy:
-    frame: Literal["aircraft_relative"]
+    frame: Literal["world", "aircraft_relative"]
     step_m: float
 
     def __post_init__(self) -> None:
         if (
-            self.frame != "aircraft_relative"
+            self.frame not in {"world", "aircraft_relative"}
             or not _is_finite_number(self.step_m)
             or self.step_m <= 0
         ):
-            raise ValueError("translation policy requires a positive aircraft-relative step")
+            raise ValueError("translation policy requires a supported frame and positive step")
 
 
 @dataclass(frozen=True, slots=True)
@@ -645,6 +645,13 @@ class Plan:
             "hold_scope": self.hold_scope.value if self.hold_scope is not None else None,
             "status": self.status.value,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedExecution:
+    intent: IntentV1
+    plan: Plan
+    snapshot: FleetSnapshot
 
 
 @dataclass(frozen=True, slots=True)
