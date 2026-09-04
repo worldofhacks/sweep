@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from math import cos, isfinite, radians, sin
 
 from planner.models import (
+    AltitudeGrounding,
     Command,
     CommandOperation,
     FleetSnapshot,
+    FlightState,
     HoldScope,
     JsonValue,
     MembershipState,
@@ -27,6 +29,7 @@ SELECTION_TARGETED_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
         IntentName.HOLD,
         IntentName.COME_HOME,
         IntentName.LAND,
@@ -49,6 +52,9 @@ class PlanningConfig:
     capture_gimbal_pitch_deg: float
     reconstruct_headings_deg: tuple[float, ...]
     translation_frame: str = "world"
+    altitude_step_m: float | None = None
+    altitude_floor_z_m: float | None = None
+    altitude_configuration_id: str | None = None
 
     def __post_init__(self) -> None:
         positive = {
@@ -106,8 +112,38 @@ class PlanningConfig:
             raise ValueError("reconstruct_8 headings must be finite values in [0, 360)")
         if len(set(self.reconstruct_headings_deg)) != 8:
             raise ValueError("reconstruct_8 headings must be unique")
+        if self.altitude_floor_z_m is not None and (
+            isinstance(self.altitude_floor_z_m, bool)
+            or not isinstance(self.altitude_floor_z_m, int | float)
+            or not isfinite(self.altitude_floor_z_m)
+        ):
+            raise ValueError("altitude floor reference must be finite")
+        self.altitude_grounding()
         if self.translation_frame not in {"world", "aircraft_relative"}:
             raise ValueError("translation_frame must be world or aircraft_relative")
+
+    def altitude_grounding(self) -> AltitudeGrounding | None:
+        if self.altitude_step_m is None:
+            return None
+        return AltitudeGrounding(
+            self.altitude_step_m, self.altitude_floor_z_m, self.altitude_configuration_id
+        )
+
+    def capability_profile(self, requested: CapabilityProfile) -> CapabilityProfile:
+        grounding = self.altitude_grounding()
+        if requested == C1_CAPABILITY_PROFILE:
+            if grounding is None:
+                return requested
+            return requested.with_altitude(
+                enabled=True,
+                absolute=grounding.floor_z_m is not None,
+            )
+        if requested.supports(IntentName.ALTITUDE):
+            return requested.with_altitude(
+                enabled=grounding is not None,
+                absolute=grounding is not None and grounding.floor_z_m is not None,
+            )
+        return requested
 
     def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding:
         return TranslationGrounding(
@@ -134,10 +170,17 @@ class DeterministicPlanner:
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     ) -> None:
         self.config = config
-        self.capability_profile = capability_profile
+        self.capability_profile = config.capability_profile(capability_profile)
 
     def supports(self, intent: IntentV1) -> bool:
-        return self.capability_profile.supports(intent.name)
+        if not self.capability_profile.supports(intent.name):
+            return False
+        if intent.name is IntentName.ALTITUDE:
+            grounding = self.config.altitude_grounding()
+            return grounding is not None and (
+                "height_m" not in intent.args or grounding.floor_z_m is not None
+            )
+        return True
 
     def plan(self, intent: IntentV1, snapshot: FleetSnapshot) -> PlanResult:
         if not self.supports(intent):
@@ -236,6 +279,73 @@ class DeterministicPlanner:
                     },
                 )
 
+        elif intent.name is IntentName.ALTITUDE:
+            grounding = self.config.altitude_grounding()
+            if grounding is None:
+                return _refusal(intent, snapshot, RefusalReason.UNSUPPORTED, "altitude is disabled")
+            if set(intent.args) not in ({"delta"}, {"height_m"}):
+                return _refusal(
+                    intent, snapshot, RefusalReason.INVALID_PLAN, "invalid altitude arguments"
+                )
+            value = next(iter(intent.args.values()))
+            if isinstance(value, bool) or not isinstance(value, int | float) or not isfinite(value):
+                return _refusal(
+                    intent, snapshot, RefusalReason.INVALID_PLAN, "altitude must be finite"
+                )
+            if "height_m" in intent.args and value <= 0:
+                return _refusal(
+                    intent, snapshot, RefusalReason.INVALID_STATE, "height must be positive"
+                )
+            targets = {}
+            for drone_id in selected:
+                aircraft = snapshot.aircraft[drone_id]
+                if aircraft.flight_state not in {FlightState.AIRBORNE, FlightState.HOVERING}:
+                    return _refusal(
+                        intent,
+                        snapshot,
+                        RefusalReason.INVALID_STATE,
+                        "altitude requires an airborne aircraft",
+                        drone_id,
+                    )
+                target_z = (
+                    aircraft.pose.z + value * grounding.step_m
+                    if "delta" in intent.args
+                    else grounding.floor_z_m + value
+                )
+                if not isfinite(target_z):
+                    return _refusal(
+                        intent, snapshot, RefusalReason.INVALID_PLAN, "altitude target overflow"
+                    )
+                if target_z <= (grounding.floor_z_m if grounding.floor_z_m is not None else 0.0):
+                    return _refusal(
+                        intent,
+                        snapshot,
+                        RefusalReason.INVALID_STATE,
+                        "altitude cannot descend to or below the reference floor",
+                        drone_id,
+                    )
+                targets[drone_id] = target_z
+
+            # Move the leading aircraft first so stacked columns retain separation.
+            def vertical_order(drone_id: int) -> tuple[int, float, int]:
+                start = snapshot.aircraft[drone_id].pose.z
+                target = targets[drone_id]
+                return (0, -start, drone_id) if target > start else (1, start, drone_id)
+
+            for drone_id in sorted(selected, key=vertical_order):
+                pose = snapshot.aircraft[drone_id].pose
+                builder.add(
+                    drone_id,
+                    CommandOperation.GOTO,
+                    {
+                        "x": pose.x,
+                        "y": pose.y,
+                        "z": targets[drone_id],
+                        "speed": self.config.flight_speed_m_s,
+                    },
+                )
+                builder.add(drone_id, CommandOperation.HOVER)
+
         elif intent.name is IntentName.HOLD:
             hold_scope = HoldScope.OPERATOR_SELECTION
             for drone_id in selected:
@@ -308,6 +418,9 @@ class DeterministicPlanner:
             armed_update=armed_update,
             estop_update=estop_update,
             hold_scope=hold_scope,
+            altitude_grounding=(
+                self.config.altitude_grounding() if intent.name is IntentName.ALTITUDE else None
+            ),
         )
 
     def emergency_hold_plan(

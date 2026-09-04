@@ -87,7 +87,7 @@ class RelaySession:
         self.intent_sink = intent_sink
         self.leave_authorizer = leave_authorizer
         sink_profile = getattr(intent_sink, "capability_profile", capability_profile)
-        if sink_profile != capability_profile:
+        if sink_profile is not capability_profile:
             raise ValueError("relay session and planner use different capability profiles")
         self.capability_profile = capability_profile
         self.registry = FleetRegistry(

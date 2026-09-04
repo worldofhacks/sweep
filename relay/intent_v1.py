@@ -111,6 +111,15 @@ def validate_intent(
             RejectionReason.UNSUPPORTED,
             f"{name} is outside capability profile {capability_profile.name}",
         )
+    if (
+        name is IntentName.ALTITUDE
+        and "height_m" in args
+        and not capability_profile.altitude_absolute_enabled
+    ):
+        return RejectedIntent(
+            RejectionReason.UNSUPPORTED,
+            f"absolute altitude is outside capability profile {capability_profile.name}",
+        )
 
     return AcceptedIntent(
         IntentV1(
@@ -211,7 +220,15 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
             raise ValueError
         return MappingProxyType({})
 
-    if name in {IntentName.ALTITUDE, IntentName.SPACING}:
+    if name is IntentName.ALTITUDE:
+        if set(value) not in ({"delta"}, {"height_m"}):
+            raise ValueError
+        key = next(iter(value))
+        if not _is_finite_number(value[key]) or (key == "height_m" and value[key] <= 0):
+            raise ValueError
+        return MappingProxyType({key: value[key]})
+
+    if name is IntentName.SPACING:
         if set(value) != {"delta"} or not _is_finite_number(value["delta"]):
             raise ValueError
         return MappingProxyType({"delta": value["delta"]})

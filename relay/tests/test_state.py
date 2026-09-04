@@ -81,6 +81,7 @@ def test_all_readiness_gates_must_pass_before_aircraft_is_selectable() -> None:
     assert state["drones"][0]["selectable"] is True
     assert state["drones"][0]["home_pose"] == {"x": 1.0, "y": 2.0, "z": 0.5}
     assert state["capability_profile"] == "c1_basic_control"
+    assert state["altitude_absolute_enabled"] is False
     assert state["enabled_intent_names"] == [
         "arm",
         "capture_room",
@@ -271,6 +272,7 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
         "mode",
         "capability_profile",
         "enabled_intent_names",
+        "altitude_absolute_enabled",
         "pending",
         "accepted_plan",
         "drones",

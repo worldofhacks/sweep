@@ -94,6 +94,7 @@ describe('Control / Capture console', () => {
       mode: 'indoor',
       capability_profile: 'c1_basic_control',
       enabled_intent_names: ['hold'],
+      altitude_absolute_enabled: false,
       pending: null,
       accepted_plan: null,
       drones,
