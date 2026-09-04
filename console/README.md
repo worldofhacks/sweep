@@ -31,9 +31,10 @@ window.__SWEEP_RELAY_CONFIG__ = {
 }
 ```
 
-The client opens `/ws/{session_id}` twice: one connection authenticates as `console` for buttons
-and state, and a separate connection authenticates as `keyboard` for the Shift+Escape network
-stop. An intent is never moved between those sources, and neither connection retries silently.
+The client opens `/ws/{session_id}` three times: one connection authenticates as `console` for
+buttons and state, a separate connection authenticates as `keyboard` for the Shift+Escape network
+stop, and a third authenticates as `webcam` for the gesture producer. An intent is never moved
+between those sources, and no connection retries silently.
 The token is sent only in the first WebSocket frame; it is never placed in a URL, rendered in the
 UI, or included in console logging. Without the full bootstrap, both sources remain visibly
 disconnected and network controls are unavailable.
@@ -49,3 +50,37 @@ and browser playback remain held for M3.1.
 For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
 development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build
 cannot enable it. It is a UI/contract fixture, not acceptance evidence and not a flight simulator.
+
+## Gesture tracking
+
+The Gesture readout panel below the Control / Capture grid is a second input channel through the
+same Intent v1 path as the buttons. Tracking is off by default. To enable it, expand the panel,
+pick a camera, and click Enable tracking; the browser asks for camera permission, then the
+MediaPipe GestureRecognizer runtime and model load from the MediaPipe CDN (`@mediapipe/tasks-vision`
+WASM and `gesture_recognizer.task`). A denied permission, a dropped or unplugged webcam, or a model
+that fails to load are shown as distinct states that emit nothing; the network stop and the
+physical RC are unaffected.
+
+| Gesture | Held for | Score | Action |
+|---|---|---|---|
+| Open_Palm | 600 ms | >= 0.8 | draft `capture_room` for the selected aircraft and the room field |
+| Closed_Fist | 600 ms | >= 0.8 | draft `hold` for the current selection |
+| Thumb_Up | 400 ms | >= 0.8 | confirm the pending gesture-drafted preview |
+| Thumb_Down | 400 ms | >= 0.8 | cancel the pending gesture-drafted preview |
+
+A draft appears in the plan preview with source `webcam` and is never sent until it is confirmed;
+the `intent_id` assigned at draft time is kept through confirmation, and the confirmed intent leaves
+through the `webcam` connection. Thumb gestures act only on previews that a gesture drafted. A held
+gesture is accepted once and then suppressed until the hand returns to neutral; low confidence and
+an interrupted dwell are shown and emit nothing. `estop`, `arm`, `takeoff`, and free-flight motion
+are never gesture-emittable (`src/gesture/policy.ts`). Thresholds and dwell are constants in the same
+module.
+
+Download session (JSONL) saves the current session: a header line with the enabled pairs, then one
+line per recognizer frame, policy transition, status change, and intent event (`draft`, `confirm`,
+`cancel`, `blocked`), each with monotonic `t` and epoch `wall_t`. These recordings feed the gesture
+eval fixtures. Clear recording discards the buffer; the buffer is bounded and reports dropped
+entries.
+
+The development fixture (`/?fixture=control`) includes a `webcam` fixture client, so gesture drafts
+can be confirmed without a relay while the camera and model are real.
