@@ -126,6 +126,14 @@ Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, 
 
 Each normalized event is one append-only JSONL record shaped as `{"seq": N, "event": {...}}`, with a contiguous per-session sequence. Session names are SHA-256 hashed for filenames under `SWEEP_SESSION_LOG_DIR`. Any attempt to log a token, signature, authorization value, credential, password, or secret is rejected recursively.
 
+Events from one relay operation are committed as a single audit batch. A per-session SQLite database in WAL mode records the pending operation before irreversible work begins and makes its events visible only when the whole operation completes. JSONL remains the public replay mirror with the same per-event record shape. An incomplete operation fences replay across restart.
+
+Control projection updates record their pending operation before changing any field. If copying a later field fails, the session rejects further mutations, state reads, and replay, including when a planner callback catches the original exception.
+
+Live appends compare the mirror's file identity, size, and modification metadata with the last verified append. An unchanged mirror requires no history reads; a changed mirror receives full validation. Reopen and replay always verify the complete history.
+
 Authenticate HTTP requests with `Authorization: Bearer $SWEEP_RELAY_TOKEN`. `GET /metrics` returns relay/session counters. `GET /session/{id}?after_sequence=N` returns a `replay` envelope whose `events` are the ordered JSONL records after `N`. `intent_record` is log-only and pairs the normalized Intent v1 request with its accepted/refused outcome; membership, telemetry, state, acknowledgement, and refusal records use the same event shapes delivered live. Replay UI remains outside M2.0.
 
 A live session ID is scoped to one relay process lifetime. After restart, any ID whose persisted log is nonempty is replay-only: a correctly authenticated WebSocket receives `auth.refused` with `reason: "session_closed"` and must reconnect under a new session ID. The replay endpoint reads that closed log without constructing mutable fleet state. This deliberately prevents a restarted relay from appending new roster versions or connection epochs starting at one; safe live-state restoration also requires autonomy-owned plan/confirmation invalidation and loss handling and is not part of M1.1.
+
+On first reopen of a legacy JSONL log, the relay removes only a nonempty, unterminated EOF fragment after validating every complete record, then imports that prefix into the transaction database. Later recovery verifies the JSONL mirror against completed database operations. Complete malformed records and divergent mirrors fail closed. A repaired log remains evidence of prior session use even when its first record was torn, so that session ID stays replay-only.
