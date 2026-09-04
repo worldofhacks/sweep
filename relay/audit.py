@@ -88,9 +88,7 @@ class SessionAuditLog:
 
     def append(self, event: Mapping[str, object]) -> dict[str, object]:
         """Validate and durably append one safe JSON-native event."""
-        self._validate_event(event)
-        operation_id = self.begin_operation()
-        return self.append_batch([event], operation_id=operation_id)[0]
+        return self.append_batch([event])[0]
 
     def append_batch(
         self,
@@ -147,6 +145,7 @@ class SessionAuditLog:
         return records
 
     def _validate_event(self, event: Mapping[str, object]) -> None:
+        _reject_nonfinite_numbers(event)
         _reject_sensitive_fields(event)
         if event.get("session") != self.session:
             raise AuditLogError("event session does not match this log")
@@ -508,7 +507,7 @@ class SessionAuditLog:
                 record = json.loads(line)
                 _validate_record(record, line_number, self.session, line_number)
                 records.append(record)
-        except (UnicodeError, json.JSONDecodeError) as error:
+        except (UnicodeError, ValueError, RecursionError) as error:
             raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
         if repair_content is not None:
             self._replace_mirror(repair_content)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import stat
 from pathlib import Path
 
@@ -151,6 +152,53 @@ def test_sensitive_fields_are_refused_at_any_depth(tmp_path: Path, field: str) -
     with pytest.raises(AuditLogError, match="sensitive field"):
         log.append(event)
     assert not log.path.exists()
+
+
+@pytest.mark.parametrize("value", [float("nan"), {1, 2}])
+def test_rejected_append_does_not_poison_next_append(tmp_path: Path, value: object) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    event = _event("event-1")
+    event["value"] = value
+
+    with pytest.raises(AuditLogError):
+        log.append(event)
+
+    if log.database_path.exists():
+        with sqlite3.connect(log.database_path) as database:
+            assert database.execute(
+                "SELECT COUNT(*) FROM operations WHERE status = 'pending'"
+            ).fetchone() == (0,)
+    assert not log.path.exists()
+    assert log.append(_event("valid"))["seq"] == 1
+    assert len(log.replay()) == 1
+    assert len(SessionAuditLog(tmp_path, "session-1").replay()) == 1
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        b'{"seq":1,"event":{"session":"session-1","event_id":"bad","value":'
+        + b"9" * 5000
+        + b"}}\n",
+        b'{"seq":1,"event":{"session":"session-1","event_id":"bad","value":'
+        + b"[" * 2000
+        + b"0"
+        + b"]" * 2000
+        + b"}}\n",
+    ],
+    ids=["integer-limit", "nesting-limit"],
+)
+def test_legacy_decoder_resource_limits_are_audit_errors_without_mutation(
+    tmp_path: Path, encoded: bytes
+) -> None:
+    seed = SessionAuditLog(tmp_path, "session-1")
+    seed.path.write_bytes(encoded)
+
+    with pytest.raises(AuditLogError, match="cannot replay"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert seed.path.read_bytes() == encoded
+    assert not seed.database_path.exists()
 
 
 def test_corrupt_or_reordered_log_fails_closed(tmp_path: Path) -> None:

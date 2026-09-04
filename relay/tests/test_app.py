@@ -288,6 +288,48 @@ def test_same_roster_operations_publish_in_mutation_order(
     assert asyncio.run(exercise_race()) == [False, True]
 
 
+def test_cancelled_session_operation_finishes_publishing_before_releasing_order(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+) -> None:
+    mutation_finished = Event()
+    release_operation = Event()
+
+    async def exercise() -> list[bool]:
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        subscription = await runtime.subscribe(
+            SESSION, Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        )
+
+        def blocked_operation() -> list[dict[str, object]]:
+            event = session.update_control_projection(estop=True)
+            mutation_finished.set()
+            assert release_operation.wait(timeout=2)
+            return [event]
+
+        cancelled = asyncio.create_task(runtime.process_and_publish(SESSION, blocked_operation))
+        for _ in range(200):
+            if mutation_finished.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert mutation_finished.is_set()
+        cancelled.cancel()
+        release_operation.set()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        await runtime.process_and_publish(
+            SESSION, lambda: [session.update_control_projection(estop=False)]
+        )
+        return [
+            bool(subscription.queue.get_nowait()["estop"]),
+            bool(subscription.queue.get_nowait()["estop"]),
+        ]
+
+    assert asyncio.run(exercise()) == [True, False]
+
+
 def test_bad_authentication_is_refused_without_creating_a_session_log(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:

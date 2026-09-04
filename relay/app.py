@@ -72,9 +72,11 @@ class RelayRuntime:
         self._activation_tasks: dict[str, asyncio.Task[RelaySession]] = {}
         self._activation_tasks_lock = Lock()
         self._session_operations: dict[str, asyncio.Lock] = {}
+        self._background_operations: set[asyncio.Task[object]] = set()
         self._connection_lock = asyncio.Lock()
         self._fanout_failed_sessions: set[str] = set()
         self._fanout_task: asyncio.Task[None] | None = None
+        self._fanout_session_tasks: dict[str, asyncio.Task[None]] = {}
 
     def session(self, session_id: str) -> RelaySession:
         _validate_session_id(session_id)
@@ -168,11 +170,17 @@ class RelayRuntime:
         self._fanout_task = asyncio.create_task(self._fanout_loop())
 
     async def stop(self) -> None:
-        if self._fanout_task is None:
-            return
-        self._fanout_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._fanout_task
+        if self._fanout_task is not None:
+            self._fanout_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._fanout_task
+        tasks = tuple(self._fanout_session_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        while self._background_operations:
+            await asyncio.gather(*tuple(self._background_operations), return_exceptions=True)
         self._fanout_task = None
 
     async def subscribe(self, session_id: str, principal: Principal) -> _Subscription:
@@ -217,10 +225,28 @@ class RelayRuntime:
         session_id: str,
         operation: Callable[[], list[dict[str, object]]],
     ) -> list[dict[str, object]]:
+        """Caller cancellation leaves the ordered mutation and publication running."""
+        task = asyncio.create_task(self._process_and_publish(session_id, operation))
+        self._track_background_operation(task)
+        return await asyncio.shield(task)
+
+    async def _process_and_publish(
+        self,
+        session_id: str,
+        operation: Callable[[], list[dict[str, object]]],
+    ) -> list[dict[str, object]]:
         async with self._session_operation(session_id):
             events = await asyncio.to_thread(operation)
             await self.publish(session_id, events)
             return events
+
+    def _track_background_operation(self, task: asyncio.Task[object]) -> None:
+        self._background_operations.add(task)
+        task.add_done_callback(self._background_operation_done)
+
+    def _background_operation_done(self, task: asyncio.Task[object]) -> None:
+        self._background_operations.discard(task)
+        _log_background_failure(task)
 
     async def unsubscribe(self, session_id: str, subscription: _Subscription) -> None:
         async with self._connection_lock:
@@ -235,6 +261,51 @@ class RelayRuntime:
                 key = (session_id, principal.drone_id)
                 if self._adapter_connections.get(key) == subscription.connection_id:
                     self._adapter_connections.pop(key, None)
+
+    async def cleanup_connection(
+        self,
+        session_id: str,
+        session: RelaySession,
+        principal: Principal,
+        subscription: _Subscription,
+    ) -> None:
+        """Complete disconnect and unbinding even when the socket task is cancelled."""
+        task = asyncio.create_task(
+            self._cleanup_connection(session_id, session, principal, subscription)
+        )
+        self._track_background_operation(task)
+        with CancelScope(shield=True):
+            await asyncio.shield(task)
+
+    async def _cleanup_connection(
+        self,
+        session_id: str,
+        session: RelaySession,
+        principal: Principal,
+        subscription: _Subscription,
+    ) -> None:
+        with CancelScope(shield=True):
+            async with self._session_operation(session_id):
+                try:
+                    if principal.source == "adapter":
+                        assert principal.drone_id is not None
+                        try:
+                            events = await asyncio.to_thread(
+                                session.handle_adapter_disconnect,
+                                drone_id=principal.drone_id,
+                                connection_epoch=session.registry.connection_epoch(
+                                    principal.drone_id
+                                ),
+                            )
+                            await self.publish(session_id, events)
+                        except AuditLogError:
+                            _LOGGER.exception(
+                                "adapter disconnect audit failed session=%s drone=%s",
+                                session_id,
+                                principal.drone_id,
+                            )
+                finally:
+                    await self.unsubscribe(session_id, subscription)
 
     async def publish(self, session_id: str, events: list[dict[str, object]]) -> None:
         """Queue an event batch atomically with respect to subscription activation."""
@@ -267,16 +338,35 @@ class RelayRuntime:
         while True:
             await asyncio.sleep(delay)
             for session_id, session in tuple(self.sessions.items()):
-                if session_id in self._fanout_failed_sessions:
+                if (
+                    session_id in self._fanout_failed_sessions
+                    or session_id in self._fanout_session_tasks
+                ):
                     continue
-                try:
-                    await self.process_and_publish(session_id, session.periodic_events)
-                except AuditLogError:
-                    self._fanout_failed_sessions.add(session_id)
-                    _LOGGER.exception(
-                        "session fan-out stopped after audit failure session=%s", session_id
+                task = asyncio.create_task(self._fanout_session(session_id, session))
+                self._fanout_session_tasks[session_id] = task
+                task.add_done_callback(
+                    lambda completed, active_session=session_id: self._fanout_session_done(
+                        active_session, completed
                     )
-                    continue
+                )
+
+    async def _fanout_session(self, session_id: str, session: RelaySession) -> None:
+        try:
+            await self.process_and_publish(session_id, session.periodic_events)
+        except AuditLogError:
+            self._fanout_failed_sessions.add(session_id)
+            _LOGGER.exception("session fan-out stopped after audit failure session=%s", session_id)
+
+    def _fanout_session_done(self, session_id: str, task: asyncio.Task[None]) -> None:
+        if self._fanout_session_tasks.get(session_id) is task:
+            del self._fanout_session_tasks[session_id]
+        if not task.cancelled() and (error := task.exception()) is not None:
+            _LOGGER.error(
+                "session fan-out task failed session=%s",
+                session_id,
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
 
 def create_app(
@@ -378,28 +468,7 @@ def create_app(
                 sender.cancel()
                 with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
                     await sender
-            try:
-                if principal.source == "adapter":
-                    assert principal.drone_id is not None
-                    try:
-                        with CancelScope(shield=True):
-                            await runtime.process_and_publish(
-                                session_id,
-                                lambda: session.handle_adapter_disconnect(
-                                    drone_id=principal.drone_id,
-                                    connection_epoch=session.registry.connection_epoch(
-                                        principal.drone_id
-                                    ),
-                                ),
-                            )
-                    except AuditLogError:
-                        _LOGGER.exception(
-                            "adapter disconnect audit failed session=%s drone=%s",
-                            session_id,
-                            principal.drone_id,
-                        )
-            finally:
-                await runtime.unsubscribe(session_id, subscription)
+            await runtime.cleanup_connection(session_id, session, principal, subscription)
 
     def authorized_runtime(authorization: str | None = Header(default=None)) -> RelayRuntime:
         runtime: RelayRuntime = application.state.relay_runtime
@@ -444,6 +513,16 @@ async def _send_events(websocket: WebSocket, subscription: _Subscription) -> Non
     while True:
         event = await subscription.queue.get()
         await websocket.send_json(event)
+
+
+def _log_background_failure(task: asyncio.Task[object]) -> None:
+    if task.cancelled():
+        return
+    if (error := task.exception()) is not None:
+        _LOGGER.error(
+            "cancellation-safe relay operation failed",
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
 
 def _auth_accepted(
