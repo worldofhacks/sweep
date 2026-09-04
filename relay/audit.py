@@ -68,8 +68,19 @@ class SessionAuditLog:
             flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
-            descriptor = os.open(self.path, flags, 0o600)
-            original_size = os.fstat(descriptor).st_size
+            try:
+                descriptor = os.open(self.path, flags, 0o600)
+            except OSError as error:
+                raise AuditLogError(f"cannot open session log: {error}") from None
+            try:
+                original_size = os.fstat(descriptor).st_size
+            except OSError as error:
+                try:
+                    os.close(descriptor)
+                except OSError as close_error:
+                    self._append_usable = False
+                    raise AuditLogError(f"cannot close session log: {close_error}") from None
+                raise AuditLogError(f"cannot inspect session log: {error}") from None
             try:
                 remaining = memoryview(encoded)
                 while remaining:

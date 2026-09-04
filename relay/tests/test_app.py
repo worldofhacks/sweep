@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Lock
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+import relay.app as app_module
 from relay.app import RelayRuntime, create_app
 from relay.audit import SessionAuditLog
 from relay.auth import AuthenticationError, Principal
@@ -381,6 +385,75 @@ def test_restart_keeps_torn_only_session_closed_after_replay_repair(
 
     assert refusal.value.code == "session_closed"
     assert log.path.read_bytes() == b""
+
+
+def test_persisted_replay_cannot_race_live_session_activation(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructor_started = Event()
+    second_constructor_started = Event()
+    resume_constructor = Event()
+    recovery_complete = Event()
+    partial_write = Event()
+    constructor_lock = Lock()
+    constructor_calls = 0
+    real_write = os.write
+
+    class PausingAuditLog(SessionAuditLog):
+        def __init__(self, root: Path, session: str) -> None:
+            nonlocal constructor_calls
+            with constructor_lock:
+                constructor_calls += 1
+                call = constructor_calls
+            if call == 1:
+                constructor_started.set()
+                assert resume_constructor.wait(timeout=2)
+            else:
+                second_constructor_started.set()
+            super().__init__(root, session)
+
+    monkeypatch.setattr(app_module, "SessionAuditLog", PausingAuditLog)
+    runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        replay_future = executor.submit(runtime.replay, SESSION)
+        assert constructor_started.wait(timeout=2)
+        session_future = executor.submit(runtime.session, SESSION)
+        raced = second_constructor_started.wait(timeout=0.2)
+
+        if raced:
+            session = session_future.result(timeout=2)
+            first_write = True
+
+            def pause_partial_write(descriptor: int, data: bytes | memoryview) -> int:
+                nonlocal first_write
+                if first_write:
+                    first_write = False
+                    written = real_write(descriptor, data[:5])
+                    partial_write.set()
+                    assert recovery_complete.wait(timeout=2)
+                    return written
+                return real_write(descriptor, data)
+
+            monkeypatch.setattr(os, "write", pause_partial_write)
+            append_future = executor.submit(session.update_control_projection, selection=())
+            assert partial_write.wait(timeout=2)
+            resume_constructor.set()
+            replay_future.result(timeout=2)
+            recovery_complete.set()
+            append_future.result(timeout=2)
+        else:
+            resume_constructor.set()
+            replay_future.result(timeout=2)
+            session = session_future.result(timeout=2)
+            session.update_control_projection(selection=())
+
+    replay = runtime.replay(SESSION)
+    assert [record["seq"] for record in replay["events"]] == [1]
+    assert replay["last_sequence"] == 1
 
 
 def test_initial_send_failure_releases_adapter_binding_and_records_loss(

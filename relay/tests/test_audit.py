@@ -235,3 +235,50 @@ def test_close_failure_fences_writer_and_reopen_continues_sequence(
 
     assert second["seq"] == 2
     assert [record["seq"] for record in reopened.replay()] == [1, 2]
+
+
+def test_open_failure_is_normalized_as_an_audit_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    real_open = os.open
+
+    def failing_open(path: object, flags: int, *args: object) -> int:
+        if flags & os.O_APPEND:
+            raise PermissionError("injected open failure")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(os, "open", failing_open)
+
+    with pytest.raises(AuditLogError, match="cannot open session log"):
+        log.append(_event("event-1"))
+
+
+def test_fstat_failure_closes_the_open_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    descriptors: list[int] = []
+    real_open = os.open
+    real_fstat = os.fstat
+
+    def recording_open(path: object, flags: int, *args: object) -> int:
+        descriptor = real_open(path, flags, *args)
+        if flags & os.O_APPEND:
+            descriptors.append(descriptor)
+        return descriptor
+
+    def failing_fstat(descriptor: int) -> os.stat_result:
+        if descriptor in descriptors:
+            raise OSError("injected fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "fstat", failing_fstat)
+
+    with pytest.raises(AuditLogError, match="cannot inspect session log"):
+        log.append(_event("event-1"))
+
+    monkeypatch.setattr(os, "fstat", real_fstat)
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(descriptors[0])

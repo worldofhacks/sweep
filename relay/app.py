@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from threading import RLock
 
 from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
@@ -56,59 +57,63 @@ class RelayRuntime:
         self.sessions: dict[str, RelaySession] = {}
         self._subscriptions: dict[str, dict[str, _Subscription]] = {}
         self._adapter_connections: dict[tuple[str, int], str] = {}
+        self._session_lock = RLock()
         self._connection_lock = asyncio.Lock()
         self._fanout_task: asyncio.Task[None] | None = None
 
     def session(self, session_id: str) -> RelaySession:
         _validate_session_id(session_id)
-        session = self.sessions.get(session_id)
-        if session is None:
-            audit_log = SessionAuditLog(self.settings.log_dir, session_id)
-            if audit_log.had_persisted_log:
-                raise AuthenticationError(
-                    "session_closed",
-                    "persisted sessions are replay-only after a relay process restart; "
-                    "use a new session ID",
+        with self._session_lock:
+            session = self.sessions.get(session_id)
+            if session is None:
+                audit_log = SessionAuditLog(self.settings.log_dir, session_id)
+                if audit_log.had_persisted_log:
+                    raise AuthenticationError(
+                        "session_closed",
+                        "persisted sessions are replay-only after a relay process restart; "
+                        "use a new session ID",
+                    )
+                sink = (
+                    None
+                    if self.intent_sink_factory is None
+                    else self.intent_sink_factory(session_id)
                 )
-            sink = (
-                None if self.intent_sink_factory is None else self.intent_sink_factory(session_id)
-            )
-            leave_authorizer = (
-                None
-                if self.leave_authorizer_factory is None
-                else self.leave_authorizer_factory(session_id)
-            )
-            session = RelaySession(
-                session_id=session_id,
-                audit_log=audit_log,
-                limits=self.settings.limits(),
-                clock=self.clock,
-                event_ids=self.event_ids,
-                intent_sink=sink,
-                leave_authorizer=leave_authorizer,
-            )
-            self.sessions[session_id] = session
-        return session
+                leave_authorizer = (
+                    None
+                    if self.leave_authorizer_factory is None
+                    else self.leave_authorizer_factory(session_id)
+                )
+                session = RelaySession(
+                    session_id=session_id,
+                    audit_log=audit_log,
+                    limits=self.settings.limits(),
+                    clock=self.clock,
+                    event_ids=self.event_ids,
+                    intent_sink=sink,
+                    leave_authorizer=leave_authorizer,
+                )
+                self.sessions[session_id] = session
+            return session
 
     def replay(self, session_id: str, *, after_sequence: int = 0) -> dict[str, object]:
         """Read active or persisted history without reopening mutable live state."""
         _validate_session_id(session_id)
-        session = self.sessions.get(session_id)
-        if session is not None:
-            return session.replay(after_sequence=after_sequence)
-
-        audit_log = SessionAuditLog(self.settings.log_dir, session_id)
-        records, last_sequence = audit_log.replay_snapshot(after_sequence=after_sequence)
-        return {
-            "v": 1,
-            "t": self.clock(),
-            "type": "replay",
-            "event_id": self.event_ids(),
-            "session": session_id,
-            "after_sequence": after_sequence,
-            "last_sequence": last_sequence,
-            "events": records,
-        }
+        with self._session_lock:
+            session = self.sessions.get(session_id)
+            if session is None:
+                audit_log = SessionAuditLog(self.settings.log_dir, session_id)
+                records, last_sequence = audit_log.replay_snapshot(after_sequence=after_sequence)
+                return {
+                    "v": 1,
+                    "t": self.clock(),
+                    "type": "replay",
+                    "event_id": self.event_ids(),
+                    "session": session_id,
+                    "after_sequence": after_sequence,
+                    "last_sequence": last_sequence,
+                    "events": records,
+                }
+        return session.replay(after_sequence=after_sequence)
 
     async def start(self) -> None:
         self._fanout_task = asyncio.create_task(self._fanout_loop())

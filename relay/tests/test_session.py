@@ -205,6 +205,39 @@ def test_replay_records_and_cursor_share_one_snapshot_during_append(
     assert next_replay["last_sequence"] == 2
 
 
+def test_session_fails_closed_after_rolled_back_audit_append(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    adapter_principal: Principal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _new_session(tmp_path, clock, event_ids)
+    real_fsync = os.fsync
+    calls = 0
+
+    def fail_once(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("injected fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_once)
+
+    with pytest.raises(AuditLogError, match="cannot append session log"):
+        _join(session, adapter_principal)
+
+    assert session.audit_log.replay() == []
+    assert session.audit_log.last_sequence == 0
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.current_state()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.replay()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.handle_adapter_disconnect(drone_id=1, connection_epoch=1)
+
+
 def test_authenticated_source_cannot_impersonate_another_registered_source(
     relay_session: RelaySession, console_principal: Principal, keyboard_principal: Principal
 ) -> None:
