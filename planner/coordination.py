@@ -59,27 +59,30 @@ def resolve_intent_group(
         raise ValueError("conflict_window_ms cannot be negative")
     ordered = tuple(sorted(intents, key=lambda intent: (intent.t, intent.intent_id)))
     earlier, later = ordered[0], ordered[-1]
+    for safety_name in (IntentName.ESTOP, IntentName.HOLD):
+        safety = tuple(intent for intent in ordered if intent.name is safety_name)
+        if not safety:
+            continue
+        winner = safety[-1]
+        neighbors = tuple(
+            intent for intent in ordered if abs(intent.t - winner.t) <= conflict_window_ms
+        )
+        remaining = tuple(intent for intent in ordered if intent not in neighbors)
+        rest = (
+            resolve_intent_group(remaining, snapshot, conflict_window_ms=conflict_window_ms)
+            if remaining
+            else ConflictResolution((), (), (), False)
+        )
+        return ConflictResolution(
+            (winner, *rest.accepted),
+            rest.refusals,
+            tuple(intent.intent_id for intent in neighbors if intent is not winner)
+            + rest.invalidated_intent_ids,
+            rest.hold_required,
+        )
     if later.t - earlier.t > conflict_window_ms:
         return ConflictResolution(intents, (), (), False)
 
-    estops = tuple(intent for intent in ordered if intent.name is IntentName.ESTOP)
-    if estops:
-        winner = estops[-1]
-        return ConflictResolution(
-            (winner,),
-            (),
-            tuple(intent.intent_id for intent in ordered if intent is not winner),
-            False,
-        )
-    holds = tuple(intent for intent in ordered if intent.name is IntentName.HOLD)
-    if holds:
-        winner = holds[-1]
-        return ConflictResolution(
-            (winner,),
-            (),
-            tuple(intent.intent_id for intent in ordered if intent is not winner),
-            False,
-        )
     if all(intent.name is IntentName.SELECT for intent in ordered):
         return ConflictResolution(
             (later,), (), tuple(intent.intent_id for intent in ordered[:-1]), False

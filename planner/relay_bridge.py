@@ -165,9 +165,42 @@ class AutonomyRelayBridge:
                 group = tuple(
                     admission
                     for admission in self._admissions.values()
-                    if abs(admission.intent.t - seed.intent.t)
+                    if admission.result is None
+                    and admission.error is None
+                    and abs(admission.intent.t - seed.intent.t)
                     <= self.controller.arbiter.config.motion_conflict_window_ms
                 )
+                safety = tuple(
+                    admission
+                    for admission in self._admissions.values()
+                    if admission.result is None
+                    and admission.error is None
+                    and admission.intent.name in {IntentName.ESTOP, IntentName.HOLD}
+                    and any(
+                        item.delivered
+                        and abs(admission.intent.t - item.intent.t)
+                        <= self.controller.arbiter.config.motion_conflict_window_ms
+                        for item in group
+                    )
+                )
+                if safety:
+                    anchor = max(
+                        safety,
+                        key=lambda item: (
+                            item.intent.name is IntentName.ESTOP,
+                            item.delivered,
+                            item.intent.t,
+                            item.intent.intent_id,
+                        ),
+                    )
+                    group = tuple(
+                        admission
+                        for admission in self._admissions.values()
+                        if admission.result is None
+                        and admission.error is None
+                        and abs(admission.intent.t - anchor.intent.t)
+                        <= self.controller.arbiter.config.motion_conflict_window_ms
+                    )
                 if any(item.delivered and item.intent.name is IntentName.ESTOP for item in group):
                     earliest_delivered = min(item.intent.t for item in group if item.delivered)
                     group = tuple(

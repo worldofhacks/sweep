@@ -987,6 +987,46 @@ def test_estop_admission_preempts_motion_before_its_acceptance_delivery(tmp_path
     assert all(call.operation.value != "goto" for call in harness.flight.calls)
 
 
+def test_select_coordinator_cannot_dispatch_motion_near_undelivered_estop(tmp_path: Path) -> None:
+    initial = make_snapshot(
+        1,
+        selection=(1,),
+        flight_state=FlightState.HOVERING,
+        armed=True,
+        now_ms=Clock().value,
+    )
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+
+    with TestClient(harness.app):
+        session = harness.app.state.relay_runtime.session(SESSION)
+        console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        keyboard = Principal(source="keyboard", drone_id=None, signing_key=CONSOLE_KEY)
+        selection = harness.intent("select", selection=[], args={"ids": [1]})
+        assert session.process_frame(selection, console)[0]["status"] == "accepted"
+        session.mark_pending_intent_delivered(selection["intent_id"])
+        assert session.execute_pending_intent(selection["intent_id"])[-1]["status"] == "completed"
+        early = harness.intent("select", selection=[1], args={"ids": [1]})
+        assert session.process_frame(early, console)[0]["status"] == "accepted"
+        session.mark_pending_intent_delivered(early["intent_id"])
+        harness.clock.advance(300)
+        motion = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
+        harness.clock.advance(400)
+        estop = harness.intent("estop", selection=[], source="keyboard")
+        assert session.process_frame(motion, console)[0]["status"] == "accepted"
+        assert session.process_frame(estop, keyboard)[0]["status"] == "accepted"
+        session.mark_pending_intent_delivered(motion["intent_id"])
+
+        early_events = session.execute_pending_intent(early["intent_id"])
+        motion_events = session.execute_pending_intent(motion["intent_id"])
+        session.mark_pending_intent_delivered(estop["intent_id"])
+        estop_events = session.execute_pending_intent(estop["intent_id"])
+
+    assert early_events[-1]["status"] == "completed"
+    assert motion_events[-1]["status"] == "invalidated"
+    assert estop_events[-1]["status"] == "completed"
+    assert all(call.operation.value != "goto" for call in harness.flight.calls)
+
+
 def test_out_of_window_coordinator_seed_cannot_orphan_an_earlier_intent(tmp_path: Path) -> None:
     initial = make_snapshot(
         1,

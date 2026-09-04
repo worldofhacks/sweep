@@ -66,7 +66,7 @@ export function useControlConsole({
       if (event.kind === 'connection') {
         dispatch({ type: 'connection_changed', connection: event.connection })
       } else {
-        dispatch({ type: 'relay_event', event: event.event })
+        dispatch({ type: 'relay_event', event: event.event, source: 'console' })
       }
     })
     const subscribeLifecycleOnly = (
@@ -86,7 +86,8 @@ export function useControlConsole({
           (connectionType === 'keyboard_connection_changed' &&
             (event.event.type === 'safety_action' || event.event.type === 'state'))
         ) {
-          dispatch({ type: 'relay_event', event: event.event })
+          dispatch({ type: 'relay_event', event: event.event,
+            source: connectionType === 'keyboard_connection_changed' ? 'keyboard' : 'webcam' })
         }
       })
     const unsubscribeKeyboard = subscribeLifecycleOnly(clients.keyboard, 'keyboard_connection_changed')

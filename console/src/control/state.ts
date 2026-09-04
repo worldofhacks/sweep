@@ -3,6 +3,7 @@ import type {
   CapturePattern,
   DroneId,
   IntentV1,
+  IntentSource,
   MembershipAction,
   RelayAircraftState,
   RelayServerEvent,
@@ -94,14 +95,14 @@ export interface ControlState {
   lastOutcome: OutcomeSummary | null
   notices: OperatorNotice[]
   seenEventIds: string[]
-  lastStateEvent: { rosterVersion: number; t: number } | null
+  lastStateEvent: { rosterVersion: number; t: number; source: IntentSource | null } | null
 }
 
 export type ControlAction =
   | { type: 'connection_changed'; connection: RelayConnection }
   | { type: 'keyboard_connection_changed'; connection: RelayConnection }
   | { type: 'webcam_connection_changed'; connection: RelayConnection }
-  | { type: 'relay_event'; event: RelayServerEvent }
+  | { type: 'relay_event'; event: RelayServerEvent; source?: IntentSource }
   | { type: 'request_created'; request: RequestRecord }
   | { type: 'request_pending_confirmation'; intentId: string; t: number; plan: PlanPreview }
   | { type: 'request_confirmed'; intent: IntentV1; t: number }
@@ -168,7 +169,7 @@ export function controlReducer(state: ControlState, action: ControlAction): Cont
     case 'webcam_connection_changed':
       return reduceWebcamConnection(state, action.connection)
     case 'relay_event':
-      return reduceRelayEvent(state, action.event)
+      return reduceRelayEvent(state, action.event, action.source ?? 'console')
     case 'request_created':
       return { ...state, requests: [action.request, ...state.requests] }
     case 'request_pending_confirmation':
@@ -264,7 +265,11 @@ function reduceWebcamConnection(state: ControlState, connection: RelayConnection
   }
 }
 
-function reduceRelayEvent(state: ControlState, event: RelayServerEvent): ControlState {
+function reduceRelayEvent(
+  state: ControlState,
+  event: RelayServerEvent,
+  source: IntentSource,
+): ControlState {
   if (state.seenEventIds.includes(event.event_id)) return state
   const stateWithEvent = {
     ...state,
@@ -292,7 +297,7 @@ function reduceRelayEvent(state: ControlState, event: RelayServerEvent): Control
     case 'auth.refused':
       return reduceAuthRefusal(stateWithEvent, event)
     case 'state':
-      return reduceStateEvent(stateWithEvent, event)
+      return reduceStateEvent(stateWithEvent, event, source)
     case 'membership':
       return reduceMembershipEvent(stateWithEvent, event)
     case 'telemetry':
@@ -419,6 +424,7 @@ function reduceCommandAcknowledgement(
 function reduceStateEvent(
   state: ControlState,
   event: Extract<RelayServerEvent, { type: 'state' }>,
+  source: IntentSource,
 ): ControlState {
   const lastStateEvent = state.lastStateEvent
   if (
@@ -429,6 +435,10 @@ function reduceStateEvent(
   ) {
     return state
   }
+  // Equal timestamps order one socket, but cannot order competing socket snapshots.
+  const ambiguousOrder = lastStateEvent !== null &&
+    event.roster_version === lastStateEvent.rosterVersion &&
+    event.t === lastStateEvent.t && lastStateEvent.source !== source
   const aircraft = Object.fromEntries(event.drones.map((drone) => [drone.drone_id, drone]))
   const staleSelection = event.selection.filter(
     (id) => aircraft[id]?.membership !== 'ready' || !aircraft[id]?.selectable,
@@ -444,8 +454,12 @@ function reduceStateEvent(
     formation: event.formation,
     spacing: event.spacing,
     armed: event.armed,
-    estop: event.estop,
-    lastStateEvent: { rosterVersion: event.roster_version, t: event.t },
+    estop: event.estop || (ambiguousOrder && state.estop),
+    lastStateEvent: {
+      rosterVersion: event.roster_version,
+      t: event.t,
+      source: ambiguousOrder ? null : source,
+    },
   }
 
   if (

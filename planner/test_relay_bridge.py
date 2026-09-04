@@ -3,9 +3,10 @@ from __future__ import annotations
 from threading import Condition, Lock
 from types import SimpleNamespace
 
+from planner.coordination import resolve_intent_group
 from planner.relay_bridge import AutonomyRelayBridge, _CoordinatedIntent
 from relay.intent_v1 import IntentName
-from tests.autonomy_fixtures import make_intent
+from tests.autonomy_fixtures import make_intent, make_snapshot
 
 
 def test_undelivered_early_admission_cannot_truncate_estop_neighborhood() -> None:
@@ -15,6 +16,19 @@ def test_undelivered_early_admission_cannot_truncate_estop_neighborhood() -> Non
     bridge, executed_groups = _bridge(early, motion, estop)
 
     group, _, error = bridge._resolve_admission_group(motion)
+
+    assert error is None
+    assert _intent_ids(group) == ("motion", "estop")
+    assert executed_groups == [("motion", "estop")]
+
+
+def test_select_seed_cannot_hide_estop_near_delivered_motion() -> None:
+    early = _admission(IntentName.SELECT, "early", t=100, delivered=True)
+    motion = _admission(IntentName.TRANSLATE, "motion", t=400, delivered=True)
+    estop = _admission(IntentName.ESTOP, "estop", t=800, delivered=False)
+    bridge, executed_groups = _bridge(early, motion, estop)
+
+    group, _, error = bridge._resolve_admission_group(early)
 
     assert error is None
     assert _intent_ids(group) == ("motion", "estop")
@@ -71,3 +85,19 @@ def _bridge(
 
 def _intent_ids(admissions: tuple[_CoordinatedIntent, ...]) -> tuple[str, ...]:
     return tuple(admission.intent.intent_id for admission in admissions)
+
+
+def test_stop_covers_both_sides_of_its_window_without_absorbing_distant_motion() -> None:
+    admissions = (
+        _admission(IntentName.TRANSLATE, "before", t=100, delivered=True),
+        _admission(IntentName.ESTOP, "stop", t=500, delivered=True),
+        _admission(IntentName.TRANSLATE, "after", t=900, delivered=True),
+        _admission(IntentName.TRANSLATE, "distant", t=1100, delivered=True),
+    )
+
+    result = resolve_intent_group(
+        tuple(item.intent for item in admissions), make_snapshot(1), conflict_window_ms=500
+    )
+
+    assert tuple(intent.intent_id for intent in result.accepted) == ("stop", "distant")
+    assert result.invalidated_intent_ids == ("before", "after")

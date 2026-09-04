@@ -148,6 +148,18 @@ describe('control reducer fleet lifecycle', () => {
     expect(rosterMoved.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_roster' })
   })
 
+  test('accepts ordered same-socket E-stop transitions within one millisecond', () => {
+    let state = createInitialControlState(session, t)
+    for (const [index, estop] of [false, true, false].entries()) {
+      state = controlReducer(state, {
+        type: 'relay_event',
+        source: 'console',
+        event: { ...stateEvent(`same-socket-${index}`, 1, [drone()], [1]), estop },
+      })
+      expect(state.estop).toBe(estop)
+    }
+  })
+
   test('keeps a fleet-wide land preview when the authoritative selection is nonempty', () => {
     const intent: IntentV1 = {
       v: 1,

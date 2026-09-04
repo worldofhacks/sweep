@@ -288,6 +288,44 @@ describe('Control / Capture console', () => {
     expect(screen.getByRole('button', { name: 'Network stop' })).toHaveClass('is-active')
   })
 
+  test.each([true, false])('keeps E-stop active across equal-time socket states (console active: %s)', async (consoleActive) => {
+    const consoleClient = new SilentFixtureRelayClient(session, clock, 'console')
+    const keyboard = new SilentFixtureRelayClient(session, clock, 'keyboard')
+    render(<App sessionId={session} clients={{ console: consoleClient, keyboard }} />)
+    const snapshot = {
+      v: 1 as const,
+      t: clock(),
+      type: 'state' as const,
+      session,
+      roster_version: 2,
+      armed: true,
+      selection: [1],
+      formation: 'none',
+      spacing: 0.8,
+      mode: 'indoor',
+      pending: null,
+      accepted_plan: null,
+      drones: fixtureAircraft(clock()),
+    }
+
+    act(() => {
+      consoleClient.emitServer({ ...snapshot, event_id: 'console-state', estop: consoleActive })
+      keyboard.emitServer({ ...snapshot, event_id: 'keyboard-state', estop: !consoleActive })
+    })
+    expect(await screen.findByText('Network stop active')).toBeInTheDocument()
+
+    act(() => {
+      consoleClient.emitServer({ ...snapshot, event_id: 'console-clear-tied', estop: false })
+      keyboard.emitServer({ ...snapshot, event_id: 'keyboard-clear-tied', estop: false })
+    })
+    expect(screen.getByText('Network stop active')).toBeInTheDocument()
+
+    act(() => {
+      consoleClient.emitServer({ ...snapshot, t: clock() + 1, event_id: 'console-clear-newer', estop: false })
+    })
+    expect(screen.getByText('Network stop clear')).toBeInTheDocument()
+  })
+
   test('ignores a delayed keyboard state older than the current console state', async () => {
     const consoleClient = new SilentFixtureRelayClient(session, clock, 'console')
     const keyboard = new SilentFixtureRelayClient(session, clock, 'keyboard')
