@@ -20,22 +20,9 @@ from planner.models import (
     TranslationGrounding,
     TranslationPolicy,
 )
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import IntentName, IntentV1
 
-SUPPORTED_INTENTS = frozenset(
-    {
-        IntentName.ARM,
-        IntentName.SELECT,
-        IntentName.TAKEOFF,
-        IntentName.TRANSLATE,
-        IntentName.HOLD,
-        IntentName.COME_HOME,
-        IntentName.LAND,
-        IntentName.LAND_ALL,
-        IntentName.ESTOP,
-        IntentName.CAPTURE_ROOM,
-    }
-)
 SELECTION_TARGETED_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
@@ -141,13 +128,16 @@ class PlanningConfig:
 
 
 class DeterministicPlanner:
-    def __init__(self, config: PlanningConfig) -> None:
+    def __init__(
+        self,
+        config: PlanningConfig,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+    ) -> None:
         self.config = config
+        self.capability_profile = capability_profile
 
-    @staticmethod
-    def supports(intent: IntentV1) -> bool:
-        """Return the earned M2.0 capability before any state-dependent check."""
-        return intent.name in SUPPORTED_INTENTS
+    def supports(self, intent: IntentV1) -> bool:
+        return self.capability_profile.supports(intent.name)
 
     def plan(self, intent: IntentV1, snapshot: FleetSnapshot) -> PlanResult:
         if not self.supports(intent):
@@ -155,7 +145,7 @@ class DeterministicPlanner:
                 intent,
                 snapshot,
                 RefusalReason.UNSUPPORTED,
-                f"{intent.name.value} has no earned M2.0 planner capability",
+                f"{intent.name.value} is outside capability profile {self.capability_profile.name}",
             )
 
         if intent.name in SELECTION_TARGETED_INTENTS and tuple(sorted(intent.selection)) != tuple(
