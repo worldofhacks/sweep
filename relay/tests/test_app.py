@@ -13,6 +13,7 @@ from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import relay.app as app_module
+import relay.audit as audit_module
 from relay.app import RelayRuntime, create_app
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal
@@ -574,6 +575,106 @@ def test_same_session_recovery_does_not_block_websocket_event_loop(
     assert ticks >= 5
 
 
+def test_active_replay_does_not_block_same_session_or_unrelated_handshakes(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+    active = runtime.session(SESSION)
+    active.update_control_projection(selection=())
+    replay_started = Event()
+    resume_replay = Event()
+    validate_record = audit_module._validate_record
+
+    def pause_replay(record: object, expected: int, session: str, line: int) -> None:
+        validate_record(record, expected, session, line)
+        replay_started.set()
+        assert resume_replay.wait(timeout=2)
+
+    monkeypatch.setattr(audit_module, "_validate_record", pause_replay)
+
+    async def exercise() -> tuple[int, str, str]:
+        ticks = 0
+        principal = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+
+        async def ticker() -> None:
+            nonlocal ticks
+            for _ in range(5):
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        replay_task = asyncio.create_task(asyncio.to_thread(runtime.replay, SESSION))
+        assert await asyncio.to_thread(replay_started.wait, 2)
+        ticker_task = asyncio.create_task(ticker())
+        same = await runtime.activate_session(SESSION)
+        same_subscription = await runtime.subscribe(SESSION, principal)
+        other = await runtime.activate_session("session-b")
+        other_subscription = await runtime.subscribe("session-b", principal)
+        await ticker_task
+        await runtime.unsubscribe(SESSION, same_subscription)
+        await runtime.unsubscribe("session-b", other_subscription)
+        resume_replay.set()
+        await replay_task
+        return ticks, same.session_id, other.session_id
+
+    ticks, same_id, other_id = asyncio.run(exercise())
+    assert (ticks, same_id, other_id) == (5, SESSION, "session-b")
+
+
+def test_fanout_isolates_audit_failure_to_affected_session(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> tuple[int, bool, set[str]]:
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+        failed = runtime.session("session-a")
+        runtime.session("session-b")
+        real_fsync = os.fsync
+
+        def fail_fsync(_descriptor: int) -> None:
+            raise OSError("injected fsync failure")
+
+        monkeypatch.setattr(os, "fsync", fail_fsync)
+        with pytest.raises(AuditLogError):
+            failed.update_control_projection(selection=())
+        monkeypatch.setattr(os, "fsync", real_fsync)
+        subscription = await runtime.subscribe(
+            "session-b", Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        )
+        await runtime.start()
+        await asyncio.sleep(0.25)
+        running = runtime._fanout_task is not None and not runtime._fanout_task.done()
+        await runtime.stop()
+        return subscription.queue.qsize(), running, runtime._fanout_failed_sessions
+
+    queued, running, failed_sessions = asyncio.run(exercise())
+    assert running is True
+    assert queued >= 1
+    assert failed_sessions == {"session-a"}
+    assert "session fan-out stopped after audit failure session=session-a" in caplog.text
+
+
+def test_pending_wal_operation_keeps_session_closed_after_restart(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+) -> None:
+    log = SessionAuditLog(app_settings.log_dir, SESSION)
+    log.begin_operation()
+
+    runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+    with pytest.raises(AuthenticationError, match="persisted sessions are replay-only"):
+        runtime.session(SESSION)
+    with pytest.raises(AuditLogError, match="incomplete operation"):
+        runtime.replay(SESSION)
+    assert not log.pending_path.exists()
+
+
 def test_join_close_failure_closes_socket_and_fences_live_projection(
     app_settings: RelaySettings,
     clock: MutableClock,
@@ -601,14 +702,11 @@ def test_join_close_failure_closes_socket_and_fences_live_projection(
                 adapter.receive_json()
 
         session = runtime.sessions[SESSION]
-        replay = session.replay()
         assert runtime.connection_count() == 0
 
     assert closed.value.code == 1011
-    assert [record["event"]["type"] for record in replay["events"]] == [
-        "membership",
-        "state",
-    ]
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.replay()
     with pytest.raises(AuditLogError, match="session is unusable"):
         session.current_state()
     with pytest.raises(AuditLogError, match="session is unusable"):

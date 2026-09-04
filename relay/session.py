@@ -99,6 +99,7 @@ class RelaySession:
         self._projection_usable = True
         self._replay_usable = True
         self._audit_batch: list[dict[str, object]] | None = None
+        self._audit_operation_id: int | None = None
         self._lock = RLock()
 
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
@@ -502,6 +503,16 @@ class RelaySession:
             self._ensure_projection_usable()
             return self._state_event(self.clock())
 
+    def current_state_if_available(self) -> dict[str, object] | None:
+        """Return immediately so async callers can offload only contended reads."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            self._ensure_projection_usable()
+            return self._state_event(self.clock())
+        finally:
+            self._lock.release()
+
     def update_control_projection(
         self,
         *,
@@ -533,7 +544,9 @@ class RelaySession:
 
     def replay(self, *, after_sequence: int = 0) -> dict[str, object]:
         with self._lock:
-            records, last_sequence = self.audit_log.replay_snapshot(after_sequence=after_sequence)
+            self._ensure_replay_usable()
+        records, last_sequence = self.audit_log.replay_snapshot(after_sequence=after_sequence)
+        with self._lock:
             self._ensure_replay_usable()
             return {
                 "v": 1,
@@ -793,6 +806,7 @@ class RelaySession:
             return
 
         self._audit_batch = []
+        self._audit_operation_id = None
         try:
             yield
             batch = self._audit_batch
@@ -802,9 +816,13 @@ class RelaySession:
             if self._audit_batch:
                 self._mutation_usable = False
                 self._projection_usable = False
+                self._replay_usable = False
+                if self._audit_operation_id is not None:
+                    self.audit_log.abandon_operation(self._audit_operation_id)
             raise
         finally:
             self._audit_batch = None
+            self._audit_operation_id = None
 
     def _append_audit(self, event: Mapping[str, object]) -> dict[str, object]:
         self._ensure_mutation_usable()
@@ -812,21 +830,19 @@ class RelaySession:
             raise RuntimeError("audit append requires an active relay operation")
         buffered = dict(event)
         self._audit_batch.append(buffered)
+        if self._audit_operation_id is None:
+            self._audit_operation_id = self.audit_log.begin_operation()
         return buffered
 
     def _commit_audit_batch(self, events: list[dict[str, object]]) -> None:
-        previous_sequence = self.audit_log.last_sequence
+        if self._audit_operation_id is None:
+            raise RuntimeError("audit commit requires a durable operation marker")
         try:
-            self.audit_log.append_batch(events)
+            self.audit_log.append_batch(events, operation_id=self._audit_operation_id)
         except AuditLogError:
             self._mutation_usable = False
             self._projection_usable = False
-            try:
-                committed = self.audit_log.last_sequence > previous_sequence
-            except AuditLogError:
-                committed = False
-            if not committed:
-                self._replay_usable = False
+            self._replay_usable = False
             raise
 
     def _ensure_mutation_usable(self) -> None:

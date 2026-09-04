@@ -6,7 +6,10 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
+import tempfile
 from collections.abc import Iterable, Mapping
+from contextlib import closing
 from pathlib import Path
 from threading import RLock
 
@@ -21,7 +24,7 @@ class AuditLogError(RuntimeError):
 
 
 class SessionAuditLog:
-    """Append durable event batches with monotonic per-event sequences."""
+    """Commit relay operations durably while preserving the public JSONL mirror."""
 
     def __init__(self, root: Path, session: str) -> None:
         if not session or len(session) > 512:
@@ -31,107 +34,92 @@ class SessionAuditLog:
         self.root.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(session.encode()).hexdigest()
         self.path = self.root / f"{digest}.jsonl"
+        self.database_path = self.root / f"{digest}.sqlite3"
         self.pending_path = self.root / f"{digest}.pending"
         self._lock = RLock()
         self._append_usable = True
         self._replay_usable = True
-        self.had_persisted_log = self.path.exists() or self.pending_path.exists()
         self.recovered_tail_bytes = 0
-        self._recover_incomplete_operation()
-        records = self.replay()
-        self._next_sequence = 1 if not records else records[-1]["seq"] + 1
+        self.had_persisted_log = (
+            self.path.exists() or self.database_path.exists() or self.pending_path.exists()
+        )
+        if self.pending_path.exists():
+            self._recover_legacy_pending_operation()
+        if self.database_path.exists():
+            self._initialize_database()
+            self._recover_mirror_from_database()
+        elif self.path.exists():
+            records = self._read_jsonl(repair_tail=True)
+            self._migrate_legacy_records(records)
+            self._initialize_database()
+        self._next_sequence = self._database_last_sequence() + 1
+        if self.database_path.exists() and self._has_pending_operation():
+            self._append_usable = False
+            self._replay_usable = False
 
     @property
     def last_sequence(self) -> int:
         with self._lock:
             if not self._replay_usable:
-                raise AuditLogError("session log cursor is uncertain after a failed rollback")
+                raise AuditLogError("session log cursor is uncertain after an incomplete operation")
             return self._next_sequence - 1
 
-    def append(self, event: Mapping[str, object]) -> dict[str, object]:
-        """Validate and durably append one safe JSON-native event."""
-        return self.append_batch([event])[0]
-
-    def append_batch(self, events: Iterable[Mapping[str, object]]) -> list[dict[str, object]]:
-        """Durably append one complete relay operation."""
+    def begin_operation(self) -> int:
+        """Durably mark an outer relay operation before its first side effect."""
         with self._lock:
             if not self._append_usable:
                 raise AuditLogError("session log is unusable after a failed append operation")
-            records: list[dict[str, object]] = []
-            for offset, event in enumerate(events):
-                _reject_sensitive_fields(event)
-                if event.get("session") != self.session:
-                    raise AuditLogError("event session does not match this log")
-                if not isinstance(event.get("event_id"), str) or not event["event_id"]:
-                    raise AuditLogError("logged events require event_id")
-                records.append({"seq": self._next_sequence + offset, "event": dict(event)})
-            if not records:
-                return []
+            self._initialize_database()
             try:
-                encoded_records = [
-                    (
-                        json.dumps(
-                            record,
-                            allow_nan=False,
-                            separators=(",", ":"),
-                            sort_keys=True,
-                        )
-                        + "\n"
-                    ).encode()
-                    for record in records
-                ]
-                encoded = b"".join(encoded_records)
-            except (TypeError, ValueError) as error:
-                raise AuditLogError(f"event is not JSON-native: {error}") from None
+                with closing(self._connect()) as database:
+                    cursor = database.execute("INSERT INTO operations(status) VALUES ('pending')")
+                    database.commit()
+                    assert cursor.lastrowid is not None
+                    return cursor.lastrowid
+            except sqlite3.Error as error:
+                raise AuditLogError(f"cannot begin audit operation: {error}") from None
 
-            flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
+    def abandon_operation(self, operation_id: int) -> None:
+        with self._lock:
+            if self._operation_status(operation_id) == "pending":
+                self._append_usable = False
+                self._replay_usable = False
+
+    def append(self, event: Mapping[str, object]) -> dict[str, object]:
+        """Validate and durably append one safe JSON-native event."""
+        self._validate_event(event)
+        operation_id = self.begin_operation()
+        return self.append_batch([event], operation_id=operation_id)[0]
+
+    def append_batch(
+        self,
+        events: Iterable[Mapping[str, object]],
+        *,
+        operation_id: int | None = None,
+    ) -> list[dict[str, object]]:
+        """Durably append and complete one outer relay operation."""
+        with self._lock:
+            if not self._append_usable:
+                raise AuditLogError("session log is unusable after a failed append operation")
+            records = self._prepare_records(events)
+            if not records and operation_id is None:
+                return []
+            if operation_id is None:
+                operation_id = self.begin_operation()
+            if not records:
+                self._complete_operation(operation_id, [])
+                return []
+            encoded_records = [self._encode_record(record) for record in records]
+            encoded = b"".join(encoded_records)
+            self._verify_mirror(self._database_records())
+            self._complete_operation(operation_id, records)
+            self._next_sequence += len(records)
             try:
-                descriptor = os.open(self.path, flags, 0o600)
-            except OSError as error:
-                raise AuditLogError(f"cannot open session log: {error}") from None
-            try:
-                original_size = os.fstat(descriptor).st_size
-            except OSError as error:
-                try:
-                    os.close(descriptor)
-                except OSError as close_error:
-                    self._append_usable = False
-                    raise AuditLogError(f"cannot close session log: {close_error}") from None
-                raise AuditLogError(f"cannot inspect session log: {error}") from None
-            try:
-                self._mark_operation_pending(original_size)
-                remaining = memoryview(encoded)
-                while remaining:
-                    try:
-                        written = os.write(descriptor, remaining)
-                    except InterruptedError:
-                        continue
-                    if written <= 0:
-                        raise OSError("append made no progress")
-                    remaining = remaining[written:]
-                os.fsync(descriptor)
-                self._clear_pending_operation()
-                self._next_sequence += len(records)
-            except OSError as error:
-                try:
-                    os.ftruncate(descriptor, original_size)
-                    os.fsync(descriptor)
-                    self._clear_pending_operation()
-                except OSError as rollback_error:
-                    self._append_usable = False
-                    self._replay_usable = False
-                    raise AuditLogError(
-                        f"cannot append or restore session log: {rollback_error}"
-                    ) from None
-                raise AuditLogError(f"cannot append session log: {error}") from None
-            finally:
-                try:
-                    os.close(descriptor)
-                except OSError as error:
-                    self._append_usable = False
-                    raise AuditLogError(f"cannot close session log: {error}") from None
+                self._append_mirror(encoded)
+            except AuditLogError:
+                self._append_usable = False
+                self._replay_usable = False
+                raise
             return [json.loads(encoded_record) for encoded_record in encoded_records]
 
     def replay(self, *, after_sequence: int = 0) -> list[dict[str, object]]:
@@ -142,79 +130,388 @@ class SessionAuditLog:
         if after_sequence < 0:
             raise ValueError("after_sequence must be non-negative")
         with self._lock:
-            if not self._replay_usable:
-                raise AuditLogError("session log replay is uncertain after a failed rollback")
-            if not self.path.exists():
-                return [], 0
-            self._recover_unterminated_tail()
-            records: list[dict[str, object]] = []
-            expected = 1
-            try:
-                with self.path.open(encoding="utf-8") as stream:
-                    for line_number, line in enumerate(stream, start=1):
-                        record = json.loads(line)
-                        _validate_record(record, expected, self.session, line_number)
-                        if record["seq"] > after_sequence:
-                            records.append(record)
-                        expected += 1
-            except (OSError, UnicodeError, json.JSONDecodeError) as error:
-                raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
-            return records, expected - 1
+            if not self._replay_usable or self._has_pending_operation():
+                raise AuditLogError("session log replay is uncertain after an incomplete operation")
+            records = self._database_records()
+            self._verify_mirror(records)
+            return [record for record in records if record["seq"] > after_sequence], len(records)
 
-    def _recover_unterminated_tail(self) -> None:
+    def _prepare_records(self, events: Iterable[Mapping[str, object]]) -> list[dict[str, object]]:
+        records: list[dict[str, object]] = []
+        for offset, event in enumerate(events):
+            self._validate_event(event)
+            records.append({"seq": self._next_sequence + offset, "event": dict(event)})
+        for record in records:
+            self._encode_record(record)
+        return records
+
+    def _validate_event(self, event: Mapping[str, object]) -> None:
+        _reject_sensitive_fields(event)
+        if event.get("session") != self.session:
+            raise AuditLogError("event session does not match this log")
+        if not isinstance(event.get("event_id"), str) or not event["event_id"]:
+            raise AuditLogError("logged events require event_id")
+
+    @staticmethod
+    def _encode_record(record: Mapping[str, object]) -> bytes:
+        try:
+            return (
+                json.dumps(record, allow_nan=False, separators=(",", ":"), sort_keys=True) + "\n"
+            ).encode()
+        except (TypeError, ValueError) as error:
+            raise AuditLogError(f"event is not JSON-native: {error}") from None
+
+    def _initialize_database(self) -> None:
+        try:
+            with closing(self._connect()) as database:
+                database.execute("PRAGMA journal_mode=WAL")
+                database.execute("PRAGMA synchronous=FULL")
+                database.execute(
+                    "CREATE TABLE IF NOT EXISTS operations ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "status TEXT NOT NULL CHECK(status IN ('pending', 'complete')))"
+                )
+                database.execute(
+                    "CREATE TABLE IF NOT EXISTS records ("
+                    "seq INTEGER PRIMARY KEY, operation_id INTEGER NOT NULL, "
+                    "event_json TEXT NOT NULL, "
+                    "FOREIGN KEY(operation_id) REFERENCES operations(id))"
+                )
+                database.commit()
+        except sqlite3.Error as error:
+            raise AuditLogError(f"cannot initialize audit database: {error}") from None
+
+    def _connect(self) -> sqlite3.Connection:
+        database: sqlite3.Connection | None = None
+        guard = None
+        created = False
+        try:
+            create_flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+            if hasattr(os, "O_NOFOLLOW"):
+                create_flags |= os.O_NOFOLLOW
+            try:
+                descriptor = os.open(self.database_path, create_flags, 0o600)
+            except FileExistsError:
+                pass
+            else:
+                created = True
+                os.fdopen(descriptor, "rb").close()
+            guard_flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                guard_flags |= os.O_NOFOLLOW
+            guard = os.fdopen(os.open(self.database_path, guard_flags), "rb")
+            guarded = os.fstat(guard.fileno())
+            database = sqlite3.connect(self.database_path, timeout=30)
+            opened = os.stat(self.database_path, follow_symlinks=False)
+            if (guarded.st_dev, guarded.st_ino) != (opened.st_dev, opened.st_ino):
+                raise OSError("audit database changed while it was opened")
+            os.chmod(self.database_path, 0o600, follow_symlinks=False)
+            database.execute("PRAGMA synchronous=FULL")
+            database.execute("PRAGMA foreign_keys=ON")
+            if created:
+                self._fsync_root()
+        except OSError as error:
+            if database is not None:
+                database.close()
+            raise sqlite3.OperationalError(str(error)) from None
+        except sqlite3.Error:
+            if database is not None:
+                database.close()
+            raise
+        finally:
+            if guard is not None:
+                guard.close()
+        assert database is not None
+        return database
+
+    def _complete_operation(self, operation_id: int, records: list[dict[str, object]]) -> None:
+        try:
+            with closing(self._connect()) as database:
+                database.execute("BEGIN IMMEDIATE")
+                status = database.execute(
+                    "SELECT status FROM operations WHERE id = ?", (operation_id,)
+                ).fetchone()
+                if status != ("pending",):
+                    raise AuditLogError("audit operation is missing or already complete")
+                for record in records:
+                    database.execute(
+                        "INSERT INTO records(seq, operation_id, event_json) VALUES (?, ?, ?)",
+                        (
+                            record["seq"],
+                            operation_id,
+                            json.dumps(
+                                record["event"],
+                                allow_nan=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            ),
+                        ),
+                    )
+                database.execute(
+                    "UPDATE operations SET status = 'complete' WHERE id = ?", (operation_id,)
+                )
+                database.commit()
+        except sqlite3.Error as error:
+            self._append_usable = False
+            self._replay_usable = False
+            raise AuditLogError(f"cannot complete audit operation: {error}") from None
+
+    def _has_pending_operation(self) -> bool:
+        if not self.database_path.exists():
+            return False
+        try:
+            with closing(self._connect()) as database:
+                return (
+                    database.execute(
+                        "SELECT 1 FROM operations WHERE status = 'pending' LIMIT 1"
+                    ).fetchone()
+                    is not None
+                )
+        except sqlite3.Error as error:
+            raise AuditLogError(f"cannot inspect audit operations: {error}") from None
+
+    def _operation_status(self, operation_id: int) -> str | None:
+        try:
+            with closing(self._connect()) as database:
+                row = database.execute(
+                    "SELECT status FROM operations WHERE id = ?", (operation_id,)
+                ).fetchone()
+                return None if row is None else str(row[0])
+        except sqlite3.Error as error:
+            raise AuditLogError(f"cannot inspect audit operation: {error}") from None
+
+    def _database_last_sequence(self) -> int:
+        return len(self._database_records()) if self.database_path.exists() else 0
+
+    def _database_records(self) -> list[dict[str, object]]:
+        if not self.database_path.exists():
+            return []
+        try:
+            with closing(self._connect()) as database:
+                rows = database.execute(
+                    "SELECT seq, event_json FROM records ORDER BY seq"
+                ).fetchall()
+        except sqlite3.Error as error:
+            raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+        records: list[dict[str, object]] = []
+        for line_number, (sequence, event_json) in enumerate(rows, start=1):
+            try:
+                record = {"seq": sequence, "event": json.loads(event_json)}
+            except (TypeError, json.JSONDecodeError) as error:
+                raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+            _validate_record(record, line_number, self.session, line_number)
+            records.append(record)
+        return records
+
+    def _migrate_legacy_records(self, records: list[dict[str, object]]) -> None:
+        temporary_path = self._new_temporary_path(self.database_path.name, ".migrate")
+        try:
+            with closing(sqlite3.connect(temporary_path)) as database:
+                database.execute("PRAGMA journal_mode=DELETE")
+                database.execute("PRAGMA synchronous=FULL")
+                database.execute(
+                    "CREATE TABLE operations ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "status TEXT NOT NULL CHECK(status IN ('pending', 'complete')))"
+                )
+                database.execute(
+                    "CREATE TABLE records ("
+                    "seq INTEGER PRIMARY KEY, operation_id INTEGER NOT NULL, "
+                    "event_json TEXT NOT NULL, "
+                    "FOREIGN KEY(operation_id) REFERENCES operations(id))"
+                )
+                cursor = database.execute("INSERT INTO operations(status) VALUES ('complete')")
+                assert cursor.lastrowid is not None
+                for record in records:
+                    database.execute(
+                        "INSERT INTO records(seq, operation_id, event_json) VALUES (?, ?, ?)",
+                        (
+                            record["seq"],
+                            cursor.lastrowid,
+                            json.dumps(
+                                record["event"],
+                                allow_nan=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            ),
+                        ),
+                    )
+                database.commit()
+            temporary_path.chmod(0o600)
+            self._fsync_path(temporary_path)
+            os.replace(temporary_path, self.database_path)
+            self._fsync_root()
+        except (OSError, sqlite3.Error) as error:
+            temporary_path.unlink(missing_ok=True)
+            raise AuditLogError(f"cannot migrate legacy audit log: {error}") from None
+
+    def _recover_mirror_from_database(self) -> None:
+        committed = self._database_records()
+        expected = b"".join(self._encode_record(record) for record in committed)
+        if not self.path.exists():
+            if expected:
+                self._replace_mirror(expected)
+            return
+        try:
+            actual = self.path.read_bytes()
+        except OSError as error:
+            raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+        pending = self._has_pending_operation()
+        if actual == expected:
+            return
+        if expected.startswith(actual) or (pending and actual.startswith(expected)):
+            self._replace_mirror(expected)
+            return
+        if actual.startswith(expected) and not actual.endswith(b"\n"):
+            removed = len(actual) - len(expected)
+            self.recovered_tail_bytes += removed
+            self._replace_mirror(expected)
+            _LOGGER.warning("recovered unterminated audit tail removed_bytes=%d", removed)
+            return
+        raise AuditLogError(f"cannot replay {self.path.name}: mirror differs from committed audit")
+
+    def _verify_mirror(self, records: list[dict[str, object]]) -> None:
+        if not self.path.exists():
+            if records:
+                raise AuditLogError(f"cannot replay {self.path.name}: audit mirror is missing")
+            return
+        expected = b"".join(self._encode_record(record) for record in records)
+        try:
+            actual = self.path.read_bytes()
+        except OSError as error:
+            raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+        if actual != expected:
+            self._read_jsonl(repair_tail=False)
+            raise AuditLogError(
+                f"cannot replay {self.path.name}: mirror differs from committed audit"
+            )
+
+    def _append_mirror(self, content: bytes) -> None:
+        flags = os.O_APPEND | os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor: int | None = None
+        created = False
+        try:
+            try:
+                descriptor = os.open(self.path, flags)
+            except FileNotFoundError:
+                try:
+                    descriptor = os.open(self.path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+                    created = True
+                except FileExistsError:
+                    descriptor = os.open(self.path, flags)
+            try:
+                os.fstat(descriptor)
+            except OSError as error:
+                raise AuditLogError(f"cannot inspect session log: {error}") from None
+            remaining = memoryview(content)
+            while remaining:
+                try:
+                    written = os.write(descriptor, remaining)
+                except InterruptedError:
+                    continue
+                if written <= 0:
+                    raise OSError("append made no progress")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+            if created:
+                self._fsync_root()
+        except AuditLogError:
+            raise
+        except OSError as error:
+            action = "open" if descriptor is None else "append"
+            raise AuditLogError(f"cannot {action} session log: {error}") from None
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as error:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                    raise AuditLogError(f"cannot close session log: {error}") from None
+
+    def _replace_mirror(self, content: bytes) -> None:
+        temporary_path: Path | None = None
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=self.root, prefix=f".{self.path.name}.", suffix=".repair"
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, "wb") as stream:
+                remaining = memoryview(content)
+                while remaining:
+                    written = os.write(stream.fileno(), remaining)
+                    if written <= 0:
+                        raise OSError("mirror repair made no progress")
+                    remaining = remaining[written:]
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, self.path)
+            self._fsync_root()
+        except OSError as error:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise AuditLogError(f"cannot repair {self.path.name}: {error}") from None
+
+    def _new_temporary_path(self, stem: str, suffix: str) -> Path:
+        temporary_path: Path | None = None
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=self.root, prefix=f".{stem}.", suffix=suffix
+            )
+            temporary_path = Path(temporary_name)
+            os.fdopen(descriptor, "rb").close()
+            return temporary_path
+        except OSError as error:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise AuditLogError(f"cannot create audit temporary file: {error}") from None
+
+    def _fsync_path(self, path: Path) -> None:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _fsync_root(self) -> None:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            flags |= os.O_DIRECTORY
+        descriptor = os.open(self.root, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _read_jsonl(self, *, repair_tail: bool) -> list[dict[str, object]]:
         try:
             data = self.path.read_bytes()
         except OSError as error:
             raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
-        if not data or data.endswith(b"\n"):
-            return
-
-        prefix_end = data.rfind(b"\n") + 1
-        prefix = data[:prefix_end]
+        if repair_tail and data and not data.endswith(b"\n"):
+            prefix_end = data.rfind(b"\n") + 1
+            removed = len(data) - prefix_end
+            data = data[:prefix_end]
+            self._replace_mirror(data)
+            self.recovered_tail_bytes += removed
+            _LOGGER.warning("recovered unterminated audit tail removed_bytes=%d", removed)
+        records: list[dict[str, object]] = []
         try:
-            text = prefix.decode("utf-8")
-            for line_number, line in enumerate(text.splitlines(), start=1):
+            for line_number, line in enumerate(data.decode().splitlines(), start=1):
                 record = json.loads(line)
                 _validate_record(record, line_number, self.session, line_number)
+                records.append(record)
         except (UnicodeError, json.JSONDecodeError) as error:
             raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+        return records
 
-        flags = os.O_WRONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        try:
-            descriptor = os.open(self.path, flags)
-            try:
-                os.ftruncate(descriptor, prefix_end)
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        except OSError as error:
-            raise AuditLogError(f"cannot repair {self.path.name}: {error}") from None
-
-        removed = len(data) - prefix_end
-        self.recovered_tail_bytes += removed
-        _LOGGER.warning("recovered unterminated audit tail removed_bytes=%d", removed)
-
-    def _mark_operation_pending(self, original_size: int) -> None:
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        try:
-            descriptor = os.open(self.pending_path, flags, 0o600)
-            with os.fdopen(descriptor, "w", encoding="ascii") as stream:
-                stream.write(f"{original_size}\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-        except OSError as error:
-            raise AuditLogError(f"cannot mark pending audit operation: {error}") from None
-
-    def _clear_pending_operation(self) -> None:
-        self.pending_path.unlink()
-
-    def _recover_incomplete_operation(self) -> None:
-        if not self.pending_path.exists():
-            return
+    def _recover_legacy_pending_operation(self) -> None:
         try:
             flags = os.O_RDONLY
             if hasattr(os, "O_NOFOLLOW"):
@@ -228,22 +525,13 @@ class SessionAuditLog:
             if not self.path.exists():
                 if original_size != 0:
                     raise AuditLogError("pending audit cursor exceeds missing session log")
+                self._replace_mirror(b"")
             else:
-                flags = os.O_WRONLY
-                if hasattr(os, "O_NOFOLLOW"):
-                    flags |= os.O_NOFOLLOW
-                descriptor = os.open(self.path, flags)
-                try:
-                    if os.fstat(descriptor).st_size < original_size:
-                        raise AuditLogError("pending audit cursor exceeds session log")
-                    os.ftruncate(descriptor, original_size)
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
+                if self.path.stat().st_size < original_size:
+                    raise AuditLogError("pending audit cursor exceeds session log")
+                self._replace_mirror(self.path.read_bytes()[:original_size])
             self.pending_path.unlink()
-        except (UnicodeError, ValueError):
-            raise AuditLogError("invalid pending audit operation") from None
-        except OSError as error:
+        except (OSError, UnicodeError, ValueError) as error:
             raise AuditLogError(f"cannot recover pending audit operation: {error}") from None
 
 

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import logging
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -27,6 +28,7 @@ from relay.settings import RelaySettings
 
 IntentSinkFactory = Callable[[str], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(eq=False, slots=True)
@@ -68,6 +70,7 @@ class RelayRuntime:
         self._activation_tasks: dict[str, asyncio.Task[RelaySession]] = {}
         self._activation_tasks_lock = Lock()
         self._connection_lock = asyncio.Lock()
+        self._fanout_failed_sessions: set[str] = set()
         self._fanout_task: asyncio.Task[None] | None = None
 
     def session(self, session_id: str) -> RelaySession:
@@ -180,10 +183,14 @@ class RelayRuntime:
                         "adapter_already_connected",
                         "an authenticated connection is already bound to this drone",
                     )
+            session = self.sessions[session_id]
+            initial_state = session.current_state_if_available()
+            if initial_state is None:
+                initial_state = await asyncio.to_thread(session.current_state)
             subscription = _Subscription(
                 connection_id=self.event_ids(),
                 principal=principal,
-                initial_state=self.sessions[session_id].current_state(),
+                initial_state=initial_state,
             )
             if principal.source == "adapter":
                 assert principal.drone_id is not None
@@ -224,7 +231,17 @@ class RelayRuntime:
         while True:
             await asyncio.sleep(delay)
             for session_id, session in tuple(self.sessions.items()):
-                await self.publish(session_id, session.periodic_events())
+                if session_id in self._fanout_failed_sessions:
+                    continue
+                try:
+                    events = await asyncio.to_thread(session.periodic_events)
+                except AuditLogError:
+                    self._fanout_failed_sessions.add(session_id)
+                    _LOGGER.exception(
+                        "session fan-out stopped after audit failure session=%s", session_id
+                    )
+                    continue
+                await self.publish(session_id, events)
 
 
 def create_app(
@@ -303,12 +320,14 @@ def create_app(
                     frame = await websocket.receive_json()
                 except json.JSONDecodeError:
                     events = [
-                        session.protocol_refusal(
-                            reason="invalid_json", detail="frame must contain valid JSON"
+                        await asyncio.to_thread(
+                            session.protocol_refusal,
+                            reason="invalid_json",
+                            detail="frame must contain valid JSON",
                         )
                     ]
                 else:
-                    events = session.process_frame(frame, principal)
+                    events = await asyncio.to_thread(session.process_frame, frame, principal)
                 await runtime.publish(session_id, events)
         except WebSocketDisconnect:
             pass
@@ -329,7 +348,11 @@ def create_app(
                             connection_epoch=session.registry.connection_epoch(principal.drone_id),
                         )
                     except AuditLogError:
-                        pass
+                        _LOGGER.exception(
+                            "adapter disconnect audit failed session=%s drone=%s",
+                            session_id,
+                            principal.drone_id,
+                        )
                     else:
                         await runtime.publish(session_id, events)
             finally:
