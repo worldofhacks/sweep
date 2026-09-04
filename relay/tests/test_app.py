@@ -334,13 +334,15 @@ def test_session_operations_publish_whole_batches_in_mutation_order(
         real_publish = runtime.publish
         publish_count = 0
 
-        async def paused_first_publish(session_id: str, events: list[dict[str, object]]) -> None:
+        async def paused_first_publish(
+            session_id: str, events: list[dict[str, object]], **kwargs: object
+        ) -> None:
             nonlocal publish_count
             publish_count += 1
             if publish_count == 1:
                 publish_started.set()
                 await resume_publish.wait()
-            await real_publish(session_id, events)
+            await real_publish(session_id, events, **kwargs)
 
         monkeypatch.setattr(runtime, "publish", paused_first_publish)
         first_operation = asyncio.create_task(
@@ -368,7 +370,9 @@ def test_session_operations_publish_whole_batches_in_mutation_order(
         resume_publish.set()
         await asyncio.gather(first_operation, second_operation)
         joined = await joining_subscription
-        queued_versions = [int(existing.queue.get_nowait()["roster_version"]) for _ in range(4)]
+        queued_versions = [
+            int(existing.queue.get_nowait().event["roster_version"]) for _ in range(4)
+        ]
         return (
             queued_versions,
             int(joined.initial_state["roster_version"]),
@@ -398,13 +402,15 @@ def test_same_roster_operations_publish_in_mutation_order(
         real_publish = runtime.publish
         publish_count = 0
 
-        async def paused_first_publish(session_id: str, events: list[dict[str, object]]) -> None:
+        async def paused_first_publish(
+            session_id: str, events: list[dict[str, object]], **kwargs: object
+        ) -> None:
             nonlocal publish_count
             publish_count += 1
             if publish_count == 1:
                 publish_started.set()
                 await resume_publish.wait()
-            await real_publish(session_id, events)
+            await real_publish(session_id, events, **kwargs)
 
         monkeypatch.setattr(runtime, "publish", paused_first_publish)
         older = asyncio.create_task(runtime.process_and_publish(SESSION, session.periodic_events))
@@ -420,8 +426,8 @@ def test_same_roster_operations_publish_in_mutation_order(
         resume_publish.set()
         await asyncio.gather(older, newer)
         return [
-            bool(subscription.queue.get_nowait()["estop"]),
-            bool(subscription.queue.get_nowait()["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
     assert asyncio.run(exercise_race()) == [False, True]
@@ -462,8 +468,8 @@ def test_cancelled_session_operation_finishes_publishing_before_releasing_order(
             SESSION, lambda: [session.update_control_projection(estop=False)]
         )
         return [
-            bool(subscription.queue.get_nowait()["estop"]),
-            bool(subscription.queue.get_nowait()["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
     assert asyncio.run(exercise()) == [True, False]

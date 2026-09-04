@@ -74,7 +74,9 @@ def resolve_intent_group(
             else ConflictResolution((), (), (), False)
         )
         return ConflictResolution(
-            (winner, *rest.accepted),
+            tuple(
+                sorted((winner, *rest.accepted), key=lambda intent: (intent.t, intent.intent_id))
+            ),
             rest.refusals,
             tuple(intent.intent_id for intent in neighbors if intent is not winner)
             + rest.invalidated_intent_ids,

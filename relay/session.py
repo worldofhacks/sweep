@@ -305,6 +305,7 @@ class RelaySession:
     def execute_pending_intent(self, intent_id: str) -> list[dict[str, object]]:
         """Execute one relay-accepted intent after its acknowledgement was published."""
         with self._lock:
+            self._ensure_mutation_usable()
             pending = self._pending_intents.pop(intent_id, None)
             sink = self.intent_sink
         if pending is None:
@@ -318,6 +319,7 @@ class RelaySession:
 
     def mark_pending_intent_delivered(self, intent_id: str) -> None:
         with self._lock:
+            self._ensure_mutation_usable()
             if intent_id not in self._pending_intents:
                 return
             delivered = getattr(self.intent_sink, "intent_delivered", None)
@@ -328,7 +330,8 @@ class RelaySession:
         self, intent_id: str, *, reason: str, detail: str
     ) -> list[dict[str, object]]:
         now = self.clock()
-        with self._lock:
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
             pending = self._pending_intents.pop(intent_id, None)
             if pending is None:
                 return []
@@ -359,7 +362,8 @@ class RelaySession:
             else:
                 sink_result = sink(pending.intent, self.current_state())
         except Exception:
-            with self._lock:
+            with self._lock, self._audit_operation():
+                self._ensure_mutation_usable()
                 self._intents[intent_id].status = LifecycleStatus.REFUSED
                 self._log_intent(
                     pending.intent,
@@ -375,11 +379,10 @@ class RelaySession:
                         now=now,
                     )
                 ]
-        if sink_result is None:
-            return events
-
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
+            if sink_result is None:
+                return events
             if not isinstance(sink_result, IntentSinkResult):
                 events.extend(self._record_execution_result(pending.intent, sink_result))
                 return events
@@ -1054,7 +1057,7 @@ class RelaySession:
         self._append_audit(event)
 
     def _log_sink_result(self, intent: IntentV1, result: IntentSinkResult, *, now: int) -> None:
-        self.audit_log.append(
+        self._append_audit(
             {
                 "v": 1,
                 "t": now,

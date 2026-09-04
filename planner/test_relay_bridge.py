@@ -101,3 +101,15 @@ def test_stop_covers_both_sides_of_its_window_without_absorbing_distant_motion()
 
     assert tuple(intent.intent_id for intent in result.accepted) == ("stop", "distant")
     assert result.invalidated_intent_ids == ("before", "after")
+
+
+def test_distant_motion_keeps_its_order_before_estop() -> None:
+    motion = _admission(IntentName.TRANSLATE, "motion", t=100, delivered=True)
+    stop = _admission(IntentName.ESTOP, "stop", t=800, delivered=True)
+
+    result = resolve_intent_group(
+        (motion.intent, stop.intent), make_snapshot(1), conflict_window_ms=500
+    )
+
+    assert tuple(intent.intent_id for intent in result.accepted) == ("motion", "stop")
+    assert result.invalidated_intent_ids == ()

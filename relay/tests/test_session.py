@@ -384,10 +384,12 @@ def test_sink_cannot_catch_projection_failure_and_publish_partial_state(
 
     session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
     session.update_control_projection(selection=(1,))
+    accepted = session.process_intent(intent_payload(), console_principal)
+    assert accepted[0]["status"] == "accepted"
     committed = session.audit_log.path.read_bytes()
 
     with pytest.raises(AuditLogError, match="session is unusable"):
-        session.process_intent(intent_payload(), console_principal)
+        session.execute_pending_intent("intent-1")
 
     assert session.audit_log.path.read_bytes() == committed
     with pytest.raises(AuditLogError, match="session is unusable"):
@@ -1046,3 +1048,66 @@ def _contains_key(value: object, target: str) -> bool:
     if isinstance(value, list):
         return any(_contains_key(item, target) for item in value)
     return False
+
+
+@pytest.mark.parametrize("delivery_failed", [False, True], ids=["execution", "delivery"])
+def test_pending_intent_audit_close_failure_preserves_complete_outcome_and_blocks_dispatch(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    console_principal: Principal,
+    monkeypatch: pytest.MonkeyPatch,
+    delivery_failed: bool,
+) -> None:
+    dispatched: list[str] = []
+
+    def sink(intent: IntentV1, _state: dict[str, object]) -> IntentSinkResult:
+        dispatched.append(intent.intent_id)
+        return IntentSinkResult(
+            status=LifecycleStatus.COMPLETED,
+            source="test",
+            selection_update=(2,),
+        )
+
+    session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
+    session.process_intent(intent_payload(), console_principal)
+    session.process_intent(intent_payload(intent_id="intent-2"), console_principal)
+    accepted_sequence = session.replay()["last_sequence"]
+    real_close = os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("injected close failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "close", close_then_fail)
+        with pytest.raises(AuditLogError, match="cannot close session log"):
+            if delivery_failed:
+                session.fail_pending_intent(
+                    "intent-1",
+                    reason="acceptance_delivery_failed",
+                    detail="accepting connection did not receive acknowledgement",
+                )
+            else:
+                session.execute_pending_intent("intent-1")
+
+    reopened = SessionAuditLog(tmp_path, SESSION)
+    outcome = [record["event"] for record in reopened.replay(after_sequence=accepted_sequence)]
+    if delivery_failed:
+        assert [event["type"] for event in outcome] == ["intent_record", "refusal"]
+        assert outcome[-1]["reason"] == "acceptance_delivery_failed"
+    else:
+        assert [event["type"] for event in outcome] == [
+            "autonomy_result",
+            "state",
+            "acknowledgement",
+        ]
+        assert outcome[-1]["status"] == "completed"
+        assert outcome[1]["selection"] == [2]
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.current_state()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.replay()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.execute_pending_intent("intent-2")
+    assert dispatched == ([] if delivery_failed else ["intent-1"])
