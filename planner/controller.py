@@ -9,7 +9,7 @@ from weakref import WeakSet
 
 from adapters.dispatch import AdapterDispatcher
 from arbiter.safety import SafetyArbiter
-from planner.coordination import ConflictResolution, resolve_intent_pair
+from planner.coordination import MOTION_INTENTS, ConflictResolution, resolve_intent_pair
 from planner.models import (
     CommandAcknowledgement,
     ExecutionResult,
@@ -44,7 +44,7 @@ class PositioningLossResult:
 
 
 @dataclass(frozen=True, slots=True)
-class ResumedExecution:
+class RelayExecution:
     execution: ExecutionResult
     relay_events: tuple[dict[str, object], ...]
 
@@ -228,47 +228,204 @@ class PreparedExecutionRouter:
 
     def process_relay_intent(
         self, intent: IntentV1, relay_state: object, session: object
-    ) -> ExecutionResult:
+    ) -> RelayExecution:
         if intent.name is IntentName.ESTOP:
             session.update_control_projection(estop=True)
+        blocked = self._gate_active_execution(intent, relay_state, session)
+        if blocked is not None:
+            return blocked
         with self._lock:
             self._submitting_sessions[intent.intent_id] = session
         try:
-            return self(intent, relay_state)
+            result = self(intent, relay_state)
+            events = self._retire_held_motion(intent, result, session)
+            return RelayExecution(result, events)
         finally:
             with self._lock:
                 self._submitting_sessions.pop(intent.intent_id, None)
 
-    def resume(self, intent_id: str, terminal_ack: CommandAcknowledgement) -> ResumedExecution:
+    def _gate_active_execution(
+        self, intent: IntentV1, relay_state: object, session: object
+    ) -> RelayExecution | None:
+        if intent.name in {IntentName.HOLD, IntentName.ESTOP}:
+            return None
         with self._lock:
-            running = self._running.pop(intent_id, None)
+            candidate = self._prepared.get(intent.intent_id)
+            active = [
+                (prepared, pending)
+                for prepared, pending, owner in self._running.values()
+                if owner is session
+            ]
+            if candidate is None or not candidate.plan.commands or not active:
+                return None
+            conflicting = [
+                (prepared, pending)
+                for prepared, pending in active
+                if intent.name in MOTION_INTENTS
+                and prepared.intent.name in MOTION_INTENTS
+                and abs(intent.t - prepared.intent.t)
+                <= self.controller.arbiter.config.motion_conflict_window_ms
+            ]
+            self._prepared.pop(intent.intent_id)
+        events = []
+        acknowledgements = ()
+        detail = "another execution is still active; wait for its terminal result"
+        if conflicting:
+            detail = "conflicting motion invalidated the active execution; safety HOLD requested"
+            for prepared, pending in conflicting:
+                invalidated = replace(
+                    pending,
+                    status=LifecycleStatus.INVALIDATED,
+                    refusal=Refusal(
+                        intent_id=prepared.intent.intent_id,
+                        roster_version=pending.roster_version,
+                        drone_id=None,
+                        connection_epoch=None,
+                        reason=RefusalReason.CONFLICTING_MOTION,
+                        detail=detail,
+                        status=LifecycleStatus.INVALIDATED,
+                    ),
+                )
+                events.extend(session.record_execution_result(prepared.intent, invalidated))
+                with self._lock:
+                    self._running.pop(prepared.intent.intent_id, None)
+            try:
+                current = self._relay_snapshot(session, relay_state)
+                hold = self.controller.planner.emergency_hold_plan(
+                    intent_id=f"safety:motion-conflict:{intent.intent_id}",
+                    snapshot=current,
+                )
+                safety = self.controller.dispatcher.dispatch(
+                    hold, current, current_snapshot=lambda: self._relay_snapshot(session)
+                )
+                acknowledgements = safety.acknowledgements
+            except Exception:
+                detail += "; safety HOLD could not complete"
+        result = ExecutionResult(
+            intent_id=intent.intent_id,
+            roster_version=candidate.plan.roster_version,
+            status=LifecycleStatus.REFUSED,
+            plan=candidate.plan,
+            acknowledgements=acknowledgements,
+            refusal=Refusal(
+                intent_id=intent.intent_id,
+                roster_version=candidate.plan.roster_version,
+                drone_id=None,
+                connection_epoch=None,
+                reason=(
+                    RefusalReason.CONFLICTING_MOTION if conflicting else RefusalReason.ACTIVE_TASK
+                ),
+                detail=detail,
+            ),
+        )
+        return RelayExecution(result, tuple(events))
+
+    def _retire_held_motion(
+        self, intent: IntentV1, result: ExecutionResult, session: object
+    ) -> tuple[dict[str, object], ...]:
+        if intent.name not in {IntentName.HOLD, IntentName.ESTOP}:
+            return ()
+        held_aircraft = {
+            ack.drone_id
+            for ack in result.acknowledgements
+            if ack.status
+            in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING, LifecycleStatus.COMPLETED}
+        }
+        if not held_aircraft and intent.name is not IntentName.ESTOP:
+            return ()
+        retired = []
+        with self._lock:
+            for intent_id, (prepared, pending, owner) in tuple(self._running.items()):
+                if owner is session and intent_id != intent.intent_id:
+                    retired.append((prepared, pending))
+        events = []
+        for prepared, pending in retired:
+            invalidated = replace(
+                pending,
+                status=LifecycleStatus.INVALIDATED,
+                refusal=Refusal(
+                    intent_id=prepared.intent.intent_id,
+                    roster_version=pending.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.CONFLICTING_MOTION,
+                    detail=f"execution superseded by {intent.name.value} {intent.intent_id}",
+                    status=LifecycleStatus.INVALIDATED,
+                ),
+            )
+            events.extend(session.record_execution_result(prepared.intent, invalidated))
+            with self._lock:
+                self._running.pop(prepared.intent.intent_id, None)
+        return tuple(events)
+
+    def resume(self, intent_id: str, terminal_ack: CommandAcknowledgement) -> RelayExecution:
+        with self._lock:
+            running = self._running.get(intent_id)
         if running is None:
             raise RuntimeError("intent has no executing prepared plan")
         prepared, pending, session = running
-        result = self.controller.dispatcher.resume_after_completion(
-            prepared.plan,
-            pending,
-            terminal_ack,
-            prepared.snapshot,
-            current_snapshot=(
-                (lambda: self._relay_snapshot(session))
-                if session is not None
-                else self.current_snapshot
-            ),
-        )
-        if result.status is LifecycleStatus.EXECUTING:
-            with self._lock:
-                self._running[intent_id] = (prepared, result, session)
+
+        class ResumeSnapshotUnavailable(Exception):
+            pass
+
+        def live_snapshot() -> FleetSnapshot:
+            try:
+                if session is not None:
+                    return self._relay_snapshot(session)
+                return self.current_snapshot() if self.current_snapshot else prepared.snapshot
+            except Exception as error:
+                raise ResumeSnapshotUnavailable from error
+
+        try:
+            result = self.controller.dispatcher.resume_after_completion(
+                prepared.plan,
+                pending,
+                terminal_ack,
+                prepared.snapshot,
+                current_snapshot=live_snapshot,
+            )
+        except ResumeSnapshotUnavailable:
+            status = (
+                terminal_ack.status
+                if terminal_ack.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
+                else LifecycleStatus.INVALIDATED
+            )
+            result = ExecutionResult(
+                intent_id=intent_id,
+                roster_version=pending.roster_version,
+                status=status,
+                plan=prepared.plan,
+                acknowledgements=tuple(
+                    terminal_ack if ack.command_id == terminal_ack.command_id else ack
+                    for ack in pending.acknowledgements
+                ),
+                refusal=Refusal(
+                    intent_id=intent_id,
+                    roster_version=pending.roster_version,
+                    drone_id=terminal_ack.drone_id,
+                    connection_epoch=terminal_ack.connection_epoch,
+                    reason=terminal_ack.reason or RefusalReason.INVALID_PLAN,
+                    detail=(
+                        "live safety state unavailable during resume; remaining dispatch cancelled"
+                    ),
+                    status=status,
+                ),
+            )
         relay_events = ()
         if session is not None:
             relay_events = tuple(session.record_execution_result(prepared.intent, result))
-        return ResumedExecution(execution=result, relay_events=relay_events)
+        with self._lock:
+            if result.status is LifecycleStatus.EXECUTING:
+                self._running[intent_id] = (prepared, result, session)
+            else:
+                self._running.pop(intent_id, None)
+        return RelayExecution(execution=result, relay_events=relay_events)
 
     def resume_after_acknowledgement(
         self,
         session: object,
         acknowledgement: object,
-    ) -> ResumedExecution | None:
+    ) -> RelayExecution | None:
         """Resume only the session-owned execution waiting for this terminal adapter ack."""
         status_value = getattr(getattr(acknowledgement, "status", None), "value", None)
         try:

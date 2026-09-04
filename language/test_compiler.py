@@ -2612,7 +2612,15 @@ def test_translate_completion_rejects_unchanged_authoritative_position() -> None
     with pytest.raises(ConfirmationError, match="position"):
         pending.acknowledge(
             _lifecycle(case, "translate-unchanged", "completed", source="autonomy"),
-            {**state, "t": case.now_ms + 2, "event_id": "state-unchanged"},
+            {
+                **state,
+                "t": case.now_ms + 2,
+                "event_id": "state-unchanged",
+                "drones": [
+                    {**drone, "telemetry": {**drone["telemetry"], "t": case.now_ms + 2}}
+                    for drone in state["drones"]
+                ],
+            },
             capability_version=case.capability_version,
             rooms=case.rooms,
             now_ms=case.now_ms + 2,
@@ -2695,7 +2703,15 @@ def test_come_home_completion_rejects_unchanged_authoritative_position() -> None
     with pytest.raises(ConfirmationError, match="position"):
         pending.acknowledge(
             _lifecycle(case, "come-home-unchanged", "completed", source="autonomy"),
-            {**state, "t": case.now_ms + 2, "event_id": "state-unchanged"},
+            {
+                **state,
+                "t": case.now_ms + 2,
+                "event_id": "state-unchanged",
+                "drones": [
+                    {**drone, "telemetry": {**drone["telemetry"], "t": case.now_ms + 2}}
+                    for drone in state["drones"]
+                ],
+            },
             capability_version=case.capability_version,
             rooms=case.rooms,
             now_ms=case.now_ms + 2,
@@ -2903,6 +2919,29 @@ def test_motion_completion_requires_post_dispatch_evidence(
         **_lifecycle(case, emitted.intent_id, "completed", source="autonomy"),
         "t": emitted.t - 1 if stale_evidence == "outcome" else emitted.t + 1,
     }
+
+    if stale_evidence == "position":
+        pending.acknowledge(
+            stale_outcome,
+            stale_state,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=emitted.t + 1,
+        )
+        fresh = _with_execution_positions(
+            {**state, "t": emitted.t + 2, "event_id": "fresh-position"},
+            {**positions, **target_positions},
+            homes,
+        )
+        pending.acknowledge(
+            stale_outcome,
+            fresh,
+            capability_version=case.capability_version,
+            rooms=case.rooms,
+            now_ms=emitted.t + 2,
+        )
+        assert pending.audit.records[-1]["event"] == "intent_accepted"
+        return
 
     with pytest.raises(ConfirmationError, match="predates"):
         pending.acknowledge(
