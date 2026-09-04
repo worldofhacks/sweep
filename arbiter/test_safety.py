@@ -143,6 +143,27 @@ def test_every_operation_has_an_explicit_stopped_state_classification(
         assert refusal is None
 
 
+@pytest.mark.parametrize("intent_name", [IntentName.ARM, IntentName.SELECT])
+def test_zero_command_state_update_plan_cannot_bypass_stop(intent_name: IntentName) -> None:
+    snapshot = replace(make_snapshot(1, selection=(1,)), estop_active=True)
+    _, planner, arbiter, dispatcher, flight, _ = make_stack(snapshot)
+    intent = make_intent(
+        intent_name,
+        selection=() if intent_name is IntentName.ARM else (1,),
+        args={} if intent_name is IntentName.ARM else {"ids": (1,)},
+    )
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+    assert plan.commands == ()
+
+    result = dispatcher.dispatch(plan, snapshot)
+
+    assert result.status is LifecycleStatus.REFUSED
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.ESTOP_ACTIVE
+    assert flight.calls == []
+
+
 @pytest.mark.parametrize(
     "operation",
     [CommandOperation.HOVER, CommandOperation.LAND, CommandOperation.ESTOP],

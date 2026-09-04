@@ -239,6 +239,17 @@ def test_complete_corrupt_tail_fails_without_mutation(tmp_path: Path) -> None:
     assert log.path.read_bytes() == corrupted
 
 
+def test_torn_tail_does_not_hide_a_corrupt_complete_prefix(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    corrupted = b'{"seq":1,not-json}\n{"seq":2'
+    log.path.write_bytes(corrupted)
+
+    with pytest.raises(AuditLogError):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert log.path.read_bytes() == corrupted
+
+
 def test_short_write_retries_until_record_is_complete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

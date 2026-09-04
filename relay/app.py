@@ -36,6 +36,7 @@ class _Subscription:
     connection_id: str
     principal: Principal
     initial_state: dict[str, object]
+    roster_version: int
     queue: asyncio.Queue[dict[str, object]] = field(default_factory=asyncio.Queue)
 
 
@@ -191,6 +192,7 @@ class RelayRuntime:
                 connection_id=self.event_ids(),
                 principal=principal,
                 initial_state=initial_state,
+                roster_version=int(initial_state["roster_version"]),
             )
             if principal.source == "adapter":
                 assert principal.drone_id is not None
@@ -221,6 +223,16 @@ class RelayRuntime:
             subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
             for subscription in subscriptions:
                 for event in events:
+                    event_type = event.get("type")
+                    roster_version = event.get("roster_version")
+                    if (
+                        event_type in {"membership", "state"}
+                        and isinstance(roster_version, int)
+                        and not isinstance(roster_version, bool)
+                    ):
+                        if roster_version < subscription.roster_version:
+                            continue
+                        subscription.roster_version = roster_version
                     subscription.queue.put_nowait(event)
 
     def connection_count(self) -> int:

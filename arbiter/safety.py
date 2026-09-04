@@ -348,6 +348,19 @@ class SafetyArbiter:
         boundary = self._check_plan_boundary(plan, snapshot)
         if boundary is not None:
             return boundary
+        if (
+            not plan.commands
+            and snapshot.estop_active
+            and plan.intent_name not in _SAFE_WHILE_STOPPED
+        ):
+            return Refusal(
+                intent_id=plan.intent_id,
+                roster_version=snapshot.roster_version,
+                drone_id=None,
+                connection_epoch=None,
+                reason=RefusalReason.ESTOP_ACTIVE,
+                detail="network stop is active",
+            )
         for command in plan.commands:
             boundary = self._check_command_boundary(plan, command, snapshot)
             if boundary is not None:

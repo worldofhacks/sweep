@@ -176,6 +176,38 @@ def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
     assert state_rosters == sorted(state_rosters)
 
 
+def test_stale_membership_batch_cannot_regress_new_subscriber_snapshot(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    async def exercise_race() -> tuple[int, list[dict[str, object]]]:
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        first = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        second_key = b"adapter-key-2"
+        second = Principal(source="adapter", drone_id=2, signing_key=second_key)
+        stale_events = session.process_frame(
+            membership_payload(action="join", event_id="join-1"), first
+        )
+        session.process_frame(
+            membership_payload(action="join", event_id="join-2", drone_id=2, key=second_key),
+            second,
+        )
+        subscription = await runtime.subscribe(
+            SESSION, Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        )
+
+        await runtime.publish(SESSION, stale_events)
+        queued = []
+        while not subscription.queue.empty():
+            queued.append(subscription.queue.get_nowait())
+        return int(subscription.initial_state["roster_version"]), queued
+
+    initial_roster, queued = asyncio.run(exercise_race())
+
+    assert initial_roster == 2
+    assert not [event for event in queued if event["type"] in {"membership", "state"}]
+
+
 def test_bad_authentication_is_refused_without_creating_a_session_log(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:

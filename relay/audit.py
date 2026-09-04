@@ -494,13 +494,13 @@ class SessionAuditLog:
             data = self.path.read_bytes()
         except OSError as error:
             raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+        repair_content: bytes | None = None
+        removed = 0
         if repair_tail and data and not data.endswith(b"\n"):
             prefix_end = data.rfind(b"\n") + 1
             removed = len(data) - prefix_end
             data = data[:prefix_end]
-            self._replace_mirror(data)
-            self.recovered_tail_bytes += removed
-            _LOGGER.warning("recovered unterminated audit tail removed_bytes=%d", removed)
+            repair_content = data
         records: list[dict[str, object]] = []
         try:
             for line_number, line in enumerate(data.decode().splitlines(), start=1):
@@ -509,6 +509,10 @@ class SessionAuditLog:
                 records.append(record)
         except (UnicodeError, json.JSONDecodeError) as error:
             raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+        if repair_content is not None:
+            self._replace_mirror(repair_content)
+            self.recovered_tail_bytes += removed
+            _LOGGER.warning("recovered unterminated audit tail removed_bytes=%d", removed)
         return records
 
     def _recover_legacy_pending_operation(self) -> None:
