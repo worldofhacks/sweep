@@ -530,6 +530,30 @@ def test_authenticated_source_cannot_impersonate_another_registered_source(
     assert accepted[0]["status"] == "accepted"
 
 
+def test_webcam_source_is_gated_like_console_and_keyboard(
+    relay_session: RelaySession,
+    console_principal: Principal,
+    webcam_principal: Principal,
+    adapter_principal: Principal,
+) -> None:
+    accepted = relay_session.process_frame(intent_payload(source="webcam"), webcam_principal)
+    impersonated = relay_session.process_frame(
+        intent_payload(source="webcam", intent_id="intent-2"), console_principal
+    )
+    reversed_binding = relay_session.process_frame(
+        intent_payload(source="console", intent_id="intent-3"), webcam_principal
+    )
+    adapter_authored = relay_session.process_frame(
+        intent_payload(source="webcam", intent_id="intent-4"), adapter_principal
+    )
+
+    assert accepted[0]["status"] == "accepted"
+    assert accepted[0]["intent_id"] == "intent-1"
+    assert impersonated[0]["reason"] == "source_mismatch"
+    assert reversed_binding[0]["reason"] == "source_mismatch"
+    assert adapter_authored[0]["reason"] == "frame_not_allowed"
+
+
 def test_intent_timestamp_and_id_replay_checks(
     relay_session: RelaySession, console_principal: Principal, clock: MutableClock
 ) -> None:
