@@ -113,10 +113,13 @@ Each drone has these required keys:
 drone_id, connection_epoch, membership, readiness_reasons, flight_state,
 battery, link, pos_quality, control_authority, last_seen_at, camera_patterns,
 selectable, adapter_id, adapter_capabilities, home_pose,
-rc_safety_operator_present, telemetry, membership_history
+rc_safety_operator_present, telemetry, membership_history,
+camera_capabilities, node_status
 ```
 
 `flight_state`, battery/link/position aliases, and `last_seen_at` are a normalized console projection and are nullable until current telemetry exists. The nested `telemetry` object is the authoritative Appendix B snapshot; its transport-only event ID, session, and connection epoch are represented by the containing drone/event. `camera_patterns` is derived from the signed capability list and does not assert camera readiness. The relay does not invent storage, camera-ready, active-task, or operator-presence/timing facts absent from Appendix B. The autonomy boundary must enrich those inputs explicitly and fail closed when they are missing.
+
+`camera_capabilities` and `node_status` are the node's latest `capabilities` and `node_status` frames (see the node protocol below) without their transport-only fields, or null until the node has sent one in the current connection epoch; a rejoin clears both. They are informational projections for the console and the command wire. Neither changes membership or `control_authority`: only a signed `readiness` frame does that, so a node that loses authority must report it through readiness as well as `node_status`.
 
 Top-level `armed` is the authoritative session arm authorization, initially false and updated only through `RelaySession.update_control_projection(armed=...)` after the planner/arbiter accepts that control-state change. It is not inferred from aircraft flight-state strings. Join and rejoin leave it unchanged; a new session after process restart begins disarmed. Per-aircraft physical armed/disarmed evidence remains an explicit autonomy enrichment used by graceful-removal safety.
 
