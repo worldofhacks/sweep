@@ -288,7 +288,10 @@ def test_confirmed_altitude_requires_fresh_target_position(
         {**state, "t": case.now_ms + 2, "event_id": "altitude-completed"},
         {1: (completed_x, 0, completed_z), 2: (2, 0, completed_z)},
     )
-    outcome = _lifecycle(case, "confirmed-altitude", "completed", source="autonomy")
+    outcome = {
+        **_lifecycle(case, "confirmed-altitude", "completed", source="autonomy"),
+        "t": case.now_ms + 1,
+    }
     if stale_first:
         stale = {
             **completed,
