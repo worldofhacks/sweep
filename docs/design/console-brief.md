@@ -22,6 +22,7 @@ Ignore the current console entirely. Do not reference its colors, layout, or com
 - **Density is deliberate.** The Control module is dense and calm. The Live view is mostly picture. Library and Builder are catalog pages. Connectivity is a table. Configuration is a form. Each module has its own rhythm inside one system.
 - **Motion is minimal.** State changes fade or slide briefly. Nothing pulses except a live indicator. Honor reduced-motion preferences.
 - **Copy is plain and specific.** Every refusal, failure, and disabled control states its reason in one sentence. No jargon that the tables in section 6 do not define.
+- **Formats.** Aircraft identifiers render as `D-01` (two-digit, monospace); stream names as `drone1`. Intent ids shorten to the first eight characters, an ellipsis, and the last four, with the full id on hover and in the JSON block. Times are 24-hour HH:MM:SS local in monospace; ages are "4 s ago"; elapsed is m:ss; calendar dates never appear in copy, only inside the session id. Battery, link, and position quality are whole percentages with tabular numerals.
 - **Contrast.** Text at WCAG AAA. Controls and non-text indicators at AA minimum. Test every status color on the white base.
 
 ## 3. Information architecture
@@ -46,10 +47,10 @@ Later surfaces (design now, ship later): camera mosaic and focus pane · detecti
 
 Elements, in priority order:
 
-1. **Network stop.** The largest control on every page. It sends `estop`. It is disabled with a stated reason when the console socket is not connected, and it shows "stop active" when the fleet is stopped. Beside it, always: "Physical RC remains primary" and the keyboard shortcut Shift+Escape, which travels on a separate authenticated keyboard connection.
+1. **Network stop.** The largest control on every page. It sends `estop`. It is disabled with a stated reason when the console socket is not connected, and it shows "stop active" when the fleet is stopped. Beside it, always: "Physical RC remains primary", the keyboard shortcut Shift+Escape, which travels on a separate authenticated keyboard connection, and the live physical RC status: for each selected aircraft, control authority (Sweep or RC) and RC safety operator present or absent, from `control_authority` and `rc_safety_operator_present`. An RC takeover or an absent safety operator is a state word in the bar, not only a note. While stop is active the control stays enabled and sends `estop` again when pressed; it reads "Stop active" with the time it was raised. There is no console control that clears a stop: it clears only when the relay's state reports `estop: false`, and the shell then shows "Stop cleared" for ten seconds. Never design a resume, reset, or clear-stop control.
 2. **Fleet state.** Armed or disarmed, stop active or clear, mode (indoor), roster version, aircraft ready as "n of m".
 3. **Selected aircraft.** Identifiers of the current selection, or "none selected".
-4. **Active intent or plan.** The one request in flight: name, lifecycle state, short intent id, elapsed time. When a request is pending confirmation, the confirm and cancel actions are reachable from the shell itself.
+4. **Active intent or plan.** The one request in flight: name, lifecycle state, short intent id, elapsed time. When a request is pending confirmation, the confirm and cancel actions are reachable from the shell itself. When the relay's pending object carries `expires`, show the remaining time as a countdown beside the elapsed time; at zero the preview is invalidated with the reason "confirmation window expired" and the actions disappear.
 5. **Link health.** Relay connection and keyboard-stop connection, each one of connecting, connected, degraded, disconnected. Degraded means the console received a frame it could not parse and dropped it.
 6. **Warnings.** A capped list, newest first, each with severity info, warning, or danger and a one-sentence reason.
 7. **Fixture banner.** When running on fixture data, a persistent banner says so.
@@ -64,11 +65,11 @@ The working page. Left to right or top to bottom: aircraft registry, controls, p
 
 **Aircraft registry.** One row or card per aircraft with: identifier, membership state, connection epoch, flight state, battery, link, position quality, control authority, RC safety operator present, readiness reasons (a list of short codes when not ready), advertised capture patterns, last seen, and a select toggle. Selection rules: only ready and selectable aircraft can be selected; at least one aircraft stays selected once any is; a stale selection is cleared visibly when the roster changes. Departed aircraft move to a "departed this session" list with epoch, time, and reason, and return to the registry on rejoin with a new epoch. Empty state for no aircraft. Skeleton rows while connecting.
 
-**Flight controls.** The full Appendix E set, each a named control with its own enabled and disabled reasons: arm, disarm, select all, takeoff (confirm), land (confirm), land all (confirm), hold, translate with direction and step count, altitude up and down by step, formation next and formation set with the five named formations line, column, circle, grid, V, spacing tighter and wider, come home, sweep (confirm), and the network stop. Show which of these the relay currently accepts and which return unsupported at this milestone, without hiding the latter.
+**Flight controls.** The full Appendix E set, each a named control with its own enabled and disabled reasons: arm, disarm, select all, takeoff (confirm), land (confirm), land all (confirm), hold, translate with direction and step count, altitude up and down by step, formation next and formation set with the five named formations line, column, circle, grid, V, spacing tighter and wider, come home, sweep (confirm), and the network stop. Show which of these the relay currently accepts and which return unsupported at this milestone, without hiding the latter. At M2.0 the relay accepts `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, `estop`, and `capture_room`; `disarm`, `land`, `altitude`, `formation_next`, `formation_set`, `spacing`, `sweep`, `survey_area`, and `map_area` are refused as `unsupported`, as is any mode other than `indoor`.
 
-**Capture controls.** Room identifier field with inline validation, capture pattern choice between `pano_360` and `reconstruct_8` with the coverage label each produces (full equirectangular versus incomplete vertical coverage), a readiness panel that names the exact blocking reason, and Capture room. Beside it, the capture-readiness guidance mirror: guidance mode (`visual_advisory` or `registered_metric`), pose source, and pass or fail marks for pose, clearance, camera, motion, and image quality, an azimuth coverage compass with unseen, weak, and accepted sectors, the next heading, and the suggested yaw or gimbal delta. In `visual_advisory` mode the UI must never suggest an XYZ move.
+**Capture controls.** Room identifier field with inline validation, capture pattern choice between `pano_360` and `reconstruct_8` with the coverage label each produces (full equirectangular versus incomplete vertical coverage), a readiness panel that names the exact blocking reason, and Capture room. Beside it, the capture-readiness guidance mirror: guidance mode (`visual_advisory` or `registered_metric`), pose source, and pass or fail marks for pose, clearance, camera, storage, motion, and image quality, an azimuth coverage compass with unseen, weak, and accepted sectors, the next heading, and the suggested yaw or gimbal delta. In `visual_advisory` mode the UI must never suggest an XYZ move.
 
-**Plan preview and confirmation.** Appears the moment a draft exists. Shows the plan title, roster version it was built against, ordered steps in plain language, the affected aircraft, and the exact Intent v1 JSON in a collapsible block. Two actions: Confirm and send, Cancel. The preview is invalidated visibly when the roster changes, the selection changes, an aircraft leaves, or a configuration change lands; the reason is stated and the actions disappear.
+**Plan preview and confirmation.** Appears the moment a draft exists. Shows the plan title, roster version it was built against, ordered steps in plain language, the affected aircraft, and the exact Intent v1 JSON in a block that is expanded every time a preview appears and may be collapsed by the operator afterwards. Two actions: Confirm and send, Cancel. The preview is invalidated visibly when the roster changes, the selection changes, an aircraft leaves, or a configuration change lands; the reason is stated and the actions disappear.
 
 **Requests.** The most recent outcome as a card, then a list of recent requests. Each request shows intent name, lifecycle state, short id, target selection, source, the failed request it retries if any, reason and detail, and a timestamp row for every lifecycle state reached. A failed request offers Retry as new intent, disabled with a reason when the source connection is down or the aircraft is no longer ready.
 
@@ -82,7 +83,7 @@ A catalog of captured media by project, room, capture, aircraft, and time. Each 
 
 ### 5.4 World Builder
 
-The room project. A building holds named rooms with explicit doorway adjacency and an optional floor-plan reference. For each room: capture status, an accepted capture bundle selector, a preview of the exact upload set and model, a Submit action that always shows the `public: false` badge, and the generation job tracked through draft, uploading, queued, running, succeeded, failed, timed out, with retry that preserves the capture. Provenance on every job: operation id, world id, model, timestamps, assets. A succeeded job opens the room world by link or asset preview. Both sides of each doorway can be recorded as composition references, kept visibly separate from generation inputs. The operator can keep working on the next room while prior jobs run.
+The room project. A building holds named rooms with explicit doorway adjacency and an optional floor-plan reference. For each room: capture status, an accepted capture bundle selector that lists drone bundles and the manual phone fallback (exactly three overlapping phone photos added from this page, shown as a bundle type visibly distinct from `pano_360` and `reconstruct_8` and usable when the drone path is unavailable), a preview of the exact upload set and model, a Submit action that always shows the `public: false` badge, and the generation job tracked through draft, uploading, queued, running, succeeded, failed, timed out, with retry that preserves the capture. Provenance on every job: operation id, world id, model, timestamps, assets. A succeeded job opens the room world by link or asset preview; the world is labelled "generated", its source photos stay visible beside it, and no copy presents it as a factual or safety record. Both sides of each doorway can be recorded as composition references, kept visibly separate from generation inputs. The operator can keep working on the next room while prior jobs run.
 
 ### 5.5 Connectivity
 
@@ -99,8 +100,8 @@ Design these to the same system now so nothing is bolted on later.
 - **Detections and attention.** A detection event carries confidence, class, aircraft, world-position estimate, and time. At or above 0.6 it is shown; at or above 0.8 it promotes its aircraft's feed to focus within one second. The operator marks it real or dismisses it. A detection never emits a command, and the UI says so.
 - **Map and room graph.** Aircraft positions on an occupancy map, the room graph with doorways, candidate versus approved capture poses, the geofence, and the batch plan preview for `map_area`: assignments, routes, poses, and patterns frozen into one confirmation.
 - **Ledger and health.** The session's accepted, refused, and failed requests over time, replay of a session by id, and health metrics: intent latency, telemetry rate, video latency, unsafe-intent count (always zero), per-aircraft battery and link.
-- **Gesture readout.** Camera selection, tracking enabled or disabled, a hand-landmark overlay, confidence and dwell feedback, the candidate intent as a preview, confirm and cancel, duplicate suppression indicator.
-- **Push-to-talk.** Press and hold Space (with a guard when typing in a field) or a large button. Recording capped at thirty seconds with a visible countdown. Then the transcript, and a voice outcome card: transcribed or refused, the source, the reason, and the plan preview that follows the same confirm-one-intent-at-a-time rule as every other request. Denied microphone permission, empty audio, upload failure, timeout, and rate limit are distinct states that emit nothing.
+- **Gesture readout.** Camera selection, tracking enabled or disabled (explicit enablement, off by default), a hand-landmark overlay, confidence and dwell feedback, the candidate intent as a preview, confirm and cancel, duplicate suppression indicator, and the enabled gesture-to-intent pairs (first `capture_room`, `hold`, confirm, and cancel) with a note that `estop`, `arm`, `takeoff`, and free-flight motion are not gesture-emittable and stay on the console controls and the physical RC. Distinct states that emit nothing: model failed to load, webcam dropped or unplugged, low confidence, dwell timeout, and duplicate suppressed; each shows the error and that emission is disabled while the network stop and physical RC remain.
+- **Push-to-talk.** Press and hold Space (with a guard when typing in a field) or a large button. Recording capped at thirty seconds with a visible countdown. Then the transcript, and a voice outcome card: transcribed or refused, the source, the reason, and the plan preview that follows the same confirm-one-intent-at-a-time rule as every other request. Denied microphone permission, empty audio, upload failure, timeout, and rate limit are distinct states that emit nothing. Two more states emit nothing: ambiguous, where the compiler returns options for the selection or location and the operator picks one or cancels; and language disabled, shown when microphone capture or transcription is unavailable or the LLM API is rate-limited or down with no local fallback, with the reason stated. When the local compiler fallback is in use, the outcome card says so.
 
 ## 6. Vocabulary of states
 
@@ -112,25 +113,29 @@ Use these words exactly. The prototype's fixtures must exercise every value.
 | Membership | registered, ready, leaving, disconnected, degraded |
 | Membership events | join, readiness, graceful_leave, graceful_leave_completed, unexpected_loss, telemetry_stale, telemetry_recovered |
 | Flight state | disarmed, landed, armed, taking_off, airborne, hovering, landing, emergency |
-| Intent lifecycle | draft, pending_confirmation, sent, accepted, refused, executing, completed, failed, invalidated |
+| Intent lifecycle | draft, pending_confirmation, sent, accepted, refused, executing, completed, failed, invalidated, cancelled |
 | Stream status | live, offline, unreported |
 | Capture pattern and coverage | pano_360 with full_equirectangular; reconstruct_8 with incomplete_vertical_coverage |
 | Capture progress | ready, capturing, downloading, needs retake, disconnected |
 | Guidance mode | visual_advisory, registered_metric |
 | Generation job | draft, uploading, queued, running, succeeded, failed, timed_out |
-| Mode | indoor (outdoor modes exist in the contract and return unsupported) |
+| Mode | indoor (outdoorC and outdoorF exist in the contract and return unsupported) |
+| Readiness reasons | identity_unverified, adapter_capabilities_missing, flight_capability_missing, telemetry_missing, telemetry_stale, home_pose_missing, control_authority_missing, rc_safety_operator_missing, disconnected, leaving |
+| Membership reason | authenticated_join, authenticated_rejoin, readiness_gate_failed, graceful_leave_requested, telemetry_recovered, telemetry_stale, graceful_leave_completed, adapter_connection_lost, or null |
+| Provenance | adapter_signature, relay_transport_attestation, relay_freshness_attestation, authenticated_adapter_telemetry |
 
 Refusal and failure reasons the UI must render with a plain sentence each:
 
 - **Request shape and routing:** invalid_payload, unknown_source, unknown_intent, unsupported, duplicate_intent, invalid_retry, session_mismatch, source_mismatch, source_not_allowed, frame_not_allowed, downstream_error, downstream_unavailable.
 - **Selection and roster:** invalid_selection, stale_selection, stale_roster, stale_connection_epoch, aircraft_not_registered, aircraft_not_ready, invalid_state, confirmation_required, armed_required, active_task.
 - **Safety:** estop_active, geofence, ceiling, spacing, battery_reserve, battery_critical, link_quality, link_stale, position_quality, position_stale, operator_absent, control_authority, rc_safety_operator_absent, home_pose_missing.
+- **Plan integrity:** invalid_plan, conflicting_motion, invalid_roster_transition, invalid_resume.
 - **Camera and media:** storage, camera_unsupported, camera_not_ready, camera_failure, download_failure.
 - **Adapter:** adapter_failure, adapter_timeout, planner_failure.
 
 ## 7. Wiring
 
-**Connections.** Two WebSockets to the relay at `/ws/{session_id}`: one authenticated as source `console`, one as source `keyboard`. The keyboard connection carries only the Shift+Escape stop. The first frame on each is an auth frame; the token never appears in a URL. There is no automatic reconnect; disconnection is shown honestly.
+**Connections.** Two WebSockets to the relay at `/ws/{session_id}`: one authenticated as source `console`, one as source `keyboard`. The keyboard connection carries only the Shift+Escape stop. The first frame on each is an auth frame; the token never appears in a URL. There is no automatic reconnect; disconnection is shown honestly. There is also no reconnect control in the console: the disconnected notice reads "Relay disconnected. Reload the console from the operator shell to reconnect. Physical RC remains primary."
 
 **Events the console receives, and what each drives.**
 
@@ -143,7 +148,7 @@ Refusal and failure reasons the UI must render with a plain sentence each:
 | telemetry | drone, connection_epoch, x, y, z, vx, vy, vz, battery, state, link, pos_quality | map positions, health metrics; not the registry, which follows state |
 | acknowledgement | intent_id, status, command_id, reason, detail, drone_id | request lifecycle, last outcome |
 | refusal | intent_id, reason, detail, drone_id | request lifecycle, last outcome, warnings |
-| capture_readiness (guidance) | guidance_mode, pose_source, pose_ok, clearance_ok, camera_ok, motion_ok, image_quality_ok, coverage_missing, next_heading_deg, suggested_delta | the readiness compass and gates |
+| capture_readiness (guidance) | guidance_mode, pose_source, pose_ok, clearance_ok, camera_ok, storage_ok, motion_ok, image_quality_ok, coverage_missing, next_heading_deg, suggested_delta | the readiness compass and gates |
 | voice outcome (later) | status, source, reason, transcript, emissions | the voice outcome card |
 | detection (later) | confidence, class, drone, position, time | detections list, attention promotion |
 
@@ -158,7 +163,8 @@ Refusal and failure reasons the UI must render with a plain sentence each:
 | Hold | hold | none | no | selected |
 | Translate | translate | dx, dy in steps | no | selected |
 | Altitude | altitude | delta in steps | no | selected |
-| Formation | formation_next, formation_set | name | no | selected |
+| Formation next | formation_next | none | no | selected |
+| Formation set | formation_set | name | no | selected |
 | Spacing | spacing | delta | no | selected |
 | Come home | come_home | none | no | selected |
 | Sweep | sweep | optional box | yes | selected |
@@ -172,17 +178,17 @@ Refusal and failure reasons the UI must render with a plain sentence each:
 ## 8. Responsive rules
 
 - **Laptop, 1200 px and up.** Full grid. Shell across the top, module navigation at the left, Control as a dense multi-column workspace, Live view as picture with a side rail.
-- **Tablet, 880 to 1199 px.** Two columns. Navigation collapses to icons with labels on hover or press. The mosaic goes to two tiles per row.
-- **Phone, below 880 px, verified at 390 px.** Single column. The safety bar is sticky and shrinks to stop, fleet state, selected aircraft, and active request. Navigation becomes a bottom bar. The mosaic becomes a swipeable single tile with the focus pane above it. Confirm and cancel for a pending plan stay reachable without scrolling. Touch targets at least 44 px.
+- **Tablet, 880 to 1199 px.** Two columns. Navigation collapses to icons with short labels always visible beneath them; a tap navigates. The mosaic goes to two tiles per row.
+- **Phone, below 880 px, verified at 390 px.** Single column. The safety bar is sticky and shrinks to stop, console and keyboard connection status, fleet state, selected aircraft, active request, and the newest danger warning; info and warning severities collapse to a count that opens the list. Navigation becomes a bottom bar. The mosaic becomes a swipeable single tile with the focus pane above it. Confirm and cancel for a pending plan stay reachable without scrolling. Touch targets at least 44 px.
 - What never leaves the screen at any width: the network stop, the active request state, and the connection status.
 - Wide content such as the connectivity table and the intent JSON scrolls inside its own container. The page never scrolls sideways.
 
 ## 9. Accessibility and keyboard
 
 - Every panel labelled; every icon-only control named; every disabled control explains itself in text, not only in a tooltip.
-- Shift+Escape is the network stop everywhere. Space is push-to-talk when no text field has focus. Arrow keys move within radio groups and the registry.
+- Shift+Escape is the network stop everywhere. Space is push-to-talk only while focus is on the page body, the workspace landmark, or the push-to-talk button itself; when any other control has focus, Space keeps its native behavior and the push-to-talk button shows "Press Space here or hold this button". Arrow keys move within radio groups and the registry.
 - Focus moves to a new plan preview when it appears and returns to the originating control when it resolves.
-- Live regions announce request outcomes and warnings politely; the connection warning is an alert.
+- Live regions announce request outcomes and info and warning severities politely; danger warnings, stop active, plan invalidation, and the connection warning are assertive alerts. Elapsed-time and countdown counters sit outside every live region.
 - Skip link to the workspace. Visible focus rings. Reduced-motion variant. No information carried by color alone.
 
 ## 10. Deliverables and acceptance checklist
@@ -199,7 +205,8 @@ Deliver, as a working React prototype on the fixtures in section 7 with no runti
 Accepted when every line below is present in the prototype:
 
 - [ ] Network stop on every page, disabled with reason when disconnected, showing stop active
-- [ ] Physical RC primary note and Shift+Escape hint beside the stop
+- [ ] Physical RC primary note, Shift+Escape hint, and live physical RC status (control authority, RC safety operator present) beside the stop
+- [ ] Stop-active state that re-sends on press, clears only from relay state, and no resume or clear-stop control
 - [ ] Armed or disarmed, stop active or clear, mode, roster version, aircraft ready n of m
 - [ ] Selected aircraft in the shell
 - [ ] Active request with lifecycle state and elapsed time in the shell, confirm and cancel reachable
@@ -211,14 +218,14 @@ Accepted when every line below is present in the prototype:
 - [ ] Departed list with rejoin
 - [ ] Every Appendix E control with enabled and disabled reasons, and unsupported shown honestly
 - [ ] Room field, pattern choice with coverage labels, readiness panel with exact blocking reason, Capture room
-- [ ] Capture-readiness compass, gates, guidance mode, next heading, yaw or gimbal suggestion, no XYZ in visual_advisory
+- [ ] Capture-readiness compass, gates (pose, clearance, camera, storage, motion, image quality), guidance mode, next heading, yaw or gimbal suggestion, no XYZ in visual_advisory
 - [ ] Plan preview with steps, roster version, exact JSON, confirm and cancel, and every invalidation reason
-- [ ] Request list with all nine lifecycle states, timestamps per state, retry with new id and retry_of
+- [ ] Request list with all ten lifecycle states, timestamps per state, retry with new id and retry_of
 - [ ] Every refusal and failure reason in section 6 rendered with a sentence
 - [ ] Live view single feed with stream status, last frame, health, readiness, guidance mode, capture progress
 - [ ] Mosaic of four and of six, focus pane, focus survives video loss, degraded states
 - [ ] Capture library with filters, item metadata, checksums, quality, needs-retake flag, export
-- [ ] World Builder with building, rooms, adjacency, floor-plan reference, bundle selector, upload preview, public false badge, all seven job states, retry, provenance, open world
+- [ ] World Builder with building, rooms, adjacency, floor-plan reference, bundle selector including the manual three-photo fallback, upload preview, public false badge, all seven job states, retry, provenance, open world
 - [ ] Connectivity table with every column and cell in section 5.5
 - [ ] Configuration with apply-now versus staged semantics and plan invalidation warning
 - [ ] Detections with the 0.6 and 0.8 thresholds, promotion, mark real or dismiss, never a command
