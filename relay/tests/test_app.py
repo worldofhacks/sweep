@@ -585,8 +585,11 @@ def test_authenticated_console_receives_periodic_state_fanout_at_frozen_rate(
 def test_restart_keeps_persisted_session_replay_only(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:
-    def accepting_sink(_intent: object, _state: object) -> None:
-        return None
+    from relay.contracts import LifecycleStatus
+    from relay.session import IntentSinkResult
+
+    def accepting_sink(_intent: object, _state: object) -> IntentSinkResult:
+        return IntentSinkResult(status=LifecycleStatus.COMPLETED, source="planner")
 
     first_app = create_app(
         app_settings,
@@ -601,9 +604,11 @@ def test_restart_keeps_persisted_session_replay_only(
             _authenticate_console(socket)
             socket.send_json(intent_payload())
             acknowledgement = _receive_type(socket, "acknowledgement")
+            completion = _receive_type(socket, "acknowledgement")
         original_replay = client.get(f"/session/{SESSION}", headers=headers).json()
 
     assert acknowledgement["status"] == "accepted"
+    assert completion["status"] == "completed"
     assert original_replay["last_sequence"] > 0
     log_path = next(app_settings.log_dir.glob("*.jsonl"))
     original_log = log_path.read_bytes()
