@@ -10,7 +10,8 @@ from math import isclose
 from types import MappingProxyType
 from typing import Literal
 
-from planner.models import TranslationGrounding, TranslationPolicy
+from planner.models import AltitudeGrounding, TranslationGrounding, TranslationPolicy
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import AcceptedIntent, IntentName, Mode, validate_intent
 
 MAX_PLAN_STEPS = 12
@@ -39,6 +40,12 @@ _EXPLICIT_TRANSLATION = re.compile(
 )
 _NAMED_TRANSLATION = re.compile(
     r"\bdrones?\s+(?P<ids>[^.!?,;:]+?)\s+fly\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_ALTITUDE = re.compile(
+    r"\b(?:(?P<hover>hover)\s+at|(?:fly|move)\s+(?P<direction>up|down))"
+    r"(?:\s+(?P<distance>\d+(?:\.\d+)?)\s*(?P<unit>foot|feet|metres?|meters?))?"
+    r"\s*(?=$|[.!?,;:])",
     re.IGNORECASE,
 )
 type OutcomeSource = Literal["anthropic", "replay", "synthetic", "template"]
@@ -106,6 +113,7 @@ class GroundingFacts:
     rooms: tuple[str, ...]
     translation_frame: str | None
     translation_step_m: float | None
+    altitude: AltitudeGrounding | None
     pending: Mapping[str, str] | None
     qualified_voice_intents: tuple[str, ...]
 
@@ -126,6 +134,7 @@ class GroundingFacts:
                 if self.translation_frame is None
                 else {"frame": self.translation_frame, "step_m": self.translation_step_m}
             ),
+            "altitude": None if self.altitude is None else self.altitude.to_dict(),
             "pending": None if self.pending is None else dict(self.pending),
             "qualified_voice_intents": list(self.qualified_voice_intents),
         }
@@ -139,7 +148,7 @@ class GroundingFacts:
 
     @classmethod
     def from_record(cls, raw: object) -> GroundingFacts:
-        if not isinstance(raw, Mapping) or set(raw) != {
+        required = {
             "session",
             "state_event_id",
             "state_time_ms",
@@ -152,9 +161,11 @@ class GroundingFacts:
             "drones",
             "rooms",
             "translation",
+            "altitude",
             "pending",
             "qualified_voice_intents",
-        }:
+        }
+        if not isinstance(raw, Mapping) or set(raw) not in (required, required - {"altitude"}):
             raise ValueError("persisted grounding facts are invalid")
         drones = raw["drones"]
         if not isinstance(drones, list):
@@ -221,6 +232,9 @@ class GroundingFacts:
                 if raw["translation"] is None
                 else _translation_from_record(raw["translation"], drones)
             ),
+            altitude=(
+                None if raw.get("altitude") is None else _altitude_from_record(raw["altitude"])
+            ),
             qualified_voice_intents=(
                 tuple(raw["qualified_voice_intents"])
                 if isinstance(raw["qualified_voice_intents"], list)
@@ -239,6 +253,7 @@ def build_grounding_facts(
     capability_version: str,
     rooms: tuple[str, ...] = (),
     translation: object = None,
+    altitude: object = None,
     qualified_voice_intents: tuple[str, ...] = (),
     pending: object = None,
 ) -> GroundingFacts:
@@ -284,6 +299,8 @@ def build_grounding_facts(
         translation_frame = translation.policy.frame
         translation_step_m = translation.policy.step_m
         translation_headings = translation.headings
+    if altitude is not None and not isinstance(altitude, AltitudeGrounding):
+        raise ValueError("altitude must come from the trusted planning policy")
     if any(not isinstance(value, str) for value in qualified_voice_intents):
         raise ValueError("qualified voice intents must be unique Intent v1 names")
     normalized_qualified = tuple(qualified_voice_intents)
@@ -381,6 +398,7 @@ def build_grounding_facts(
             if translation_frame is None
             else {"frame": translation_frame, "step_m": translation_step_m}
         ),
+        "altitude": None if altitude is None else altitude.to_dict(),
         "pending": None if normalized_pending is None else dict(normalized_pending),
         "qualified_voice_intents": list(normalized_qualified),
     }
@@ -404,6 +422,7 @@ def build_grounding_facts(
         rooms=rooms,
         translation_frame=translation_frame,
         translation_step_m=translation_step_m,
+        altitude=altitude,
         pending=normalized_pending,
         qualified_voice_intents=normalized_qualified,
     )
@@ -416,6 +435,7 @@ def validate_model_outcome(
     capture_id: Callable[[int], str],
     source: OutcomeSource,
     transcript: str,
+    capability_profile: CapabilityProfile | None = None,
 ) -> CompilerOutcome:
     if not isinstance(raw, Mapping) or not set(raw) <= {
         "kind",
@@ -475,6 +495,7 @@ def validate_model_outcome(
             expected_estop=expected_estop,
             capture_id=capture_id,
             allow_persisted_capture_id=False,
+            capability_profile=capability_profile or _profile_for_facts(facts),
         )
         if intent is None:
             return _invalid(source)
@@ -503,6 +524,8 @@ def validate_model_outcome(
             source=source,
         )
     if not _explicit_translation_matches(intents, transcript, facts):
+        return _invalid(source)
+    if not _explicit_altitude_matches(intents, transcript, facts):
         return _invalid(source)
     return CompilerOutcome(kind=kind, intents=tuple(intents), detail=detail, source=source)
 
@@ -588,6 +611,7 @@ def _validate_proposed_intent(
     expected_estop: bool,
     capture_id: Callable[[int], str],
     allow_persisted_capture_id: bool,
+    capability_profile: CapabilityProfile | None = None,
 ) -> ProposedIntent | None:
     if not isinstance(raw, Mapping) or set(raw) != {"name", "args", "selection", "mode"}:
         return None
@@ -625,7 +649,9 @@ def _validate_proposed_intent(
         "mode": raw.get("mode"),
         "confirm": True,
     }
-    result = validate_intent(candidate)
+    result = validate_intent(
+        candidate, capability_profile=capability_profile or _profile_for_facts(facts)
+    )
     if not isinstance(result, AcceptedIntent):
         return None
     known = {drone["drone_id"]: drone for drone in facts.drones}
@@ -653,6 +679,11 @@ def _validate_proposed_intent(
         )
     ):
         return None
+    if result.intent.name is IntentName.ALTITUDE and (
+        facts.altitude is None
+        or ("height_m" in result.intent.args and facts.altitude.floor_z_m is None)
+    ):
+        return None
     if result.intent.name in {
         IntentName.ARM,
         IntentName.DISARM,
@@ -661,6 +692,7 @@ def _validate_proposed_intent(
         IntentName.LAND_ALL,
         IntentName.HOLD,
         IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
         IntentName.COME_HOME,
     } and any(not known[drone_id]["flight_available"] for drone_id in result.intent.selection):
         return None
@@ -783,6 +815,19 @@ def _translation_from_record(
     )
 
 
+def _altitude_from_record(raw: object) -> AltitudeGrounding:
+    if not isinstance(raw, Mapping) or set(raw) != {"step_m", "floor_z_m", "configuration_id"}:
+        raise ValueError("persisted altitude policy is invalid")
+    return AltitudeGrounding(raw["step_m"], raw["floor_z_m"], raw["configuration_id"])
+
+
+def _profile_for_facts(facts: GroundingFacts) -> CapabilityProfile:
+    return C1_CAPABILITY_PROFILE.with_altitude(
+        enabled=facts.altitude is not None,
+        absolute=facts.altitude is not None and facts.altitude.floor_z_m is not None,
+    )
+
+
 def _explicit_translation_matches(
     intents: list[ProposedIntent], transcript: str, facts: GroundingFacts
 ) -> bool:
@@ -869,6 +914,33 @@ def _translation_steps(direction: str, steps: float, frame: str | None) -> tuple
         "left": (-steps, 0.0),
         "right": (steps, 0.0),
     }[direction]
+
+
+def _explicit_altitude_matches(
+    intents: list[ProposedIntent], transcript: str, facts: GroundingFacts
+) -> bool:
+    matches = list(_EXPLICIT_ALTITUDE.finditer(transcript))
+    if len(matches) != 1:
+        return True
+    match = matches[0]
+    if transcript[: match.start()].strip() or transcript[match.end() :].strip(" \t\r\n.!?,;:"):
+        return True
+    if facts.altitude is None or len(intents) != 1 or intents[0].name is not IntentName.ALTITUDE:
+        return False
+    intent = intents[0]
+    if tuple(sorted(intent.selection)) != tuple(sorted(facts.selection)):
+        return False
+    distance = float(match["distance"]) if match["distance"] is not None else 1.0
+    if match["unit"] is None or match["unit"].casefold().startswith("f"):
+        distance *= 0.3048
+    if match["hover"] is not None:
+        return (
+            match["distance"] is not None
+            and facts.altitude.floor_z_m is not None
+            and intent.args == {"height_m": distance}
+        )
+    direction = 1 if match["direction"].casefold() == "up" else -1
+    return intent.args == {"delta": direction * distance / facts.altitude.step_m}
 
 
 def _is_finite_number(value: object) -> bool:

@@ -318,7 +318,10 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "means one foot. Preserve metres exactly before dividing by step_m. Named drones "
             "require a select step before their translate when they differ from the current "
             "selection. In aircraft_relative frame forward and backward use dx; in world frame "
-            "they use dy. Plain hover means hold; it does not imply a translation. "
+            "they use dy. For altitude, hover at a height uses height_m above the authoritative "
+            "surveyed floor; fly up or down uses signed delta configured altitude steps. Convert "
+            "feet exactly and default an omitted up or down distance to one foot. Plain hover "
+            "means hold. "
             "Return clarify, unsupported, or refuse when grounding is not unique or possible."
         ),
         "messages": [

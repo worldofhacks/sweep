@@ -33,6 +33,7 @@ from language.transport import (
 )
 from planner.controller import PreparedExecutionRouter
 from planner.models import (
+    AltitudeGrounding,
     CommandOperation,
     ExecutionResult,
     FleetSnapshot,
@@ -43,6 +44,7 @@ from planner.models import (
     TranslationPolicy,
 )
 from relay.audit import SessionAuditLog
+from relay.capabilities import C1_CAPABILITY_PROFILE
 from relay.contracts import LifecycleStatus
 from relay.intent_v1 import AcceptedIntent, IntentV1, validate_intent
 
@@ -211,6 +213,7 @@ class TranscriptCompiler:
         capability_version: str,
         rooms: tuple[str, ...] = (),
         translation: object = None,
+        altitude: object = None,
         qualified_voice_intents: tuple[str, ...] = (),
         now_ms: int,
         correlation_id: str | None = None,
@@ -229,6 +232,7 @@ class TranscriptCompiler:
                 capability_version=capability_version,
                 rooms=rooms,
                 translation=translation,
+                altitude=altitude,
                 qualified_voice_intents=qualified_voice_intents,
             )
         except ValueError:
@@ -757,6 +761,7 @@ class ConfirmedPlan:
                 capability_version=capability_version,
                 rooms=rooms,
                 translation=_translation_grounding(self._compiled.facts),
+                altitude=_altitude_grounding(self._compiled.facts),
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
@@ -911,6 +916,7 @@ class ConfirmedPlan:
             capability_version=capability_version,
             rooms=rooms,
             translation=_translation_grounding(self._compiled.facts),
+            altitude=_altitude_grounding(self._compiled.facts),
             qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
         )
         targets = (
@@ -970,6 +976,12 @@ class ConfirmedPlan:
             ):
                 self._terminal = True
                 raise ConfirmationError("actual planner translation is below completion tolerance")
+        elif intent.name.value == "altitude":
+            expected = _altitude_grounding(self._compiled.facts)
+            actual = router.controller.planner.config.altitude_grounding()
+            if expected is None or plan.altitude_grounding != expected or actual != expected:
+                self._terminal = True
+                raise ConfirmationError("planner altitude configuration differs from preview")
         elif intent.name.value == "come_home":
             for drone_id in intent.selection:
                 home = _drone_position(facts, drone_id, "home_position")
@@ -1005,6 +1017,7 @@ class ConfirmedPlan:
                 capability_version=capability_version,
                 rooms=rooms,
                 translation=_translation_grounding(self._compiled.facts),
+                altitude=_altitude_grounding(self._compiled.facts),
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
             )
         except ValueError:
@@ -1025,7 +1038,11 @@ class ConfirmedPlan:
                 session=self._compiled.facts.session,
                 intent_id=intent_id,
                 timestamp_ms=now_ms,
-            )
+            ),
+            capability_profile=C1_CAPABILITY_PROFILE.with_altitude(
+                enabled=facts.altitude is not None,
+                absolute=facts.altitude is not None and facts.altitude.floor_z_m is not None,
+            ),
         )
         if not isinstance(result, AcceptedIntent):
             raise ConfirmationError("intent failed validation before emission")
@@ -1165,6 +1182,10 @@ def _translation_grounding(facts: GroundingFacts) -> TranslationGrounding | None
             if drone["heading_deg"] is not None
         },
     )
+
+
+def _altitude_grounding(facts: GroundingFacts) -> AltitudeGrounding | None:
+    return facts.altitude
 
 
 def _translation_matches_selection(
