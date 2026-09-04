@@ -538,7 +538,8 @@ class SafetyArbiter:
             command.intent_id,
             snapshot,
             aircraft,
-            safe_action=command.safety_action,
+            safe_action=command.safety_action
+            or (plan.intent_name is IntentName.LAND and command.operation is CommandOperation.LAND),
         )
         if membership_refusal is not None:
             return membership_refusal

@@ -626,6 +626,51 @@ def test_selected_land_can_descend_with_critical_battery_and_lost_position() -> 
     assert [call.operation for call in flight.calls] == [CommandOperation.LAND]
 
 
+def test_degraded_selected_land_passes_intent_plan_and_command_preflight() -> None:
+    snapshot = replace_aircraft(
+        make_snapshot(2, selection=(1,)), 1, membership=MembershipState.DEGRADED
+    )
+    controller, planner, arbiter, _, flight, _ = make_stack(snapshot)
+    intent = make_intent(IntentName.LAND, selection=(1,), confirm=True)
+
+    assert arbiter.check_intent(intent, snapshot) is None
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+    assert arbiter.check_plan(plan, snapshot) is None
+    assert arbiter.check_command(plan, plan.commands[0], snapshot) is None
+
+    result = controller.execute(intent, snapshot)
+
+    assert result.status is LifecycleStatus.COMPLETED
+    assert [(call.operation, call.drone_ids) for call in flight.calls] == [
+        (CommandOperation.LAND, (1,))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"control_authority": False}, RefusalReason.CONTROL_AUTHORITY),
+        ({"rc_safety_operator_present": False}, RefusalReason.RC_SAFETY_OPERATOR_ABSENT),
+        ({"link_last_seen_ms": NOW_MS - 2000}, RefusalReason.LINK_STALE),
+        ({"connection_epoch": 2}, RefusalReason.STALE_CONNECTION_EPOCH),
+    ],
+)
+def test_degraded_selected_land_rechecks_authority_link_and_epoch_before_io(change, reason) -> None:
+    snapshot = replace_aircraft(make_snapshot(1), 1, membership=MembershipState.DEGRADED)
+    _, planner, arbiter, dispatcher, flight, _ = make_stack(snapshot)
+    intent = make_intent(IntentName.LAND, selection=(1,), confirm=True)
+    assert arbiter.check_intent(intent, snapshot) is None
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+
+    result = dispatcher.dispatch(plan, replace_aircraft(snapshot, 1, **change))
+
+    assert result.refusal is not None
+    assert result.refusal.reason is reason
+    assert flight.calls == []
+
+
 @pytest.mark.parametrize("corruption", ["missing", "extra", "duplicate", "epoch", "bypass"])
 def test_selected_land_rejects_altered_plan_before_any_io(corruption: str) -> None:
     snapshot = make_snapshot(3, selection=(1, 2))
