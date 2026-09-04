@@ -174,6 +174,8 @@ def test_two_drone_button_mission_has_ordered_jsonl_evidence(tmp_path: Path) -> 
             harness.intent("land_all", selection=[], confirm=True),
         ]
         for intent in mission:
+            harness.clock.advance(501)
+            intent["t"] = harness.clock()
             terminal = _send_intent(console, intent)
             assert terminal["status"] == "completed"
             _sync_telemetry(harness, adapters)
@@ -575,6 +577,7 @@ def test_deployed_simulator_nodes_stream_and_rejoin_without_stale_epoch_io(tmp_p
             _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))["status"]
             == "completed"
         )
+        harness.clock.advance(501)
         state_after_takeoff = harness.app.state.relay_runtime.session(SESSION).current_state()
         assert state_after_takeoff["drones"][0]["flight_state"] == "hovering"
         translated = _send_intent(
@@ -724,6 +727,7 @@ def test_estop_cannot_be_overwritten_by_an_already_running_motion(
             _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))["status"]
             == "completed"
         )
+        harness.clock.advance(501)
 
         original_goto = harness.flight.goto
 
@@ -789,6 +793,7 @@ def test_land_all_remains_available_after_completed_estop(tmp_path: Path) -> Non
                 keyboard,
                 harness.intent("estop", selection=[], source="keyboard"),
             )
+        harness.clock.advance(501)
         landed = _send_intent(
             console,
             harness.intent("land_all", selection=[], confirm=True),
@@ -827,6 +832,7 @@ def test_node_failsafe_cannot_be_overwritten_by_an_already_running_motion(
             _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))["status"]
             == "completed"
         )
+        harness.clock.advance(501)
         original_goto = harness.flight.goto
 
         def delayed_goto(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -880,6 +886,7 @@ def test_prior_epoch_motion_cannot_resume_after_estop_and_rejoin(
             _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))["status"]
             == "completed"
         )
+        harness.clock.advance(501)
         original_goto = harness.flight.goto
 
         def delayed_goto(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -1292,6 +1299,7 @@ def test_delayed_pre_command_telemetry_cannot_rollback_post_command_state(tmp_pa
             _send_intent(console, harness.intent("takeoff", selection=[1], confirm=True))["status"]
             == "completed"
         )
+        harness.clock.advance(501)
         node = harness.factory.nodes[SESSION]
         delayed = node._telemetry(1)
         assert (

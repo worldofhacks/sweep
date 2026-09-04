@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from planner.coordination import resolve_intent_group
 from planner.relay_bridge import AutonomyRelayBridge, _CoordinatedIntent
+from relay.contracts import LifecycleStatus as RelayStatus
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import make_intent, make_snapshot
 
@@ -86,7 +87,7 @@ def test_delivered_hold_survives_an_undelivered_estop_reservation() -> None:
         (hold, estop), resolution, make_snapshot(1), 500
     )
 
-    assert tuple(intent.intent_id for intent in preserved.accepted) == ("hold", "estop")
+    assert tuple(intent.intent_id for intent in preserved.accepted) == ("hold",)
     assert preserved.invalidated_intent_ids == ()
 
 
@@ -101,7 +102,7 @@ def test_confirmed_land_all_survives_an_undelivered_estop_reservation() -> None:
         (land, estop), resolution, make_snapshot(1), 500
     )
 
-    assert tuple(intent.intent_id for intent in preserved.accepted) == ("land", "estop")
+    assert tuple(intent.intent_id for intent in preserved.accepted) == ("land",)
     assert preserved.invalidated_intent_ids == ()
 
 
@@ -158,7 +159,7 @@ def test_delivered_hold_retires_older_motion_outside_conflict_window() -> None:
 def test_unclaimed_estop_bypasses_a_busy_coordinator() -> None:
     bridge, _ = _bridge()
     bridge._coordinator_active = True
-    result = SimpleNamespace()
+    result = SimpleNamespace(status=RelayStatus.COMPLETED)
     bridge._execute_one = lambda _intent: result  # type: ignore[method-assign]
     estop = make_intent(IntentName.ESTOP, intent_id="estop", t=100)
 
@@ -179,7 +180,7 @@ def test_estop_reserved_while_hold_runs_is_not_claimed_or_later_dispatched_twice
     assert executed_groups == [("hold", "estop")]
 
     bridge._coordinator_active = True
-    result = SimpleNamespace()
+    result = SimpleNamespace(status=RelayStatus.COMPLETED)
     bridge._execute_one = lambda _intent: result  # type: ignore[method-assign]
 
     assert bridge._coordinate_intent(estop.intent) is result
@@ -234,6 +235,11 @@ def _bridge(
     )
     bridge._coordination = Condition(Lock())
     bridge._admissions = {admission.intent.intent_id: admission for admission in admissions}
+    bridge._completed_ordering = []
+    bridge.session = SimpleNamespace(
+        current_state=lambda: {"t": 100},
+        limits=SimpleNamespace(intent_max_age_ms=5_000),
+    )
     executed_groups: list[tuple[str, ...]] = []
 
     def execute_group(group: tuple[_CoordinatedIntent, ...]) -> dict[str, object]:

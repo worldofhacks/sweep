@@ -159,6 +159,38 @@ describe('Control / Capture console', () => {
     expect(screen.queryByText(/simulator active/i)).not.toBeInTheDocument()
   })
 
+  test.each([7, 8])('retains an actionable preview after delayed membership roster %s', async (rosterVersion) => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    expect(await screen.findByText(/Development fixture active/i)).toBeInTheDocument()
+    act(() => {
+      clients.console.emitServer({
+        v: 1, t: clock(), type: 'state', event_id: 'current-authoritative-state', session,
+        roster_version: 8, state_sequence: 20, armed: true, estop: false, selection: [1],
+        formation: 'none', spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
+        drones: fixtureAircraft(clock()),
+      })
+    })
+    await user.click(screen.getByRole('button', { name: /Capture room/ }))
+    expect(screen.getByRole('heading', { name: 'Plan request preview' })).toBeInTheDocument()
+    act(() => {
+      clients.keyboard.emitServer({
+        v: 1, t: clock(), type: 'membership', event_id: 'delayed-keyboard-join', session,
+        roster_version: rosterVersion, action: 'join', drone_id: 1, connection_epoch: 3,
+        membership: 'registered', readiness_reasons: ['readiness_not_declared'],
+        adapter_id: 'fixture-dji-01', capabilities: ['flight', 'camera'],
+        provenance: 'adapter_signature', reason: null,
+      })
+    })
+    expect(screen.getAllByText('roster v8')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: /D-01 ready epoch 3 Selected/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Confirm and send' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    expect(clients.console.sent[0]).toMatchObject({ name: 'capture_room', selection: [1], confirm: true })
+  })
+
   test('previews capture before sending and confirms the same Intent v1 ID', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()

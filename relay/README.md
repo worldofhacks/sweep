@@ -97,9 +97,13 @@ An Intent v1 request is acknowledged as `accepted` only after the configured `in
 
 Coordinated dispatch creates a durable operation marker for every delivered group member before adapter I/O. The relay commits each member's outcome and includes sibling lifecycle evidence in the coordinator's response, so a sibling worker can retrieve its result without repeating adapter work. An interruption before those outcomes commit leaves replay fail-closed.
 
+Undelivered stop reservations preserve executable recovery actions and the conflict HOLD. Completed coordination retains timestamp history for the intent freshness window plus the conflict window, and longer while a related admitted request awaits delivery. A late older motion remains superseded by a completed stop; late members of a motion conflict remain refused. Newly issued motion outside the conflict window remains executable.
+
 ## Membership and state fan-out
 
 Each state snapshot carries a session-local, increasing `state_sequence`. Consumers use it to order the full projection across sockets, including snapshots generated in the same millisecond. Lifecycle acknowledgements remain deliverable when a newer roster makes an accompanying projection stale.
+
+The console ignores membership projections older than its current roster or already covered by an authoritative state snapshot. A delayed membership frame cannot undo aircraft readiness, selection, or a preview built against the newer roster.
 
 Every accepted membership transition is immediately followed, in the same ordered publication, by a `state` event. Membership values are exactly `registered`, `ready`, `leaving`, `disconnected`, and `degraded`. A session retains records and membership history for disconnected aircraft, caps physical stable IDs at four, increments `connection_epoch` on rejoin, and increments `roster_version` on membership changes. Join and rejoin do not modify the current selection or accepted plan.
 

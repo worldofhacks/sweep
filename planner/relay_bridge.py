@@ -14,6 +14,8 @@ from planner.coordination import MOTION_INTENTS, ConflictResolution, resolve_int
 from planner.models import (
     ExecutionResult,
     FleetSnapshot,
+    Refusal,
+    RefusalReason,
     RelaySnapshotEnrichment,
 )
 from planner.models import (
@@ -65,6 +67,7 @@ class AutonomyRelayBridge:
         self._connection_epochs: dict[int, int] = {}
         self._coordination = Condition(Lock())
         self._admissions: dict[str, _CoordinatedIntent] = {}
+        self._completed_ordering: list[_CompletedOrdering] = []
         self._coordinator_active = False
 
     def __call__(self, intent: IntentV1, _relay_state: dict[str, object]) -> IntentSinkResult:
@@ -141,7 +144,12 @@ class AutonomyRelayBridge:
                     coordinator = False
                     self._coordination.wait()
             if bypass:
-                return self._execute_one(intent)
+                result = self._execute_one(intent)
+                self._record_completed_ordering(
+                    (_CoordinatedIntent(intent, monotonic(), delivered=True),),
+                    {intent.intent_id: result},
+                )
+                return result
             if not coordinator:
                 continue
 
@@ -301,6 +309,7 @@ class AutonomyRelayBridge:
         )
         resolution = self._retire_motion_preceding_delivered_hold(admissions, resolution)
         resolution = self._prioritize_delivered_estop(admissions, resolution)
+        resolution = self._apply_completed_ordering(admissions, resolution, current)
         bypass_execution_lock = any(
             intent.name is IntentName.ESTOP and intent.intent_id in delivered
             for intent in resolution.accepted
@@ -316,10 +325,104 @@ class AutonomyRelayBridge:
                     admissions, resolution, delivered, current, snapshot
                 )
 
-        return self.session.execute_coordinated_group(
+        results = self.session.execute_coordinated_group(
             tuple(sorted(delivered)),
             dispatch,
         )
+        self._record_completed_ordering(admissions, results)
+        return results
+
+    def _prune_completed_ordering(self) -> None:
+        window_ms = self.controller.arbiter.config.motion_conflict_window_ms
+        cutoff = monotonic() - (self.session.limits.intent_max_age_ms + window_ms) / 1_000
+        pending = tuple(
+            item.intent
+            for item in self._admissions.values()
+            if item.intent.name in MOTION_INTENTS and item.result is None and item.error is None
+        )
+        self._completed_ordering = [
+            record
+            for record in self._completed_ordering
+            if record.completed_at >= cutoff
+            or any(
+                (record.safety_t is not None and intent.t <= record.safety_t)
+                or any(abs(intent.t - t) <= window_ms for t in record.motion_times)
+                for intent in pending
+            )
+        ]
+
+    def _apply_completed_ordering(
+        self,
+        admissions: tuple[_CoordinatedIntent, ...],
+        resolution: ConflictResolution,
+        snapshot: FleetSnapshot,
+    ) -> ConflictResolution:
+        motions = tuple(intent for intent in resolution.accepted if intent.name in MOTION_INTENTS)
+        with self._coordination:
+            self._prune_completed_ordering()
+            records = tuple(self._completed_ordering)
+        window_ms = self.controller.arbiter.config.motion_conflict_window_ms
+        retired = {
+            motion.intent_id
+            for motion in motions
+            if any(
+                record.safety_t is not None and motion.t <= record.safety_t for record in records
+            )
+        }
+        conflicting = tuple(
+            Refusal(
+                intent_id=motion.intent_id,
+                roster_version=snapshot.roster_version,
+                drone_id=None,
+                connection_epoch=None,
+                reason=RefusalReason.CONFLICTING_MOTION,
+                detail="another motion intent arrived inside the configured conflict window",
+            )
+            for motion in motions
+            if motion.intent_id not in retired
+            and any(
+                abs(motion.t - t) <= window_ms for record in records for t in record.motion_times
+            )
+        )
+        excluded = retired | {refusal.intent_id for refusal in conflicting}
+        return replace(
+            resolution,
+            accepted=tuple(
+                intent for intent in resolution.accepted if intent.intent_id not in excluded
+            ),
+            refusals=resolution.refusals + conflicting,
+            invalidated_intent_ids=tuple(
+                dict.fromkeys((*resolution.invalidated_intent_ids, *sorted(retired)))
+            ),
+            hold_required=resolution.hold_required or bool(conflicting),
+        )
+
+    def _record_completed_ordering(
+        self,
+        admissions: tuple[_CoordinatedIntent, ...],
+        results: dict[str, IntentSinkResult],
+    ) -> None:
+        motion_times = tuple(
+            item.intent.t
+            for item in admissions
+            if item.intent.name in MOTION_INTENTS
+            and (result := results.get(item.intent.intent_id)) is not None
+            and (result.status is RelayStatus.COMPLETED or result.reason == "conflicting_motion")
+        )
+        safety_times = tuple(
+            item.intent.t
+            for item in admissions
+            if item.delivered
+            and item.intent.name in {IntentName.HOLD, IntentName.ESTOP, IntentName.LAND_ALL}
+            and (result := results.get(item.intent.intent_id)) is not None
+            and result.status is RelayStatus.COMPLETED
+        )
+        with self._coordination:
+            self._prune_completed_ordering()
+            if motion_times or safety_times:
+                self._completed_ordering.append(
+                    _CompletedOrdering(monotonic(), motion_times, max(safety_times, default=None))
+                )
 
     @staticmethod
     def _preserve_delivered_safety_action(
@@ -328,16 +431,17 @@ class AutonomyRelayBridge:
         snapshot: FleetSnapshot,
         conflict_window_ms: int,
     ) -> ConflictResolution:
-        undelivered_estop = any(
-            item.intent.name is IntentName.ESTOP and not item.delivered for item in admissions
+        undelivered_safety = any(
+            item.intent.name in {IntentName.ESTOP, IntentName.HOLD} and not item.delivered
+            for item in admissions
         )
-        if not undelivered_estop:
+        if not undelivered_safety:
             return resolution
         fallback = resolve_intent_group(
             tuple(
                 item.intent
                 for item in admissions
-                if item.delivered or item.intent.name is not IntentName.ESTOP
+                if item.delivered or item.intent.name not in {IntentName.ESTOP, IntentName.HOLD}
             ),
             snapshot,
             conflict_window_ms=conflict_window_ms,
@@ -351,23 +455,9 @@ class AutonomyRelayBridge:
             and item.intent.intent_id in resolution.invalidated_intent_ids
             and item.intent.intent_id in fallback_accepted
         )
-        if not protected:
+        if not protected and not fallback.hold_required:
             return resolution
-        restored_ids = {intent.intent_id for intent in protected}
-        return replace(
-            resolution,
-            accepted=tuple(
-                sorted(
-                    (*resolution.accepted, *protected),
-                    key=lambda intent: (intent.t, intent.intent_id),
-                )
-            ),
-            invalidated_intent_ids=tuple(
-                intent_id
-                for intent_id in resolution.invalidated_intent_ids
-                if intent_id not in restored_ids
-            ),
-        )
+        return fallback
 
     @staticmethod
     def _retire_motion_preceding_delivered_hold(
@@ -578,3 +668,10 @@ class _CoordinatedIntent:
     claimed: bool = False
     result: IntentSinkResult | None = None
     error: Exception | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletedOrdering:
+    completed_at: float
+    motion_times: tuple[int, ...]
+    safety_t: int | None

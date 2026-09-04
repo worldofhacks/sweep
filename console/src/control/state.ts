@@ -553,6 +553,10 @@ function reduceMembershipEvent(
   state: ControlState,
   event: Extract<RelayServerEvent, { type: 'membership' }>,
 ): ControlState {
+  if (
+    event.roster_version < state.rosterVersion ||
+    (state.lastStateEvent !== null && event.roster_version <= state.lastStateEvent.rosterVersion)
+  ) return state
   const previous = state.aircraft[event.drone_id]
   const drone = projectMembershipEvent(event, previous)
   const aircraft = { ...state.aircraft, [event.drone_id]: drone }

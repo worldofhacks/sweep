@@ -148,6 +148,30 @@ describe('control reducer fleet lifecycle', () => {
     expect(rosterMoved.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_roster' })
   })
 
+  test.each([0, 1, 2])('applies membership only beyond authoritative roster (incoming %s)', (rosterVersion) => {
+    const current = withPendingCapture()
+    const next = controlReducer(current, {
+      type: 'relay_event', source: 'keyboard',
+      event: {
+        v: 1, t: t + 10, type: 'membership', event_id: 'delayed-join', session,
+        roster_version: rosterVersion, action: 'join', drone_id: 1, connection_epoch: 1,
+        membership: 'registered', readiness_reasons: ['readiness_not_declared'],
+        adapter_id: 'adapter-1', capabilities: ['flight'], provenance: 'adapter_signature', reason: null,
+      },
+    })
+    if (rosterVersion <= 1) {
+      expect(next.rosterVersion).toBe(1)
+      expect(next.aircraft).toEqual(current.aircraft)
+      expect(next.selection).toEqual([1])
+      expect(next.requests[0].status).toBe('pending_confirmation')
+      expect(next.notices).toEqual(current.notices)
+    } else {
+      expect(next.rosterVersion).toBe(2)
+      expect(next.selection).toEqual([])
+      expect(next.requests[0].status).toBe('invalidated')
+    }
+  })
+
   test.each(['console', 'keyboard'] as const)('orders all tied projection fields when %s delivers newer first', (source) => {
     const newer = {
       ...stateEvent('newer', 1, [drone(), drone({ drone_id: 2 })], [2]),
