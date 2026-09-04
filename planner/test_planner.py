@@ -80,7 +80,7 @@ def test_land_all_and_estop_ignore_stale_selection_and_target_fleet() -> None:
     assert stop.to_dict()["estop_update"] is True
 
 
-def test_land_is_unsupported_before_selection_or_flight_state_checks() -> None:
+def test_land_targets_only_selected_aircraft() -> None:
     snapshot = replace_aircraft(
         make_snapshot(3, selection=(1, 3)), 2, flight_state=FlightState.LANDED
     )
@@ -88,8 +88,10 @@ def test_land_is_unsupported_before_selection_or_flight_state_checks() -> None:
 
     result = planner.plan(make_intent(IntentName.LAND, selection=(1, 3), confirm=True), snapshot)
 
-    assert isinstance(result, Refusal)
-    assert result.reason is RefusalReason.UNSUPPORTED
+    assert isinstance(result, Plan)
+    assert [command.drone_id for command in result.commands] == [1, 3]
+    assert all(command.operation is CommandOperation.LAND for command in result.commands)
+    assert all(not command.safety_action for command in result.commands)
 
 
 def test_aircraft_relative_translation_rotates_each_aircraft_vector_by_heading() -> None:

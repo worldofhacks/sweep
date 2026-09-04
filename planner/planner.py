@@ -30,6 +30,7 @@ SUPPORTED_INTENTS = frozenset(
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
@@ -41,6 +42,7 @@ SELECTION_TARGETED_INTENTS = frozenset(
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.CAPTURE_ROOM,
     }
 )
@@ -270,6 +272,10 @@ class DeterministicPlanner:
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
+
+        elif intent.name is IntentName.LAND:
+            for drone_id in selected:
+                builder.add(drone_id, CommandOperation.LAND)
 
         elif intent.name is IntentName.LAND_ALL:
             for drone_id, aircraft in sorted(snapshot.aircraft.items()):

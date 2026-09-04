@@ -8,10 +8,11 @@ Any engineer may claim a ready task and owns it through review, integration, and
 
 `DeterministicPlanner` consumes validated `relay.intent_v1.IntentV1` values and a
 transport-neutral `FleetSnapshot`. It supports the checkpoint operations `arm`,
-`select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, `estop`, and
+`select`, `takeoff`, `translate`, `hold`, `come_home`, `land`, `land_all`, `estop`, and
 `capture_room`. Call `supports()` before state-dependent checks: other valid Intent v1
 names return the stable `unsupported` reason and never become a plan. `come_home` is a
-normal `goto` expansion; the flight adapter has no special return-home method.
+normal `goto` expansion; the flight adapter has no special return-home method. Confirmed `land`
+expands only the current selection; `land_all` expands every reachable airborne aircraft.
 
 `Plan`, `Command`, `CommandAcknowledgement`, `Refusal`, and `ExecutionResult` in
 `planner.models` are the semantic contract. Their `to_dict()` projections are

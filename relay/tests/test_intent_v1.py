@@ -76,6 +76,7 @@ def test_registered_sources_share_the_validator(
         ("translate", {"dx": 2, "dy": -1}, False),
         ("hold", {}, False),
         ("come_home", {}, False),
+        ("land", {}, True),
         ("land_all", {}, True),
         ("estop", {}, False),
     ],
@@ -264,7 +265,6 @@ def test_unknown_intent_name_is_rejected(
 @pytest.mark.parametrize(
     ("name", "args"),
     [
-        ("land", {}),
         ("disarm", {}),
         ("altitude", {"delta": 1}),
         ("formation_next", {}),
