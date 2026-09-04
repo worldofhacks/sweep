@@ -33,6 +33,7 @@ from planner.models import (
     FleetSnapshot,
     HoldScope,
     LifecycleStatus,
+    MembershipState,
     Plan,
     Position,
     Refusal,
@@ -553,6 +554,42 @@ class AdapterDispatcher:
 
         prior_acks = [*pending.acknowledgements[:-1], terminal_ack]
         completed_prefix = plan.commands[: command_index + 1]
+        if (
+            plan.roster_version != current.roster_version
+            and command_index + 1 == len(plan.commands)
+            and terminal_ack.status is LifecycleStatus.COMPLETED
+            and not any(
+                completed.operation
+                in {
+                    CommandOperation.CAPTURE_PANORAMA,
+                    CommandOperation.CAPTURE_PHOTO,
+                    CommandOperation.RETRIEVE_MEDIA,
+                }
+                for completed in completed_prefix
+            )
+            and all(
+                (aircraft := current.aircraft.get(completed.drone_id)) is not None
+                and aircraft.connection_epoch == completed.connection_epoch
+                and (
+                    aircraft.membership is MembershipState.READY
+                    or (
+                        plan.intent_name is IntentName.LAND
+                        and aircraft.membership is MembershipState.DEGRADED
+                        and snapshot.aircraft.get(completed.drone_id) is not None
+                        and snapshot.aircraft[completed.drone_id].membership
+                        is MembershipState.DEGRADED
+                    )
+                )
+                for completed in completed_prefix
+            )
+        ):
+            return ExecutionResult(
+                intent_id=plan.intent_id,
+                roster_version=current.roster_version,
+                status=LifecycleStatus.COMPLETED,
+                plan=plan,
+                acknowledgements=tuple(prior_acks),
+            )
         if plan.roster_version != current.roster_version:
             holds = self._hold_affected(
                 plan,

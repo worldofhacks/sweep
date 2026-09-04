@@ -72,6 +72,7 @@ class PreparedExecutionRouter:
         self._prepared: dict[str, PreparedExecution] = {}
         self._running: dict[str, tuple[PreparedExecution, ExecutionResult, object]] = {}
         self._submitting_sessions: dict[str, object] = {}
+        self._landing_completed_at: dict[str, int] = {}
         self._emitters: WeakSet[PreparedIntentEmitter] = WeakSet()
         self._lock = RLock()
 
@@ -228,7 +229,15 @@ class PreparedExecutionRouter:
                 raise
             # Complete the stop with the last validated state; never retry motion this way.
             result = self.controller.dispatcher.dispatch(prepared.plan, current)
-        if result.status is LifecycleStatus.EXECUTING:
+        if result.status is LifecycleStatus.COMPLETED and intent.name in {
+            IntentName.LAND,
+            IntentName.LAND_ALL,
+        }:
+            self._landing_completed_at[intent.intent_id] = session.clock()
+        if (
+            result.status is LifecycleStatus.EXECUTING
+            or intent.intent_id in self._landing_completed_at
+        ):
             with self._lock:
                 self._running[intent.intent_id] = (prepared, result, session)
         return result
@@ -238,15 +247,16 @@ class PreparedExecutionRouter:
     ) -> RelayExecution:
         if intent.name is IntentName.ESTOP:
             session.update_control_projection(estop=True)
+        reconciled = self.reconcile_landing(session)
         blocked = self._gate_active_execution(intent, relay_state, session)
         if blocked is not None:
-            return blocked
+            return replace(blocked, relay_events=reconciled + blocked.relay_events)
         with self._lock:
             self._submitting_sessions[intent.intent_id] = session
         try:
             prepared = self._prepared.get(intent.intent_id)
             result = self(intent, relay_state)
-            events = self._retire_held_motion(intent, result, session)
+            events = reconciled + self._retire_held_motion(intent, result, session)
             if prepared is not None:
                 events += self._retain_ambiguous_stop(intent, result, session, prepared.snapshot)
             return RelayExecution(result, events)
@@ -279,6 +289,7 @@ class PreparedExecutionRouter:
                 for prepared, pending in active
                 if intent.name in MOTION_INTENTS
                 and prepared.intent.name in MOTION_INTENTS
+                and prepared.intent.intent_id not in self._landing_completed_at
                 and abs(intent.t - prepared.intent.t)
                 <= self.controller.arbiter.config.motion_conflict_window_ms
             ]
@@ -302,9 +313,10 @@ class PreparedExecutionRouter:
                         status=LifecycleStatus.INVALIDATED,
                     ),
                 )
-                events.extend(session.record_execution_result(prepared.intent, invalidated))
+                events.extend(self._record_retirement(prepared, invalidated, session))
                 with self._lock:
                     self._running.pop(prepared.intent.intent_id, None)
+                self._landing_completed_at.pop(prepared.intent.intent_id, None)
             try:
                 current = self._safety_snapshot(session, candidate.snapshot)
                 events.extend(
@@ -403,7 +415,7 @@ class PreparedExecutionRouter:
         command_ids = (
             {command.command_id for command in result.plan.commands} if result.plan else set()
         )
-        if intent.name is not IntentName.HOLD and not any(
+        if intent.name not in {IntentName.HOLD, IntentName.LAND, IntentName.LAND_ALL} and not any(
             ack.command_id not in command_ids
             and ack.status
             in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING, LifecycleStatus.FAILED}
@@ -416,6 +428,16 @@ class PreparedExecutionRouter:
             session,
             intent_id=f"safety:ambiguous:{intent.intent_id}",
         )
+
+    def _record_retirement(
+        self, prepared: PreparedExecution, invalidated: ExecutionResult, session: object
+    ) -> tuple[dict[str, object], ...]:
+        if prepared.intent.intent_id in self._landing_completed_at:
+            active = session.current_state()["accepted_plan"]
+            if active is not None and active["intent_id"] == prepared.intent.intent_id:
+                return (session.update_control_projection(accepted_plan=None),)
+            return ()
+        return tuple(session.record_execution_result(prepared.intent, invalidated))
 
     def _retire_held_motion(
         self, intent: IntentV1, result: ExecutionResult, session: object
@@ -440,6 +462,12 @@ class PreparedExecutionRouter:
                     and intent_id not in {intent.intent_id, result.intent_id}
                     and (
                         intent.name is IntentName.ESTOP
+                        or (
+                            prepared.intent.intent_id in self._landing_completed_at
+                            and held_aircraft.intersection(
+                                command.drone_id for command in prepared.plan.commands
+                            )
+                        )
                         or held_aircraft.intersection(
                             ack.drone_id
                             for ack in pending.acknowledgements
@@ -466,9 +494,10 @@ class PreparedExecutionRouter:
                     status=LifecycleStatus.INVALIDATED,
                 ),
             )
-            events.extend(session.record_execution_result(prepared.intent, invalidated))
+            events.extend(self._record_retirement(prepared, invalidated, session))
             with self._lock:
                 self._running.pop(prepared.intent.intent_id, None)
+                self._landing_completed_at.pop(prepared.intent.intent_id, None)
         return tuple(events)
 
     def resume(self, intent_id: str, terminal_ack: CommandAcknowledgement) -> RelayExecution:
@@ -487,6 +516,44 @@ class PreparedExecutionRouter:
                     return self._relay_snapshot(session)
                 return self.current_snapshot() if self.current_snapshot else prepared.snapshot
             except Exception as error:
+                if (
+                    session is not None
+                    and prepared.plan.intent_name is not IntentName.ESTOP
+                    and terminal_ack.status is LifecycleStatus.COMPLETED
+                    and prepared.plan.commands
+                    and terminal_ack.command_id == prepared.plan.commands[-1].command_id
+                    and len(pending.acknowledgements) == len(prepared.plan.commands)
+                ):
+                    state = session.current_state()
+                    members = {member["drone_id"]: member for member in state["drones"]}
+                    if state["roster_version"] != prepared.plan.roster_version and all(
+                        (member := members.get(command.drone_id)) is not None
+                        and member["connection_epoch"] == command.connection_epoch
+                        and (
+                            member["membership"] == "ready"
+                            or (
+                                prepared.plan.intent_name is IntentName.LAND
+                                and member["membership"] == "degraded"
+                                and prepared.snapshot.aircraft[command.drone_id].membership
+                                is MembershipState.DEGRADED
+                            )
+                        )
+                        for command in prepared.plan.commands
+                    ):
+                        return replace(
+                            prepared.snapshot,
+                            roster_version=state["roster_version"],
+                            aircraft={
+                                drone_id: replace(
+                                    aircraft,
+                                    connection_epoch=members[drone_id]["connection_epoch"],
+                                    membership=MembershipState(members[drone_id]["membership"]),
+                                )
+                                for drone_id, aircraft in prepared.snapshot.aircraft.items()
+                                if drone_id in members
+                            },
+                            now_ms=state["t"],
+                        )
                 raise ResumeSnapshotUnavailable from error
 
         safety_events = ()
@@ -535,6 +602,12 @@ class PreparedExecutionRouter:
                     status=status,
                 ),
             )
+        if (
+            session is not None
+            and result.status is LifecycleStatus.COMPLETED
+            and prepared.intent.name in {IntentName.LAND, IntentName.LAND_ALL}
+        ):
+            self._landing_completed_at[intent_id] = session.clock()
         relay_events = safety_events
         if session is not None:
             relay_events += tuple(session.record_execution_result(prepared.intent, result))
@@ -543,11 +616,45 @@ class PreparedExecutionRouter:
                     prepared.intent, result, session, prepared.snapshot
                 )
         with self._lock:
-            if result.status is LifecycleStatus.EXECUTING:
+            if (
+                result.status is LifecycleStatus.EXECUTING
+                or intent_id in self._landing_completed_at
+            ):
                 self._running[intent_id] = (prepared, result, session)
             else:
                 self._running.pop(intent_id, None)
         return RelayExecution(execution=result, relay_events=relay_events)
+
+    def completion_pending(self, intent_id: str) -> bool:
+        return intent_id in self._landing_completed_at
+
+    def reconcile_landing(self, session: object) -> tuple[dict[str, object], ...]:
+        state = session.current_state()
+        drones = {drone["drone_id"]: drone for drone in state["drones"]}
+        events = []
+        for intent_id, completed_at in tuple(self._landing_completed_at.items()):
+            running = self._running.get(intent_id)
+            if running is None:
+                self._landing_completed_at.pop(intent_id, None)
+                continue
+            prepared, _, owner = running
+            if owner is not session:
+                continue
+            if not all(
+                (drone := drones.get(command.drone_id)) is not None
+                and drone["connection_epoch"] == command.connection_epoch
+                and (telemetry := drone.get("telemetry")) is not None
+                and telemetry["t"] > completed_at
+                and telemetry["state"] in {"landed", "disarmed"}
+                for command in prepared.plan.commands
+            ):
+                continue
+            active = session.current_state()["accepted_plan"]
+            if active is not None and active["intent_id"] == intent_id:
+                events.append(session.update_control_projection(accepted_plan=None))
+            self._landing_completed_at.pop(intent_id, None)
+            self._running.pop(intent_id, None)
+        return tuple(events)
 
     def reconcile_membership(self, session: object) -> tuple[dict[str, object], ...]:
         """Retire plans whose roster can no longer authenticate their waiting commands."""
@@ -624,9 +731,10 @@ class PreparedExecutionRouter:
                     status=LifecycleStatus.INVALIDATED,
                 ),
             )
-            events.extend(session.record_execution_result(prepared.intent, invalidated))
+            events.extend(self._record_retirement(prepared, invalidated, session))
             with self._lock:
                 self._running.pop(prepared.intent.intent_id, None)
+                self._landing_completed_at.pop(prepared.intent.intent_id, None)
         return tuple(events)
 
     def resume_after_acknowledgement(
