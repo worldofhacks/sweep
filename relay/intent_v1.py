@@ -79,6 +79,7 @@ M20_SUPPORTED_NAMES = frozenset(
         IntentName.SELECT,
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
         IntentName.HOLD,
         IntentName.COME_HOME,
         IntentName.LAND,
@@ -252,7 +253,15 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
             raise ValueError
         return MappingProxyType({})
 
-    if name in {IntentName.ALTITUDE, IntentName.SPACING}:
+    if name is IntentName.ALTITUDE:
+        if set(value) not in ({"delta"}, {"height_m"}):
+            raise ValueError
+        key = next(iter(value))
+        if not _is_finite_number(value[key]) or (key == "height_m" and value[key] <= 0):
+            raise ValueError
+        return MappingProxyType({key: value[key]})
+
+    if name is IntentName.SPACING:
         if set(value) != {"delta"} or not _is_finite_number(value["delta"]):
             raise ValueError
         return MappingProxyType({"delta": value["delta"]})
