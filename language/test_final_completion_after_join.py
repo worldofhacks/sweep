@@ -20,11 +20,16 @@ from tests.autonomy_fixtures import (
 
 
 @pytest.mark.parametrize("enrich_newcomer", [False, True])
-@pytest.mark.parametrize("degraded_land", [False, True])
+@pytest.mark.parametrize(
+    "intent_name", [IntentName.TRANSLATE, IntentName.LAND, IntentName.LAND_ALL]
+)
 def test_newcomer_join_does_not_invalidate_final_completion(
-    tmp_path, monkeypatch, enrich_newcomer, degraded_land
+    tmp_path, monkeypatch, enrich_newcomer, intent_name
 ):
-    snapshot = make_snapshot(2, selection=(1,), roster_version=4)
+    degraded_land = intent_name in {IntentName.LAND, IntentName.LAND_ALL}
+    snapshot = make_snapshot(
+        1 if intent_name is IntentName.LAND_ALL else 2, selection=(1,), roster_version=4
+    )
     if degraded_land:
         snapshot = replace_aircraft(snapshot, 1, membership=MembershipState.DEGRADED)
     controller, _, _, _, flight, _ = make_stack(snapshot)
@@ -50,7 +55,7 @@ def test_newcomer_join_does_not_invalidate_final_completion(
     )
     _hydrate_relay_from_snapshot(relay, snapshot)
     intent = make_intent(
-        IntentName.LAND if degraded_land else IntentName.TRANSLATE,
+        intent_name,
         selection=(1,),
         args={} if degraded_land else {"dx": 1, "dy": 0},
         confirm=degraded_land,

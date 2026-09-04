@@ -72,7 +72,8 @@ class PreparedExecutionRouter:
         self._prepared: dict[str, PreparedExecution] = {}
         self._running: dict[str, tuple[PreparedExecution, ExecutionResult, object]] = {}
         self._submitting_sessions: dict[str, object] = {}
-        self._landing_completed_at: dict[str, int] = {}
+        self._pending_landings: dict[str, tuple[int, frozenset[int]]] = {}
+        self._landing_ack_times: dict[str, int] = {}
         self._emitters: WeakSet[PreparedIntentEmitter] = WeakSet()
         self._lock = RLock()
 
@@ -233,11 +234,11 @@ class PreparedExecutionRouter:
             IntentName.LAND,
             IntentName.LAND_ALL,
         }:
-            self._landing_completed_at[intent.intent_id] = session.clock()
-        if (
-            result.status is LifecycleStatus.EXECUTING
-            or intent.intent_id in self._landing_completed_at
-        ):
+            self._pending_landings[intent.intent_id] = (
+                session.clock(),
+                frozenset(command.drone_id for command in prepared.plan.commands),
+            )
+        if result.status is LifecycleStatus.EXECUTING or intent.intent_id in self._pending_landings:
             with self._lock:
                 self._running[intent.intent_id] = (prepared, result, session)
         return result
@@ -289,7 +290,7 @@ class PreparedExecutionRouter:
                 for prepared, pending in active
                 if intent.name in MOTION_INTENTS
                 and prepared.intent.name in MOTION_INTENTS
-                and prepared.intent.intent_id not in self._landing_completed_at
+                and prepared.intent.intent_id not in self._pending_landings
                 and abs(intent.t - prepared.intent.t)
                 <= self.controller.arbiter.config.motion_conflict_window_ms
             ]
@@ -316,7 +317,8 @@ class PreparedExecutionRouter:
                 events.extend(self._record_retirement(prepared, invalidated, session))
                 with self._lock:
                     self._running.pop(prepared.intent.intent_id, None)
-                self._landing_completed_at.pop(prepared.intent.intent_id, None)
+                self._pending_landings.pop(prepared.intent.intent_id, None)
+                self._landing_ack_times.pop(prepared.intent.intent_id, None)
             try:
                 current = self._safety_snapshot(session, candidate.snapshot)
                 events.extend(
@@ -432,7 +434,7 @@ class PreparedExecutionRouter:
     def _record_retirement(
         self, prepared: PreparedExecution, invalidated: ExecutionResult, session: object
     ) -> tuple[dict[str, object], ...]:
-        if prepared.intent.intent_id in self._landing_completed_at:
+        if prepared.intent.intent_id in self._pending_landings:
             active = session.current_state()["accepted_plan"]
             if active is not None and active["intent_id"] == prepared.intent.intent_id:
                 return (session.update_control_projection(accepted_plan=None),)
@@ -460,10 +462,21 @@ class PreparedExecutionRouter:
                 if (
                     owner is session
                     and intent_id not in {intent.intent_id, result.intent_id}
+                    and intent.name is IntentName.HOLD
+                    and intent_id in self._pending_landings
+                ):
+                    completed_at, targets = self._pending_landings[intent_id]
+                    remaining = targets - held_aircraft
+                    if remaining:
+                        self._pending_landings[intent_id] = (completed_at, remaining)
+                        continue
+                if (
+                    owner is session
+                    and intent_id not in {intent.intent_id, result.intent_id}
                     and (
                         intent.name is IntentName.ESTOP
                         or (
-                            prepared.intent.intent_id in self._landing_completed_at
+                            prepared.intent.intent_id in self._pending_landings
                             and held_aircraft.intersection(
                                 command.drone_id for command in prepared.plan.commands
                             )
@@ -497,15 +510,34 @@ class PreparedExecutionRouter:
             events.extend(self._record_retirement(prepared, invalidated, session))
             with self._lock:
                 self._running.pop(prepared.intent.intent_id, None)
-                self._landing_completed_at.pop(prepared.intent.intent_id, None)
+                self._pending_landings.pop(prepared.intent.intent_id, None)
+                self._landing_ack_times.pop(prepared.intent.intent_id, None)
         return tuple(events)
 
-    def resume(self, intent_id: str, terminal_ack: CommandAcknowledgement) -> RelayExecution:
+    def resume(
+        self,
+        intent_id: str,
+        terminal_ack: CommandAcknowledgement,
+        *,
+        completed_at_ms: int | None = None,
+    ) -> RelayExecution:
         with self._lock:
             running = self._running.get(intent_id)
         if running is None:
             raise RuntimeError("intent has no executing prepared plan")
         prepared, pending, session = running
+        if (
+            prepared.intent.name in {IntentName.LAND, IntentName.LAND_ALL}
+            and terminal_ack.status is LifecycleStatus.COMPLETED
+        ):
+            acknowledged_at = (
+                completed_at_ms
+                if completed_at_ms is not None
+                else (session.clock() if session is not None else prepared.snapshot.now_ms)
+            )
+            self._landing_ack_times[intent_id] = max(
+                self._landing_ack_times.get(intent_id, acknowledged_at), acknowledged_at
+            )
 
         class ResumeSnapshotUnavailable(Exception):
             pass
@@ -532,7 +564,7 @@ class PreparedExecutionRouter:
                         and (
                             member["membership"] == "ready"
                             or (
-                                prepared.plan.intent_name is IntentName.LAND
+                                prepared.plan.intent_name in {IntentName.LAND, IntentName.LAND_ALL}
                                 and member["membership"] == "degraded"
                                 and prepared.snapshot.aircraft[command.drone_id].membership
                                 is MembershipState.DEGRADED
@@ -607,7 +639,10 @@ class PreparedExecutionRouter:
             and result.status is LifecycleStatus.COMPLETED
             and prepared.intent.name in {IntentName.LAND, IntentName.LAND_ALL}
         ):
-            self._landing_completed_at[intent_id] = session.clock()
+            self._pending_landings[intent_id] = (
+                max(session.clock(), self._landing_ack_times.get(intent_id, session.clock())),
+                frozenset(command.drone_id for command in prepared.plan.commands),
+            )
         relay_events = safety_events
         if session is not None:
             relay_events += tuple(session.record_execution_result(prepared.intent, result))
@@ -616,26 +651,25 @@ class PreparedExecutionRouter:
                     prepared.intent, result, session, prepared.snapshot
                 )
         with self._lock:
-            if (
-                result.status is LifecycleStatus.EXECUTING
-                or intent_id in self._landing_completed_at
-            ):
+            if result.status is LifecycleStatus.EXECUTING or intent_id in self._pending_landings:
                 self._running[intent_id] = (prepared, result, session)
             else:
                 self._running.pop(intent_id, None)
+            if result.status is not LifecycleStatus.EXECUTING:
+                self._landing_ack_times.pop(intent_id, None)
         return RelayExecution(execution=result, relay_events=relay_events)
 
     def completion_pending(self, intent_id: str) -> bool:
-        return intent_id in self._landing_completed_at
+        return intent_id in self._pending_landings
 
     def reconcile_landing(self, session: object) -> tuple[dict[str, object], ...]:
         state = session.current_state()
         drones = {drone["drone_id"]: drone for drone in state["drones"]}
         events = []
-        for intent_id, completed_at in tuple(self._landing_completed_at.items()):
+        for intent_id, (completed_at, targets) in tuple(self._pending_landings.items()):
             running = self._running.get(intent_id)
             if running is None:
-                self._landing_completed_at.pop(intent_id, None)
+                self._pending_landings.pop(intent_id, None)
                 continue
             prepared, _, owner = running
             if owner is not session:
@@ -647,12 +681,13 @@ class PreparedExecutionRouter:
                 and telemetry["t"] > completed_at
                 and telemetry["state"] in {"landed", "disarmed"}
                 for command in prepared.plan.commands
+                if command.drone_id in targets
             ):
                 continue
             active = session.current_state()["accepted_plan"]
             if active is not None and active["intent_id"] == intent_id:
                 events.append(session.update_control_projection(accepted_plan=None))
-            self._landing_completed_at.pop(intent_id, None)
+            self._pending_landings.pop(intent_id, None)
             self._running.pop(intent_id, None)
         return tuple(events)
 
@@ -675,6 +710,8 @@ class PreparedExecutionRouter:
                         != prepared.snapshot.aircraft[command.drone_id].membership.value
                     )
                     for command in prepared.plan.commands
+                    if prepared.intent.intent_id not in self._pending_landings
+                    or command.drone_id in self._pending_landings[prepared.intent.intent_id][1]
                 )
             ]
         events: list[dict[str, object]] = []
@@ -734,7 +771,8 @@ class PreparedExecutionRouter:
             events.extend(self._record_retirement(prepared, invalidated, session))
             with self._lock:
                 self._running.pop(prepared.intent.intent_id, None)
-                self._landing_completed_at.pop(prepared.intent.intent_id, None)
+                self._pending_landings.pop(prepared.intent.intent_id, None)
+                self._landing_ack_times.pop(prepared.intent.intent_id, None)
         return tuple(events)
 
     def resume_after_acknowledgement(
@@ -802,7 +840,7 @@ class PreparedExecutionRouter:
                 or terminal_ack.connection_epoch != command.connection_epoch
             ):
                 return None
-        return self.resume(intent_id, terminal_ack)
+        return self.resume(intent_id, terminal_ack, completed_at_ms=acknowledgement.t)
 
 
 def _intent_payload(intent: IntentV1) -> dict[str, object]:
