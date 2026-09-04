@@ -328,7 +328,7 @@ def test_configuration_change_while_waiting_for_completion_blocks_resume(monkeyp
     controller.planner = DeterministicPlanner(replace(config(), altitude_step_m=None))
     terminal = replace(pending.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
     result = dispatcher.resume_after_completion(pending.plan, pending, terminal, snapshot)
-    assert result.status is LifecycleStatus.REFUSED
+    assert result.status is LifecycleStatus.INVALIDATED
     assert "configuration" in result.refusal.detail
     assert sum(call.operation is CommandOperation.GOTO for call in flight.calls) == 1
 
@@ -346,3 +346,44 @@ def test_signed_building_height_uses_surveyed_floor(monkeypatch):
     )
     assert result.status is LifecycleStatus.COMPLETED
     assert flight.aircraft[1].pose.z == pytest.approx(-0.476)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("change", ["configuration", "stale_position"])
+def test_final_hover_cannot_complete_with_changed_grounding_or_stale_position(
+    monkeypatch, asynchronous, change
+):
+    snapshot = make_snapshot(1)
+    current = snapshot
+    controller, _, _, dispatcher, flight, _ = make_stack(snapshot, config=config())
+    original = flight.hover
+
+    def change_state():
+        nonlocal current
+        if change == "configuration":
+            controller.planner = DeterministicPlanner(
+                replace(config(), altitude_configuration_id="v2")
+            )
+        else:
+            current = replace_aircraft(current, 1, position_last_seen_ms=0)
+
+    def final_hover(*args, **kwargs):
+        acknowledgements = original(*args, **kwargs)
+        if asynchronous:
+            return tuple(replace(ack, status=LifecycleStatus.EXECUTING) for ack in acknowledgements)
+        change_state()
+        return acknowledgements
+
+    monkeypatch.setattr(flight, "hover", final_hover)
+    intent = make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1})
+    result = controller.execute(intent, snapshot, current_snapshot=lambda: current)
+    if asynchronous:
+        assert result.status is LifecycleStatus.EXECUTING
+        change_state()
+        terminal = replace(result.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
+        result = dispatcher.resume_after_completion(
+            result.plan, result, terminal, snapshot, current_snapshot=lambda: current
+        )
+    assert result.status in {LifecycleStatus.REFUSED, LifecycleStatus.INVALIDATED}
+    assert result.refusal is not None
+    assert sum(call.operation is CommandOperation.GOTO for call in flight.calls) == 1
