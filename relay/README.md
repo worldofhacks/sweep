@@ -24,7 +24,7 @@ The validator makes these schema choices where Appendix A leaves details open:
 - `intent_id` is a non-empty stable identifier. A retry gets a new identifier and may link to a different request through `retry_of`. This function validates the reference shape; the relay lifecycle validates same-session failure, deduplication, and terminal-state semantics.
 - `confirm` records the source's confirmation state. `capture_room` requires confirmation and exactly one selected drone; the arbiter enforces the remaining action-specific checks.
 - Rejection precedence is envelope, registered source, intent name, argument shape, scope, mode capability, then intent-name capability.
-- M2.0 accepts indoor requests for the nine flight-control names plus the previously accepted `capture_room` path. The outdoor mode values remain schema-reserved and return `unsupported`; the remaining intent names keep their v1 argument shapes and also return `unsupported`.
+- `c1_basic_control` enables `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land`, `land_all`, `estop`, and `capture_room`. The outdoor mode values remain schema-reserved and return `unsupported`; the remaining intent names keep their v1 argument shapes and also return `unsupported`.
 - `come_home` returns selected drones to their home positions through planner-generated `goto` calls. Confirmed `land` maps the current selection to adapter `land`; `land_all` applies landing fleet-wide.
 
 The current source registry is `console` and `keyboard`. Language and webcam join only when their real producers and conformance tests land. Registering another source or enabling another Intent v1 name changes the shared constants and conformance tests in this module.
@@ -104,7 +104,8 @@ State is fanned out at 10 Hz. Its required top-level keys are:
 
 ```text
 v, t, type="state", event_id, session, roster_version, armed, estop,
-selection, formation, spacing, mode, pending, accepted_plan, drones
+selection, formation, spacing, mode, capability_profile, enabled_intent_names,
+pending, accepted_plan, drones
 ```
 
 Each drone has these required keys:
@@ -119,6 +120,8 @@ rc_safety_operator_present, telemetry, membership_history
 `flight_state`, battery/link/position aliases, and `last_seen_at` are a normalized console projection and are nullable until current telemetry exists. The nested `telemetry` object is the authoritative Appendix B snapshot; its transport-only event ID, session, and connection epoch are represented by the containing drone/event. `camera_patterns` is derived from the signed capability list and does not assert camera readiness. The relay does not invent storage, camera-ready, active-task, or operator-presence/timing facts absent from Appendix B. The autonomy boundary must enrich those inputs explicitly and fail closed when they are missing.
 
 Top-level `armed` is the authoritative session arm authorization, initially false and updated only through `RelaySession.update_control_projection(armed=...)` after the planner/arbiter accepts that control-state change. It is not inferred from aircraft flight-state strings. Join and rejoin leave it unchanged; a new session after process restart begins disarmed. Per-aircraft physical armed/disarmed evidence remains an explicit autonomy enrichment used by graceful-removal safety.
+
+The capability profile limits valid intent names before planning. It does not approve an adapter or aircraft deployment. Authenticated membership, adapter capabilities, current telemetry, control authority, RC-safety-operator presence, and the planner and arbiter gates remain required before hardware dispatch.
 
 Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, `state`, `telemetry`, `acknowledgement`, and `refusal`; every one carries `event_id`. A refusal always includes all of `intent_id`, `command_id`, `drone_id`, `connection_epoch`, `roster_version`, `reason`, and `detail`; context fields are deliberately present as null when they do not apply. Acknowledgements use the same always-present context fields; `command_id` is non-null for adapter facts and nullable for relay/orchestrator intent-level lifecycle events.
 
