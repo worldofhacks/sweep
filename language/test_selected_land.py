@@ -18,9 +18,11 @@ from relay.session import RelayLimits, RelaySession
 from tests.autonomy_fixtures import make_snapshot, make_stack, replace_aircraft
 
 
-@pytest.mark.parametrize("async_completion", [False, True])
+@pytest.mark.parametrize(
+    ("async_completion", "lagging_same_ms"), [(False, False), (True, False), (True, True)]
+)
 def test_selected_land_waits_for_landed_telemetry_and_leaves_other_aircraft_airborne(
-    tmp_path, monkeypatch, async_completion
+    tmp_path, monkeypatch, async_completion, lagging_same_ms
 ):
     snapshot = replace(make_snapshot(3), selection=(1, 2))
     current = [snapshot]
@@ -94,6 +96,26 @@ def test_selected_land_waits_for_landed_telemetry_and_leaves_other_aircraft_airb
         assert [call.drone_ids for call in flight.calls] == [(1,)]
         now[0] += 1
         current[0] = replace(current[0], now_ms=now[0])
+        if lagging_same_ms:
+            for drone_id in (1, 2):
+                drone = next(
+                    d for d in relay.current_state()["drones"] if d["drone_id"] == drone_id
+                )
+                events = relay.process_frame(
+                    {
+                        **drone["telemetry"],
+                        "v": 1,
+                        "t": now[0],
+                        "type": "telemetry",
+                        "session": relay.session_id,
+                        "drone": drone_id,
+                        "connection_epoch": 1,
+                        "event_id": f"lagging-{drone_id}",
+                        "state": "hovering",
+                    },
+                    Principal(source="adapter", drone_id=drone_id, signing_key=b"x" * 32),
+                )
+                assert not any(event["type"] == "refusal" for event in events)
         for command in prepared.execution.plan.commands:
             events = relay.process_frame(
                 {

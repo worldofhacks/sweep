@@ -654,6 +654,7 @@ def _validate_proposed_intent(
     if expected_estop and result.intent.name not in {
         IntentName.ESTOP,
         IntentName.HOLD,
+        IntentName.LAND,
         IntentName.LAND_ALL,
     }:
         return None

@@ -590,9 +590,11 @@ def test_voice_estop_requires_exact_phrase_and_qualification(
     assert outcome.kind is expected_kind
 
 
-def test_selected_land_preserves_current_aircraft_selection() -> None:
+@pytest.mark.parametrize("stopped", [False, True])
+def test_selected_land_preserves_current_aircraft_selection(stopped: bool) -> None:
     case = _case("hold-current-selection")
     state = _state(case)
+    state["estop"] = stopped
     outcome, plan = TranscriptCompiler(
         StaticResponseTransport(
             {
