@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import TimeoutError as DeliveryTimeout
+from dataclasses import dataclass
 
-from adapters.dji_mini3.remote import CommandRequest
-from adapters.protocols import AdapterError
+from adapters.dispatch import AdapterDispatcher
+from adapters.dji_mini3.remote import CommandRequest, RemoteBridgeAdapter
+from adapters.protocols import AdapterError, CameraCapture, SwarmAdapter
+from adapters.sim.camera import SimCamera, SimCameraConfig
+from adapters.sim.flight import SimFlightAdapter
+from arbiter.safety import SafetyArbiter
+from planner.models import FleetSnapshot
 from relay.app import RelayRuntime
 from relay.contracts import AdapterAcknowledgement, CapabilitiesFrame, MediaFileRecord
 from relay.session import RelaySession
+from relay.settings import AdapterBackend
 
 
 class RelayNodeLink:
@@ -17,7 +24,8 @@ class RelayNodeLink:
 
     Drive it from a worker thread, never from the relay event loop: delivery is
     scheduled onto the loop and awaited synchronously, and acknowledgements arrive
-    through the session as the node's socket frames are processed.
+    through the session as the node's socket frames are processed. Both ``send`` and
+    ``await_acknowledgement`` block the calling thread and refuse the loop thread.
     """
 
     def __init__(self, runtime: RelayRuntime, session_id: str, *, delivery_timeout_ms: int) -> None:
@@ -39,10 +47,7 @@ class RelayNodeLink:
         return self._session.registry.connection_epoch(drone_id)
 
     def send(self, request: CommandRequest) -> None:
-        loop = self._runtime.loop
-        if loop is None:
-            raise AdapterError("relay runtime is not started")
-        _refuse_loop_thread(loop)
+        loop = self._worker_loop()
         key = self._runtime.credential_resolver.resolve("adapter", request.drone_id)
         if key is None:
             raise AdapterError(
@@ -81,6 +86,7 @@ class RelayNodeLink:
     def await_acknowledgement(
         self, command_id: str, *, timeout_ms: int
     ) -> AdapterAcknowledgement | None:
+        self._worker_loop()
         return self._session.await_command_acknowledgement(command_id, timeout_ms=timeout_ms)
 
     def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None:
@@ -88,6 +94,74 @@ class RelayNodeLink:
 
     def media_files(self, drone_id: int, capture_id: str) -> tuple[MediaFileRecord, ...]:
         return self._session.media_files(drone_id, capture_id)
+
+    def _worker_loop(self) -> asyncio.AbstractEventLoop:
+        """Return the started relay loop after proving this thread is not running it."""
+        loop = self._runtime.loop
+        if loop is None:
+            raise AdapterError("relay runtime is not started")
+        _refuse_loop_thread(loop)
+        return loop
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterPair:
+    """The flight and camera adapters one session dispatches through."""
+
+    flight: SwarmAdapter
+    camera: CameraCapture
+
+
+def build_adapters(
+    runtime: RelayRuntime,
+    session_id: str,
+    snapshot: FleetSnapshot,
+    *,
+    sim_camera_config: SimCameraConfig | None = None,
+) -> AdapterPair:
+    """Construct the adapters ``SWEEP_ADAPTER_BACKEND`` selects for one session.
+
+    ``sim`` builds the deterministic simulator from the snapshot and requires an
+    explicit ``SimCameraConfig`` because the relay carries no camera fixture values.
+    ``remote`` builds one ``RemoteBridgeAdapter`` serving as both flight and camera over
+    a ``RelayNodeLink``; delivery and acknowledgement waits are bounded by the command
+    TTL the relay stamps on every wire command.
+    """
+    settings = runtime.settings
+    backend = settings.adapter_backend
+    if backend is AdapterBackend.SIM:
+        if sim_camera_config is None:
+            raise ValueError("the sim backend requires an explicit SimCameraConfig")
+        flight = SimFlightAdapter.from_snapshot(snapshot)
+        camera = SimCamera(
+            drone_epochs={
+                drone_id: aircraft.connection_epoch
+                for drone_id, aircraft in snapshot.aircraft.items()
+            },
+            pose_provider=flight.camera_pose,
+            config=sim_camera_config,
+        )
+        return AdapterPair(flight=flight, camera=camera)
+    if backend is AdapterBackend.REMOTE:
+        link = RelayNodeLink(runtime, session_id, delivery_timeout_ms=settings.command_ttl_ms)
+        remote = RemoteBridgeAdapter.from_snapshot(
+            link, snapshot, acknowledgement_timeout_ms=settings.command_ttl_ms
+        )
+        return AdapterPair(flight=remote, camera=remote)
+    raise ValueError(f"unknown adapter backend {backend!r}")
+
+
+def build_dispatcher(
+    runtime: RelayRuntime,
+    session_id: str,
+    snapshot: FleetSnapshot,
+    *,
+    arbiter: SafetyArbiter,
+    sim_camera_config: SimCameraConfig | None = None,
+) -> AdapterDispatcher:
+    """Construct a session's ``AdapterDispatcher`` on the configured backend."""
+    adapters = build_adapters(runtime, session_id, snapshot, sim_camera_config=sim_camera_config)
+    return AdapterDispatcher(flight=adapters.flight, camera=adapters.camera, arbiter=arbiter)
 
 
 def _refuse_loop_thread(loop: asyncio.AbstractEventLoop) -> None:

@@ -157,7 +157,12 @@ class RemoteBridgeAdapter:
 
     @contextmanager
     def for_intent(self, intent_id: str, roster_version: int) -> Iterator[None]:
-        """Bind the intent and roster that every command in the block belongs to."""
+        """Bind the intent and roster that every command in the block belongs to.
+
+        ``AdapterDispatcher`` opens this around each command it executes, including
+        best-effort holds and estop; a caller driving the adapter directly opens it
+        itself. Scopes do not nest.
+        """
         if self._context is not None:
             raise AdapterError("an intent context is already bound")
         self._context = _IntentContext(intent_id, roster_version)
@@ -345,7 +350,7 @@ class RemoteBridgeAdapter:
     ) -> _Reply:
         context = self._context
         if context is None:
-            raise AdapterError("no intent context is bound; wrap dispatch in for_intent")
+            raise AdapterError("no intent context is bound; open for_intent first")
         expected_epoch = self._require_aircraft(drone_id)
         request = CommandRequest(
             command_id=self._command_ids(),

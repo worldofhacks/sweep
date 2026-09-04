@@ -73,13 +73,20 @@ node's live connection epoch, sends a `CommandRequest`, awaits the acknowledgeme
 a `command_id` with a timeout, and retains the node's latest `capabilities` frame and
 `media_file` records. The link owns the wire envelope, the per-node sequence, and the
 signature; `relay.bridge.RelayNodeLink` is the implementation over a live relay runtime
-and must be driven from a worker thread, never the relay event loop. The relay setting
-`SWEEP_ADAPTER_BACKEND` selects `sim` or `remote` for dispatch; `relay/README.md`
-documents the node protocol the adapter speaks.
+and must be driven from a worker thread, never the relay event loop: both `send` and
+`await_acknowledgement` block the calling thread and refuse the loop thread.
+`relay.bridge.build_adapters` reads the relay setting `SWEEP_ADAPTER_BACKEND` and
+returns the session's flight and camera pair: `sim` builds the simulator from the
+snapshot with an explicit `SimCameraConfig`, `remote` builds one `RemoteBridgeAdapter`
+over a `RelayNodeLink` whose delivery and acknowledgement waits are bounded by
+`SWEEP_COMMAND_TTL_MS`; `build_dispatcher` wraps that pair in an `AdapterDispatcher`.
+`relay/README.md` documents the node protocol the adapter speaks.
 
-Wrap dispatch in `adapter.for_intent(intent_id, roster_version)` so every command in
-the block carries the intent and roster it belongs to; the wire `command_id` is
-generated per request. Flight arguments travel as integer millimetre and millidegree
+`AdapterDispatcher` opens `adapter.for_intent(intent_id, roster_version)` around every
+command it executes, including best-effort holds and estop, so each wire command carries
+the intent and roster it belongs to; a caller driving the adapter directly opens the
+scope itself, and scopes do not nest. The wire `command_id` is generated per request.
+Flight arguments travel as integer millimetre and millidegree
 units. Before sending, the adapter compares the connection epoch it was given (from the
 snapshot, or `update_connection_epoch`) with the link's live epoch and refuses without
 sending when they differ; the dispatcher then reports `stale_connection_epoch`. Silence
@@ -94,7 +101,8 @@ relay registry directly over the node socket.
 
 `adapters.dji_mini3.fake_node` behaves like the phone on the wire without hardware:
 `just fake-node` connects one to a running relay so the console shows a real registry
-entry, and `relay/tests/test_bridge_roundtrip.py` drives it end to end.
+entry, and `relay/tests/test_bridge_roundtrip.py` dispatches through `build_dispatcher`
+on the `remote` backend to drive it end to end.
 
 The existing `crazyswarm2/` and `mavlink/` packages remain inactive placeholder stubs. They are not accepted hardware implementations and do not drive an abstraction change until a concrete second hardware integration is specified and proven.
 

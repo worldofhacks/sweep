@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from math import isfinite
 from string import hexdigits
 
@@ -57,6 +58,24 @@ class AdapterDispatcher:
         self.flight = flight
         self.camera = camera
         self.arbiter = arbiter
+
+    @contextmanager
+    def _intent_scope(self, intent_id: str, roster_version: int) -> Iterator[None]:
+        """Bind the intent and roster on adapters that scope their commands by intent.
+
+        An adapter exposing ``for_intent`` (the remote bridge adapter stamps both onto
+        every wire command) is bound once per command, even when one object serves as
+        both flight and camera. The simulator has no such method and needs no scope.
+        """
+        with ExitStack() as stack:
+            bound: list[object] = []
+            for adapter in (self.flight, self.camera):
+                bind = getattr(adapter, "for_intent", None)
+                if bind is None or any(adapter is seen for seen in bound):
+                    continue
+                bound.append(adapter)
+                stack.enter_context(bind(intent_id, roster_version))
+            yield
 
     def dispatch(
         self,
@@ -143,7 +162,8 @@ class AdapterDispatcher:
                 )
 
             try:
-                outcome = self._execute(command, captures, provider)
+                with self._intent_scope(command.intent_id, command.roster_version):
+                    outcome = self._execute(command, captures, provider)
             except AdapterTimeout as error:
                 failure = self._failure_for(
                     command,
@@ -927,7 +947,8 @@ class AdapterDispatcher:
         if preflight is not None:
             return self._refused(plan, current, preflight)
         try:
-            raw_by_id = {ack.drone_id: ack for ack in self.flight.estop()}
+            with self._intent_scope(plan.intent_id, plan.roster_version):
+                raw_by_id = {ack.drone_id: ack for ack in self.flight.estop()}
         except Exception as error:
             refusal = Refusal(
                 intent_id=plan.intent_id,
@@ -1061,7 +1082,8 @@ class AdapterDispatcher:
         ):
             return []
         try:
-            raw = self.flight.hover([failed_command.drone_id])[0]
+            with self._intent_scope(hold.intent_id, hold.roster_version):
+                raw = self.flight.hover([failed_command.drone_id])[0]
         except Exception:
             return [
                 CommandAcknowledgement(

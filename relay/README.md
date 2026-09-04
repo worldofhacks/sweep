@@ -143,7 +143,7 @@ SWEEP_NODE_WATCHDOG_HOLD_MS=2000
 SWEEP_NODE_WATCHDOG_FAILSAFE_MS=10000
 ```
 
-`SWEEP_ADAPTER_BACKEND` selects `sim` (the deterministic simulator) or `remote` (the bridge wire) for dispatch. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
+`SWEEP_ADAPTER_BACKEND` selects which adapters `relay.bridge.build_adapters` and `build_dispatcher` construct for a session: `sim` (the deterministic simulator, with an explicit `SimCameraConfig`) or `remote` (one `RemoteBridgeAdapter` over the bridge wire, bounded by `SWEEP_COMMAND_TTL_MS`). The relay itself never dispatches; the autonomy composition that owns the planner and arbiter calls that factory. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
 
 ### Command frame (relay to node)
 
@@ -169,7 +169,7 @@ All node-authored frames carry `drone_id` and `connection_epoch`, rely on the au
 - `media_file`: the `MediaFile` fields (`capture_id`, `file_id`, `timestamp_ms`, `drone_id`, `connection_epoch`, `pose`, `actual_yaw_deg`, `gimbal_pitch_deg`, `intrinsics`, 64-character lowercase hex `checksum_sha256`, `storage_ref`, `retrieval_status`). Audited and retained for the command wire, not fanned out. A node sends the `media_file` before the terminal acknowledgement of the capture or retrieval command that produced it.
 - `capture_bundle`: `room_id`, `capture_id`, `pattern`, `coverage`, `status`, nested `media` records, and nullable `reason` and `detail`; a `failed` or `unsupported` bundle requires a machine-readable reason. Audited and retained, not fanned out.
 
-The fake node runs against a live relay with `just fake-node` or `uv run python -m adapters.dji_mini3.fake_node --drone-id 1`; it reads its credential from `--token`, `SWEEP_ADAPTER_KEYS_JSON`, or `SWEEP_RELAY_TOKEN`. `relay/tests/test_bridge_roundtrip.py` starts the relay in-process, connects the fake node, and dispatches a hover through the remote adapter end to end.
+The fake node runs against a live relay with `just fake-node` or `uv run python -m adapters.dji_mini3.fake_node --drone-id 1`; it reads its credential from `--token`, `SWEEP_ADAPTER_KEYS_JSON`, or `SWEEP_RELAY_TOKEN`. `relay/tests/test_bridge_roundtrip.py` starts the relay in-process on the `remote` backend, connects the fake node, and dispatches a safety hold through `build_dispatcher` and the remote adapter end to end.
 
 ## Audit and replay
 

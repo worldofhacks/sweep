@@ -15,6 +15,7 @@ from adapters.protocols import (
     CapturePattern,
 )
 from arbiter.safety import SafetyArbiter
+from planner.controller import AutonomyController
 from planner.models import (
     Command,
     CommandOperation,
@@ -382,12 +383,67 @@ def test_translate_plan_dispatches_through_the_remote_adapter() -> None:
     link = ScriptedLink(epochs={1: 1})
     adapter = _adapter(link)
 
-    with adapter.for_intent(plan.intent_id, plan.roster_version):
-        result = _dispatcher(adapter).dispatch(plan, snapshot)
+    result = _dispatcher(adapter).dispatch(plan, snapshot)
 
     assert result.status is LifecycleStatus.COMPLETED
     assert [request.operation for request in link.sent] == [CommandOperation.GOTO]
+    assert link.sent[0].intent_id == plan.intent_id
+    assert link.sent[0].roster_version == plan.roster_version
     assert link.sent[0].connection_epoch == 1
+
+
+def test_autonomy_controller_drives_the_remote_adapter_without_a_caller_scope() -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    intent = make_intent(IntentName.HOLD, selection=(1,))
+    link = ScriptedLink(epochs={1: 1})
+    adapter = _adapter(link)
+    arbiter = SafetyArbiter(safety_config())
+    controller = AutonomyController(
+        planner=DeterministicPlanner(planning_config()),
+        arbiter=arbiter,
+        dispatcher=AdapterDispatcher(flight=adapter, camera=adapter, arbiter=arbiter),
+    )
+
+    result = controller.execute(intent, snapshot)
+
+    assert result.status is LifecycleStatus.COMPLETED, result.refusal
+    assert [
+        (request.operation, request.intent_id, request.roster_version) for request in link.sent
+    ] == [(CommandOperation.HOVER, intent.intent_id, snapshot.roster_version)]
+    assert [ack.status for ack in result.acknowledgements] == [LifecycleStatus.COMPLETED]
+
+
+def test_dispatcher_scopes_safety_holds_and_estop_to_their_plan() -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    plan = DeterministicPlanner(planning_config()).plan(
+        make_intent(IntentName.TRANSLATE, selection=(1,), args={"dx": 1, "dy": 0}),
+        snapshot,
+    )
+    assert isinstance(plan, Plan)
+    failing = ScriptedLink(
+        epochs={1: 1},
+        scripts={CommandOperation.GOTO: [("failed", "authority_lost", "physical RC took over")]},
+    )
+    estop_plan = DeterministicPlanner(planning_config()).plan(
+        make_intent(IntentName.ESTOP, selection=(1,)), snapshot
+    )
+    assert isinstance(estop_plan, Plan)
+    stopping = ScriptedLink(epochs={1: 1})
+
+    failed = _dispatcher(_adapter(failing)).dispatch(plan, snapshot)
+    stopped = _dispatcher(_adapter(stopping)).dispatch(estop_plan, snapshot)
+
+    assert failed.status is LifecycleStatus.FAILED
+    assert [
+        (request.operation, request.intent_id, request.roster_version) for request in failing.sent
+    ] == [
+        (CommandOperation.GOTO, plan.intent_id, plan.roster_version),
+        (CommandOperation.HOVER, plan.intent_id, snapshot.roster_version),
+    ]
+    assert stopped.status is LifecycleStatus.COMPLETED
+    assert [(request.operation, request.intent_id) for request in stopping.sent] == [
+        (CommandOperation.ESTOP, estop_plan.intent_id)
+    ]
 
 
 def test_panorama_capture_round_trips_media_through_the_remote_adapter() -> None:
@@ -407,10 +463,10 @@ def test_panorama_capture_round_trips_media_through_the_remote_adapter() -> None
     )
     adapter = _adapter(link)
 
-    with adapter.for_intent(plan.intent_id, plan.roster_version):
-        result = _dispatcher(adapter).dispatch(plan, snapshot)
+    result = _dispatcher(adapter).dispatch(plan, snapshot)
 
     assert result.status is LifecycleStatus.COMPLETED, result.refusal
+    assert {request.intent_id for request in link.sent} == {plan.intent_id}
     bundle = result.capture_bundle
     assert bundle is not None
     assert bundle.status is CameraResultStatus.COMPLETED

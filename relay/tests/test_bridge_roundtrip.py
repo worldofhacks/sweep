@@ -15,12 +15,22 @@ from websockets.asyncio.client import connect
 
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
 from adapters.dji_mini3.remote import RemoteBridgeAdapter
+from arbiter.safety import SafetyArbiter
+from planner.models import (
+    FleetSnapshot,
+    LifecycleStatus,
+    RelayAircraftSafetyEnrichment,
+    RelaySnapshotEnrichment,
+)
+from planner.planner import DeterministicPlanner
 from relay.app import RelayRuntime, create_app
-from relay.bridge import RelayNodeLink
-from relay.settings import RelaySettings
+from relay.bridge import build_dispatcher
+from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION, intent_payload
+from tests.autonomy_fixtures import planning_config, safety_config
 
 WAIT_S = 10.0
+HOLD_INTENT = "safety:roundtrip-hold"
 
 
 @dataclass(slots=True)
@@ -105,6 +115,7 @@ def relay_server(tmp_path: Path) -> Iterator[RelayServer]:
         relay_token=CONSOLE_KEY,
         adapter_keys={1: ADAPTER_KEY},
         log_dir=tmp_path,
+        adapter_backend=AdapterBackend.REMOTE,
     )
     app = create_app(settings, intent_sink_factory=lambda _session: lambda _intent, _state: None)
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -159,48 +170,71 @@ def test_hover_round_trips_through_the_node_socket_and_remote_adapter(
         session = relay_server.runtime.sessions[SESSION]
         state = session.current_state()
         drone = state["drones"][0]
-        link = RelayNodeLink(relay_server.runtime, SESSION, delivery_timeout_ms=2_000)
-        adapter = RemoteBridgeAdapter(
-            link,
-            epochs={1: drone["connection_epoch"]},
-            acknowledgement_timeout_ms=2_000,
-            command_ids=iter(["wire-hover", "wire-stale"]).__next__,
-        )
+        assert drone["telemetry"]["state"] == "landed"
 
+        def current() -> FleetSnapshot:
+            return _snapshot(session.current_state())
+
+        # The configured backend, not the test, decides that dispatch reaches the node.
+        dispatcher = build_dispatcher(
+            relay_server.runtime, SESSION, current(), arbiter=SafetyArbiter(safety_config())
+        )
+        adapter = dispatcher.flight
+        assert isinstance(adapter, RemoteBridgeAdapter)
+        # A direct caller opens the scope itself; lift the fixture aircraft so the
+        # arbiter admits a hold.
         with adapter.for_intent("intent-1", state["roster_version"]):
-            (acknowledgement,) = adapter.hover([1])
+            (takeoff,) = adapter.takeoff([1], 1.0)
+        _wait_until(
+            lambda: session.current_state()["drones"][0]["telemetry"]["state"] == "hovering",
+            what="hovering telemetry",
+        )
+        snapshot = current()
+        plan = DeterministicPlanner(planning_config()).emergency_hold_plan(
+            intent_id=HOLD_INTENT, snapshot=snapshot
+        )
+        result = dispatcher.dispatch(plan, snapshot, current_snapshot=current)
         with adapter.for_intent("intent-1", state["roster_version"] + 100):
             (stale,) = adapter.hover([1])
     finally:
         node.stop()
         console.stop()
 
-    assert acknowledgement.status.value == "completed"
-    assert acknowledgement.connection_epoch == drone["connection_epoch"]
-    assert acknowledgement.detail == ""
+    assert takeoff.status.value == "completed"
+    assert result.status is LifecycleStatus.COMPLETED, result.refusal
+    (hold,) = result.acknowledgements
+    assert hold.command_id == plan.commands[0].command_id
+    assert hold.intent_id == HOLD_INTENT
+    assert hold.status is LifecycleStatus.COMPLETED
+    assert hold.connection_epoch == drone["connection_epoch"]
+    assert hold.detail == ""
     assert stale.status.value == "failed"
     assert stale.detail.startswith("stale_command")
     assert drone["camera_capabilities"]["aircraft_model"] == "fake-mini3"
     assert drone["node_status"]["watchdog_state"] == "nominal"
-    assert drone["telemetry"]["state"] == "landed"
 
     records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
     commands = [record for record in records if record["type"] == "command"]
-    assert [command["command_id"] for command in commands] == ["wire-hover", "wire-stale"]
-    assert commands[0]["operation"] == "hover"
-    assert commands[0]["seq"] == 1
-    assert commands[1]["seq"] == 2
+    issued = [(command["operation"], command["intent_id"], command["seq"]) for command in commands]
+    assert issued == [
+        ("takeoff", "intent-1", 1),
+        ("hover", HOLD_INTENT, 2),
+        ("hover", "intent-1", 3),
+    ]
+    assert commands[1]["command_id"] != hold.command_id
     assert all("signature" not in command for command in commands)
     hover_acks = [
         (record["status"], record["reason"])
         for record in records
-        if record["type"] == "acknowledgement" and record.get("command_id") == "wire-hover"
+        if record["type"] == "acknowledgement"
+        and record.get("command_id") == commands[1]["command_id"]
     ]
     assert hover_acks == [("accepted", None), ("executing", None), ("completed", None)]
     stale_acks = [
         (record["status"], record["reason"])
         for record in records
-        if record["type"] == "acknowledgement" and record.get("command_id") == "wire-stale"
+        if record["type"] == "acknowledgement"
+        and record.get("command_id") == commands[2]["command_id"]
     ]
     assert stale_acks == [("failed", "stale_command")]
     assert {record["type"] for record in records} >= {
@@ -215,6 +249,29 @@ def test_hover_round_trips_through_the_node_socket_and_remote_adapter(
     assert {"capabilities", "node_status", "capture_readiness", "state"} <= console_types
     assert "command" not in console_types
     assert not any("signature" in event for event in console.events)
+
+
+def _snapshot(state: dict[str, object]) -> FleetSnapshot:
+    """Enrich the relay projection with the safety facts the fake node cannot assert."""
+    drones = state["drones"]
+    assert isinstance(drones, list)
+    enrichment = RelaySnapshotEnrichment(
+        operator_present=True,
+        operator_last_seen_ms=int(state["t"]),  # type: ignore[call-overload]
+        aircraft={
+            int(drone["drone_id"]): RelayAircraftSafetyEnrichment(
+                drone_id=int(drone["drone_id"]),
+                armed=True,
+                physical_rc_available=True,
+                storage_remaining_bytes=50_000_000,
+                camera_ready=True,
+                active_task_id=None,
+                position_loss_since_ms=None,
+            )
+            for drone in drones
+        },
+    )
+    return FleetSnapshot.from_relay_state(state, enrichment=enrichment)
 
 
 def _now_ms() -> int:
