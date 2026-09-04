@@ -23,6 +23,7 @@ def _pipeline() -> dict[str, object]:
         "camera_mode": "fpv",
         "android_device_id": "not_applicable",
         "network_id": "not_applicable",
+        "fov_bounds_deg": {"horizontal": [65, 75], "vertical": [40, 48]},
     }
 
 
@@ -78,6 +79,11 @@ def test_calibrate_recovers_known_intrinsics_from_decoded_varied_images(tmp_path
     assert matrix[1, 1] == pytest.approx(900.0, abs=15.0)
     assert matrix[0, 2] == pytest.approx(640.0, abs=15.0)
     assert matrix[1, 2] == pytest.approx(360.0, abs=15.0)
+    assert all(0 < value <= 0.05 for value in result["relative_focal_stddev"])
+    assert len(result["focal_stddev_px"]) == 2
+    assert 65 <= result["pinhole_fov_deg"]["horizontal"] <= 75
+    assert 40 <= result["pinhole_fov_deg"]["vertical"] <= 48
+    assert result["pipeline"]["fov_bounds_deg"] == _pipeline()["fov_bounds_deg"]
 
 
 def test_calibrate_rejects_insufficient_detected_boards(tmp_path: Path) -> None:

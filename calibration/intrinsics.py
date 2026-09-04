@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from hashlib import sha256
-from math import isfinite
+from math import atan, degrees, isfinite
 from pathlib import Path
 
 import cv2
@@ -15,6 +15,7 @@ _IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 _MINIMUM_DETECTIONS = 20
 _MAXIMUM_RMS_REPROJECTION_ERROR_PX = 0.5
 _MINIMUM_POSE_CONSTRAINT_RATIO = 0.005
+_MAXIMUM_RELATIVE_FOCAL_STDDEV = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +68,8 @@ def calibrate(request: CalibrationRequest) -> dict[str, object]:
         )
 
     _validate_pose_diversity(object_template, image_points, image_size)
-    rms_error, camera_matrix, distortion, _, _ = cv2.calibrateCamera(
-        object_points, image_points, image_size, None, None
+    rms_error, camera_matrix, distortion, _, _, intrinsic_stddev, _, _ = (
+        cv2.calibrateCameraExtended(object_points, image_points, image_size, None, None)
     )
     if not isfinite(float(rms_error)):
         raise ValueError("OpenCV produced a non-finite reprojection error")
@@ -78,6 +79,25 @@ def calibrate(request: CalibrationRequest) -> dict[str, object]:
             f"{_MAXIMUM_RMS_REPROJECTION_ERROR_PX:.1f}px"
         )
     _validate_calibration_result(camera_matrix, distortion, image_size)
+    focal_stddev = intrinsic_stddev.reshape(-1)[:2]
+    focal = np.array([camera_matrix[0, 0], camera_matrix[1, 1]])
+    relative_focal_stddev = focal_stddev / focal
+    if (
+        focal_stddev.shape != (2,)
+        or not np.isfinite(focal_stddev).all()
+        or np.any(focal_stddev <= 0)
+        or np.any(relative_focal_stddev > _MAXIMUM_RELATIVE_FOCAL_STDDEV)
+    ):
+        raise ValueError("focal length uncertainty exceeds 5%; capture more varied, sharper boards")
+    fov = {}
+    for index, axis in enumerate(("horizontal", "vertical")):
+        principal = float(camera_matrix[index, 2])
+        fov[axis] = degrees(
+            atan(principal / focal[index]) + atan((image_size[index] - principal) / focal[index])
+        )
+        lower, upper = request.pipeline["fov_bounds_deg"][axis]
+        if not lower <= fov[axis] <= upper:
+            raise ValueError(f"estimated {axis} FOV is outside declared fov_bounds_deg")
 
     return {
         "schema_version": 1,
@@ -93,6 +113,9 @@ def calibrate(request: CalibrationRequest) -> dict[str, object]:
         "camera_matrix": camera_matrix.tolist(),
         "distortion_coefficients": distortion.reshape(-1).tolist(),
         "rms_reprojection_error_px": float(rms_error),
+        "focal_stddev_px": focal_stddev.tolist(),
+        "relative_focal_stddev": relative_focal_stddev.tolist(),
+        "pinhole_fov_deg": fov,
         "accepted_image_count": len(image_points),
         "image_sha256": hashes,
     }
@@ -161,6 +184,22 @@ def _validate_request(request: CalibrationRequest) -> None:
         )
     ):
         raise ValueError("inner corners must be a two-integer tuple, each value at least three")
+    bounds = request.pipeline.get("fov_bounds_deg")
+    if not isinstance(bounds, dict) or set(bounds) != {"horizontal", "vertical"}:
+        raise ValueError("pipeline fov_bounds_deg must declare horizontal and vertical bounds")
+    for axis, interval in bounds.items():
+        if (
+            not isinstance(interval, list)
+            or len(interval) != 2
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                for value in interval
+            )
+            or not 0 < interval[0] < interval[1] < 180
+        ):
+            raise ValueError(f"fov_bounds_deg {axis} must be [minimum, maximum] within (0, 180)")
 
 
 def _image_paths(directory: Path) -> list[Path]:

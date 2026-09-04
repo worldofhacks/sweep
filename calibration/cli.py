@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
+
+import cv2
 
 from calibration.intrinsics import CalibrationRequest, calibrate
 from calibration.latency import summarize_latency
@@ -20,8 +24,20 @@ def _read_json(path: Path) -> object:
 def _write_artifact(path: Path, artifact: dict[str, object]) -> None:
     content = json.dumps(artifact, indent=2, sort_keys=True) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as stream:
-        stream.write(content)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=".calibration-", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            if stream.write(content) != len(content):
+                raise OSError("incomplete artifact write")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _corners(value: str) -> tuple[int, int]:
@@ -101,5 +117,5 @@ def main() -> None:
     args = _parser().parse_args()
     try:
         args.handler(args)
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, cv2.error) as error:
         raise SystemExit(f"error: {error}") from error
