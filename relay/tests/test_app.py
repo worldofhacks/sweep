@@ -311,7 +311,7 @@ def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
 
     assert [event["type"] for event in events[:2]] == ["auth.accepted", "state"]
     assert events[1]["roster_version"] == 0
-    assert [event["roster_version"] for event in events if event["type"] == "membership"] == [1, 2]
+    assert any(event["type"] == "state" and event["roster_version"] == 1 for event in events)
     state_rosters = [event["roster_version"] for event in events if event["type"] == "state"]
     assert state_rosters[-1] == 2
     assert state_rosters == sorted(state_rosters)
@@ -373,8 +373,7 @@ def test_session_operations_publish_whole_batches_in_mutation_order(
         await asyncio.gather(first_operation, second_operation)
         joined = await joining_subscription
         queued_versions = [
-            int(existing.queue.get_nowait().event["roster_version"])
-            for _ in range(existing.queue.qsize())
+            int(existing.queue.get_nowait().event["roster_version"]) for _ in range(4)
         ]
         return (
             queued_versions,
@@ -384,7 +383,7 @@ def test_session_operations_publish_whole_batches_in_mutation_order(
 
     queued_versions, initial_roster, new_backlog = asyncio.run(exercise_race())
 
-    assert queued_versions == [1, 2, 2]
+    assert queued_versions == [1, 1, 2, 2]
     assert (initial_roster, new_backlog) == (2, 0)
 
 
@@ -430,9 +429,10 @@ def test_same_roster_operations_publish_in_mutation_order(
         await asyncio.gather(older, newer)
         return [
             bool(subscription.queue.get_nowait().event["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
-    assert asyncio.run(exercise_race()) == [True]
+    assert asyncio.run(exercise_race()) == [False, True]
 
 
 def test_cancelled_session_operation_finishes_publishing_before_releasing_order(
@@ -471,9 +471,10 @@ def test_cancelled_session_operation_finishes_publishing_before_releasing_order(
         )
         return [
             bool(subscription.queue.get_nowait().event["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
-    assert asyncio.run(exercise()) == [False]
+    assert asyncio.run(exercise()) == [True, False]
 
 
 def test_bad_authentication_is_refused_without_creating_a_session_log(
@@ -490,6 +491,36 @@ def test_bad_authentication_is_refused_without_creating_a_session_log(
     assert refused["reason"] == "authentication_failed"
     assert refused["event_id"]
     assert not list(app_settings.log_dir.glob("*.jsonl"))
+
+
+def test_auth_accepted_distributes_node_thresholds_to_adapters_only(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as console:
+            console_accepted, _ = _authenticate_console(console)
+        with client.websocket_connect(f"/ws/{SESSION}") as adapter:
+            adapter_accepted, _ = _authenticate_adapter(adapter)
+
+    assert console_accepted["node"] is None
+    assert adapter_accepted["node"] == {
+        "command_ttl_ms": app_settings.command_ttl_ms,
+        "virtual_stick_hz": app_settings.virtual_stick_hz,
+        "watchdog_hold_ms": app_settings.node_watchdog_hold_ms,
+        "watchdog_failsafe_ms": app_settings.node_watchdog_failsafe_ms,
+    }
+    assert set(adapter_accepted) == {
+        "v",
+        "t",
+        "type",
+        "event_id",
+        "session",
+        "source",
+        "drone_id",
+        "node",
+    }
 
 
 def test_second_adapter_connection_for_same_id_is_refused(

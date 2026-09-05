@@ -266,16 +266,17 @@ class PreparedExecutionRouter:
                 plan=prepared.plan,
                 refusal=refusal,
             )
-        try:
-            result = self.controller.dispatch_prepared(
-                prepared,
-                current_snapshot=lambda: self._relay_snapshot(session),
-            )
-        except Exception:
-            if intent.name is not IntentName.HOLD:
-                raise
-            # Complete the stop with the last validated state; never retry motion this way.
-            result = self.controller.dispatcher.dispatch(prepared.plan, current)
+        with self.controller.dispatcher.observe_commands(session.register_dispatched_command):
+            try:
+                result = self.controller.dispatch_prepared(
+                    prepared,
+                    current_snapshot=lambda: self._relay_snapshot(session),
+                )
+            except Exception:
+                if intent.name is not IntentName.HOLD:
+                    raise
+                # Complete the stop with the last validated state; never retry motion this way.
+                result = self.controller.dispatcher.dispatch(prepared.plan, current)
         if result.status in {
             LifecycleStatus.EXECUTING,
             LifecycleStatus.COMPLETED,
@@ -432,13 +433,14 @@ class PreparedExecutionRouter:
             )
         safety_intent = replace(safety_intent, selection=hold.selection)
         events = [session.admit_safety_stop(safety_intent)]
-        try:
-            safety = self.controller.dispatcher.dispatch(
-                hold, current, current_snapshot=lambda: self._relay_snapshot(session)
-            )
-        except Exception:
-            # Repeating a safety stop is safe when enrichment fails after possible I/O.
-            safety = self.controller.dispatcher.dispatch(hold, current)
+        with self.controller.dispatcher.observe_commands(session.register_dispatched_command):
+            try:
+                safety = self.controller.dispatcher.dispatch(
+                    hold, current, current_snapshot=lambda: self._relay_snapshot(session)
+                )
+            except Exception:
+                # Repeating a safety stop is safe when enrichment fails after possible I/O.
+                safety = self.controller.dispatcher.dispatch(hold, current)
         if safety.status in {
             LifecycleStatus.EXECUTING,
             LifecycleStatus.FAILED,
@@ -703,19 +705,21 @@ class PreparedExecutionRouter:
         if isinstance(token, RecoveryToken):
             prepared = token.prepared
             session = token.original.running[2]
-            try:
-                result = self.controller.dispatcher.dispatch(
-                    prepared.plan,
-                    prepared.snapshot,
-                    current_snapshot=current_snapshot or (lambda: self._relay_snapshot(session)),
-                    owner_still_valid=lambda: self._owns_resume(token),
-                )
-            except Exception:
-                result = self.controller.dispatcher.dispatch(
-                    prepared.plan,
-                    prepared.snapshot,
-                    owner_still_valid=lambda: self._owns_resume(token),
-                )
+            with self.controller.dispatcher.observe_commands(session.register_dispatched_command):
+                try:
+                    result = self.controller.dispatcher.dispatch(
+                        prepared.plan,
+                        prepared.snapshot,
+                        current_snapshot=current_snapshot
+                        or (lambda: self._relay_snapshot(session)),
+                        owner_still_valid=lambda: self._owns_resume(token),
+                    )
+                except Exception:
+                    result = self.controller.dispatcher.dispatch(
+                        prepared.plan,
+                        prepared.snapshot,
+                        owner_still_valid=lambda: self._owns_resume(token),
+                    )
             return ResumeOutcome(result)
         prepared, pending, session = token.running
         intent_id = token.intent_id
@@ -780,14 +784,15 @@ class PreparedExecutionRouter:
                 raise ResumeSnapshotUnavailable from error
 
         try:
-            result = self.controller.dispatcher.resume_after_completion(
-                prepared.plan,
-                pending,
-                terminal_ack,
-                prepared.snapshot,
-                current_snapshot=current_snapshot or live_snapshot,
-                owner_still_valid=lambda: self._owns_resume(token),
-            )
+            with self.controller.dispatcher.observe_commands(session.register_dispatched_command):
+                result = self.controller.dispatcher.resume_after_completion(
+                    prepared.plan,
+                    pending,
+                    terminal_ack,
+                    prepared.snapshot,
+                    current_snapshot=current_snapshot or live_snapshot,
+                    owner_still_valid=lambda: self._owns_resume(token),
+                )
         except Exception as error:
             status = (
                 terminal_ack.status

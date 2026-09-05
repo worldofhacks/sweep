@@ -7,7 +7,13 @@ import pytest
 import relay.app as app_module
 from relay.app import RelayRuntime, create_app
 from relay.auth import Principal
-from relay.tests.conftest import ADAPTER_KEY, SESSION, membership_payload
+from relay.tests.conftest import (
+    ADAPTER_KEY,
+    CONSOLE_KEY,
+    SESSION,
+    intent_payload,
+    membership_payload,
+)
 from relay.tests.test_app import app_settings as app_settings
 
 
@@ -113,6 +119,141 @@ def test_pending_states_conflate_without_losing_ordered_events(app_settings, clo
         assert subscription.queue.qsize() == 2
         assert subscription.queue.get_nowait().event["event_id"] == "one-shot"
         assert subscription.queue.get_nowait().event["t"] == 1000
+
+    asyncio.run(exercise())
+
+
+def test_stalled_acceptance_send_times_out_and_releases_receipt_and_connection(
+    app_settings, clock, event_ids, monkeypatch
+):
+    monkeypatch.setattr(app_module, "_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(app_module, "_CLOSE_TIMEOUT_SECONDS", 0.01)
+
+    async def exercise():
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        session.intent_sink = lambda _intent, _state: None
+        application = create_app(app_settings)
+        application.state.relay_runtime = runtime
+        route = next(
+            r for r in application.routes if getattr(r, "path", None) == "/ws/{session_id}"
+        )
+        stalled = asyncio.Event()
+
+        class Socket:
+            app = application
+            sends = 0
+            receives = 0
+            closed = []
+
+            async def accept(self):
+                pass
+
+            async def close(self, code):
+                self.closed.append(code)
+
+            async def receive_json(self):
+                self.receives += 1
+                if self.receives == 1:
+                    return {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "console",
+                        "token": CONSOLE_KEY.decode(),
+                    }
+                if self.receives == 2:
+                    return intent_payload()
+                await asyncio.Event().wait()
+
+            async def send_json(self, data):
+                self.sends += 1
+                if self.sends == 3:
+                    stalled.set()
+                    await asyncio.Event().wait()
+
+        socket = Socket()
+        endpoint = asyncio.create_task(route.endpoint(socket, SESSION))
+        await asyncio.wait_for(stalled.wait(), 1)
+        await asyncio.wait_for(endpoint, 1)
+
+        assert socket.closed == [1013]
+        assert runtime.connection_count() == 0
+        assert session._pending_intents == {}
+        assert session._intents["intent-1"].status.value == "refused"
+        replay = session.replay()["events"]
+        assert any(item["event"].get("reason") == "acceptance_delivery_failed" for item in replay)
+
+    asyncio.run(exercise())
+
+
+def test_state_only_stalled_sender_times_out_through_real_receive_loop(
+    app_settings, clock, event_ids, monkeypatch
+):
+    monkeypatch.setattr(app_module, "_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(app_module, "_CLOSE_TIMEOUT_SECONDS", 0.01)
+
+    async def exercise():
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        principal = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        session.process_membership(
+            membership_payload(action="join", event_id="join-before-state-stall"), principal
+        )
+        application = create_app(app_settings)
+        application.state.relay_runtime = runtime
+        route = next(
+            r for r in application.routes if getattr(r, "path", None) == "/ws/{session_id}"
+        )
+        stalled = asyncio.Event()
+        receiver_cancelled = asyncio.Event()
+
+        class Socket:
+            app = application
+            sends = 0
+            receives = 0
+            closed = []
+
+            async def accept(self):
+                pass
+
+            async def close(self, code):
+                self.closed.append(code)
+
+            async def receive_json(self):
+                self.receives += 1
+                if self.receives == 1:
+                    return {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "adapter",
+                        "drone_id": 1,
+                        "token": ADAPTER_KEY.decode(),
+                    }
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    receiver_cancelled.set()
+
+            async def send_json(self, data):
+                self.sends += 1
+                if self.sends == 3:
+                    assert data["type"] == "state"
+                    stalled.set()
+                    await asyncio.Event().wait()
+
+        socket = Socket()
+        endpoint = asyncio.create_task(route.endpoint(socket, SESSION))
+        while socket.sends < 2:
+            await asyncio.sleep(0)
+        await runtime.publish(SESSION, [{"type": "state", "roster_version": 1}])
+        await asyncio.wait_for(stalled.wait(), 1)
+        await asyncio.wait_for(endpoint, 1)
+
+        assert socket.closed == [1013]
+        assert receiver_cancelled.is_set()
+        assert runtime.connection_count() == 0
+        assert runtime._adapter_connections == {}
+        assert session.current_state()["drones"][0]["membership"] == "disconnected"
 
     asyncio.run(exercise())
 

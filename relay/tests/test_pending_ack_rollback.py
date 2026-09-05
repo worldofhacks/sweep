@@ -2,11 +2,25 @@ from types import SimpleNamespace
 
 import pytest
 
+from planner.models import CommandOperation
 from relay.audit import AuditLogError
 from relay.auth import Principal
 from relay.contracts import LifecycleStatus
 from relay.session import RelaySession
 from relay.tests.conftest import acknowledgement_payload, intent_payload, membership_payload
+
+
+def register_command(session: RelaySession) -> None:
+    session.register_dispatched_command(
+        SimpleNamespace(
+            command_id="command-1",
+            intent_id="intent-1",
+            roster_version=1,
+            drone_id=1,
+            connection_epoch=1,
+            operation=CommandOperation.HOVER,
+        )
+    )
 
 
 def test_disk_full_does_not_retain_uncommitted_early_completion(
@@ -35,6 +49,7 @@ def test_disk_full_does_not_retain_uncommitted_early_completion(
         membership_payload(action="join", event_id="join"), adapter_principal
     )
     session.process_intent(intent_payload(), console_principal)
+    register_command(session)
 
     def disk_full(*args: object, **kwargs: object) -> None:
         raise AuditLogError("disk full")
@@ -97,6 +112,7 @@ def test_disk_full_preserves_phased_completion_ownership(
         membership_payload(action="join", event_id="join"), adapter_principal
     )
     session.process_intent(intent_payload(), console_principal)
+    register_command(session)
     session.execute_pending_intent("intent-1", defer_resume=True)
     session.process_acknowledgement(
         acknowledgement_payload(event_id="completion", status="completed"),

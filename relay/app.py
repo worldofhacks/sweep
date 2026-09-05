@@ -33,6 +33,7 @@ LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
 _LOGGER = logging.getLogger(__name__)
 ShutdownCallback = Callable[[], None]
 _OUTBOUND_LIMIT = 128
+_SEND_TIMEOUT_SECONDS = 5.0
 _CLOSE_TIMEOUT_SECONDS = 1.0
 
 
@@ -49,13 +50,13 @@ class _Subscription:
     sender_failed: asyncio.Event = field(default_factory=asyncio.Event)
     overflowed: asyncio.Event = field(default_factory=asyncio.Event)
 
-    def enqueue(self, outbound: _Outbound) -> None:
+    def enqueue(self, outbound: _Outbound) -> bool:
+        """Queue ordered events, conflating only disposable state snapshots."""
         if self.overflowed.is_set() or self.sender_failed.is_set():
-            if outbound.delivered is not None and not outbound.delivered.done():
-                outbound.delivered.set_result(False)
-            return
+            _resolve_delivery(outbound, False)
+            return False
         if outbound.event.get("type") == "state":
-            retained = []
+            retained: list[_Outbound] = []
             while not self.queue.empty():
                 pending = self.queue.get_nowait()
                 self.queue.task_done()
@@ -63,6 +64,7 @@ class _Subscription:
                     pending.event.get("type") != "state"
                     or pending.delivered is not None
                     or pending.event.get("invalidation_reason") is not None
+                    or not _same_state_projection(pending.event, outbound.event)
                 ):
                     retained.append(pending)
             for pending in retained:
@@ -71,8 +73,9 @@ class _Subscription:
             self.queue.put_nowait(outbound)
         except asyncio.QueueFull:
             self.overflowed.set()
-            if outbound.delivered is not None and not outbound.delivered.done():
-                outbound.delivered.set_result(False)
+            _resolve_delivery(outbound, False)
+            return False
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +120,7 @@ class RelayRuntime:
         self._fanout_failed_sessions: set[str] = set()
         self._fanout_task: asyncio.Task[None] | None = None
         self._fanout_session_tasks: dict[str, asyncio.Task[None]] = {}
+        self.loop: asyncio.AbstractEventLoop | None = None
 
     def session(self, session_id: str) -> RelaySession:
         _validate_session_id(session_id)
@@ -203,6 +207,7 @@ class RelayRuntime:
                 del self._activation_tasks[session_id]
 
     async def start(self) -> None:
+        self.loop = asyncio.get_running_loop()
         self._fanout_task = asyncio.create_task(self._fanout_loop())
 
     async def stop(self) -> None:
@@ -216,8 +221,33 @@ class RelayRuntime:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         while self._background_operations:
-            await asyncio.gather(*tuple(self._background_operations), return_exceptions=True)
+            pending = tuple(task for task in self._background_operations if not task.done())
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            # gather completes synchronously for finished tasks, so yield once so their
+            # queued done callbacks can run, then drop whatever has already finished.
+            await asyncio.sleep(0)
+            self._background_operations.difference_update(
+                task for task in tuple(self._background_operations) if task.done()
+            )
         self._fanout_task = None
+        self.loop = None
+
+    def node_connected(self, session_id: str, drone_id: int) -> bool:
+        return (session_id, drone_id) in self._adapter_connections
+
+    async def deliver_to_node(
+        self, session_id: str, drone_id: int, frame: dict[str, object]
+    ) -> bool:
+        """Queue a relay-authored frame for the one socket bound to this aircraft."""
+        async with self._connection_lock:
+            connection_id = self._adapter_connections.get((session_id, drone_id))
+            if connection_id is None:
+                return False
+            subscription = self._subscriptions.get(session_id, {}).get(connection_id)
+            if subscription is None:
+                return False
+            return subscription.enqueue(_Outbound(frame))
 
     async def subscribe(self, session_id: str, principal: Principal) -> _Subscription:
         """Freeze the initial snapshot at the same linearization point as activation."""
@@ -704,34 +734,37 @@ def create_app(
         except (AuthenticationError, ValueError, json.JSONDecodeError) as error:
             code = getattr(error, "code", "invalid_auth")
             detail = getattr(error, "detail", "authentication frame was not accepted")
-            await websocket.send_json(
-                _auth_refused(runtime, session_id=session_id, reason=code, detail=detail)
-            )
-            await websocket.close(code=1008)
+            with contextlib.suppress(TimeoutError, WebSocketDisconnect, RuntimeError, OSError):
+                await _send_json(
+                    websocket,
+                    _auth_refused(runtime, session_id=session_id, reason=code, detail=detail),
+                )
+            await _close_failed_socket(websocket, code=1008)
             return
         except TimeoutError:
-            await websocket.send_json(
-                _auth_refused(
-                    runtime,
-                    session_id=session_id,
-                    reason="auth_timeout",
-                    detail="authentication frame was not received in time",
+            with contextlib.suppress(TimeoutError, WebSocketDisconnect, RuntimeError, OSError):
+                await _send_json(
+                    websocket,
+                    _auth_refused(
+                        runtime,
+                        session_id=session_id,
+                        reason="auth_timeout",
+                        detail="authentication frame was not received in time",
+                    ),
                 )
-            )
-            await websocket.close(code=1008)
+            await _close_failed_socket(websocket, code=1008)
             return
         except WebSocketDisconnect:
             return
         except AuditLogError:
-            with contextlib.suppress(WebSocketDisconnect, RuntimeError):
-                await websocket.close(code=1011)
+            await _close_failed_socket(websocket, code=1011)
             return
 
         sender: asyncio.Task[None] | None = None
         executions: set[asyncio.Task[None]] = set()
         try:
-            await websocket.send_json(accepted)
-            await websocket.send_json(subscription.initial_state)
+            await _send_json(websocket, accepted)
+            await _send_json(websocket, subscription.initial_state)
             sender = asyncio.create_task(_send_events(websocket, subscription))
             while True:
                 try:
@@ -786,11 +819,12 @@ def create_app(
                         runtime._track_background_operation(execution)
         except WebSocketDisconnect:
             pass
+        except TimeoutError:
+            await _close_failed_socket(websocket, code=1013)
         except (RuntimeError, OSError):
             await _close_failed_socket(websocket, code=1011)
         except AuditLogError:
-            with contextlib.suppress(WebSocketDisconnect, RuntimeError):
-                await websocket.close(code=1011)
+            await _close_failed_socket(websocket, code=1011)
         finally:
             if sender is not None:
                 sender.cancel()
@@ -839,9 +873,25 @@ def create_app(
     return application
 
 
+async def _send_json(websocket: WebSocket, event: dict[str, object]) -> None:
+    await asyncio.wait_for(websocket.send_json(event), timeout=_SEND_TIMEOUT_SECONDS)
+
+
 async def _close_failed_socket(websocket: WebSocket, *, code: int) -> None:
     with contextlib.suppress(TimeoutError, WebSocketDisconnect, RuntimeError, OSError):
         await asyncio.wait_for(websocket.close(code=code), timeout=_CLOSE_TIMEOUT_SECONDS)
+
+
+def _resolve_delivery(outbound: _Outbound, delivered: bool) -> None:
+    if outbound.delivered is not None and not outbound.delivered.done():
+        outbound.delivered.set_result(delivered)
+
+
+def _same_state_projection(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
+    volatile = {"t", "event_id", "state_sequence"}
+    return {key: value for key, value in left.items() if key not in volatile} == {
+        key: value for key, value in right.items() if key not in volatile
+    }
 
 
 async def _send_events(websocket: WebSocket, subscription: _Subscription) -> None:
@@ -854,7 +904,11 @@ async def _send_events(websocket: WebSocket, subscription: _Subscription) -> Non
             await asyncio.gather(worker, return_exceptions=True)
             await _close_failed_socket(websocket, code=1013)
             raise WebSocketDisconnect(code=1013)
-        await worker
+        try:
+            await worker
+        except TimeoutError:
+            await _close_failed_socket(websocket, code=1013)
+            raise WebSocketDisconnect(code=1013) from None
     finally:
         worker.cancel()
         overflow.cancel()
@@ -863,8 +917,7 @@ async def _send_events(websocket: WebSocket, subscription: _Subscription) -> Non
         while not subscription.queue.empty():
             outbound = subscription.queue.get_nowait()
             subscription.queue.task_done()
-            if outbound.delivered is not None and not outbound.delivered.done():
-                outbound.delivered.set_result(False)
+            _resolve_delivery(outbound, False)
 
 
 async def _send_outbound(websocket: WebSocket, subscription: _Subscription) -> None:
@@ -873,12 +926,11 @@ async def _send_outbound(websocket: WebSocket, subscription: _Subscription) -> N
         sent = False
         try:
             async with subscription.send_lock:
-                await websocket.send_json(outbound.event)
+                await _send_json(websocket, outbound.event)
             sent = True
         finally:
             subscription.queue.task_done()
-            if outbound.delivered is not None and not outbound.delivered.done():
-                outbound.delivered.set_result(sent)
+            _resolve_delivery(outbound, sent)
 
 
 async def _receive_or_sender_failure(websocket: WebSocket, sender: asyncio.Task[None]) -> object:
@@ -928,6 +980,7 @@ def _auth_accepted(
         "session": session_id,
         "source": principal.source,
         "drone_id": principal.drone_id,
+        "node": runtime.settings.node_settings() if principal.source == "adapter" else None,
     }
 
 

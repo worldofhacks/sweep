@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
+from planner.models import CommandOperation
 from relay.audit import AuditLogError
 from relay.auth import Principal
 from relay.contracts import LifecycleStatus
@@ -30,6 +32,31 @@ def snapshot(session: RelaySession) -> object:
             tuple(session._pending_intents),
         )
     )
+
+
+def test_registry_transaction_rolls_back_history_without_copying_it(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+) -> None:
+    relay_session.process_membership(
+        membership_payload(action="join", event_id="join"), adapter_principal
+    )
+    record = relay_session.registry._aircraft[1]
+
+    class NoCopyHistory(list[dict[str, object]]):
+        def copy(self):
+            raise AssertionError("transaction must not clone total telemetry history")
+
+    history = NoCopyHistory([{"event_id": "existing"}])
+    record.history = history
+
+    with pytest.raises(RuntimeError, match="rollback"):
+        with relay_session.registry.transaction():
+            record.history.append({"event_id": "uncommitted"})
+            raise RuntimeError("rollback")
+
+    assert relay_session.registry._aircraft[1].history is history
+    assert history == [{"event_id": "existing"}]
 
 
 @pytest.mark.parametrize("failure_at", ["begin_operation", "append_batch"])
@@ -73,6 +100,16 @@ def test_disk_full_restores_all_relay_state(
             membership_payload(action="readiness", event_id="ready"), adapter_principal
         )
         session.process_intent(intent_payload(), console_principal)
+        session.register_dispatched_command(
+            SimpleNamespace(
+                command_id="command-1",
+                intent_id="intent-1",
+                roster_version=1,
+                drone_id=1,
+                connection_epoch=1,
+                operation=CommandOperation.HOVER,
+            )
+        )
         session.update_control_projection(selection=(1,), accepted_plan={"intent_id": "intent-1"})
     if operation == "rejoin":
         session.handle_adapter_disconnect(drone_id=1, connection_epoch=1)

@@ -50,6 +50,25 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+  bridge-jvm:
+    name: bridge-jvm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: adapters/dji_mini3/pilot-app
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: adapters/dji_mini3/pilot-app/gradle/wrapper/gradle-wrapper.properties
+      # Pure-JVM modules only; the Android module is skipped by settings.gradle.kts when no SDK
+      # location resolves, so no Android SDK is installed here.
+      - run: ./gradlew --no-daemon :bridge-core:test :bench:test
+
   m14-browser:
     name: m14 browser path
     runs-on: ubuntu-latest
