@@ -14,8 +14,9 @@ rtmp: no
 srt: no
 moq: no
 
-# Inside Docker, MediaMTX advertises its container IP as an ICE candidate. Set this to the
-# ground-station's LAN IP before WebRTC playback from another machine (M3).
+# Inside Docker, MediaMTX advertises its container IP as an ICE candidate. docker-compose.yml
+# sets webrtcAdditionalHosts from SWEEP_MEDIA_HOST (the ground station's LAN IP) so phones
+# publishing over WHIP and browsers playing over WHEP from other machines can reach it.
 # webrtcAdditionalHosts: []
 
 # Recording is switched on in M3: pathDefaults.record plus a mounted recordings volume.
