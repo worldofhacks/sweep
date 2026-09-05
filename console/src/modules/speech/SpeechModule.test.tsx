@@ -273,6 +273,22 @@ describe('Speech module', () => {
     expect(result()).toHaveTextContent('transcript whisper')
     expect(clients.console.sent).toHaveLength(0)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+
+    await user().click(screen.getByRole('button', { name: 'Draft for confirmation' }))
+    const dock = screen.getByRole('region', { name: 'Pending confirmation' })
+    expect(dock).toHaveTextContent('hold')
+    expect(clients.console.sent).toHaveLength(0)
+
+    await user().click(within(dock).getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    expect(clients.console.sent[0]).toMatchObject({
+      intent_id: 'speech-intent-1',
+      name: 'hold',
+      source: 'console',
+      selection: [1],
+      confirm: true,
+      args: {},
+    })
   })
 
   test('a relay transcript without a compiler falls back locally and says so; refusals and errors emit nothing', async () => {

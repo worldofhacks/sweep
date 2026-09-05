@@ -41,6 +41,16 @@ SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 
 `SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true` is a demo-only fallback. It proves that a frame came from a holder of the shared secret, but cannot prove which aircraft sent it; keep it false for hardware. The freshness settings in `.env.example` are explicit demo values and must be measured and configured for a hardware session.
 
+## Voice transcription
+
+`POST /api/sessions/{id}/transcripts` accepts a bearer-authenticated `audio/webm`, `audio/ogg`, `audio/wav`, or `audio/mpeg` body up to 8 MiB and 30 seconds. The browser reports duration in `X-Sweep-Audio-Duration-Ms`; the relay rejects an oversized declaration and independently decodes the audio before provider I/O so a false or missing header cannot bypass the limit. Audio that cannot be decoded, lacks a sample rate, or carries negative, repeated, or non-monotonic frame timestamps is refused. The request carries a bounded `X-Sweep-Correlation-Id`. The relay reads `OPENAI_API_KEY` only on the server and sends valid uploads to OpenAI's `whisper-1` endpoint. Browser code never receives that credential.
+
+Browser uploads are allowed only from the explicit origins in `SWEEP_CONSOLE_ORIGINS`, which defaults to the local Vite development origins. Configure the deployed console origin rather than using a wildcard.
+
+The endpoint requires an existing live relay session. It derives the compiler capability version from the authoritative state projection, hands the final transcript to `TranscriptCompiler.compile(transcript, relay_state, capability_version=..., rooms=..., now_ms=..., correlation_id=..., session_id=...)`, and returns a typed `voice_outcome`. The current compiler handoff is deliberately unavailable until the transcript compiler lands, so it returns `compiler_unavailable` with `emissions: []`. Upload, provider, and compiler failures use the same no-emission shape.
+
+Langfuse telemetry starts only when both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. It records opaque correlation and session identifiers, content type, byte count, model, and outcome. Audio and transcript text stay out of telemetry.
+
 Run loopback by default. An intentional LAN deployment should add its transport protection and network boundary outside the app:
 
 ```bash

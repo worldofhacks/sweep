@@ -44,7 +44,11 @@ export class HttpTranscriptClient implements TranscriptClient {
 
   async transcribe(request: TranscriptRequest): Promise<VoiceOutcome> {
     const contentType = request.audio.type || 'audio/webm'
-    const response = await this.fetcher(transcriptEndpoint(this.config.baseUrl, request.sessionId), {
+    // Native Window.fetch rejects when it is invoked as an instance method and
+    // receives this client as its receiver. Copy it first so both the browser
+    // implementation and injected test fetchers are called as plain functions.
+    const fetcher = this.fetcher
+    const response = await fetcher(transcriptEndpoint(this.config.baseUrl, request.sessionId), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.config.token}`,

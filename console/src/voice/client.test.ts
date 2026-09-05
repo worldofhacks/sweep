@@ -3,6 +3,42 @@ import { describe, expect, test, vi } from 'vitest'
 import { HttpTranscriptClient, UnavailableTranscriptClient } from './client'
 
 describe('transcript upload client', () => {
+  test('calls the browser fetch implementation without rebinding its receiver', async () => {
+    const fetcher = function (this: unknown) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            v: 1,
+            type: 'voice_outcome',
+            session: 'session-1',
+            correlation_id: 'voice-browser',
+            status: 'transcribed',
+            source: 'whisper',
+            reason: null,
+            transcript: 'hold position',
+            emissions: [],
+          }),
+          { status: 200 },
+        ),
+      )
+    }
+    const trackedFetcher = vi.fn(fetcher)
+    const client = new HttpTranscriptClient(
+      { baseUrl: 'ws://relay.example', token: 'relay-token' },
+      trackedFetcher as unknown as typeof fetch,
+    )
+
+    await client.transcribe({
+      sessionId: 'session-1',
+      correlationId: 'voice-browser',
+      audio: new Blob(['audio'], { type: 'audio/webm' }),
+      durationMs: 500,
+    })
+
+    expect(trackedFetcher).toHaveBeenCalledTimes(1)
+    expect(trackedFetcher.mock.contexts[0]).toBeUndefined()
+  })
+
   test('sends bounded recorded audio to the authenticated relay endpoint', async () => {
     const fetcher = vi.fn().mockResolvedValue(
       new Response(
