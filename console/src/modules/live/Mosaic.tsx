@@ -10,6 +10,8 @@ export interface MosaicProps {
   now: number
   focusedId: DroneId | null
   selection: DroneId[]
+  selectionEnabled?: boolean
+  selectionDisabledReason?: string | null
   onFocus: (droneId: DroneId) => void
   onToggleSelection: (droneId: DroneId) => void
 }
@@ -21,6 +23,8 @@ export function Mosaic({
   now,
   focusedId,
   selection,
+  selectionEnabled = true,
+  selectionDisabledReason = null,
   onFocus,
   onToggleSelection,
 }: MosaicProps) {
@@ -38,6 +42,8 @@ export function Mosaic({
               focused={focusedId === drone.drone_id}
               selected={selection.includes(drone.drone_id)}
               lastInSelection={selection.length === 1 && selection[0] === drone.drone_id}
+              selectionEnabled={selectionEnabled}
+              selectionDisabledReason={selectionDisabledReason}
               onFocus={onFocus}
               onToggleSelection={onToggleSelection}
             />
@@ -56,6 +62,8 @@ function Tile({
   focused,
   selected,
   lastInSelection,
+  selectionEnabled,
+  selectionDisabledReason,
   onFocus,
   onToggleSelection,
 }: {
@@ -64,20 +72,22 @@ function Tile({
   focused: boolean
   selected: boolean
   lastInSelection: boolean
+  selectionEnabled: boolean
+  selectionDisabledReason: string | null
   onFocus: (droneId: DroneId) => void
   onToggleSelection: (droneId: DroneId) => void
 }) {
   const id = formatDroneId(drone.drone_id)
   const stream = deriveStream(drone, now)
   const readiness = deriveReadiness(drone)
-  const canSelect = isReady(drone)
+  const canSelect = selectionEnabled && isReady(drone)
   const selectLabel = selected ? 'in selection' : canSelect ? 'add to selection' : 'not selectable'
   const selectDisabled = !canSelect || lastInSelection
-  const selectTitle = lastInSelection
+  const selectTitle = selectionDisabledReason ?? (lastInSelection
     ? 'Intent v1 requires at least one aircraft in a select request.'
     : !canSelect
       ? 'Relay reports this aircraft is not selectable.'
-      : undefined
+      : undefined)
   return (
     <article className={`lv-tile is-${stream.status}`} aria-label={`${id} camera tile`}>
       <div className="lv-visual">

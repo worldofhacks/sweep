@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { controlReducer, createInitialControlState, createRequestRecord, type ControlState } from '../../control/state'
 import { createIntent } from '../../control/intent'
-import type { RelayStateEvent } from '../../relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, type RelayStateEvent } from '../../relay/contract'
 import { fixtureAircraft } from '../../testing/fixture-relay-client'
 import {
   DPAD_CELLS,
@@ -25,7 +25,6 @@ import {
   gateRows,
   guidanceNote,
   motionControls,
-  refusalCopy,
   requestTone,
   retryBlockedReason,
   sectorSummary,
@@ -49,6 +48,8 @@ function stateEvent(selection: number[], overrides: Partial<RelayStateEvent> = {
     formation: 'none',
     spacing: 0.8,
     mode: 'indoor',
+    capability_profile: 'c1_basic_control',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
     pending: null,
     accepted_plan: null,
     drones: fixtureAircraft(t),
@@ -80,6 +81,30 @@ const guidance: CaptureReadiness = {
 }
 
 describe('control gating', () => {
+  test('the advertised profile disables non-safety controls the relay did not enable', () => {
+    const state = connected([1], {
+      capability_profile: 'land-only',
+      enabled_intent_names: ['land'],
+    })
+    const byKey = Object.fromEntries(
+      [...fleetControls(state), ...motionControls(state)].map((spec) => [spec.key, spec]),
+    )
+
+    expect(byKey.arm).toMatchObject({
+      enabled: false,
+      soft: false,
+      note: 'arm is disabled by relay capability profile land-only.',
+    })
+    expect(byKey.hold).toMatchObject({ enabled: false, soft: false })
+    expect(dpadBlockedReason(state)).toBe(
+      'translate is disabled by relay capability profile land-only.',
+    )
+    expect(captureGate(state, 'room-1', true, guidance)).toMatchObject({
+      ready: false,
+      text: 'capture_room is disabled by relay capability profile land-only.',
+    })
+  })
+
   test('disconnected: every control is disabled with the connection reason, nothing is soft', () => {
     const state = createInitialControlState(session, t)
     for (const spec of [...fleetControls(state), ...motionControls(state)]) {
@@ -90,19 +115,19 @@ describe('control gating', () => {
     expect(dpadBlockedReason(state)).toBe('The console connection is disconnected. Nothing can be sent.')
   })
 
-  test('connected with one ready aircraft selected: supported controls send or confirm, unsupported stay pressable', () => {
+  test('connected with one ready aircraft selected: advertised controls send or confirm and others are disabled', () => {
     const state = connected([1])
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
     expect(byKey.arm).toMatchObject({ enabled: true, soft: false, badge: '', note: 'Sends immediately on the console connection.' })
-    expect(byKey.disarm).toMatchObject({ enabled: true, soft: true, badge: 'unsupported', note: refusalCopy('disarm'), noteTone: 'warn' })
+    expect(byKey.disarm).toMatchObject({ enabled: false, soft: false, badge: 'unsupported', note: 'disarm is disabled by relay capability profile c1_basic_control.', noteTone: 'warn' })
     expect(byKey['select-all']).toMatchObject({ enabled: true, note: 'Selects every ready aircraft.', press: { name: 'select', args: { ids: [1, 2, 4] }, targets: [1, 2, 4] } })
     expect(byKey.takeoff).toMatchObject({ enabled: true, confirm: true, badge: 'confirm', note: 'Confirmation required before send.' })
     expect(byKey.hold).toMatchObject({ enabled: true, badge: '', rule: 'selected' })
     expect(byKey.land_all).toMatchObject({ enabled: true, confirm: true, press: { targets: [1, 2, 3, 4] }, note: 'Confirmation required. Targets every aircraft in the roster.' })
-    expect(byKey.sweep).toMatchObject({ enabled: true, soft: true, confirm: true, badge: 'unsupported', note: refusalCopy('sweep') })
-    expect(byKey['spacing-']).toMatchObject({ soft: true, press: { name: 'spacing', args: { delta: -1 } } })
-    expect(byKey['spacing+']).toMatchObject({ soft: true, press: { name: 'spacing', args: { delta: 1 } } })
-    expect(byKey.formation_next).toMatchObject({ soft: true, press: { name: 'formation_next', args: {} } })
+    expect(byKey.sweep).toMatchObject({ enabled: false, soft: false, confirm: true, badge: 'unsupported' })
+    expect(byKey['spacing-']).toMatchObject({ enabled: false, soft: false, press: { name: 'spacing', args: { delta: -1 } } })
+    expect(byKey['spacing+']).toMatchObject({ enabled: false, soft: false, press: { name: 'spacing', args: { delta: 1 } } })
+    expect(byKey.formation_next).toMatchObject({ enabled: false, soft: false, press: { name: 'formation_next', args: {} } })
     expect(dpadBlockedReason(state)).toBeNull()
   })
 
@@ -110,9 +135,9 @@ describe('control gating', () => {
     const state = connected([])
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
     expect(byKey.takeoff).toMatchObject({ enabled: false, note: NO_SELECTION_REASON })
-    expect(byKey.sweep).toMatchObject({ enabled: false, soft: false, note: NO_SELECTION_REASON })
+    expect(byKey.sweep).toMatchObject({ enabled: false, soft: false, note: 'sweep is disabled by relay capability profile c1_basic_control.' })
     expect(byKey.arm.enabled).toBe(true)
-    expect(byKey.disarm).toMatchObject({ enabled: true, soft: true })
+    expect(byKey.disarm).toMatchObject({ enabled: false, soft: false })
     expect(byKey.land_all.enabled).toBe(true)
     expect(dpadBlockedReason(state)).toBe(NO_SELECTION_REASON)
   })
@@ -122,7 +147,7 @@ describe('control gating', () => {
     const byKey = Object.fromEntries(motionControls(state).map((s) => [s.key, s]))
     expect(byKey.takeoff.note).toBe('D-03 is not ready.')
     expect(byKey.hold.enabled).toBe(false)
-    expect(byKey.sweep).toMatchObject({ enabled: true, soft: true })
+    expect(byKey.sweep).toMatchObject({ enabled: false, soft: false })
   })
 
   test('stop active: motion is blocked with the stop reason, the pad follows stop before selection', () => {
@@ -130,7 +155,7 @@ describe('control gating', () => {
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
     expect(byKey.arm).toMatchObject({ enabled: false, note: STOP_ACTIVE_REASON })
     expect(byKey.land_all).toMatchObject({ enabled: true, note: 'Confirmation required. Targets every aircraft in the roster.' })
-    expect(byKey.disarm).toMatchObject({ enabled: true, soft: true })
+    expect(byKey.disarm).toMatchObject({ enabled: false, soft: false })
     expect(dpadBlockedReason(state)).toBe(STOP_ACTIVE_REASON)
   })
 
@@ -140,12 +165,12 @@ describe('control gating', () => {
     expect(fleetControls(state)[2]).toMatchObject({ enabled: false, note: 'No aircraft is ready.' })
   })
 
-  test('formation and altitude controls are unsupported and need a selection', () => {
+  test('formation and altitude controls stay disabled when the profile omits them', () => {
     const withSelection = connected([1])
     expect(formationControls(withSelection).map((s) => s.label)).toEqual(['line', 'column', 'circle', 'grid', 'V'])
-    expect(formationControls(withSelection)[2]).toMatchObject({ soft: true, press: { name: 'formation_set', args: { name: 'circle' } } })
-    expect(altitudeControls(withSelection)[0]).toMatchObject({ soft: true, press: { name: 'altitude', args: { delta: 1 } } })
-    expect(altitudeControls(connected([]))[1]).toMatchObject({ enabled: false, note: NO_SELECTION_REASON })
+    expect(formationControls(withSelection)[2]).toMatchObject({ enabled: false, soft: false, press: { name: 'formation_set', args: { name: 'circle' } } })
+    expect(altitudeControls(withSelection)[0]).toMatchObject({ enabled: false, soft: false, press: { name: 'altitude', args: { delta: 1 } } })
+    expect(altitudeControls(connected([]))[1]).toMatchObject({ enabled: false, note: 'altitude is disabled by relay capability profile c1_basic_control.' })
   })
 })
 
@@ -340,6 +365,12 @@ describe('requests', () => {
     expect(retryBlockedReason(staleHold, state)).toBe(
       'Disabled: D-03 is no longer ready. No substitute aircraft is selected.',
     )
+    expect(
+      retryBlockedReason(
+        hold,
+        connected([1], { capability_profile: 'land-only', enabled_intent_names: ['land'] }),
+      ),
+    ).toBe('Disabled: hold is disabled by relay capability profile land-only.')
     const landAll = createRequestRecord(
       createIntent({ name: 'land_all', args: {}, selection: [1, 2, 3, 4], source: 'console', session }, deps),
       t,

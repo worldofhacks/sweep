@@ -5,6 +5,7 @@ from planner.controller import PreparedExecutionRouter
 from planner.models import FlightState, Plan
 from planner.planner import DeterministicPlanner
 from relay.audit import SessionAuditLog
+from relay.auth import Principal
 from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
     C1_IMPLEMENTED_INTENT_NAMES,
@@ -45,6 +46,29 @@ def test_profile_rejects_unimplemented_intents() -> None:
     with pytest.raises(ValueError, match="unimplemented intents: sweep"):
         CapabilityProfile("unsafe", frozenset({IntentName.SWEEP}))
 
+    with pytest.raises(ValueError, match="must not be empty"):
+        CapabilityProfile("empty", frozenset())
+
+
+def test_profile_normalizes_caller_owned_sets_and_string_members() -> None:
+    caller_owned = {IntentName.LAND}
+    profile = CapabilityProfile("land-only", caller_owned)  # type: ignore[arg-type]
+    caller_owned.add(IntentName.SWEEP)
+
+    assert profile.enabled_intent_names == frozenset({IntentName.LAND})
+    assert isinstance(profile.enabled_intent_names, frozenset)
+    assert profile.state_value()["enabled_intent_names"] == ["land"]
+
+    from_string = CapabilityProfile("land-string", frozenset({"land"}))  # type: ignore[arg-type]
+    assert from_string.enabled_intent_names == frozenset({IntentName.LAND})
+    assert from_string.state_value()["enabled_intent_names"] == ["land"]
+
+
+@pytest.mark.parametrize("name", ["sweep", "not_registered"])
+def test_profile_rejects_unsupported_string_members_as_value_errors(name: str) -> None:
+    with pytest.raises(ValueError):
+        CapabilityProfile("unsafe", frozenset({name}))  # type: ignore[arg-type]
+
 
 def test_relay_and_router_must_use_the_same_profile(tmp_path) -> None:
     profile = CapabilityProfile("land-only", frozenset({IntentName.LAND}))
@@ -63,6 +87,14 @@ def test_relay_and_router_must_use_the_same_profile(tmp_path) -> None:
             intent_sink=router,
         )
 
+    with pytest.raises(ValueError, match="different capability profiles"):
+        RelaySession(
+            session_id="profile-test",
+            audit_log=SessionAuditLog(tmp_path, "profile-test"),
+            limits=limits,
+            intent_sink=router.__call__,
+        )
+
     session = RelaySession(
         session_id="profile-test",
         audit_log=SessionAuditLog(tmp_path, "profile-test"),
@@ -72,6 +104,23 @@ def test_relay_and_router_must_use_the_same_profile(tmp_path) -> None:
     )
 
     assert session.current_state()["capability_profile"] == "land-only"
+
+    router.controller.planner = DeterministicPlanner(planning_config(), C1_CAPABILITY_PROFILE)
+    refusal = session.process_intent(
+        {**intent_payload(), "name": "land", "confirm": True},
+        Principal(source="console", drone_id=None, signing_key=b"x" * 32),
+    )
+    assert refusal[0]["reason"] == "capability_profile_mismatch"
+
+
+def test_opaque_sink_requires_an_explicit_capability_contract(tmp_path) -> None:
+    with pytest.raises(ValueError, match="must declare an immutable capability profile"):
+        RelaySession(
+            session_id="profile-test",
+            audit_log=SessionAuditLog(tmp_path, "profile-test"),
+            limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+            intent_sink=lambda _intent, _state: None,
+        )
 
 
 def test_every_advertised_intent_has_a_safe_planner_and_arbiter_path() -> None:

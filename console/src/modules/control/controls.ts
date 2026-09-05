@@ -4,7 +4,7 @@
  * input is authoritative relay state; nothing here invents a value.
  */
 import type { ControlState, RequestRecord, RequestStatus } from '../../control/state'
-import { formatDroneId } from '../../control/state'
+import { capabilityBlockedReason, formatDroneId } from '../../control/state'
 import type { TranslateDirection } from '../../control/intent'
 import type {
   ConsoleIntentName,
@@ -35,9 +35,9 @@ export interface ControlSpec {
   press: ControlPress
   confirm: boolean
   supported: boolean
-  /** A press drafts or sends. Soft controls stay enabled although the relay refuses them. */
+  /** A press drafts or sends. Capability-disabled controls always remain inert. */
   enabled: boolean
-  /** Unsupported at M2.0 while connected: pressable so the refusal is recorded. */
+  /** Legacy display policy for schema-known names outside the M2.0 implementation set. */
   soft: boolean
   badge: ControlBadge
   /** The one sentence under the control: the blocking reason, the refusal copy, or what a press does. */
@@ -95,13 +95,15 @@ interface Gate {
 }
 
 /**
- * Reason order: connection, then the selection rule, then the M2.0 set (soft:
- * the refusal is worth recording, so the control stays pressable), then the
- * network stop. A control with no reason drafts or sends.
+ * Reason order: connection, authoritative relay capability, selection rule,
+ * then the local M2.0 presentation set and network stop. A valid server profile
+ * disables every unimplemented name before the legacy soft-display path.
  */
 export function gateControl(state: ControlState, name: ConsoleIntentName, options: GateOptions = {}): Gate {
   const connection = connectionReason(state)
   if (connection) return { reason: connection, soft: false }
+  const capability = capabilityBlockedReason(state, name)
+  if (capability) return { reason: capability, soft: false }
   if (options.sel && state.selection.length === 0) return { reason: NO_SELECTION_REASON, soft: false }
   if (options.ready) {
     const notReady = notReadySentence(state)
@@ -182,7 +184,7 @@ export function motionControls(state: ControlState): ControlSpec[] {
 }
 
 export const MOTION_FOOTNOTE =
-  'Greyed labels are refused as unsupported at M2.0 — pressing one records the refusal. Altitude up and down are unsupported too. Steps resolve against the room frame.'
+  'Greyed labels are disabled by the relay capability profile. Altitude up and down are unsupported too. Steps resolve against the room frame.'
 
 /** Commands: the five formations and the two altitude steps, both unsupported at M2.0. */
 export function formationControls(state: ControlState): ControlSpec[] {
@@ -301,6 +303,7 @@ export const DPAD_CELLS: readonly DpadCell[] = [
 export function dpadBlockedReason(state: ControlState): string | null {
   return (
     connectionReason(state) ??
+    capabilityBlockedReason(state, 'translate') ??
     (state.estop ? STOP_ACTIVE_REASON : state.selection.length === 0 ? NO_SELECTION_REASON : null)
   )
 }
@@ -418,18 +421,19 @@ export interface ChipView {
 
 export function aircraftChips(state: ControlState): ChipView[] {
   return sortedAircraft(state.aircraft).map((drone) => {
-    const selectable = isReady(drone)
+    const selectCapability = capabilityBlockedReason(state, 'select')
+    const selectable = selectCapability === null && isReady(drone)
     return {
       droneId: drone.drone_id,
       id: formatDroneId(drone.drone_id),
       sub: `${drone.flight_state ?? 'flight state unreported'} · ${drone.battery === null ? '—' : `${Math.round(drone.battery * 100)}%`}`,
       selected: state.selection.includes(drone.drone_id),
       selectable,
-      reason: selectable
+      reason: selectCapability ?? (selectable
         ? ''
         : drone.readiness_reasons[0]
           ? drone.readiness_reasons[0].replaceAll('_', ' ')
-          : drone.membership,
+          : drone.membership),
     }
   })
 }
@@ -540,6 +544,8 @@ export function captureGate(
   if (!isLinkUp(state.connection.status)) {
     return { ready: false, text: `The console connection is ${state.connection.status}. Capture room cannot be sent.` }
   }
+  const capability = capabilityBlockedReason(state, 'capture_room')
+  if (capability) return { ready: false, text: capability }
   if (state.estop) {
     return { ready: false, text: 'The network stop is active. Capture room is refused until the relay reports it clear.' }
   }
@@ -711,6 +717,8 @@ export function retryBlockedReason(request: RequestRecord, state: ControlState):
   if (!isLinkUp(connection.status)) {
     return `Disabled: the ${request.intent.source} connection is ${connection.status}.`
   }
+  const capability = capabilityBlockedReason(state, request.intent.name)
+  if (capability) return `Disabled: ${capability}`
   if (followsSelection(request.intent.name)) {
     const gone = request.intent.selection.find((id) => !isReady(state.aircraft[id]))
     if (gone !== undefined) {

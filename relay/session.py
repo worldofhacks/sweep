@@ -68,6 +68,40 @@ LeaveAuthorizer = Callable[[int, int, dict[str, object]], bool]
 _UNSET = object()
 
 
+def _declared_sink_capability_profile(sink: IntentSink) -> CapabilityProfile | None:
+    profile = getattr(sink, "capability_profile", None)
+    if profile is None:
+        owner = getattr(sink, "__self__", None)
+        profile = getattr(owner, "capability_profile", None)
+    return profile if isinstance(profile, CapabilityProfile) else None
+
+
+def _sink_capability_profile(sink: IntentSink) -> CapabilityProfile:
+    profile = _declared_sink_capability_profile(sink)
+    if profile is None:
+        raise ValueError("intent sink must declare an immutable capability profile")
+    return profile
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityBoundIntentSink:
+    """Give an otherwise opaque downstream callable an explicit immutable contract."""
+
+    sink: IntentSink
+    capability_profile: CapabilityProfile
+
+    def __post_init__(self) -> None:
+        declared = _declared_sink_capability_profile(self.sink)
+        if declared is not None:
+            raise ValueError("a sink that already declares capabilities must not be wrapped")
+
+    def __call__(self, intent: IntentV1, state: dict[str, object]) -> object:
+        return self.sink(intent, state)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.sink, name)
+
+
 @dataclass(frozen=True, slots=True)
 class RelayLimits:
     intent_max_age_ms: int
@@ -136,12 +170,10 @@ class RelaySession:
         self.limits = limits
         self.clock = clock or _epoch_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
-        self.intent_sink = intent_sink
         self.leave_authorizer = leave_authorizer
-        sink_profile = getattr(intent_sink, "capability_profile", capability_profile)
-        if sink_profile != capability_profile:
-            raise ValueError("relay session and planner use different capability profiles")
-        self.capability_profile = capability_profile
+        self._capability_profile = capability_profile
+        self._intent_sink: IntentSink | None = None
+        self.intent_sink = intent_sink
         self.registry = FleetRegistry(
             telemetry_freshness_ms=limits.telemetry_freshness_ms,
             capability_profile=capability_profile,
@@ -167,6 +199,20 @@ class RelaySession:
         self._audit_batch: list[dict[str, object]] | None = None
         self._audit_operation_id: int | None = None
         self._lock = RLock()
+
+    @property
+    def capability_profile(self) -> CapabilityProfile:
+        return self._capability_profile
+
+    @property
+    def intent_sink(self) -> IntentSink | None:
+        return self._intent_sink
+
+    @intent_sink.setter
+    def intent_sink(self, sink: IntentSink | None) -> None:
+        if sink is not None and _sink_capability_profile(sink) != self.capability_profile:
+            raise ValueError("relay session and planner use different capability profiles")
+        self._intent_sink = sink
 
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Route one post-authentication frame according to its bound principal."""
@@ -213,6 +259,16 @@ class RelaySession:
                         raw,
                         reason="source_not_allowed",
                         detail="this authenticated connection cannot emit intents",
+                        now=now,
+                    )
+                ]
+
+            if self.intent_sink is not None and not self._sink_profile_agrees():
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="capability_profile_mismatch",
+                        detail="the relay and downstream planner capability profiles diverged",
                         now=now,
                     )
                 ]
@@ -331,6 +387,12 @@ class RelaySession:
         self, intent_id: str, *, defer_resume: bool = False
     ) -> list[dict[str, object]]:
         """Execute accepted work or return a group outcome already committed for it."""
+        if self.intent_sink is not None and not self._sink_profile_agrees():
+            return self.fail_pending_intent(
+                intent_id,
+                reason="capability_profile_mismatch",
+                detail="the relay and downstream planner capability profiles diverged",
+            )
         with self._lock:
             self._ensure_mutation_usable()
             pending = self._pending_intents.get(intent_id)
@@ -355,6 +417,15 @@ class RelaySession:
         with self._lock:
             self._pending_intents.pop(intent_id, None)
         return events
+
+    def _sink_profile_agrees(self) -> bool:
+        sink = self.intent_sink
+        if sink is None:
+            return True
+        try:
+            return _sink_capability_profile(sink) == self.capability_profile
+        except ValueError:
+            return False
 
     def execute_coordinated_group(
         self,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { isConsoleIntentV1, parseRelayServerEvent } from './contract'
+import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1, parseRelayServerEvent } from './contract'
 
 const session = 'session-contract-test'
 
@@ -33,6 +33,8 @@ describe('M1.1 wire compatibility', () => {
       v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,
       roster_version: 1, state_sequence: sequence, armed: false, estop: false,
       selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
       pending: null, accepted_plan: null, drones: [aircraft()],
     })
     if (sequence === undefined || sequence === 1 || sequence === 2) {
@@ -58,7 +60,7 @@ describe('M1.1 wire compatibility', () => {
         spacing: 0.8,
         mode: 'indoor',
         capability_profile: 'c1_basic_control',
-        enabled_intent_names: ['hold'],
+        enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
         pending: null,
         accepted_plan: null,
         drones: [
@@ -89,7 +91,7 @@ describe('M1.1 wire compatibility', () => {
       spacing: 0.8,
       mode: 'indoor',
       capability_profile: 'c1_basic_control',
-      enabled_intent_names: ['hold'],
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
       pending: null,
       accepted_plan: null,
       drones: [aircraft()],
@@ -97,6 +99,61 @@ describe('M1.1 wire compatibility', () => {
 
     expect(event).not.toBeNull()
     expect(event?.type).toBe('state')
+  })
+
+  test.each([
+    ['', ['hold']],
+    ['custom', []],
+    ['custom', ['hold', 'hold']],
+    ['custom', ['unknown']],
+    ['custom', ['sweep']],
+    ['c1_basic_control', ['hold']],
+  ])('rejects contradictory capability advertisement %s / %j', (profile, enabled) => {
+    expect(
+      parseRelayServerEvent({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'state',
+        event_id: 'bad-capability',
+        session,
+        roster_version: 4,
+        armed: true,
+        estop: false,
+        selection: [1],
+        formation: 'line',
+        spacing: 0.8,
+        mode: 'indoor',
+        capability_profile: profile,
+        enabled_intent_names: enabled,
+        pending: null,
+        accepted_plan: null,
+        drones: [aircraft()],
+      }),
+    ).toBeNull()
+  })
+
+  test('accepts a bounded custom subset profile', () => {
+    expect(
+      parseRelayServerEvent({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'state',
+        event_id: 'land-only-capability',
+        session,
+        roster_version: 4,
+        armed: true,
+        estop: false,
+        selection: [1],
+        formation: 'line',
+        spacing: 0.8,
+        mode: 'indoor',
+        capability_profile: 'land-only',
+        enabled_intent_names: ['land'],
+        pending: null,
+        accepted_plan: null,
+        drones: [aircraft()],
+      }),
+    ).toMatchObject({ capability_profile: 'land-only', enabled_intent_names: ['land'] })
   })
 
   test('accepts the one-shot graceful-leave invalidation state fields', () => {
@@ -115,7 +172,7 @@ describe('M1.1 wire compatibility', () => {
       spacing: 0.8,
       mode: 'indoor',
       capability_profile: 'c1_basic_control',
-      enabled_intent_names: ['hold'],
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
       pending: null,
       accepted_plan: null,
       invalidated_intent_ids: ['intent-capture'],

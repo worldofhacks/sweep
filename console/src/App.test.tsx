@@ -3,11 +3,15 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
 import App from './App'
 import { UnavailableRelayClient } from './relay/client'
-import type { IntentV1 } from './relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, type IntentV1 } from './relay/contract'
 import { FixtureRelayClient, fixtureAircraft } from './testing/fixture-relay-client'
 
 const session = 'component-test-session'
 const clock = () => 1_756_700_000_000
+const capabilityFields = () => ({
+  capability_profile: 'c1_basic_control',
+  enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+})
 
 type User = ReturnType<typeof userEvent.setup>
 
@@ -132,7 +136,7 @@ describe('Control / Capture console', () => {
       spacing: 0.8,
       mode: 'indoor',
       capability_profile: 'c1_basic_control',
-      enabled_intent_names: ['hold'],
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
       pending: null,
       accepted_plan: null,
       drones,
@@ -169,6 +173,7 @@ describe('Control / Capture console', () => {
     const snapshot = {
       v: 1 as const, t: clock(), type: 'state' as const, session, armed: true, estop: false,
       formation: 'none', spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
+      ...capabilityFields(),
     }
     const lossState = { ...snapshot, event_id: 'loss-state', roster_version: 8, state_sequence: 20,
       selection: [], drones: fixtureAircraft(clock()).map((drone) => drone.drone_id === 1
@@ -334,6 +339,7 @@ describe('Control / Capture console', () => {
       formation: 'none',
       spacing: 0.8,
       mode: 'indoor',
+      ...capabilityFields(),
       pending: null,
       accepted_plan: null,
       drones: fixtureAircraft(clock()),
@@ -358,6 +364,7 @@ describe('Control / Capture console', () => {
       formation: 'none',
       spacing: 0.8,
       mode: 'indoor',
+      ...capabilityFields(),
       pending: null,
       accepted_plan: null,
       drones: fixtureAircraft(clock()),
@@ -391,6 +398,7 @@ describe('Control / Capture console', () => {
       v: 1 as const, t: clock(), type: 'state' as const, session,
       roster_version: 2, armed: true, estop: false, selection: [2],
       formation: 'none', spacing: 0.8, mode: 'indoor', pending: null,
+      ...capabilityFields(),
       accepted_plan: null, drones: fixtureAircraft(clock()).slice(0, 2),
     }
     act(() => {
@@ -428,6 +436,7 @@ describe('Control / Capture console', () => {
         formation: 'none',
         spacing: 0.8,
         mode: 'indoor',
+        ...capabilityFields(),
         pending: null,
         accepted_plan: null,
         drones: fixtureAircraft(clock()).slice(0, 2),
@@ -452,6 +461,7 @@ describe('Control / Capture console', () => {
         formation: 'none',
         spacing: 0.8,
         mode: 'indoor',
+        ...capabilityFields(),
         pending: null,
         accepted_plan: null,
         drones: fixtureAircraft(clock()).slice(0, 1),

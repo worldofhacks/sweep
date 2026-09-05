@@ -15,7 +15,7 @@ import type {
   RelayServerEvent,
   IntentSource,
 } from '../relay/contract'
-import { isSupportedAtM20 } from '../relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, isSupportedAtM20 } from '../relay/contract'
 
 export type FixtureFleetSize = 4 | 6
 
@@ -228,6 +228,8 @@ export class FixtureRelayClient implements RelayClient {
       formation: this.scenario.formation,
       spacing: this.scenario.spacing,
       mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
       pending: this.scenario.pending,
       accepted_plan: null,
       drones: this.scenario.fleet(this.now()),

@@ -103,8 +103,11 @@ geometry; every control builds its envelope through `control/intent.ts`, which n
 Appendix E name the contract lists. `takeoff`, `land`, `land_all`, `sweep` and `capture_room` park
 in the dock until the operator confirms the exact envelope; the rest send at once. A retry creates a new intent id with `retry_of` set. Takeoff, fleet landing and capture retries
 return to the dock for fresh confirmation of the same arguments; other retries retain their
-confirmation and send immediately. Names outside the M2.0 set
-stay pressable so the relay's `unsupported` refusal is recorded rather than hidden.
+confirmation and send immediately. The authoritative state projection carries the relay's
+capability profile and exact enabled-intent list. Controls outside that list remain visible with
+their reason but are disabled before preview or dispatch; the network stop remains universally
+available by explicit safety policy. Missing or malformed capability metadata fails closed at the
+WebSocket parser.
 No relay event carries capture-readiness guidance yet, so the compass and gates render unreported.
 
 ## Catalog modules

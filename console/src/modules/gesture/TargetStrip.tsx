@@ -1,4 +1,10 @@
-import { formatDroneId, type ControlState, type RequestRecord } from '../../control/state'
+import {
+  capabilityBlockedReason,
+  formatDroneId,
+  isIntentEnabled,
+  type ControlState,
+  type RequestRecord,
+} from '../../control/state'
 import { isSupportedAtM20, selectionRule } from '../../relay/contract'
 import { isReady, sortedAircraft } from '../../shell/derive'
 import { formatPercent, humanizeCode } from '../../shell/format'
@@ -65,6 +71,8 @@ function quickCommandView(
   state: ControlState,
   pending: RequestRecord | null,
 ): QuickCommandView {
+  const capability = capabilityBlockedReason(state, spec.name)
+  if (capability) return { badge: null, reason: capability, note: capability }
   if (!isSupportedAtM20(spec.name)) {
     const sentences = [
       `The relay refuses ${spec.name} as unsupported at M2.0; it is listed until the relay accepts it.`,
@@ -112,8 +120,9 @@ export function TargetStrip({ controller }: { controller: Controller }) {
   const fleet = sortedAircraft(state.aircraft)
   const ready = fleet.filter(isReady).map((drone) => drone.drone_id)
   const blockers = fleet.filter((drone) => !isReady(drone))
+  const canSelect = isIntentEnabled(state, 'select')
   const allReadySelected = ready.length > 0 && ready.every((id) => state.selection.includes(id))
-  const allReadyDisabled = ready.length === 0 || allReadySelected || pendingRequest !== null
+  const allReadyDisabled = !canSelect || ready.length === 0 || allReadySelected || pendingRequest !== null
   return (
     <div className="tg-strip" role="group" aria-label="Target">
       <span className="tg-strip-count">
@@ -124,10 +133,12 @@ export function TargetStrip({ controller }: { controller: Controller }) {
       </span>
       <span className="tg-strip-chips">
         {fleet.map((drone) => {
-          const can = isReady(drone)
+          const can = canSelect && isReady(drone)
           const on = state.selection.includes(drone.drone_id)
           const lastSelected = on && state.selection.length === 1
-          const reason = can
+          const reason = !canSelect
+            ? capabilityBlockedReason(state, 'select') ?? undefined
+            : can
             ? lastSelected
               ? 'Intent v1 requires at least one aircraft in a select request.'
               : undefined
@@ -158,7 +169,9 @@ export function TargetStrip({ controller }: { controller: Controller }) {
           className="tg-strip-all"
           disabled={allReadyDisabled}
           title={
-            pendingRequest
+            !canSelect
+              ? capabilityBlockedReason(state, 'select') ?? undefined
+              : pendingRequest
               ? 'Confirm or cancel the pending preview first.'
               : allReadySelected
                 ? 'Every ready aircraft is already selected.'

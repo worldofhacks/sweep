@@ -1,6 +1,7 @@
 import type {
   BackendIntentStatus,
   CapturePattern,
+  ConsoleIntentName,
   DroneId,
   IntentV1,
   IntentSource,
@@ -86,6 +87,9 @@ export interface ControlState {
   /** Formation and spacing the relay reports in its state frame; null until the first frame. */
   formation: string | null
   spacing: number | null
+  /** Null until a validated relay state advertises its active capability contract. */
+  capabilityProfile: string | null
+  enabledIntentNames: ConsoleIntentName[]
   departed: DepartureRecord[]
   requests: RequestRecord[]
   selectedFeedId: DroneId | null
@@ -139,6 +143,8 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     selection: [],
     formation: null,
     spacing: null,
+    capabilityProfile: null,
+    enabledIntentNames: [],
     departed: [],
     requests: [],
     selectedFeedId: null,
@@ -150,6 +156,22 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     seenEventIds: [],
     lastStateEvent: null,
   }
+}
+
+/** E-stop remains universally available by policy; every other intent is profile-gated. */
+export function isIntentEnabled(state: ControlState, name: ConsoleIntentName): boolean {
+  return name === 'estop' || state.enabledIntentNames.includes(name)
+}
+
+export function capabilityBlockedReason(
+  state: ControlState,
+  name: ConsoleIntentName,
+): string | null {
+  if (isIntentEnabled(state, name)) return null
+  if (state.capabilityProfile === null) {
+    return `The relay has not advertised support for ${name}.`
+  }
+  return `${name} is disabled by relay capability profile ${state.capabilityProfile}.`
 }
 
 export function createRequestRecord(intent: IntentV1, now: number): RequestRecord {
@@ -456,6 +478,13 @@ function reduceStateEvent(
     selection,
     formation: event.formation,
     spacing: event.spacing,
+    capabilityProfile:
+      typeof event.capability_profile === 'string'
+        ? event.capability_profile
+        : state.capabilityProfile,
+    enabledIntentNames: Array.isArray(event.enabled_intent_names)
+      ? [...event.enabled_intent_names]
+      : state.enabledIntentNames,
     armed: event.armed,
     estop: event.estop || (ambiguousOrder && state.estop),
     lastStateEvent: {
@@ -465,6 +494,20 @@ function reduceStateEvent(
       sequence: event.state_sequence,
     },
   }
+
+  const capabilityDisabledRequests = next.requests
+    .filter(
+      (request) =>
+        request.status === 'pending_confirmation' && !isIntentEnabled(next, request.intent.name),
+    )
+    .map((request) => request.intent.intent_id)
+  next = invalidateRequests(
+    next,
+    capabilityDisabledRequests,
+    event.t,
+    'capability_disabled',
+    `The relay capability profile changed to ${next.capabilityProfile ?? 'an unavailable profile'}. Build a supported preview.`,
+  )
 
   if (
     selection.length === 1 &&

@@ -54,8 +54,8 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
 
 /**
  * Mirror of relay/intent_v1.py M20_SUPPORTED_NAMES. The relay refuses every
- * other name with reason `unsupported`; the console still sends them so the
- * refusal is recorded rather than hidden.
+ * other name with reason `unsupported`; the console keeps those controls
+ * visible but disables them from the advertised capability profile.
  */
 export const M20_SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'arm',
@@ -69,6 +69,20 @@ export const M20_SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Con
   'estop',
   'capture_room',
 ])
+
+/** The exact baseline profile emitted by the C1 relay when no optional capability is enabled. */
+export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
+  'arm',
+  'capture_room',
+  'come_home',
+  'estop',
+  'hold',
+  'land',
+  'land_all',
+  'select',
+  'takeoff',
+  'translate',
+]
 
 export function isSupportedAtM20(name: ConsoleIntentName): boolean {
   return M20_SUPPORTED_INTENTS.has(name)
@@ -238,7 +252,7 @@ export interface RelayStateEvent {
   spacing: number
   mode: string
   capability_profile: string
-  enabled_intent_names: string[]
+  enabled_intent_names: ConsoleIntentName[]
   pending: Record<string, unknown> | null
   accepted_plan: Record<string, unknown> | null
   drones: RelayAircraftState[]
@@ -431,6 +445,24 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
+function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled is ConsoleIntentName[] {
+  if (
+    typeof profile !== 'string' ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(profile) ||
+    !isStringArray(enabled) ||
+    enabled.length === 0 ||
+    new Set(enabled).size !== enabled.length ||
+    !enabled.every((name) => M20_SUPPORTED_INTENTS.has(name as ConsoleIntentName))
+  ) {
+    return false
+  }
+  if (profile !== 'c1_basic_control') return true
+  return (
+    enabled.length === C1_BASIC_CONTROL_INTENTS.length &&
+    C1_BASIC_CONTROL_INTENTS.every((name) => enabled.includes(name))
+  )
+}
+
 function isNullableDroneId(value: unknown): value is DroneId | null {
   return value === null || isDroneId(value)
 }
@@ -518,8 +550,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       typeof value.formation !== 'string' ||
       !isFiniteNumber(value.spacing) ||
       typeof value.mode !== 'string' ||
-      typeof value.capability_profile !== 'string' ||
-      !isStringArray(value.enabled_intent_names) ||
+      !isCapabilityAdvertisement(value.capability_profile, value.enabled_intent_names) ||
       !isNullableRecord(value.pending) ||
       !isNullableRecord(value.accepted_plan) ||
       !Array.isArray(value.drones) ||

@@ -1,4 +1,5 @@
 import { clampTranslateSteps, createTranslateArgs } from '../../control/intent'
+import { capabilityBlockedReason, isIntentEnabled } from '../../control/state'
 import type { RequestRecord } from '../../control/state'
 import { planTitle } from '../../control/plan'
 import { sortedAircraft } from '../../shell/derive'
@@ -34,6 +35,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
   const chips = aircraftChips(state)
   const blockers = chipBlockers(state)
   const ready = readyIds(state)
+  const selectEnabled = isIntentEnabled(state, 'select')
   const dpadReason = dpadBlockedReason(state)
   const run = (spec: ControlSpec) => {
     if (spec.name === 'select') selectAllReady()
@@ -53,8 +55,11 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
           <button
             type="button"
             className="ct-select-all"
-            disabled={ready.length === 0}
-            title={ready.length === 0 ? 'No aircraft is ready.' : undefined}
+            disabled={!selectEnabled || ready.length === 0}
+            title={
+              capabilityBlockedReason(state, 'select') ??
+              (ready.length === 0 ? 'No aircraft is ready.' : undefined)
+            }
             onClick={selectAllReady}
           >
             Select all ready
