@@ -1,0 +1,17 @@
+{
+  "entries": {
+    "25c0894a71320c9b0f05357d8995fc68a5ac7f74aa74072a71b1d3154521ab71": {"text": "bring the selected aircraft home"},
+    "2acd436dc1b919f86213edae44290512ed4f26ad5e6964ab13a255fee8f0a785": {"text": "hold now"},
+    "3a85f416075f524fc0b20a199d4e2817cf1f161dfa8cbb08c3fcb798a86121a3": {"text": "move east one meter"},
+    "3fa28dc0d6277fc4ed2b3fec407f30f4a2a776c23934ff93f9ddc4fac054385e": {"text": "cancel that"},
+    "4205a805fdd4e022ca16d1f60b0c56edd5c7f636f79e81637d99b93caadb7c38": {"text": "emergency stop"},
+    "56d794cdaf064b5502191ae69d250554d768ecefc0a623d18244356d6dcac120": {"text": "land all aircraft"},
+    "63b3b0218e0fd7d6e360457cefc10d3a99e2984a5b02adf30a2b201cd145a984": {"text": "arm the team"},
+    "70eedd81b52eff06c2e93f0c142363ee4e7c91a6fbec96ef5f040d59013dfdbe": {"text": "return to home"},
+    "878a090e99f49ee7e62bdabdafccb231357f5b70ecac9609526c7a0535b128d5": {"text": "take off"},
+    "a43c57e4e604c4e77e7f280a93df5816d399500f900c57ee977b5d51f2632f62": {"text": "hold the selected aircraft"},
+    "d0bcd688f59a0204014f4208565199bb87bc62161a6cd41360ea0133ea9fa065": {"text": "capture this room"},
+    "d185b750f0016059c82a342e7632acf246599141077429789b196adace274c43": {"text": "select drones one and two"}
+  },
+  "version": 1
+}

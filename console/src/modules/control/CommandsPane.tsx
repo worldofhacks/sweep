@@ -25,7 +25,7 @@ export function CommandsPane({ controller, steps, onSteps }: CommandsPaneProps) 
     else issueIntent(spec.press)
   }
   const statusTone = (row: CatalogRow) =>
-    row.status === 'accepted at M2.0' ? 'ok' : row.status === 'unsupported' ? 'warn' : 'muted'
+    row.status === 'available' ? 'ok' : row.status === 'unsupported' ? 'warn' : 'muted'
 
   return (
     <div>
@@ -76,7 +76,7 @@ export function CommandsPane({ controller, steps, onSteps }: CommandsPaneProps) 
           />
         </label>
         <div>
-          <p className="ct-eyebrow">Formation — unsupported at M2.0</p>
+          <p className="ct-eyebrow">Formation</p>
           <div className="ct-static-chips" role="group" aria-label="Formation set">
             {formationControls(state).map((spec) => (
               <button
@@ -97,7 +97,7 @@ export function CommandsPane({ controller, steps, onSteps }: CommandsPaneProps) 
           </p>
         </div>
         <div>
-          <p className="ct-eyebrow">Altitude — unsupported at M2.0</p>
+          <p className="ct-eyebrow">Altitude</p>
           <div className="ct-static-chips" role="group" aria-label="Altitude">
             {altitudeControls(state).map((spec) => (
               <button

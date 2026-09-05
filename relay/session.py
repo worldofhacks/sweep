@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
+from math import isfinite
 from threading import Lock, RLock
 
 from planner.models import CommandOperation
@@ -61,6 +62,8 @@ class IntentSinkResult:
     selection_update: tuple[int, ...] | None = None
     armed_update: bool | None = None
     estop_update: bool | None = None
+    formation_update: str | None = None
+    spacing_update: float | None = None
     reason: str | None = None
     detail: str | None = None
 
@@ -75,6 +78,17 @@ class IntentSinkResult:
             not isinstance(event, Mapping) for event in self.events
         ):
             raise ValueError("sink result events must be a tuple of mappings")
+        if self.formation_update is not None and (
+            not isinstance(self.formation_update, str) or not self.formation_update
+        ):
+            raise ValueError("formation update must be a non-empty string")
+        if self.spacing_update is not None and (
+            isinstance(self.spacing_update, bool)
+            or not isinstance(self.spacing_update, int | float)
+            or not isfinite(self.spacing_update)
+            or self.spacing_update <= 0
+        ):
+            raise ValueError("spacing update must be a finite positive number")
 
 
 IntentSink = Callable[[IntentV1, dict[str, object]], object]
@@ -543,6 +557,8 @@ class RelaySession:
                         sink_result.selection_update,
                         sink_result.armed_update,
                         sink_result.estop_update,
+                        sink_result.formation_update,
+                        sink_result.spacing_update,
                     )
                 ):
                     plan = sink_result.result.get("plan")
@@ -553,6 +569,8 @@ class RelaySession:
                             accepted_plan=accepted_plan,
                             armed=sink_result.armed_update,
                             estop=sink_result.estop_update,
+                            formation=sink_result.formation_update,
+                            spacing=sink_result.spacing_update,
                         )
                     )
                 events.append(
@@ -1288,6 +1306,16 @@ class RelaySession:
                         else None
                     ),
                     estop=(True if getattr(plan, "estop_update", None) is True else None),
+                    formation=(
+                        getattr(plan, "formation_update", None)
+                        if status is LifecycleStatus.COMPLETED
+                        else None
+                    ),
+                    spacing=(
+                        getattr(plan, "spacing_update", None)
+                        if status is LifecycleStatus.COMPLETED
+                        else None
+                    ),
                 )
             )
         elif status is LifecycleStatus.EXECUTING:
@@ -1428,6 +1456,8 @@ class RelaySession:
         pending: dict[str, object] | None | object = _UNSET,
         armed: bool | None = None,
         estop: bool | None = None,
+        formation: str | None = None,
+        spacing: float | None = None,
     ) -> dict[str, object]:
         """Apply accepted control state; failure after the durable marker disables the session."""
         now = self.clock()
@@ -1447,6 +1477,10 @@ class RelaySession:
                 self.registry.set_armed(armed)
             if estop is not None:
                 self.registry.set_estop(estop)
+            if formation is not None:
+                self.registry.set_formation(formation)
+            if spacing is not None:
+                self.registry.set_spacing(spacing)
             state = self._state_event(now)
             self._append_audit(state)
             return state

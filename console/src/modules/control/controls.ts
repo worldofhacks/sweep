@@ -15,7 +15,7 @@ import type {
   RelayAircraftState,
   SelectionRule,
 } from '../../relay/contract'
-import { followsSelection, isSupportedAtM20, requiresConfirmation, selectionRule } from '../../relay/contract'
+import { followsSelection, isSupportedIntent, requiresConfirmation, selectionRule } from '../../relay/contract'
 import { isLinkUp, isReady, sortedAircraft, type Tone } from '../../shell/derive'
 
 /** One control press: the intent it drafts and the aircraft it addresses. */
@@ -37,7 +37,7 @@ export interface ControlSpec {
   supported: boolean
   /** A press drafts or sends. Soft controls stay enabled although the relay refuses them. */
   enabled: boolean
-  /** Unsupported at M2.0 while connected: pressable so the refusal is recorded. */
+  /** Unsupported while connected: pressable so the refusal is recorded. */
   soft: boolean
   badge: ControlBadge
   /** The one sentence under the control: the blocking reason, the refusal copy, or what a press does. */
@@ -84,7 +84,7 @@ interface GateOptions {
   sel?: boolean
   /** Every selected aircraft must be ready. */
   ready?: boolean
-  /** Reason that applies before the M2.0 check, for select-all with nothing ready. */
+  /** Reason that applies before the capability check, for select-all with nothing ready. */
   extra?: string | null
   okNote?: string
 }
@@ -95,7 +95,7 @@ interface Gate {
 }
 
 /**
- * Reason order: connection, then the selection rule, then the M2.0 set (soft:
+ * Reason order: connection, then the selection rule, then the capability set (soft:
  * the refusal is worth recording, so the control stays pressable), then the
  * network stop. A control with no reason drafts or sends.
  */
@@ -108,7 +108,7 @@ export function gateControl(state: ControlState, name: ConsoleIntentName, option
     if (notReady) return { reason: notReady, soft: false }
   }
   if (options.extra) return { reason: options.extra, soft: false }
-  if (!isSupportedAtM20(name)) return { reason: refusalCopy(name), soft: true }
+  if (!isSupportedIntent(name)) return { reason: refusalCopy(name), soft: true }
   if (state.estop && name !== 'estop' && name !== 'land' && name !== 'land_all') return { reason: STOP_ACTIVE_REASON, soft: false }
   return { reason: null, soft: false }
 }
@@ -122,7 +122,7 @@ function control(
 ): ControlSpec {
   const { name } = press
   const confirm = requiresConfirmation(name)
-  const supported = isSupportedAtM20(name)
+  const supported = isSupportedIntent(name)
   const gate = gateControl(state, name, options)
   const enabled = gate.reason === null || gate.soft
   const note =
@@ -182,9 +182,9 @@ export function motionControls(state: ControlState): ControlSpec[] {
 }
 
 export const MOTION_FOOTNOTE =
-  'Greyed labels are refused as unsupported at M2.0 — pressing one records the refusal. Altitude up and down are unsupported too. Steps resolve against the room frame.'
+  'Motion controls use the authoritative selection. Steps resolve against the room frame and every target remains subject to the arbiter.'
 
-/** Commands: the five formations and the two altitude steps, both unsupported at M2.0. */
+/** Commands: the five formations and the two altitude steps. */
 export function formationControls(state: ControlState): ControlSpec[] {
   return FORMATION_NAMES.map((name) =>
     control(state, `formation-${name}`, name, { name: 'formation_set', args: { name } }, { sel: true }),
@@ -198,7 +198,7 @@ export function altitudeControls(state: ControlState): ControlSpec[] {
   ]
 }
 
-export type CatalogStatus = 'accepted at M2.0' | 'unsupported' | 'later'
+export type CatalogStatus = 'available' | 'unsupported' | 'later'
 
 export interface CatalogRow {
   key: string
@@ -225,7 +225,7 @@ function catalogRow(spec: ControlSpec): CatalogRow {
     intent: spec.name,
     confirm: spec.confirm ? 'confirm' : '—',
     rule: spec.rule,
-    status: spec.supported ? 'accepted at M2.0' : 'unsupported',
+    status: spec.supported ? 'available' : 'unsupported',
     note: spec.note,
     noteTone: spec.noteTone,
     enabled: spec.enabled,
@@ -368,10 +368,10 @@ export function formationRelayNote(preview: string | null, reported: string | nu
   if (reported === null) {
     return shown === null
       ? 'The relay has not reported a formation.'
-      : `Previewing ${shown}. The relay has not reported a formation — formation_set is refused as unsupported at M2.0.`
+      : `Requested ${shown}. Waiting for the relay to report the completed formation.`
   }
   if (shown === reported) return `The relay reports ${reported}.`
-  return `Previewing ${shown}. The relay still reports ${reported} — formation_set is refused as unsupported at M2.0.`
+  return `Requested ${shown}. The relay still reports ${reported} until execution completes.`
 }
 
 export interface FanoutRow {
@@ -665,7 +665,7 @@ export interface MissionStep {
   gesture: string
   intent: string
   note: string
-  status: 'accepted at M2.0' | 'unsupported'
+  status: 'available' | 'unsupported'
 }
 
 /** Appendix E, the scripted mission: gesture, canonical intent, and what the relay does with it. */
@@ -675,9 +675,9 @@ export const MISSION_STEPS: readonly MissionStep[] = (
     ['Open palm', 'select', 'Select every ready aircraft.'],
     ['Open palm up', 'takeoff', 'Takeoff — risky, so the relay returns a pending object.'],
     ['Thumb up', 'confirm', 'Confirm the pending takeoff. Dwell 400 ms.'],
-    ['Circle', 'formation_set', 'Formation to circle. Unsupported at M2.0.'],
+    ['Circle', 'formation_set', 'Formation to circle.'],
     ['Index swipe right, twice', 'translate', 'Translate two steps east.'],
-    ['Pinch and raise', 'altitude', 'Altitude up one step. Unsupported at M2.0.'],
+    ['Pinch and raise', 'altitude', 'Altitude up one step.'],
     ['Two fingers held', 'sweep', 'Sweep, then thumb up to confirm, then wait for the lanes.'],
     ['Rock sign', 'come_home', 'Come home to staggered pads.'],
     ['Rock sign, then both palms up', 'land_all', 'Land all, then disarm.'],
@@ -688,7 +688,7 @@ export const MISSION_STEPS: readonly MissionStep[] = (
   intent,
   note,
   status:
-    intent === 'confirm' || isSupportedAtM20(intent as ConsoleIntentName) ? 'accepted at M2.0' : 'unsupported',
+    intent === 'confirm' || isSupportedIntent(intent as ConsoleIntentName) ? 'available' : 'unsupported',
 }))
 
 export const MISSION_PASS_TEXT =
