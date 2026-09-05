@@ -15,8 +15,12 @@ import dji.v5.manager.KeyManager
 import dji.v5.manager.SDKManager
 import dji.v5.manager.interfaces.SDKManagerCallback
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.flight.DjiFlightPort
+import org.worldofhacks.sweep.bridge.flight.FlightExecutor
+import org.worldofhacks.sweep.bridge.flight.FlightNode
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
+import org.worldofhacks.sweep.bridge.node.NodeLog
 import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
@@ -35,6 +39,10 @@ import org.worldofhacks.sweep.bridge.session.SessionState
  * generation it was issued for, so a late key callback from a previous product is dropped
  * instead of overwriting the current one. The capture matrix and camera probing of the
  * original are not carried over.
+ *
+ * Phase E: [DjiFlightPort] and [FlightExecutor] run the Virtual Stick loop; the port's
+ * takeover signals are attached once the SDK is registered and the flight controller's
+ * failsafe setting is read (never changed) on every product connection.
  */
 class SdkSession(private val application: Application) : AircraftSession {
     private val model = SessionModel()
@@ -45,18 +53,30 @@ class SdkSession(private val application: Application) : AircraftSession {
         log = { name, detail -> model.event(name, detail) },
     )
 
+    private val port = DjiFlightPort { name, detail -> model.event(name, detail) }
+    private val flightExecutor = FlightExecutor(port, probe, fallback = probe, log = NodeLog { line -> model.event("Flight", line) })
+
     override val state: StateFlow<SessionState> = model.state
 
     override val aircraft: AircraftSource
         get() = probe
 
     override val executor: CommandExecutor
-        get() = probe
+        get() = flightExecutor
+
+    override val flight: FlightNode = FlightNode(
+        flightExecutor,
+        probe,
+        application.filesDir,
+        onStatus = { status -> probe.setFlightStatus(status.virtualStickEnabled, status.authorityLostReason) },
+        log = { line -> model.event("Probe", line) },
+    )
 
     private val callback = object : SDKManagerCallback {
         override fun onRegisterSuccess() {
             model.registerSucceeded()
             probe.attach()
+            port.attach(flightExecutor)
         }
 
         override fun onRegisterFailure(error: IDJIError) {
@@ -74,12 +94,14 @@ class SdkSession(private val application: Application) : AircraftSession {
             probe.attach()
             probe.productConnected(true)
             queryIdentity(generation)
+            port.onProductConnected()
         }
 
         override fun onProductChanged(productId: Int) {
             val generation = model.productChanged(productId)
             probe.productConnected(true)
             queryIdentity(generation)
+            port.onProductConnected()
         }
 
         override fun onInitProcess(event: DJISDKInitEvent, totalProcess: Int) {

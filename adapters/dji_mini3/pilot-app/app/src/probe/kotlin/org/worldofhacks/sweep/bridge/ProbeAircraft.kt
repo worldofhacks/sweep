@@ -19,6 +19,7 @@ import kotlin.math.hypot
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
 import org.worldofhacks.sweep.bridge.core.frames.HardwareProfile
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
@@ -39,12 +40,17 @@ import org.worldofhacks.sweep.bridge.session.AircraftIdentity
  *   there is usually no fix, so they stay 0 and `pos_quality` stays 0.
  * - `z` is `KeyAltitude` (barometric, metres above takeoff) or, failing that,
  *   `KeyUltrasonicHeight` in decimetres divided by ten.
- * - `vz` flips the SDK's z-down velocity to the planner's z-up.
+ * - `vx`, `vy`, `vz`: `KeyAircraftVelocity` is N-E-D (x north, y east, z down), so the SDK's
+ *   `y` is the planner's `vx` (east), its `x` the planner's `vy` (north), and `vz` flips to
+ *   z-up, matching the east/north position mapping above. The #85 axis probe reads these.
+ * - `yaw` is `KeyAircraftAttitude.yaw` (degrees, 0 north, clockwise), which the Phase E
+ *   body-frame steps and `rotate_to` use.
  * - `state` follows motors and flying flags plus the flight mode name (`taking_off`,
  *   `landing`, `hovering` below 0.2 m/s, else `airborne`).
  *
- * Commands fail with `control_loop_unavailable` until the Phase E Virtual Stick loop lands;
- * the node must never claim it executed motion it cannot drive.
+ * Flight commands are routed to the Phase E `FlightExecutor` before they reach this class;
+ * the camera and media commands fail with `unsupported` until Phase G, so the node never
+ * claims it executed something it cannot drive.
  */
 class ProbeAircraft(
     phoneModel: String,
@@ -70,6 +76,8 @@ class ProbeAircraft(
     private var rcConnected = false
     private var batteryPercent: Int? = null
     private var signalQuality: Int? = null
+    private var virtualStickEnabled = false
+    private var authorityLostReason: String? = null
     private var hardware = HardwareProfile(
         aircraftModel = HardwareProfile.UNREPORTED,
         aircraftFirmware = HardwareProfile.UNREPORTED,
@@ -142,8 +150,25 @@ class ProbeAircraft(
         publish()
     }
 
+    /** The Phase E loop's status, reported in `node_status` and (after a takeover) in readiness. */
+    fun setFlightStatus(virtualStickEnabled: Boolean, authorityLostReason: String?) {
+        synchronized(lock) {
+            this.virtualStickEnabled = virtualStickEnabled
+            this.authorityLostReason = authorityLostReason
+        }
+        publish()
+    }
+
     override fun execute(command: CommandFrame, report: CommandReport) {
-        report.failed("control_loop_unavailable", "the Virtual Stick control loop lands with Phase E")
+        when (command.args) {
+            CommandArgs.CameraCapabilities -> {
+                report.executing("capabilities frame sent by the link")
+                report.completed("probed camera capabilities reported")
+            }
+            is CommandArgs.Takeoff, is CommandArgs.Goto, is CommandArgs.RotateTo, CommandArgs.Hover, CommandArgs.Land, CommandArgs.Estop ->
+                report.failed("control_loop_unavailable", "flight commands are routed to the Virtual Stick loop; this executor never drives motion")
+            else -> report.failed("unsupported", "the camera and media path lands with Phase G")
+        }
     }
 
     private fun <T : Any> listen(name: String, key: DJIKey<T>, apply: (T) -> Unit) {
@@ -180,9 +205,11 @@ class ProbeAircraft(
         val (x, y) = if (fix != null && base != null) eastNorthMetres(base, fix) else 0.0 to 0.0
         val z = altitude ?: ultrasonicHeightDm?.let { it / 10.0 } ?: 0.0
         val v = velocity
-        val vx = v?.x ?: 0.0
-        val vy = v?.y ?: 0.0
+        // KeyAircraftVelocity is N-E-D: SDK y (east) is planner x, SDK x (north) is planner y.
+        val vx = v?.y ?: 0.0
+        val vy = v?.x ?: 0.0
         val vz = -(v?.z ?: 0.0)
+        val yaw = attitude?.yaw ?: 0.0
         val mode = flightMode?.name.orEmpty()
         val state = when {
             motorsOn != true -> FlightStates.LANDED
@@ -208,6 +235,9 @@ class ProbeAircraft(
             posQuality = if (fix != null) PROVISIONAL_FIX_QUALITY else 0.0,
             hardware = hardware,
             keyRatesHz = rates.snapshot(now),
+            yawDeg = yaw,
+            virtualStickEnabled = virtualStickEnabled,
+            authorityLostReason = authorityLostReason,
         )
     }
 
