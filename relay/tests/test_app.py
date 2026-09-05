@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Lock, Timer
 from time import sleep
@@ -17,7 +18,7 @@ import relay.app as app_module
 import relay.audit as audit_module
 from relay.app import RelayRuntime, create_app
 from relay.audit import AuditLogError, SessionAuditLog
-from relay.auth import AuthenticationError, Principal
+from relay.auth import AuthenticationError, Principal, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
 from relay.session import CapabilityBoundIntentSink, IntentSink
 from relay.settings import RelaySettings
@@ -80,6 +81,129 @@ def _receive_type(
         if event["type"] == event_type:
             return event
     raise AssertionError(f"did not receive {event_type!r} within {maximum} frames")
+
+
+def test_control_heartbeat_is_signed_routed_current_and_not_audited(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+) -> None:
+    async def exercise() -> tuple[dict[str, object], dict[str, object], tuple[int, int, int, int]]:
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        adapter_subscription = await runtime.subscribe(SESSION, adapter)
+        console_subscription = await runtime.subscribe(SESSION, console)
+
+        # A socket that has authenticated but not joined receives no control lease.
+        await runtime._publish_control_heartbeats(SESSION, session)
+        assert adapter_subscription.queue.empty()
+
+        session.process_membership(
+            membership_payload(action="join", event_id="heartbeat-join"), adapter
+        )
+        audit_before = session.replay()["last_sequence"]
+        await runtime._publish_control_heartbeats(SESSION, session)
+        first = adapter_subscription.queue.get_nowait().event
+        audit_after_first = session.replay()["last_sequence"]
+        assert console_subscription.queue.empty()
+
+        # The one-second cadence is independent of the 10 Hz state fan-out.
+        await runtime._publish_control_heartbeats(SESSION, session)
+        assert adapter_subscription.queue.empty()
+        runtime._control_heartbeat_last[adapter_subscription.connection_id] -= 1.1
+
+        clock.advance(1)
+        session.process_membership(
+            membership_payload(
+                action="readiness",
+                event_id="heartbeat-ready",
+                timestamp=clock.value,
+            ),
+            adapter,
+        )
+        audit_after_readiness = session.replay()["last_sequence"]
+        await runtime._publish_control_heartbeats(SESSION, session)
+        second = adapter_subscription.queue.get_nowait().event
+        audit_after_second = session.replay()["last_sequence"]
+        return (
+            first,
+            second,
+            (
+                int(audit_before),
+                int(audit_after_first),
+                int(audit_after_readiness),
+                int(audit_after_second),
+            ),
+        )
+
+    first, second, audit_sequences = asyncio.run(exercise())
+    expected = {
+        "v",
+        "t",
+        "type",
+        "event_id",
+        "session",
+        "source",
+        "drone_id",
+        "connection_epoch",
+        "roster_version",
+        "seq",
+        "signature",
+    }
+    assert set(first) == expected
+    unsigned = {key: value for key, value in first.items() if key != "signature"}
+    assert verify_event_signature(unsigned, str(first["signature"]), ADAPTER_KEY)
+    identity = (
+        first["type"],
+        first["source"],
+        first["drone_id"],
+        first["connection_epoch"],
+        first["seq"],
+    )
+    assert identity == (
+        "control_heartbeat",
+        "relay",
+        1,
+        1,
+        1,
+    )
+    assert second["seq"] == 2
+    assert second["roster_version"] > first["roster_version"]
+    # Only the readiness transition, not either transport heartbeat, added an audit record.
+    before, after_first, after_readiness, after_second = audit_sequences
+    assert after_first == before
+    assert after_readiness > after_first
+    assert after_second == after_readiness
+
+
+def test_control_heartbeat_cadence_stays_inside_a_short_hold_window(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+) -> None:
+    async def exercise() -> None:
+        settings = replace(app_settings, node_watchdog_hold_ms=500)
+        runtime = RelayRuntime(settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        subscription = await runtime.subscribe(SESSION, adapter)
+        session.process_membership(
+            membership_payload(action="join", event_id="short-hold-join"), adapter
+        )
+
+        await runtime._publish_control_heartbeats(SESSION, session)
+        subscription.queue.get_nowait()
+        runtime._control_heartbeat_last[subscription.connection_id] = time.monotonic() - 0.10
+        await runtime._publish_control_heartbeats(SESSION, session)
+        assert subscription.queue.empty()
+
+        runtime._control_heartbeat_last[subscription.connection_id] = time.monotonic() - 0.30
+        await runtime._publish_control_heartbeats(SESSION, session)
+        assert subscription.queue.get_nowait().event["seq"] == 2
+
+    asyncio.run(exercise())
 
 
 def test_first_frame_authentication_precedes_state_and_intent_results(

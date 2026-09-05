@@ -28,11 +28,11 @@ class WatchdogTest {
     }
 
     @Test
-    fun `armed stays armed while heartbeats or commands keep arriving`() {
+    fun `armed stays armed while verified heartbeats keep arriving`() {
         val watchdog = armed()
         repeat(10) {
             clock.advance(400)
-            if (it % 2 == 0) watchdog.heartbeat() else watchdog.command()
+            watchdog.heartbeat()
             assertNull(watchdog.poll())
         }
         assertEquals(WatchdogState.ARMED, watchdog.state)
@@ -47,7 +47,7 @@ class WatchdogTest {
         val transition = watchdog.poll()
         assertEquals(WatchdogTransition(WatchdogState.ARMED, WatchdogState.HOLD, WatchdogReason.WATCHDOG_HOLD, 500), transition)
         assertEquals("watchdog_hold", transition?.reason?.wire)
-        assertEquals("hold", watchdog.state.wire)
+        assertEquals("hold", watchdog.state.toNodeStatus().wire)
         assertNull(watchdog.poll(), "no repeated transition while still in hold")
     }
 
@@ -84,7 +84,7 @@ class WatchdogTest {
         val watchdog = armed()
         clock.advance(700)
         watchdog.poll()
-        watchdog.command()
+        watchdog.heartbeat()
         val transition = watchdog.poll()
         assertEquals(WatchdogTransition(WatchdogState.HOLD, WatchdogState.ARMED, null, 0), transition)
         clock.advance(499)
@@ -102,6 +102,12 @@ class WatchdogTest {
 
     @Test
     fun `wire names match the node_status contract`() {
-        assertEquals(listOf("disarmed", "armed", "hold", "failsafe"), WatchdogState.entries.map { it.wire })
+        assertEquals(listOf("nominal", "hold", "failsafe"), NodeWatchdogState.entries.map { it.wire })
+        assertEquals(NodeWatchdogState.NOMINAL, WatchdogState.DISARMED.toNodeStatus())
+        assertEquals(NodeWatchdogState.NOMINAL, WatchdogState.ARMED.toNodeStatus())
+        assertEquals(NodeWatchdogState.HOLD, WatchdogState.HOLD.toNodeStatus())
+        assertEquals(NodeWatchdogState.FAILSAFE, WatchdogState.FAILSAFE.toNodeStatus())
+        assertEquals(NodeWatchdogState.HOLD, NodeWatchdogState.fromWire("hold"))
+        assertNull(NodeWatchdogState.fromWire("armed"))
     }
 }

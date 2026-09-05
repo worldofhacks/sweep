@@ -3,4 +3,7 @@
     <string name="app_name">Sweep Bridge</string>
     <string name="service_channel">Bridge node</string>
     <string name="service_running">Bridge node link active</string>
+    <string name="notification_relay">Relay %1$s</string>
+    <string name="notification_epoch">epoch %1$d</string>
+    <string name="notification_halted">reconnect stopped</string>
 </resources>

@@ -58,6 +58,25 @@ def test_four_aircraft_can_disconnect_and_rejoin_in_one_session() -> None:
     assert all(drone["membership"] == "registered" for drone in state["drones"])
 
 
+def test_active_connection_identity_is_atomic_and_excludes_inactive_memberships() -> None:
+    registry = FleetRegistry(telemetry_freshness_ms=1_000)
+    assert registry.active_connection_identity(1) is None
+
+    _join(registry, 1, "join-1")
+    assert registry.active_connection_identity(1) == (1, 1)
+
+    registry.disconnect(
+        drone_id=1,
+        connection_epoch=1,
+        t=1_756_700_000_001,
+        event_id="loss-1",
+    )
+    assert registry.active_connection_identity(1) is None
+
+    _join(registry, 1, "join-2")
+    assert registry.active_connection_identity(1) == (2, 3)
+
+
 def test_all_readiness_gates_must_pass_before_aircraft_is_selectable() -> None:
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
     _join(registry, 1, "join-1")
