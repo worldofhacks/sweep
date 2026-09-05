@@ -81,6 +81,9 @@ class RelayLinkTest {
             val aircraft = FakeAircraft(connected = true)
             link(stub, aircraft).use { link ->
                 await("membership ready") { link.state.value.membership == "ready" }
+                // node_status is the last of the six startup frames; wait for it so the order
+                // assertion does not race the frames still in flight on a slow runner.
+                stub.awaitFrame("node_status")
                 val order = stub.frames.map { frame ->
                     frame.str("type") + if (frame.str("type") == "membership") "/" + frame.str("action") else ""
                 }
@@ -280,6 +283,8 @@ class RelayLinkTest {
                 assertEquals(WatchdogState.ARMED, state.watchdog)
                 assertTrue(logs.any { it.contains("reconnecting in") }, "backoff was logged")
 
+                // The epoch-2 readiness is sent just after the rejoin; wait for both before asserting.
+                stub.awaitFrames("membership", 2) { it.str("action") == "readiness" }
                 val readinessEpochs = stub.frames("membership") { it.str("action") == "readiness" }.map { it.int("connection_epoch") }.distinct()
                 assertEquals(listOf(1L, 2L), readinessEpochs)
 
