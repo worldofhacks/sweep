@@ -208,7 +208,13 @@ class FakeNode:
                 self._handle_membership(frame)
             elif frame_type == "state":
                 self._roster_version = int(frame.get("roster_version", self._roster_version))
-            elif frame_type == "refusal" and frame.get("drone_id") == self.config.drone_id:
+            elif (
+                frame_type == "refusal"
+                and frame.get("source") == "relay"
+                and frame.get("drone_id") == self.config.drone_id
+            ):
+                # Autonomy refusals also name an aircraft; only relay protocol refusals
+                # mean this node's own frame was rejected.
                 _LOGGER.warning(
                     "relay refused a node frame: %s (%s)", frame.get("reason"), frame.get("detail")
                 )
