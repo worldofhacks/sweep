@@ -1,15 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
+import './control.css'
 import { Pane, type PaneTab } from '../../shell/Pane'
-import { sortedAircraft } from '../../shell/derive'
-import { FleetRegistry } from '../FleetContext'
-import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
-import { ActiveAircraftPanel } from './ActiveAircraftPanel'
-import { CapturePanel } from './CapturePanel'
-import { RegistryPanel } from './RegistryPanel'
-import { RequestsPanel } from './RequestsPanel'
+import { CapturePane } from './CapturePane'
+import { CommandsPane } from './CommandsPane'
+import { FleetPane } from './FleetPane'
+import { RequestsPane } from './RequestsPane'
+import { SwarmPane } from './SwarmPane'
+import type { CaptureReadiness } from './controls'
 
-type ControlPane = 'swarm' | 'capture' | 'commands' | 'requests' | 'fleet'
+export type ControlPaneId = 'swarm' | 'capture' | 'commands' | 'requests' | 'fleet'
 
 const PANES: PaneTab[] = [
   { id: 'swarm', label: 'Swarm' },
@@ -19,21 +19,21 @@ const PANES: PaneTab[] = [
   { id: 'fleet', label: 'Fleet' },
 ]
 
-export function ControlModule({ controller }: ModuleProps) {
-  const [pane, setPane] = useState<ControlPane>('swarm')
+export interface ControlModuleProps extends ModuleProps {
+  /**
+   * capture_readiness guidance for the compass and gates. No relay event on
+   * main carries it yet, so the module renders it as unreported by default.
+   */
+  guidance?: CaptureReadiness | null
+  initialPane?: ControlPaneId
+}
+
+/** Control and capture: Swarm, Capture, Commands, Requests and Fleet on the authoritative state. */
+export function ControlModule({ controller, now, guidance = null, initialPane = 'swarm' }: ControlModuleProps) {
+  const [pane, setPane] = useState<ControlPaneId>(initialPane)
   const [roomId, setRoomId] = useState('room-01')
-  const { state } = controller
-  const aircraft = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
-  const activeAircraft = useMemo(() => {
-    const selected = aircraft.filter((drone) => state.selection.includes(drone.drone_id))
-    const remaining = aircraft.filter(
-      (drone) =>
-        !state.selection.includes(drone.drone_id) &&
-        drone.membership !== 'disconnected' &&
-        drone.membership !== 'leaving',
-    )
-    return [...selected, ...remaining].slice(0, 2)
-  }, [aircraft, state.selection])
+  const [steps, setSteps] = useState(2)
+  const [formationPreview, setFormationPreview] = useState<string | null>(null)
 
   return (
     <Pane
@@ -41,28 +41,24 @@ export function ControlModule({ controller }: ModuleProps) {
       note="Preview every request in full, then confirm."
       tabs={PANES}
       activeTab={pane}
-      onTabChange={(id) => setPane(id as ControlPane)}
+      onTabChange={(id) => setPane(id as ControlPaneId)}
       tabsLabel="Control panes"
     >
       {pane === 'swarm' && (
-        <div data-two="1">
-          <RegistryPanel controller={controller} aircraft={aircraft} />
-          <ActiveAircraftPanel activeAircraft={activeAircraft} selection={state.selection} />
-        </div>
-      )}
-      {pane === 'capture' && (
-        <div data-two="1">
-          <CapturePanel controller={controller} roomId={roomId} onRoomIdChange={setRoomId} />
-        </div>
-      )}
-      {pane === 'commands' && (
-        <EmptyModule
-          what="a command catalogue"
-          detail="The console sends select, hold, capture_room and estop from the Swarm and Capture panes. The relay accepts no other intent name from this console yet, so no catalogue is rendered."
+        <SwarmPane
+          controller={controller}
+          steps={steps}
+          onSteps={setSteps}
+          formationPreview={formationPreview}
+          onFormationPreview={setFormationPreview}
         />
       )}
-      {pane === 'requests' && <RequestsPanel controller={controller} />}
-      {pane === 'fleet' && <FleetRegistry controller={controller} layout="two" />}
+      {pane === 'capture' && (
+        <CapturePane controller={controller} roomId={roomId} onRoomId={setRoomId} guidance={guidance} />
+      )}
+      {pane === 'commands' && <CommandsPane controller={controller} steps={steps} onSteps={setSteps} />}
+      {pane === 'requests' && <RequestsPane controller={controller} />}
+      {pane === 'fleet' && <FleetPane controller={controller} now={now} />}
     </Pane>
   )
 }

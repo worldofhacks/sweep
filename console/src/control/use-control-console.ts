@@ -98,6 +98,12 @@ export function useControlConsole({
       const t = intentDependencies.now()
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       if (requiresConfirmation(intent.name)) {
+        // One preview at a time: a new draft cancels an earlier, unconfirmed one.
+        state.requests
+          .filter((request) => request.status === 'pending_confirmation')
+          .forEach((request) => {
+            dispatch({ type: 'request_cancelled', intentId: request.intent.intent_id, t })
+          })
         dispatch({
           type: 'request_pending_confirmation',
           intentId: intent.intent_id,
@@ -110,7 +116,7 @@ export function useControlConsole({
       const client = intent.source === 'keyboard' ? clients.keyboard : clients.console
       sendToRelay(intent, client, t, intentDependencies.now, dispatch)
     },
-    [clients.console, clients.keyboard, intentDependencies, state.rosterVersion],
+    [clients.console, clients.keyboard, intentDependencies, state.requests, state.rosterVersion],
   )
 
   const sendExistingIntent = useCallback(
@@ -139,6 +145,11 @@ export function useControlConsole({
     [intentDependencies, stageIntent, state.selection, state.sessionId],
   )
 
+  /**
+   * A select intent addresses the aircraft it names: `selection` carries the
+   * desired ids, the same as `args.ids`, so selecting from an empty selection
+   * still satisfies the at-least-one rule.
+   */
   const sendSelection = useCallback(
     (desired: DroneId[]) => {
       if (desired.length === 0) return
@@ -146,7 +157,7 @@ export function useControlConsole({
         {
           name: 'select',
           args: { ids: desired },
-          selection: state.selection,
+          selection: desired,
           source: 'console',
           session: state.sessionId,
         },
@@ -154,7 +165,7 @@ export function useControlConsole({
       )
       stageIntent(intent)
     },
-    [intentDependencies, stageIntent, state.selection, state.sessionId],
+    [intentDependencies, stageIntent, state.sessionId],
   )
 
   /** Registry and mosaic toggles are additive and never empty the selection. */
@@ -328,6 +339,27 @@ export function useControlConsole({
   )
 
   /**
+   * A configuration change (the room identifier, for one) lands after a plan
+   * was built: every unconfirmed preview is invalidated with the reason stated.
+   */
+  const invalidatePending = useCallback(
+    (reasonCode: string, detail: string) => {
+      state.requests
+        .filter((request) => request.status === 'pending_confirmation')
+        .forEach((request) => {
+          dispatch({
+            type: 'request_invalidated',
+            intentId: request.intent.intent_id,
+            t: intentDependencies.now(),
+            reasonCode,
+            detail,
+          })
+        })
+    },
+    [intentDependencies, state.requests],
+  )
+
+  /**
    * Retry a failed or refused request as a new intent: new id, retry_of set,
    * same args and selection. Confirmation-gated intents re-enter the preview.
    */
@@ -357,6 +389,7 @@ export function useControlConsole({
     issueHold,
     issueNetworkStop,
     changeCapturePattern,
+    invalidatePending,
     retryRequest,
     selectFeed: (droneId: DroneId) => dispatch({ type: 'feed_selected', droneId }),
   }

@@ -73,7 +73,7 @@ describe('intent envelopes', () => {
     (name) => {
       expect(requiresConfirmation(name)).toBe(true)
       const { args, selection } = ENVELOPES[name]
-      const draft = createIntent({ name, args, selection, source: 'console', session }, deps)
+      const draft = createIntent<ConsoleIntentName>({ name, args, selection, source: 'console', session }, deps)
       expect(isConsoleIntentV1(draft)).toBe(false)
       expect(isConsoleIntentV1(confirmIntent(draft, t + 1))).toBe(true)
     },
@@ -95,7 +95,9 @@ describe('intent envelopes', () => {
     expect(requiresConfirmation(name)).toBe(false)
     const { args, selection } = ENVELOPES[name]
     expect(
-      isConsoleIntentV1(createIntent({ name, args, selection, source: 'console', session }, deps)),
+      isConsoleIntentV1(
+        createIntent<ConsoleIntentName>({ name, args, selection, source: 'console', session }, deps),
+      ),
     ).toBe(true)
   })
 
@@ -136,7 +138,7 @@ describe('intent envelopes', () => {
     )
     expect(isConsoleIntentV1(stopWithSelection)).toBe(false)
     const captureTwo = confirmIntent(
-      createIntent(
+      createIntent<ConsoleIntentName>(
         { name: 'capture_room', args: ENVELOPES.capture_room.args, selection: [1, 2], source: 'console', session },
         deps,
       ),
