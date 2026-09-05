@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import math
 import subprocess
@@ -35,6 +36,8 @@ def bundle(tmp_path):
     tags = {
         **header,
         "frame": "building",
+        "source": {"path": "scan.ply", "sha256": hashlib.sha256(b"synthetic source\n").hexdigest()},
+        "T_map_scan": IDENTITY,
         "tags": [
             {
                 "id": 0,
@@ -46,6 +49,7 @@ def bundle(tmp_path):
                 "yaw": 0,
                 "normal": [0, 0, 1],
                 "T_map_tag": IDENTITY,
+                "T_scan_tag": IDENTITY,
                 "orientation_confirmed": True,
             },
         ],
@@ -60,9 +64,19 @@ def bundle(tmp_path):
         ],
         "room_graph": {
             "nodes": [
-                {"id": "113", "floor_id": "level_1"},
-                {"id": "north_hallway", "floor_id": "level_1"},
-                {"id": "mezzanine", "floor_id": "mezzanine"},
+                {"id": "113", "floor_id": "level_1", "region_id": "113", "autonomous": True},
+                {
+                    "id": "north_hallway",
+                    "floor_id": "level_1",
+                    "region_id": "north_hallway",
+                    "autonomous": False,
+                },
+                {
+                    "id": "mezzanine",
+                    "floor_id": "mezzanine",
+                    "region_id": "mezzanine",
+                    "autonomous": False,
+                },
             ],
             "edges": [
                 {"from": "113", "to": "mezzanine", "side": "west", "autonomous": False},
@@ -89,10 +103,24 @@ def change(bundle, filename, mutate):
     seal_manifest(bundle)
 
 
+def accepted(bundle):
+    manifest = read_document(bundle / "manifest.yaml")
+    return {manifest["bundle_version"]: manifest["content_sha256"]}
+
+
 def test_valid_bundle_and_cli(bundle):
-    assert validate_bundle(bundle, {"trial-1"})["bundle_version"] == "trial-1"
+    assert validate_bundle(bundle, accepted(bundle))["bundle_version"] == "trial-1"
+    registry = bundle / "accepted.json"
+    write_document(registry, accepted(bundle))
     run = subprocess.run(
-        [sys.executable, "-m", "tools.map_validate", str(bundle), "--accepted-version", "trial-1"],
+        [
+            sys.executable,
+            "-m",
+            "tools.map_validate",
+            str(bundle),
+            "--accepted-versions",
+            str(registry),
+        ],
         capture_output=True,
         text=True,
     )
@@ -161,7 +189,7 @@ def test_document_rejects_ambiguous_or_nonfinite_values(tmp_path, text):
 def test_invalid_bundle_content(bundle, filename, mutate, match):
     change(bundle, filename, mutate)
     with pytest.raises(ValueError, match=match):
-        validate_bundle(bundle, ["trial-1"])
+        validate_bundle(bundle, accepted(bundle))
 
 
 @pytest.mark.parametrize(
@@ -177,7 +205,7 @@ def test_invalid_bundle_content(bundle, filename, mutate, match):
 def test_malformed_polygons(bundle, polygon):
     change(bundle, "zones.yaml", lambda d: d["geofence"].update(polygon=polygon))
     with pytest.raises(ValueError):
-        validate_bundle(bundle, ["trial-1"])
+        validate_bundle(bundle, accepted(bundle))
 
 
 def test_tag_on_geofence_boundary(bundle):
@@ -186,7 +214,7 @@ def test_tag_on_geofence_boundary(bundle):
         "zones.yaml",
         lambda d: d["geofence"].update(polygon=[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]], z_min=0),
     )
-    validate_bundle(bundle, ["trial-1"])
+    validate_bundle(bundle, accepted(bundle))
 
 
 @pytest.mark.parametrize("filename", ["scan.ply", "tags.yaml", "zones.yaml", "obstacles.yaml"])
@@ -194,19 +222,19 @@ def test_modified_bytes_fail_hash_verification(bundle, filename):
     with (bundle / filename).open("a") as file:
         file.write(" ")
     with pytest.raises(ValueError, match="hash mismatch"):
-        validate_bundle(bundle, ["trial-1"])
+        validate_bundle(bundle, accepted(bundle))
 
 
 def test_content_hash_and_explicit_versions(bundle):
     manifest = read_document(bundle / "manifest.yaml")
     assert content_hash(manifest) == content_hash(dict(reversed(list(manifest.items()))))
-    for accepted in ([], ["other"], "trial-1"):
+    for invalid in ([], ["other"], "trial-1"):
         with pytest.raises(ValueError):
-            validate_bundle(bundle, accepted)
+            validate_bundle(bundle, invalid)
     manifest["created_at"] = "2026-09-05T00:00:00Z"
     write_document(bundle / "manifest.yaml", manifest)
     with pytest.raises(ValueError, match="content hash"):
-        validate_bundle(bundle, ["trial-1"])
+        validate_bundle(bundle, accepted(bundle))
 
 
 @pytest.mark.parametrize("source", ["../secret", "/tmp/secret", "tags.yaml"])
@@ -215,7 +243,7 @@ def test_source_path_restrictions(bundle, source):
     manifest["sources"][0]["path"] = source
     write_document(bundle / "manifest.yaml", manifest)
     with pytest.raises(ValueError):
-        validate_bundle(bundle, ["trial-1"])
+        validate_bundle(bundle, accepted(bundle))
 
 
 def test_source_symlink_cannot_escape_bundle(bundle, tmp_path_factory):
@@ -223,14 +251,14 @@ def test_source_symlink_cannot_escape_bundle(bundle, tmp_path_factory):
     outside.write_text("synthetic source\n")
     (bundle / "scan.ply").unlink()
     (bundle / "scan.ply").symlink_to(outside)
-    with pytest.raises(ValueError, match="unsafe"):
-        validate_bundle(bundle, ["trial-1"])
+    with pytest.raises(ValueError, match="symlinks"):
+        validate_bundle(bundle, accepted(bundle))
 
 
 def test_east_transition_requires_acceptance(bundle):
     change(bundle, "zones.yaml", lambda d: d["room_graph"]["edges"][1].update(autonomous=True))
     with pytest.raises(ValueError, match="cannot be autonomous"):
-        validate_bundle(bundle, ["trial-1"])
+        validate_bundle(bundle, accepted(bundle))
 
 
 def test_huge_integer_rejected_as_value_error(tmp_path):
@@ -248,7 +276,7 @@ def test_huge_integer_rejected_as_value_error(tmp_path):
 def test_graph_collections_must_be_lists(bundle, key):
     change(bundle, "zones.yaml", lambda d: d["room_graph"].update({key: {}}))
     with pytest.raises(ValueError, match="must be a list"):
-        validate_bundle(bundle, ["trial-1"])
+        validate_bundle(bundle, accepted(bundle))
 
 
 @pytest.mark.parametrize(
@@ -257,11 +285,92 @@ def test_graph_collections_must_be_lists(bundle, key):
 )
 def test_unaccepted_branch_cannot_gain_autonomous_reverse_or_alternate_edge(bundle, start, end):
     def mutate(document):
-        document["room_graph"]["nodes"].append({"id": "launch", "floor_id": "level_1"})
+        document["room_graph"]["nodes"].append(
+            {"id": "launch", "floor_id": "level_1", "region_id": "launch", "autonomous": True}
+        )
         document["room_graph"]["edges"].append(
             {"from": start, "to": end, "side": "connector", "autonomous": True}
         )
 
     change(bundle, "zones.yaml", mutate)
     with pytest.raises(ValueError, match="cannot be autonomous"):
-        validate_bundle(bundle, ["trial-1"])
+        validate_bundle(bundle, accepted(bundle))
+
+
+def test_resealed_content_cannot_reuse_external_version_acceptance(bundle):
+    pinned = accepted(bundle)
+    change(bundle, "zones.yaml", lambda d: d["zones"][0].update(owner_approved=True))
+    with pytest.raises(ValueError, match="content hash"):
+        validate_bundle(bundle, pinned)
+
+
+def test_registered_transform_cannot_diverge_from_extracted_poses(bundle):
+    transform = copy.deepcopy(IDENTITY)
+    transform[0][3] = 1
+    change(bundle, "manifest.yaml", lambda d: d["sources"][0].update(T_map_scan=transform))
+    with pytest.raises(ValueError, match="registration"):
+        validate_bundle(bundle, accepted(bundle))
+
+
+def test_replaced_source_cannot_retain_old_extraction_provenance(bundle):
+    (bundle / "scan.ply").write_text("different survey\n")
+    seal_manifest(bundle)
+    with pytest.raises(ValueError, match="tag source hash"):
+        validate_bundle(bundle, accepted(bundle))
+
+
+def test_map_pose_must_be_derived_from_registered_scan_pose(bundle):
+    transform = copy.deepcopy(IDENTITY)
+    transform[0][3] = 1
+    change(bundle, "tags.yaml", lambda d: d["tags"][0].update(T_scan_tag=transform))
+    with pytest.raises(ValueError, match="registered scan pose"):
+        validate_bundle(bundle, accepted(bundle))
+
+
+def test_self_consistent_rotated_origin_cannot_redefine_building_yaw(bundle):
+    rotation = [[0, -1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+    change(
+        bundle,
+        "tags.yaml",
+        lambda d: d["tags"][0].update(yaw=math.pi / 2, T_map_tag=rotation, T_scan_tag=rotation),
+    )
+    change(bundle, "manifest.yaml", lambda d: d["frame"].update(tag0_yaw_rad=math.pi / 2))
+    with pytest.raises(ValueError, match="Tag 0 yaw"):
+        validate_bundle(bundle, accepted(bundle))
+
+
+def test_downward_origin_cannot_define_floor_tag(bundle):
+    rotation = [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]
+    change(
+        bundle,
+        "tags.yaml",
+        lambda d: d["tags"][0].update(normal=[0, 0, -1], T_map_tag=rotation, T_scan_tag=rotation),
+    )
+    with pytest.raises(ValueError, match="Tag 0 normal"):
+        validate_bundle(bundle, accepted(bundle))
+
+
+@pytest.mark.parametrize("region,floor", [("mezzanine", "mezzanine"), ("north_hallway", "level_1")])
+def test_alias_node_cannot_enable_excluded_autonomous_topology(bundle, region, floor):
+    def mutate(document):
+        graph = document["room_graph"]
+        graph["nodes"].append(
+            {"id": "alias", "floor_id": floor, "region_id": region, "autonomous": True}
+        )
+        graph["edges"].append(
+            {"from": "113", "to": "alias", "side": "connector", "autonomous": True}
+        )
+
+    change(bundle, "zones.yaml", mutate)
+    with pytest.raises(ValueError, match="cannot be autonomous"):
+        validate_bundle(bundle, accepted(bundle))
+
+
+def test_excluded_node_cannot_relabel_itself_as_accepted_region(bundle):
+    change(
+        bundle,
+        "zones.yaml",
+        lambda d: d["room_graph"]["nodes"][1].update(region_id="kitchen", autonomous=True),
+    )
+    with pytest.raises(ValueError, match="excluded region"):
+        validate_bundle(bundle, accepted(bundle))

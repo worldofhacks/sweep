@@ -4,10 +4,20 @@ import argparse
 import hashlib
 import json
 import math
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from tools.map_common import finite_number, read_document, validate_transform, write_document
+from tools.map_common import (
+    bundle_document_path,
+    finite_number,
+    parse_document,
+    read_bundle_bytes,
+    read_document,
+    source_path,
+    validate_transform,
+)
 
 FILES = {"tags.yaml", "zones.yaml", "obstacles.yaml"}
 
@@ -22,10 +32,6 @@ def _text(value, name):
     return value
 
 
-def _hash(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def content_hash(manifest):
     payload = {key: value for key, value in manifest.items() if key != "content_sha256"}
     return hashlib.sha256(
@@ -34,24 +40,47 @@ def content_hash(manifest):
 
 
 def _source_path(bundle, name):
-    _text(name, "source path")
-    relative = Path(name)
-    _require(not relative.is_absolute() and ".." not in relative.parts, "unsafe source path")
-    path = (bundle / relative).resolve()
-    _require(path.is_relative_to(bundle.resolve()) and path.is_file(), "source missing or unsafe")
-    _require(name not in FILES | {"manifest.yaml"}, "source cannot be a bundle document")
-    return path
+    return source_path(bundle, name)
+
+
+class ValidatedBundle(dict):
+    def __init__(self, manifest, documents, sources):
+        super().__init__(manifest)
+        self._documents = dict(documents)
+        self._sources = dict(sources)
+
+    def document(self, name):
+        """Return a parsed copy of the exact bytes validated at load, without reopening paths."""
+        return parse_document(self._documents[name], name)
+
+    def source_bytes(self, name):
+        return self._sources[name]
 
 
 def seal_manifest(bundle):
-    """Recompute hashes and write manifest.yaml; this does not validate or approve the bundle."""
-    bundle = Path(bundle)
-    manifest = read_document(bundle / "manifest.yaml")
+    """Recompute and atomically replace hashes; this never creates external acceptance."""
+    bundle = Path(bundle).resolve()
+    manifest_path = bundle_document_path(bundle, "manifest.yaml")
+    manifest = parse_document(read_bundle_bytes(bundle, "manifest.yaml"))
     for source in manifest["sources"]:
-        source["sha256"] = _hash(_source_path(bundle, source["path"]))
-    manifest["files"] = {name: _hash(bundle / name) for name in sorted(FILES)}
+        source["sha256"] = hashlib.sha256(
+            read_bundle_bytes(bundle, source["path"], source=True)
+        ).hexdigest()
+    manifest["files"] = {
+        name: hashlib.sha256(read_bundle_bytes(bundle, name)).hexdigest() for name in sorted(FILES)
+    }
     manifest["content_sha256"] = content_hash(manifest)
-    write_document(bundle / "manifest.yaml", manifest)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=bundle, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(manifest, indent=2, allow_nan=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, manifest_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return manifest
 
 
@@ -126,10 +155,15 @@ def _document_header(document):
 
 
 def _validate_bundle(bundle, accepted_versions):
-    manifest = read_document(bundle / "manifest.yaml")
+    documents = {"manifest.yaml": read_bundle_bytes(bundle, "manifest.yaml")}
+    manifest = parse_document(documents["manifest.yaml"], "manifest.yaml")
     _document_header(manifest)
     _text(manifest["bundle_version"], "bundle_version")
     _require(manifest["bundle_version"] in accepted_versions, "bundle version is not accepted")
+    _require(
+        accepted_versions[manifest["bundle_version"]] == manifest["content_sha256"],
+        "accepted version content hash mismatch",
+    )
     timestamp = _text(manifest["created_at"], "created_at")
     parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     _require(
@@ -149,6 +183,7 @@ def _validate_bundle(bundle, accepted_versions):
         "origin_tag_id must be 0",
     )
     tag0_yaw = finite_number(frame["tag0_yaw_rad"], "tag0_yaw_rad")
+    _require(abs(math.remainder(tag0_yaw, 2 * math.pi)) <= 1e-6, "Tag 0 yaw must be zero")
     floors = manifest["floor_ids"]
     _require(isinstance(floors, list) and bool(floors), "floor_ids must be nonempty")
     for floor in floors:
@@ -159,38 +194,74 @@ def _validate_bundle(bundle, accepted_versions):
         "sources must be nonempty",
     )
     source_paths = set()
+    sources = {}
+    registrations = {}
     for source in manifest["sources"]:
         path = _source_path(bundle, source["path"])
         _require(path not in source_paths, "duplicate source path")
         source_paths.add(path)
-        _require(source["sha256"] == _hash(path), "source hash mismatch")
+        sources[source["path"]] = read_bundle_bytes(bundle, source["path"], source=True)
+        _require(
+            source["sha256"] == hashlib.sha256(sources[source["path"]]).hexdigest(),
+            "source hash mismatch",
+        )
+        registrations[path] = source
         validate_transform(source["T_map_scan"])
         _require(finite_number(source["rms_m"], "rms_m") >= 0, "rms_m must be nonnegative")
     _require(set(manifest["files"]) == FILES, "manifest files must list all three documents")
     for name in FILES:
-        _require(manifest["files"][name] == _hash(bundle / name), f"{name} hash mismatch")
+        documents[name] = read_bundle_bytes(bundle, name)
+        _require(
+            manifest["files"][name] == hashlib.sha256(documents[name]).hexdigest(),
+            f"{name} hash mismatch",
+        )
     _require(manifest["content_sha256"] == content_hash(manifest), "content hash mismatch")
-    tags_doc = read_document(bundle / "tags.yaml")
-    zones_doc = read_document(bundle / "zones.yaml")
-    obstacles_doc = read_document(bundle / "obstacles.yaml")
+    tags_doc = parse_document(documents["tags.yaml"], "tags.yaml")
+    zones_doc = parse_document(documents["zones.yaml"], "zones.yaml")
+    obstacles_doc = parse_document(documents["obstacles.yaml"], "obstacles.yaml")
     for document in (tags_doc, zones_doc, obstacles_doc):
         _document_header(document)
     _require(tags_doc["frame"] == "building", "tag frame must be building")
+    tag_source = tags_doc["source"]
+    registration = registrations.get(_source_path(bundle, tag_source["path"]))
+    _require(registration is not None, "tag source is not registered")
+    _require(tag_source["sha256"] == registration["sha256"], "tag source hash mismatch")
+    tag_registration = validate_transform(tags_doc["T_map_scan"])
+    _require(
+        tag_registration == registration["T_map_scan"], "tag registration disagrees with source"
+    )
     polygon, z_min, z_max = _volume(zones_doc["geofence"])
     graph = zones_doc["room_graph"]
     _require(isinstance(graph["nodes"], list), "graph nodes must be a list")
     _require(isinstance(graph["edges"], list), "graph edges must be a list")
     nodes = {}
+    node_regions = {}
+    node_autonomous = {}
     for node in graph["nodes"]:
         node_id = _text(node["id"], "node id")
         _require(node_id not in nodes, "duplicate graph node")
         _require(node["floor_id"] in floors, "graph node has unknown floor")
         nodes[node_id] = node["floor_id"]
+        node_regions[node_id] = _text(node["region_id"], "region_id")
+        _require(type(node["autonomous"]) is bool, "node autonomous must be boolean")
+        node_autonomous[node_id] = node["autonomous"]
     _require({"113", "mezzanine", "north_hallway"} <= nodes.keys(), "missing required graph nodes")
     _require(
         nodes["113"] == nodes["north_hallway"] and nodes["113"] != nodes["mezzanine"],
         "mezzanine and Level 1 must be separate graph floors",
     )
+    for node_id in ("mezzanine", "north_hallway"):
+        _require(
+            node_regions[node_id] == node_id and not node_autonomous[node_id],
+            "excluded region cannot be autonomous or relabeled",
+        )
+    phase_one = {"lobby", "corridor", "kitchen", "atrium", "113", "launch"}
+    for node_id in nodes:
+        if node_autonomous[node_id]:
+            _require(
+                nodes[node_id] == nodes["113"] and node_regions[node_id] in phase_one,
+                "unaccepted region or floor cannot be autonomous",
+            )
     edges = set()
     for edge in graph["edges"]:
         _require(edge["from"] in nodes and edge["to"] in nodes, "unknown graph edge endpoint")
@@ -198,6 +269,15 @@ def _validate_bundle(bundle, accepted_versions):
         key = (edge["from"], edge["to"], edge["side"])
         _require(key not in edges, "duplicate graph edge")
         edges.add(key)
+        if edge["autonomous"]:
+            _require(
+                nodes[edge["from"]] == nodes[edge["to"]] == nodes["113"]
+                and all(
+                    node_autonomous[n] and node_regions[n] in phase_one
+                    for n in (edge["from"], edge["to"])
+                ),
+                "unaccepted transition cannot be autonomous",
+            )
         if {"mezzanine", "north_hallway"} & {edge["from"], edge["to"]}:
             _require(edge["autonomous"] is False, "unaccepted transition cannot be autonomous")
     _require(
@@ -234,6 +314,17 @@ def _validate_bundle(bundle, accepted_versions):
         position = [finite_number(tag[axis], axis) for axis in ("x", "y", "z")]
         yaw = finite_number(tag["yaw"], "yaw")
         transform = validate_transform(tag["T_map_tag"])
+        scan_pose = validate_transform(tag["T_scan_tag"])
+        mapped_pose = [
+            [sum(tag_registration[i][k] * scan_pose[k][j] for k in range(4)) for j in range(4)]
+            for i in range(4)
+        ]
+        _require(
+            all(
+                abs(transform[i][j] - mapped_pose[i][j]) <= 1e-6 for i in range(4) for j in range(4)
+            ),
+            "tag pose disagrees with registered scan pose",
+        )
         normal = tag["normal"]
         _require(isinstance(normal, list) and len(normal) == 3, "normal needs three coordinates")
         normal = [finite_number(item, "normal coordinate") for item in normal]
@@ -259,22 +350,36 @@ def _validate_bundle(bundle, accepted_versions):
         )
         if ident == 0:
             _require(all(abs(item) <= 1e-6 for item in position), "Tag 0 must be at origin")
+            _require(abs(math.remainder(yaw, 2 * math.pi)) <= 1e-6, "Tag 0 yaw must be zero")
+            _require(
+                all(abs(normal[i] - expected) <= 1e-6 for i, expected in enumerate([0, 0, 1])),
+                "Tag 0 normal must be +z",
+            )
             _require(
                 abs(math.remainder(yaw - tag0_yaw, 2 * math.pi)) <= 1e-6,
                 "Tag 0 yaw disagrees with frame",
             )
     _require(0 in ids, "missing origin Tag 0")
-    return manifest
+    return ValidatedBundle(manifest, documents, sources)
 
 
 def validate_bundle(path, accepted_versions):
-    """Return a valid manifest or raise ValueError; acceptance is an explicit version allowlist."""
+    """Return a validated byte snapshot; accepted_versions externally binds versions to SHA-256."""
     try:
         _require(
-            not isinstance(accepted_versions, str) and bool(accepted_versions),
-            "accepted_versions must be a nonempty collection",
+            isinstance(accepted_versions, dict)
+            and bool(accepted_versions)
+            and all(
+                isinstance(k, str)
+                and k
+                and isinstance(v, str)
+                and len(v) == 64
+                and all(c in "0123456789abcdef" for c in v)
+                for k, v in accepted_versions.items()
+            ),
+            "accepted_versions must be a nonempty version-to-content-sha256 mapping",
         )
-        return _validate_bundle(Path(path), accepted_versions)
+        return _validate_bundle(Path(path), dict(accepted_versions))
     except (KeyError, TypeError, IndexError, OSError, OverflowError) as exc:
         raise ValueError(f"malformed or missing bundle data: {exc}") from exc
 
@@ -282,10 +387,10 @@ def validate_bundle(path, accepted_versions):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundle", type=Path)
-    parser.add_argument("--accepted-version", action="append", required=True)
+    parser.add_argument("--accepted-versions", type=Path, required=True)
     args = parser.parse_args()
     try:
-        manifest = validate_bundle(args.bundle, args.accepted_version)
+        manifest = validate_bundle(args.bundle, read_document(args.accepted_versions))
     except ValueError as exc:
         print(json.dumps({"valid": False, "error": str(exc)}))
         return 1

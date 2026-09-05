@@ -28,16 +28,19 @@ def test_three_independent_known_centers_and_full_axes(survey):
     assert tags[2]["yaw"] == pytest.approx(math.pi / 2)
 
 
-def test_proper_registration_preserves_building_axes_and_tag_zero_yaw(survey):
-    # Scan coordinates are offset from the origin before a 90-degree building rotation.
+def test_registration_rotates_scan_back_to_tag_zero_building_axes(survey):
     for tag in survey["tags"]:
-        for point in tag["corners"]:
-            point[0] += 10
+        tag["corners"] = [[point[1] + 10, -point[0], point[2]] for point in tag["corners"]]
+        x, y, z = tag["front_normal_scan"]
+        tag["front_normal_scan"] = [y, -x, z]
     survey["T_map_scan"] = [[0, -1, 0, 0], [1, 0, 0, -10], [0, 0, 1, 0], [0, 0, 0, 1]]
-    tags = extract_tags(survey)["tags"]
-    assert tags[0]["yaw"] == pytest.approx(math.pi / 2)
-    assert [tags[1][k] for k in ("x", "y", "z")] == pytest.approx([-1, 2, 0.5])
-    assert tags[1]["normal"] == pytest.approx([1, 0, 0])
+    result = extract_tags(survey)
+    assert result["tags"][0]["yaw"] == pytest.approx(0)
+    assert [result["tags"][1][k] for k in ("x", "y", "z")] == pytest.approx([2, 1, 0.5])
+    assert result["T_map_scan"] == survey["T_map_scan"]
+    assert result["source"] == survey["source"]
+    scan_pose = result["tags"][1]["T_scan_tag"]
+    assert [row[3] for row in scan_pose[:3]] == pytest.approx([11, -2, 0.5])
 
 
 @pytest.mark.parametrize(
@@ -128,10 +131,9 @@ def test_extractor_cli_produces_validator_input(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["tags"] == 3
-    seal_manifest(bundle)
-    assert validate_bundle(bundle, ["synthetic-three-tags-v1"])["bundle_version"] == (
-        "synthetic-three-tags-v1"
-    )
+    manifest = seal_manifest(bundle)
+    accepted = {manifest["bundle_version"]: manifest["content_sha256"]}
+    assert validate_bundle(bundle, accepted)["bundle_version"] == ("synthetic-three-tags-v1")
 
 
 def test_tilted_tag_preserves_full_orientation(survey):
