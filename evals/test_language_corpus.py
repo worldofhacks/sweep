@@ -21,6 +21,7 @@ from evals.language_corpus import (
 )
 from language.contracts import build_grounding_facts
 from language.transport import (
+    PROMPT_SCHEMA_VERSION,
     AnthropicTransport,
     ModelRequest,
     ModelResponse,
@@ -464,7 +465,7 @@ def test_eval_rejects_transport_that_self_attests_anthropic_provenance() -> None
                 source="anthropic",
                 origin="anthropic",
                 model="claude-sonnet-5",
-                prompt_schema_version="intent-v1-compiler-3",
+                prompt_schema_version=PROMPT_SCHEMA_VERSION,
             )
 
     result = evaluate_case(corpus[0], SpoofTransport())
@@ -485,7 +486,7 @@ def test_eval_does_not_trust_rebound_anthropic_transport(monkeypatch, tmp_path, 
             source="anthropic",
             origin="anthropic",
             model="claude-sonnet-5",
-            prompt_schema_version="intent-v1-compiler-3",
+            prompt_schema_version=PROMPT_SCHEMA_VERSION,
         ),
     )
 

@@ -443,7 +443,7 @@ def validate_model_outcome(
             )
         return CompilerOutcome(kind=kind, reason=reason, detail=detail, source=source)
 
-    if set(raw) != {"kind", "intents"}:
+    if set(raw) != {"kind", "intents"} | ({"detail"} if "detail" in raw else set()):
         return _invalid(source)
     items = raw.get("intents")
     if not isinstance(items, list) or not 1 <= len(items) <= MAX_PLAN_STEPS:

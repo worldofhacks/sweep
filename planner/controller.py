@@ -707,7 +707,27 @@ class PreparedExecutionRouter:
                 self._running.pop(intent_id, None)
             if result.status is not LifecycleStatus.EXECUTING:
                 self._landing_ack_times.pop(intent_id, None)
+        if session is not None:
+            relay_events += self._restore_active_projection(session)
         return RelayExecution(execution=result, relay_events=relay_events)
+
+    def _restore_active_projection(self, session: object) -> tuple[dict[str, object], ...]:
+        active = session.current_state()["accepted_plan"]
+        owned = {
+            intent_id: prepared.plan
+            for intent_id, (prepared, _, owner) in self._running.items()
+            if owner is session
+        }
+        if active is not None and active["intent_id"] in owned:
+            return ()
+        replacement = next(iter(owned.values()), None)
+        if active is None and replacement is None:
+            return ()
+        return (
+            session.update_control_projection(
+                accepted_plan=None if replacement is None else replacement.to_dict()
+            ),
+        )
 
     def completion_pending(self, intent_id: str) -> bool:
         return intent_id in self._pending_landings
@@ -892,16 +912,22 @@ class PreparedExecutionRouter:
                 return None
             if pending.status is not LifecycleStatus.EXECUTING:
                 landing = self._pending_landings.get(intent_id)
-                if (
-                    landing is not None
-                    and terminal_ack.drone_id in landing[1]
-                    and terminal_ack.status is LifecycleStatus.COMPLETED
-                ):
+                if landing is None or terminal_ack.drone_id not in landing[1]:
+                    return None
+                if terminal_ack.status is LifecycleStatus.COMPLETED:
                     self._pending_landings[intent_id] = (
                         max(landing[0], acknowledgement.t),
                         landing[1],
                     )
-                return None
+                    return None
+                events = self._retain_ambiguous_stop(
+                    prepared.intent, pending, session, prepared.snapshot
+                )
+                self._running.pop(intent_id, None)
+                self._pending_landings.pop(intent_id, None)
+                self._landing_ack_times.pop(intent_id, None)
+                events += self._restore_active_projection(session)
+                return RelayExecution(pending, events)
         return self.resume(intent_id, terminal_ack, completed_at_ms=acknowledgement.t)
 
 
