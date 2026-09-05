@@ -53,6 +53,7 @@ from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
 from relay.app import RelayRuntime, create_app
 from relay.bridge import RelayNodeLink, build_dispatcher
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
 from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
@@ -408,6 +409,8 @@ class AutonomySession:
     ``land_all`` or ``estop``; a network stop cancels whatever is running and latches
     the session's ``estop`` in the same operation that accepted it.
     """
+
+    capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
 
     def __init__(self, composition: AutonomyComposition, session_id: str) -> None:
         self.session_id = session_id

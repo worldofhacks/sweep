@@ -13,6 +13,7 @@ from relay.tests.conftest import (
     SESSION,
     intent_payload,
     membership_payload,
+    profiled_sink,
 )
 from relay.tests.test_app import app_settings as app_settings
 
@@ -132,7 +133,7 @@ def test_stalled_acceptance_send_times_out_and_releases_receipt_and_connection(
     async def exercise():
         runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
         session = runtime.session(SESSION)
-        session.intent_sink = lambda _intent, _state: None
+        session.intent_sink = profiled_sink(lambda _intent, _state: None)
         application = create_app(app_settings)
         application.state.relay_runtime = runtime
         route = next(

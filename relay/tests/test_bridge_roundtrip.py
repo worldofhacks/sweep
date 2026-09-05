@@ -25,6 +25,8 @@ from planner.models import (
 from planner.planner import DeterministicPlanner
 from relay.app import RelayRuntime, create_app
 from relay.bridge import build_dispatcher
+from relay.capabilities import C1_CAPABILITY_PROFILE
+from relay.session import CapabilityBoundIntentSink
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION, intent_payload
 from tests.autonomy_fixtures import planning_config, safety_config
@@ -117,7 +119,13 @@ def relay_server(tmp_path: Path) -> Iterator[RelayServer]:
         log_dir=tmp_path,
         adapter_backend=AdapterBackend.REMOTE,
     )
-    app = create_app(settings, intent_sink_factory=lambda _session: lambda _intent, _state: None)
+    app = create_app(
+        settings,
+        intent_sink_factory=lambda _session: CapabilityBoundIntentSink(
+            lambda _intent, _state: None,
+            C1_CAPABILITY_PROFILE,
+        ),
+    )
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))

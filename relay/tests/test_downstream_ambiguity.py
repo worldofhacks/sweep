@@ -6,7 +6,7 @@ from relay.auth import Principal
 from relay.contracts import LifecycleStatus
 from relay.intent_v1 import IntentV1
 from relay.session import RelaySession
-from relay.tests.conftest import intent_payload
+from relay.tests.conftest import intent_payload, profiled_sink
 
 
 @pytest.mark.parametrize("refusal", ["invalid_payload", "stale_timestamp"])
@@ -19,7 +19,7 @@ def test_early_refusal_cannot_launder_ambiguous_retry_ancestry(
         dispatched.append(intent.intent_id)
         raise RuntimeError("adapter acknowledgement connection closed")
 
-    relay_session.intent_sink = dispatch
+    relay_session.intent_sink = profiled_sink(dispatch)
     relay_session.process_intent(intent_payload(intent_id="ambiguous"), console_principal)
     relay_session.execute_pending_intent("ambiguous")
     alias = intent_payload(intent_id="alias", retry_of="ambiguous")
@@ -50,7 +50,7 @@ def test_post_dispatch_exception_cannot_duplicate_io_through_retry(
         dispatched.append(intent.intent_id)
         raise RuntimeError("adapter acknowledgement connection closed")
 
-    relay_session.intent_sink = dispatch_then_fail
+    relay_session.intent_sink = profiled_sink(dispatch_then_fail)
     relay_session.process_intent(intent_payload(intent_id="ambiguous"), console_principal)
     relay_session.execute_pending_intent("ambiguous")
     relay_session.process_intent(
@@ -75,7 +75,7 @@ def test_ambiguous_dispatch_does_not_block_fresh_emergency_stop(
         if intent.intent_id == "ambiguous":
             raise RuntimeError("adapter acknowledgement connection closed")
 
-    relay_session.intent_sink = dispatch
+    relay_session.intent_sink = profiled_sink(dispatch)
     relay_session.process_intent(intent_payload(intent_id="ambiguous"), console_principal)
     relay_session.execute_pending_intent("ambiguous")
     estop = intent_payload(intent_id="emergency-stop")
@@ -100,7 +100,7 @@ def test_pre_dispatch_refusal_stays_retryable_when_consumer_becomes_available(
     def dispatch(intent: IntentV1, _state: dict[str, object]) -> None:
         dispatched.append(intent.intent_id)
 
-    relay_session.intent_sink = dispatch
+    relay_session.intent_sink = profiled_sink(dispatch)
     result = relay_session.process_intent(
         intent_payload(intent_id="retry", retry_of="unavailable"), console_principal
     )
@@ -124,7 +124,7 @@ def test_dispatch_exception_preserves_already_recorded_execution(
         relay_session.record_lifecycle(intent_id=intent.intent_id, status=status, source="planner")
         raise RuntimeError("response transport failed after lifecycle publication")
 
-    relay_session.intent_sink = dispatch
+    relay_session.intent_sink = profiled_sink(dispatch)
     relay_session.process_intent(intent_payload(intent_id="ambiguous"), console_principal)
     relay_session.execute_pending_intent("ambiguous")
     result = relay_session.process_intent(

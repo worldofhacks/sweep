@@ -7,7 +7,12 @@ from relay.audit import AuditLogError
 from relay.auth import Principal
 from relay.contracts import LifecycleStatus
 from relay.session import RelaySession
-from relay.tests.conftest import acknowledgement_payload, intent_payload, membership_payload
+from relay.tests.conftest import (
+    acknowledgement_payload,
+    intent_payload,
+    membership_payload,
+    profiled_sink,
+)
 
 
 def register_command(session: RelaySession) -> None:
@@ -44,7 +49,7 @@ def test_disk_full_does_not_retain_uncommitted_early_completion(
         ) -> None:
             resumed.append(acknowledgement)
 
-    session.intent_sink = Sink()
+    session.intent_sink = profiled_sink(Sink())
     session.process_membership(
         membership_payload(action="join", event_id="join"), adapter_principal
     )
@@ -107,7 +112,7 @@ def test_disk_full_preserves_phased_completion_ownership(
                 continuation=next_token if failure == "continuation" else None,
             )
 
-    session.intent_sink = Sink()
+    session.intent_sink = profiled_sink(Sink())
     session.process_membership(
         membership_payload(action="join", event_id="join"), adapter_principal
     )

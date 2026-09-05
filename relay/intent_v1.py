@@ -4,26 +4,12 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal
 
-
-class IntentName(StrEnum):
-    ARM = "arm"
-    DISARM = "disarm"
-    ESTOP = "estop"
-    SELECT = "select"
-    TAKEOFF = "takeoff"
-    LAND = "land"
-    LAND_ALL = "land_all"
-    HOLD = "hold"
-    TRANSLATE = "translate"
-    ALTITUDE = "altitude"
-    FORMATION_NEXT = "formation_next"
-    FORMATION_SET = "formation_set"
-    SPACING = "spacing"
-    COME_HOME = "come_home"
-    SWEEP = "sweep"
-    CAPTURE_ROOM = "capture_room"
-    SURVEY_AREA = "survey_area"
-    MAP_AREA = "map_area"
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    C1_IMPLEMENTED_INTENT_NAMES,
+    CapabilityProfile,
+    IntentName,
+)
 
 
 class Mode(StrEnum):
@@ -37,6 +23,7 @@ class RejectionReason(StrEnum):
     UNKNOWN_SOURCE = "unknown_source"
     UNKNOWN_INTENT = "unknown_intent"
     UNSUPPORTED = "unsupported"
+    SOURCE_NOT_ALLOWED = "source_not_allowed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,26 +60,21 @@ type ValidationResult = AcceptedIntent | RejectedIntent
 # producer are each bound to their own connection; an intent never moves
 # between them. Adding a source changes this constant and its conformance tests.
 REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
-M20_SUPPORTED_NAMES = frozenset(
+# Intent v1 names each registered source may emit. The console owns every C1
+# name; the keyboard socket carries only the Shift+Escape network stop; the
+# webcam gesture producer drafts only the two names its gesture policy may emit
+# (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES), so the console's
+# never-gesture-emittable list is enforced by the relay as well. A name outside
+# its source's set is refused with `source_not_allowed` only after the effective
+# capability profile accepts it. The console aliases the single implemented-name
+# registry rather than maintaining another capability list.
+SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
     {
-        IntentName.ARM,
-        IntentName.SELECT,
-        IntentName.TAKEOFF,
-        IntentName.TRANSLATE,
-        IntentName.HOLD,
-        IntentName.COME_HOME,
-        IntentName.LAND,
-        IntentName.LAND_ALL,
-        IntentName.ESTOP,
-        IntentName.CAPTURE_ROOM,
-        IntentName.ALTITUDE,
-        IntentName.FORMATION_NEXT,
-        IntentName.FORMATION_SET,
-        IntentName.SPACING,
-        IntentName.SWEEP,
+        "console": C1_IMPLEMENTED_INTENT_NAMES,
+        "keyboard": frozenset({IntentName.ESTOP}),
+        "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
     }
 )
-
 _REQUIRED_FIELDS = frozenset(
     {
         "v",
@@ -111,7 +93,9 @@ _REQUIRED_FIELDS = frozenset(
 _FIELDS = _REQUIRED_FIELDS | {"retry_of"}
 
 
-def validate_intent(raw: object) -> ValidationResult:
+def validate_intent(
+    raw: object, *, capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
+) -> ValidationResult:
     """Validate untrusted input without raising; failures are returned as typed rejections."""
     if not isinstance(raw, Mapping) or not _REQUIRED_FIELDS <= set(raw) or not set(raw) <= _FIELDS:
         return RejectedIntent(
@@ -143,12 +127,19 @@ def validate_intent(raw: object) -> ValidationResult:
     mode = Mode(raw["mode"])
     if mode is not Mode.INDOOR:
         return RejectedIntent(
-            RejectionReason.UNSUPPORTED, f"{mode} is outside the M2.0 capability set"
+            RejectionReason.UNSUPPORTED,
+            f"{mode} is outside capability profile {capability_profile.name}",
         )
 
-    if name not in M20_SUPPORTED_NAMES:
+    if not capability_profile.supports(name):
         return RejectedIntent(
-            RejectionReason.UNSUPPORTED, f"{name} is outside the M2.0 capability set"
+            RejectionReason.UNSUPPORTED,
+            f"{name} is outside capability profile {capability_profile.name}",
+        )
+
+    if name not in SOURCE_ALLOWED_NAMES[source]:
+        return RejectedIntent(
+            RejectionReason.SOURCE_NOT_ALLOWED, f"{name} is not allowed from source {source}"
         )
 
     return AcceptedIntent(

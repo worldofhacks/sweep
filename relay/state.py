@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import RLock
 
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import (
     CapabilitiesFrame,
     Membership,
@@ -94,10 +95,16 @@ class _AircraftRecord:
 class FleetRegistry:
     """One-session fleet state; transport authentication happens before entry."""
 
-    def __init__(self, *, telemetry_freshness_ms: int) -> None:
+    def __init__(
+        self,
+        *,
+        telemetry_freshness_ms: int,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+    ) -> None:
         if telemetry_freshness_ms <= 0:
             raise ValueError("telemetry_freshness_ms must be positive")
         self.telemetry_freshness_ms = telemetry_freshness_ms
+        self.capability_profile = capability_profile
         self._aircraft: dict[int, _AircraftRecord] = {}
         self._roster_version = 0
         self._state_sequence = 0
@@ -131,6 +138,9 @@ class FleetRegistry:
                 self._selection,
                 self._armed,
                 self._estop,
+                self._formation,
+                self._spacing,
+                self._mode,
                 self._pending,
                 self._accepted_plan,
             )
@@ -146,6 +156,9 @@ class FleetRegistry:
                     self._selection,
                     self._armed,
                     self._estop,
+                    self._formation,
+                    self._spacing,
+                    self._mode,
                     self._pending,
                     self._accepted_plan,
                 ) = scalars_before
@@ -526,6 +539,7 @@ class FleetRegistry:
                 "formation": self._formation,
                 "spacing": self._spacing,
                 "mode": self._mode,
+                **self.capability_profile.state_value(),
                 "pending": _json_copy(self._pending),
                 "accepted_plan": _json_copy(self._accepted_plan),
                 "drones": drones,

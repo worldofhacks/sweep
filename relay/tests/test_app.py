@@ -19,6 +19,8 @@ import relay.audit as audit_module
 from relay.app import RelayRuntime, create_app
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal, verify_event_signature
+from relay.capabilities import C1_CAPABILITY_PROFILE
+from relay.session import CapabilityBoundIntentSink, IntentSink
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
     ADAPTER_KEY,
@@ -30,6 +32,10 @@ from relay.tests.conftest import (
     membership_payload,
     telemetry_payload,
 )
+
+
+def _profiled(sink: IntentSink) -> CapabilityBoundIntentSink:
+    return CapabilityBoundIntentSink(sink, C1_CAPABILITY_PROFILE)
 
 
 @pytest.fixture
@@ -207,7 +213,7 @@ def test_first_frame_authentication_precedes_state_and_intent_results(
         app_settings,
         clock=clock,
         event_ids=event_ids,
-        intent_sink_factory=lambda _session: lambda _intent, _state: None,
+        intent_sink_factory=lambda _session: _profiled(lambda _intent, _state: None),
     )
 
     with TestClient(app) as client:
@@ -253,7 +259,7 @@ def test_relay_publishes_acceptance_before_downstream_execution_finishes(
         app_settings,
         clock=clock,
         event_ids=event_ids,
-        intent_sink_factory=lambda _session: blocking_sink,
+        intent_sink_factory=lambda _session: _profiled(blocking_sink),
     )
 
     with TestClient(app) as client:
@@ -279,7 +285,7 @@ def test_duplicate_intent_from_another_console_cannot_execute_the_pending_owner(
         app_settings,
         clock=clock,
         event_ids=event_ids,
-        intent_sink_factory=lambda _session: sink,
+        intent_sink_factory=lambda _session: _profiled(sink),
     )
 
     with TestClient(app) as client:
@@ -311,7 +317,7 @@ def test_failed_intent_acceptance_delivery_prevents_downstream_execution(
         app_settings,
         clock=clock,
         event_ids=event_ids,
-        intent_sink_factory=lambda _session: lambda _intent, _state: executed.set(),
+        intent_sink_factory=lambda _session: _profiled(lambda _intent, _state: executed.set()),
     )
     original_send_json = WebSocket.send_json
 
@@ -347,7 +353,7 @@ def test_dead_sender_cannot_leave_a_buffered_intent_accepted(
         app_settings,
         clock=clock,
         event_ids=event_ids,
-        intent_sink_factory=lambda _session: lambda _intent, _state: executed.set(),
+        intent_sink_factory=lambda _session: _profiled(lambda _intent, _state: executed.set()),
     )
     original_send_json = WebSocket.send_json
     state_sends = 0
@@ -751,7 +757,7 @@ def test_restart_keeps_persisted_session_replay_only(
         app_settings,
         clock=clock,
         event_ids=event_ids,
-        intent_sink_factory=lambda _session: accepting_sink,
+        intent_sink_factory=lambda _session: _profiled(accepting_sink),
     )
     headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
 
@@ -1293,8 +1299,10 @@ def test_new_membership_does_not_discard_committed_arm_completion(
         console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
         adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
         subscription = await runtime.subscribe(SESSION, console)
-        session.intent_sink = lambda _intent, _state: IntentSinkResult(
-            status=LifecycleStatus.COMPLETED, source="planner", armed_update=True
+        session.intent_sink = _profiled(
+            lambda _intent, _state: IntentSinkResult(
+                status=LifecycleStatus.COMPLETED, source="planner", armed_update=True
+            )
         )
         raw = {**intent_payload(), "name": "arm", "selection": []}
         session.process_intent(raw, console)

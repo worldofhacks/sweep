@@ -15,6 +15,7 @@ from relay.tests.conftest import (
     acknowledgement_payload,
     intent_payload,
     membership_payload,
+    profiled_sink,
     telemetry_payload,
 )
 
@@ -140,6 +141,8 @@ def test_disk_full_restores_all_relay_state(
                 selection=(2,),
                 armed=True,
                 estop=True,
+                formation="circle",
+                spacing=1.4,
                 pending={"intent_id": "pending"},
                 accepted_plan=None,
             )
@@ -189,7 +192,7 @@ def test_execution_result_audit_failure_restores_projection_without_permitting_r
             armed_update=True,
         )
 
-    relay_session.intent_sink = sink
+    relay_session.intent_sink = profiled_sink(sink)
     relay_session.process_intent(intent_payload(), console_principal)
     before = snapshot(relay_session)
 

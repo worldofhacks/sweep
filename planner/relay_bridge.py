@@ -21,6 +21,7 @@ from planner.models import (
 from planner.models import (
     LifecycleStatus as AutonomyStatus,
 )
+from relay.capabilities import CapabilityProfile
 from relay.contracts import LifecycleStatus as RelayStatus
 from relay.intent_v1 import IntentName, IntentV1
 from relay.session import IntentSinkResult, RelaySession
@@ -69,6 +70,11 @@ class AutonomyRelayBridge:
         self._admissions: dict[str, _CoordinatedIntent] = {}
         self._completed_ordering: list[_CompletedOrdering] = []
         self._coordinator_active = False
+
+    @property
+    def capability_profile(self) -> CapabilityProfile:
+        """Expose the live planner contract at the relay composition boundary."""
+        return self.controller.planner.capability_profile
 
     def __call__(self, intent: IntentV1, _relay_state: dict[str, object]) -> IntentSinkResult:
         if intent.name in _COORDINATED_INTENTS:
@@ -346,7 +352,9 @@ class AutonomyRelayBridge:
         pending = tuple(
             item.intent
             for item in self._admissions.values()
-            if item.intent.name in MOTION_INTENTS and item.result is None and item.error is None
+            if item.intent.name in MOTION_INTENTS | {IntentName.SELECT}
+            and item.result is None
+            and item.error is None
         )
         self._completed_ordering = [
             record
@@ -355,6 +363,11 @@ class AutonomyRelayBridge:
             or any(
                 record.supersedes(intent, window_ms)
                 or any(abs(intent.t - t) <= window_ms for t in record.motion_times)
+                or (
+                    intent.name is IntentName.SELECT
+                    and record.selection_order is not None
+                    and _intent_order(intent) <= record.selection_order
+                )
                 for intent in pending
             )
         ]
@@ -366,6 +379,9 @@ class AutonomyRelayBridge:
         snapshot: FleetSnapshot,
     ) -> ConflictResolution:
         motions = tuple(intent for intent in resolution.accepted if intent.name in MOTION_INTENTS)
+        selections = tuple(
+            intent for intent in resolution.accepted if intent.name is IntentName.SELECT
+        )
         with self._coordination:
             self._prune_completed_ordering()
             records = tuple(self._completed_ordering)
@@ -390,7 +406,16 @@ class AutonomyRelayBridge:
                 abs(motion.t - t) <= window_ms for record in records for t in record.motion_times
             )
         )
-        excluded = retired | {refusal.intent_id for refusal in conflicting}
+        superseded_selections = {
+            selection.intent_id
+            for selection in selections
+            if any(
+                record.selection_order is not None
+                and _intent_order(selection) <= record.selection_order
+                for record in records
+            )
+        }
+        excluded = retired | {refusal.intent_id for refusal in conflicting} | superseded_selections
         return replace(
             resolution,
             accepted=tuple(
@@ -398,7 +423,9 @@ class AutonomyRelayBridge:
             ),
             refusals=resolution.refusals + conflicting,
             invalidated_intent_ids=tuple(
-                dict.fromkeys((*resolution.invalidated_intent_ids, *sorted(retired)))
+                dict.fromkeys(
+                    (*resolution.invalidated_intent_ids, *sorted(retired | superseded_selections))
+                )
             ),
             hold_required=resolution.hold_required or bool(conflicting),
         )
@@ -423,11 +450,34 @@ class AutonomyRelayBridge:
             and (result := results.get(item.intent.intent_id)) is not None
             and result.status is RelayStatus.COMPLETED
         )
+        selection_orders = tuple(
+            _intent_order(item.intent)
+            for item in admissions
+            if item.intent.name is IntentName.SELECT
+            and (result := results.get(item.intent.intent_id)) is not None
+            and result.status is RelayStatus.COMPLETED
+        )
         with self._coordination:
             self._prune_completed_ordering()
-            if motion_times or safety_times:
+            if selection_orders:
+                selection_orders += tuple(
+                    record.selection_order
+                    for record in self._completed_ordering
+                    if record.selection_order is not None
+                )
+                self._completed_ordering = [
+                    replace(record, selection_order=None)
+                    for record in self._completed_ordering
+                    if record.motion_times or record.safety_t is not None
+                ]
+            if motion_times or safety_times or selection_orders:
                 self._completed_ordering.append(
-                    _CompletedOrdering(monotonic(), motion_times, max(safety_times, default=None))
+                    _CompletedOrdering(
+                        monotonic(),
+                        motion_times,
+                        max(safety_times, default=None),
+                        max(selection_orders, default=None),
+                    )
                 )
 
     @staticmethod
@@ -707,6 +757,7 @@ class _CompletedOrdering:
     completed_at: float
     motion_times: tuple[int, ...]
     safety_t: int | None
+    selection_order: tuple[int, str] | None
 
     def supersedes(self, intent: IntentV1, conflict_window_ms: int) -> bool:
         if self.safety_t is None:
@@ -714,3 +765,7 @@ class _CompletedOrdering:
         recovery = intent.name in {IntentName.COME_HOME, IntentName.LAND, IntentName.LAND_ALL}
         cutoff = self.safety_t + (0 if recovery else conflict_window_ms)
         return intent.t <= cutoff
+
+
+def _intent_order(intent: IntentV1) -> tuple[int, str]:
+    return intent.t, intent.intent_id

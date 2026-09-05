@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -14,9 +15,16 @@ import relay.audit as audit_module
 from planner.models import CommandOperation
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import LifecycleStatus
 from relay.intent_v1 import IntentV1
-from relay.session import IntentSinkResult, RelayLimits, RelaySession
+from relay.session import (
+    CapabilityBoundIntentSink,
+    IntentSink,
+    IntentSinkResult,
+    RelayLimits,
+    RelaySession,
+)
 from relay.tests.conftest import (
     ADAPTER_KEY,
     SESSION,
@@ -43,6 +51,10 @@ def _new_session(
     event_ids: EventIds,
     **kwargs: object,
 ) -> RelaySession:
+    sink = kwargs.get("intent_sink")
+    if sink is not None and not hasattr(sink, "capability_profile"):
+        profile = cast(CapabilityProfile, kwargs.get("capability_profile", C1_CAPABILITY_PROFILE))
+        kwargs["intent_sink"] = CapabilityBoundIntentSink(cast(IntentSink, sink), profile)
     return RelaySession(
         session_id=SESSION,
         audit_log=SessionAuditLog(tmp_path, SESSION),
@@ -592,11 +604,12 @@ def test_authenticated_source_cannot_impersonate_another_registered_source(
     relay_session: RelaySession, console_principal: Principal, keyboard_principal: Principal
 ) -> None:
     keyboard_intent = intent_payload(source="keyboard")
+    keyboard_intent.update(name="estop", selection=[])
+    keyboard_stop = intent_payload(source="keyboard", intent_id="intent-2")
+    keyboard_stop.update(name="estop", selection=[])
 
     refused = relay_session.process_intent(keyboard_intent, console_principal)
-    accepted = relay_session.process_intent(
-        intent_payload(source="keyboard", intent_id="intent-2"), keyboard_principal
-    )
+    accepted = relay_session.process_intent(keyboard_stop, keyboard_principal)
 
     assert refused[0]["reason"] == "source_mismatch"
     assert accepted[0]["status"] == "accepted"
@@ -624,6 +637,30 @@ def test_webcam_source_is_gated_like_console_and_keyboard(
     assert impersonated[0]["reason"] == "source_mismatch"
     assert reversed_binding[0]["reason"] == "source_mismatch"
     assert adapter_authored[0]["reason"] == "frame_not_allowed"
+
+
+def test_source_allowlist_refuses_names_a_source_never_emits(
+    relay_session: RelaySession,
+    keyboard_principal: Principal,
+    webcam_principal: Principal,
+) -> None:
+    webcam_takeoff = intent_payload(source="webcam")
+    webcam_takeoff.update(name="takeoff", confirm=True)
+    keyboard_hold = intent_payload(source="keyboard", intent_id="intent-2")
+
+    refused_takeoff = relay_session.process_frame(webcam_takeoff, webcam_principal)
+    refused_hold = relay_session.process_frame(keyboard_hold, keyboard_principal)
+    accepted_hold = relay_session.process_frame(
+        intent_payload(source="webcam", intent_id="intent-3"), webcam_principal
+    )
+
+    assert refused_takeoff[0]["type"] == "refusal"
+    assert refused_takeoff[0]["reason"] == "source_not_allowed"
+    assert refused_takeoff[0]["detail"] == "takeoff is not allowed from source webcam"
+    assert refused_hold[0]["reason"] == "source_not_allowed"
+    assert refused_hold[0]["detail"] == "hold is not allowed from source keyboard"
+    assert accepted_hold[0]["status"] == "accepted"
+    assert relay_session.current_state()["estop"] is False
 
 
 def test_intent_timestamp_and_id_replay_checks(
