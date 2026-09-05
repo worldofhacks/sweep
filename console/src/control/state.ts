@@ -7,6 +7,7 @@ import type {
   RelayAircraftState,
   RelayServerEvent,
 } from '../relay/contract'
+import { followsSelection } from '../relay/contract'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'degraded' | 'disconnected'
 export type RelayTransport = 'websocket' | 'fixture' | 'unavailable'
@@ -27,6 +28,12 @@ export interface PlanPreview {
   title: string
   steps: string[]
   rosterVersion: number
+  /**
+   * Wall-clock deadline for confirming this preview. Set only when the relay
+   * reports a confirmation window; nothing sets it today, so the dock shows
+   * no countdown.
+   */
+  expiresAt?: number
 }
 
 export interface RequestRecord {
@@ -71,9 +78,13 @@ export interface ControlState {
   sessionId: string
   connection: RelayConnection
   keyboardConnection: RelayConnection
+  webcamConnection: RelayConnection
   rosterVersion: number
   aircraft: Record<DroneId, RelayAircraftState>
   selection: DroneId[]
+  /** Formation and spacing the relay reports in its state frame; null until the first frame. */
+  formation: string | null
+  spacing: number | null
   departed: DepartureRecord[]
   requests: RequestRecord[]
   selectedFeedId: DroneId | null
@@ -88,6 +99,7 @@ export interface ControlState {
 export type ControlAction =
   | { type: 'connection_changed'; connection: RelayConnection }
   | { type: 'keyboard_connection_changed'; connection: RelayConnection }
+  | { type: 'webcam_connection_changed'; connection: RelayConnection }
   | { type: 'relay_event'; event: RelayServerEvent }
   | { type: 'request_created'; request: RequestRecord }
   | { type: 'request_pending_confirmation'; intentId: string; t: number; plan: PlanPreview }
@@ -114,9 +126,17 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
       changedAt: now,
       reason: 'Keyboard relay source is unavailable.',
     },
+    webcamConnection: {
+      status: 'disconnected',
+      transport: 'unavailable',
+      changedAt: now,
+      reason: 'Webcam relay source is unavailable.',
+    },
     rosterVersion: 0,
     aircraft: {},
     selection: [],
+    formation: null,
+    spacing: null,
     departed: [],
     requests: [],
     selectedFeedId: null,
@@ -143,6 +163,8 @@ export function controlReducer(state: ControlState, action: ControlAction): Cont
       return reduceConnection(state, action.connection)
     case 'keyboard_connection_changed':
       return reduceKeyboardConnection(state, action.connection)
+    case 'webcam_connection_changed':
+      return reduceWebcamConnection(state, action.connection)
     case 'relay_event':
       return reduceRelayEvent(state, action.event)
     case 'request_created':
@@ -218,6 +240,24 @@ function reduceKeyboardConnection(state: ControlState, connection: RelayConnecti
   return {
     ...state,
     keyboardConnection: connection,
+    notices: prependNotice(state.notices, notice),
+  }
+}
+
+function reduceWebcamConnection(state: ControlState, connection: RelayConnection): ControlState {
+  if (connection.status === 'connected' || connection.status === 'connecting') {
+    return { ...state, webcamConnection: connection }
+  }
+  const notice = makeNotice(
+    `webcam-connection-${connection.changedAt}`,
+    connection.status === 'degraded' ? 'warning' : 'danger',
+    connection.status === 'degraded' ? 'Webcam source degraded' : 'Webcam source unavailable',
+    connection.reason ?? 'No reason was provided.',
+    connection.changedAt,
+  )
+  return {
+    ...state,
+    webcamConnection: connection,
     notices: prependNotice(state.notices, notice),
   }
 }
@@ -376,6 +416,8 @@ function reduceStateEvent(
     rosterVersion: event.roster_version,
     aircraft,
     selection,
+    formation: event.formation,
+    spacing: event.spacing,
     armed: event.armed,
     estop: event.estop,
   }
@@ -417,6 +459,7 @@ function reduceStateEvent(
       .filter(
         (request) =>
           request.status === 'pending_confirmation' &&
+          followsSelection(request.intent.name) &&
           request.intent.selection.some((id) => staleSelection.includes(id)),
       )
       .map((request) => request.intent.intent_id)
@@ -442,10 +485,13 @@ function reduceStateEvent(
     'stale_roster',
     `Fleet roster changed to version ${event.roster_version}. Build and confirm a new preview.`,
   )
+  // Intents that address the whole roster (land_all) keep their preview while
+  // the operator's selection moves; only a roster change invalidates them.
   const changedSelectionRequests = next.requests
     .filter(
       (request) =>
         request.status === 'pending_confirmation' &&
+        followsSelection(request.intent.name) &&
         !sameDroneSet(request.intent.selection, selection),
     )
     .map((request) => request.intent.intent_id)
