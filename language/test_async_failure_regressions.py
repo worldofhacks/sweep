@@ -238,9 +238,17 @@ def test_async_stop_failure_preserves_terminal_status_and_latch(tmp_path, monkey
     assert overall[0]["reason"] == "adapter_failure", events
     assert relay.current_state()["estop"] is True
     assert relay.current_state()["accepted_plan"] is None
+    # The keyboard socket carries only the network stop; motion comes from the console.
+    console = Principal(source="console", drone_id=None, signing_key=b"x" * 32)
     events = relay.process_frame(
-        {**intent, "intent_id": "motion-after-stop", "name": "takeoff", "selection": [1, 2]},
-        operator,
+        {
+            **intent,
+            "intent_id": "motion-after-stop",
+            "source": "console",
+            "name": "takeoff",
+            "selection": [1, 2],
+        },
+        console,
     )
     assert events[0]["status"] == "accepted"
     relay.mark_pending_intent_delivered("motion-after-stop")

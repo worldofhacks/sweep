@@ -37,6 +37,7 @@ class RejectionReason(StrEnum):
     UNKNOWN_SOURCE = "unknown_source"
     UNKNOWN_INTENT = "unknown_intent"
     UNSUPPORTED = "unsupported"
+    SOURCE_NOT_ALLOWED = "source_not_allowed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,21 @@ M20_SUPPORTED_NAMES = frozenset(
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
+    }
+)
+# Intent v1 names each registered source may emit. The console owns every M2.0
+# name; the keyboard socket carries only the Shift+Escape network stop; the
+# webcam gesture producer drafts only the two names its gesture policy may emit
+# (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES), so the console's
+# never-gesture-emittable list is enforced by the relay as well. A name outside
+# its source's set is refused with `source_not_allowed` even when M2.0 supports
+# it. Every set is a subset of M20_SUPPORTED_NAMES and every registered source
+# has an entry; the conformance tests hold both invariants.
+SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
+    {
+        "console": M20_SUPPORTED_NAMES,
+        "keyboard": frozenset({IntentName.ESTOP}),
+        "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
     }
 )
 
@@ -144,6 +160,11 @@ def validate_intent(raw: object) -> ValidationResult:
     if name not in M20_SUPPORTED_NAMES:
         return RejectedIntent(
             RejectionReason.UNSUPPORTED, f"{name} is outside the M2.0 capability set"
+        )
+
+    if name not in SOURCE_ALLOWED_NAMES[source]:
+        return RejectedIntent(
+            RejectionReason.SOURCE_NOT_ALLOWED, f"{name} is not allowed from source {source}"
         )
 
     return AcceptedIntent(

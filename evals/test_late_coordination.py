@@ -39,6 +39,11 @@ def _admit(session: RelaySession, intent: dict[str, object]) -> None:
     assert outcome[0]["status"] == "accepted", outcome
 
 
+def _safety_source(name: str) -> str:
+    """The keyboard socket carries only the network stop; a hold is a console button."""
+    return "keyboard" if name == "estop" else "console"
+
+
 def _execute(session: RelaySession, intent: dict[str, object]) -> dict[str, object]:
     intent_id = intent["intent_id"]
     assert isinstance(intent_id, str)
@@ -167,7 +172,7 @@ def test_undelivered_safety_cannot_erase_delivered_recovery(
     reserved = harness.intent(
         reservation,
         selection=[1] if reservation == "hold" else [],
-        source="keyboard",
+        source=_safety_source(reservation),
     )
     _admit(session, reserved)
 
@@ -303,7 +308,9 @@ def test_history_conflict_does_not_remove_delivered_safety_from_group(
     _admit(session, original)
     assert _execute(session, original)["status"] == "completed"
     harness.clock.advance(100)
-    safety = harness.intent(name, selection=[1] if name == "hold" else [], source="keyboard")
+    safety = harness.intent(
+        name, selection=[1] if name == "hold" else [], source=_safety_source(name)
+    )
     for intent in (delayed, safety):
         _admit(session, intent)
         session.mark_pending_intent_delivered(str(intent["intent_id"]))
@@ -347,7 +354,9 @@ def test_delivered_recovery_does_not_release_motion_suppressed_by_reserved_safet
     _admit(session, hold)
     harness.clock.advance(400)
     reserved = harness.intent(
-        reserved_name, selection=[1] if reserved_name == "hold" else [], source="keyboard"
+        reserved_name,
+        selection=[1] if reserved_name == "hold" else [],
+        source=_safety_source(reserved_name),
     )
     _admit(session, reserved)
     harness.clock.advance(400)
