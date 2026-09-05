@@ -138,3 +138,20 @@ def test_synthetic_observations_never_claim_physical_acceptance():
 def test_empty_observations_reject():
     with pytest.raises(ValueError):
         build_report([], evidence()[1])
+
+
+def test_short_recording_without_any_fix_cannot_claim_coverage():
+    rows, checkpoints = evidence()
+    rows = rows[:3]
+    for row in rows:
+        row.update(
+            accepted=False,
+            confidence="red",
+            position_map_m=None,
+            fix_age_s=None,
+            fix_age_with_p95_tail_s=None,
+        )
+    checkpoints["checkpoints"] = checkpoints["checkpoints"][:2]
+    report = build_report(rows, checkpoints)
+    assert report["coverage_within_500ms"] is False
+    assert report["software_checks_passed"] is False
