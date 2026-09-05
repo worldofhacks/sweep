@@ -20,7 +20,7 @@ PRD: sections 4.2, 5.8.
 
 ## Relay bootstrap
 
-Production has no simulator or fixture fallback. The hosting shell must set an in-memory runtime
+Production has no simulator or fixture fallback. The hosting shell either sets an in-memory runtime
 bootstrap before `main.tsx` runs:
 
 ```ts
@@ -30,6 +30,17 @@ window.__SWEEP_RELAY_CONFIG__ = {
   token: '<relay token supplied by the trusted local shell>',
 }
 ```
+
+or serves the same three values as same-origin JSON at `/relay-bootstrap.json`, shaped
+`{ "relay": { "baseUrl", "sessionId", "token" } }`. `main.tsx` prefers the global; without it the
+endpoint is read exactly once (`src/relay/bootstrap.ts`) before the runtime is created, and only a
+complete payload whose `baseUrl` parses as `ws:` or `wss:` is accepted. `pnpm dev` serves that
+endpoint from the relay's own variables, so one exported `.env` serves both processes:
+`SWEEP_RELAY_ORIGIN` (default `ws://127.0.0.1:8000`), `SWEEP_SESSION_ID` (default `demo`), and
+`SWEEP_RELAY_TOKEN` (no default). With the token unset it answers 503 with `{ "relay": null }` and
+the console runs as before: visibly disconnected, network controls unavailable, no retry. The built
+`dist/` contains neither the endpoint nor the token, so a production host must serve the same JSON
+at that path or set the global itself. The `?fixture=` path never reads the endpoint.
 
 The client opens `/ws/{session_id}` three times: one connection authenticates as `console` for
 buttons and state, a separate connection authenticates as `keyboard` for the Shift+Escape network
