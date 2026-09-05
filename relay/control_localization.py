@@ -60,9 +60,16 @@ class ClockMapping:
 
     def __post_init__(self) -> None:
         if (
-            not self.capture_clock_id
+            not isinstance(self.capture_clock_id, str)
+            or not self.capture_clock_id
+            or not isinstance(self.relay_clock_id, str)
             or not self.relay_clock_id
-            or not self.measured
+            or self.measured is not True
+            or isinstance(self.relay_reference_ms, bool)
+            or not isinstance(self.relay_reference_ms, int)
+            or self.relay_reference_ms < 0
+            or isinstance(self.max_error_ms, bool)
+            or not isinstance(self.max_error_ms, int)
             or self.max_error_ms < 0
             or self.milliseconds_per_capture_second <= 0
         ):
@@ -118,8 +125,14 @@ class ControlLocalizationPins:
 
     def __post_init__(self) -> None:
         if (
-            self.drone_id <= 0
+            isinstance(self.drone_id, bool)
+            or not isinstance(self.drone_id, int)
+            or self.drone_id <= 0
+            or isinstance(self.connection_epoch, bool)
+            or not isinstance(self.connection_epoch, int)
             or self.connection_epoch < 0
+            or not isinstance(self.source_ids, tuple)
+            or not self.source_ids
             or not all(
                 isinstance(value, str) and value
                 for value in (
@@ -230,6 +243,9 @@ class ControlLocalizationWire:
         sources = raw.get("source_ids")
         if not isinstance(sources, list | tuple):
             raise ValueError("source_ids must be an array")
+        control_eligible = raw.get("control_eligible")
+        if not isinstance(control_eligible, bool):
+            raise ValueError("control_eligible must be a boolean")
         return cls(
             drone_id=_integer(raw.get("drone_id"), "drone_id"),
             connection_epoch=_integer(raw.get("connection_epoch"), "connection_epoch"),
@@ -251,7 +267,7 @@ class ControlLocalizationWire:
                 None if raw.get("fix_age_s") is None else _finite(raw.get("fix_age_s"), "fix_age_s")
             ),
             status=_text(raw.get("localization_status"), "localization_status"),
-            control_eligible=raw.get("control_eligible") is True,
+            control_eligible=control_eligible,
             reason=_text(raw.get("localization_reason"), "localization_reason"),
             source_ids=tuple(_text(value, "source_ids") for value in sources),
             clock_mapping=ClockMapping.from_mapping(raw.get("clock_mapping")),
@@ -303,7 +319,14 @@ class ControlLocalizationStore:
         max_clock_error_ms: int,
         max_fix_age_ms: int,
     ) -> None:
-        if max_clock_error_ms < 0 or max_fix_age_ms < 0:
+        if (
+            isinstance(max_clock_error_ms, bool)
+            or not isinstance(max_clock_error_ms, int)
+            or max_clock_error_ms < 0
+            or isinstance(max_fix_age_ms, bool)
+            or not isinstance(max_fix_age_ms, int)
+            or max_fix_age_ms < 0
+        ):
             raise ValueError("control localization age limits must be non-negative")
         self._pins = MappingProxyType(dict(pins))
         if any(drone_id != pin.drone_id for drone_id, pin in self._pins.items()):
