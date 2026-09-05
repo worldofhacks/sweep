@@ -252,3 +252,18 @@ def test_revalidation_refuses_changed_artifacts_or_stationary_aircraft() -> None
         planner.revalidate(plan, artifact(), (drone(1, 0.5, 1.5), static), 0, 0, 0.1).code
         == "remaining_route_obstructed"
     )
+
+
+def test_astar_edge_cannot_pass_close_to_stationary_aircraft_between_clear_cells() -> None:
+    active = drone(1, 1.5, 1.5)
+    stationary = drone(2, 2.0, 2.2)
+    destination = ArrivalSlot("atrium-a", "atrium", pose(2.5, 1.5), 0.5)
+    request = NavigationRequest("atrium", 4, (active,), (active, stationary), MOTION, PERMISSION)
+    result = NavigationPlanner().plan(request, artifact(slots=(destination,)))
+
+    assert not isinstance(result, NavigationRefusal)
+    assert all(
+        dist(point.xyz, stationary.pose.xyz) >= 2 * MOTION.swept_radius_m
+        for segment in result.routes[0].swept_segments
+        for point in segment_samples(segment.start, segment.end)
+    )
