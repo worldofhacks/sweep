@@ -4,26 +4,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal
 
-
-class IntentName(StrEnum):
-    ARM = "arm"
-    DISARM = "disarm"
-    ESTOP = "estop"
-    SELECT = "select"
-    TAKEOFF = "takeoff"
-    LAND = "land"
-    LAND_ALL = "land_all"
-    HOLD = "hold"
-    TRANSLATE = "translate"
-    ALTITUDE = "altitude"
-    FORMATION_NEXT = "formation_next"
-    FORMATION_SET = "formation_set"
-    SPACING = "spacing"
-    COME_HOME = "come_home"
-    SWEEP = "sweep"
-    CAPTURE_ROOM = "capture_room"
-    SURVEY_AREA = "survey_area"
-    MAP_AREA = "map_area"
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
 
 
 class Mode(StrEnum):
@@ -73,26 +54,6 @@ type ValidationResult = AcceptedIntent | RejectedIntent
 # producer are each bound to their own connection; an intent never moves
 # between them. Adding a source changes this constant and its conformance tests.
 REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
-M20_SUPPORTED_NAMES = frozenset(
-    {
-        IntentName.ARM,
-        IntentName.SELECT,
-        IntentName.TAKEOFF,
-        IntentName.TRANSLATE,
-        IntentName.HOLD,
-        IntentName.COME_HOME,
-        IntentName.LAND,
-        IntentName.LAND_ALL,
-        IntentName.ESTOP,
-        IntentName.CAPTURE_ROOM,
-        IntentName.ALTITUDE,
-        IntentName.FORMATION_NEXT,
-        IntentName.FORMATION_SET,
-        IntentName.SPACING,
-        IntentName.SWEEP,
-    }
-)
-
 _REQUIRED_FIELDS = frozenset(
     {
         "v",
@@ -111,7 +72,9 @@ _REQUIRED_FIELDS = frozenset(
 _FIELDS = _REQUIRED_FIELDS | {"retry_of"}
 
 
-def validate_intent(raw: object) -> ValidationResult:
+def validate_intent(
+    raw: object, *, capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
+) -> ValidationResult:
     """Validate untrusted input without raising; failures are returned as typed rejections."""
     if not isinstance(raw, Mapping) or not _REQUIRED_FIELDS <= set(raw) or not set(raw) <= _FIELDS:
         return RejectedIntent(
@@ -143,12 +106,14 @@ def validate_intent(raw: object) -> ValidationResult:
     mode = Mode(raw["mode"])
     if mode is not Mode.INDOOR:
         return RejectedIntent(
-            RejectionReason.UNSUPPORTED, f"{mode} is outside the M2.0 capability set"
+            RejectionReason.UNSUPPORTED,
+            f"{mode} is outside capability profile {capability_profile.name}",
         )
 
-    if name not in M20_SUPPORTED_NAMES:
+    if not capability_profile.supports(name):
         return RejectedIntent(
-            RejectionReason.UNSUPPORTED, f"{name} is outside the M2.0 capability set"
+            RejectionReason.UNSUPPORTED,
+            f"{name} is outside capability profile {capability_profile.name}",
         )
 
     return AcceptedIntent(

@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -14,9 +15,16 @@ import relay.audit as audit_module
 from planner.models import CommandOperation
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import LifecycleStatus
 from relay.intent_v1 import IntentV1
-from relay.session import IntentSinkResult, RelayLimits, RelaySession
+from relay.session import (
+    CapabilityBoundIntentSink,
+    IntentSink,
+    IntentSinkResult,
+    RelayLimits,
+    RelaySession,
+)
 from relay.tests.conftest import (
     ADAPTER_KEY,
     SESSION,
@@ -43,6 +51,10 @@ def _new_session(
     event_ids: EventIds,
     **kwargs: object,
 ) -> RelaySession:
+    sink = kwargs.get("intent_sink")
+    if sink is not None and not hasattr(sink, "capability_profile"):
+        profile = cast(CapabilityProfile, kwargs.get("capability_profile", C1_CAPABILITY_PROFILE))
+        kwargs["intent_sink"] = CapabilityBoundIntentSink(cast(IntentSink, sink), profile)
     return RelaySession(
         session_id=SESSION,
         audit_log=SessionAuditLog(tmp_path, SESSION),

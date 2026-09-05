@@ -5,7 +5,9 @@ import pytest
 
 from relay.app import RelayRuntime
 from relay.auth import Principal
+from relay.capabilities import C1_CAPABILITY_PROFILE
 from relay.contracts import LifecycleStatus
+from relay.session import CapabilityBoundIntentSink
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
     ADAPTER_KEY,
@@ -25,7 +27,9 @@ def test_resumed_batch_cannot_roll_back_existing_or_newly_activated_subscriber(
             RelaySettings(relay_token=CONSOLE_KEY, adapter_keys={1: ADAPTER_KEY}, log_dir=tmp_path),
             clock=clock,
             event_ids=event_ids,
-            intent_sink_factory=lambda _session: lambda _intent, _state: None,
+            intent_sink_factory=lambda _session: CapabilityBoundIntentSink(
+                lambda _intent, _state: None, C1_CAPABILITY_PROFILE
+            ),
         )
         session = runtime.session(SESSION)
         console = Principal("console", None, CONSOLE_KEY)
@@ -137,7 +141,9 @@ def test_nonterminal_and_malformed_acknowledgements_do_not_prepare_resume(
             RelaySettings(relay_token=CONSOLE_KEY, adapter_keys={1: ADAPTER_KEY}, log_dir=tmp_path),
             clock=clock,
             event_ids=event_ids,
-            intent_sink_factory=lambda _session: lambda _intent, _state: None,
+            intent_sink_factory=lambda _session: CapabilityBoundIntentSink(
+                lambda _intent, _state: None, C1_CAPABILITY_PROFILE
+            ),
         )
         session = runtime.session(SESSION)
         console = Principal("console", None, CONSOLE_KEY)
