@@ -75,3 +75,17 @@ honest empty state.
 
 Fixture scenarios are data only: `/?fixture=control`, `pending4`, `six6`, or `down` select a
 `FixtureRelayClient` scenario for both the console and keyboard sources.
+
+## Catalog modules
+
+Captures, Worlds, and the Reference group's Health (Connectivity), Config and States sections read
+a `CatalogClient` from `src/catalog/`: captures, the building and its rooms, generation jobs,
+per-node details, shared services, health metrics and configuration groups. The relay exposes no
+endpoint for any of these yet, so production wires `UnreportedCatalogClient`: every surface reads
+unreported and every action refuses with its reason. The fixture scenarios carry the design's
+tables through `FixtureCatalogClient` (`control` present but empty, `pending4` and `six6`
+populated, `down` keeping the last snapshot while the console link is down and refusing actions);
+job chains run on an injectable scheduler so tests advance them by hand. Relay-owned facts on
+those pages (node membership, telemetry staleness, video, the two sockets, the pending plan) come
+from the control state, never the catalog, and an apply-now configuration save invalidates a
+pending plan through the control hook so the shell states it.

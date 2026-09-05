@@ -303,7 +303,7 @@ describe('persistent shell', () => {
     await user.click(tabs.getByRole('button', { name: 'Health' }))
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Reference')
     expect(screen.getByText(/Connectivity and health — Nodes, services, metrics/)).toBeInTheDocument()
-    const empty = screen.getByText(/per-node health or shared-service status/)
+    const empty = screen.getByText(/does not report shared-service status/)
     expect(empty.closest('[role="status"]')).toHaveTextContent('Nothing to show')
   })
 })

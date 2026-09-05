@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useState } from 'react'
 import './shell.css'
+import type { CatalogController } from '../catalog/use-catalog'
 import type { ConnectionStatus } from '../control/state'
 import type { MediaRuntime } from '../media/runtime'
 import { MODULES, getModule } from '../modules/registry'
@@ -22,6 +23,7 @@ import {
 
 export interface ShellProps {
   controller: ConsoleController
+  catalog: CatalogController
   now?: () => number
   initialModule?: ModuleId
   /** Present only when a webcam pipeline reports a status; absent today. */
@@ -34,6 +36,7 @@ const TICK_MS = 1_000
 
 export function Shell({
   controller,
+  catalog,
   now = Date.now,
   initialModule = 'control',
   webcam,
@@ -79,10 +82,10 @@ export function Shell({
         </Header>
       }
       rail={<Rail modules={MODULES} active={activeId} onSelect={setActiveId} />}
-      pane={<ModuleComponent controller={controller} now={now} media={media} />}
+      pane={<ModuleComponent controller={controller} catalog={catalog} now={now} media={media} />}
       context={
         <ContextColumn rosterVersion={state.rosterVersion}>
-          <ModuleContext controller={controller} now={now} media={media} />
+          <ModuleContext controller={controller} catalog={catalog} now={now} media={media} />
         </ContextColumn>
       }
       dock={
