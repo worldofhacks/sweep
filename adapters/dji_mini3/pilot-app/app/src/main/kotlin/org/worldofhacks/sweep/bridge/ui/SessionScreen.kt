@@ -333,6 +333,18 @@ private fun NodeStatusCard(link: LinkState, aircraft: AircraftSnapshot, now: Lon
                 Text("Last node_status: authority ${it.controlAuthority}${it.authorityChangeReason?.let { reason -> " ($reason)" } ?: ""} · virtual stick ${it.virtualStickEnabled} · video ${it.videoPublishState.wire} · phone ${it.phoneBatteryPercent}% ${it.phoneThermalState.wire}")
             }
             Text("Aircraft: ${if (aircraft.aircraftConnected) "connected" else "disconnected"} · RC: ${if (aircraft.rcConnected) "connected" else "disconnected"}")
+            if (aircraft.telemetryKeys.isNotEmpty()) {
+                // Probe flavor: listeners are registered before the aircraft connects; the support
+                // answers are recorded, never used to skip a key, so this line says what reported.
+                Text(
+                    "Telemetry keys (isKeySupported at registration / on connect · first value): " +
+                        aircraft.telemetryKeys.entries.sortedBy { it.key }.joinToString { (name, key) ->
+                            "$name ${yesNo(key.supportedAtAttach)}/${yesNo(key.supportedAtConnect)} · ${age(now, key.firstValueAtMs)}" +
+                                if (key.listening) "" else " (not listening)"
+                        },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Text(
                 "Telemetry: state ${aircraft.state} · battery ${(aircraft.battery * 100).toInt()}% · link ${(aircraft.link * 100).toInt()}% · " +
                     "position quality ${(aircraft.posQuality * 100).toInt()}% (provisional) · z ${"%.2f".format(aircraft.z)} m",
@@ -419,6 +431,12 @@ private fun SimulationCard(simulation: SimulationControls) {
 private const val MAX_COMMAND_ROWS = 20
 
 private fun age(now: Long, at: Long?): String = if (at == null) "never" else "${((now - at).coerceAtLeast(0)) / 1000} s ago"
+
+private fun yesNo(value: Boolean?): String = when (value) {
+    null -> "-"
+    true -> "yes"
+    false -> "no"
+}
 
 private fun shortId(id: String): String = if (id.length <= 13) id else id.take(8) + "…" + id.takeLast(4)
 

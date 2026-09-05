@@ -14,6 +14,8 @@ enum class RecordKind(val wire: String) {
     /** Issue #85 first-flight probe entries (axis probe results, drill transitions, operator sign-off). */
     PROBE("probe"),
     TELEMETRY("telemetry"),
+    /** One telemetry key's listener event in the probe flavor: `attached`, `product_connected`, or `first_value`. */
+    TELEMETRY_KEY("telemetry_key"),
     VIDEO_PUBLISH("video_publish"),
     VIDEO_FRAME("video_frame"),
     STREAM_INFO("stream_info"),
@@ -63,6 +65,25 @@ class BenchRecorder(private val sink: Appendable, private val clock: Clock) {
 
     fun telemetry(droneId: Int, eventId: String) {
         write(RecordKind.TELEMETRY, clock.nowMs(), "drone_id" to droneId, "event_id" to eventId)
+    }
+
+    /**
+     * One telemetry key's listener evidence (Phase C, probe flavor). `event` is `attached`
+     * (listener registered, normally before the aircraft connects), `product_connected`
+     * (`isKeySupported` asked again for the product that connected), or `first_value`; the
+     * support answers and the first-value time ride along so any one line tells the key's
+     * story, and `grep telemetry_key <log>` shows which keys reported.
+     */
+    fun telemetryKey(key: String, event: String, supportedAtAttach: Boolean?, supportedAtConnect: Boolean?, firstValueAtMs: Long?) {
+        write(
+            RecordKind.TELEMETRY_KEY,
+            clock.nowMs(),
+            "key" to key,
+            "event" to event,
+            "supported_at_attach" to supportedAtAttach,
+            "supported_at_connect" to supportedAtConnect,
+            "first_value_at_ms" to firstValueAtMs,
+        )
     }
 
     fun videoFrame(sizeBytes: Int, keyframe: Boolean, decodeMs: Long? = null, dropped: Boolean = false) {

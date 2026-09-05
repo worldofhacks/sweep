@@ -20,6 +20,8 @@ import org.worldofhacks.sweep.bridge.flight.FlightExecutor
 import org.worldofhacks.sweep.bridge.flight.FlightNode
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
+import org.worldofhacks.sweep.bridge.node.TelemetryKeyStatus
+import org.worldofhacks.sweep.bridge.publish.BenchSink
 import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
@@ -48,7 +50,25 @@ class SdkSession(private val application: Application) : AircraftSession, FpvSes
         androidVersion = Build.VERSION.RELEASE ?: "",
         sdkVersion = { runCatching { SDKManager.getInstance().sdkVersion }.getOrNull().orEmpty() },
         log = { name, detail -> model.event(name, detail) },
+        record = { key, event, status -> recordKey(key, event, status) },
     )
+
+    /**
+     * Phase C follow-up: `filesDir/bench/telemetry-keys-<stamp>.jsonl`, one `telemetry_key`
+     * record per key and listener event, so the first on-phone run says which keys reported
+     * and when. Opened on the first record, that is when the listeners register; the path
+     * is in the SDK events.
+     */
+    private val keyBench: BenchSink? by lazy {
+        BenchSink.open(application.filesDir, "telemetry-keys").also { sink ->
+            model.event("Telemetry key log", sink?.file?.absolutePath ?: "could not open bench/telemetry-keys log")
+        }
+    }
+
+    private fun recordKey(key: String, event: String, status: TelemetryKeyStatus) {
+        val sink = keyBench ?: return
+        synchronized(sink) { sink.recorder.telemetryKey(key, event, status.supportedAtAttach, status.supportedAtConnect, status.firstValueAtMs) }
+    }
 
     // Phase D hook: local FPV, yaw, and codec evidence (org.worldofhacks.sweep.bridge.video).
     override val fpv: DjiFpv = DjiFpv(application.filesDir, AndroidPhoneStatus(application)) { name, detail -> model.event(name, detail) }

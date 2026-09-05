@@ -10,9 +10,10 @@ import org.worldofhacks.sweep.bridge.bench.BenchRecorder
 import org.worldofhacks.sweep.bridge.core.admission.SystemClock
 
 /**
- * One JSONL bench file per publish session under `filesDir/bench/`, written through the
- * bench module's recorder so `BenchAnalysis` reads it back. Flushed on every record so an
- * `adb pull` mid-run sees the windows so far.
+ * One JSONL bench file per publish session (or per named log, such as the probe flavor's
+ * telemetry-key evidence) under `filesDir/bench/`, written through the bench module's
+ * recorder so `BenchAnalysis` reads it back. Flushed on every record so an `adb pull`
+ * mid-run sees the windows so far.
  */
 class BenchSink private constructor(val file: File, private val writer: BufferedWriter) {
     val recorder = BenchRecorder(FlushingAppendable(writer), SystemClock)
@@ -42,10 +43,13 @@ class BenchSink private constructor(val file: File, private val writer: Buffered
     }
 
     companion object {
-        fun open(filesDir: File, droneId: Int): BenchSink? = runCatching {
+        fun open(filesDir: File, droneId: Int): BenchSink? = open(filesDir, "publish-drone$droneId")
+
+        /** `filesDir/bench/<prefix>-<stamp>.jsonl`; null when the file cannot be created. */
+        fun open(filesDir: File, prefix: String): BenchSink? = runCatching {
             val directory = File(filesDir, "bench").apply { mkdirs() }
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-            val file = File(directory, "publish-drone$droneId-$stamp.jsonl")
+            val file = File(directory, "$prefix-$stamp.jsonl")
             BenchSink(file, BufferedWriter(FileWriter(file, true)))
         }.getOrNull()
     }

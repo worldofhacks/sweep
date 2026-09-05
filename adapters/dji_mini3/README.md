@@ -187,6 +187,18 @@ heading the flight loop rotates body-frame steps with. Flight commands run in th
 loop below; the camera and media commands acknowledge `failed` with `unsupported` until
 Phase G.
 
+The listeners are registered when the SDK registers, before the RC and aircraft are
+connected, and `isKeySupported` is not allowed to skip a key: its answer is per connected
+product and is usually `false` at that moment, so it is recorded, asked again on every
+product connect, and shown on the Node status card as `Telemetry keys` (`yes` or `no` at
+registration and on connect, then the age of the key's first value) beside the measured
+key rates. The same evidence is in the SDK events (`Telemetry keys`, `Telemetry key`), so
+in the exported probe report, and in `filesDir/bench/telemetry-keys-<stamp>.jsonl` as
+`telemetry_key` records (`event` is `attached`, `product_connected`, or `first_value`;
+pull it like the Phase D logs; `BenchAnalysis` lists the first values under `notes`). An
+aircraft power cycle asks support again without registering a second listener: every
+listener shares one holder object and is cancelled by it.
+
 ## Phase E: Virtual Stick loop, deadman, and RC takeover
 
 Phase E connects admitted commands to the aircraft. The loop lives in

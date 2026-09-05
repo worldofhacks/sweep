@@ -3,6 +3,7 @@ package org.worldofhacks.sweep.bridge
 import dji.sdk.keyvalue.key.AirLinkKey
 import dji.sdk.keyvalue.key.BatteryKey
 import dji.sdk.keyvalue.key.DJIKey
+import dji.sdk.keyvalue.key.DJIKeyInfo
 import dji.sdk.keyvalue.key.FlightControllerKey
 import dji.sdk.keyvalue.key.KeyTools
 import dji.sdk.keyvalue.key.RemoteControllerKey
@@ -27,6 +28,8 @@ import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.node.CommandReport
 import org.worldofhacks.sweep.bridge.node.FlightStates
+import org.worldofhacks.sweep.bridge.node.TelemetryKeyLedger
+import org.worldofhacks.sweep.bridge.node.TelemetryKeyStatus
 import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 
 /**
@@ -34,6 +37,14 @@ import org.worldofhacks.sweep.bridge.session.AircraftIdentity
  * snapshot the relay link streams at 10 Hz (Phase C2), plus the measured update rate of every
  * listened key. Rates are measured, never assumed: the prior-art notes on issue #43 found a
  * bridge whose telemetry ran at 2 Hz while its README claimed 20.
+ *
+ * Every key is listened as soon as the SDK registers, before the RC and aircraft are there.
+ * `isKeySupported` answers for the product connected right now, so at that moment it is
+ * usually false, and skipping a key on that answer left a session without its telemetry
+ * once the aircraft did connect. The answer is recorded at registration and again on every
+ * product connect and shown, never acted on; [TelemetryKeyLedger] holds those decisions
+ * (plain JVM, tested in `bridge-node`) and makes sure a reconnect registers no key twice.
+ * All listeners share one [holder], which is what MSDK v5 cancels them by.
  *
  * Provisional mappings, to be confirmed against the aircraft in the next hardware session:
  * - `x`, `y` are east/north metres from the first valid `KeyAircraftLocation3D` fix; indoors
@@ -57,8 +68,12 @@ class ProbeAircraft(
     androidVersion: String,
     private val sdkVersion: () -> String,
     private val log: (name: String, detail: String) -> Unit,
+    /** Bench log hook: one call per key and listener event (`attached`, `product_connected`, `first_value`). */
+    private val record: (key: String, event: String, status: TelemetryKeyStatus) -> Unit = { _, _, _ -> },
 ) : AircraftSource, CommandExecutor {
     private val lock = Any()
+
+    /** The one holder every listener is registered with; `cancelListen(holder)` removes them all. */
     private val holder = Any()
     private val rates = KeyRates()
     private var attached = false
@@ -88,10 +103,30 @@ class ProbeAircraft(
         measuredHfovDeg = null,
     )
 
+    /** The listened keys; each DJI key object is created on first use, once the SDK is initialized. */
+    private val bindings: List<Binding<*>> = listOf(
+        Binding("KeyConnection", FlightControllerKey.KeyConnection) { connected ->
+            aircraftConnected = connected
+            if (!connected) origin = null
+        },
+        Binding("KeyRcConnection", RemoteControllerKey.KeyConnection, ComponentIndexType.LEFT_OR_MAIN) { rcConnected = it },
+        Binding("KeyAircraftLocation3D", FlightControllerKey.KeyAircraftLocation3D) { location = it },
+        Binding("KeyAircraftVelocity", FlightControllerKey.KeyAircraftVelocity) { velocity = it },
+        Binding("KeyAircraftAttitude", FlightControllerKey.KeyAircraftAttitude) { attitude = it },
+        Binding("KeyAltitude", FlightControllerKey.KeyAltitude) { altitude = it },
+        Binding("KeyUltrasonicHeight", FlightControllerKey.KeyUltrasonicHeight) { ultrasonicHeightDm = it },
+        Binding("KeyFlightMode", FlightControllerKey.KeyFlightMode) { flightMode = it },
+        Binding("KeyAreMotorsOn", FlightControllerKey.KeyAreMotorsOn) { motorsOn = it },
+        Binding("KeyIsFlying", FlightControllerKey.KeyIsFlying) { flying = it },
+        Binding("KeyChargeRemainingInPercent", BatteryKey.KeyChargeRemainingInPercent) { batteryPercent = it },
+        Binding("KeySignalQuality", AirLinkKey.KeySignalQuality) { signalQuality = it },
+    )
+    private val byName = bindings.associateBy { it.name }
+    private val ledger = TelemetryKeyLedger(bindings.map { it.name })
+
     private val _snapshot = MutableStateFlow(AircraftSnapshot(hardware = hardware))
     override val snapshot: StateFlow<AircraftSnapshot> = _snapshot.asStateFlow()
 
-    /** Registers every telemetry listener once; safe to call again. */
     /** Phase E hooks: [onAttached] fires once, when [attach] registers the listeners; [onProductConnected] on every product connection. */
     @Volatile
     var onAttached: (() -> Unit)? = null
@@ -99,50 +134,69 @@ class ProbeAircraft(
     @Volatile
     var onProductConnected: (() -> Unit)? = null
 
+    /**
+     * Registers every telemetry listener, whatever `isKeySupported` says at the moment (the
+     * SDK is registered, the aircraft usually not yet connected); safe to call again, a key
+     * that already has a listener is not registered twice.
+     */
     fun attach() {
-        synchronized(lock) {
-            if (attached) return
+        val manager = KeyManager.getInstance()
+        val now = System.currentTimeMillis()
+        val answers = bindings.associate { it.name to it.supported(manager) }
+        val (firstAttach, registered, statuses) = synchronized(lock) {
+            val first = !attached
             attached = true
-            hardware = hardware.copy(sdkVersion = sdkVersion().ifBlank { HardwareProfile.UNREPORTED })
+            if (first) hardware = hardware.copy(sdkVersion = sdkVersion().ifBlank { HardwareProfile.UNREPORTED })
+            val names = ledger.attach(now) { answers.getValue(it) }
+            Triple(first, names.map(byName::getValue), ledger.snapshot())
         }
-        listen("KeyConnection", KeyTools.createKey(FlightControllerKey.KeyConnection)) { connected ->
-            aircraftConnected = connected
-            if (!connected) origin = null
+        registered.forEach { it.listen(manager) }
+        if (registered.isNotEmpty()) {
+            log(
+                "Telemetry keys",
+                "${registered.size} listeners registered; isKeySupported now: ${support(statuses) { it.supportedAtAttach }}. " +
+                    "Every key is listened regardless (the answer is per connected product) and asked again when a product connects.",
+            )
+            registered.forEach { record(it.name, "attached", statuses.getValue(it.name)) }
         }
-        listen(
-            "KeyRcConnection",
-            KeyTools.createKey(RemoteControllerKey.KeyConnection, ComponentIndexType.LEFT_OR_MAIN),
-        ) { connected -> rcConnected = connected }
-        listen("KeyAircraftLocation3D", KeyTools.createKey(FlightControllerKey.KeyAircraftLocation3D)) { location = it }
-        listen("KeyAircraftVelocity", KeyTools.createKey(FlightControllerKey.KeyAircraftVelocity)) { velocity = it }
-        listen("KeyAircraftAttitude", KeyTools.createKey(FlightControllerKey.KeyAircraftAttitude)) { attitude = it }
-        listen("KeyAltitude", KeyTools.createKey(FlightControllerKey.KeyAltitude)) { altitude = it }
-        listen("KeyUltrasonicHeight", KeyTools.createKey(FlightControllerKey.KeyUltrasonicHeight)) { ultrasonicHeightDm = it }
-        listen("KeyFlightMode", KeyTools.createKey(FlightControllerKey.KeyFlightMode)) { flightMode = it }
-        listen("KeyAreMotorsOn", KeyTools.createKey(FlightControllerKey.KeyAreMotorsOn)) { motorsOn = it }
-        listen("KeyIsFlying", KeyTools.createKey(FlightControllerKey.KeyIsFlying)) { flying = it }
-        listen("KeyChargeRemainingInPercent", KeyTools.createKey(BatteryKey.KeyChargeRemainingInPercent)) { batteryPercent = it }
-        listen("KeySignalQuality", KeyTools.createKey(AirLinkKey.KeySignalQuality)) { signalQuality = it }
         publish()
-        onAttached?.invoke()
+        if (firstAttach) onAttached?.invoke()
     }
 
     fun detach() {
-        synchronized(lock) {
-            if (!attached) return
-            attached = false
-        }
+        synchronized(lock) { if (!attached) return }
+        // The same holder every listener was registered with: MSDK v5 removes them by holder,
+        // so the next attach() starts from none and cannot stack a second listener on a key.
         KeyManager.getInstance().cancelListen(holder)
+        synchronized(lock) {
+            attached = false
+            ledger.detach()
+        }
     }
 
-    /** The SDK manager's own connect and disconnect callbacks, independent of `KeyConnection`. */
+    /**
+     * The SDK manager's own connect and disconnect callbacks, independent of `KeyConnection`.
+     * On connect, `isKeySupported` is asked again for the product that is now there, for the
+     * record, and any key still without a listener gets one; keys already listened are left
+     * alone, so a power cycle of the aircraft never doubles a subscription.
+     */
     fun productConnected(connected: Boolean) {
-        synchronized(lock) {
+        val manager = KeyManager.getInstance()
+        val answers = if (connected) bindings.associate { it.name to it.supported(manager) } else emptyMap()
+        val (registered, statuses) = synchronized(lock) {
             aircraftConnected = connected
             if (!connected) {
                 rcConnected = false
                 origin = null
             }
+            val names = if (connected) ledger.productConnected { answers.getValue(it) } else emptyList()
+            Pair(names.map(byName::getValue), ledger.snapshot())
+        }
+        registered.forEach { it.listen(manager) }
+        if (connected) {
+            val late = if (registered.isEmpty()) "all listeners were registered before the aircraft connected" else "${registered.size} listeners registered only now"
+            log("Telemetry keys", "product connected; isKeySupported now: ${support(statuses) { it.supportedAtConnect }}; $late.")
+            statuses.forEach { (name, status) -> record(name, "product_connected", status) }
         }
         publish()
         if (connected) onProductConnected?.invoke()
@@ -180,25 +234,47 @@ class ProbeAircraft(
         }
     }
 
-    private fun <T : Any> listen(name: String, key: DJIKey<T>, apply: (T) -> Unit) {
-        val manager = KeyManager.getInstance()
-        if (!manager.isKeySupported(key)) {
-            log("Telemetry key", "$name is not supported by this product")
-            return
+    /** One listened key: its name, the DJI key (created lazily), and where its value goes. */
+    private inner class Binding<T : Any>(
+        val name: String,
+        info: DJIKeyInfo<T>,
+        component: ComponentIndexType? = null,
+        private val onValue: (T) -> Unit,
+    ) {
+        private val key: DJIKey<T> by lazy { if (component == null) KeyTools.createKey(info) else KeyTools.createKey(info, component) }
+
+        fun supported(manager: KeyManager): Boolean = manager.isKeySupported(key)
+
+        fun listen(manager: KeyManager) {
+            manager.listen(
+                key,
+                holder,
+                CommonCallbacks.KeyListener<T> { _, newValue -> if (newValue != null) received(this@Binding, newValue) },
+            )
         }
-        manager.listen(
-            key,
-            holder,
-            CommonCallbacks.KeyListener<T> { _, newValue ->
-                if (newValue != null) {
-                    synchronized(lock) {
-                        rates.tick(name, System.currentTimeMillis())
-                        apply(newValue)
-                    }
-                    publish()
-                }
-            },
-        )
+
+        fun accept(value: T) = onValue(value)
+    }
+
+    private fun <T : Any> received(binding: Binding<T>, value: T) {
+        val now = System.currentTimeMillis()
+        val (first, sinceAttachMs) = synchronized(lock) {
+            rates.tick(binding.name, now)
+            val status = if (ledger.value(binding.name, now)) ledger.status(binding.name) else null
+            binding.accept(value)
+            Pair(status, ledger.attachedAtMs?.let { now - it })
+        }
+        if (first != null) {
+            log("Telemetry key", "${binding.name} first value" + (sinceAttachMs?.let { " $it ms after its listener was registered" } ?: ""))
+            record(binding.name, "first_value", first)
+        }
+        publish()
+    }
+
+    private fun support(statuses: Map<String, TelemetryKeyStatus>, answer: (TelemetryKeyStatus) -> Boolean?): String {
+        val yes = statuses.filterValues { answer(it) == true }.keys.joinToString().ifEmpty { "none" }
+        val no = statuses.filterValues { answer(it) == false }.keys.joinToString().ifEmpty { "none" }
+        return "yes for $yes; no for $no"
     }
 
     private fun publish() {
@@ -244,6 +320,7 @@ class ProbeAircraft(
             posQuality = if (fix != null) PROVISIONAL_FIX_QUALITY else 0.0,
             hardware = hardware,
             keyRatesHz = rates.snapshot(now),
+            telemetryKeys = ledger.snapshot(),
             yawDeg = yaw,
             virtualStickEnabled = virtualStickEnabled,
             authorityLostReason = authorityLostReason,
