@@ -5,6 +5,7 @@ import android.content.Intent
 import android.util.Log
 import com.cySdkyc.clx.Helper
 import org.worldofhacks.sweep.bridge.publish.DjiPublishSources
+import org.worldofhacks.sweep.bridge.publish.PublishLaunchRequest
 import org.worldofhacks.sweep.bridge.publish.PublishSourceFactory
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 
@@ -29,4 +30,8 @@ object AircraftVariant {
     /** The probe flavor takes setup values from the Setup screen only. */
     @Suppress("UNUSED_PARAMETER")
     fun debugSetup(intent: Intent): BridgeSetup? = null
+
+    /** The probe flavor takes the publish values from the Setup screen only. */
+    @Suppress("UNUSED_PARAMETER")
+    fun debugPublish(intent: Intent): PublishLaunchRequest? = null
 }

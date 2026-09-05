@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -27,13 +28,17 @@ import org.worldofhacks.sweep.bridge.publish.PublishSource
 import org.worldofhacks.sweep.bridge.publish.Publisher
 import org.worldofhacks.sweep.bridge.publish.WhipEndpoint
 
+/** The Phase F publisher for the Setup and Connectivity cards; `MainActivity` provides it. */
+val LocalPublisher = staticCompositionLocalOf<Publisher> { error("LocalPublisher is not provided") }
+
 /**
  * The ground-station fields on the Setup card (Phase F): host (blank means the relay host),
  * MediaMTX WebRTC port, and the auto-start switch. Values save as they change; nothing here
  * is a secret.
  */
 @Composable
-fun PublishSetupFields(publisher: Publisher, relayUrl: String) {
+fun PublishSetupFields(relayUrl: String) {
+    val publisher = LocalPublisher.current
     val settings by publisher.settings.collectAsStateWithLifecycle()
     val endpoints by publisher.endpoints.collectAsStateWithLifecycle()
     var host by remember { mutableStateOf(settings.mediaHost) }
@@ -78,7 +83,8 @@ fun PublishSetupFields(publisher: Publisher, relayUrl: String) {
 
 /** The publish state, reason, metrics, and controls on the Connectivity card. */
 @Composable
-fun PublishRow(publisher: Publisher, now: Long) {
+fun PublishRow(now: Long) {
+    val publisher = LocalPublisher.current
     val status by publisher.status.collectAsStateWithLifecycle()
     val metrics by publisher.metrics.collectAsStateWithLifecycle()
     val request by publisher.request.collectAsStateWithLifecycle()

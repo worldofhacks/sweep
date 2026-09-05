@@ -3,6 +3,7 @@ package org.worldofhacks.sweep.bridge
 import android.app.Application
 import android.content.Intent
 import org.worldofhacks.sweep.bridge.publish.FakePublishSources
+import org.worldofhacks.sweep.bridge.publish.PublishLaunchRequest
 import org.worldofhacks.sweep.bridge.publish.PublishSourceFactory
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 
@@ -32,8 +33,24 @@ object AircraftVariant {
         return BridgeSetup(relayUrl = relayUrl, session = session, droneId = droneId, token = token)
     }
 
+    /**
+     * Fake flavor only (Phase F): `--es publish_host <host> --ei publish_port <port> --es publish
+     * start|stop|auto` set the ground station and drive the publisher, so the WHIP path can be
+     * proven against MediaMTX with the screen off. Null when the intent carries none of them.
+     */
+    fun debugPublish(intent: Intent): PublishLaunchRequest? {
+        val host = intent.getStringExtra(EXTRA_PUBLISH_HOST)
+        val port = if (intent.hasExtra(EXTRA_PUBLISH_PORT)) intent.getIntExtra(EXTRA_PUBLISH_PORT, 0) else null
+        val action = intent.getStringExtra(EXTRA_PUBLISH)
+        if (host == null && port == null && action == null) return null
+        return PublishLaunchRequest(mediaHost = host, mediaPort = port, action = action)
+    }
+
     private const val EXTRA_RELAY_URL = "relay_url"
     private const val EXTRA_SESSION = "session"
     private const val EXTRA_DRONE_ID = "drone_id"
     private const val EXTRA_TOKEN = "token"
+    private const val EXTRA_PUBLISH_HOST = "publish_host"
+    private const val EXTRA_PUBLISH_PORT = "publish_port"
+    private const val EXTRA_PUBLISH = "publish"
 }
