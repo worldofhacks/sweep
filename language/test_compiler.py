@@ -124,6 +124,12 @@ def _response(case_id: str):
     )[case_id]
 
 
+def _translation_response(*, dx: float, dy: float):
+    response = _response("translate-selected")
+    intent = response["intents"][0]
+    return {**response, "intents": [{**intent, "args": {"dx": dx, "dy": dy}}]}
+
+
 def _compile(case_id: str):
     case = _case(case_id)
     response = _response(case_id)
@@ -626,7 +632,20 @@ def test_selected_land_preserves_current_aircraft_selection(stopped: bool) -> No
     ]
 
 
-def test_compiled_translation_uses_planner_owned_policy_without_widening_intent() -> None:
+@pytest.mark.parametrize(
+    ("direction", "args", "expected_targets"),
+    [
+        ("forward", {"dx": 1, "dy": 0}, {1: (0.75, 0.0), 2: (2.0, 0.75)}),
+        ("backward", {"dx": -1, "dy": 0}, {1: (-0.75, 0.0), 2: (2.0, -0.75)}),
+        ("left", {"dx": 0, "dy": 1}, {1: (0.0, 0.75), 2: (1.25, 0.0)}),
+        ("right", {"dx": 0, "dy": -1}, {1: (0.0, -0.75), 2: (2.75, 0.0)}),
+    ],
+)
+def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
+    direction: str,
+    args: dict[str, int],
+    expected_targets: dict[int, tuple[float, float]],
+) -> None:
     case = _case("translate-selected")
     state = _state(case)
     state["selection"] = [1, 2]
@@ -655,7 +674,7 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
                 "intents": [
                     {
                         "name": "translate",
-                        "args": {"dx": 1, "dy": 0},
+                        "args": args,
                         "selection": [1, 2],
                         "mode": "indoor",
                     }
@@ -664,7 +683,7 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
         ),
         audit=InMemoryAuditSink(),
     ).compile(
-        "Move right one step.",
+        f"Move {direction} one step.",
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -683,14 +702,15 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
         now_ms=case.now_ms,
         intent_id="translate-relative-1",
     )
-    targets = {
+    actual_targets = {
         call.drone_ids[0]: (
             dict(call.parameters)["x"],
             dict(call.parameters)["y"],
         )
         for call in flight.calls
     }
-    assert targets == {1: (0.75, 0.0), 2: (2.0, 0.75)}
+    for drone_id, expected in expected_targets.items():
+        assert actual_targets[drone_id] == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(
@@ -698,12 +718,15 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
     [
         ("fly forward 5 feet", {"dx": 0.0, "dy": 3.048}, [1, 2]),
         ("fly forward 5 feet .", {"dx": 0.0, "dy": 3.048}, [1, 2]),
-        ("Drones one \tAND   two fly forward 2 feet!", {"dx": 0.0, "dy": 1.2192}, [1, 2]),
+        ("Drones one, \tAND   two fly forward 2 feet!", {"dx": 0.0, "dy": 1.2192}, [1, 2]),
         ("fly forward 1.5 metres", {"dx": 0.0, "dy": 3.0}, [1, 2]),
         ("fly forward", {"dx": 0.0, "dy": 0.6096}, [1, 2]),
+        ("Go left.", {"dx": -0.6096, "dy": 0.0}, [1, 2]),
+        ("Move forward half a meter.", {"dx": 0.0, "dy": 1.0}, [1, 2]),
+        ("Please\u00a0move right by 5 ft！", {"dx": 3.048, "dy": 0.0}, [1, 2]),
     ],
 )
-def test_synthetic_flight_phrase_evaluation_keeps_distances_in_planner_steps(
+def test_synthetic_direction_phrase_evaluation_keeps_distances_in_planner_steps(
     transcript, args, selection
 ) -> None:
     case = _case("translate-selected")
@@ -749,6 +772,94 @@ def test_synthetic_flight_phrase_evaluation_keeps_distances_in_planner_steps(
         "selection": selection,
         "mode": "indoor",
     }
+
+
+@pytest.mark.parametrize(
+    ("transcript", "args"),
+    [
+        ("Move the selected drones half a meter right.", {"dx": 1, "dy": 0}),
+        ("Go left.", {"dx": 0.6096, "dy": 0}),
+        ("Move forward half a meter.", {"dx": 0, "dy": 1}),
+        ("fly forward 5 feet", {"dx": 10**400, "dy": 0}),
+    ],
+)
+def test_direction_phrase_rejects_wrong_axes_and_oversized_numbers(
+    transcript: str, args: dict[str, int | float]
+) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": args,
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        transcript,
+        _state(case),
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(
+            planning_config(translation_frame="aircraft_relative"),
+            translation_step_m=0.5,
+        ).translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
+
+
+def test_select_then_move_phrase_cannot_bypass_axis_grounding() -> None:
+    case = _case("translate-selected")
+    state = {**_state(case), "selection": [1]}
+    snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "select",
+                        "args": {"ids": [1, 2]},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    },
+                    {
+                        "name": "translate",
+                        "args": {"dx": 1, "dy": 0},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    },
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "Select both drones, then move them half a meter right.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(
+            planning_config(translation_frame="aircraft_relative"),
+            translation_step_m=0.5,
+        ).translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
 
 
 def test_five_foot_translation_preview_and_execution_use_the_prepared_plan() -> None:
@@ -1158,7 +1269,8 @@ def test_confirmation_rejects_changed_execution_translation_headings() -> None:
         headings={1: 0.0, 2: 90.0},
     )
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.0, dy=-1.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1553,7 +1665,8 @@ def test_confirmation_rejects_mismatched_actual_planner_before_dispatch() -> Non
         },
     )
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.0, dy=-(0.5 / 0.75))),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1593,7 +1706,8 @@ def test_previewed_plan_reaches_dispatch_through_relay_unchanged(tmp_path, monke
     state = _with_execution_positions(_state(case), positions)
     config = replace(planning_config(translation_frame="world"), translation_step_m=0.75)
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.5 / 0.75, dy=0.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1780,7 +1894,8 @@ def test_motion_preview_survives_later_confirmation_timestamp(monkeypatch) -> No
     state = _with_execution_positions(_state(case), positions)
     config = replace(planning_config(translation_frame="world"), translation_step_m=0.75)
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.5 / 0.75, dy=0.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1847,7 +1962,8 @@ def test_motion_confirmation_rejects_forged_preparation_and_different_sink(tmp_p
     state = _with_execution_positions(_state(case), positions)
     config = replace(planning_config(translation_frame="world"), translation_step_m=0.75)
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.5 / 0.75, dy=0.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -2028,7 +2144,8 @@ def test_preparation_rejects_snapshot_older_than_relay_position_evidence() -> No
     stale = _snapshot_at(make_snapshot(2), case.now_ms - 1)
     config = replace(planning_config(translation_frame="world"), translation_step_m=0.5)
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=1.0, dy=0.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -2069,7 +2186,7 @@ def test_preparation_compares_unselected_aircraft_used_by_spacing_safety() -> No
         "intents": [
             {
                 "name": "translate",
-                "args": {"dx": 1, "dy": 0},
+                "args": {"dx": 0.6096, "dy": 0},
                 "selection": [1],
                 "mode": "indoor",
             }
@@ -2534,7 +2651,7 @@ def test_confirmation_uses_actual_terminal_flight_state_for_next_step() -> None:
             {"name": "takeoff", "args": {}, "selection": [1], "mode": "indoor"},
             {
                 "name": "translate",
-                "args": {"dx": 1, "dy": 0},
+                "args": {"dx": 0, "dy": -0.6096},
                 "selection": [1],
                 "mode": "indoor",
             },
