@@ -170,7 +170,7 @@ describe('command catalogue', () => {
     const later = groups[1].rows.filter((row) => row.status === 'later')
     expect(later.every((row) => !row.enabled && row.spec === null)).toBe(true)
     const land = groups[1].rows.find((row) => row.label === 'Land')
-    expect(land).toMatchObject({ enabled: true, note: refusalCopy('land') })
+    expect(land).toMatchObject({ enabled: true, note: 'Confirmation required before send.' })
   })
 })
 
