@@ -80,6 +80,8 @@ returns the session's flight and camera pair: `sim` builds the simulator from th
 snapshot with an explicit `SimCameraConfig`, `remote` builds one `RemoteBridgeAdapter`
 over a `RelayNodeLink` whose delivery and acknowledgement waits are bounded by
 `SWEEP_COMMAND_TTL_MS`; `build_dispatcher` wraps that pair in an `AdapterDispatcher`.
+`relay.autonomy` calls it once per accepted intent from the snapshot the arbiter checks,
+so the adapter's connection epochs are the ones the plan was built against.
 `relay/README.md` documents the node protocol the adapter speaks.
 
 `AdapterDispatcher` opens `adapter.for_intent(intent_id, roster_version)` around every
@@ -102,7 +104,8 @@ relay registry directly over the node socket.
 `adapters.dji_mini3.fake_node` behaves like the phone on the wire without hardware:
 `just fake-node` connects one to a running relay so the console shows a real registry
 entry, and `relay/tests/test_bridge_roundtrip.py` dispatches through `build_dispatcher`
-on the `remote` backend to drive it end to end.
+on the `remote` backend to drive it end to end; `relay/tests/test_autonomy_roundtrip.py`
+runs the M2.0 workflow from console intents through `relay.autonomy` to two fake nodes.
 
 The existing `crazyswarm2/` and `mavlink/` packages remain inactive placeholder stubs. They are not accepted hardware implementations and do not drive an abstraction change until a concrete second hardware integration is specified and proven.
 
