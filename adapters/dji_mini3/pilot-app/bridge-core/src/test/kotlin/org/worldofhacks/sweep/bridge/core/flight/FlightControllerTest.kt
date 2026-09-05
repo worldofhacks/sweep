@@ -653,4 +653,75 @@ class FlightControllerTest {
         assertFalse(h.model.virtualStickEnabled, "the late enable answer is released again")
         assertEquals("idle", h.controller.status.phase)
     }
+
+    @Test
+    fun `bench holds and virtual stick need the deadman armed and are refused after failsafe`() {
+        val h = Harness()
+        h.hovering()
+        // No relay yet: no thresholds, no deadman, no stick stream.
+        val disarmed = RecordingSink()
+        assertFalse(h.controller.startBench("axis-pitch", StickFrame.NEUTRAL.copy(pitch = 0.3), 1_000, disarmed))
+        assertEquals("watchdog_disarmed", disarmed.terminal?.second, disarmed.events.toString())
+        assertTrue(disarmed.terminal!!.third!!.contains("[retryable]"))
+        val hover = h.run(CommandArgs.Hover)
+        assertEquals("watchdog_disarmed", hover.terminal?.second, hover.events.toString())
+        h.tick(2)
+        assertTrue(h.frames.isEmpty(), "no frame without the deadman")
+        assertFalse(h.model.virtualStickEnabled)
+        assertEquals("idle", h.controller.status.phase)
+        // Joined: the thresholds are in force and the bench hold runs under the deadman.
+        h.join()
+        val armed = RecordingSink()
+        assertTrue(h.controller.startBench("axis-pitch", StickFrame.NEUTRAL.copy(pitch = 0.3), 500, armed))
+        h.tickMs(1_000)
+        assertEquals("completed", armed.terminal?.first, armed.events.toString())
+        assertFalse(h.model.virtualStickEnabled)
+        // Failsafe after relay silence: bench holds are refused exactly like wire commands.
+        h.relayAlive = false
+        h.tickMs(2_500)
+        assertEquals("failsafe", h.controller.status.watchdog)
+        val tripped = RecordingSink()
+        assertFalse(h.controller.startBench("deadman", StickFrame.NEUTRAL, 1_000, tripped))
+        assertEquals("watchdog_failsafe", tripped.terminal?.second, tripped.events.toString())
+        assertFalse(h.model.virtualStickEnabled)
+    }
+
+    @Test
+    fun `a hold that interrupted a node takeoff still lands at failsafe unless the relay comes back`() {
+        val h = Harness()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1200))
+        h.tick(1)
+        assertEquals("taking_off", h.controller.status.phase)
+        h.relayAlive = false
+        h.tickMs(500)
+        // Hold: the takeoff command fails and the flight controller finishes the takeoff by itself.
+        assertEquals("watchdog_hold", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        assertFalse(h.model.virtualStickEnabled)
+        // Relay activity before failsafe re-arms the deadman: nothing is landed.
+        h.relayAlive = true
+        h.tickMs(3_000)
+        assertEquals("armed", h.controller.status.watchdog)
+        assertFalse(h.model.landing)
+        assertEquals("hovering", h.model.flightState)
+        // The same takeoff interrupted again with the relay silent through failsafe: the node
+        // lands what it took off, although the hold left the loop idle with virtual stick off.
+        h.model.place()
+        h.tick(1)
+        val again = h.run(CommandArgs.Takeoff(zMm = 1200))
+        h.tick(1)
+        h.relayAlive = false
+        h.tickMs(500)
+        assertEquals("watchdog_hold", again.terminal?.second, again.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        h.tickMs(1_500)
+        assertEquals("failsafe", h.controller.status.watchdog)
+        assertEquals("watchdog_failsafe", h.controller.status.landingReason)
+        assertTrue(h.model.landing, "auto-landing commanded for the aircraft the node took off")
+        assertTrue(h.log.any { it.contains("never return to home") })
+        h.tickMs(4_000)
+        assertEquals("landed", h.model.flightState)
+        assertEquals("idle", h.controller.status.phase)
+    }
 }

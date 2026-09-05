@@ -21,7 +21,9 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  *    protection. Hold decays the stream to neutral sticks and fails the active command with
  *    `watchdog_hold`; failsafe commands auto-landing (indoors: land, never return to home)
  *    and fails with `watchdog_failsafe`. Neutral sticks keep flowing while Virtual Stick is
- *    enabled, so the stream never stops silently.
+ *    enabled, so the stream never stops silently. Nothing streams without it: a Virtual Stick
+ *    enable or a bench hold is refused while the deadman is disarmed or in failsafe, and a
+ *    hold that interrupted a node takeoff is remembered so the failsafe still lands it.
  *    The deadman lands only what the node was flying: with the loop idle and Virtual Stick
  *    off the aircraft is already under the flight controller and the RC operator, and after
  *    an RC takeover the node never commands a landing underneath the pilot.
@@ -102,6 +104,8 @@ class FlightController(
     private var estopLatched = false
     private var estopSinceMs = 0L
     private var estopLandStarted = false
+    /** Set when a hold interrupted a command the node was flying, so the failsafe still lands what the node flew. */
+    private var flownIntoHold = false
     private var landingReason: String? = null
     private var stickSeq = 0L
     private val rate = RateMeter()
@@ -146,6 +150,7 @@ class FlightController(
         val dog = watchdog
         if (dog != null && next.joined && (!previous.joined || dog.state == WatchdogState.DISARMED)) {
             dog.arm()
+            flownIntoHold = false
             event("joined the relay; deadman armed (hold ${dog.config.holdMs} ms, failsafe ${dog.config.failsafeMs} ms)")
         }
     }
@@ -174,6 +179,7 @@ class FlightController(
         event("RC takeover ($reason${detail?.let { ": $it" } ?: ""}): loop cancelled, virtual stick released")
         failActive(FlightReason.AUTHORITY_LOST, "$reason${detail?.let { ": $it" } ?: ""}; re-arm control authority on the flight card")
         authorityLost = reason
+        flownIntoHold = false
         if (vsEnabled) {
             vsEnabled = false
             port.disableVirtualStick { result -> if (result is PortResult.Failed) log("virtual stick disable after takeover failed: ${result.detail}") }
@@ -387,6 +393,17 @@ class FlightController(
             fail(sink, FlightReason.AIRCRAFT_UNAVAILABLE, "aircraft and RC must both be connected")
             return false
         }
+        when (watchdogState) {
+            WatchdogState.DISARMED -> {
+                fail(sink, FlightReason.WATCHDOG_DISARMED, "deadman not armed: bench holds stream sticks only under the relay's watchdog thresholds; connect and join the relay first")
+                return false
+            }
+            WatchdogState.FAILSAFE -> {
+                fail(sink, FlightReason.WATCHDOG_FAILSAFE, "deadman is in failsafe after relay silence; it re-arms on the next join")
+                return false
+            }
+            else -> Unit
+        }
         if (!motionAllowed(sink)) return false
         if (!facts.flying) {
             fail(sink, FlightReason.NOT_AIRBORNE, "bench procedures start from a guarded hover")
@@ -432,9 +449,12 @@ class FlightController(
         when (transition.to) {
             WatchdogState.HOLD -> enterHold(now, transition.elapsedMs)
             WatchdogState.FAILSAFE -> enterFailsafe(now, transition.elapsedMs)
-            WatchdogState.ARMED -> if (phase is Phase.Holding) {
-                event("relay activity resumed after hold; virtual stick released")
-                releaseVirtualStick()
+            WatchdogState.ARMED -> {
+                flownIntoHold = false
+                if (phase is Phase.Holding) {
+                    event("relay activity resumed after hold; virtual stick released")
+                    releaseVirtualStick()
+                }
             }
             WatchdogState.DISARMED -> Unit
         }
@@ -444,6 +464,9 @@ class FlightController(
         val detail = "no relay activity for $elapsedMs ms (hold threshold ${settings?.holdMs} ms): sticks neutral until the link recovers"
         event("watchdog hold: $detail")
         if (phase is Phase.Landing) return
+        // A takeoff, or a Virtual Stick enable still pending, ends here with the loop idle and
+        // Virtual Stick off: remember that the node was flying so the failsafe still lands it.
+        if (active != null || phase !is Phase.Idle) flownIntoHold = true
         failActive(FlightReason.WATCHDOG_HOLD, detail)
         transition(if (vsEnabled) Phase.Holding(now) else Phase.Idle)
     }
@@ -453,7 +476,8 @@ class FlightController(
         event("watchdog failsafe: $detail")
         if (phase is Phase.Landing) return
         // Decided before failActive clears the command: the node lands only what it was flying.
-        val flownByNode = vsEnabled || active != null || phase !is Phase.Idle
+        val flownByNode = vsEnabled || active != null || phase !is Phase.Idle || flownIntoHold
+        flownIntoHold = false
         failActive(FlightReason.WATCHDOG_FAILSAFE, detail)
         val lost = authorityLost
         when {
@@ -714,6 +738,22 @@ class FlightController(
         if (vsEnabled) {
             then()
             return
+        }
+        // No stick stream without the deadman. Its thresholds arrive with the relay's
+        // auth.accepted and it arms on join, so a wire command always finds it armed; a bench
+        // takeoff's climb without a relay, or anything after a failsafe, does not.
+        when (watchdogState) {
+            WatchdogState.DISARMED -> {
+                failActive(FlightReason.WATCHDOG_DISARMED, "deadman not armed; the aircraft stays under the flight controller and the RC")
+                transition(Phase.Idle)
+                return
+            }
+            WatchdogState.FAILSAFE -> {
+                failActive(FlightReason.WATCHDOG_FAILSAFE, "deadman is in failsafe; no virtual stick until the next join")
+                transition(Phase.Idle)
+                return
+            }
+            else -> Unit
         }
         transition(Phase.Enabling(now))
         val gen = generation

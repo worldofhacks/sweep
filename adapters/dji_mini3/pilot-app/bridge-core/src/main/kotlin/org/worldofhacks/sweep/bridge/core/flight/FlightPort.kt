@@ -41,6 +41,8 @@ enum class FlightReason(val wire: String, val retryable: Boolean) {
     AUTHORITY_LOST("authority_lost", false),
     WATCHDOG_HOLD("watchdog_hold", true),
     WATCHDOG_FAILSAFE("watchdog_failsafe", false),
+    /** The deadman is not armed: its thresholds arrive with the relay's `auth.accepted` and it arms on join; nothing streams without it. */
+    WATCHDOG_DISARMED("watchdog_disarmed", true),
     ESTOP_ASSERTED("estop_asserted", true),
     NOT_AIRBORNE("not_airborne", true),
     ALREADY_AIRBORNE("already_airborne", false),
