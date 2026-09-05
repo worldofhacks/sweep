@@ -23,6 +23,8 @@ import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.ProbeReport
 import org.worldofhacks.sweep.bridge.session.SessionModel
 import org.worldofhacks.sweep.bridge.session.SessionState
+import org.worldofhacks.sweep.bridge.video.DjiFpv
+import org.worldofhacks.sweep.bridge.video.FpvSessionHost
 
 /**
  * MSDK v5 init, registration, and product identity (Phase B4), plus the telemetry listeners
@@ -36,7 +38,7 @@ import org.worldofhacks.sweep.bridge.session.SessionState
  * instead of overwriting the current one. The capture matrix and camera probing of the
  * original are not carried over.
  */
-class SdkSession(private val application: Application) : AircraftSession {
+class SdkSession(private val application: Application) : AircraftSession, FpvSessionHost {
     private val model = SessionModel()
     private val probe = ProbeAircraft(
         phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
@@ -44,6 +46,9 @@ class SdkSession(private val application: Application) : AircraftSession {
         sdkVersion = { runCatching { SDKManager.getInstance().sdkVersion }.getOrNull().orEmpty() },
         log = { name, detail -> model.event(name, detail) },
     )
+
+    // Phase D hook: local FPV, yaw, and codec evidence (org.worldofhacks.sweep.bridge.video).
+    override val fpv: DjiFpv = DjiFpv(application.filesDir, AndroidPhoneStatus(application)) { name, detail -> model.event(name, detail) }
 
     override val state: StateFlow<SessionState> = model.state
 
@@ -57,6 +62,7 @@ class SdkSession(private val application: Application) : AircraftSession {
         override fun onRegisterSuccess() {
             model.registerSucceeded()
             probe.attach()
+            fpv.attach()
         }
 
         override fun onRegisterFailure(error: IDJIError) {
@@ -66,19 +72,23 @@ class SdkSession(private val application: Application) : AircraftSession {
         override fun onProductDisconnect(productId: Int) {
             model.productDisconnected(productId)
             probe.productConnected(false)
+            fpv.productConnected(false)
             probe.updateIdentity(model.current.identity)
         }
 
         override fun onProductConnect(productId: Int) {
             val generation = model.productConnected(productId)
             probe.attach()
+            fpv.attach()
             probe.productConnected(true)
+            fpv.productConnected(true)
             queryIdentity(generation)
         }
 
         override fun onProductChanged(productId: Int) {
             val generation = model.productChanged(productId)
             probe.productConnected(true)
+            fpv.productConnected(true)
             queryIdentity(generation)
         }
 

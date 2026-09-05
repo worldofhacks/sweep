@@ -11,7 +11,8 @@ object AircraftVariant {
 
     fun installSdk(application: Application) = Unit
 
-    fun createSession(application: Application): AircraftSession = FakeAircraftSession(application.filesDir)
+    fun createSession(application: Application): AircraftSession =
+        FakeAircraftSession(application.filesDir, AndroidPhoneStatus(application))
 
     /**
      * Fake flavor only: the setup values may arrive as launch extras so a bench run can be
