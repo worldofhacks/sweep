@@ -112,7 +112,8 @@ describe('persistent shell', () => {
     const dock = await draftCapture(user)
     expect(dock).toHaveFocus()
     expect(dock).toHaveTextContent('Pending — nothing sent')
-    expect(dock).toHaveTextContent('D-01 · pano_360')
+    expect(dock).toHaveTextContent('Capture room')
+    expect(dock).toHaveTextContent('D-01')
     expect(dock).toHaveTextContent('roster v7')
     expect(within(dock).getAllByRole('listitem')).toHaveLength(4)
 
@@ -170,7 +171,7 @@ describe('persistent shell', () => {
     await screen.findByText(/Development fixture active/i)
     await draftCapture(user)
 
-    await user.click(screen.getByRole('radio', { name: /Reconstruct 8/ }))
+    await user.click(screen.getByRole('button', { name: /^reconstruct_8/ }))
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     const alert = screen.getByText(/Preview invalidated, nothing sent/).closest('[role="alert"]')
     expect(alert).toHaveTextContent('capture_pattern_changed')

@@ -159,7 +159,7 @@ describe('Speech module', () => {
 
     await u.click(screen.getByRole('button', { name: 'Draft for confirmation' }))
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
-    expect(dock).toHaveTextContent('D-01 · pano_360')
+    expect(dock).toHaveTextContent('Capture room')
     expect(dock).toHaveTextContent('source console')
     expect(within(dock).getByText(/"room_id": "kitchen-01"/)).toBeInTheDocument()
     expect(clients.console.sent).toHaveLength(0)
@@ -197,7 +197,7 @@ describe('Speech module', () => {
     expect(result()).toHaveTextContent('{"ids":[1,2,4]}')
     await u.click(screen.getByRole('button', { name: 'Draft for confirmation' }))
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
-    expect(dock).toHaveTextContent('D-01, D-02, D-04 · select')
+    expect(within(dock).getByText('select', { selector: '.sh-dock-title' })).toBeInTheDocument()
     expect(clients.console.sent).toHaveLength(0)
     await u.click(within(dock).getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()

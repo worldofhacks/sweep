@@ -46,9 +46,7 @@ describe('Control / Capture console', () => {
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} />)
 
-    expect(await screen.findByRole('heading', { name: 'Aircraft registry' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'View feed D-01' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: 'View feed D-02' })).toHaveAttribute('aria-pressed', 'false')
+    expect(await screen.findByText('1 of 4 selected')).toBeInTheDocument()
 
     await openModule(user, 'Live')
     expect(screen.getByRole('region', { name: 'Wall of 4' })).toBeInTheDocument()
@@ -64,7 +62,11 @@ describe('Control / Capture console', () => {
     expect(screen.getByRole('region', { name: 'Focused aircraft D-02' })).toBeInTheDocument()
 
     await openModule(user, 'Control')
-    expect(screen.getByRole('button', { name: 'View feed D-02' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('1 of 4 selected')).toBeInTheDocument()
+    await openModule(user, 'Live')
+    expect(screen.getByRole('button', { name: 'Focus D-02' })).toHaveAttribute('aria-pressed', 'true')
+    await openLivePane(user, 'Focus feed')
+    expect(screen.getByRole('region', { name: 'Focused aircraft D-02' })).toBeInTheDocument()
     expect(clients.console.sent).toHaveLength(0)
   })
 
@@ -137,7 +139,7 @@ describe('Control / Capture console', () => {
     render(<App sessionId={session} clients={clients} />)
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/^Danger — /)
-    expect(screen.getByText('No aircraft state')).toBeInTheDocument()
+    expect(screen.getByText('0 of 0 selected')).toBeInTheDocument()
     const stop = screen.getByRole('button', { name: 'Network stop' })
     expect(stop).toBeDisabled()
     expect(stop).toHaveAccessibleDescription(
@@ -193,7 +195,8 @@ describe('Control / Capture console', () => {
 
     await openControlPane(user, 'Capture')
     await user.click(screen.getByRole('button', { name: /Capture room/ }))
-    expect(screen.getByText(/delayed-capture-intent/)).toBeInTheDocument()
+    const dock = screen.getByRole('region', { name: 'Pending confirmation' })
+    expect(within(dock).getByText(/"intent_id": "delayed-capture-intent"/)).toBeInTheDocument()
     currentTime += 30_000
     await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
 
@@ -239,8 +242,7 @@ describe('Control / Capture console', () => {
     )
     await screen.findByText(/Development fixture active/i)
 
-    await openControlPane(user, 'Capture')
-    await user.click(screen.getByRole('button', { name: /Hold selected/ }))
+    await user.click(screen.getByRole('button', { name: 'Hold' }))
 
     expect(
       await screen.findAllByText('Socket closed before the intent frame was written.'),
@@ -255,14 +257,14 @@ describe('Control / Capture console', () => {
     render(<App sessionId={session} clients={clients} />)
     await screen.findByText(/Development fixture active/i)
 
-    await user.click(screen.getByRole('button', { name: /D-02 Ready epoch 1 Select/i }))
+    await user.click(screen.getByRole('button', { name: /^D-02 / }))
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
-    await user.click(screen.getByRole('button', { name: /D-01 Ready epoch 3 Selected/i }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+    expect(clients.console.sent[0]).toMatchObject({ name: 'select', args: { ids: [2] } })
+    expect(screen.getByRole('button', { name: /^D-02 / })).toHaveAttribute('aria-pressed', 'true')
 
     await openControlPane(user, 'Capture')
-    expect(await screen.findByText(/D-02 does not report pano_360/)).toBeInTheDocument()
+    expect(await screen.findByText(/D-02 does not advertise pano_360/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Capture room/ })).toBeDisabled()
-    expect(screen.getByRole('radio', { name: /Pano 360/ })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('button', { name: /^pano_360/ })).toHaveAttribute('aria-pressed', 'true')
   })
 })

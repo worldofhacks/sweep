@@ -1,21 +1,28 @@
 import { useCallback, useEffect, useMemo, useReducer, type Dispatch } from 'react'
 import type { RelayClient } from '../relay/client'
-import type { CapturePattern, DroneId, IntentSource, IntentV1 } from '../relay/contract'
-import { isConsoleIntentV1 } from '../relay/contract'
+import type {
+  CapturePattern,
+  ConsoleIntentName,
+  DroneId,
+  IntentArgsByName,
+  IntentSource,
+  IntentV1,
+} from '../relay/contract'
+import { isConsoleIntentV1, requiresConfirmation, selectionRule } from '../relay/contract'
 import {
   browserIntentDependencies,
   confirmIntent,
   createCaptureArgs,
   createIntent,
+  isValidRoomId,
   retryIntent,
   type IntentFactoryDependencies,
 } from './intent'
+import { buildPlanPreview } from './plan'
 import {
   controlReducer,
   createInitialControlState,
   createRequestRecord,
-  formatDroneId,
-  type PlanPreview,
   type RequestRecord,
 } from './state'
 
@@ -33,6 +40,14 @@ export interface UseControlConsoleOptions {
   sessionId: string
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
+}
+
+/** One control press: an intent name, its args, and the aircraft it addresses. */
+export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> {
+  name: N
+  args: IntentArgsByName[N]
+  /** Defaults to the authoritative selection. `land_all` passes the whole roster. */
+  targets?: DroneId[]
 }
 
 export function useControlConsole({
@@ -99,19 +114,9 @@ export function useControlConsole({
     [clients],
   )
 
-  const sendNewIntent = useCallback(
-    (intent: IntentV1, client: RelayClient) => {
-      const t = intentDependencies.now()
-      dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
-      dispatch({ type: 'request_sent', intentId: intent.intent_id, t })
-      sendToRelay(intent, client, t, intentDependencies.now, dispatch)
-    },
-    [intentDependencies],
-  )
-
-  const sendExistingIntent = useCallback(
+  /** Marks a recorded request sent and hands it to the client its source names. */
+  const sendNow = useCallback(
     (intent: IntentV1, t: number) => {
-      dispatch({ type: 'request_confirmed', intent, t })
       dispatch({ type: 'request_sent', intentId: intent.intent_id, t })
       const client = clientFor(intent.source)
       if (!client) {
@@ -128,6 +133,98 @@ export function useControlConsole({
     [clientFor, intentDependencies],
   )
 
+  /**
+   * Records a freshly minted intent and parks it in the dock with its plan
+   * preview. One preview at a time: a new draft cancels an earlier, unconfirmed
+   * one. The intent id never changes. The speech compiler and the gesture
+   * producer draft through this so nothing leaves on a compile or a pose.
+   */
+  const stageForConfirmation = useCallback(
+    (intent: IntentV1): IntentV1 => {
+      const t = intentDependencies.now()
+      dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
+      state.requests
+        .filter((request) => request.status === 'pending_confirmation')
+        .forEach((request) => {
+          dispatch({ type: 'request_cancelled', intentId: request.intent.intent_id, t })
+        })
+      dispatch({
+        type: 'request_pending_confirmation',
+        intentId: intent.intent_id,
+        t,
+        plan: buildPlanPreview(intent, state.rosterVersion),
+      })
+      return intent
+    },
+    [intentDependencies, state.requests, state.rosterVersion],
+  )
+
+  /**
+   * Records a freshly minted intent, then either parks it for confirmation
+   * (with its plan preview) or sends it at once.
+   */
+  const stageIntent = useCallback(
+    (intent: IntentV1) => {
+      if (requiresConfirmation(intent.name)) {
+        stageForConfirmation(intent)
+        return
+      }
+      const t = intentDependencies.now()
+      dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
+      sendNow(intent, t)
+    },
+    [intentDependencies, sendNow, stageForConfirmation],
+  )
+
+  const sendExistingIntent = useCallback(
+    (intent: IntentV1, t: number) => {
+      dispatch({ type: 'request_confirmed', intent, t })
+      sendNow(intent, t)
+    },
+    [sendNow],
+  )
+
+  const issueIntent = useCallback(
+    <N extends ConsoleIntentName>(request: IntentRequest<N>) => {
+      const intent = createIntent(
+        {
+          name: request.name,
+          args: request.args,
+          selection: request.targets ?? state.selection,
+          source: 'console',
+          session: state.sessionId,
+        },
+        intentDependencies,
+      )
+      stageIntent(intent)
+    },
+    [intentDependencies, stageIntent, state.selection, state.sessionId],
+  )
+
+  /**
+   * A select intent addresses the aircraft it names: `selection` carries the
+   * desired ids, the same as `args.ids`, so selecting from an empty selection
+   * still satisfies the at-least-one rule.
+   */
+  const sendSelection = useCallback(
+    (desired: DroneId[]) => {
+      if (desired.length === 0) return
+      const intent = createIntent(
+        {
+          name: 'select',
+          args: { ids: desired },
+          selection: desired,
+          source: 'console',
+          session: state.sessionId,
+        },
+        intentDependencies,
+      )
+      stageIntent(intent)
+    },
+    [intentDependencies, stageIntent, state.sessionId],
+  )
+
+  /** Registry and mosaic toggles are additive and never empty the selection. */
   const toggleAircraft = useCallback(
     (droneId: DroneId) => {
       const aircraft = state.aircraft[droneId]
@@ -136,37 +233,40 @@ export function useControlConsole({
       const desired = isSelected
         ? state.selection.filter((id) => id !== droneId)
         : [...state.selection, droneId].sort((a, b) => a - b)
-      if (desired.length === 0) return
-
-      const intent = createIntent(
-        {
-          name: 'select',
-          args: { ids: desired },
-          selection: state.selection,
-          source: 'console',
-          session: state.sessionId,
-        },
-        intentDependencies,
-      )
-      sendNewIntent(intent, clients.console)
+      sendSelection(desired)
     },
-    [clients.console, intentDependencies, sendNewIntent, state.aircraft, state.selection, state.sessionId],
-  )
-
-  const stageForConfirmation = useCallback(
-    (intent: IntentV1): IntentV1 => {
-      const t = intentDependencies.now()
-      const plan = planPreview(intent, state.rosterVersion)
-      dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
-      dispatch({ type: 'request_pending_confirmation', intentId: intent.intent_id, t, plan })
-      return intent
-    },
-    [intentDependencies, state.rosterVersion],
+    [sendSelection, state.aircraft, state.selection],
   )
 
   /**
+   * Swarm chips are single-select: pressing an unselected chip replaces the
+   * selection with that one aircraft; pressing a selected chip removes it
+   * unless it is the last one.
+   */
+  const selectAircraft = useCallback(
+    (droneId: DroneId) => {
+      const aircraft = state.aircraft[droneId]
+      if (!aircraft || aircraft.membership !== 'ready' || !aircraft.selectable) return
+      const desired = state.selection.includes(droneId)
+        ? state.selection.filter((id) => id !== droneId)
+        : [droneId]
+      sendSelection(desired)
+    },
+    [sendSelection, state.aircraft, state.selection],
+  )
+
+  const selectAllReady = useCallback(() => {
+    const ready = Object.values(state.aircraft)
+      .filter((drone) => drone.membership === 'ready' && drone.selectable)
+      .map((drone) => drone.drone_id)
+      .sort((a, b) => a - b)
+    sendSelection(ready)
+  }, [sendSelection, state.aircraft])
+
+  /**
    * Drafts a capture_room preview. The pattern defaults to the console's current
-   * pattern; the speech compiler passes the pattern the utterance named.
+   * pattern; the speech compiler passes the pattern the utterance named, and the
+   * gesture producer drafts with source webcam.
    */
   const prepareCapture = useCallback(
     (
@@ -180,12 +280,12 @@ export function useControlConsole({
       if (!aircraft || aircraft.membership !== 'ready' || !aircraft.selectable) return null
       if (!aircraft.camera_patterns.includes(pattern)) return null
       const trimmedRoomId = roomId.trim()
-      if (!trimmedRoomId) return null
+      if (!isValidRoomId(trimmedRoomId)) return null
 
       const draft = createIntent(
         {
           name: 'capture_room',
-          args: {},
+          args: { room_id: trimmedRoomId, capture_id: 'pending', pattern },
           selection: [selectedId],
           source,
           session: state.sessionId,
@@ -271,16 +371,19 @@ export function useControlConsole({
         })
         return null
       }
-      const selectionStillReady = request.intent.selection.every(
-        (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
-      )
-      if (!selectionStillReady) {
+      const selectionStillValid =
+        selectionRule(request.intent.name) === 'all'
+          ? request.intent.selection.every((id) => state.aircraft[id] !== undefined)
+          : request.intent.selection.every(
+              (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
+            )
+      if (!selectionStillValid) {
         dispatch({
           type: 'request_invalidated',
           intentId,
           t: intentDependencies.now(),
           reasonCode: 'stale_selection',
-          detail: 'The selected aircraft is no longer ready. No command was sent.',
+          detail: 'An aircraft in the preview is no longer ready. No command was sent.',
         })
         return null
       }
@@ -301,18 +404,8 @@ export function useControlConsole({
 
   const issueHold = useCallback(() => {
     if (state.selection.length === 0) return
-    const intent = createIntent(
-      {
-        name: 'hold',
-        args: {},
-        selection: state.selection,
-        source: 'console',
-        session: state.sessionId,
-      },
-      intentDependencies,
-    )
-    sendNewIntent(intent, clients.console)
-  }, [clients.console, intentDependencies, sendNewIntent, state.selection, state.sessionId])
+    issueIntent({ name: 'hold', args: {} })
+  }, [issueIntent, state.selection.length])
 
   const issueNetworkStop = useCallback(
     (source: Extract<IntentSource, 'console' | 'keyboard'>) => {
@@ -326,10 +419,9 @@ export function useControlConsole({
         },
         intentDependencies,
       )
-      const client = source === 'keyboard' ? clients.keyboard : clients.console
-      sendNewIntent(intent, client)
+      stageIntent(intent)
     },
-    [clients.console, clients.keyboard, intentDependencies, sendNewIntent, state.sessionId],
+    [intentDependencies, stageIntent, state.sessionId],
   )
 
   useEffect(() => {
@@ -364,10 +456,12 @@ export function useControlConsole({
   )
 
   /**
-   * A change that lands while a preview is pending invalidates it visibly with
-   * the stated reason, exactly as a roster or selection change would.
+   * A change that lands while a preview is pending (the room identifier or an
+   * apply-now configuration save, for two) invalidates every unconfirmed
+   * preview visibly with the reason stated, exactly as a roster or selection
+   * change would.
    */
-  const invalidatePendingRequests = useCallback(
+  const invalidatePending = useCallback(
     (reasonCode: string, detail: string) => {
       const t = intentDependencies.now()
       state.requests
@@ -385,37 +479,21 @@ export function useControlConsole({
     [intentDependencies, state.requests],
   )
 
-  const retryFailedRequest = useCallback(
+  /**
+   * Retry a failed or refused request as a new intent: new id, retry_of set,
+   * same args, selection, source and confirmation. It sends at once and never
+   * opens a second preview, even for a confirmation-gated name: the operator
+   * already confirmed this exact envelope, and that confirmation carries over.
+   */
+  const retryRequest = useCallback(
     (request: RequestRecord) => {
-      if (request.status !== 'failed') return
-      const retry = retryIntent(request.intent, intentDependencies)
+      if (request.status !== 'failed' && request.status !== 'refused') return
+      const intent = retryIntent(request.intent, intentDependencies)
       const t = intentDependencies.now()
-      dispatch({ type: 'request_created', request: createRequestRecord(retry, t) })
-
-      if (retry.name === 'capture_room' || request.plan) {
-        dispatch({
-          type: 'request_pending_confirmation',
-          intentId: retry.intent_id,
-          t,
-          plan: planPreview(retry, state.rosterVersion),
-        })
-        return
-      }
-
-      dispatch({ type: 'request_sent', intentId: retry.intent_id, t })
-      const client = clientFor(retry.source)
-      if (!client) {
-        dispatch({
-          type: 'request_send_failed',
-          intentId: retry.intent_id,
-          t,
-          detail: `No relay connection is bound to source ${retry.source}; the intent was not sent.`,
-        })
-        return
-      }
-      sendToRelay(retry, client, t, intentDependencies.now, dispatch)
+      dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
+      sendNow(intent, t)
     },
-    [clientFor, intentDependencies, state.rosterVersion],
+    [intentDependencies, sendNow],
   )
 
   const pendingRequest = useMemo(
@@ -426,7 +504,10 @@ export function useControlConsole({
   return {
     state,
     pendingRequest,
+    issueIntent,
     toggleAircraft,
+    selectAircraft,
+    selectAllReady,
     prepareCapture,
     prepareHold,
     prepareSelect,
@@ -435,8 +516,8 @@ export function useControlConsole({
     issueHold,
     issueNetworkStop,
     changeCapturePattern,
-    invalidatePendingRequests,
-    retryFailedRequest,
+    invalidatePending,
+    retryRequest,
     selectFeed: (droneId: DroneId) => dispatch({ type: 'feed_selected', droneId }),
   }
 }
@@ -467,44 +548,4 @@ function sendToRelay(
       detail: error instanceof Error ? error.message : 'Relay send failed for an unknown reason.',
     })
   })
-}
-
-function planPreview(intent: IntentV1, rosterVersion: number): PlanPreview {
-  const targets = intent.selection.map(formatDroneId).join(', ')
-  if (intent.name === 'hold') {
-    return {
-      title: `${targets} · hold`,
-      rosterVersion,
-      steps: [
-        'Submit one confirmed hold request for the selected aircraft.',
-        `Keep ${targets} at the current pose; no motion is planned.`,
-        'Planner and arbiter must revalidate safety before dispatch.',
-      ],
-    }
-  }
-  if (intent.name === 'select' && 'ids' in intent.args) {
-    const ids = intent.args.ids.map(formatDroneId).join(', ')
-    return {
-      title: `${ids} · select`,
-      rosterVersion,
-      steps: [
-        'Submit one confirmed select request.',
-        `Selection membership becomes ${ids}; no motion is planned.`,
-        'The relay reports the authoritative selection in its next state frame.',
-      ],
-    }
-  }
-  if (intent.name !== 'capture_room' || !('pattern' in intent.args)) {
-    throw new Error('Plan preview requires a capture_room, hold, or select intent.')
-  }
-  return {
-    title: `${formatDroneId(intent.selection[0])} · ${intent.args.pattern}`,
-    rosterVersion,
-    steps: [
-      'Submit one confirmed capture_room outcome request.',
-      `Keep ${formatDroneId(intent.selection[0])} at its operator-approved hover pose.`,
-      `Request ${intent.args.pattern}; never substitute a different capture pattern.`,
-      'Planner and arbiter must revalidate safety and camera readiness before dispatch.',
-    ],
-  }
 }

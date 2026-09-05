@@ -119,7 +119,7 @@ describe('Configuration module', () => {
 
     const confirm = within(screen.getByRole('group', { name: 'Confirm Media change' }))
     expect(confirm.getByText(/Saving Media invalidates the pending plan/)).toHaveTextContent(
-      'D-01 · pano_360. Nothing has been sent.',
+      'Capture room. Nothing has been sent.',
     )
     await user.click(confirm.getByRole('button', { name: 'Keep the plan' }))
     expect(screen.queryByRole('group', { name: 'Confirm Media change' })).not.toBeInTheDocument()

@@ -127,7 +127,7 @@ describe('useGestureProducer', () => {
       args: { room_id: 'room-01', pattern: 'pano_360', capture_id: `capture-${pending?.intent.intent_id}` },
     })
     expect(pending?.status).toBe('pending_confirmation')
-    expect(pending?.plan?.title).toBe('D-01 · pano_360')
+    expect(pending?.plan?.title).toBe('Capture room')
     expect(clients.webcam?.sent).toHaveLength(0)
     expect(clients.console.sent).toHaveLength(0)
     expect(get().producer.view.lastAction).toMatchObject({ kind: 'draft', intentId: pending?.intent.intent_id })
@@ -162,7 +162,7 @@ describe('useGestureProducer', () => {
     hold('Closed_Fist', 650)
     const pending = get().control.pendingRequest
     expect(pending?.intent).toMatchObject({ name: 'hold', source: 'webcam', confirm: false, args: {}, selection: [1] })
-    expect(pending?.plan?.title).toBe('D-01 · hold')
+    expect(pending?.plan?.title).toBe('hold')
     expect(clients.webcam?.sent).toHaveLength(0)
 
     hold(null, 250)

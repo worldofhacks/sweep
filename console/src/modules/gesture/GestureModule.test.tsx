@@ -136,7 +136,7 @@ describe('Gesture module', () => {
     expect(screen.getByText(/Thumb up confirms and sends through the webcam source/)).toBeInTheDocument()
     expect(screen.getAllByText(/Duplicate suppressed/).length).toBeGreaterThan(0)
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
-    expect(dock).toHaveTextContent('D-01 · pano_360')
+    expect(dock).toHaveTextContent('Capture room')
     expect(dock).toHaveTextContent('source webcam')
     expect(clients.webcam?.sent).toHaveLength(0)
     expect(clients.console.sent).toHaveLength(0)

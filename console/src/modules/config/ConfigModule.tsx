@@ -91,7 +91,7 @@ export function ConfigModule({ controller, catalog }: ModuleProps) {
   }
 
   const confirmSave = (group: ConfigGroup) => {
-    controller.invalidatePendingRequests(
+    controller.invalidatePending(
       'configuration_changed',
       configurationChangedDetail(group.title),
     )

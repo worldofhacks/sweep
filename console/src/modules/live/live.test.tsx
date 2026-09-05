@@ -204,7 +204,7 @@ describe('Live module walls', () => {
       name: 'select',
       source: 'console',
       args: { ids: [1, 2] },
-      selection: [1],
+      selection: [1, 2],
     })
     expect(await tile('D-02').findByRole('button', { name: 'in selection D-02' })).toHaveAttribute(
       'aria-pressed',

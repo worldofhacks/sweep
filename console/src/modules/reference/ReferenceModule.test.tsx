@@ -76,11 +76,13 @@ describe('Reference module', () => {
     expect(screen.queryByText(/does not report/)).not.toBeInTheDocument()
   })
 
-  test('Mission, Ledger and Map stay honest empties until the relay feeds them', async () => {
+  test('Mission is the Appendix E tracker; Ledger and Map stay honest empties until the relay feeds them', async () => {
     const user = userEvent.setup()
     renderCatalogConsole({ scenario: 'pending4' })
     await openReferenceTab(user, 'Mission')
-    expect(screen.getByText(/does not report a mission tracker/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Elapsed')).toHaveTextContent('0:00')
+    expect(screen.getAllByRole('button', { name: /accepted at M2\.0|unsupported/ })).toHaveLength(10)
+    expect(screen.queryByText(/does not report a mission tracker/)).not.toBeInTheDocument()
     await openReferenceTab(user, 'Ledger')
     expect(screen.getByText(/does not report a session ledger or replay/)).toBeInTheDocument()
     await openReferenceTab(user, 'Map')

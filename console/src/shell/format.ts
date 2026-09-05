@@ -26,6 +26,19 @@ export function formatPercent(value: number | null): string {
   return value === null ? '—' : `${Math.round(value * 100)}%`
 }
 
+/** "unreported", "just now", or "N s ago" from the design's ago(); never negative. */
+export function formatAgo(now: number, at: number | null): string {
+  if (at === null) return 'unreported'
+  const seconds = Math.max(0, Math.round((now - at) / 1000))
+  return seconds < 1 ? 'just now' : `${seconds} s ago`
+}
+
+/** m:ss from a millisecond span, floored at zero. */
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000))
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
 /** Age of a reported timestamp; null means the relay never reported one. */
 export function formatAge(ageMs: number | null): string {
   if (ageMs === null) return 'unreported'

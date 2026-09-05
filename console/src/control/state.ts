@@ -7,6 +7,7 @@ import type {
   RelayAircraftState,
   RelayServerEvent,
 } from '../relay/contract'
+import { followsSelection } from '../relay/contract'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'degraded' | 'disconnected'
 export type RelayTransport = 'websocket' | 'fixture' | 'unavailable'
@@ -81,6 +82,9 @@ export interface ControlState {
   rosterVersion: number
   aircraft: Record<DroneId, RelayAircraftState>
   selection: DroneId[]
+  /** Formation and spacing the relay reports in its state frame; null until the first frame. */
+  formation: string | null
+  spacing: number | null
   departed: DepartureRecord[]
   requests: RequestRecord[]
   selectedFeedId: DroneId | null
@@ -131,6 +135,8 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     rosterVersion: 0,
     aircraft: {},
     selection: [],
+    formation: null,
+    spacing: null,
     departed: [],
     requests: [],
     selectedFeedId: null,
@@ -410,6 +416,8 @@ function reduceStateEvent(
     rosterVersion: event.roster_version,
     aircraft,
     selection,
+    formation: event.formation,
+    spacing: event.spacing,
     armed: event.armed,
     estop: event.estop,
   }
@@ -451,6 +459,7 @@ function reduceStateEvent(
       .filter(
         (request) =>
           request.status === 'pending_confirmation' &&
+          followsSelection(request.intent.name) &&
           request.intent.selection.some((id) => staleSelection.includes(id)),
       )
       .map((request) => request.intent.intent_id)
@@ -476,10 +485,13 @@ function reduceStateEvent(
     'stale_roster',
     `Fleet roster changed to version ${event.roster_version}. Build and confirm a new preview.`,
   )
+  // Intents that address the whole roster (land_all) keep their preview while
+  // the operator's selection moves; only a roster change invalidates them.
   const changedSelectionRequests = next.requests
     .filter(
       (request) =>
         request.status === 'pending_confirmation' &&
+        followsSelection(request.intent.name) &&
         !sameDroneSet(request.intent.selection, selection),
     )
     .map((request) => request.intent.intent_id)

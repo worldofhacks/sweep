@@ -104,7 +104,7 @@ describe('Target strip quick commands', () => {
 
     await user.click(holdButton())
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
-    expect(dock).toHaveTextContent('D-01 · hold')
+    expect(within(dock).getByText('hold', { selector: '.sh-dock-title' })).toBeInTheDocument()
     expect(dock).toHaveTextContent('source console')
     expect(clients.console.sent).toHaveLength(0)
     expect(holdButton()).toBeDisabled()
