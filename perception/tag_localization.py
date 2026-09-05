@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from tools.map_common import read_document, validate_transform
+from tools.map_common import parse_document, validate_transform
 from tools.map_validate import validate_bundle
 
 
@@ -29,7 +29,6 @@ class TagLocalizer:
         self,
         bundle,
         accepted_versions,
-        map_sha256,
         calibration_path,
         calibration_sha256,
         camera_serial,
@@ -37,12 +36,11 @@ class TagLocalizer:
         T_body_camera,
     ):
         self.manifest = validate_bundle(bundle, accepted_versions)
-        if self.manifest["content_sha256"] != map_sha256:
-            raise ValueError("map content hash mismatch")
-        payload = Path(calibration_path).read_bytes()
+        calibration_path = Path(calibration_path)
+        payload = calibration_path.read_bytes()
         if hashlib.sha256(payload).hexdigest() != calibration_sha256:
             raise ValueError("calibration hash mismatch")
-        calibration = read_document(calibration_path)
+        calibration = parse_document(payload, str(calibration_path))
         if (
             type(calibration.get("schema_version")) is not int
             or calibration["schema_version"] != 1
@@ -56,30 +54,28 @@ class TagLocalizer:
         if calibration.get("status") != "offline" or self.evidence_kind not in (
             "synthetic",
             "recorded_live",
-            "synthetic_known_intrinsics",
         ):
             raise ValueError("invalid calibration evidence")
-        if self.evidence_kind != "synthetic_known_intrinsics":
-            count = calibration.get("accepted_image_count")
-            rms = calibration.get("rms_reprojection_error_px")
-            hashes = calibration.get("image_sha256")
-            if (
-                type(count) is not int
-                or count < 20
-                or type(rms) not in (int, float)
-                or not np.isfinite(rms)
-                or not 0 <= rms < 0.5
-                or not isinstance(hashes, dict)
-                or len(hashes) != count
-                or any(
-                    not isinstance(h, str)
-                    or len(h) != 64
-                    or any(c not in "0123456789abcdef" for c in h)
-                    for h in hashes.values()
-                )
-                or len(set(hashes.values())) != count
-            ):
-                raise ValueError("invalid calibration quality evidence")
+        count = calibration.get("accepted_image_count")
+        rms = calibration.get("rms_reprojection_error_px")
+        hashes = calibration.get("image_sha256")
+        if (
+            type(count) is not int
+            or count < 20
+            or type(rms) not in (int, float)
+            or not np.isfinite(rms)
+            or not 0 <= rms < 0.5
+            or not isinstance(hashes, dict)
+            or len(hashes) != count
+            or any(
+                not isinstance(h, str)
+                or len(h) != 64
+                or any(c not in "0123456789abcdef" for c in h)
+                for h in hashes.values()
+            )
+            or len(set(hashes.values())) != count
+        ):
+            raise ValueError("invalid calibration quality evidence")
         self.K = np.array(calibration["camera_matrix"], dtype=float)
         self.dist = np.array(calibration["distortion_coefficients"], dtype=float)
         if (
@@ -98,7 +94,7 @@ class TagLocalizer:
         ):
             raise ValueError("invalid camera intrinsics")
         self.T_body_camera = rigid(T_body_camera)
-        self.tags = {t["id"]: t for t in read_document(Path(bundle) / "tags.yaml")["tags"]}
+        self.tags = {t["id"]: t for t in self.manifest.document("tags.yaml")["tags"]}
         self.calibration_sha256 = calibration_sha256
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         parameters = cv2.aruco.DetectorParameters()

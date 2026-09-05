@@ -88,7 +88,8 @@ class SwarmAdapter(Protocol):
 
     def land(self, ids: list[int]) -> tuple[AdapterAcknowledgement, ...]: ...
 
-    def estop(self) -> tuple[AdapterAcknowledgement, ...]: ...
+    def estop(self) -> tuple[AdapterAcknowledgement, ...]:
+        """Latch emergency stop atomically; reject later takeoff/goto/rotate but allow land."""
 
     def telemetry(self) -> Iterator[Telemetry]: ...
 
@@ -152,6 +153,14 @@ class NodeWatchdogState:
         if elapsed_ms < config.failsafe_after_ms:
             return LossBehavior.HOLD
         return config.loss_behavior
+
+
+@dataclass(frozen=True, slots=True)
+class NodeSafetyAction:
+    drone_id: int
+    connection_epoch: int
+    t_ms: int
+    action: LossBehavior
 
 
 class NodeWatchdog(Protocol):

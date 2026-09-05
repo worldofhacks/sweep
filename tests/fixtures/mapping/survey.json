@@ -127,5 +127,9 @@
         ]
       ]
     }
-  ]
+  ],
+  "source": {
+    "path": "scan.ply",
+    "sha256": "9f9ea697fbda7c4438539da165eef21a441cc41332d878566e6dfffbea870994"
+  }
 }

@@ -50,8 +50,8 @@
   ],
   "files": {
     "obstacles.yaml": "e742a1404cdc3e1f4c9b9fa6200faea5f63045fb4d22c0f7cdb0e989a6fda677",
-    "tags.yaml": "f12ffeb23d596da22ed1b3a1e9f1517ded8aa274ebd86916025e61a63b7c779b",
-    "zones.yaml": "c893c5b6ac9846e5672650eb9255f3725189cad701a37b38557b7adcc1923c7a"
+    "tags.yaml": "a557a3e710219a9689d0254dc5ac82673ba126685ee6764aeb37f00f97e212df",
+    "zones.yaml": "0b20a3654065a30c61c9ee78d30566b0ef18e7ffb7d516dde5ff26a2ac656b4d"
   },
-  "content_sha256": "12b4523aac9f04dbebf21a52d8c924176e1e6346f960035a6f4c52f4266d012f"
+  "content_sha256": "9569ddab2c99fad1911f78b54ae58e5298b355489bf0a4c6c092eca58d4be594"
 }

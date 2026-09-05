@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import cos, isfinite, radians, sin
 
 from planner.models import (
     Command,
@@ -17,6 +17,8 @@ from planner.models import (
     Position,
     Refusal,
     RefusalReason,
+    TranslationGrounding,
+    TranslationPolicy,
 )
 from relay.intent_v1 import IntentName, IntentV1
 
@@ -28,6 +30,7 @@ SUPPORTED_INTENTS = frozenset(
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
@@ -39,6 +42,7 @@ SELECTION_TARGETED_INTENTS = frozenset(
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.CAPTURE_ROOM,
     }
 )
@@ -57,6 +61,7 @@ class PlanningConfig:
     capture_min_overlap_deg: float
     capture_gimbal_pitch_deg: float
     reconstruct_headings_deg: tuple[float, ...]
+    translation_frame: str = "world"
 
     def __post_init__(self) -> None:
         positive = {
@@ -114,6 +119,25 @@ class PlanningConfig:
             raise ValueError("reconstruct_8 headings must be finite values in [0, 360)")
         if len(set(self.reconstruct_headings_deg)) != 8:
             raise ValueError("reconstruct_8 headings must be unique")
+        if self.translation_frame not in {"world", "aircraft_relative"}:
+            raise ValueError("translation_frame must be world or aircraft_relative")
+
+    def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding:
+        return TranslationGrounding(
+            policy=TranslationPolicy(
+                frame=self.translation_frame,
+                step_m=self.translation_step_m,
+            ),
+            headings=(
+                {
+                    drone_id: aircraft.heading_deg
+                    for drone_id, aircraft in snapshot.aircraft.items()
+                    if aircraft.heading_deg is not None
+                }
+                if self.translation_frame == "aircraft_relative"
+                else {}
+            ),
+        )
 
 
 class DeterministicPlanner:
@@ -134,9 +158,8 @@ class DeterministicPlanner:
                 f"{intent.name.value} has no earned M2.0 planner capability",
             )
 
-        if (
-            intent.name in SELECTION_TARGETED_INTENTS
-            and tuple(intent.selection) != snapshot.selection
+        if intent.name in SELECTION_TARGETED_INTENTS and tuple(sorted(intent.selection)) != tuple(
+            sorted(snapshot.selection)
         ):
             return _refusal(
                 intent,
@@ -173,8 +196,56 @@ class DeterministicPlanner:
                 )
 
         elif intent.name is IntentName.TRANSLATE:
-            dx = float(intent.args["dx"]) * self.config.translation_step_m
-            dy = float(intent.args["dy"]) * self.config.translation_step_m
+            translation_frame = self.config.translation_frame
+            try:
+                dx = float(intent.args["dx"]) * self.config.translation_step_m
+                dy = float(intent.args["dy"]) * self.config.translation_step_m
+            except OverflowError:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "translation exceeds numeric limits",
+                )
+            if not isfinite(dx) or not isfinite(dy):
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "translation exceeds numeric limits",
+                )
+            displacements: dict[int, tuple[float, float]] = {}
+            for drone_id in selected:
+                if translation_frame == "world":
+                    displacements[drone_id] = (dx, dy)
+                else:
+                    heading = snapshot.aircraft[drone_id].heading_deg
+                    if heading is None:
+                        return _refusal(
+                            intent,
+                            snapshot,
+                            RefusalReason.INVALID_STATE,
+                            f"aircraft {drone_id} has no current heading",
+                            drone_id,
+                        )
+                    angle = radians(heading)
+                    displacements[drone_id] = (
+                        dx * cos(angle) - dy * sin(angle),
+                        dx * sin(angle) + dy * cos(angle),
+                    )
+                drone_dx, drone_dy = displacements[drone_id]
+                pose = snapshot.aircraft[drone_id].pose
+                if not all(
+                    isfinite(value)
+                    for value in (drone_dx, drone_dy, pose.x + drone_dx, pose.y + drone_dy)
+                ):
+                    return _refusal(
+                        intent,
+                        snapshot,
+                        RefusalReason.INVALID_PLAN,
+                        "translation target exceeds numeric limits",
+                        drone_id,
+                    )
             ordered = selected
             if dx != 0 or dy != 0:
                 ordered = tuple(
@@ -182,8 +253,8 @@ class DeterministicPlanner:
                         selected,
                         key=lambda drone_id: (
                             -(
-                                snapshot.aircraft[drone_id].pose.x * dx
-                                + snapshot.aircraft[drone_id].pose.y * dy
+                                snapshot.aircraft[drone_id].pose.x * displacements[drone_id][0]
+                                + snapshot.aircraft[drone_id].pose.y * displacements[drone_id][1]
                             ),
                             drone_id,
                         ),
@@ -191,12 +262,13 @@ class DeterministicPlanner:
                 )
             for drone_id in ordered:
                 pose = snapshot.aircraft[drone_id].pose
+                drone_dx, drone_dy = displacements[drone_id]
                 builder.add(
                     drone_id,
                     CommandOperation.GOTO,
                     {
-                        "x": pose.x + dx,
-                        "y": pose.y + dy,
+                        "x": pose.x + drone_dx,
+                        "y": pose.y + drone_dy,
                         "z": pose.z,
                         "speed": self.config.flight_speed_m_s,
                     },
@@ -228,6 +300,10 @@ class DeterministicPlanner:
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
+
+        elif intent.name is IntentName.LAND:
+            for drone_id in selected:
+                builder.add(drone_id, CommandOperation.LAND)
 
         elif intent.name is IntentName.LAND_ALL:
             for drone_id, aircraft in sorted(snapshot.aircraft.items()):

@@ -1,6 +1,6 @@
 import pytest
 
-from planner.models import CommandOperation, Plan, Position, Refusal, RefusalReason
+from planner.models import CommandOperation, FlightState, Plan, Position, Refusal, RefusalReason
 from planner.planner import DeterministicPlanner
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
@@ -78,6 +78,58 @@ def test_land_all_and_estop_ignore_stale_selection_and_target_fleet() -> None:
     assert all(command.safety_action for command in (*land.commands, *stop.commands))
     assert stop.estop_update is True
     assert stop.to_dict()["estop_update"] is True
+
+
+def test_land_targets_only_selected_aircraft() -> None:
+    snapshot = replace_aircraft(
+        make_snapshot(3, selection=(1, 3)), 2, flight_state=FlightState.LANDED
+    )
+    planner = DeterministicPlanner(planning_config())
+
+    result = planner.plan(make_intent(IntentName.LAND, selection=(1, 3), confirm=True), snapshot)
+
+    assert isinstance(result, Plan)
+    assert [command.drone_id for command in result.commands] == [1, 3]
+    assert all(command.operation is CommandOperation.LAND for command in result.commands)
+    assert all(not command.safety_action for command in result.commands)
+
+
+def test_aircraft_relative_translation_rotates_each_aircraft_vector_by_heading() -> None:
+    snapshot = replace_aircraft(make_snapshot(2), 2, heading_deg=90.0)
+    intent = make_intent(
+        IntentName.TRANSLATE,
+        selection=(1, 2),
+        args={"dx": 1, "dy": 0},
+    )
+
+    result = DeterministicPlanner(planning_config(translation_frame="aircraft_relative")).plan(
+        intent, snapshot
+    )
+
+    assert isinstance(result, Plan)
+    targets = {
+        command.drone_id: (command.parameters["x"], command.parameters["y"])
+        for command in result.commands
+    }
+    assert targets == {1: (0.5, 0.0), 2: (2.0, 0.5)}
+
+
+def test_world_translation_keeps_the_shared_world_vector() -> None:
+    snapshot = replace_aircraft(make_snapshot(2), 2, heading_deg=90.0)
+    intent = make_intent(
+        IntentName.TRANSLATE,
+        selection=(1, 2),
+        args={"dx": 1, "dy": 0},
+    )
+
+    result = DeterministicPlanner(planning_config(translation_frame="world")).plan(intent, snapshot)
+
+    assert isinstance(result, Plan)
+    targets = {
+        command.drone_id: (command.parameters["x"], command.parameters["y"])
+        for command in result.commands
+    }
+    assert targets == {1: (0.5, 0.0), 2: (2.5, 0.0)}
 
 
 def test_panorama_plan_preserves_room_association_and_protocol_order() -> None:

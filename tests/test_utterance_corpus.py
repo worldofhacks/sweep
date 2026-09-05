@@ -87,11 +87,11 @@ def test_owner_decisions_are_encoded_in_corpus() -> None:
     }
 
     movement = {
-        "move-right-half-meter": {"dx": 1.0, "dy": 0.0},
-        "move-left-half-meter": {"dx": -1.0, "dy": 0.0},
-        "move-forward-half-meter": {"dx": 0.0, "dy": 1.0},
-        "select-all-then-translate": {"dx": 1.0, "dy": 0.0},
-        "move-right-one-meter": {"dx": 2.0, "dy": 0.0},
+        "move-right-half-meter": {"dx": 0.0, "dy": -1.0},
+        "move-left-half-meter": {"dx": 0.0, "dy": 0.6096},
+        "move-forward-half-meter": {"dx": 1.0, "dy": 0.0},
+        "select-all-then-translate": {"dx": 0.0, "dy": -1.0},
+        "move-right-one-meter": {"dx": 0.0, "dy": -2.0},
     }
     for case_id, expected_args in movement.items():
         case = cases[case_id]

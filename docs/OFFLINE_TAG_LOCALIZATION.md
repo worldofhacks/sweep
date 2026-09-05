@@ -22,8 +22,7 @@ the example extrinsic with the exact artifacts for the captured frame:
 {
   "localizer": {
     "bundle": "/data/level1-v1",
-    "accepted_versions": ["level1-v1"],
-    "map_sha256": "externally accepted manifest content_sha256",
+    "accepted_versions": {"level1-v1": "<64-lowercase-hex-content-sha256>"},
     "calibration_path": "/data/camera-calibration.yaml",
     "calibration_sha256": "externally accepted SHA256 of calibration file bytes",
     "camera_serial": "aircraft camera serial",
@@ -33,7 +32,11 @@ the example extrinsic with the exact artifacts for the captured frame:
       "decoder_path": "exact #83 decoder_path",
       "camera_mode": "exact #83 camera_mode",
       "android_device_id": "exact #83 android_device_id",
-      "network_id": "exact #83 network_id"
+      "network_id": "exact #83 network_id",
+      "fov_bounds_deg": {
+        "horizontal": ["independent minimum", "independent maximum"],
+        "vertical": ["independent minimum", "independent maximum"]
+      }
     },
     "T_body_camera": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
   },
@@ -49,15 +52,18 @@ transform for traceability.
 
 Calibration uses #83's JSON-formatted YAML fields `schema_version`, `camera_serial`,
 `pipeline`, `image_size_px`, `camera_matrix` and `distortion_coefficients`.
-For fitted #83 artifacts the loader also requires offline status, a synthetic or
-recorded_live evidence label, at least 20 distinct source hashes, and fit RMS below
-0.5 px. These fields record #83's evidence; this consumer does not repeat fitting.
-The test fixture uses the separate `synthetic_known_intrinsics` evidence label for
-an independently specified camera matrix. That label makes no calibration-fit
-claim and is repeated in the output. The loader checks identity, resolution and
-finite, plausible matrix structure for both forms.
-An operator must pin accepted hashes externally. Copying hashes from whichever
-files happen to be present removes that protection.
+The loader requires offline status, #83's synthetic or recorded-live evidence label,
+at least 20 distinct source hashes, and fit RMS below 0.5 px. These fields record
+#83's evidence; this consumer does not repeat fitting. It checks identity, resolution
+and finite, plausible matrix structure. The test fixture supplies a complete synthetic
+artifact with independently specified geometry.
+
+An operator must pin accepted hashes externally. `accepted_versions` binds each
+accepted map version to its manifest content SHA-256; `calibration_sha256` binds the
+exact calibration bytes. Both artifacts are parsed from the same immutable byte
+snapshots that were validated or hashed, so replacing either path during startup
+cannot substitute unchecked map coordinates or camera intrinsics. Copying hashes
+from whichever files happen to be present removes that protection.
 
 Capture, decode and evaluation times are seconds in one upstream monotonic clock.
 Capture time must describe the image exposure, with synchronization established

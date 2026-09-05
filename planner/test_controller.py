@@ -1,9 +1,21 @@
 from dataclasses import replace
 
-from planner.controller import AutonomyController
-from planner.models import FlightState, LifecycleStatus, RefusalReason
+from language.test_compiler import _hydrate_relay_from_snapshot
+from planner.controller import AutonomyController, PreparedExecutionRouter
+from planner.models import (
+    CommandAcknowledgement,
+    ExecutionResult,
+    FlightState,
+    LifecycleStatus,
+    PreparedExecution,
+    Refusal,
+    RefusalReason,
+)
 from planner.planner import DeterministicPlanner
+from relay.audit import SessionAuditLog
+from relay.auth import Principal
 from relay.intent_v1 import IntentName
+from relay.session import RelayLimits, RelaySession
 from tests.autonomy_fixtures import (
     NOW_MS,
     make_intent,
@@ -47,6 +59,136 @@ def test_arm_select_takeoff_documented_workflow() -> None:
         FlightState.HOVERING,
         FlightState.HOVERING,
     ]
+
+
+def test_prepared_plan_dispatches_without_replanning() -> None:
+    snapshot = replace_aircraft(make_snapshot(2), 2, heading_deg=90.0)
+    config = replace(
+        planning_config(translation_frame="aircraft_relative"),
+        translation_step_m=0.75,
+    )
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
+    intent = make_intent(IntentName.TRANSLATE, args={"dx": 1, "dy": 0})
+
+    prepared = controller.prepare(intent, snapshot)
+    assert isinstance(prepared, PreparedExecution)
+    controller.planner = DeterministicPlanner(
+        replace(planning_config(translation_frame="world"), translation_step_m=2.0)
+    )
+    result = controller.dispatch_prepared(prepared)
+
+    assert result.status is LifecycleStatus.COMPLETED
+    targets = {
+        call.drone_ids[0]: (dict(call.parameters)["x"], dict(call.parameters)["y"])
+        for call in flight.calls
+    }
+    assert targets == {1: (0.75, 0.0), 2: (2.0, 0.75)}
+
+
+def test_prepared_router_returns_executing_without_relabelling_it(monkeypatch, tmp_path) -> None:
+    snapshot = make_snapshot(2)
+    controller, _, _, dispatcher, _, _ = make_stack(snapshot)
+    intent = make_intent(IntentName.TRANSLATE, args={"dx": 1, "dy": 0})
+    prepared = controller.prepare(intent, snapshot)
+    assert isinstance(prepared, PreparedExecution)
+    monkeypatch.setattr(
+        dispatcher,
+        "dispatch",
+        lambda plan, _snapshot, *, current_snapshot=None: ExecutionResult(
+            intent_id=plan.intent_id,
+            roster_version=plan.roster_version,
+            status=LifecycleStatus.EXECUTING,
+            plan=plan,
+        ),
+    )
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    router.bind(prepared)
+
+    relay = RelaySession(
+        session_id=intent.session,
+        audit_log=SessionAuditLog(tmp_path, intent.session),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: snapshot.now_ms,
+        intent_sink=router,
+    )
+    _hydrate_relay_from_snapshot(relay, snapshot)
+    events = router.relay_emitter(
+        relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+    )(intent)
+
+    assert events[-1]["status"] == "executing"
+    assert relay.current_state()["accepted_plan"] == prepared.plan.to_dict()
+
+
+def test_prepared_router_returns_relay_events_from_terminal_resume(monkeypatch, tmp_path) -> None:
+    snapshot = make_snapshot(2)
+    controller, _, _, dispatcher, _, _ = make_stack(snapshot)
+    intent = make_intent(IntentName.TRANSLATE, args={"dx": 1, "dy": 0})
+    prepared = controller.prepare(intent, snapshot)
+    assert isinstance(prepared, PreparedExecution)
+    pending = ExecutionResult(
+        intent_id=intent.intent_id,
+        roster_version=prepared.plan.roster_version,
+        status=LifecycleStatus.EXECUTING,
+        plan=prepared.plan,
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "dispatch",
+        lambda plan, _snapshot, *, current_snapshot=None: pending,
+    )
+    terminal = ExecutionResult(
+        intent_id=intent.intent_id,
+        roster_version=prepared.plan.roster_version,
+        status=LifecycleStatus.INVALIDATED,
+        plan=prepared.plan,
+        refusal=Refusal(
+            intent_id=intent.intent_id,
+            roster_version=prepared.plan.roster_version,
+            reason=RefusalReason.STALE_ROSTER,
+            detail="roster changed during execution",
+            drone_id=None,
+            connection_epoch=None,
+            status=LifecycleStatus.INVALIDATED,
+        ),
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "resume_after_completion",
+        lambda *args, **kwargs: terminal,
+    )
+
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    router.bind(prepared)
+    relay = RelaySession(
+        session_id=intent.session,
+        audit_log=SessionAuditLog(tmp_path, intent.session),
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=lambda: snapshot.now_ms,
+        intent_sink=router,
+    )
+    _hydrate_relay_from_snapshot(relay, snapshot)
+    events = router.relay_emitter(
+        relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+    )(intent)
+    assert events[-1]["status"] == "executing"
+    acknowledgement = CommandAcknowledgement(
+        command_id="command-1",
+        intent_id=intent.intent_id,
+        roster_version=prepared.plan.roster_version,
+        drone_id=1,
+        connection_epoch=1,
+        status=LifecycleStatus.INVALIDATED,
+    )
+
+    resumed = router.resume(intent.intent_id, acknowledgement)
+
+    assert resumed.execution is terminal
+    assert [event["type"] for event in resumed.relay_events] == ["state", "acknowledgement"]
+    assert resumed.relay_events[0]["accepted_plan"] is None
+    assert resumed.relay_events[1]["status"] == "invalidated"
+    assert resumed.relay_events[1]["intent_id"] == intent.intent_id
+    assert relay.current_state()["accepted_plan"] is None
 
 
 def test_arm_is_global_and_does_not_depend_on_a_stale_selection() -> None:

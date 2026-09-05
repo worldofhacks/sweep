@@ -4,6 +4,11 @@ import argparse
 import html
 import json
 import math
+import os
+import re
+import shutil
+import tempfile
+import unicodedata
 from pathlib import Path
 
 from tools.map_common import (
@@ -46,8 +51,21 @@ def extract_tags(document):
         or document.get("units") != "meters"
     ):
         raise ValueError("survey requires schema_version 1 and units meters")
-    transform = document.get("T_map_scan")
-    validate_transform(transform)
+    source = document.get("source")
+    if not isinstance(source, dict):
+        raise ValueError("survey requires source path and sha256 provenance")
+    source_path = source.get("path")
+    source_hash = source.get("sha256")
+    if (
+        not isinstance(source_path, str)
+        or not source_path.strip()
+        or Path(source_path).is_absolute()
+        or ".." in Path(source_path).parts
+        or not isinstance(source_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", source_hash) is None
+    ):
+        raise ValueError("source requires a relative path and lowercase SHA-256")
+    transform = validate_transform(document.get("T_map_scan"))
     records = document.get("tags")
     if not isinstance(records, list) or not records:
         raise ValueError("survey requires tags")
@@ -107,13 +125,27 @@ def extract_tags(document):
                 "yaw": math.atan2(axes[0][1], axes[0][0]),
                 "normal": axes[2],
                 "T_map_tag": pose,
+                "T_scan_tag": [[right[i], up[i], normal[i], center[i]] for i in range(3)]
+                + [[0, 0, 0, 1]],
                 "orientation_confirmed": True,
             }
         )
     tag0 = next((t for t in result if t["id"] == 0), None)
     if tag0 is None or math.hypot(tag0["x"], tag0["y"], tag0["z"]) > 1e-6:
         raise ValueError("T_map_scan must place Tag 0 at the building origin")
-    return {"schema_version": 1, "units": "meters", "frame": "building", "tags": result}
+    if (
+        abs(math.remainder(tag0["yaw"], 2 * math.pi)) > 1e-6
+        or math.dist(tag0["normal"], [0, 0, 1]) > 1e-6
+    ):
+        raise ValueError("Tag 0 must have building yaw zero and printed-front normal +Z")
+    return {
+        "schema_version": 1,
+        "units": "meters",
+        "frame": "building",
+        "source": {"path": source_path, "sha256": source_hash},
+        "T_map_scan": transform,
+        "tags": result,
+    }
 
 
 def write_preview(path, document):
@@ -151,6 +183,56 @@ def write_preview(path, document):
     )
 
 
+def _write_outputs(survey, output, preview, document):
+    paths = [survey, output] + ([preview] if preview else [])
+    for index, path in enumerate(paths):
+        for other in paths[:index]:
+            if unicodedata.normalize(
+                "NFC", str(path.resolve())
+            ).casefold() == unicodedata.normalize("NFC", str(other.resolve())).casefold() or (
+                path.exists() and other.exists() and path.samefile(other)
+            ):
+                raise ValueError("survey, output, and preview must refer to distinct files")
+    targets = [path.resolve() for path in paths[1:]]
+    temporary = []
+    staged = []
+    backups = {}
+    committed = []
+
+    def stage_path(target):
+        descriptor, name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        os.close(descriptor)
+        path = Path(name)
+        temporary.append(path)
+        return path
+
+    try:
+        for index, target in enumerate(targets):
+            path = stage_path(target)
+            if index == 0:
+                write_document(path, document)
+            else:
+                write_preview(path, document)
+            staged.append(path)
+            if target.exists():
+                backup = stage_path(target)
+                shutil.copy2(target, backup)
+                backups[target] = backup
+        for target, path in zip(targets, staged, strict=True):
+            os.replace(path, target)
+            committed.append(target)
+    except OSError:
+        for target in reversed(committed):
+            if target in backups:
+                os.replace(backups[target], target)
+            else:
+                target.unlink()
+        raise
+    finally:
+        for path in temporary:
+            path.unlink(missing_ok=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("survey", type=Path)
@@ -159,9 +241,7 @@ def main():
     args = parser.parse_args()
     try:
         output = extract_tags(read_document(args.survey))
-        write_document(args.output, output)
-        if args.preview:
-            write_preview(args.preview, output)
+        _write_outputs(args.survey, args.output, args.preview, output)
     except (ValueError, OSError) as exc:
         print(json.dumps({"valid": False, "error": str(exc)}))
         return 1

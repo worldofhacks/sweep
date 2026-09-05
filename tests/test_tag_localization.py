@@ -18,12 +18,13 @@ def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False):
     bundle = tmp_path / "bundle"
     shutil.copytree(Path(__file__).parent / "fixtures/mapping", bundle)
     document = json.loads((bundle / "tags.yaml").read_text())
-    document["tags"] = document["tags"][:count]
-    transforms = []
+    map_count = max(count, 2 if tag_rotation else count)
+    document["tags"] = document["tags"][:map_count]
+    transforms = {}
     for i, tag in enumerate(document["tags"]):
         transform = np.eye(4)
         transform[:3, 3] = [i * 0.55, 0, 0]
-        if tag_rotation:
+        if tag_rotation and i == 1:
             transform[:3, :3] = cv2.Rodrigues(np.array([0.0, 0.0, np.pi / 2]))[0]
         if nonplanar and i:
             transform[:3, :3] = cv2.Rodrigues(np.array([0.4, -0.2, 0.1]))[0]
@@ -35,8 +36,9 @@ def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False):
             yaw=float(np.arctan2(transform[1, 0], transform[0, 0])),
             normal=transform[:3, 2].tolist(),
             T_map_tag=transform.tolist(),
+            T_scan_tag=transform.tolist(),
         )
-        transforms.append(transform)
+        transforms[i] = transform
     (bundle / "tags.yaml").write_text(json.dumps(document))
     manifest = json.loads((bundle / "manifest.yaml").read_text())
     manifest["frame"]["tag0_yaw_rad"] = document["tags"][0]["yaw"]
@@ -49,26 +51,30 @@ def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False):
         camera_mode="test",
         android_device_id="test",
         network_id="test",
+        fov_bounds_deg={"horizontal": [65, 75], "vertical": [40, 48]},
     )
     calibration = dict(
         schema_version=1,
         status="offline",
-        evidence_kind="synthetic_known_intrinsics",
+        evidence_kind="synthetic",
         camera_serial="test",
         pipeline=pipeline,
         image_size_px=[1280, 720],
         camera_matrix=K.tolist(),
         distortion_coefficients=[0] * 5,
+        accepted_image_count=20,
+        rms_reprojection_error_px=0.1,
+        image_sha256={f"frame-{index}.png": f"{index:064x}" for index in range(20)},
     )
     path = tmp_path / "calibration.yaml"
     path.write_text(json.dumps(calibration))
     body_camera = np.eye(4)
     body_camera[:3, :3] = cv2.Rodrigues(np.array([0.1, 0.2, -0.3]))[0]
     body_camera[:3, 3] = [0.07, -0.04, 0.12]
+    map_sha256 = json.loads((bundle / "manifest.yaml").read_text())["content_sha256"]
     config = dict(
         bundle=str(bundle),
-        accepted_versions=["synthetic-three-tags-v1"],
-        map_sha256=json.loads((bundle / "manifest.yaml").read_text())["content_sha256"],
+        accepted_versions={"synthetic-three-tags-v1": map_sha256},
         calibration_path=str(path),
         calibration_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         camera_serial="test",
@@ -79,10 +85,16 @@ def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False):
     camera[:3, :3] = cv2.Rodrigues(
         np.array([tilt, 0.12 if tilt else 0, 0.08 if tilt else 0], dtype=float)
     )[0] @ np.diag([1.0, -1.0, -1.0])
-    camera[:3, 3] = [0.25 if count > 1 else 0, -1.5 * np.tan(tilt), 1.5]
+    visible_ids = [1] if tag_rotation and count == 1 else list(range(count))
+    camera[:3, 3] = [
+        float(np.mean([transforms[i][0, 3] for i in visible_ids])),
+        -1.5 * np.tan(tilt),
+        1.5,
+    ]
     image = np.full((720, 1280), 255, np.uint8)
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
-    for i, transform in enumerate(transforms):
+    for i in visible_ids:
+        transform = transforms[i]
         # Independently specified physical print corners; no production corner helper.
         points = (
             np.array([[-0.15, 0.15, 0], [0.15, 0.15, 0], [0.15, -0.15, 0], [-0.15, -0.15, 0]])
@@ -134,7 +146,7 @@ def test_stale_missing_wrong_map_config_and_timing_fail_closed(tmp_path):
         with pytest.raises(ValueError):
             localizer.estimate(image, *timing)
     with pytest.raises(ValueError):
-        TagLocalizer(**(config | {"accepted_versions": ["wrong"]}))
+        TagLocalizer(**(config | {"accepted_versions": {"wrong": "0" * 64}}))
     with pytest.raises(ValueError):
         TagLocalizer(**(config | {"camera_serial": "different"}))
     with pytest.raises(ValueError):
@@ -208,7 +220,7 @@ def test_changed_map_content_with_same_version_is_rejected(tmp_path):
     manifest["created_at"] = "2026-09-01T00:00:00Z"
     manifest_path.write_text(json.dumps(manifest))
     seal_manifest(config["bundle"])
-    with pytest.raises(ValueError, match="map content hash"):
+    with pytest.raises(ValueError, match="accepted version content hash"):
         TagLocalizer(**config)
 
 
@@ -226,7 +238,7 @@ def test_cli_runs_real_image_and_rejects_wrong_artifact(tmp_path, capsys, monkey
     assert main() == 0
     report = json.loads(capsys.readouterr().out)
     np.testing.assert_allclose(report["T_map_camera"], camera, atol=0.02)
-    config["map_sha256"] = "0" * 64
+    config["accepted_versions"]["synthetic-three-tags-v1"] = "0" * 64
     config_path.write_text(json.dumps(dict(localizer=config, timing={})))
     assert main() == 1
     assert not json.loads(capsys.readouterr().out)["accepted"]
@@ -237,7 +249,53 @@ def test_claimed_calibration_fit_requires_quality_evidence(tmp_path):
     path = Path(config["calibration_path"])
     calibration = json.loads(path.read_text())
     calibration["evidence_kind"] = "recorded_live"
+    calibration.pop("accepted_image_count")
     path.write_text(json.dumps(calibration))
     config["calibration_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(ValueError, match="quality evidence"):
         TagLocalizer(**config)
+
+
+def test_validated_map_snapshot_is_used_if_tags_path_changes(tmp_path, monkeypatch):
+    _, _, _, _, config = scene(tmp_path)
+    from perception import tag_localization
+
+    validate = tag_localization.validate_bundle
+
+    def validate_then_replace_tags(*args, **kwargs):
+        snapshot = validate(*args, **kwargs)
+        path = Path(config["bundle"]) / "tags.yaml"
+        changed = json.loads(path.read_text())
+        changed["tags"][1]["x"] = 999
+        path.write_text(json.dumps(changed))
+        return snapshot
+
+    monkeypatch.setattr(tag_localization, "validate_bundle", validate_then_replace_tags)
+    localizer = TagLocalizer(**config)
+
+    assert localizer.tags[1]["x"] == pytest.approx(0.55)
+    assert json.loads((Path(config["bundle"]) / "tags.yaml").read_text())["tags"][1]["x"] == 999
+
+
+def test_hashed_calibration_snapshot_is_parsed_if_path_changes(tmp_path, monkeypatch):
+    _, _, _, _, config = scene(tmp_path)
+    calibration_path = Path(config["calibration_path"])
+    read_bytes = Path.read_bytes
+    replaced = False
+
+    def read_then_replace(path):
+        nonlocal replaced
+        payload = read_bytes(path)
+        if path == calibration_path and not replaced:
+            changed = json.loads(payload)
+            changed["camera_matrix"][0][0] = 1100
+            path.write_text(json.dumps(changed))
+            replaced = True
+        return payload
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_replace)
+    localizer = TagLocalizer(**config)
+
+    assert replaced
+    assert localizer.K[0, 0] == 900
+    assert json.loads(calibration_path.read_text())["camera_matrix"][0][0] == 1100
