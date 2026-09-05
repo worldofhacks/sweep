@@ -549,3 +549,11 @@
   cursor: pointer;
 }
 .ct-mission-reset:hover { background: var(--color-ground); }
+
+/* Phone (below --bp-two-column): the target chips settle into two columns, and a
+   control button's badge drops under its label when the two-column motion grid
+   cannot hold them side by side. */
+@media (max-width: 759px) {
+  .ct-chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ct-control-btn { flex-wrap: wrap; }
+}

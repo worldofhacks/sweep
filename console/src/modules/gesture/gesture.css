@@ -239,3 +239,9 @@
 .gs-fails .is-key { font-family: var(--font-mono); color: var(--color-warn); }
 .gs-fails .is-value { color: var(--color-ink-2); }
 .gs-note { margin: 14px 0 0; padding: 12px 14px; border-radius: var(--radius-tab-group); background: var(--color-panel); font-size: var(--text-12-5); color: var(--color-ink-2); }
+
+/* Phone (below --bp-two-column): the quick commands take their own row and wrap
+   instead of holding their full-row width. */
+@media (max-width: 759px) {
+  .tg-strip-quick { flex: 1 1 100%; }
+}
