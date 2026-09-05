@@ -32,6 +32,11 @@ _SAFE_WHILE_STOPPED: Final = frozenset({IntentName.ESTOP, IntentName.HOLD, Inten
 _SAFE_OPERATIONS: Final = frozenset(
     {CommandOperation.ESTOP, CommandOperation.HOVER, CommandOperation.LAND}
 )
+_STOPPED_OPERATION_BY_INTENT: Final = {
+    IntentName.HOLD: CommandOperation.HOVER,
+    IntentName.LAND_ALL: CommandOperation.LAND,
+    IntentName.ESTOP: CommandOperation.ESTOP,
+}
 _ARMED_INTENTS: Final = frozenset(
     {IntentName.TRANSLATE, IntentName.COME_HOME, IntentName.CAPTURE_ROOM}
 )
@@ -343,6 +348,10 @@ class SafetyArbiter:
         boundary = self._check_plan_boundary(plan, snapshot)
         if boundary is not None:
             return boundary
+        if not plan.commands:
+            zero_command_refusal = self._check_zero_command_safety(plan, snapshot)
+            if zero_command_refusal is not None:
+                return zero_command_refusal
         for command in plan.commands:
             boundary = self._check_command_boundary(plan, command, snapshot)
             if boundary is not None:
@@ -392,6 +401,58 @@ class SafetyArbiter:
                 reason=RefusalReason.CONFIRMATION_REQUIRED,
                 detail=f"{plan.intent_name.value} plan is not confirmed",
             )
+        return None
+
+    def _check_zero_command_safety(self, plan: Plan, snapshot: FleetSnapshot) -> Refusal | None:
+        if plan.intent_name not in {IntentName.ARM, IntentName.SELECT}:
+            return None
+        if snapshot.estop_active:
+            return self._refusal_for(
+                plan.intent_id,
+                snapshot,
+                RefusalReason.ESTOP_ACTIVE,
+                "network stop is active",
+            )
+        operator_refusal = self._check_operator(plan.intent_id, snapshot)
+        if operator_refusal is not None:
+            return operator_refusal
+        targets = plan.selection if plan.intent_name is IntentName.ARM else plan.selection_update
+        for drone_id in targets or ():
+            aircraft = snapshot.aircraft.get(drone_id)
+            if aircraft is None:
+                return self._refusal_for(
+                    plan.intent_id,
+                    snapshot,
+                    RefusalReason.AIRCRAFT_NOT_REGISTERED,
+                    f"aircraft {drone_id} is absent from the registry",
+                )
+            membership_refusal = self._check_membership(
+                plan.intent_id, snapshot, aircraft, safe_action=False
+            )
+            if membership_refusal is not None:
+                return membership_refusal
+            if plan.intent_name is IntentName.ARM and (
+                aircraft.flight_state not in {FlightState.DISARMED, FlightState.LANDED}
+                or aircraft.armed
+            ):
+                return self._refusal_for(
+                    plan.intent_id,
+                    snapshot,
+                    RefusalReason.INVALID_STATE,
+                    "arm requires a landed and disarmed aircraft",
+                    aircraft=aircraft,
+                )
+            authority_refusal = self._check_authority(plan.intent_id, snapshot, aircraft)
+            if authority_refusal is not None:
+                return authority_refusal
+            telemetry_refusal = self._check_telemetry(
+                plan.intent_id, snapshot, aircraft, require_position=True
+            )
+            if telemetry_refusal is not None:
+                return telemetry_refusal
+            battery_refusal = self._check_battery(plan.intent_id, snapshot, aircraft, aircraft.pose)
+            if battery_refusal is not None:
+                return battery_refusal
         return None
 
     def check_command(
@@ -474,11 +535,7 @@ class SafetyArbiter:
         if membership_refusal is not None:
             return membership_refusal
 
-        if (
-            snapshot.estop_active
-            and not command.safety_action
-            and command.operation not in _SAFE_OPERATIONS
-        ):
+        if snapshot.estop_active and not self._is_allowed_while_stopped(plan, command):
             return self._command_refusal(
                 command,
                 snapshot,
@@ -1157,12 +1214,15 @@ class SafetyArbiter:
 
     @staticmethod
     def _is_legitimate_safety_action(plan: Plan, command: Command) -> bool:
-        expected = {
-            IntentName.HOLD: CommandOperation.HOVER,
-            IntentName.LAND_ALL: CommandOperation.LAND,
-            IntentName.ESTOP: CommandOperation.ESTOP,
-        }
-        return expected.get(plan.intent_name) is command.operation
+        return _STOPPED_OPERATION_BY_INTENT.get(plan.intent_name) is command.operation
+
+    @staticmethod
+    def _is_allowed_while_stopped(plan: Plan, command: Command) -> bool:
+        return (
+            command.safety_action
+            and _STOPPED_OPERATION_BY_INTENT.get(plan.intent_name) is command.operation
+            and (plan.intent_name is not IntentName.LAND_ALL or plan.confirmed is True)
+        )
 
     def _intent_targets(
         self, intent: IntentV1, snapshot: FleetSnapshot
