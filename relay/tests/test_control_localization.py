@@ -135,6 +135,7 @@ def store() -> ControlLocalizationStore:
         },
         max_clock_error_ms=5,
         max_fix_age_ms=500,
+        max_position_uncertainty_m=0.2,
     )
 
 
@@ -156,6 +157,8 @@ def test_fuser_wire_store_replaces_generic_telemetry_pose_with_capture_timestamp
     assert aircraft.position_last_seen_ms == 100_895
     assert aircraft.control_provenance is not None
     assert aircraft.control_provenance.to_dict()["map_id"] == "map-sha"
+    assert aircraft.control_provenance.evaluated_at_relay_ms == 101_000
+    assert aircraft.control_provenance.position_uncertainty_m < 0.2
 
 
 def test_stale_localization_replaces_quality_and_existing_safety_refuses_translation():
@@ -244,3 +247,13 @@ def test_reconnect_clock_mapping_covariance_and_duplicate_replay_are_rejected():
     duplicate = evidence.ingest(payload(), 1, 1, 101_000)
     assert not duplicate.accepted
     assert duplicate.reason == "duplicate_event"
+
+
+def test_covariance_above_the_control_uncertainty_bound_is_not_position_evidence():
+    evidence = store()
+    uncertain = payload()
+    uncertain["covariance_map_enu_m2"] = [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]]
+    result = evidence.ingest(uncertain, 1, 1, 101_000)
+    assert not result.accepted
+    assert result.reason == "position_uncertainty_exceeded"
+    assert evidence.apply(make_snapshot(1, now_ms=101_000)).aircraft[1].position_quality == 0.0
