@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import planner.relay_bridge as bridge_module
 from evals.test_m14_button_to_sim import CONSOLE_KEY, SESSION, Clock, Harness
+from planner.models import FlightState
 from relay.auth import Principal
 from relay.session import RelaySession
 from tests.autonomy_fixtures import make_snapshot
@@ -60,6 +61,74 @@ def _fail_delivery(session: RelaySession, intent: dict[str, object]) -> None:
         detail="acceptance socket closed before delivery",
     )
     assert outcome[-1]["reason"] == "acceptance_delivery_failed", outcome
+
+
+@pytest.mark.parametrize(
+    ("stop_name", "recovery_name", "expected_calls"),
+    [("hold", "come_home", ["hover", "goto"]), ("estop", "land_all", ["estop", "land"])],
+)
+def test_completed_stop_allows_immediate_explicit_recovery(
+    airborne_session: tuple[Harness, RelaySession],
+    stop_name: str,
+    recovery_name: str,
+    expected_calls: list[str],
+) -> None:
+    harness, session = airborne_session
+    stop = harness.intent(stop_name, selection=[1] if stop_name == "hold" else [])
+    _admit(session, stop)
+    assert _execute(session, stop)["status"] == "completed"
+    harness.clock.advance(1)
+    recovery = harness.intent(
+        recovery_name,
+        selection=[1] if recovery_name == "come_home" else [],
+        confirm=recovery_name == "land_all",
+    )
+    _admit(session, recovery)
+
+    outcome = _execute(session, recovery)
+
+    assert outcome["status"] == "completed", outcome
+    assert [call.operation.value for call in harness.flight.calls] == expected_calls
+    aircraft = harness.flight.aircraft[1]
+    if recovery_name == "land_all":
+        assert aircraft.flight_state is FlightState.LANDED
+        assert aircraft.armed is False
+        assert session.current_state()["estop"] is True
+    else:
+        assert aircraft.pose.x == aircraft.home.x
+        assert aircraft.pose.y == aircraft.home.y
+
+
+@pytest.mark.parametrize(
+    ("stop_name", "recovery_name", "operation"),
+    [("hold", "come_home", "hover"), ("estop", "land_all", "estop")],
+)
+@pytest.mark.parametrize("stop_delay_ms", [0, 1])
+def test_precreated_recovery_at_or_before_completed_stop_stays_superseded(
+    airborne_session: tuple[Harness, RelaySession],
+    stop_name: str,
+    recovery_name: str,
+    operation: str,
+    stop_delay_ms: int,
+) -> None:
+    harness, session = airborne_session
+    recovery = harness.intent(
+        recovery_name,
+        selection=[1] if recovery_name == "come_home" else [],
+        confirm=recovery_name == "land_all",
+    )
+    harness.clock.advance(stop_delay_ms)
+    stop = harness.intent(stop_name, selection=[1] if stop_name == "hold" else [])
+    _admit(session, stop)
+    assert _execute(session, stop)["status"] == "completed"
+
+    _admit(session, recovery)
+    outcome = _execute(session, recovery)
+
+    assert outcome["status"] == "invalidated", outcome
+    assert outcome["reason"] == "superseded"
+    assert [call.operation.value for call in harness.flight.calls] == [operation]
+    assert harness.flight.aircraft[1].flight_state is FlightState.HOVERING
 
 
 @pytest.mark.parametrize(("name", "operation"), [("hold", "hover"), ("land_all", "land")])

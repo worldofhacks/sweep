@@ -353,7 +353,7 @@ class AutonomyRelayBridge:
             for record in self._completed_ordering
             if record.completed_at >= cutoff
             or any(
-                (record.safety_t is not None and intent.t <= record.safety_t + window_ms)
+                record.supersedes(intent, window_ms)
                 or any(abs(intent.t - t) <= window_ms for t in record.motion_times)
                 for intent in pending
             )
@@ -373,10 +373,7 @@ class AutonomyRelayBridge:
         retired = {
             motion.intent_id
             for motion in motions
-            if any(
-                record.safety_t is not None and motion.t <= record.safety_t + window_ms
-                for record in records
-            )
+            if any(record.supersedes(motion, window_ms) for record in records)
         }
         conflicting = tuple(
             Refusal(
@@ -707,3 +704,10 @@ class _CompletedOrdering:
     completed_at: float
     motion_times: tuple[int, ...]
     safety_t: int | None
+
+    def supersedes(self, intent: IntentV1, conflict_window_ms: int) -> bool:
+        if self.safety_t is None:
+            return False
+        recovery = intent.name in {IntentName.COME_HOME, IntentName.LAND_ALL}
+        cutoff = self.safety_t + (0 if recovery else conflict_window_ms)
+        return intent.t <= cutoff
