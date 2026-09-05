@@ -1,5 +1,5 @@
 import type { DepartureRecord } from '../control/state'
-import { formatDroneId } from '../control/state'
+import { capabilityBlockedReason, formatDroneId, isIntentEnabled } from '../control/state'
 import type { RelayAircraftState } from '../relay/contract'
 import { isReady, membershipTone, metricTone, sortedAircraft } from '../shell/derive'
 import { formatPercent, formatTime, humanizeCode } from '../shell/format'
@@ -39,6 +39,8 @@ export function FleetRegistry({
             drone={drone}
             selected={state.selection.includes(drone.drone_id)}
             lastInSelection={state.selection.length === 1 && state.selection[0] === drone.drone_id}
+            selectionEnabled={isIntentEnabled(state, 'select')}
+            selectionDisabledReason={capabilityBlockedReason(state, 'select')}
             onToggle={() => toggleAircraft(drone.drone_id)}
           />
         ))
@@ -88,21 +90,25 @@ function FleetCard({
   drone,
   selected,
   lastInSelection,
+  selectionEnabled,
+  selectionDisabledReason,
   onToggle,
 }: {
   drone: RelayAircraftState
   selected: boolean
   lastInSelection: boolean
+  selectionEnabled: boolean
+  selectionDisabledReason: string | null
   onToggle: () => void
 }) {
   const id = formatDroneId(drone.drone_id)
-  const canSelect = isReady(drone)
+  const canSelect = selectionEnabled && isReady(drone)
   const disabled = !canSelect || lastInSelection
-  const title = lastInSelection
+  const title = selectionDisabledReason ?? (lastInSelection
     ? 'Intent v1 requires at least one aircraft in a select request.'
     : !canSelect
       ? 'Relay reports this aircraft is not selectable.'
-      : undefined
+      : undefined)
   return (
     <article className="fleet-card" aria-label={`${id} registry card`}>
       <div className="fleet-card-head">

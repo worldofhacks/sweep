@@ -24,7 +24,7 @@ The validator makes these schema choices where Appendix A leaves details open:
 - `intent_id` is a non-empty stable identifier. A retry gets a new identifier and may link to a different request through `retry_of`. This function validates the reference shape; the relay lifecycle validates same-session failure, deduplication, and terminal-state semantics.
 - `confirm` records the source's confirmation state. `capture_room` requires confirmation and exactly one selected drone; the arbiter enforces the remaining action-specific checks.
 - Rejection precedence is envelope, registered source, intent name, argument shape, scope, mode capability, then intent-name capability.
-- M2.0 accepts indoor requests for the nine flight-control names plus the previously accepted `capture_room` path. The outdoor mode values remain schema-reserved and return `unsupported`; the remaining intent names keep their v1 argument shapes and also return `unsupported`.
+- `c1_basic_control` enables `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land`, `land_all`, `estop`, `capture_room`, `altitude`, `formation_next`, `formation_set`, `spacing`, and `sweep`. The outdoor mode values remain schema-reserved and return `unsupported`; `disarm`, `survey_area`, and `map_area` keep their v1 argument shapes and also return `unsupported`.
 - `come_home` returns selected drones to their home positions through planner-generated `goto` calls. Confirmed `land` maps the current selection to adapter `land`; `land_all` applies landing fleet-wide.
 
 The current source registry is `console`, `keyboard`, and `webcam`; `webcam` is the console-hosted gesture producer and authenticates on its own connection with the same relay token. Language joins only when its real producer and conformance tests land. Registering another source or enabling another Intent v1 name changes the shared constants and conformance tests in this module.
@@ -42,6 +42,16 @@ SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 Single-quote JSON values in `.env`: `just relay` and `just fake-node` read the file with `uv run --env-file`, which strips double quotes from unquoted values.
 
 `SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true` is a demo-only fallback. It proves that a frame came from a holder of the shared secret, but cannot prove which aircraft sent it; keep it false for hardware. The freshness settings in `.env.example` are explicit demo values and must be measured and configured for a hardware session.
+
+## Voice transcription
+
+`POST /api/sessions/{id}/transcripts` accepts a bearer-authenticated `audio/webm`, `audio/ogg`, `audio/wav`, or `audio/mpeg` body up to 8 MiB and 30 seconds. The browser reports duration in `X-Sweep-Audio-Duration-Ms`; the relay rejects an oversized declaration and independently decodes the audio before provider I/O so a false or missing header cannot bypass the limit. Audio that cannot be decoded, lacks a sample rate, or carries negative, repeated, or non-monotonic frame timestamps is refused. The request carries a bounded `X-Sweep-Correlation-Id`. The relay reads `OPENAI_API_KEY` only on the server and sends valid uploads to OpenAI's `whisper-1` endpoint. Browser code never receives that credential.
+
+Browser uploads are allowed only from the explicit origins in `SWEEP_CONSOLE_ORIGINS`, which defaults to the local Vite development origins. Configure the deployed console origin rather than using a wildcard.
+
+The endpoint requires an existing live relay session. It derives the compiler capability version from the authoritative state projection, hands the final transcript to `TranscriptCompiler.compile(transcript, relay_state, capability_version=..., rooms=..., now_ms=..., correlation_id=..., session_id=...)`, and returns a typed `voice_outcome`. The current compiler handoff is deliberately unavailable until the transcript compiler lands, so it returns `compiler_unavailable` with `emissions: []`. Upload, provider, and compiler failures use the same no-emission shape.
+
+Langfuse telemetry starts only when both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. It records opaque correlation and session identifiers, content type, byte count, model, and outcome. Audio and transcript text stay out of telemetry.
 
 Run loopback by default. An intentional LAN deployment should add its transport protection and network boundary outside the app:
 
@@ -122,7 +132,8 @@ State is fanned out at 10 Hz. Its required top-level keys are:
 
 ```text
 v, t, type="state", event_id, session, roster_version, armed, estop,
-selection, formation, spacing, mode, pending, accepted_plan, drones
+selection, formation, spacing, mode, capability_profile, enabled_intent_names,
+pending, accepted_plan, drones
 ```
 
 Each drone has these required keys:
@@ -140,6 +151,8 @@ camera_capabilities, node_status
 `camera_capabilities` and `node_status` are the node's latest `capabilities` and `node_status` frames (see the node protocol below) without their transport-only fields, or null until the node has sent one in the current connection epoch; a rejoin clears both. They are informational projections for the console and the command wire. Neither changes membership or `control_authority`: only a signed `readiness` frame does that, so a node that loses authority must report it through readiness as well as `node_status`.
 
 Top-level `armed` is the authoritative session arm authorization, initially false and updated only through `RelaySession.update_control_projection(armed=...)` after the planner/arbiter accepts that control-state change. It is not inferred from aircraft flight-state strings. Join and rejoin leave it unchanged; a new session after process restart begins disarmed. Per-aircraft physical armed/disarmed evidence remains an explicit autonomy enrichment used by graceful-removal safety.
+
+The capability profile limits valid intent names before planning. Every non-null intent sink must expose the same immutable `CapabilityProfile` as the relay session; opaque callbacks must be wrapped in `CapabilityBoundIntentSink`. The session revalidates that declaration before admission and again before pending execution, so replacing a planner behind a bound method cannot silently widen the command surface. A capability profile does not approve an adapter or aircraft deployment. Authenticated membership, adapter capabilities, current telemetry, control authority, RC-safety-operator presence, and the planner and arbiter gates remain required before hardware dispatch.
 
 Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, `state`, `telemetry`, `safety_action`, `acknowledgement`, `refusal`, and the node-authored `capabilities`, `capture_readiness`, and `node_status`; a node's socket additionally receives `command`. Every one carries `event_id`. Node-local `safety_action` events expose the aircraft, connection epoch, and HOLD or FAILSAFE action so operators can see link-loss intervention. A refusal always includes all of `intent_id`, `command_id`, `drone_id`, `connection_epoch`, `roster_version`, `reason`, and `detail`; context fields are deliberately present as null when they do not apply. Acknowledgements use the same always-present context fields; `command_id` is non-null for adapter facts and nullable for relay/orchestrator intent-level lifecycle events.
 

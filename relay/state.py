@@ -6,8 +6,10 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from math import isfinite
 from threading import RLock
 
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import (
     CapabilitiesFrame,
     Membership,
@@ -19,6 +21,7 @@ from relay.contracts import (
 
 MAX_PHYSICAL_AIRCRAFT = 4
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
+_FORMATIONS = frozenset({"line", "column", "circle", "grid", "V"})
 
 
 class RegistryError(ValueError):
@@ -92,10 +95,16 @@ class _AircraftRecord:
 class FleetRegistry:
     """One-session fleet state; transport authentication happens before entry."""
 
-    def __init__(self, *, telemetry_freshness_ms: int) -> None:
+    def __init__(
+        self,
+        *,
+        telemetry_freshness_ms: int,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+    ) -> None:
         if telemetry_freshness_ms <= 0:
             raise ValueError("telemetry_freshness_ms must be positive")
         self.telemetry_freshness_ms = telemetry_freshness_ms
+        self.capability_profile = capability_profile
         self._aircraft: dict[int, _AircraftRecord] = {}
         self._roster_version = 0
         self._state_sequence = 0
@@ -477,6 +486,23 @@ class FleetRegistry:
         with self._lock:
             self._armed = value
 
+    def set_formation(self, value: str) -> None:
+        if value not in _FORMATIONS:
+            raise ValueError("formation is not in the supported formation library")
+        with self._lock:
+            self._formation = value
+
+    def set_spacing(self, value: float) -> None:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError("spacing must be a finite positive number")
+        with self._lock:
+            self._spacing = float(value)
+
     def state_event(self, *, session: str, t: int, event_id: str) -> dict[str, object]:
         with self._lock:
             drones = [self._aircraft_state(record, t) for record in self._aircraft.values()]
@@ -496,6 +522,7 @@ class FleetRegistry:
                 "formation": self._formation,
                 "spacing": self._spacing,
                 "mode": self._mode,
+                **self.capability_profile.state_value(),
                 "pending": _json_copy(self._pending),
                 "accepted_plan": _json_copy(self._accepted_plan),
                 "drones": drones,

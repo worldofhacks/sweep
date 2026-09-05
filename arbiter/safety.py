@@ -26,7 +26,13 @@ from planner.planner import SELECTION_TARGETED_INTENTS
 from relay.intent_v1 import IntentName, IntentV1
 
 _CONFIRMED_INTENTS: Final = frozenset(
-    {IntentName.TAKEOFF, IntentName.LAND, IntentName.LAND_ALL, IntentName.CAPTURE_ROOM}
+    {
+        IntentName.TAKEOFF,
+        IntentName.LAND,
+        IntentName.LAND_ALL,
+        IntentName.CAPTURE_ROOM,
+        IntentName.SWEEP,
+    }
 )
 _SAFE_WHILE_STOPPED: Final = frozenset(
     {IntentName.ESTOP, IntentName.HOLD, IntentName.LAND, IntentName.LAND_ALL}
@@ -40,7 +46,15 @@ _STOPPED_OPERATION_BY_INTENT: Final = {
     IntentName.ESTOP: CommandOperation.ESTOP,
 }
 _ARMED_INTENTS: Final = frozenset(
-    {IntentName.TRANSLATE, IntentName.COME_HOME, IntentName.CAPTURE_ROOM}
+    {
+        IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
+        IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
+        IntentName.COME_HOME,
+        IntentName.SWEEP,
+        IntentName.CAPTURE_ROOM,
+    }
 )
 _CAMERA_OPERATIONS: Final = frozenset(
     {
@@ -166,6 +180,11 @@ class SafetyArbiter:
                 f"{intent.name.value} requires operator confirmation",
             )
 
+        if intent.name is IntentName.SWEEP:
+            box_refusal = self._check_sweep_box(intent, snapshot)
+            if box_refusal is not None:
+                return box_refusal
+
         if snapshot.estop_active and intent.name not in _SAFE_WHILE_STOPPED:
             return self._intent_refusal(
                 intent,
@@ -261,6 +280,49 @@ class SafetyArbiter:
                 if capture_refusal is not None:
                     return capture_refusal
 
+        return None
+
+    def _check_sweep_box(self, intent: IntentV1, snapshot: FleetSnapshot) -> Refusal | None:
+        raw_box = intent.args.get("box")
+        if raw_box is None:
+            return None
+        expected = {"min_x", "max_x", "min_y", "max_y"}
+        if not isinstance(raw_box, Mapping) or set(raw_box) != expected:
+            return self._intent_refusal(
+                intent,
+                snapshot,
+                RefusalReason.INVALID_PLAN,
+                "sweep box does not match the validated axis-aligned contract",
+            )
+        values = tuple(raw_box[key] for key in ("min_x", "max_x", "min_y", "max_y"))
+        if any(not _finite_number(value) for value in values):
+            return self._intent_refusal(
+                intent,
+                snapshot,
+                RefusalReason.INVALID_PLAN,
+                "sweep box bounds must be finite",
+            )
+        min_x, max_x, min_y, max_y = (float(value) for value in values)
+        if min_x >= max_x or min_y >= max_y:
+            return self._intent_refusal(
+                intent,
+                snapshot,
+                RefusalReason.INVALID_PLAN,
+                "sweep box bounds must be ordered",
+            )
+        geofence = self.config.geofence
+        if (
+            min_x < geofence.min_x
+            or max_x > geofence.max_x
+            or min_y < geofence.min_y
+            or max_y > geofence.max_y
+        ):
+            return self._intent_refusal(
+                intent,
+                snapshot,
+                RefusalReason.GEOFENCE,
+                "requested sweep box extends outside the configured geofence",
+            )
         return None
 
     def check_plan(self, plan: Plan, snapshot: FleetSnapshot) -> Refusal | None:
@@ -682,6 +744,11 @@ class SafetyArbiter:
             IntentName.SELECT: frozenset(),
             IntentName.TAKEOFF: frozenset({CommandOperation.TAKEOFF}),
             IntentName.TRANSLATE: frozenset({CommandOperation.GOTO}),
+            IntentName.ALTITUDE: frozenset({CommandOperation.GOTO}),
+            IntentName.FORMATION_NEXT: frozenset({CommandOperation.GOTO}),
+            IntentName.FORMATION_SET: frozenset({CommandOperation.GOTO}),
+            IntentName.SPACING: frozenset(),
+            IntentName.SWEEP: frozenset({CommandOperation.GOTO}),
             IntentName.HOLD: frozenset({CommandOperation.HOVER}),
             IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
             IntentName.LAND: frozenset({CommandOperation.LAND}),
@@ -785,10 +852,13 @@ class SafetyArbiter:
     @staticmethod
     def _check_plan_boundary(plan: Plan, snapshot: FleetSnapshot) -> Refusal | None:
         optional_updates_are_typed = (
-            plan.selection_update is None or isinstance(plan.selection_update, tuple)
-        ) and all(
-            value is None or isinstance(value, bool)
-            for value in (plan.armed_update, plan.estop_update)
+            (plan.selection_update is None or isinstance(plan.selection_update, tuple))
+            and all(
+                value is None or isinstance(value, bool)
+                for value in (plan.armed_update, plan.estop_update)
+            )
+            and (plan.formation_update is None or isinstance(plan.formation_update, str))
+            and (plan.spacing_update is None or _finite_positive(plan.spacing_update))
         )
         valid = (
             isinstance(plan.plan_id, str)
@@ -856,6 +926,9 @@ class SafetyArbiter:
         if plan.intent_name in {
             IntentName.TAKEOFF,
             IntentName.TRANSLATE,
+            IntentName.ALTITUDE,
+            IntentName.FORMATION_NEXT,
+            IntentName.FORMATION_SET,
             IntentName.COME_HOME,
             IntentName.LAND,
         }:
@@ -874,6 +947,30 @@ class SafetyArbiter:
                         snapshot,
                         f"{plan.intent_name.value} command parameters are malformed",
                     )
+        if plan.intent_name is IntentName.SWEEP:
+            expected = tuple(sorted(plan.selection))
+            actual = tuple(sorted(command.drone_id for command in plan.commands))
+            if not expected or actual != tuple(drone_id for drone_id in expected for _ in range(2)):
+                return self._invalid_plan_refusal(
+                    plan,
+                    snapshot,
+                    "sweep requires exactly two lane endpoints per selected aircraft",
+                )
+            if any(
+                not self._valid_normal_command(IntentName.SWEEP, command)
+                for command in plan.commands
+            ):
+                return self._invalid_plan_refusal(
+                    plan,
+                    snapshot,
+                    "sweep command parameters are malformed",
+                )
+        if plan.intent_name is IntentName.SPACING and plan.commands:
+            return self._invalid_plan_refusal(
+                plan,
+                snapshot,
+                "spacing changes projection state without adapter commands",
+            )
         if plan.intent_name is IntentName.CAPTURE_ROOM:
             return self._check_capture_plan_shape(plan, snapshot)
         return None
@@ -892,7 +989,14 @@ class SafetyArbiter:
                 and set(command.parameters) == {"z"}
                 and _finite_positive(command.parameters.get("z"))
             )
-        if intent_name in {IntentName.TRANSLATE, IntentName.COME_HOME}:
+        if intent_name in {
+            IntentName.TRANSLATE,
+            IntentName.ALTITUDE,
+            IntentName.FORMATION_NEXT,
+            IntentName.FORMATION_SET,
+            IntentName.COME_HOME,
+            IntentName.SWEEP,
+        }:
             return (
                 command.operation is CommandOperation.GOTO
                 and set(command.parameters) == {"speed", "x", "y", "z"}
@@ -1137,6 +1241,8 @@ class SafetyArbiter:
                 plan.armed_update is True
                 and plan.selection_update is None
                 and plan.estop_update is None
+                and plan.formation_update is None
+                and plan.spacing_update is None
             )
         elif plan.intent_name is IntentName.SELECT:
             update = plan.selection_update
@@ -1155,18 +1261,41 @@ class SafetyArbiter:
                 )
                 and plan.armed_update is None
                 and plan.estop_update is None
+                and plan.formation_update is None
+                and plan.spacing_update is None
             )
         elif plan.intent_name is IntentName.ESTOP:
             valid = (
                 plan.estop_update is True
                 and plan.selection_update is None
                 and plan.armed_update is None
+                and plan.formation_update is None
+                and plan.spacing_update is None
+            )
+        elif plan.intent_name in {IntentName.FORMATION_NEXT, IntentName.FORMATION_SET}:
+            valid = (
+                isinstance(plan.formation_update, str)
+                and bool(plan.formation_update)
+                and plan.selection_update is None
+                and plan.armed_update is None
+                and plan.estop_update is None
+                and plan.spacing_update is None
+            )
+        elif plan.intent_name is IntentName.SPACING:
+            valid = (
+                _finite_positive(plan.spacing_update)
+                and plan.selection_update is None
+                and plan.armed_update is None
+                and plan.estop_update is None
+                and plan.formation_update is None
             )
         else:
             valid = (
                 plan.selection_update is None
                 and plan.armed_update is None
                 and plan.estop_update is None
+                and plan.formation_update is None
+                and plan.spacing_update is None
             )
         valid = valid and (
             isinstance(plan.hold_scope, HoldScope)
@@ -1420,7 +1549,11 @@ class SafetyArbiter:
             intent.name
             in {
                 IntentName.TRANSLATE,
+                IntentName.ALTITUDE,
+                IntentName.FORMATION_NEXT,
+                IntentName.FORMATION_SET,
                 IntentName.COME_HOME,
+                IntentName.SWEEP,
             }
             and aircraft.flight_state not in _STABLE_MOTION_STATES
         ):

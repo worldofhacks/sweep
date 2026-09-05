@@ -6,7 +6,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from math import dist
+from math import atan2, degrees, dist, hypot
 from threading import RLock
 from typing import Protocol
 
@@ -376,9 +376,16 @@ class PreparedConfirmation:
     execution: PreparedExecution
     state_digest: str
     router: PreparedExecutionRouter
+    translation: TranslationGrounding | None = None
 
     def preview(self) -> dict[str, object]:
-        return self.execution.plan.to_dict()
+        preview = self.execution.plan.to_dict()
+        if self.intent.name.value == "translate" and self.translation is not None:
+            preview["translation"] = _resolved_translation_preview(
+                self.execution,
+                self.translation,
+            )
+        return preview
 
 
 class ConfirmedPlan:
@@ -462,6 +469,7 @@ class ConfirmedPlan:
                 execution=planned,
                 state_digest=_execution_digest(facts),
                 router=router,
+                translation=_translation_grounding(facts),
             )
             self._issued_preparation = prepared
             return prepared
@@ -1169,6 +1177,35 @@ def _translation_matches_selection(
     return expected.policy == actual.policy and all(
         expected.headings.get(drone_id) == actual.headings.get(drone_id) for drone_id in selection
     )
+
+
+def _resolved_translation_preview(
+    execution: PreparedExecution,
+    grounding: TranslationGrounding,
+) -> dict[str, object]:
+    directions = []
+    for command in execution.plan.commands:
+        if command.operation is not CommandOperation.GOTO:
+            continue
+        pose = execution.snapshot.aircraft[command.drone_id].pose
+        target = Position.from_mapping(command.parameters)
+        dx_m = target.x - pose.x
+        dy_m = target.y - pose.y
+        directions.append(
+            {
+                "drone_id": command.drone_id,
+                "dx_m": dx_m,
+                "dy_m": dy_m,
+                "heading_deg": degrees(atan2(dy_m, dx_m)) % 360,
+            }
+        )
+    distance_m = hypot(directions[0]["dx_m"], directions[0]["dy_m"]) if directions else 0.0
+    return {
+        "frame": grounding.policy.frame,
+        "selection": list(execution.plan.selection),
+        "distance_m": distance_m,
+        "directions": directions,
+    }
 
 
 def _drone_position(

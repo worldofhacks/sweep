@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest'
-import type { IntentV1, RelayAircraftState, RelayServerEvent } from '../relay/contract'
+import {
+  C1_BASIC_CONTROL_INTENTS,
+  type IntentV1,
+  type RelayAircraftState,
+  type RelayServerEvent,
+} from '../relay/contract'
 import { retryIntent } from './intent'
 import {
   controlReducer,
@@ -54,6 +59,8 @@ function stateEvent(
     formation: 'none',
     spacing: 0.8,
     mode: 'indoor',
+    capability_profile: 'c1_basic_control',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
     pending: null,
     accepted_plan: null,
     drones,
@@ -104,6 +111,8 @@ describe('control reducer fleet lifecycle', () => {
     const initial = createInitialControlState(session, t)
     expect(initial.formation).toBeNull()
     expect(initial.spacing).toBeNull()
+    expect(initial.capabilityProfile).toBeNull()
+    expect(initial.enabledIntentNames).toEqual([])
 
     const event = stateEvent('state-formation', 1, [drone()], [1])
     event.formation = 'line'
@@ -111,6 +120,8 @@ describe('control reducer fleet lifecycle', () => {
     const state = controlReducer(initial, { type: 'relay_event', event })
     expect(state.formation).toBe('line')
     expect(state.spacing).toBe(1.5)
+    expect(state.capabilityProfile).toBe('c1_basic_control')
+    expect(state.enabledIntentNames).toEqual(C1_BASIC_CONTROL_INTENTS)
   })
 
   test('a roster-wide land_all preview survives selection changes but not roster changes', () => {
