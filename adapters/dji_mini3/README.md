@@ -14,14 +14,21 @@ skeleton, and the `KeyProductType` / `KeyRcFirmwareInfo` identity check, each at
 the file header. Its indoor-capture domain, Room database, placeholder camera, WorkManager
 dependency, and dangling `@xml/accessory_filter` reference were not carried over.
 
-`hardware-profile.json` pins the one node this bridge is proven on; `aircraft_firmware` and
-`rc_firmware` stay `null` until the probe report reads them from the connected product.
+`hardware-profile.json` records the candidate phone, Android build, and MSDK version. It is
+not a hardware qualification record: `aircraft_firmware` and `rc_firmware` are still `null`,
+and no aircraft/RC probe report or signed flight evidence is committed.
+
+Hardware acceptance is therefore still pending. JVM tests and the fake flavor exercise the
+protocol and safety state machines, but they do not establish Mini 3 axis signs, Virtual Stick
+availability, RC takeover timing, deadman landing, real-camera codec compatibility, a 15-minute
+soak, or end-to-end latency. Complete the guarded procedures below on the exact recorded
+aircraft/RC/phone tuple before describing this bridge as flight-proven.
 
 ## Modules
 
 | Module | Kind | Contents |
 |---|---|---|
-| `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, the relay-signed `command` (integer-only `args`), `capabilities`, `capture_readiness`, `node_status`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; canonical JSON that byte-matches `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`; HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence; `core/flight`, the Phase E Virtual Stick loop as a pure tick-driven state machine (axis mapping, time-boxed steps from millimetre arguments, deadman actions, estop and takeover latches), the kinematic `FakeFlightModel`, and the #85 axis-probe classifier |
+| `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, relay-signed `command` and exact per-node `control_heartbeat`, `capabilities`, `capture_readiness`, `node_status`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; canonical JSON and HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence; `core/flight`, the Phase E Virtual Stick loop as a pure tick-driven state machine (axis mapping, time-boxed steps from millimetre arguments, deadman actions, estop and takeover latches), the kinematic `FakeFlightModel`, and the #85 axis-probe classifier |
 | `bridge-node` | Kotlin/JVM | `RelayLink`, the node's OkHttp WebSocket client: auth, join, readiness, telemetry at 10 Hz, capabilities, node_status, command admission and acknowledgement, reconnect with bounded backoff, the watchdog under relay silence; `FakeAircraft`, the kinematic fixture with the command semantics of `fake_node.py`; `flight/FlightExecutor`, the loop's coroutine ticker and command executor, and `FakeFlightAircraft`, the fixture flown by the loop; tested against a stub relay on MockWebServer |
 | `bench` | Kotlin/JVM | JSONL recorder for command round-trip time, jitter, drops, stick send rate, telemetry rate, video frame stats, and the #85 `probe` entries, plus the report writer |
 | `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates, and `DjiFlightPort` on `IVirtualStickManager`) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`; the Compose page with Setup, Connectivity, Readiness, node status, the Flight and First-flight probes cards, the command log, and the Phase B4 registration and identity cards |
@@ -250,28 +257,29 @@ the BODY coordinate system X is the nose axis and Y the starboard axis, so the l
 is `roll = forward`, `pitch = right`, positive up on `verticalThrottle`, yaw clockwise
 positive. That is exactly the "transpose" lis-epfl measured in GROUND frame (`pitch` drove
 east, `roll` drove north). `AxisMapping` in `core/flight/Axes.kt` is the one place the
-mapping lives; `AxesTest` writes the signs down. The #85 axis probe below confirms it on the
-exact Mini 3 and MSDK 5.18.0 pair; if the aircraft moves the other way, the Axis transpose
+mapping lives; `AxesTest` writes the software convention down. The #85 axis probe below must
+confirm it on the exact Mini 3, firmware, and MSDK 5.18.0 tuple; until signed probe evidence
+exists the mapping is provisional. If the aircraft moves the other way, the Axis transpose
 switch on the Flight card flips the mapping in the bridge, never downstream, and the
 constant in `FlightConfig.mapping` is then changed in code.
 
 ### Deadman (local and mandatory)
 
-The flight controller has no link-loss failsafe under Virtual Stick: it hovers forever when
-stick frames stop (prior-art notes on #43). The loop therefore keeps its own `Watchdog` on
-the relay-distributed `watchdog_hold_ms` and `watchdog_failsafe_ms`, fed through the link
-state by relay-authored frames only (`state`, `membership`, `refusal`, `safety_action`, the
-lifecycle acknowledgements the relay or its autonomy owner writes, and commands whose
-signature verifies), independently of the link object, so tearing the link down cannot stop
-the protection. The relay fans every node frame back out on the same socket, the node's own
-10 Hz telemetry, acknowledgements, and `node_status` included; those echoes prove nothing
-about the relay attending and never refresh the deadman, so a relay that still echoes but
-no longer speaks trips hold and failsafe on schedule (OkHttp's transport ping only fails a
-dead socket; it is not a liveness source either). With no relay activity:
+The bridge does not rely on an aircraft-side link-loss response under Virtual Stick; the
+prior-art notes on #43 report hover when stick frames stop, but the exact Mini 3 behavior is
+part of the pending hardware qualification. The loop therefore keeps its own `Watchdog` on
+the relay-distributed `watchdog_hold_ms` and `watchdog_failsafe_ms`. Its sole refresh source
+is the relay's periodic, per-node `control_heartbeat` (one hertz at the default thresholds
+and faster for a shorter hold window), accepted only after its HMAC,
+session, drone id, connection epoch, roster version, timestamp, and increasing sequence all
+verify. State, membership, refusal, commands, telemetry echoes, acknowledgements, and
+`node_status` never refresh it. Thus a parseable frame or a fan-out loop that only echoes the
+node cannot mask loss of the control authority loop; OkHttp ping remains transport liveness
+only. With no authorized control heartbeat:
 
 - at `hold`: the active command fails with `watchdog_hold` (retryable) and the stream decays
   to neutral sticks; the frames keep flowing while Virtual Stick is enabled, so the stream
-  never stops silently. Relay activity releases the hold and disables Virtual Stick.
+  never stops silently. A new authorized heartbeat releases the hold and disables Virtual Stick.
 - at `failsafe`: the active command fails with `watchdog_failsafe` (terminal), the stream
   sends one neutral frame, Virtual Stick is disabled, and `KeyStartAutoLanding` is issued
   (retried up to five times if the flight controller refuses). Indoors the failsafe is land,
@@ -283,7 +291,7 @@ dead socket; it is not a liveness source either). With no relay activity:
   idle (hold included, since hold keeps Virtual Stick on), and when the hold itself
   interrupted a node takeoff or a Virtual Stick enable still pending (that leaves the loop
   idle with Virtual Stick off while the flight controller finishes the takeoff; the loop
-  remembers it was flying until relay activity re-arms the deadman). With the loop idle and
+  remembers it was flying until an authorized heartbeat re-arms the deadman). With the loop idle and
   Virtual Stick off otherwise, the aircraft is already under the flight controller and the
   RC operator and the node commands nothing: an aircraft the RC operator took off by hand,
   or one hovering after a completed command, stays in the RC operator's hands when the relay
@@ -303,8 +311,9 @@ path and its setting stays whatever the pilot configured in DJI Fly.
 
 ### RC takeover and control authority
 
-Physical RC input drops the aircraft out of Virtual Stick: any stick past 30 % of full
-deflection (`KeyStickLeft/RightHorizontal/Vertical`, the WildBridge latch pattern), the
+The bridge treats physical RC input as a takeover request and asks to leave Virtual Stick:
+any stick past 30 % of full deflection (`KeyStickLeft/RightHorizontal/Vertical`, the
+WildBridge latch pattern), the
 pause or RTH button, and every `FlightControlAuthorityChangeReason` other than the node's
 own `MSDK_REQUEST` (`RC_LOST`, `RC_NOT_P_MODE`, `RC_SWITCH`, `RC_PAUSE_STOP`,
 `RC_ONE_KEY_GO_HOME`, the battery reasons, `NEAR_BOUNDARY`), and the Virtual Stick state
@@ -316,9 +325,10 @@ Stick, and latches: readiness reports `control_authority=false` with the reason 
 and every command is refused with `authority_lost` until the pilot presses Re-arm control
 authority on the Flight card. Every stick event past the threshold and every button press
 is forwarded to the loop; the loop, on its own thread and in order with the commands it
-admits, is the only judge of whether there is anything to cancel, so a takeover works every
-time: after a re-arm, and for a stick moved in the window between a command's admission and
-its first tick. Stick input while the loop is idle is the pilot flying and latches nothing
+admits, is the only judge of whether there is anything to cancel. JVM regressions cover a
+takeover after re-arm and a stick moved between command admission and the first tick; the
+guarded-hover procedure must establish the same behavior on hardware. Stick input while the
+loop is idle is the pilot flying and latches nothing
 (the loop notes it once per idle stretch); input while the latch is already set changes
 nothing. Losing the aircraft or the RC link cancels the loop with `authority_lost` too,
 without a latch, and disables Virtual Stick on the aircraft (best effort while the SDK is
@@ -433,7 +443,7 @@ probes (procedures, result, transitions, sign-off, log path), Commands (every co
 its outcome and detail). The probe log is `filesDir/bench/first-flight-<time>.jsonl`; copy
 it with `adb` and attach it to #85 with the videos.
 
-### Tests that prove the safety behaviours
+### Automated safety-behavior regressions (not hardware evidence)
 
 `bridge-core`: `AxesTest` (BODY-frame signs and the transpose), `LimitsTest` (5 to 25 Hz
 clamp, drift-free cadence, node limits), `MotionPlannerTest` (time-boxed steps from
@@ -458,7 +468,8 @@ and `node_status` report it, twice across a re-arm, the toggle refusing a goto w
 airborne hover still holds) and checks that closing the executor mid-hold releases Virtual
 Stick. `RelayLinkTest` steps an injected clock against a stub relay that only echoes the
 node's telemetry and requires hold at `watchdog_hold_ms` and failsafe at
-`watchdog_failsafe_ms` regardless, and refuses motion at the link with the toggle off.
+`watchdog_failsafe_ms` regardless; separate regressions prove state, commands, telemetry
+echoes, forged/stale/replayed heartbeats, and wrong connection identities cannot refresh it.
 
 ## Phase D bring-up: local FPV and codec evidence
 
@@ -552,7 +563,7 @@ evidence is also just `grep stream_info <log> | tail -1`.
 - `phone_thermal_state` next to `measured_frame_rate_hz` over a five-minute run is the
   thermal evidence Phase D's exit asks for, and the headroom #51 has for publishing.
 
-### Phase D exit checklist (aircraft powered)
+### Phase D exit procedure (aircraft powered; not yet evidenced)
 
 1. Probe flavor registered, aircraft and RC connected, Flight display open: the picture is
    live, the top scrim says `Video live`, `Authority` matches the Readiness toggle, and the
@@ -567,7 +578,7 @@ evidence is also just `grep stream_info <log> | tail -1`.
    measured frame rate, keyframe interval, profile and level, and the thermal state at the
    end of the run.
 
-## Phase B4 exit on the phone
+## Phase B4 exit procedure on the phone (not yet evidenced)
 
 Install `app-probe-debug.apk` on the pinned phone, then:
 
@@ -645,15 +656,19 @@ this firmware offers it, or the explicit re-encode source.
 
 ### Ground station
 
-MediaMTX 1.20.1 (`media/mediamtx.yml`, `webrtc: yes` on 8889, no authentication on
-`all_others`) accepts the four paths `drone1` to `drone4` without per-path configuration.
-The one change is `docker-compose.yml` passing `MTX_WEBRTCADDITIONALHOSTS` from
+MediaMTX 1.20.1 (`media/mediamtx.yml`, `webrtc: yes` on 8889) has no anonymous user.
+Each `drone{id}` account can publish only its matching path and `sweep-reader` can read only
+`drone1` through `drone4`; missing `.env` secrets leave every account locked. The Android
+publisher derives a media-only HMAC password from its stored adapter key, so the relay/control
+key itself is never sent with HTTP Basic. `docker-compose.yml` also passes
+`MTX_WEBRTCADDITIONALHOSTS` from
 `SWEEP_MEDIA_HOST`: inside Docker MediaMTX advertises its container address as its ICE
 candidate, which a phone cannot reach, so the ground station's LAN IP has to be advertised
 too. Set it and recreate the container:
 
 ```sh
 export SWEEP_MEDIA_HOST=10.10.1.60      # this Mac on the flight-room LAN; or put it in .env
+# Set SWEEP_MEDIA_DRONE1_PASSWORD and SWEEP_MEDIA_READ_PASSWORD as media/README.md describes.
 docker compose up -d mediamtx
 docker compose logs mediamtx | grep WebRTC
 # [WebRTC] started with listeners on :8889 (TCP/HTTP), :8189 (UDP/ICE)
@@ -670,11 +685,11 @@ without an aircraft or a relay; the probe flavor publishes the aircraft.
    aircraft connected for the automatic start, and either loss stops the session.
 2. Fake flavor: on the Connectivity card press `Start publish` (no relay needed). The
    publish line walks `connecting` then `publishing` with the negotiated codec: `H264
-   (phone encoder)` when libwebrtc offers the phone's hardware H.264 encoder (the pinned
-   Seeker offers `H264 (42e01f)`), otherwise `VP8 (no H.264 encoder on this phone)`, which
-   the console decodes too. Then the one-second metrics line: bitrate, frame rate, 1280x720,
-   dropped frames, RTT, ICE state (the Seeker against this Mac: 30 fps, RTT 5 to 11 ms, about
-   9 ms of processing per frame, no drops). Scripted, with the screen off: `adb shell am start -n
+   (phone encoder)` when libwebrtc offers hardware H.264, otherwise `VP8 (no H.264 encoder
+   on this phone)`, which the console decodes too. The one-second metrics line reports bitrate,
+   frame rate, size, dropped frames, RTT, ICE state, and processing time. Record those values
+   from the tested device; this repository currently carries no qualifying phone/aircraft run.
+   Scripted, with the screen off: `adb shell am start -n
    org.worldofhacks.sweep.bridge/.MainActivity --es publish_host 10.10.1.60 --ei publish_port
    8889 --es publish start` (`--es publish stop` ends the session, `auto` returns to the
    automatic policy); `adb logcat -s SweepPublish WhipPublisher` shows the same lines as the card.
@@ -694,8 +709,8 @@ without an aircraft or a relay; the probe flavor publishes the aircraft.
    (the clock against the browser machine's clock is the glass-to-glass estimate). Then the
    console's Live module, which reads `<webrtcOrigin>/drone1/whep`.
 5. Probe flavor with the aircraft powered: the publish log shows `listening to the
-   LEFT_OR_MAIN encoded stream`, then `codec gate: H264 High 4.0 1280x720 30fps
-   keyframe/<n>ms` (the Phase D evidence, also in the bench log), then `publishing`. A
+   LEFT_OR_MAIN encoded stream`, then a measured `codec gate: H264 <profile> <size> <rate>
+   keyframe/<n>ms` line (the Phase D evidence, also in the bench log), then `publishing`. A
    `Publish failed: codec_unsupported (...)` line names the profile; it does not retry until
    the source or the aircraft changes.
 6. `Stop publish` logs `WHIP resource released (DELETE 200)` and MediaMTX logs the session

@@ -1,6 +1,7 @@
 package org.worldofhacks.sweep.bridge.node
 
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -341,6 +342,42 @@ class RelayLinkTest {
     }
 
     @Test
+    fun `an explicit reconnect resolves the current network client instead of reusing the first one`() {
+        StubRelay(key).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val first = RelayClients.build(timing)
+            val replacement = RelayClients.build(timing)
+            val providerCalls = AtomicInteger()
+            try {
+                RelayLink(
+                    config(stub),
+                    aircraft,
+                    aircraft,
+                    phone,
+                    timing = timing,
+                    log = { logs += it },
+                    clientProvider = {
+                        if (providerCalls.incrementAndGet() == 1) first else replacement
+                    },
+                ).use { link ->
+                    link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
+                    link.start()
+                    await("first join") { link.state.value.connectionEpoch == 1 }
+                    link.reconnectNow()
+                    await("join through replacement client") { link.state.value.connectionEpoch == 2 }
+                    assertTrue(providerCalls.get() >= 2)
+                }
+            } finally {
+                for (client in listOf(first, replacement)) {
+                    client.dispatcher.cancelAll()
+                    client.dispatcher.executorService.shutdown()
+                    client.connectionPool.evictAll()
+                }
+            }
+        }
+    }
+
+    @Test
     fun `session_closed and bad credentials halt automatic reconnects until asked again`() {
         val detail = "persisted sessions are replay-only after a relay process restart; use a new session ID"
         StubRelay(key, refuseAuth = "session_closed" to detail).use { stub ->
@@ -409,14 +446,13 @@ class RelayLinkTest {
     @Test
     fun `a relay that only echoes the node's telemetry does not feed the deadman`() {
         val clock = SteppedClock(1_000_000)
-        StubRelay(key, echoTelemetry = true).use { stub ->
+        StubRelay(key, echoTelemetry = true, emitControlHeartbeats = false).use { stub ->
             val aircraft = FakeAircraft(connected = true)
             RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, timing = timing, log = { logs += it }).use { link ->
                 link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
                 link.start()
                 await("ready") { link.state.value.membership == "ready" }
-                // The readiness answer is the relay's last own frame; from here it only echoes.
-                val armedAt = checkNotNull(link.state.value.lastRelayActivityMs)
+                assertNull(link.state.value.lastRelayActivityMs)
                 assertEquals(WatchdogState.ARMED, link.state.value.watchdog)
                 val framesAtReady = link.state.value.framesIn
                 await("the node's telemetry coming back") { stub.echoed.get() >= 5 && link.state.value.framesIn >= framesAtReady + 5 }
@@ -437,7 +473,7 @@ class RelayLinkTest {
                 advanced = hold
                 stub.awaitFrame("node_status", timeoutMs = 2_000) { it.str("watchdog_state") == "hold" }
                 assertEquals(WatchdogState.HOLD, link.state.value.watchdog)
-                assertTrue(logs.any { it.contains("ARMED -> HOLD after $hold ms without relay activity") }, logs.joinToString("\n"))
+                assertTrue(logs.any { it.contains("ARMED -> HOLD after $hold ms without an authorized control heartbeat") }, logs.joinToString("\n"))
                 while (advanced + 500 < failsafe) {
                     clock.advance(500)
                     advanced += 500
@@ -447,14 +483,60 @@ class RelayLinkTest {
                 clock.advance(failsafe - advanced)
                 stub.awaitFrame("node_status", timeoutMs = 2_000) { it.str("watchdog_state") == "failsafe" }
                 assertEquals(WatchdogState.FAILSAFE, link.state.value.watchdog)
-                assertTrue(logs.any { it.contains("HOLD -> FAILSAFE after $failsafe ms without relay activity") }, logs.joinToString("\n"))
+                assertTrue(logs.any { it.contains("HOLD -> FAILSAFE after $failsafe ms without an authorized control heartbeat") }, logs.joinToString("\n"))
 
-                // Echoes flowed the whole time and were seen as frames, never as relay activity.
+                // Echoes flowed the whole time and were seen as frames, never as a control heartbeat.
                 val state = link.state.value
                 assertTrue(stub.echoed.get() >= 10 && state.framesIn >= framesAtReady + 10, "echoed ${stub.echoed.get()}, frames in ${state.framesIn - framesAtReady}")
-                assertTrue(checkNotNull(state.lastRelayFrameAtMs) > armedAt, "the echoes stamped the last-frame time")
-                assertEquals(armedAt, state.lastRelayActivityMs, "no echo counted as relay activity")
+                await("an echo stamped the current last-frame time") {
+                    (link.state.value.lastRelayFrameAtMs ?: Long.MIN_VALUE) >= clock.nowMs()
+                }
+                assertNull(state.lastRelayActivityMs, "no echo counted as an authorized control heartbeat")
                 assertEquals(RelayConnection.CONNECTED, state.connection, "the socket itself never dropped")
+            }
+        }
+    }
+
+    @Test
+    fun `only a fresh current signed increasing control heartbeat refreshes the deadman`() {
+        val clock = SteppedClock(2_000_000)
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, timing = timing, log = { logs += it }).use { link ->
+                link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
+                link.start()
+                await("ready") { link.state.value.membership == "ready" }
+                assertNull(link.state.value.lastRelayActivityMs)
+
+                val first = stub.sendControlHeartbeat(seq = 1)
+                await("first heartbeat") { link.state.value.lastRelayActivityMs == clock.nowMs() }
+                assertTrue(Signing.verify(first.without("signature"), first.str("signature"), key))
+
+                clock.advance(100)
+                val acceptedAt = link.state.value.lastRelayActivityMs
+                stub.sendState()
+                val command = stub.issueCommand(CommandArgs.Hover)
+                stub.awaitAck(command.commandId, "completed")
+                Thread.sleep(100)
+                assertEquals(acceptedAt, link.state.value.lastRelayActivityMs, "state and a signed command are not control leases")
+
+                stub.sendControlHeartbeat(seq = 2, rosterVersion = stub.rosterVersion.get() + 1)
+                stub.sendControlHeartbeat(seq = 2, signingKey = "forged".toByteArray())
+                stub.sendControlHeartbeat(seq = 1)
+                Thread.sleep(100)
+                assertEquals(acceptedAt, link.state.value.lastRelayActivityMs, "wrong identity, forgery, and replay are ignored")
+
+                stub.sendControlHeartbeat(seq = 2)
+                await("next valid heartbeat") { link.state.value.lastRelayActivityMs == clock.nowMs() }
+                val nextAcceptedAt = link.state.value.lastRelayActivityMs
+
+                clock.advance(100)
+                stub.sendControlHeartbeat(
+                    seq = 3,
+                    timestamp = stub.relayNow() - stub.nodeSettings.watchdogHoldMs - 1_000,
+                )
+                Thread.sleep(100)
+                assertEquals(nextAcceptedAt, link.state.value.lastRelayActivityMs, "an already-expired lease is ignored")
             }
         }
     }
@@ -483,7 +565,7 @@ class RelayLinkTest {
                     stub.awaitAck(command.commandId, "completed")
                     assertEquals(listOf("accepted", "executing", "completed"), stub.acks(command.commandId), args.operation.wire)
                 }
-                // Every one of those frames was signed by the relay: the deadman stayed fed.
+                // The stub's dedicated signed heartbeats, not these commands, kept the deadman fed.
                 assertEquals(WatchdogState.ARMED, link.state.value.watchdog)
                 assertFalse(logs.any { it.contains("-> HOLD") }, logs.joinToString("\n"))
 
@@ -504,11 +586,11 @@ class RelayLinkTest {
     @Test
     fun `relay silence drives the watchdog to hold then failsafe and failsafe refuses commands`() {
         val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 300, watchdogFailsafeMs = 900)
-        StubRelay(key, nodeSettings = settings).use { stub ->
+        StubRelay(key, nodeSettings = settings, emitControlHeartbeats = false).use { stub ->
             val aircraft = FakeAircraft(connected = true)
             link(stub, aircraft).use { link ->
                 await("ready") { link.state.value.membership == "ready" }
-                // The stub sends nothing unprompted; the node's own telemetry is not relay activity.
+                // The stub sends no control heartbeat; the node's own telemetry is not one.
                 stub.awaitFrame("node_status", timeoutMs = 3_000) { it.str("watchdog_state") == "hold" }
                 stub.awaitFrame("node_status", timeoutMs = 3_000) { it.str("watchdog_state") == "failsafe" }
                 assertEquals(WatchdogState.FAILSAFE, link.state.value.watchdog)

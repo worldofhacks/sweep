@@ -33,10 +33,11 @@ object PublishReasons {
     const val ICE_FAILED = "ice_failed"
     const val ICE_DISCONNECTED = "ice_disconnected"
     const val AIRCRAFT_DISCONNECTED = "aircraft_disconnected"
+    const val MEDIA_AUTH_UNAVAILABLE = "media_auth_unavailable"
     const val INTERNAL_ERROR = "internal_error"
 
     /** Reasons a retry cannot clear: the operator must change the source, the aircraft, or the setup. */
-    val TERMINAL: Set<String> = setOf(CODEC_UNSUPPORTED, SOURCE_UNAVAILABLE)
+    val TERMINAL: Set<String> = setOf(CODEC_UNSUPPORTED, SOURCE_UNAVAILABLE, MEDIA_AUTH_UNAVAILABLE)
 
     fun isTerminal(reason: String): Boolean = reason in TERMINAL
 }

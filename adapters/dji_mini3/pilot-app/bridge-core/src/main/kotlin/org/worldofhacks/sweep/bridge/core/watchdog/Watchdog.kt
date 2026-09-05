@@ -54,8 +54,8 @@ data class WatchdogTransition(
 )
 
 /**
- * Node-local link deadman. While armed, any authenticated relay frame or admitted command
- * resets the activity clock. [poll] moves to `hold` once `hold_ms` pass without activity
+ * Node-local link deadman. While armed, only a caller-verified control heartbeat resets the
+ * activity clock. [poll] moves to `hold` once `hold_ms` pass without activity
  * and to `failsafe` once `failsafe_ms` pass; a long silence jumps straight to failsafe.
  * Activity during `hold` recovers to `armed`; `failsafe` is terminal until [arm] is called
  * again (the node re-arms on every rejoin), mirroring `NodeWatchdogState.action_at` in
@@ -89,8 +89,6 @@ class Watchdog(val config: WatchdogConfig, private val clock: Clock) {
     }
 
     fun heartbeat() = activity()
-
-    fun command() = activity()
 
     private fun activity() {
         when (state) {

@@ -21,8 +21,39 @@ moq: no
 
 # Recording is switched on in M3: pathDefaults.record plus a mounted recordings volume.
 
-# M3 prerequisite: set authInternalUsers so publishing and reading need credentials;
-# the MediaMTX default lets anyone on the LAN publish or read every path.
+# Locked by default. docker-compose.yml replaces only these password hashes when the
+# operator supplies the five media credentials in .env. Each aircraft may publish only
+# its own path; the console reader may read/play back only drone1..drone4. There is no
+# anonymous user, so a missing environment value fails closed instead of opening the LAN.
+authMethod: internal
+authInternalUsers:
+  - user: drone1
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: drone1
+  - user: drone2
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: drone2
+  - user: drone3
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: drone3
+  - user: drone4
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: drone4
+  - user: sweep-reader
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: read
+        path: ~^drone[1-4]$
+      - action: playback
+        path: ~^drone[1-4]$
 
 paths:
   all_others:

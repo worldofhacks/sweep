@@ -28,11 +28,11 @@ class WatchdogTest {
     }
 
     @Test
-    fun `armed stays armed while heartbeats or commands keep arriving`() {
+    fun `armed stays armed while verified heartbeats keep arriving`() {
         val watchdog = armed()
         repeat(10) {
             clock.advance(400)
-            if (it % 2 == 0) watchdog.heartbeat() else watchdog.command()
+            watchdog.heartbeat()
             assertNull(watchdog.poll())
         }
         assertEquals(WatchdogState.ARMED, watchdog.state)
@@ -84,7 +84,7 @@ class WatchdogTest {
         val watchdog = armed()
         clock.advance(700)
         watchdog.poll()
-        watchdog.command()
+        watchdog.heartbeat()
         val transition = watchdog.poll()
         assertEquals(WatchdogTransition(WatchdogState.HOLD, WatchdogState.ARMED, null, 0), transition)
         clock.advance(499)

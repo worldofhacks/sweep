@@ -37,20 +37,15 @@ class FlightExecutorTest {
     private val logs = CopyOnWriteArrayList<String>()
     private val config = FlightConfig(settleMs = 300, progressIntervalMs = 300, takeoffMinMs = 500, yawSettleMs = 200)
 
-    private class Node(val aircraft: FakeFlightAircraft, val executor: FlightExecutor, val link: RelayLink, private val keepAlive: Thread?) : AutoCloseable {
+    private class Node(val aircraft: FakeFlightAircraft, val executor: FlightExecutor, val link: RelayLink) : AutoCloseable {
         override fun close() {
-            keepAlive?.interrupt()
             link.close()
             executor.close()
         }
     }
 
-    /**
-     * The real relay fans state out at 10 Hz, which is what keeps the node's deadman fed; the
-     * stub sends nothing unprompted, so the tests that are not about the deadman run a state
-     * ticker. The deadman test leaves it off.
-     */
-    private fun node(stub: StubRelay, flying: Boolean, relayAlive: Boolean = true): Node {
+    /** The stub emits the real relay's signed control heartbeat unless a silence test disables it. */
+    private fun node(stub: StubRelay, flying: Boolean): Node {
         val aircraft = FakeFlightAircraft()
         aircraft.setConnected(true)
         if (flying) aircraft.place(zUp = 1.2, flying = true)
@@ -79,24 +74,7 @@ class FlightExecutorTest {
         executor.observe(link.state)
         link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
         link.start()
-        val keepAlive = if (!relayAlive) {
-            null
-        } else {
-            Thread {
-                while (!Thread.currentThread().isInterrupted) {
-                    try {
-                        Thread.sleep(200)
-                    } catch (_: InterruptedException) {
-                        return@Thread
-                    }
-                    if (link.state.value.joined) runCatching { stub.sendState() }
-                }
-            }.apply {
-                isDaemon = true
-                start()
-            }
-        }
-        return Node(aircraft, executor, link, keepAlive)
+        return Node(aircraft, executor, link)
     }
 
     private fun await(what: String, timeoutMs: Long = 10_000, predicate: () -> Boolean) {
@@ -180,10 +158,10 @@ class FlightExecutorTest {
     @Test
     fun `relay silence holds the stream then lands and the acknowledgement names watchdog_hold`() {
         val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 400, watchdogFailsafeMs = 1500)
-        StubRelay(key, nodeSettings = settings).use { stub ->
-            node(stub, flying = true, relayAlive = false).use { node ->
+        StubRelay(key, nodeSettings = settings, emitControlHeartbeats = false).use { stub ->
+            node(stub, flying = true).use { node ->
                 await("ready") { node.link.state.value.membership == "ready" }
-                // The stub sends nothing after the join: the command itself is the last relay activity.
+                // The stub sends no heartbeat after join; the command cannot refresh the lease.
                 val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 4000, zMm = 1200, speedMmS = 500))
                 stub.awaitAck(goto.commandId, "executing")
                 val hold = stub.awaitAck(goto.commandId, "failed")
@@ -204,12 +182,12 @@ class FlightExecutorTest {
     @Test
     fun `a relay that only echoes the node's telemetry still holds the stream then lands`() {
         val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 400, watchdogFailsafeMs = 1500)
-        StubRelay(key, nodeSettings = settings, echoTelemetry = true).use { stub ->
-            node(stub, flying = true, relayAlive = false).use { node ->
+        StubRelay(key, nodeSettings = settings, echoTelemetry = true, emitControlHeartbeats = false).use { stub ->
+            node(stub, flying = true).use { node ->
                 await("ready") { node.link.state.value.membership == "ready" }
                 await("the node's telemetry coming back") { stub.echoed.get() >= 3 }
-                // The command is the relay's last own frame; its echoes of the node's 10 Hz
-                // telemetry keep arriving and must not count as the relay attending.
+                // The signed command and echoes of the node's 10 Hz telemetry keep arriving;
+                // neither is an authorized control heartbeat.
                 val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 4000, zMm = 1200, speedMmS = 500))
                 stub.awaitAck(goto.commandId, "executing")
                 val hold = stub.awaitAck(goto.commandId, "failed")

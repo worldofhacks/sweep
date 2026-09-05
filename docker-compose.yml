@@ -21,6 +21,15 @@ services:
       # Export SWEEP_MEDIA_HOST (or put it in .env) before `docker compose up`, then recreate
       # the container to apply it; the loopback default keeps browsers on this host working.
       - MTX_WEBRTCADDITIONALHOSTS=${SWEEP_MEDIA_HOST:-127.0.0.1}
+      # The committed hash has no known plaintext and keeps every account locked when a
+      # value is absent. Publisher passwords are media-only HMAC derivatives documented
+      # in media/README.md; never put a relay/control token here directly.
+      - MTX_AUTHINTERNALUSERS_0_PASS=${SWEEP_MEDIA_DRONE1_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
+      - MTX_AUTHINTERNALUSERS_1_PASS=${SWEEP_MEDIA_DRONE2_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
+      - MTX_AUTHINTERNALUSERS_2_PASS=${SWEEP_MEDIA_DRONE3_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
+      - MTX_AUTHINTERNALUSERS_3_PASS=${SWEEP_MEDIA_DRONE4_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
+      - MTX_AUTHINTERNALUSERS_4_USER=${SWEEP_MEDIA_READ_USERNAME:-sweep-reader}
+      - MTX_AUTHINTERNALUSERS_4_PASS=${SWEEP_MEDIA_READ_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
     volumes:
       # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
       - ./media/mediamtx.yml:/mediamtx.yml:ro

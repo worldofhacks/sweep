@@ -15,8 +15,8 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  * cadence; the bridge-node `FlightExecutor` is that caller on the phone.
  *
  * Safety behaviour, in the order it is checked on every tick:
- * 1. Deadman. The loop keeps its own [Watchdog] on the relay-distributed thresholds, fed by
- *    the relay frames it sees through [updateLink] and by admitted commands. It runs
+ * 1. Deadman. The loop keeps its own [Watchdog] on the relay-distributed thresholds, fed
+ *    only by the verified control-heartbeat timestamp it sees through [updateLink]. It runs
  *    independently of the relay link object, so tearing the link down cannot stop the
  *    protection. Hold decays the stream to neutral sticks and fails the active command with
  *    `watchdog_hold`; failsafe commands auto-landing (indoors: land, never return to home)
@@ -221,7 +221,6 @@ class FlightController(
 
     fun execute(command: FlightCommand, sink: ReportSink) {
         val now = clock.nowMs()
-        watchdog?.command()
         authorityLost?.let {
             fail(sink, FlightReason.AUTHORITY_LOST, "control authority not re-armed after $it; re-arm on the flight card")
             return
@@ -464,7 +463,7 @@ class FlightController(
             WatchdogState.ARMED -> {
                 flownIntoHold = false
                 if (phase is Phase.Holding) {
-                    event("relay activity resumed after hold; virtual stick released")
+                    event("authorized control heartbeat resumed after hold; virtual stick released")
                     releaseVirtualStick()
                 }
             }
@@ -473,7 +472,7 @@ class FlightController(
     }
 
     private fun enterHold(now: Long, elapsedMs: Long) {
-        val detail = "no relay activity for $elapsedMs ms (hold threshold ${settings?.holdMs} ms): sticks neutral until the link recovers"
+        val detail = "no authorized control heartbeat for $elapsedMs ms (hold threshold ${settings?.holdMs} ms): sticks neutral until the link recovers"
         event("watchdog hold: $detail")
         if (phase is Phase.Landing) return
         // A takeoff, or a Virtual Stick enable still pending, ends here with the loop idle and
@@ -484,7 +483,7 @@ class FlightController(
     }
 
     private fun enterFailsafe(now: Long, elapsedMs: Long) {
-        val detail = "no relay activity for $elapsedMs ms (failsafe threshold ${settings?.failsafeMs} ms): auto-landing now, never return to home"
+        val detail = "no authorized control heartbeat for $elapsedMs ms (failsafe threshold ${settings?.failsafeMs} ms): auto-landing now, never return to home"
         event("watchdog failsafe: $detail")
         if (phase is Phase.Landing) return
         // Decided before failActive clears the command: the node lands only what it was flying.

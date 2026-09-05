@@ -107,7 +107,7 @@ class FlightExecutor(
         }
     }
 
-    /** Mirrors the relay link state (thresholds, join, estop, relay activity) into the loop. */
+    /** Mirrors relay thresholds, join, estop, and verified heartbeat time into the loop. */
     fun observe(link: StateFlow<LinkState>): Job = scope.launch { link.collect { state -> controller.updateLink(linkFacts(state)) } }
 
     override fun execute(command: CommandFrame, report: CommandReport) {
@@ -216,7 +216,7 @@ class FlightExecutor(
         fun linkFacts(state: LinkState): LinkFacts = LinkFacts(
             joined = state.joined,
             estop = state.estop,
-            // Relay-authored frames only; the echo of the node's own telemetry never feeds the deadman.
+            // Only RelayLink's verified control-heartbeat timestamp feeds the flight deadman.
             lastRelayActivityMs = state.lastRelayActivityMs,
             controlAuthorityGranted = state.readiness.controlAuthority,
             settings = state.nodeSettings?.let { FlightSettings(it.virtualStickHz, it.watchdogHoldMs, it.watchdogFailsafeMs) },

@@ -28,6 +28,7 @@ import org.worldofhacks.sweep.bridge.core.frames.CapabilitiesFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandOperation
 import org.worldofhacks.sweep.bridge.core.frames.ContractError
+import org.worldofhacks.sweep.bridge.core.frames.ControlHeartbeat
 import org.worldofhacks.sweep.bridge.core.frames.LifecycleStatus
 import org.worldofhacks.sweep.bridge.core.frames.MembershipEvent
 import org.worldofhacks.sweep.bridge.core.frames.MembershipFrame
@@ -74,13 +75,11 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  * clock running through the outage (the deadman is mandatory: without it the flight
  * controller hovers indefinitely when frames stop) and moves to hold, then failsafe; the
  * flight loop acts on those states and they are reported in `node_status` and the UI. Only
- * relay-authored frames feed it: `state`, `membership`, `refusal`, `safety_action`, the
- * lifecycle acknowledgements the relay or its autonomy owner authors, and commands whose
- * signature verifies. The relay fans every node frame back out to every socket, this node's
- * own 10 Hz telemetry and acknowledgements included; those prove nothing about the relay
- * attending and never refresh the deadman (a relay whose fan-out loop still echoes must
- * still trip hold and failsafe). OkHttp's ping is transport liveness only: a missing pong
- * fails the socket, it does not feed the deadman. An `auth.refused` with `session_closed`
+ * a dedicated `control_heartbeat` feeds it, only after its HMAC signature, session, drone,
+ * connection epoch, roster version, timestamp, and increasing sequence all verify. State,
+ * membership, commands, telemetry echoes, and acknowledgements never refresh the lease.
+ * OkHttp's ping is transport liveness only: a missing pong fails the socket, it does not
+ * feed the deadman. An `auth.refused` with `session_closed`
  * (the relay restarted; the old session id is replay-only) or a credential failure halts
  * automatic reconnects until the setup changes or [reconnectNow] is called.
  *
@@ -96,10 +95,15 @@ class RelayLink(
     private val timing: LinkTiming = LinkTiming(),
     private val log: NodeLog = NodeLog { },
     client: OkHttpClient? = null,
+    clientProvider: (() -> OkHttpClient?)? = null,
     private val videoPublish: VideoPublishSource = VideoPublishSource { VideoPublishState.STOPPED },
 ) : AutoCloseable {
-    private val ownsClient = client == null
-    private val client: OkHttpClient = client ?: RelayClients.build(timing)
+    init {
+        require(client == null || clientProvider == null) { "supply either a fixed client or a client provider, not both" }
+    }
+
+    private val ownedClient: OkHttpClient? = if (client == null && clientProvider == null) RelayClients.build(timing) else null
+    private val clientProvider: () -> OkHttpClient? = clientProvider ?: { client ?: ownedClient }
     private val loop: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "relay-link").apply { isDaemon = true }
     }
@@ -121,6 +125,7 @@ class RelayLink(
     private var tickers: List<ScheduledFuture<*>> = emptyList()
     private var readiness = ReadinessInput()
     private var previousEpoch: Int? = null
+    private var lastControlHeartbeatSeq: Long = 0
     private var lastAircraftConnected: Boolean? = null
     private var lastRcConnected: Boolean? = null
     private var lastAuthorityLost: String? = null
@@ -188,10 +193,7 @@ class RelayLink(
         stop()
         loop.shutdown()
         loop.awaitTermination(2, TimeUnit.SECONDS)
-        if (ownsClient) {
-            client.dispatcher.executorService.shutdown()
-            client.connectionPool.evictAll()
-        }
+        ownedClient?.let(::closeClient)
     }
 
     // ---- connection lifecycle (loop thread) ----
@@ -211,6 +213,24 @@ class RelayLink(
             )
         }
         log.log("connecting to ${config.socketUrl} (attempt ${_state.value.attempts})")
+        val client = try {
+            clientProvider()
+        } catch (error: RuntimeException) {
+            log.log("relay network client unavailable: ${error.message ?: error.javaClass.simpleName}")
+            null
+        }
+        if (client == null) {
+            update {
+                it.copy(
+                    connection = RelayConnection.DISCONNECTED,
+                    authenticated = false,
+                    joined = false,
+                    lastError = "relay Wi-Fi binding unavailable; refusing the default network",
+                )
+            }
+            scheduleReconnect()
+            return
+        }
         val request = Request.Builder().url(config.socketUrl).build()
         socket = client.newWebSocket(
             request,
@@ -261,10 +281,10 @@ class RelayLink(
         }
         update { it.copy(framesIn = it.framesIn + 1, lastRelayFrameAtMs = now) }
         val type = (json["type"] as? JsonString)?.value
-        if (relayAuthored(type, json)) relayActivity(now)
         when (type) {
             AuthAccepted.TYPE -> onAuthAccepted(json, now)
             AuthRefused.TYPE -> onAuthRefused(json)
+            ControlHeartbeat.TYPE -> onControlHeartbeat(json, now)
             StateEvent.TYPE -> onState(json)
             MembershipEvent.TYPE -> onMembership(json)
             CommandFrame.TYPE -> onCommand(json)
@@ -273,23 +293,39 @@ class RelayLink(
         }
     }
 
-    /**
-     * Whether the relay itself authored [json]. Telemetry, `capabilities`, `node_status`,
-     * and the other node frames come back on this socket through the relay's fan-out, this
-     * node's own included, so they say nothing about the relay attending; an acknowledgement
-     * counts only when its `source` is the relay or its autonomy owner, never `adapter`.
-     * Commands count in [onCommand], once their signature verifies.
-     */
-    private fun relayAuthored(type: String?, json: JsonObject): Boolean = when (type) {
-        AuthAccepted.TYPE, AuthRefused.TYPE, StateEvent.TYPE, MembershipEvent.TYPE, RefusalEvent.TYPE, SAFETY_ACTION_TYPE -> true
-        AcknowledgementFrame.TYPE -> (json["source"] as? JsonString)?.value.let { it != null && it != ADAPTER_SOURCE }
-        else -> false
-    }
-
-    /** Relay-authored traffic: the only thing that feeds this link's deadman and, through the state, the flight loop's. */
+    /** A verified, current relay control lease: the sole input to both deadman clocks. */
     private fun relayActivity(now: Long) {
         watchdog?.heartbeat()
         update { it.copy(lastRelayActivityMs = now) }
+    }
+
+    private fun onControlHeartbeat(json: JsonObject, receivedAtMs: Long) {
+        val heartbeat = parseOrLog("control_heartbeat") { ControlHeartbeat.parse(json) } ?: return
+        val current = _state.value
+        val relayNow = admission.relayNowMs()
+        val age = relayNow - heartbeat.t
+        val holdMs = current.nodeSettings?.watchdogHoldMs ?: return
+        val identityMatches = current.authenticated && current.joined &&
+            heartbeat.session == config.session && heartbeat.droneId == config.droneId &&
+            heartbeat.connectionEpoch == current.connectionEpoch && heartbeat.rosterVersion == current.rosterVersion
+        if (!identityMatches) {
+            log.log("dropping control_heartbeat with stale or misaddressed connection identity")
+            return
+        }
+        if (!heartbeat.verifies(config.key)) {
+            log.log("dropping control_heartbeat whose signature did not verify")
+            return
+        }
+        if (heartbeat.seq <= lastControlHeartbeatSeq) {
+            log.log("dropping replayed control_heartbeat sequence ${heartbeat.seq}")
+            return
+        }
+        if (age >= holdMs || age < -HEARTBEAT_FUTURE_SKEW_MS) {
+            log.log("dropping stale or future control_heartbeat (${age} ms old)")
+            return
+        }
+        lastControlHeartbeatSeq = heartbeat.seq
+        relayActivity(receivedAtMs)
     }
 
     private fun onAuthAccepted(json: JsonObject, receivedAtMs: Long) {
@@ -391,6 +427,7 @@ class RelayLink(
         val rejoin = previousEpoch != null && previousEpoch != epoch
         previousEpoch = epoch
         admission.bind(epoch, rosterVersion)
+        lastControlHeartbeatSeq = 0
         val dog = watchdog
         dog?.arm()
         lastNodeStatus = null
@@ -618,9 +655,6 @@ class RelayLink(
             return
         }
         val result = admission.admit(command)
-        // A command the node answers carries the relay's signature: relay activity, whatever
-        // admission says next. A forged or misaddressed frame is not.
-        if (result is AdmissionResult.Admitted || (result is AdmissionResult.Rejected && result.reason.acknowledged)) relayActivity(clock.nowMs())
         when (result) {
             is AdmissionResult.Rejected -> {
                 if (result.reason.acknowledged) {
@@ -744,7 +778,7 @@ class RelayLink(
                 WatchdogState.FAILSAFE -> " (flight loop action at failsafe: land indoors, never return to home)"
                 else -> ""
             }
-            log.log("watchdog ${transition.from} -> ${transition.to} after ${transition.elapsedMs} ms without relay activity$action")
+            log.log("watchdog ${transition.from} -> ${transition.to} after ${transition.elapsedMs} ms without an authorized control heartbeat$action")
             update { it.copy(watchdog = transition.to) }
         }
         checkAircraft()
@@ -851,6 +885,12 @@ class RelayLink(
 
     private fun String.isMachineCode(): Boolean = isNotEmpty() && all { it in 'a'..'z' || it in '0'..'9' || it == '_' }
 
+    private fun closeClient(client: OkHttpClient) {
+        client.dispatcher.cancelAll()
+        client.dispatcher.executorService.shutdown()
+        client.connectionPool.evictAll()
+    }
+
     private companion object {
         const val NORMAL_CLOSURE = 1000
         const val MAX_BACKOFF_EXPONENT = 16
@@ -859,10 +899,7 @@ class RelayLink(
         const val RATE_WINDOW_MS = 2_000L
         const val WATCHDOG_FAILSAFE = "watchdog_failsafe"
         const val AUTHORITY_LOST = "authority_lost"
-        /** The relay's own link-loss intervention event (`relay/README.md`); no node parser, the type alone marks it relay-authored. */
-        const val SAFETY_ACTION_TYPE = "safety_action"
-        /** The `source` the relay stamps on acknowledgements it fans out for node frames. */
-        const val ADAPTER_SOURCE = "adapter"
+        const val HEARTBEAT_FUTURE_SKEW_MS = 1_000L
         val MOTION_OPERATIONS = setOf(CommandOperation.TAKEOFF, CommandOperation.GOTO, CommandOperation.ROTATE_TO)
         val HALT_REASONS = setOf("session_closed", "authentication_failed", "invalid_auth", "unknown_source")
     }

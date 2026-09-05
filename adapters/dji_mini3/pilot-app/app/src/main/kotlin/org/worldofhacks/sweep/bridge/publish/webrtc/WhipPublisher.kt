@@ -121,7 +121,13 @@ class WhipPublisher(
     private class PublishFailure(val reason: String, val detail: String) : RuntimeException(detail)
 
     private val appContext = context.applicationContext
-    private val executor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "whip-publisher").apply { isDaemon = true } }
+    private val executorThread = AtomicReference<Thread?>()
+    private val executor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "whip-publisher").apply {
+            isDaemon = true
+            executorThread.set(this)
+        }
+    }
     private val munger = SdpMunger(log)
 
     private var factory: PeerConnectionFactory? = null
@@ -150,13 +156,18 @@ class WhipPublisher(
 
     /** Ends the loop and waits for its teardown (the WHIP DELETE included); safe from any thread but the loop's. */
     fun stop() {
-        if (!isRunning.getAndSet(false)) return
+        // The loop sets isRunning=false before onStopped. Shutdown must still happen when
+        // its owner releases that terminal session, otherwise this executor leaks forever.
+        isRunning.set(false)
         executor.shutdownNow()
-        try {
-            if (!executor.awaitTermination(12, TimeUnit.SECONDS)) Log.w(TAG, "publish loop did not finish within 12 s")
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
+        if (Thread.currentThread() !== executorThread.get()) {
+            try {
+                if (!executor.awaitTermination(12, TimeUnit.SECONDS)) Log.w(TAG, "publish loop did not finish within 12 s")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
         }
+        whip.close()
         Log.i(TAG, "WhipPublisher stopped")
     }
 

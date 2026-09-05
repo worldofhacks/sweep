@@ -181,6 +181,34 @@ class FramesTest {
     }
 
     @Test
+    fun `control heartbeat is exact signed and bound to one connection identity`() {
+        val unsigned = Json.json(
+            "v" to 1,
+            "t" to 2500,
+            "type" to "control_heartbeat",
+            "event_id" to "evt-heartbeat-1",
+            "session" to "session-a",
+            "source" to "relay",
+            "drone_id" to 1,
+            "connection_epoch" to 2,
+            "roster_version" to 4,
+            "seq" to 7,
+        )
+        val signingKey = "adapter-key".toByteArray()
+        val wire = unsigned.with("signature", org.worldofhacks.sweep.bridge.core.json.JsonString(Signing.sign(unsigned, signingKey)))
+        val heartbeat = ControlHeartbeat.parse(wire)
+        assertEquals(1, heartbeat.droneId)
+        assertEquals(2, heartbeat.connectionEpoch)
+        assertEquals(4, heartbeat.rosterVersion)
+        assertEquals(7, heartbeat.seq)
+        assertTrue(heartbeat.verifies(signingKey))
+        assertFalse(heartbeat.verifies("wrong-key".toByteArray()))
+        assertThrows(ContractError::class.java) {
+            ControlHeartbeat.parse(JsonObject(wire.fields + ("unexpected" to Json.value(true))))
+        }
+    }
+
+    @Test
     fun `telemetry encodes and parses`() {
         val telemetry = TelemetryFrame(
             t = 2000,

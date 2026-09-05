@@ -61,16 +61,20 @@ class WifiRelayNetwork(context: Context, private val timing: LinkTiming = LinkTi
             .build()
         val networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                _binding.value = Binding(network, label(network), clientFor(network))
+                replaceBinding(network)
             }
 
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                 val current = _binding.value
-                _binding.value = Binding(network, label(network, caps), current?.client ?: clientFor(network))
+                if (current?.network == network) {
+                    _binding.value = current.copy(label = label(network, caps))
+                } else {
+                    replaceBinding(network, caps)
+                }
             }
 
             override fun onLost(network: Network) {
-                if (_binding.value?.network == network) _binding.value = null
+                clearBinding(network)
             }
         }
         callback = networkCallback
@@ -80,8 +84,34 @@ class WifiRelayNetwork(context: Context, private val timing: LinkTiming = LinkTi
     fun stop() {
         callback?.let { runCatching { connectivity?.unregisterNetworkCallback(it) } }
         callback = null
-        _binding.value = null
+        clearBinding()
         releaseLocks()
+    }
+
+    @Synchronized
+    private fun replaceBinding(network: Network, caps: NetworkCapabilities? = null) {
+        val current = _binding.value
+        if (current?.network == network) {
+            _binding.value = current.copy(label = label(network, caps))
+            return
+        }
+        val replacement = Binding(network, label(network, caps), clientFor(network))
+        _binding.value = replacement
+        current?.client?.let(::closeClient)
+    }
+
+    @Synchronized
+    private fun clearBinding(network: Network? = null) {
+        val current = _binding.value ?: return
+        if (network != null && current.network != network) return
+        _binding.value = null
+        closeClient(current.client)
+    }
+
+    private fun closeClient(client: OkHttpClient) {
+        client.dispatcher.cancelAll()
+        client.dispatcher.executorService.shutdown()
+        client.connectionPool.evictAll()
     }
 
     private fun clientFor(network: Network): OkHttpClient {

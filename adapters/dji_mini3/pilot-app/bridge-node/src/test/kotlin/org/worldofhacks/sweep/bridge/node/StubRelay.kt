@@ -1,6 +1,8 @@
 package org.worldofhacks.sweep.bridge.node
 
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import okhttp3.Response
@@ -39,10 +41,15 @@ class StubRelay(
     initialRosterVersion: Int = 3,
     private val refuseAuth: Pair<String, String>? = null,
     private val echoTelemetry: Boolean = false,
+    private val emitControlHeartbeats: Boolean = true,
 ) : AutoCloseable {
     private val server = MockWebServer()
     private val sockets = CopyOnWriteArrayList<WebSocket>()
     private val events = AtomicLong()
+    private val heartbeatSeq = AtomicLong()
+    private val heartbeatLoop = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "stub-control-heartbeat").apply { isDaemon = true }
+    }
 
     val frames = CopyOnWriteArrayList<JsonObject>()
     /** Telemetry frames sent back to the node under [echoTelemetry]. */
@@ -57,6 +64,14 @@ class StubRelay(
             override fun dispatch(request: RecordedRequest): MockResponse = MockResponse().withWebSocketUpgrade(NodeSocket())
         }
         server.start()
+        if (emitControlHeartbeats) {
+            heartbeatLoop.scheduleAtFixedRate(
+                { if (epoch.get() > 0) sendControlHeartbeat() },
+                100,
+                100,
+                TimeUnit.MILLISECONDS,
+            )
+        }
     }
 
     val url: String
@@ -121,11 +136,40 @@ class StubRelay(
         broadcast(stateEvent(estop))
     }
 
+    fun sendControlHeartbeat(
+        seq: Long = heartbeatSeq.incrementAndGet(),
+        connectionEpoch: Int = epoch.get(),
+        rosterVersion: Int = this.rosterVersion.get(),
+        timestamp: Long = relayNow(),
+        signingKey: ByteArray = key,
+        targetDroneId: Int = droneId,
+        targetSession: String = session,
+    ): JsonObject {
+        val unsigned = Json.value(
+            linkedMapOf(
+                "v" to 1,
+                "t" to timestamp,
+                "type" to "control_heartbeat",
+                "event_id" to eventId(),
+                "session" to targetSession,
+                "source" to "relay",
+                "drone_id" to targetDroneId,
+                "connection_epoch" to connectionEpoch,
+                "roster_version" to rosterVersion,
+                "seq" to seq,
+            ),
+        ) as JsonObject
+        val event = unsigned.with("signature", JsonString(Signing.sign(unsigned, signingKey)))
+        broadcast(event)
+        return event
+    }
+
     fun dropConnections() {
         sockets.forEach { it.close(1001, "relay going away") }
     }
 
     override fun close() {
+        heartbeatLoop.shutdownNow()
         // A server-side socket the node already closed has no call behind it; cancelling it throws.
         sockets.forEach { runCatching { it.cancel() } }
         server.shutdown()

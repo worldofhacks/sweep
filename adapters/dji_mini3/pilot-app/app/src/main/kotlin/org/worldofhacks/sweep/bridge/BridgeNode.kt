@@ -69,7 +69,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
     init {
         // EncryptedSharedPreferences opens the keystore-backed keyset; keep it off the main thread.
         scope.launch(Dispatchers.IO) { _setup.value = store.summary() }
-        // Phase E hook: the flight loop reads the link state (thresholds, join, estop, relay activity) for its deadman.
+        // Phase E hook: the flight loop reads thresholds, join, estop, and verified heartbeat time.
         session.flight?.executor?.observe(link)
     }
 
@@ -118,7 +118,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
             val networkLabel = when {
                 loopback -> "loopback (adb reverse over USB)"
                 binding != null -> binding.label
-                else -> "default network (wifi binding pending)"
+                else -> "wifi unavailable (relay blocked; no cellular fallback)"
             }
             _relayNetwork.value = networkLabel
             logLine("relay network: $networkLabel")
@@ -138,19 +138,24 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     executor = session.executor,
                     phone = phone,
                     log = { line -> logLine(line) },
-                    client = binding?.client,
+                    clientProvider = if (loopback) null else ({ wifi?.binding?.value?.client }),
                     videoPublish = { videoPublish.current() },
                 )
                 relayLink = link
                 mirror = scope.launch { link.state.collect { state -> _link.value = state.copy(relayNetwork = _relayNetwork.value) } }
                 if (wifi != null && !loopback) {
                     networkMirror = scope.launch {
+                        var activeNetwork = binding?.network
                         wifi.binding.collect { current ->
-                            current?.label?.let {
-                                if (it != _relayNetwork.value) {
-                                    _relayNetwork.value = it
-                                    logLine("relay network changed: $it (a reconnect rebinds the socket)")
-                                }
+                            val label = current?.label ?: "wifi unavailable (relay blocked; no cellular fallback)"
+                            if (label != _relayNetwork.value) {
+                                _relayNetwork.value = label
+                                logLine("relay network changed: $label")
+                            }
+                            if (current?.network != activeNetwork) {
+                                activeNetwork = current?.network
+                                logLine("Wi-Fi binding identity changed; reconnecting with the current bound client")
+                                link.reconnectNow()
                             }
                         }
                     }

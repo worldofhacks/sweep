@@ -320,12 +320,12 @@ private fun NodeStatusCard(link: LinkState, aircraft: AircraftSnapshot, now: Lon
             Text("Node status", style = MaterialTheme.typography.titleMedium)
             val watchdogWord = link.watchdog.toNodeStatus().wire
             val watchdogSentence = when (watchdogWord) {
-                "hold" -> "No relay activity past the hold threshold; Phase E holds neutral sticks here."
-                "failsafe" -> "No relay activity past the failsafe threshold; Phase E lands indoors here, never return to home."
-                else -> "Relay activity is fresh."
+                "hold" -> "No authorized control heartbeat past the hold threshold; Phase E holds neutral sticks here."
+                "failsafe" -> "No authorized control heartbeat past the failsafe threshold; Phase E lands indoors here, never return to home."
+                else -> "Authorized control heartbeat is fresh."
             }
             Text(
-                "Watchdog: $watchdogWord (${link.watchdog.name.lowercase()}) · last relay activity ${age(now, link.lastRelayActivityMs)}. $watchdogSentence",
+                "Watchdog: $watchdogWord (${link.watchdog.name.lowercase()}) · last control heartbeat ${age(now, link.lastRelayActivityMs)}. $watchdogSentence",
                 color = if (watchdogWord == "nominal") MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
             )
             if (link.estop) Text("Network stop active (relay state estop=true).", color = MaterialTheme.colorScheme.error)

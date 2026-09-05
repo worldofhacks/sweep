@@ -22,13 +22,27 @@ data class WhipSession(val answerSdp: String, val resourceUrl: String?)
  * `WhipPublisher.postWhipOffer` / `deleteWhipResource` onto OkHttp so the app can bind it to
  * the Wi-Fi network like the relay socket and the tests can run it against MockWebServer.
  */
-class WhipClient(client: OkHttpClient? = null, timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
-    private val client: OkHttpClient = client ?: OkHttpClient.Builder()
-        .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-        .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-        .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-        .retryOnConnectionFailure(false)
-        .build()
+class WhipClient(
+    client: OkHttpClient? = null,
+    timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+    private val credential: MediaCredential? = null,
+    clientProvider: (() -> OkHttpClient?)? = null,
+) : AutoCloseable {
+    init {
+        require(client == null || clientProvider == null) { "supply either a fixed client or a client provider, not both" }
+    }
+
+    private val ownedClient: OkHttpClient? = if (client == null && clientProvider == null) {
+        OkHttpClient.Builder()
+            .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(false)
+            .build()
+    } else {
+        null
+    }
+    private val clientProvider: () -> OkHttpClient? = clientProvider ?: { client ?: ownedClient }
 
     @Throws(WhipException::class)
     fun publish(whipUrl: String, offerSdp: String): WhipSession {
@@ -38,9 +52,13 @@ class WhipClient(client: OkHttpClient? = null, timeoutMs: Long = DEFAULT_TIMEOUT
             .url(url)
             .post(offerSdp.toByteArray(Charsets.UTF_8).toRequestBody(SDP))
             .header("Accept", SDP_TYPE)
+            .apply { credential?.let { header("Authorization", it.authorization()) } }
             .build()
         val response = try {
-            client.newCall(request).execute()
+            val activeClient = clientProvider() ?: throw IOException("bound media network unavailable")
+            activeClient.newCall(request).execute()
+        } catch (error: RuntimeException) {
+            throw WhipException(null, "WHIP POST $whipUrl: ${error.javaClass.simpleName}${error.message?.let { ": $it" } ?: ""}", error)
         } catch (error: IOException) {
             throw WhipException(null, "WHIP POST $whipUrl: ${error.javaClass.simpleName}${error.message?.let { ": $it" } ?: ""}", error)
         }
@@ -59,9 +77,23 @@ class WhipClient(client: OkHttpClient? = null, timeoutMs: Long = DEFAULT_TIMEOUT
     fun delete(resourceUrl: String): Int? {
         val url = resourceUrl.toHttpUrlOrNull() ?: return null
         return try {
-            client.newCall(Request.Builder().url(url).delete().build()).execute().use { it.code }
+            val request = Request.Builder().url(url).delete()
+                .apply { credential?.let { header("Authorization", it.authorization()) } }
+                .build()
+            val activeClient = clientProvider() ?: return null
+            activeClient.newCall(request).execute().use { it.code }
+        } catch (_: RuntimeException) {
+            null
         } catch (_: IOException) {
             null
+        }
+    }
+
+    override fun close() {
+        ownedClient?.let {
+            it.dispatcher.cancelAll()
+            it.dispatcher.executorService.shutdown()
+            it.connectionPool.evictAll()
         }
     }
 
@@ -78,8 +110,14 @@ class WhipClient(client: OkHttpClient? = null, timeoutMs: Long = DEFAULT_TIMEOUT
         fun resolveResource(whipUrl: HttpUrl, location: String): String? {
             val trimmed = location.trim()
             if (trimmed.isEmpty()) return null
-            if ('/' !in trimmed) return whipUrl.newBuilder().addPathSegment(trimmed).build().toString()
-            return whipUrl.resolve(trimmed)?.toString()
+            val resolved = if ('/' !in trimmed) {
+                whipUrl.newBuilder().addPathSegment(trimmed).build()
+            } else {
+                whipUrl.resolve(trimmed) ?: return null
+            }
+            // Never forward the Basic credential to an origin selected by a Location header.
+            if (resolved.scheme != whipUrl.scheme || resolved.host != whipUrl.host || resolved.port != whipUrl.port) return null
+            return resolved.toString()
         }
     }
 }

@@ -20,7 +20,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
 import org.worldofhacks.sweep.bridge.BridgeNode
+import org.worldofhacks.sweep.bridge.BridgeSetupStore
 import org.worldofhacks.sweep.bridge.core.frames.VideoPublishState
 import org.worldofhacks.sweep.bridge.node.VideoPublishSource
 import org.worldofhacks.sweep.bridge.publish.codec.CodecDecision
@@ -28,6 +31,7 @@ import org.worldofhacks.sweep.bridge.publish.codec.CodecEvidence
 import org.worldofhacks.sweep.bridge.publish.metrics.PublishMetrics
 import org.worldofhacks.sweep.bridge.publish.metrics.PublishMetricsAggregator
 import org.worldofhacks.sweep.bridge.publish.metrics.WebRTCStreamMetrics
+import org.worldofhacks.sweep.bridge.publish.whip.MediaCredential
 import org.worldofhacks.sweep.bridge.publish.webrtc.WebRTCMediaOptions
 import org.worldofhacks.sweep.bridge.publish.webrtc.WhipPublisher
 import org.worldofhacks.sweep.bridge.publish.whip.WhipClient
@@ -71,6 +75,7 @@ class Publisher(
         Thread(runnable, "video-publish").apply { isDaemon = true }
     }
     private val store = PublishSettingsStore(application, sources.available.first())
+    private val setupStore = BridgeSetupStore(application)
     private val machine = PublishStateMachine()
     private val aggregator = PublishMetricsAggregator()
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
@@ -253,6 +258,32 @@ class Publisher(
         _lastStop.value = null
         _metrics.value = null
         aggregator.reset()
+        val bridgeSetup = setupStore.load()
+        if (bridgeSetup == null || bridgeSetup.droneId != next.droneId) {
+            machine.failed(PublishReasons.MEDIA_AUTH_UNAVAILABLE, "media credential unavailable for this aircraft")
+            logLine("publish blocked: media credential unavailable for this aircraft")
+            return
+        }
+        val mediaCredential = MediaCredential.publisher(next.droneId, bridgeSetup.token.toByteArray(Charsets.UTF_8))
+        val mediaHost = whipUrl.toHttpUrlOrNull()?.host
+        val loopback = mediaHost == "127.0.0.1" || mediaHost == "::1" || mediaHost?.equals("localhost", ignoreCase = true) == true
+        if (!loopback && node.wifiNetwork?.binding?.value == null) {
+            val detail = "bound Wi-Fi media network unavailable; refusing the default network"
+            val delay = machine.failed(PublishReasons.NETWORK_ERROR, detail)
+            logLine("publish blocked: $detail" + (delay?.let { "; retry in $it ms" } ?: ""))
+            if (delay != null) scheduleRestart(delay)
+            return
+        }
+        val mediaClientProvider: (() -> OkHttpClient?)? = if (loopback) {
+            null
+        } else {
+            {
+                node.wifiNetwork?.binding?.value?.client?.newBuilder()
+                    ?.readTimeout(WhipClient.DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    ?.writeTimeout(WhipClient.DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    ?.build()
+            }
+        }
         logLine("publish start: ${next.source.wire} to $whipUrl")
         val listener = SourceEvents()
         val open = try {
@@ -270,17 +301,13 @@ class Publisher(
         val bench = BenchSink.open(application.filesDir, next.droneId)
         _benchFile.value = bench?.file?.absolutePath
         bench?.recorder?.note("publish start source=${next.source.wire} url=$whipUrl")
-        val boundClient = node.wifiNetwork?.binding?.value?.client?.newBuilder()
-            ?.readTimeout(WhipClient.DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            ?.writeTimeout(WhipClient.DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            ?.build()
         val publisher = WhipPublisher(
             context = application,
             videoCapturer = open.capturer,
             encoderFactory = open.encoderFactory,
             options = WebRTCMediaOptions.mini3LiveView(),
             whipUrl = whipUrl,
-            whip = WhipClient(boundClient),
+            whip = WhipClient(credential = mediaCredential, clientProvider = mediaClientProvider),
             targetBitrateBps = open.targetBitrateBps,
             maxBitrateBps = open.maxBitrateBps,
             passthrough = next.source == PublishSource.PASSTHROUGH,

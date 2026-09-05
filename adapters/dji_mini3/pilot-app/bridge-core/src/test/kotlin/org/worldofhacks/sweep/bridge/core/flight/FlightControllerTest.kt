@@ -55,7 +55,7 @@ class FlightControllerTest {
         val controller = FlightController(model, clock, config) { log += it }
         private var link = LinkFacts()
 
-        /** The relay's 10 Hz state fan-out keeps the deadman fed; the deadman tests switch it off. */
+        /** The relay's signed control heartbeat keeps the deadman fed; deadman tests switch it off. */
         var relayAlive = true
 
         init {
@@ -81,7 +81,7 @@ class FlightControllerTest {
             controller.updateLink(link)
         }
 
-        fun relayActivity() {
+        fun controlHeartbeat() {
             link = link.copy(lastRelayActivityMs = clock.nowMs())
             controller.updateLink(link)
         }
@@ -95,7 +95,7 @@ class FlightControllerTest {
         fun tick(count: Int = 1) {
             repeat(count) {
                 clock.advance(100)
-                if (relayAlive) relayActivity()
+                if (relayAlive) controlHeartbeat()
                 controller.updateAircraft(model.facts)
                 controller.tick(clock.nowMs())
             }
@@ -166,7 +166,7 @@ class FlightControllerTest {
         h.relayAlive = false
         h.tickMs(400)
         assertEquals("velocity_step", h.controller.status.phase)
-        // t = 1500: hold threshold reached with no relay activity since the command.
+        // t = 1500: hold threshold reached with no authorized control heartbeat.
         h.tick(1)
         assertEquals("failed", sink.terminal?.first, sink.events.toString())
         assertEquals("watchdog_hold", sink.terminal?.second)
@@ -176,12 +176,16 @@ class FlightControllerTest {
         assertTrue(h.model.virtualStickEnabled, "sticks keep flowing during hold")
         h.tick(2)
         assertTrue(h.frames.takeLast(2).all { it.isNeutral }, "neutral sticks during hold")
-        // A command during hold is admitted (activity) and the sticks stay live.
+        // A command is not a control lease: this safety hover completes but cannot recover hold.
         val held = h.run(CommandArgs.Hover)
         h.tick(4)
         assertEquals("completed", held.terminal?.first, held.events.toString())
-        assertEquals("armed", h.controller.status.watchdog)
+        assertEquals("hold", h.controller.status.watchdog)
         assertFalse(h.model.virtualStickEnabled)
+        h.relayAlive = true
+        h.tick(1)
+        assertEquals("armed", h.controller.status.watchdog)
+        h.relayAlive = false
         // Silence again: hold at +500 ms, failsafe at +2000 ms lands.
         val again = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
         h.tickMs(500)
@@ -221,7 +225,7 @@ class FlightControllerTest {
     }
 
     @Test
-    fun `relay activity during hold releases virtual stick and leaves the aircraft under the flight controller`() {
+    fun `control heartbeat during hold releases virtual stick and leaves the aircraft under the flight controller`() {
         val h = Harness()
         h.hovering()
         h.join()
@@ -757,7 +761,7 @@ class FlightControllerTest {
         assertEquals("watchdog_hold", takeoff.terminal?.second, takeoff.events.toString())
         assertEquals("idle", h.controller.status.phase)
         assertFalse(h.model.virtualStickEnabled)
-        // Relay activity before failsafe re-arms the deadman: nothing is landed.
+        // An authorized control heartbeat before failsafe re-arms the deadman: nothing is landed.
         h.relayAlive = true
         h.tickMs(3_000)
         assertEquals("armed", h.controller.status.watchdog)
