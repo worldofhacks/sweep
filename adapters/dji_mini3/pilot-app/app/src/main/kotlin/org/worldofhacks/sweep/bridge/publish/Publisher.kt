@@ -36,6 +36,15 @@ import org.worldofhacks.sweep.bridge.session.AircraftSession
 /** The pilot's override of the automatic policy. */
 enum class PublishRequest { AUTO, FORCE_ON, FORCE_OFF }
 
+/** What a fake-flavor launch intent may ask of the publisher; every field is optional. */
+data class PublishLaunchRequest(val mediaHost: String?, val mediaPort: Int?, val action: String?) {
+    companion object {
+        const val START = "start"
+        const val STOP = "stop"
+        const val AUTO = "auto"
+    }
+}
+
 /** The URLs derived from the Setup values, for the screen and the README checklist. */
 data class PublishEndpoints(val whipUrl: String?, val whepUrl: String?, val playerUrl: String?, val error: String?)
 
@@ -92,7 +101,14 @@ class Publisher(
     val availableSources: List<PublishSource>
         get() = sources.available
 
-    private data class Desire(val run: Boolean, val whipUrl: String?, val source: PublishSource, val droneId: Int, val holdReason: String?)
+    private data class Desire(
+        val run: Boolean,
+        val whipUrl: String?,
+        val source: PublishSource,
+        val droneId: Int,
+        val holdReason: String?,
+        val pilotStopped: Boolean,
+    )
 
     private class Active(
         val source: PublishSource,
@@ -140,7 +156,7 @@ class Publisher(
                     !link.joined -> "relay link not joined"
                     else -> null
                 }
-                Desire(run, endpoints.whipUrl, settings.source, setup.droneId, hold)
+                Desire(run, endpoints.whipUrl, settings.source, setup.droneId, hold, pilotStopped = request == PublishRequest.FORCE_OFF)
             }.distinctUntilChanged().collect { next -> post { reconcile(next) } }
         }
     }
@@ -171,6 +187,23 @@ class Publisher(
         save(current.copy(mediaHost = host.trim(), mediaPort = port?.takeIf { it in 1..65535 } ?: current.mediaPort))
     }
 
+    /**
+     * Fake-flavor launch extras (`--es publish_host <host> --ei publish_port <port> --es publish
+     * start|stop|auto`): the ground station and a request, so a phone run against MediaMTX can be
+     * scripted with `adb shell am start` and the screen off.
+     */
+    fun applyLaunchRequest(request: PublishLaunchRequest) {
+        if (request.mediaHost != null || request.mediaPort != null) {
+            saveGroundStation(request.mediaHost ?: _settings.value.mediaHost, request.mediaPort ?: _settings.value.mediaPort)
+        }
+        when (request.action) {
+            PublishLaunchRequest.START -> startNow()
+            PublishLaunchRequest.STOP -> stopNow()
+            PublishLaunchRequest.AUTO -> resumeAuto()
+        }
+        logLine("launch request: host=${request.mediaHost ?: "(kept)"} port=${request.mediaPort ?: "(kept)"} action=${request.action ?: "(none)"}")
+    }
+
     private fun save(settings: PublishSettings) {
         _settings.value = settings
         scope.launch(Dispatchers.IO) { store.save(settings) }
@@ -192,9 +225,13 @@ class Publisher(
                 startSession(next)
             }
             !next.run && current != null -> stopSession(next.holdReason ?: "no longer wanted")
-            !next.run && current == null && machine.current.state == VideoPublishState.FAILED && machine.current.reason != null -> {
-                // A terminal failure is left on screen until the pilot changes something.
-                if (next.holdReason == PublishReasons.AIRCRAFT_DISCONNECTED) {
+            !next.run && current == null && machine.current.state == VideoPublishState.FAILED -> {
+                // A retry that is no longer wanted is cancelled, and the pilot's stop or the aircraft's
+                // loss ends the failure, so node_status stops saying `failed`; a terminal failure under
+                // a passive hold (relay not joined, auto-start off) stays on screen until the pilot acts.
+                if (machine.current.retryPending || next.pilotStopped || next.holdReason == PublishReasons.AIRCRAFT_DISCONNECTED) {
+                    restart?.cancel(false)
+                    restart = null
                     machine.stop()
                     _lastStop.value = next.holdReason
                 }
@@ -204,7 +241,14 @@ class Publisher(
 
     private fun startSession(next: Desire) {
         val whipUrl = next.whipUrl ?: return
-        val status = machine.start(next.source, whipUrl)
+        val before = machine.current
+        // A scheduled retry continues the failure streak, so its backoff keeps growing; anything
+        // else (first start, new source or URL) is a fresh session with the counters reset.
+        val status = if (before.retryPending && before.source == next.source && before.whipUrl == whipUrl) {
+            machine.attempting()
+        } else {
+            machine.start(next.source, whipUrl)
+        }
         if (status.state != VideoPublishState.CONNECTING) return
         _lastStop.value = null
         _metrics.value = null
