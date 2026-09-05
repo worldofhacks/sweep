@@ -17,7 +17,7 @@ def frame(session, *, event_id="control-pose", epoch=1):
         "camera-clock", "relay-clock", 0.0, session.clock() - 1000, 1000.0, 10, True
     )
     wire = ControlLocalizationWire.from_mapping(
-        to_wire_payload(fresh_snapshot(), mapping, "pending")
+        to_wire_payload(fresh_snapshot(), mapping, "pending", event_id)
     )
     return sign_localization_frame(
         replace(wire, connection_epoch=epoch),
