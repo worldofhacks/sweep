@@ -3,7 +3,7 @@
   "responses": {
     "hold-current-selection": {"kind": "plan", "intents": [{"name": "hold", "args": {}, "selection": [1, 2], "mode": "indoor"}]},
     "ordered-select-and-takeoff": {"kind": "plan", "intents": [{"name": "select", "args": {"ids": [1]}, "selection": [1], "mode": "indoor"}, {"name": "takeoff", "args": {}, "selection": [1], "mode": "indoor"}]},
-    "translate-selected": {"kind": "plan", "intents": [{"name": "translate", "args": {"dx": 0.5, "dy": 0.0}, "selection": [1, 2], "mode": "indoor"}]},
+    "translate-selected": {"kind": "plan", "intents": [{"name": "translate", "args": {"dx": 0.0, "dy": -1.0}, "selection": [1, 2], "mode": "indoor"}]},
     "capture-known-room": {"kind": "plan", "intents": [{"name": "capture_room", "args": {"room_id": "living-room", "pattern": "pano_360"}, "selection": [2], "mode": "indoor"}]},
     "emergency-stop": {"kind": "unsupported", "reason": "capability_unavailable"},
     "ambiguous-reference": {"kind": "clarify", "reason": "ambiguous_selection"},

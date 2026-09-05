@@ -56,7 +56,7 @@ def test_relay_rechecks_preview_after_interleaved_telemetry(tmp_path, monkeypatc
         ),
         audit=InMemoryAuditSink(),
     ).compile(
-        "Move right.",
+        "Move right one step.",
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -170,7 +170,7 @@ def test_unsafe_live_snapshot_has_no_confirmation_preview_or_adapter_io(tmp_path
         ),
         audit=InMemoryAuditSink(),
     ).compile(
-        "Move right.",
+        "Move right two steps.",
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,

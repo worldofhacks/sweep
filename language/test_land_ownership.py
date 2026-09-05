@@ -56,7 +56,7 @@ def _compiled_command(current, router, relay, name, intent_id, *, selection=None
         ),
         audit=InMemoryAuditSink(),
     ).compile(
-        "Move right." if name == "translate" else "Land drone one.",
+        "Move right one step." if name == "translate" else "Land drone one.",
         relay.current_state(),
         capability_version="test",
         rooms=(),

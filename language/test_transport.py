@@ -181,6 +181,10 @@ def test_compiler_uses_active_pinned_model_and_strict_tool_schema(monkeypatch) -
     )
 
     assert captured["model"] == "claude-sonnet-5"
+    assert (
+        "An omitted movement distance means one foot, exactly 0.3048 meters" in captured["system"]
+    )
+    assert "ordinary stop or hover means hold" in captured["system"]
     assert "temperature" not in captured
     assert "top_p" not in captured
     assert "top_k" not in captured
