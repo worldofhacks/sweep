@@ -28,7 +28,9 @@ import org.worldofhacks.sweep.bridge.core.signing.Signing
  * relay-assigned connection epoch incrementing on every join), signed commands, and
  * relay-side socket drops. Every node frame is recorded in arrival order. With
  * [echoTelemetry] it also sends each telemetry frame straight back on the socket, as the
- * real relay's fan-out does for every node frame, and nothing else unprompted.
+ * real relay's fan-out does for every node frame, and nothing else unprompted. [refuseAuth]
+ * can be set while the stub is up so that every reconnect after [dropConnections] meets an
+ * `auth.refused`, as a restarted relay answers the old session id.
  */
 class StubRelay(
     private val key: ByteArray,
@@ -37,7 +39,7 @@ class StubRelay(
     val nodeSettings: NodeSettings = NodeSettings(2000, 10, 2000, 10000),
     private val clockOffsetMs: Long = 0,
     initialRosterVersion: Int = 3,
-    private val refuseAuth: Pair<String, String>? = null,
+    @Volatile var refuseAuth: Pair<String, String>? = null,
     private val echoTelemetry: Boolean = false,
 ) : AutoCloseable {
     private val server = MockWebServer()

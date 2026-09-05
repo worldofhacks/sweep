@@ -80,9 +80,13 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  * own 10 Hz telemetry and acknowledgements included; those prove nothing about the relay
  * attending and never refresh the deadman (a relay whose fan-out loop still echoes must
  * still trip hold and failsafe). OkHttp's ping is transport liveness only: a missing pong
- * fails the socket, it does not feed the deadman. An `auth.refused` with `session_closed`
- * (the relay restarted; the old session id is replay-only) or a credential failure halts
- * automatic reconnects until the setup changes or [reconnectNow] is called.
+ * fails the socket, it does not feed the deadman. Neither do the auth answers: a relay that
+ * refuses every reconnect (the old session id after a restart, or `auth_timeout`) is a relay
+ * process answering, not the relay attending to this node, so hold and failsafe run on
+ * schedule for what the node was flying and only the join of a successful rejoin re-arms
+ * the deadman. An `auth.refused` with `session_closed` (the relay restarted; the old session
+ * id is replay-only) or a credential failure halts automatic reconnects until the setup
+ * changes or [reconnectNow] is called.
  *
  * Everything runs on one single-threaded loop; OkHttp callbacks are posted to it and fenced
  * by a socket generation so a late callback from a dead socket cannot touch a new one.
@@ -274,14 +278,18 @@ class RelayLink(
     }
 
     /**
-     * Whether the relay itself authored [json]. Telemetry, `capabilities`, `node_status`,
-     * and the other node frames come back on this socket through the relay's fan-out, this
-     * node's own included, so they say nothing about the relay attending; an acknowledgement
-     * counts only when its `source` is the relay or its autonomy owner, never `adapter`.
-     * Commands count in [onCommand], once their signature verifies.
+     * Whether the relay authored [json] while attending to this node. Telemetry,
+     * `capabilities`, `node_status`, and the other node frames come back on this socket
+     * through the relay's fan-out, this node's own included, so they say nothing about the
+     * relay attending; an acknowledgement counts only when its `source` is the relay or its
+     * autonomy owner, never `adapter`. Commands count in [onCommand], once their signature
+     * verifies. The auth answers never count: an `auth.refused` proves a relay process
+     * answered, not that this node is admitted (no state, membership, or command follows on
+     * that socket), and an `auth.accepted` is followed by the relay's own state and by the
+     * join, whose [Watchdog.arm] in [onJoined] is what re-arms the deadman on a rejoin.
      */
     private fun relayAuthored(type: String?, json: JsonObject): Boolean = when (type) {
-        AuthAccepted.TYPE, AuthRefused.TYPE, StateEvent.TYPE, MembershipEvent.TYPE, RefusalEvent.TYPE, SAFETY_ACTION_TYPE -> true
+        StateEvent.TYPE, MembershipEvent.TYPE, RefusalEvent.TYPE, SAFETY_ACTION_TYPE -> true
         AcknowledgementFrame.TYPE -> (json["source"] as? JsonString)?.value.let { it != null && it != ADAPTER_SOURCE }
         else -> false
     }

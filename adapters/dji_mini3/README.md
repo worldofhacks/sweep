@@ -267,7 +267,11 @@ the protection. The relay fans every node frame back out on the same socket, the
 10 Hz telemetry, acknowledgements, and `node_status` included; those echoes prove nothing
 about the relay attending and never refresh the deadman, so a relay that still echoes but
 no longer speaks trips hold and failsafe on schedule (OkHttp's transport ping only fails a
-dead socket; it is not a liveness source either). With no relay activity:
+dead socket; it is not a liveness source either). The auth answers are not one either: a
+relay that refuses every reconnect (`session_closed` after a restart, or `auth_timeout`) is
+a relay process answering, not the relay attending to this node, so a refusal neither
+releases a hold nor delays the failsafe, and only the join of a successful rejoin re-arms
+the deadman. With no relay activity:
 
 - at `hold`: the active command fails with `watchdog_hold` (retryable) and the stream decays
   to neutral sticks; the frames keep flowing while Virtual Stick is enabled, so the stream
@@ -453,11 +457,13 @@ takeoff landed at failsafe unless the relay came back, relay motion refused whil
 Control authority toggle is off with hover, land, estop, and bench holds unaffected).
 `bridge-node`: `FlightExecutorTest` runs the loop behind `RelayLink` against the stub relay
 (acknowledgement sequences on the wire with progress detail, the measured stick rate at
-`virtual_stick_hz`, relay silence to hold and failsafe landing, the RC takeover as readiness
-and `node_status` report it, twice across a re-arm, the toggle refusing a goto while an
-airborne hover still holds) and checks that closing the executor mid-hold releases Virtual
-Stick. `RelayLinkTest` steps an injected clock against a stub relay that only echoes the
-node's telemetry and requires hold at `watchdog_hold_ms` and failsafe at
+`virtual_stick_hz`, relay silence to hold and failsafe landing, the same under a relay that
+only echoes the node's telemetry and under one that restarts mid-goto and refuses every
+reconnect, the RC takeover as readiness and `node_status` report it, twice across a re-arm,
+the toggle refusing a goto while an airborne hover still holds) and checks that closing the
+executor mid-hold releases Virtual Stick. `RelayLinkTest` steps an injected clock against a
+stub relay that only echoes the node's telemetry, and against one that answers every
+reconnect with `auth.refused`, and requires hold at `watchdog_hold_ms` and failsafe at
 `watchdog_failsafe_ms` regardless, and refuses motion at the link with the toggle off.
 
 ## Phase D bring-up: local FPV and codec evidence

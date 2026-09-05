@@ -460,6 +460,63 @@ class RelayLinkTest {
     }
 
     @Test
+    fun `a relay that refuses every reconnect does not feed the deadman`() {
+        val clock = SteppedClock(1_000_000)
+        StubRelay(key).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, timing = timing, log = { logs += it }).use { link ->
+                link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
+                link.start()
+                await("ready") { link.state.value.membership == "ready" }
+                val armedAt = checkNotNull(link.state.value.lastRelayActivityMs)
+                assertEquals(WatchdogState.ARMED, link.state.value.watchdog)
+
+                // The relay restarts mid-session: the socket drops and every reconnect meets a
+                // non-halting auth.refused, so refusals keep landing on the backoff schedule
+                // (50 to 250 ms here, 500 ms to 6.25 s on the phone) for as long as the test
+                // runs. A refusal is a relay process answering, not the relay attending: it
+                // must neither release a hold nor keep the failsafe from arriving on time.
+                stub.refuseAuth = "auth_timeout" to "stalled"
+                stub.dropConnections()
+                await("the first refusal") { link.state.value.lastAuthRefusal?.reason == "auth_timeout" }
+                val connectionsAtRefusal = stub.connections.get()
+
+                val hold = stub.nodeSettings.watchdogHoldMs
+                val failsafe = stub.nodeSettings.watchdogFailsafeMs
+                var advanced = 0L
+                while (advanced + 500 < hold) {
+                    clock.advance(500)
+                    advanced += 500
+                    Thread.sleep(120)
+                    assertEquals(WatchdogState.ARMED, link.state.value.watchdog, "still armed $advanced ms in")
+                }
+                clock.advance(hold - advanced)
+                advanced = hold
+                await("hold") { link.state.value.watchdog == WatchdogState.HOLD }
+                assertTrue(logs.any { it.contains("ARMED -> HOLD after $hold ms without relay activity") }, logs.joinToString("\n"))
+                while (advanced + 500 < failsafe) {
+                    clock.advance(500)
+                    advanced += 500
+                    Thread.sleep(120)
+                    assertEquals(WatchdogState.HOLD, link.state.value.watchdog, "still in hold $advanced ms in; a refusal counted as activity would have re-armed")
+                }
+                clock.advance(failsafe - advanced)
+                await("failsafe") { link.state.value.watchdog == WatchdogState.FAILSAFE }
+                assertTrue(logs.any { it.contains("HOLD -> FAILSAFE after $failsafe ms without relay activity") }, logs.joinToString("\n"))
+
+                // Refusals landed the whole time and were seen as frames, never as relay activity.
+                val state = link.state.value
+                assertTrue(stub.connections.get() > connectionsAtRefusal + 2, "reconnects kept meeting refusals: ${stub.connections.get()}")
+                assertEquals("auth_timeout", state.lastAuthRefusal?.reason)
+                assertFalse(state.halted, "auth_timeout is not a halting refusal")
+                assertTrue(checkNotNull(state.lastRelayFrameAtMs) > armedAt, "the refusals stamped the last-frame time")
+                assertEquals(armedAt, state.lastRelayActivityMs, "no refusal counted as relay activity")
+                assertFalse(logs.any { it.contains("HOLD -> ARMED") }, logs.joinToString("\n"))
+            }
+        }
+    }
+
+    @Test
     fun `motion is refused with authority_lost while the pilot's control authority toggle is off`() {
         StubRelay(key).use { stub ->
             val aircraft = FakeAircraft(connected = true)

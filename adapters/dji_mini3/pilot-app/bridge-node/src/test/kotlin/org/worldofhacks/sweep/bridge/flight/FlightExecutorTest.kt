@@ -227,6 +227,38 @@ class FlightExecutorTest {
     }
 
     @Test
+    fun `a relay that restarts and refuses every reconnect still holds the stream then lands what the node flew`() {
+        val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 400, watchdogFailsafeMs = 1500)
+        StubRelay(key, nodeSettings = settings).use { stub ->
+            node(stub, flying = true, relayAlive = false).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 4000, zMm = 1200, speedMmS = 500))
+                stub.awaitAck(goto.commandId, "executing")
+                // The relay process restarts mid-goto: the socket drops and every reconnect
+                // (backoff 50 to 250 ms here, 500 ms to 6.25 s on the phone, inside the hold
+                // window either way) meets a non-halting auth.refused. A refusal is a relay
+                // process answering, not the relay attending: the hold must stand and the
+                // failsafe must land what the node was flying.
+                stub.refuseAuth = "auth_timeout" to "stalled"
+                stub.dropConnections()
+                await("refused on reconnect") { node.link.state.value.lastAuthRefusal?.reason == "auth_timeout" }
+                await("loop in hold") { node.executor.status.value.phase == "watchdog_hold" }
+                assertTrue(node.aircraft.model.virtualStickEnabled, "neutral sticks keep flowing during hold")
+                await("failsafe landing") { node.executor.status.value.landingReason == "watchdog_failsafe" || node.aircraft.snapshot.value.state == FlightStates.LANDED }
+                await("landed") { node.aircraft.snapshot.value.state == FlightStates.LANDED }
+                // No socket carries the acknowledgements after the drop; the loop's own log is the record.
+                await("the loop logging the hold failure") { logs.any { it.contains("goto ${goto.commandId} failed: watchdog_hold") } }
+                await("the loop logging the failsafe landing") { logs.any { it.contains("landed (watchdog_failsafe)") } }
+                assertTrue(logs.any { it.contains("never return to home") })
+                assertTrue(logs.none { it.contains("relay activity resumed") }, "a refusal released the hold:\n" + logs.joinToString("\n"))
+                assertTrue(stub.connections.get() >= 3, "reconnects kept meeting refusals: ${stub.connections.get()}")
+                assertEquals("auth_timeout", node.link.state.value.lastAuthRefusal?.reason)
+                assertTrue(node.aircraft.snapshot.value.y < 1.5, "the step was cut at hold, y ${node.aircraft.snapshot.value.y}")
+            }
+        }
+    }
+
+    @Test
     fun `an RC takeover fails the command with authority_lost and drops readiness control authority until re-armed, every time`() {
         StubRelay(key).use { stub ->
             node(stub, flying = true).use { node ->
