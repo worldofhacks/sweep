@@ -65,15 +65,24 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  * 6. `command` frames are verified and admitted; `accepted` is acknowledged on admission and
  *    the [CommandExecutor] reports `executing` then `completed` or `failed`. Rejections
  *    acknowledge `failed` with `stale_command` or `out_of_order_command`; forged frames are
- *    dropped without a reply.
+ *    dropped without a reply. A motion command (`takeoff`, `goto`, `rotate_to`) is refused
+ *    with `authority_lost` before `accepted` while the pilot's Control authority toggle is
+ *    off: the relay reports `control_authority_missing` for that state, and the node does
+ *    not rely on the relay alone. `hover`, `land`, and `estop` keep their handling.
  *
  * Socket loss schedules a reconnect with bounded exponential backoff. The watchdog keeps its
  * clock running through the outage (the deadman is mandatory: without it the flight
  * controller hovers indefinitely when frames stop) and moves to hold, then failsafe; the
- * flight action for those states is Phase E work, here they are reported in `node_status`
- * and the UI. An `auth.refused` with `session_closed` (the relay restarted; the old session
- * id is replay-only) or a credential failure halts automatic reconnects until the setup
- * changes or [reconnectNow] is called.
+ * flight loop acts on those states and they are reported in `node_status` and the UI. Only
+ * relay-authored frames feed it: `state`, `membership`, `refusal`, `safety_action`, the
+ * lifecycle acknowledgements the relay or its autonomy owner authors, and commands whose
+ * signature verifies. The relay fans every node frame back out to every socket, this node's
+ * own 10 Hz telemetry and acknowledgements included; those prove nothing about the relay
+ * attending and never refresh the deadman (a relay whose fan-out loop still echoes must
+ * still trip hold and failsafe). OkHttp's ping is transport liveness only: a missing pong
+ * fails the socket, it does not feed the deadman. An `auth.refused` with `session_closed`
+ * (the relay restarted; the old session id is replay-only) or a credential failure halts
+ * automatic reconnects until the setup changes or [reconnectNow] is called.
  *
  * Everything runs on one single-threaded loop; OkHttp callbacks are posted to it and fenced
  * by a socket generation so a late callback from a dead socket cannot touch a new one.
@@ -251,8 +260,9 @@ class RelayLink(
             return
         }
         update { it.copy(framesIn = it.framesIn + 1, lastRelayFrameAtMs = now) }
-        watchdog?.heartbeat()
-        when ((json["type"] as? JsonString)?.value) {
+        val type = (json["type"] as? JsonString)?.value
+        if (relayAuthored(type, json)) relayActivity(now)
+        when (type) {
             AuthAccepted.TYPE -> onAuthAccepted(json, now)
             AuthRefused.TYPE -> onAuthRefused(json)
             StateEvent.TYPE -> onState(json)
@@ -261,6 +271,25 @@ class RelayLink(
             RefusalEvent.TYPE -> onRefusal(json)
             else -> Unit // fan-out of telemetry, acknowledgements, and node-authored frames
         }
+    }
+
+    /**
+     * Whether the relay itself authored [json]. Telemetry, `capabilities`, `node_status`,
+     * and the other node frames come back on this socket through the relay's fan-out, this
+     * node's own included, so they say nothing about the relay attending; an acknowledgement
+     * counts only when its `source` is the relay or its autonomy owner, never `adapter`.
+     * Commands count in [onCommand], once their signature verifies.
+     */
+    private fun relayAuthored(type: String?, json: JsonObject): Boolean = when (type) {
+        AuthAccepted.TYPE, AuthRefused.TYPE, StateEvent.TYPE, MembershipEvent.TYPE, RefusalEvent.TYPE, SAFETY_ACTION_TYPE -> true
+        AcknowledgementFrame.TYPE -> (json["source"] as? JsonString)?.value.let { it != null && it != ADAPTER_SOURCE }
+        else -> false
+    }
+
+    /** Relay-authored traffic: the only thing that feeds this link's deadman and, through the state, the flight loop's. */
+    private fun relayActivity(now: Long) {
+        watchdog?.heartbeat()
+        update { it.copy(lastRelayActivityMs = now) }
     }
 
     private fun onAuthAccepted(json: JsonObject, receivedAtMs: Long) {
@@ -588,7 +617,11 @@ class RelayLink(
             log.log("dropping command ${command.commandId} for session ${command.session}")
             return
         }
-        when (val result = admission.admit(command)) {
+        val result = admission.admit(command)
+        // A command the node answers carries the relay's signature: relay activity, whatever
+        // admission says next. A forged or misaddressed frame is not.
+        if (result is AdmissionResult.Admitted || (result is AdmissionResult.Rejected && result.reason.acknowledged)) relayActivity(clock.nowMs())
+        when (result) {
             is AdmissionResult.Rejected -> {
                 if (result.reason.acknowledged) {
                     sendAck(command, LifecycleStatus.FAILED, result.reason.wire, result.detail)
@@ -606,7 +639,14 @@ class RelayLink(
                     record(command, "failed", WATCHDOG_FAILSAFE, detail)
                     return
                 }
-                dog?.command()
+                // The pilot's toggle, not the effective authority: the aircraft and RC link and
+                // the takeover latch are the flight loop's own refusals with their own reasons.
+                if (command.operation in MOTION_OPERATIONS && !readiness.controlAuthority) {
+                    val detail = "control authority not granted: the pilot's Control authority toggle on the Readiness card is off; ${command.operation.wire} refused"
+                    sendAck(command, LifecycleStatus.FAILED, AUTHORITY_LOST, detail)
+                    record(command, "failed", AUTHORITY_LOST, detail)
+                    return
+                }
                 sendAck(command, LifecycleStatus.ACCEPTED)
                 record(command, "accepted")
                 if (command.operation == CommandOperation.CAMERA_CAPABILITIES) sendCapabilities(aircraft.snapshot.value)
@@ -818,6 +858,12 @@ class RelayLink(
         const val MAX_DETAIL = 512
         const val RATE_WINDOW_MS = 2_000L
         const val WATCHDOG_FAILSAFE = "watchdog_failsafe"
+        const val AUTHORITY_LOST = "authority_lost"
+        /** The relay's own link-loss intervention event (`relay/README.md`); no node parser, the type alone marks it relay-authored. */
+        const val SAFETY_ACTION_TYPE = "safety_action"
+        /** The `source` the relay stamps on acknowledgements it fans out for node frames. */
+        const val ADAPTER_SOURCE = "adapter"
+        val MOTION_OPERATIONS = setOf(CommandOperation.TAKEOFF, CommandOperation.GOTO, CommandOperation.ROTATE_TO)
         val HALT_REASONS = setOf("session_closed", "authentication_failed", "invalid_auth", "unknown_source")
     }
 }

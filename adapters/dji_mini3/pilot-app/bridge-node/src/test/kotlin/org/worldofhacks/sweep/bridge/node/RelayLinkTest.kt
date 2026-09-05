@@ -3,9 +3,11 @@ package org.worldofhacks.sweep.bridge.node
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.abs
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.worldofhacks.sweep.bridge.core.admission.Clock
 import org.worldofhacks.sweep.bridge.core.frames.AcknowledgementFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
@@ -75,6 +77,24 @@ class RelayLinkTest {
 
     private fun StubRelay.awaitAck(commandId: String, status: String): JsonObject =
         awaitFrame("acknowledgement") { it.str("command_id") == commandId && it.str("status") == status }
+
+    private fun StubRelay.acks(commandId: String): List<String> =
+        frames("acknowledgement") { it.str("command_id") == commandId }.map { it.str("status") }
+
+    /**
+     * The link's clock, frozen until the test steps it: the watchdog and admission read it,
+     * while the stub relay, the telemetry ticker, and the watchdog poll run on real time.
+     */
+    private class SteppedClock(start: Long) : Clock {
+        @Volatile
+        private var now = start
+
+        override fun nowMs(): Long = now
+
+        fun advance(ms: Long) {
+            now += ms
+        }
+    }
 
     @Test
     fun `frame sequence is auth join telemetry readiness capabilities node_status`() {
@@ -382,6 +402,101 @@ class RelayLinkTest {
                 stub.awaitFrame("node_status") { it["authority_change_reason"] == JsonString("not_granted") }
                 await("degraded") { link.state.value.membership == "degraded" }
                 assertTrue(link.state.value.readinessReasons.contains("control_authority_missing"))
+            }
+        }
+    }
+
+    @Test
+    fun `a relay that only echoes the node's telemetry does not feed the deadman`() {
+        val clock = SteppedClock(1_000_000)
+        StubRelay(key, echoTelemetry = true).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, timing = timing, log = { logs += it }).use { link ->
+                link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
+                link.start()
+                await("ready") { link.state.value.membership == "ready" }
+                // The readiness answer is the relay's last own frame; from here it only echoes.
+                val armedAt = checkNotNull(link.state.value.lastRelayActivityMs)
+                assertEquals(WatchdogState.ARMED, link.state.value.watchdog)
+                val framesAtReady = link.state.value.framesIn
+                await("the node's telemetry coming back") { stub.echoed.get() >= 5 && link.state.value.framesIn >= framesAtReady + 5 }
+
+                val hold = stub.nodeSettings.watchdogHoldMs
+                val failsafe = stub.nodeSettings.watchdogFailsafeMs
+                // Step the clock in slices shorter than the hold window, with real time between
+                // slices so echoes keep landing between steps: a deadman refreshed by any frame
+                // would never leave ARMED, one fed by relay-authored frames only must.
+                var advanced = 0L
+                while (advanced + 500 < hold) {
+                    clock.advance(500)
+                    advanced += 500
+                    Thread.sleep(120)
+                    assertEquals(WatchdogState.ARMED, link.state.value.watchdog, "still armed $advanced ms in")
+                }
+                clock.advance(hold - advanced)
+                advanced = hold
+                stub.awaitFrame("node_status", timeoutMs = 2_000) { it.str("watchdog_state") == "hold" }
+                assertEquals(WatchdogState.HOLD, link.state.value.watchdog)
+                assertTrue(logs.any { it.contains("ARMED -> HOLD after $hold ms without relay activity") }, logs.joinToString("\n"))
+                while (advanced + 500 < failsafe) {
+                    clock.advance(500)
+                    advanced += 500
+                    Thread.sleep(100)
+                    assertEquals(WatchdogState.HOLD, link.state.value.watchdog, "still in hold $advanced ms in")
+                }
+                clock.advance(failsafe - advanced)
+                stub.awaitFrame("node_status", timeoutMs = 2_000) { it.str("watchdog_state") == "failsafe" }
+                assertEquals(WatchdogState.FAILSAFE, link.state.value.watchdog)
+                assertTrue(logs.any { it.contains("HOLD -> FAILSAFE after $failsafe ms without relay activity") }, logs.joinToString("\n"))
+
+                // Echoes flowed the whole time and were seen as frames, never as relay activity.
+                val state = link.state.value
+                assertTrue(stub.echoed.get() >= 10 && state.framesIn >= framesAtReady + 10, "echoed ${stub.echoed.get()}, frames in ${state.framesIn - framesAtReady}")
+                assertTrue(checkNotNull(state.lastRelayFrameAtMs) > armedAt, "the echoes stamped the last-frame time")
+                assertEquals(armedAt, state.lastRelayActivityMs, "no echo counted as relay activity")
+                assertEquals(RelayConnection.CONNECTED, state.connection, "the socket itself never dropped")
+            }
+        }
+    }
+
+    @Test
+    fun `motion is refused with authority_lost while the pilot's control authority toggle is off`() {
+        StubRelay(key).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val off = ReadinessInput(homePoseConfirmed = true, controlAuthority = false, rcSafetyOperatorPresent = true)
+            link(stub, aircraft, readiness = off).use { link ->
+                await("degraded") { link.state.value.membership == "degraded" }
+                assertTrue(link.state.value.readinessReasons.contains("control_authority_missing"))
+                // The relay would refuse these upstream; the node does not count on that.
+                for (args in listOf(CommandArgs.Takeoff(zMm = 1200), CommandArgs.Goto(xMm = 0, yMm = 1000, zMm = 1200, speedMmS = 500), CommandArgs.RotateTo(yawMdeg = 90_000, speedMdegS = 30_000))) {
+                    val command = stub.issueCommand(args)
+                    val refused = stub.awaitAck(command.commandId, "failed")
+                    assertEquals("authority_lost", refused.str("reason"), args.operation.wire)
+                    assertTrue(refused.str("detail").contains("Control authority toggle"), refused.str("detail"))
+                    assertEquals(listOf("failed"), stub.acks(command.commandId), "never accepted")
+                }
+                assertEquals(FlightStates.LANDED, aircraft.snapshot.value.state)
+                assertEquals(0.0, aircraft.snapshot.value.z)
+                // hover, land, and estop keep their handling.
+                for (args in listOf(CommandArgs.Hover, CommandArgs.Land, CommandArgs.Estop)) {
+                    val command = stub.issueCommand(args)
+                    stub.awaitAck(command.commandId, "completed")
+                    assertEquals(listOf("accepted", "executing", "completed"), stub.acks(command.commandId), args.operation.wire)
+                }
+                // Every one of those frames was signed by the relay: the deadman stayed fed.
+                assertEquals(WatchdogState.ARMED, link.state.value.watchdog)
+                assertFalse(logs.any { it.contains("-> HOLD") }, logs.joinToString("\n"))
+
+                link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
+                await("ready") { link.state.value.membership == "ready" }
+                val takeoff = stub.issueCommand(CommandArgs.Takeoff(zMm = 1200))
+                stub.awaitAck(takeoff.commandId, "completed")
+                assertEquals(1.2, aircraft.snapshot.value.z)
+                assertEquals(
+                    listOf("failed", "failed", "failed", "completed", "completed", "completed", "completed"),
+                    link.state.value.commands.reversed().map { it.outcome },
+                    "oldest first: three refusals, hover, land, estop, then the takeoff",
+                )
             }
         }
     }

@@ -64,13 +64,20 @@ class FlightControllerTest {
             controller.updateAircraft(model.facts)
         }
 
+        /** Joined with the pilot's Control authority toggle on, as every flight through the relay is. */
         fun join(estop: Boolean = false) {
-            link = LinkFacts(joined = true, estop = estop, lastRelayActivityMs = clock.nowMs(), settings = settings)
+            link = LinkFacts(joined = true, estop = estop, lastRelayActivityMs = clock.nowMs(), controlAuthorityGranted = true, settings = settings)
             controller.updateLink(link)
         }
 
         fun leave() {
             link = link.copy(joined = false)
+            controller.updateLink(link)
+        }
+
+        /** The pilot's Control authority toggle on the Readiness card. */
+        fun grantAuthority(granted: Boolean) {
+            link = link.copy(controlAuthorityGranted = granted)
             controller.updateLink(link)
         }
 
@@ -299,6 +306,57 @@ class FlightControllerTest {
         val hover = h.run(CommandArgs.Hover)
         h.tick(4)
         assertEquals("completed", hover.terminal?.first)
+    }
+
+    @Test
+    fun `relay motion is refused with authority_lost while the pilot's control authority toggle is off`() {
+        val h = Harness()
+        h.join()
+        h.grantAuthority(false)
+        // On the ground: no takeoff action reaches the flight controller.
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1200))
+        assertEquals("authority_lost", takeoff.terminal?.second, takeoff.events.toString())
+        assertTrue(takeoff.terminal!!.third!!.contains("Control authority toggle"), takeoff.terminal!!.third!!)
+        assertTrue(takeoff.terminal!!.third!!.contains("[terminal]"))
+        h.tick(2)
+        assertEquals("idle", h.controller.status.phase)
+        assertEquals("landed", h.model.flightState)
+        // Airborne under the RC operator: goto and rotate_to are refused before any stick frame.
+        h.hovering()
+        val goto = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        assertEquals("authority_lost", goto.terminal?.second, goto.events.toString())
+        val rotate = h.run(CommandArgs.RotateTo(yawMdeg = 90_000, speedMdegS = 30_000))
+        assertEquals("authority_lost", rotate.terminal?.second, rotate.events.toString())
+        h.tick(2)
+        assertTrue(h.frames.isEmpty(), "no stick frame without the pilot's authority")
+        assertFalse(h.model.virtualStickEnabled)
+        assertEquals(0.0, h.model.yNorth, 1e-9)
+        // The bench procedures are the pilot's own: the toggle does not gate them.
+        val bench = RecordingSink()
+        assertTrue(h.controller.startBench("hold", StickFrame.NEUTRAL, 300, bench))
+        h.tickMs(600)
+        assertEquals("completed", bench.terminal?.first, bench.events.toString())
+        // Hover keeps its airborne fail-safe behaviour: Virtual Stick, neutral sticks, settle.
+        val framesBefore = h.frames.size
+        val hover = h.run(CommandArgs.Hover)
+        h.tick(4)
+        assertEquals(listOf("executing", "completed"), hover.statuses, hover.events.toString())
+        assertTrue(h.frames.size > framesBefore && h.frames.drop(framesBefore).all { it.isNeutral })
+        assertFalse(h.model.virtualStickEnabled)
+        // Estop and land keep their handling too.
+        val estop = h.run(CommandArgs.Estop)
+        h.tick(4)
+        assertEquals("completed", estop.terminal?.first, estop.events.toString())
+        val land = h.run(CommandArgs.Land)
+        h.tickMs(3_500)
+        assertEquals("completed", land.terminal?.first, land.events.toString())
+        assertEquals("landed", h.model.flightState)
+        // Granted again: the next takeoff runs.
+        h.grantAuthority(true)
+        val allowed = h.run(CommandArgs.Takeoff(zMm = 1200))
+        h.tickMs(4_000)
+        assertEquals("completed", allowed.terminal?.first, allowed.events.toString())
+        assertEquals("hovering", h.model.flightState)
     }
 
     @Test

@@ -34,6 +34,12 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  *    is what the node reports as `control_authority`. The port forwards every stick
  *    deflection past its threshold; this loop is the only judge of whether there is anything
  *    to cancel (idle input is the pilot flying, latched input is already the pilot's).
+ *    The pilot's Control authority toggle ([LinkFacts.controlAuthorityGranted], the
+ *    readiness `control_authority` as the pilot set it) is enforced here as well as by the
+ *    relay: while it is off, `takeoff`, `goto`, and `rotate_to` from the wire are refused
+ *    with `authority_lost`, so a command that reaches the phone anyway never becomes a
+ *    takeoff or a stick frame; `hover`, `land`, and `estop` keep their fail-safe handling
+ *    and the bench procedures are the pilot's own.
  * 3. Network stop. The relay's authoritative `estop` flag is level-triggered: on every tick
  *    while it is asserted any running motion is cut to neutral sticks (`estop_asserted`),
  *    including motion admitted before the flag arrived or whose Virtual Stick enable answered
@@ -218,6 +224,12 @@ class FlightController(
         watchdog?.command()
         authorityLost?.let {
             fail(sink, FlightReason.AUTHORITY_LOST, "control authority not re-armed after $it; re-arm on the flight card")
+            return
+        }
+        // The relay refuses motion while readiness says control_authority=false; the node
+        // refuses it too, so nothing that slips past the relay (or races the toggle) flies.
+        if (command.relayMotion && !link.controlAuthorityGranted) {
+            fail(sink, FlightReason.AUTHORITY_LOST, "control authority not granted: the pilot's Control authority toggle on the Readiness card is off; ${command.operation} refused")
             return
         }
         if (!facts.linked) {

@@ -202,6 +202,31 @@ class FlightExecutorTest {
     }
 
     @Test
+    fun `a relay that only echoes the node's telemetry still holds the stream then lands`() {
+        val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 400, watchdogFailsafeMs = 1500)
+        StubRelay(key, nodeSettings = settings, echoTelemetry = true).use { stub ->
+            node(stub, flying = true, relayAlive = false).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                await("the node's telemetry coming back") { stub.echoed.get() >= 3 }
+                // The command is the relay's last own frame; its echoes of the node's 10 Hz
+                // telemetry keep arriving and must not count as the relay attending.
+                val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 4000, zMm = 1200, speedMmS = 500))
+                stub.awaitAck(goto.commandId, "executing")
+                val hold = stub.awaitAck(goto.commandId, "failed")
+                assertEquals("watchdog_hold", hold.str("reason"))
+                await("loop in hold") { node.executor.status.value.phase == "watchdog_hold" }
+                stub.awaitFrame("node_status") { it.str("watchdog_state") == "hold" }
+                stub.awaitFrame("node_status") { it.str("watchdog_state") == "failsafe" }
+                await("failsafe landing") { node.executor.status.value.landingReason == "watchdog_failsafe" || node.aircraft.snapshot.value.state == FlightStates.LANDED }
+                await("landed") { node.aircraft.snapshot.value.state == FlightStates.LANDED }
+                assertTrue(logs.any { it.contains("never return to home") })
+                assertTrue(stub.echoed.get() >= 15, "echoes flowed throughout: ${stub.echoed.get()}")
+                assertTrue(node.aircraft.snapshot.value.y < 1.5, "the step was cut at hold, y ${node.aircraft.snapshot.value.y}")
+            }
+        }
+    }
+
+    @Test
     fun `an RC takeover fails the command with authority_lost and drops readiness control authority until re-armed, every time`() {
         StubRelay(key).use { stub ->
             node(stub, flying = true).use { node ->
@@ -249,13 +274,42 @@ class FlightExecutorTest {
     }
 
     @Test
+    fun `with the pilot's control authority toggle off the link refuses motion and an airborne hover still holds`() {
+        StubRelay(key).use { stub ->
+            node(stub, flying = true).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                node.link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = false, rcSafetyOperatorPresent = true))
+                await("degraded") { node.link.state.value.membership == "degraded" }
+                val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 4000, zMm = 1200, speedMmS = 500))
+                val refused = stub.awaitAck(goto.commandId, "failed")
+                assertEquals("authority_lost", refused.str("reason"))
+                assertTrue(refused.str("detail").contains("Control authority toggle"), refused.str("detail"))
+                assertEquals(listOf("failed"), stub.acks(goto.commandId).map { it.str("status") }, "never accepted")
+                assertEquals(0.0, node.aircraft.snapshot.value.y, 1e-9)
+                assertTrue(!node.aircraft.model.virtualStickEnabled, "no virtual stick for a refused motion")
+                // The airborne hover keeps its fail-safe behaviour: virtual stick, neutral sticks, settle.
+                val hover = stub.issueCommand(CommandArgs.Hover)
+                stub.awaitAck(hover.commandId, "completed")
+                assertTrue(stub.acks(hover.commandId).any { it.str("status") == "executing" && it.str("detail").contains("neutral sticks") })
+                await("virtual stick released") { !node.aircraft.model.virtualStickEnabled }
+
+                node.link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
+                await("ready again") { node.link.state.value.membership == "ready" }
+                val allowed = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 1000, zMm = 1200, speedMmS = 500))
+                stub.awaitAck(allowed.commandId, "completed")
+                assertTrue(node.aircraft.snapshot.value.y in 0.75..1.05, "moved north ${node.aircraft.snapshot.value.y}")
+            }
+        }
+    }
+
+    @Test
     fun `closing the executor mid-hold releases virtual stick instead of leaving the flight controller waiting`() {
         val aircraft = FakeFlightAircraft()
         aircraft.setConnected(true)
         aircraft.place(zUp = 1.2, flying = true)
         val executor = FlightExecutor(aircraft, aircraft, aircraft.fake, config = config, log = { logs += it })
         val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 5000, watchdogFailsafeMs = 20000)
-        executor.observe(MutableStateFlow(LinkState(joined = true, nodeSettings = settings, lastRelayFrameAtMs = System.currentTimeMillis())))
+        executor.observe(MutableStateFlow(LinkState(joined = true, nodeSettings = settings, lastRelayActivityMs = System.currentTimeMillis())))
         await("deadman armed") { executor.status.value.watchdog == "armed" }
         val sink = object : ReportSink {
             override fun executing(detail: String?) = Unit

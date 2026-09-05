@@ -259,9 +259,15 @@ constant in `FlightConfig.mapping` is then changed in code.
 
 The flight controller has no link-loss failsafe under Virtual Stick: it hovers forever when
 stick frames stop (prior-art notes on #43). The loop therefore keeps its own `Watchdog` on
-the relay-distributed `watchdog_hold_ms` and `watchdog_failsafe_ms`, fed by the relay frames
-it sees through the link state and by admitted commands, independently of the link object,
-so tearing the link down cannot stop the protection. With no relay activity:
+the relay-distributed `watchdog_hold_ms` and `watchdog_failsafe_ms`, fed through the link
+state by relay-authored frames only (`state`, `membership`, `refusal`, `safety_action`, the
+lifecycle acknowledgements the relay or its autonomy owner writes, and commands whose
+signature verifies), independently of the link object, so tearing the link down cannot stop
+the protection. The relay fans every node frame back out on the same socket, the node's own
+10 Hz telemetry, acknowledgements, and `node_status` included; those echoes prove nothing
+about the relay attending and never refresh the deadman, so a relay that still echoes but
+no longer speaks trips hold and failsafe on schedule (OkHttp's transport ping only fails a
+dead socket; it is not a liveness source either). With no relay activity:
 
 - at `hold`: the active command fails with `watchdog_hold` (retryable) and the stream decays
   to neutral sticks; the frames keep flowing while Virtual Stick is enabled, so the stream
@@ -320,6 +326,14 @@ down): readiness recovers when the link does, as in Phase C. If the SDK later re
 Virtual Stick still enabled for the node while the loop is idle (a link blip or an app
 restart mid-command), the loop disables it at once, so the flight controller is never left
 waiting for frames nobody sends.
+
+The Control authority toggle on the Readiness card is enforced on the phone as well as by
+the relay. While it is off the relay reports `control_authority_missing`, and the node on
+its own refuses `takeoff`, `goto`, and `rotate_to` with `authority_lost` (the detail names
+the toggle): the link refuses before `accepted`, and the loop refuses again in case a
+command races the toggle. `hover`, `land`, and `estop` keep their handling (an airborne
+hover still holds under Virtual Stick), and the bench procedures are the pilot's own and
+are not gated by it.
 
 ### Network stop
 
@@ -435,12 +449,16 @@ pilot on failsafe or on a held stop after a takeover, the deadman landing only w
 node flew, Virtual Stick released on link loss and a stale enable cleared while idle, every
 stick event reaching the loop and takeovers cancelling again after each re-arm, bench holds
 and Virtual Stick refused while the deadman is disarmed or in failsafe, a hold-interrupted
-takeoff landed at failsafe unless the relay came back).
+takeoff landed at failsafe unless the relay came back, relay motion refused while the
+Control authority toggle is off with hover, land, estop, and bench holds unaffected).
 `bridge-node`: `FlightExecutorTest` runs the loop behind `RelayLink` against the stub relay
 (acknowledgement sequences on the wire with progress detail, the measured stick rate at
 `virtual_stick_hz`, relay silence to hold and failsafe landing, the RC takeover as readiness
-and `node_status` report it, twice across a re-arm) and checks that closing the executor
-mid-hold releases Virtual Stick.
+and `node_status` report it, twice across a re-arm, the toggle refusing a goto while an
+airborne hover still holds) and checks that closing the executor mid-hold releases Virtual
+Stick. `RelayLinkTest` steps an injected clock against a stub relay that only echoes the
+node's telemetry and requires hold at `watchdog_hold_ms` and failsafe at
+`watchdog_failsafe_ms` regardless, and refuses motion at the link with the toggle off.
 
 ## Phase D bring-up: local FPV and codec evidence
 

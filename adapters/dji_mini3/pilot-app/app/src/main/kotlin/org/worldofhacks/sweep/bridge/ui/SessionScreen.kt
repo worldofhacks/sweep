@@ -325,7 +325,7 @@ private fun NodeStatusCard(link: LinkState, aircraft: AircraftSnapshot, now: Lon
                 else -> "Relay activity is fresh."
             }
             Text(
-                "Watchdog: $watchdogWord (${link.watchdog.name.lowercase()}) · last relay activity ${age(now, link.lastRelayFrameAtMs)}. $watchdogSentence",
+                "Watchdog: $watchdogWord (${link.watchdog.name.lowercase()}) · last relay activity ${age(now, link.lastRelayActivityMs)}. $watchdogSentence",
                 color = if (watchdogWord == "nominal") MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
             )
             if (link.estop) Text("Network stop active (relay state estop=true).", color = MaterialTheme.colorScheme.error)

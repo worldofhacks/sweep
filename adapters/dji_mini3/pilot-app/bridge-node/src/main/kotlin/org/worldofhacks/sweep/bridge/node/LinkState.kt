@@ -122,7 +122,10 @@ data class LinkState(
     val authorityChangeReason: String? = null,
     val watchdog: WatchdogState = WatchdogState.DISARMED,
     val nodeStatus: NodeStatusBody? = null,
+    /** When any frame last arrived on the socket, the relay's echo of this node's own frames included: link health, not liveness. */
     val lastRelayFrameAtMs: Long? = null,
+    /** When a relay-authored frame last arrived: the deadman's clock, for this link and for the flight loop. */
+    val lastRelayActivityMs: Long? = null,
     val estop: Boolean = false,
     val lastRefusal: RefusalEvent? = null,
     val lastAuthRefusal: AuthRefused? = null,
