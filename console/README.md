@@ -31,9 +31,11 @@ window.__SWEEP_RELAY_CONFIG__ = {
 }
 ```
 
-The client opens `/ws/{session_id}` twice: one connection authenticates as `console` for buttons
-and state, and a separate connection authenticates as `keyboard` for the Shift+Escape network
-stop. An intent is never moved between those sources, and neither connection retries silently.
+The client opens `/ws/{session_id}` three times: one connection authenticates as `console` for
+buttons and state, a separate connection authenticates as `keyboard` for the Shift+Escape network
+stop, and a third authenticates as `webcam` for the gesture producer. An intent is never moved
+between those sources, and no connection retries silently. A relay that does not register the
+`webcam` source refuses that connection; the Gesture module shows the refusal and emits nothing.
 The token is sent only in the first WebSocket frame; it is never placed in a URL, rendered in the
 UI, or included in console logging. Without the full bootstrap, both sources remain visibly
 disconnected and network controls are unavailable.
@@ -65,3 +67,24 @@ honest empty state.
 
 Fixture scenarios are data only: `/?fixture=control`, `pending4`, `six6`, or `down` select a
 `FixtureRelayClient` scenario for both the console and keyboard sources.
+
+## Gesture and Speech modules
+
+Gesture (`src/gesture/`, panel in `src/modules/gesture/`) is the webcam producer: tracking is off
+until the operator enables it, then the browser asks for camera permission and the MediaPipe
+GestureRecognizer runtime and model load from the MediaPipe CDN. Open palm drafts `capture_room`,
+closed fist drafts `hold`, thumb up confirms and thumb down cancels a gesture-drafted preview; a
+draft carries source `webcam` and is never sent until it is confirmed in the dock. Low confidence,
+an interrupted dwell, a repeated pose, a denied permission, a dropped webcam, a model that fails to
+load, and a refused webcam relay source are each shown as states that emit nothing. `estop`, `arm`,
+`takeoff`, and free-flight motion are never gesture-emittable (`src/gesture/policy.ts`). Download
+session (JSONL) saves the recognizer frames, policy transitions, status changes, and intent events.
+
+Speech (`src/voice/`, `src/speech/`, panel in `src/modules/speech/`) is push-to-talk through the
+relay transcription endpoint: hold the button to record, release to upload; recording stops one
+second before the relay's thirty-second cap. The transcript, or typed text, compiles locally to one
+canonical intent (`capture_room`, `hold`, or `select`); every other recognised command is refused by
+name, ambiguity returns options, and the outcome card says the local fallback ran. Drafting sends
+nothing: the intent leaves on the console connection only after the dock confirms it. Without a
+relay bootstrap, and in fixture mode, the module reports language disabled and still compiles typed
+text.

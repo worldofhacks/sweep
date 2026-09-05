@@ -67,6 +67,7 @@ describe('transcript upload client', () => {
   test.each([
     [400, 'Voice request was rejected by the relay.'],
     [401, 'Voice relay authentication failed.'],
+    [404, 'The relay has no transcription endpoint. Nothing was emitted.'],
     [413, 'Voice recording exceeds the relay upload limit.'],
     [500, 'Voice relay request failed.'],
   ])('reports HTTP %i without retrying', async (status, message) => {

@@ -207,6 +207,33 @@ export function useControlConsole({
     ],
   )
 
+  /**
+   * Drafts a select that must be previewed and confirmed before it is sent; the
+   * speech compiler and the target strip use it so nothing leaves on a compile.
+   */
+  const prepareSelect = useCallback(
+    (ids: DroneId[], source: DraftSource): IntentV1 | null => {
+      const desired = [...new Set(ids)].sort((a, b) => a - b)
+      if (desired.length === 0) return null
+      const allReady = desired.every(
+        (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
+      )
+      if (!allReady) return null
+      const draft = createIntent(
+        {
+          name: 'select',
+          args: { ids: desired },
+          selection: state.selection,
+          source,
+          session: state.sessionId,
+        },
+        intentDependencies,
+      )
+      return stageForConfirmation(draft)
+    },
+    [intentDependencies, stageForConfirmation, state.aircraft, state.selection, state.sessionId],
+  )
+
   /** Drafts a hold that must be previewed and confirmed before it is sent. */
   const prepareHold = useCallback(
     (source: DraftSource): IntentV1 | null => {
@@ -380,6 +407,7 @@ export function useControlConsole({
     toggleAircraft,
     prepareCapture,
     prepareHold,
+    prepareSelect,
     confirmRequest,
     cancelRequest,
     issueHold,
@@ -431,8 +459,20 @@ function planPreview(intent: IntentV1, rosterVersion: number): PlanPreview {
       ],
     }
   }
+  if (intent.name === 'select' && 'ids' in intent.args) {
+    const ids = intent.args.ids.map(formatDroneId).join(', ')
+    return {
+      title: `${ids} · select`,
+      rosterVersion,
+      steps: [
+        'Submit one confirmed select request.',
+        `Selection membership becomes ${ids}; no motion is planned.`,
+        'The relay reports the authoritative selection in its next state frame.',
+      ],
+    }
+  }
   if (intent.name !== 'capture_room' || !('pattern' in intent.args)) {
-    throw new Error('Plan preview requires a capture_room or hold intent.')
+    throw new Error('Plan preview requires a capture_room, hold, or select intent.')
   }
   return {
     title: `${formatDroneId(intent.selection[0])} · ${intent.args.pattern}`,

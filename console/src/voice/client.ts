@@ -71,6 +71,8 @@ export class HttpTranscriptClient implements TranscriptClient {
 function responseFailure(status: number): string {
   if (status === 400) return 'Voice request was rejected by the relay.'
   if (status === 401) return 'Voice relay authentication failed.'
+  // This console can talk to a relay that has no transcription endpoint yet; say so rather than "failed".
+  if (status === 404 || status === 405) return 'The relay has no transcription endpoint. Nothing was emitted.'
   if (status === 413) return 'Voice recording exceeds the relay upload limit.'
   return 'Voice relay request failed.'
 }

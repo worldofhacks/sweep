@@ -162,6 +162,7 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
     }),
   )
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
   const controlRef = useRef(control)
   const roomIdRef = useRef(roomId)
   const enabledRef = useRef(false)
@@ -376,6 +377,7 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
     setEnabled(false)
     stopLoop()
     deps.camera.stop()
+    streamRef.current = null
     sourceRef.current?.close()
     sourceRef.current = null
     setRecognizer('unloaded')
@@ -398,6 +400,7 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
       recordStatus(deps.camera.state.detail)
       return
     }
+    streamRef.current = stream
     const video = videoRef.current
     if (video) await deps.attachStream(video, stream)
     if (!enabledRef.current) return
@@ -433,11 +436,32 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
       stopLoop()
       const stream = await deps.camera.start(deviceId)
       if (!enabledRef.current) return
+      streamRef.current = stream
       const video = videoRef.current
       if (video) await deps.attachStream(video, stream)
       if (stream && recognizerRef.current === 'ready') startLoop()
     },
     [deps, startLoop, stopLoop],
+  )
+
+  /**
+   * Callback ref for the preview element. The working pane remounts its
+   * children on every sub-tab switch, so a returning video element gets the
+   * live stream re-attached and the frame loop restarted without touching
+   * the camera or the recognizer.
+   */
+  const bindVideo = useCallback(
+    (element: HTMLVideoElement | null) => {
+      const previous = videoRef.current
+      videoRef.current = element
+      if (!element || element === previous || !enabledRef.current) return
+      const stream = streamRef.current
+      if (stream && element.srcObject !== stream) void deps.attachStream(element, stream)
+      if (stream && recognizerRef.current === 'ready' && deps.camera.state.status === 'streaming') {
+        startLoop()
+      }
+    },
+    [deps, startLoop],
   )
 
   useEffect(() => {
@@ -477,6 +501,7 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
     view,
     pairs: deps.policy.pairs,
     videoRef,
+    bindVideo,
     enable,
     disable,
     selectDevice,
