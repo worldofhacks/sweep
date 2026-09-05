@@ -2,6 +2,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
+import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
 
 const consoleRoot = resolve(import.meta.dirname, '..')
@@ -75,6 +76,7 @@ try {
 
   await page.getByRole('button', { name: /^Hold selected/ }).click()
   await waitForRequest(page, 'Hold', 'completed')
+  await delay(501)
   await page.getByRole('button', { name: /^Come home/ }).click()
   await waitForRequest(page, 'Come home', 'completed')
 
@@ -111,6 +113,7 @@ try {
 
   await page.getByRole('button', { name: 'Network E-stop' }).click()
   await waitForRequest(page, 'Estop', 'completed')
+  await delay(501)
   await page.getByText('Network stop active').waitFor()
   await page.getByRole('button', { name: /^Land all/ }).click()
   await page.getByRole('button', { name: 'Confirm and send' }).click()

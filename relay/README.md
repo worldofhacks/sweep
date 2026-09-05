@@ -97,7 +97,7 @@ An Intent v1 request is acknowledged as `accepted` only after the configured `in
 
 Coordinated dispatch creates a durable operation marker for every delivered group member before adapter I/O. The relay commits each member's outcome and includes sibling lifecycle evidence in the coordinator's response, so a sibling worker can retrieve its result without repeating adapter work. An interruption before those outcomes commit leaves replay fail-closed.
 
-Undelivered stop reservations preserve executable recovery actions and the conflict HOLD. Completed coordination retains timestamp history for the intent freshness window plus the conflict window, and longer while a related admitted request awaits delivery. A late older motion remains superseded by a completed stop; late members of a motion conflict remain refused. Newly issued motion outside the conflict window remains executable.
+Undelivered stop reservations preserve executable recovery actions and the conflict HOLD. Completed coordination retains timestamp history for the intent freshness window, allowed future-clock skew, and conflict window, and longer while a related admitted request awaits delivery. A late motion within the stop’s conflict window, or older than the stop, remains superseded; late members of a motion conflict remain refused. Newly issued motion outside the conflict window remains executable.
 
 ## Membership and state fan-out
 

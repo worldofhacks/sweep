@@ -553,42 +553,37 @@ function reduceMembershipEvent(
   state: ControlState,
   event: Extract<RelayServerEvent, { type: 'membership' }>,
 ): ControlState {
-  if (
-    event.roster_version < state.rosterVersion ||
+  const staleProjection = event.roster_version < state.rosterVersion ||
     (state.lastStateEvent !== null && event.roster_version <= state.lastStateEvent.rosterVersion)
-  ) return state
   const previous = state.aircraft[event.drone_id]
-  const drone = projectMembershipEvent(event, previous)
-  const aircraft = { ...state.aircraft, [event.drone_id]: drone }
+  const drone = projectMembershipEvent(
+    event, previous?.connection_epoch === event.connection_epoch ? previous : undefined,
+  )
   const isDeparture =
     event.action === 'graceful_leave_completed' || event.action === 'unexpected_loss'
-  const wasSelected = state.selection.includes(event.drone_id)
-  const selection =
-    isDeparture || event.membership !== 'ready'
+  let next = state
+  if (!staleProjection) {
+    const selection = isDeparture || event.membership !== 'ready'
       ? state.selection.filter((id) => id !== event.drone_id)
       : state.selection
-  let next: ControlState = {
-    ...state,
-    rosterVersion: event.roster_version,
-    aircraft,
-    selection,
-    selectedFeedId: state.selectedFeedId,
-  }
-
-  const staleRosterRequests = next.requests
-    .filter(
-      (request) =>
-        request.status === 'pending_confirmation' &&
-        request.plan?.rosterVersion !== event.roster_version,
+    next = {
+      ...state,
+      rosterVersion: event.roster_version,
+      aircraft: { ...state.aircraft, [event.drone_id]: drone },
+      selection,
+    }
+    const staleRosterRequests = next.requests
+      .filter((request) => request.status === 'pending_confirmation' &&
+        request.plan?.rosterVersion !== event.roster_version)
+      .map((request) => request.intent.intent_id)
+    next = invalidateRequests(
+      next, staleRosterRequests, event.t, 'stale_roster',
+      `Fleet roster changed to version ${event.roster_version}. Build and confirm a new preview.`,
     )
-    .map((request) => request.intent.intent_id)
-  next = invalidateRequests(
-    next,
-    staleRosterRequests,
-    event.t,
-    'stale_roster',
-    `Fleet roster changed to version ${event.roster_version}. Build and confirm a new preview.`,
-  )
+    if (state.selection.includes(event.drone_id) && !selection.includes(event.drone_id)) {
+      next = addStaleSelectionNotice(next, [event.drone_id], event.t)
+    }
+  }
 
   if (isDeparture) {
     const departure: DepartureRecord = {
@@ -605,17 +600,12 @@ function reduceMembershipEvent(
           : 'Aircraft connection was lost unexpectedly.',
     }
     next = { ...next, departed: [departure, ...next.departed] }
-    next = invalidateRequestsForDrone(next, event.drone_id, event.t, departure.reasonCode, departure.detail)
+    if (!staleProjection) {
+      next = invalidateRequestsForDrone(next, event.drone_id, event.t, departure.reasonCode, departure.detail)
+    }
   }
 
-  if (wasSelected && !selection.includes(event.drone_id)) {
-    next = addStaleSelectionNotice(next, [event.drone_id], event.t)
-  }
-  if (
-    event.action === 'join' &&
-    previous &&
-    event.connection_epoch > previous.connection_epoch
-  ) {
+  if (event.action === 'join' && event.connection_epoch > 1) {
     next = {
       ...next,
       notices: prependNotice(

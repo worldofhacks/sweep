@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import planner.relay_bridge as bridge_module
 from evals.test_m14_button_to_sim import CONSOLE_KEY, SESSION, Clock, Harness
 from relay.auth import Principal
 from relay.session import RelaySession
@@ -232,10 +233,97 @@ def test_failed_future_safety_reservation_does_not_block_new_recovery(
     assert _execute(session, hold)["status"] == "completed"
     _fail_delivery(session, reserved)
 
-    harness.clock.advance(200)
+    harness.clock.advance(501)
     recovery = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
     _admit(session, recovery)
     outcome = _execute(session, recovery)
 
     assert outcome["status"] == "completed", outcome
     assert [call.operation.value for call in harness.flight.calls] == ["hover", "goto"]
+
+
+@pytest.mark.parametrize("reserved_name", ["hold", "estop"])
+def test_delivered_recovery_does_not_release_motion_suppressed_by_reserved_safety(
+    airborne_session: tuple[Harness, RelaySession], reserved_name: str
+) -> None:
+    harness, session = airborne_session
+    hold = harness.intent("hold", selection=[1])
+    _admit(session, hold)
+    harness.clock.advance(400)
+    reserved = harness.intent(
+        reserved_name, selection=[1] if reserved_name == "hold" else [], source="keyboard"
+    )
+    _admit(session, reserved)
+    harness.clock.advance(400)
+    motion = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
+    _admit(session, motion)
+    for intent in (hold, motion):
+        session.mark_pending_intent_delivered(str(intent["intent_id"]))
+
+    held = _execute(session, hold)
+    suppressed = _execute(session, motion)
+    _fail_delivery(session, reserved)
+
+    assert held["status"] == "completed", held
+    assert suppressed["status"] == "invalidated", suppressed
+    assert suppressed["reason"] == "superseded"
+    assert [call.operation.value for call in harness.flight.calls] == ["hover"]
+    assert harness.flight.aircraft[1].pose.x == 0.0
+
+
+@pytest.mark.parametrize("offset_ms", [1, 500])
+@pytest.mark.parametrize("precreated", [False, True])
+def test_completed_hold_suppresses_the_full_conflict_window(
+    airborne_session: tuple[Harness, RelaySession], offset_ms: int, precreated: bool
+) -> None:
+    harness, session = airborne_session
+    hold = harness.intent("hold", selection=[1])
+    if precreated:
+        motion = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
+        motion["t"] = harness.clock.value + offset_ms
+    _admit(session, hold)
+    assert _execute(session, hold)["status"] == "completed"
+    harness.clock.advance(offset_ms)
+    if not precreated:
+        motion = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
+
+    _admit(session, motion)
+    outcome = _execute(session, motion)
+
+    assert outcome["status"] == "invalidated", outcome
+    assert outcome["reason"] == "superseded"
+    assert [call.operation.value for call in harness.flight.calls] == ["hover"]
+    assert harness.flight.aircraft[1].pose.x == 0.0
+
+
+def test_future_dated_motion_history_survives_pruning_before_late_related_admission(
+    airborne_session: tuple[Harness, RelaySession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness, session = airborne_session
+    real_monotonic = bridge_module.monotonic
+    elapsed = [0.0]
+    monkeypatch.setattr(bridge_module, "monotonic", lambda: real_monotonic() + elapsed[0])
+    original = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
+    original["t"] = harness.clock.value + session.limits.future_clock_skew_ms
+    related = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
+    related["t"] = original["t"] + 500
+    _admit(session, original)
+    assert _execute(session, original)["status"] == "completed"
+    original_x = harness.flight.aircraft[1].pose.x
+
+    elapsed[0] = 5.6
+    for increment in [500] * 11 + [100]:
+        harness.clock.advance(increment)
+        harness.factory.nodes[SESSION].periodic_events()
+    unrelated = harness.intent("select", selection=[1], args={"ids": [1]})
+    _admit(session, unrelated)
+    assert _execute(session, unrelated)["status"] == "completed"
+    harness.flight.calls.clear()
+
+    _admit(session, related)
+    outcome = _execute(session, related)
+
+    assert outcome["status"] == "refused", outcome
+    assert outcome["reason"] == "conflicting_motion"
+    assert [call.operation.value for call in harness.flight.calls] == ["hover"]
+    assert harness.flight.aircraft[1].pose.x == original_x

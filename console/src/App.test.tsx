@@ -159,32 +159,50 @@ describe('Control / Capture console', () => {
     expect(screen.queryByText(/simulator active/i)).not.toBeInTheDocument()
   })
 
-  test.each([7, 8])('retains an actionable preview after delayed membership roster %s', async (rosterVersion) => {
+  test('retains membership evidence and current preview when keyboard states arrive first', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} />)
     expect(await screen.findByText(/Development fixture active/i)).toBeInTheDocument()
+    const snapshot = {
+      v: 1 as const, t: clock(), type: 'state' as const, session, armed: true, estop: false,
+      formation: 'none', spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
+    }
+    const lossState = { ...snapshot, event_id: 'loss-state', roster_version: 8, state_sequence: 20,
+      selection: [], drones: fixtureAircraft(clock()).map((drone) => drone.drone_id === 1
+        ? { ...drone, membership: 'disconnected' as const, selectable: false } : drone) }
+    const joinState = { ...snapshot, event_id: 'join-state', roster_version: 9, state_sequence: 21,
+      selection: [], drones: fixtureAircraft(clock()).map((drone) => drone.drone_id === 1
+        ? { ...drone, connection_epoch: 4, membership: 'registered' as const, selectable: false } : drone) }
     act(() => {
-      clients.console.emitServer({
-        v: 1, t: clock(), type: 'state', event_id: 'current-authoritative-state', session,
-        roster_version: 8, state_sequence: 20, armed: true, estop: false, selection: [1],
-        formation: 'none', spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
-        drones: fixtureAircraft(clock()),
-      })
+      clients.keyboard.emitServer(lossState)
+      clients.keyboard.emitServer(joinState)
+      clients.keyboard.emitServer({ ...snapshot, event_id: 'ready-state', roster_version: 10,
+        state_sequence: 22, selection: [1], drones: fixtureAircraft(clock()).map((drone) =>
+          drone.drone_id === 1 ? { ...drone, connection_epoch: 4 } : drone) })
     })
     await user.click(screen.getByRole('button', { name: /Capture room/ }))
-    expect(screen.getByRole('heading', { name: 'Plan request preview' })).toBeInTheDocument()
     act(() => {
-      clients.keyboard.emitServer({
-        v: 1, t: clock(), type: 'membership', event_id: 'delayed-keyboard-join', session,
-        roster_version: rosterVersion, action: 'join', drone_id: 1, connection_epoch: 3,
-        membership: 'registered', readiness_reasons: ['readiness_not_declared'],
-        adapter_id: 'fixture-dji-01', capabilities: ['flight', 'camera'],
-        provenance: 'adapter_signature', reason: null,
+      clients.console.emitServer({
+        v: 1, t: clock(), type: 'membership', event_id: 'late-loss', session,
+        roster_version: 8, action: 'unexpected_loss', drone_id: 1, connection_epoch: 3,
+        membership: 'disconnected', readiness_reasons: ['disconnected'], adapter_id: 'fixture-dji-01',
+        capabilities: ['flight', 'camera'], provenance: 'relay_transport_attestation', reason: 'adapter_connection_lost',
       })
+      clients.console.emitServer(lossState)
+      const join = { v: 1 as const, t: clock(), type: 'membership' as const, event_id: 'late-join', session,
+        roster_version: 9, action: 'join' as const, drone_id: 1, connection_epoch: 4,
+        membership: 'registered' as const, readiness_reasons: ['readiness_not_declared'],
+        adapter_id: 'fixture-dji-01', capabilities: ['flight', 'camera'],
+        provenance: 'adapter_signature' as const, reason: null }
+      clients.console.emitServer(join)
+      clients.console.emitServer(joinState)
+      clients.console.emitServer(join)
     })
-    expect(screen.getAllByText('roster v8')).toHaveLength(2)
-    expect(screen.getByRole('button', { name: /D-01 ready epoch 3 Selected/i })).toBeInTheDocument()
+    expect(screen.getAllByText('roster v10')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: /D-01 ready epoch 4 Selected/i })).toBeInTheDocument()
+    expect(screen.getAllByText('D-01 rejoined')).toHaveLength(1)
+    expect(screen.getByText('1 records')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Confirm and send' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))

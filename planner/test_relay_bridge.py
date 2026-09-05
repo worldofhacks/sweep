@@ -238,7 +238,7 @@ def _bridge(
     bridge._completed_ordering = []
     bridge.session = SimpleNamespace(
         current_state=lambda: {"t": 100},
-        limits=SimpleNamespace(intent_max_age_ms=5_000),
+        limits=SimpleNamespace(intent_max_age_ms=5_000, future_clock_skew_ms=1_000),
     )
     executed_groups: list[tuple[str, ...]] = []
 

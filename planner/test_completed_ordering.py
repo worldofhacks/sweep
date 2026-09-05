@@ -23,7 +23,9 @@ def test_delayed_delivery_cannot_outlive_the_stop_that_retired_its_timestamp(
     bridge.controller = SimpleNamespace(
         arbiter=SimpleNamespace(config=SimpleNamespace(motion_conflict_window_ms=500))
     )
-    bridge.session = SimpleNamespace(limits=SimpleNamespace(intent_max_age_ms=5_000))
+    bridge.session = SimpleNamespace(
+        limits=SimpleNamespace(intent_max_age_ms=5_000, future_clock_skew_ms=1_000)
+    )
     bridge._coordination = Condition(Lock())
     bridge._admissions = {}
     bridge._completed_ordering = []
@@ -40,11 +42,11 @@ def test_delayed_delivery_cannot_outlive_the_stop_that_retired_its_timestamp(
         args={"dx": 0.5, "dy": 0.0},
     )
     bridge.admit_intent(motion)
-    now[0] = 6.0
+    now[0] = 8.0
     fresh = make_intent(
         IntentName.TRANSLATE,
         intent_id="fresh-motion",
-        t=7_000,
+        t=9_000,
         args={"dx": 0.5, "dy": 0.0},
     )
     bridge.admit_intent(fresh)

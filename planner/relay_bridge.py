@@ -334,7 +334,15 @@ class AutonomyRelayBridge:
 
     def _prune_completed_ordering(self) -> None:
         window_ms = self.controller.arbiter.config.motion_conflict_window_ms
-        cutoff = monotonic() - (self.session.limits.intent_max_age_ms + window_ms) / 1_000
+        cutoff = (
+            monotonic()
+            - (
+                self.session.limits.intent_max_age_ms
+                + self.session.limits.future_clock_skew_ms
+                + window_ms
+            )
+            / 1_000
+        )
         pending = tuple(
             item.intent
             for item in self._admissions.values()
@@ -345,7 +353,7 @@ class AutonomyRelayBridge:
             for record in self._completed_ordering
             if record.completed_at >= cutoff
             or any(
-                (record.safety_t is not None and intent.t <= record.safety_t)
+                (record.safety_t is not None and intent.t <= record.safety_t + window_ms)
                 or any(abs(intent.t - t) <= window_ms for t in record.motion_times)
                 for intent in pending
             )
@@ -366,7 +374,8 @@ class AutonomyRelayBridge:
             motion.intent_id
             for motion in motions
             if any(
-                record.safety_t is not None and motion.t <= record.safety_t for record in records
+                record.safety_t is not None and motion.t <= record.safety_t + window_ms
+                for record in records
             )
         }
         conflicting = tuple(
@@ -457,7 +466,30 @@ class AutonomyRelayBridge:
         )
         if not protected and not fallback.hold_required:
             return resolution
-        return fallback
+        protected_ids = {intent.intent_id for intent in protected}
+        accepted_ids = {intent.intent_id for intent in resolution.accepted} | protected_ids
+        reserved_ids = {
+            item.intent.intent_id
+            for item in admissions
+            if not item.delivered and item.intent.name in {IntentName.ESTOP, IntentName.HOLD}
+        }
+        refusals = {refusal.intent_id: refusal for refusal in resolution.refusals}
+        refusals.update((refusal.intent_id, refusal) for refusal in fallback.refusals)
+        invalidated = dict.fromkeys(
+            (*resolution.invalidated_intent_ids, *fallback.invalidated_intent_ids)
+        )
+        return ConflictResolution(
+            accepted=tuple(
+                intent for intent in fallback.accepted if intent.intent_id in accepted_ids
+            ),
+            refusals=tuple(refusals.values()),
+            invalidated_intent_ids=tuple(
+                intent_id
+                for intent_id in invalidated
+                if intent_id not in protected_ids | reserved_ids | refusals.keys()
+            ),
+            hold_required=resolution.hold_required or fallback.hold_required,
+        )
 
     @staticmethod
     def _retire_motion_preceding_delivered_hold(

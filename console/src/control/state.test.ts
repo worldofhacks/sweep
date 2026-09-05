@@ -148,6 +148,51 @@ describe('control reducer fleet lifecycle', () => {
     expect(rosterMoved.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_roster' })
   })
 
+  test('preserves loss and rejoin evidence in all 15 valid socket interleavings', () => {
+    const loss: RelayServerEvent = {
+      v: 1, t: t + 2, type: 'membership', event_id: 'loss', session,
+      roster_version: 2, action: 'unexpected_loss', drone_id: 1, connection_epoch: 1,
+      membership: 'disconnected', readiness_reasons: ['disconnected'], adapter_id: 'adapter-1',
+      capabilities: ['flight'], provenance: 'relay_transport_attestation', reason: 'adapter_connection_lost',
+    }
+    const join: RelayServerEvent = {
+      ...loss, t: t + 3, event_id: 'rejoin', roster_version: 3, action: 'join',
+      connection_epoch: 2, membership: 'registered', readiness_reasons: ['readiness_not_declared'],
+      provenance: 'adapter_signature', reason: null,
+    }
+    const lostState = { ...stateEvent('lost-state', 2, [drone({ membership: 'disconnected', selectable: false })], []), state_sequence: 2 }
+    const joinedState = { ...stateEvent('joined-state', 3, [drone({ connection_epoch: 2, membership: 'registered', selectable: false })], []), state_sequence: 3 }
+    const consoleEvents = [loss, lostState, join, joinedState]
+    const keyboardEvents = [lostState, joinedState]
+    let schedules = 0
+    for (let first = 0; first < 5; first++) {
+      for (let second = first + 1; second < 6; second++) {
+        let state = withPendingCapture()
+        let consoleIndex = 0
+        let keyboardIndex = 0
+        for (let step = 0; step < 6; step++) {
+          const keyboard = step === first || step === second
+          const event = keyboard ? keyboardEvents[keyboardIndex++] : consoleEvents[consoleIndex++]
+          const priorRoster = state.rosterVersion
+          state = controlReducer(state, { type: 'relay_event', source: keyboard ? 'keyboard' : 'console', event })
+          expect(state.rosterVersion).toBeGreaterThanOrEqual(priorRoster)
+        }
+        expect(state.rosterVersion).toBe(3)
+        expect(state.aircraft[1].connection_epoch).toBe(2)
+        expect(state.selection).toEqual([])
+        expect(state.departed).toHaveLength(1)
+        expect(state.departed[0].drone.connection_epoch).toBe(1)
+        expect(state.notices.filter((notice) => notice.title === 'D-01 rejoined')).toHaveLength(1)
+        expect(state.requests[0].status).toBe('invalidated')
+        for (const event of [loss, join]) state = controlReducer(state, { type: 'relay_event', event })
+        expect(state.departed).toHaveLength(1)
+        expect(state.notices.filter((notice) => notice.title === 'D-01 rejoined')).toHaveLength(1)
+        schedules++
+      }
+    }
+    expect(schedules).toBe(15)
+  })
+
   test.each([0, 1, 2])('applies membership only beyond authoritative roster (incoming %s)', (rosterVersion) => {
     const current = withPendingCapture()
     const next = controlReducer(current, {
