@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- USB accessory filter for android.hardware.usb.action.USB_ACCESSORY_ATTACHED.
+
+     The RC-N1 presents itself over USB as an Android Open Accessory whose manufacturer
+     string is "DJI". The model string is not pinned because DJI controllers report a
+     firmware-dependent model name that differs between RC-N1 revisions, and the aircraft
+     identity is asserted separately through KeyProductType once the SDK connects. Matching
+     on manufacturer alone is what the MSDK sample app does and is enough to launch the app
+     and receive accessory access when the controller is plugged in. -->
+<resources>
+    <usb-accessory manufacturer="DJI" />
+</resources>
