@@ -338,6 +338,8 @@ class NavigationPlan:
     arrival_slots: tuple[ArrivalSlot, ...]
     routes: tuple[DroneRoute, ...]
     execution_order: tuple[int, ...]
+    obstacle_roster: tuple[DronePose, ...] = ()
+    approval_digest: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,7 +395,7 @@ class NavigationPlanner:
             return NavigationRefusal(
                 "arrival_conflict", "arrival slot cannot contain swept aircraft volume"
             )
-        assigned = tuple(zip(drones, slots, strict=True))
+        assigned = tuple(zip(drones, slots[: len(drones)], strict=True))
         reserved = [(drone.pose, request.motion.swept_radius_m) for drone in request.all_positions]
         routes: list[DroneRoute] = []
         for drone, slot in assigned:
@@ -442,6 +444,8 @@ class NavigationPlanner:
             tuple(slot for _, slot in assigned),
             tuple(routes),
             tuple(drone.drone_id for drone in drones),
+            tuple(sorted(request.all_positions, key=lambda drone: drone.drone_id)),
+            _approval_digest(artifact),
         )
 
     def revalidate(
@@ -459,6 +463,10 @@ class NavigationPlanner:
             raise ValueError("position_tolerance_m exceeds frozen tracking_allowance_m")
         if artifact.map_pin != plan.map_pin or artifact.geometry_pin != plan.geometry_pin:
             return NavigationRefusal("artifact_changed", "map or geometry pin changed")
+        if not plan.obstacle_roster or plan.approval_digest != _approval_digest(artifact):
+            return NavigationRefusal(
+                "artifact_changed", "approval, slots, connectors, or obstacle roster changed"
+            )
         if not 0 <= route_index < len(plan.routes):
             raise ValueError("route_index is outside plan")
         route = plan.routes[route_index]
@@ -467,6 +475,12 @@ class NavigationPlanner:
         current = {drone.drone_id: drone for drone in actual_positions}
         if len(current) != len(actual_positions):
             raise ValueError("actual_positions contains duplicate drone ids")
+        frozen = {drone.drone_id: drone.connection_epoch for drone in plan.obstacle_roster}
+        current_epochs = {drone.drone_id: drone.connection_epoch for drone in actual_positions}
+        if any(current_epochs.get(drone_id) != epoch for drone_id, epoch in frozen.items()):
+            return NavigationRefusal(
+                "connection_changed", "current obstacle roster or epoch changed"
+            )
         for selected in plan.selected:
             actual = current.get(selected.drone_id)
             if actual is None or actual.connection_epoch != selected.connection_epoch:
@@ -685,7 +699,7 @@ class NavigationPlanner:
                 if not level.free(candidate):
                     continue
                 pose = level.pose_for(candidate)
-                if self._blocked_by_stationary(pose, reserved, radius):
+                if self._blocked_by_stationary(pose, reserved, radius, exempt):
                     continue
                 if self._segment_hits_reservation(
                     level.pose_for(current), pose, reserved, radius, exempt
@@ -760,17 +774,40 @@ def _simplify(
 
 
 def _line_is_free(start: Pose, end: Pose, level: GridLevel) -> bool:
-    steps = max(1, ceil(dist(start.xyz, end.xyz) / (level.cell_m / 2)))
-    return all(
-        level.free(
-            level.cell_for(
-                Pose(
-                    start.x_m + (end.x_m - start.x_m) * index / steps,
-                    start.y_m + (end.y_m - start.y_m) * index / steps,
-                    start.z_m + (end.z_m - start.z_m) * index / steps,
-                    start.floor_id,
-                )
+    return all(level.free(cell) for cell in _supercover(start, end, level))
+
+
+def _supercover(start: Pose, end: Pose, level: GridLevel) -> set[tuple[int, int]]:
+    """Every grid cell touched by a segment, including corner-adjacent cells."""
+    x0, y0 = level.cell_for(start)
+    x1, y1 = level.cell_for(end)
+    cells = {(x0, y0)}
+    dx, dy = end.x_m - start.x_m, end.y_m - start.y_m
+    steps = max(abs(x1 - x0), abs(y1 - y0), 1) * 4
+    for index in range(1, steps + 1):
+        t = index / steps
+        point = Pose(
+            start.x_m + dx * t,
+            start.y_m + dy * t,
+            start.z_m + (end.z_m - start.z_m) * t,
+            start.floor_id,
+        )
+        cell = level.cell_for(point)
+        cells.add(cell)
+        previous = level.cell_for(
+            Pose(
+                start.x_m + dx * (index - 1) / steps,
+                start.y_m + dy * (index - 1) / steps,
+                start.z_m,
+                start.floor_id,
             )
         )
-        for index in range(steps + 1)
-    )
+        if cell[0] != previous[0] and cell[1] != previous[1]:
+            cells.add((cell[0], previous[1]))
+            cells.add((previous[0], cell[1]))
+    return cells
+
+
+def _approval_digest(artifact: NavigationArtifact) -> str:
+    payload = repr((artifact.zones, artifact.connectors)).encode()
+    return sha256(payload).hexdigest()
