@@ -4,6 +4,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonBool
+import org.worldofhacks.sweep.bridge.core.json.JsonFloat
 import org.worldofhacks.sweep.bridge.core.json.JsonInt
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonParseException
@@ -82,6 +83,42 @@ data class CommandStats(
     )
 }
 
+/** The codec evidence as the last `stream_info` record of the run left it (Phase D). */
+data class StreamSummary(
+    val mimeType: String?,
+    val codec: String?,
+    val width: Long?,
+    val height: Long?,
+    val nominalFrameRateHz: Long?,
+    val measuredFrameRateHz: Double?,
+    val keyframeIntervalMs: Long?,
+    val keyframeIntervalFrames: Long?,
+    val profile: String?,
+    val level: String?,
+    val tier: String?,
+    val spsError: String?,
+    val phoneThermalState: String?,
+    /** How many `stream_info` records the run holds. */
+    val samples: Int,
+) {
+    fun toJson(): JsonObject = Json.json(
+        "mime_type" to mimeType,
+        "codec" to codec,
+        "width" to width,
+        "height" to height,
+        "nominal_frame_rate_hz" to nominalFrameRateHz,
+        "measured_frame_rate_hz" to measuredFrameRateHz,
+        "keyframe_interval_ms" to keyframeIntervalMs,
+        "keyframe_interval_frames" to keyframeIntervalFrames,
+        "profile" to profile,
+        "level" to level,
+        "tier" to tier,
+        "sps_error" to spsError,
+        "phone_thermal_state" to phoneThermalState,
+        "samples" to samples,
+    )
+}
+
 data class VideoStats(
     val frames: Int,
     val keyframes: Int,
@@ -89,6 +126,7 @@ data class VideoStats(
     val bytes: Long,
     val rate: RateStats,
     val decode: LatencyStats?,
+    val stream: StreamSummary? = null,
 ) {
     fun toJson(): JsonObject = Json.json(
         "frames" to frames,
@@ -97,6 +135,7 @@ data class VideoStats(
         "bytes" to bytes,
         "rate" to rate.toJson(),
         "decode" to decode?.toJson(),
+        "stream" to stream?.toJson(),
     )
 }
 
@@ -140,6 +179,8 @@ object BenchAnalysis {
         var droppedFrames = 0
         var bytes = 0L
         val decode = ArrayList<Long>()
+        var streamInfo: JsonObject? = null
+        var streamSamples = 0
         val notes = ArrayList<String>()
         var records = 0
         var skipped = 0
@@ -183,6 +224,10 @@ object BenchAnalysis {
                         (record["decode_ms"] as? JsonInt)?.value?.let(decode::add)
                     }
                 }
+                RecordKind.STREAM_INFO -> {
+                    streamInfo = record
+                    streamSamples++
+                }
                 RecordKind.NOTE -> record.string("text")?.let(notes::add)
             }
         }
@@ -205,6 +250,7 @@ object BenchAnalysis {
                 bytes = bytes,
                 rate = RateStats.of(frames),
                 decode = LatencyStats.of(decode),
+                stream = streamInfo?.let { streamSummary(it, streamSamples) },
             ),
             notes = notes,
             records = records,
@@ -214,7 +260,32 @@ object BenchAnalysis {
         )
     }
 
+    private fun streamSummary(record: JsonObject, samples: Int): StreamSummary = StreamSummary(
+        mimeType = record.string("mime_type"),
+        codec = record.string("codec"),
+        width = record.int("width"),
+        height = record.int("height"),
+        nominalFrameRateHz = record.int("nominal_frame_rate_hz"),
+        measuredFrameRateHz = record.number("measured_frame_rate_hz"),
+        keyframeIntervalMs = record.int("keyframe_interval_ms"),
+        keyframeIntervalFrames = record.int("keyframe_interval_frames"),
+        profile = record.string("profile"),
+        level = record.string("level"),
+        tier = record.string("tier"),
+        spsError = record.string("sps_error"),
+        phoneThermalState = record.string("phone_thermal_state"),
+        samples = samples,
+    )
+
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonString)?.value
+
+    private fun JsonObject.int(key: String): Long? = (this[key] as? JsonInt)?.value
+
+    private fun JsonObject.number(key: String): Double? = when (val value = this[key]) {
+        is JsonFloat -> value.value
+        is JsonInt -> value.value.toDouble()
+        else -> null
+    }
 }
 
 /** Renders a [BenchReport] as canonical JSON or as the plain text that goes into the M1.9 evidence. */
@@ -249,6 +320,20 @@ object ReportWriter {
         appendLine("  bytes: ${report.video.bytes}")
         appendLine("  rate_hz: ${rate(report.video.rate)}")
         appendLine("  decode: ${latency(report.video.decode)}")
+        report.video.stream?.let { stream ->
+            appendLine("  stream_mime: ${stream.mimeType ?: "-"}" + (stream.codec?.let { " ($it)" } ?: ""))
+            appendLine("  stream_size: ${stream.width ?: "-"}x${stream.height ?: "-"}")
+            appendLine("  stream_nominal_hz: ${stream.nominalFrameRateHz ?: "-"}")
+            appendLine("  stream_measured_hz: ${stream.measuredFrameRateHz?.let { format(it) } ?: "-"}")
+            appendLine(
+                "  stream_keyframe_interval: ${stream.keyframeIntervalMs?.let { "$it ms" } ?: "-"} / " +
+                    "${stream.keyframeIntervalFrames?.let { "$it frames" } ?: "-"}",
+            )
+            appendLine("  stream_profile: ${stream.profile ?: "-"} level ${stream.level ?: "-"}" + (stream.tier?.let { " tier $it" } ?: ""))
+            stream.spsError?.let { appendLine("  stream_sps_error: $it") }
+            appendLine("  stream_phone_thermal: ${stream.phoneThermalState ?: "-"}")
+            appendLine("  stream_samples: ${stream.samples}")
+        }
         if (report.notes.isNotEmpty()) {
             appendLine()
             appendLine("notes")
