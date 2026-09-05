@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "units": "meters",
+  "bundle_content_sha256": "286612fa8396e0b9a3f8ecacb50a0377c3b93c4e0b90e7531b80dec0798b3e69",
+  "evidence_kind": "synthetic",
+  "floor_id": "level_1",
+  "floor_elevation_m": 0,
+  "flight_box_xy": [
+    -2,
+    -2,
+    4,
+    3
+  ],
+  "wall_boundary": [
+    [
+      -2,
+      -2
+    ],
+    [
+      4,
+      -2
+    ],
+    [
+      4,
+      3
+    ],
+    [
+      -2,
+      3
+    ],
+    [
+      -2,
+      -2
+    ]
+  ],
+  "wall_source": "scan.ply",
+  "cloud_sources": [
+    "scan.ply"
+  ],
+  "free_space": [
+    {
+      "polygon": [
+        [
+          -2,
+          -2
+        ],
+        [
+          4,
+          -2
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          -2,
+          3
+        ],
+        [
+          -2,
+          -2
+        ]
+      ],
+      "z_min": 0,
+      "z_max": 3.2,
+      "source": "scan.ply",
+      "observed": true,
+      "owner_approved": false
+    }
+  ],
+  "no_fly": [
+    {
+      "polygon": [
+        [
+          2.5,
+          -1.5
+        ],
+        [
+          3,
+          -1.5
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          2.5,
+          -1
+        ],
+        [
+          2.5,
+          -1.5
+        ]
+      ],
+      "z_min": 0,
+      "z_max": 3
+    }
+  ],
+  "route": {
+    "centerline": [
+      [
+        0,
+        0
+      ],
+      [
+        2,
+        0
+      ]
+    ],
+    "half_width_m": 0.2,
+    "z_min": 1.6,
+    "z_max": 2.0
+  },
+  "formations": [
+    {
+      "id": "kitchen",
+      "polygon": [
+        [
+          0.1,
+          -0.6
+        ],
+        [
+          1.7,
+          -0.6
+        ],
+        [
+          1.7,
+          1
+        ],
+        [
+          0.1,
+          1
+        ],
+        [
+          0.1,
+          -0.6
+        ]
+      ],
+      "z_min": 1.4,
+      "z_max": 2.2,
+      "separation_m": 0.8,
+      "stopping_m": 0.1,
+      "p95_error_m": 0.05,
+      "drone_radius_m": 0.15
+    },
+    {
+      "id": "atrium",
+      "polygon": [
+        [
+          1.5,
+          1.2
+        ],
+        [
+          3,
+          1.2
+        ],
+        [
+          3,
+          2.5
+        ],
+        [
+          1.5,
+          2.5
+        ],
+        [
+          1.5,
+          1.2
+        ]
+      ],
+      "z_min": 1.4,
+      "z_max": 2.2,
+      "separation_m": 0.8,
+      "stopping_m": 0.1,
+      "p95_error_m": 0.05,
+      "drone_radius_m": 0.15
+    }
+  ]
+}

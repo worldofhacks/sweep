@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "units": "meters",
+  "geofence": {
+    "polygon": [
+      [
+        -2,
+        -2
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        -2,
+        3
+      ],
+      [
+        -2,
+        -2
+      ]
+    ],
+    "z_min": 0,
+    "z_max": 3
+  },
+  "zones": [
+    {
+      "id": "lobby",
+      "floor_id": "level_1",
+      "polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "z_min": 0.8,
+      "z_max": 2.4,
+      "owner_approved": false
+    },
+    {
+      "id": "kitchen",
+      "floor_id": "level_1",
+      "polygon": [
+        [
+          0.1,
+          -0.6
+        ],
+        [
+          1.7,
+          -0.6
+        ],
+        [
+          1.7,
+          1
+        ],
+        [
+          0.1,
+          1
+        ],
+        [
+          0.1,
+          -0.6
+        ]
+      ],
+      "z_min": 1.4,
+      "z_max": 2.2,
+      "owner_approved": false
+    },
+    {
+      "id": "atrium",
+      "floor_id": "level_1",
+      "polygon": [
+        [
+          1.5,
+          1.2
+        ],
+        [
+          3,
+          1.2
+        ],
+        [
+          3,
+          2.5
+        ],
+        [
+          1.5,
+          2.5
+        ],
+        [
+          1.5,
+          1.2
+        ]
+      ],
+      "z_min": 1.4,
+      "z_max": 2.2,
+      "owner_approved": false
+    },
+    {
+      "id": "launch",
+      "floor_id": "level_1",
+      "polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "z_min": 0.8,
+      "z_max": 2.4,
+      "owner_approved": false
+    },
+    {
+      "id": "corridor",
+      "floor_id": "level_1",
+      "polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "z_min": 0.8,
+      "z_max": 2.4,
+      "owner_approved": false
+    }
+  ],
+  "room_graph": {
+    "nodes": [
+      {
+        "id": "113",
+        "floor_id": "level_1",
+        "region_id": "113",
+        "autonomous": true
+      },
+      {
+        "id": "mezzanine",
+        "floor_id": "mezzanine",
+        "region_id": "mezzanine",
+        "autonomous": false
+      },
+      {
+        "id": "north_hallway",
+        "floor_id": "level_1",
+        "region_id": "north_hallway",
+        "autonomous": false
+      }
+    ],
+    "edges": [
+      {
+        "from": "113",
+        "to": "mezzanine",
+        "side": "west",
+        "autonomous": false
+      },
+      {
+        "from": "113",
+        "to": "north_hallway",
+        "side": "east",
+        "autonomous": false
+      }
+    ]
+  }
+}

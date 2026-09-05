@@ -76,6 +76,33 @@ def test_chained_motion_conflicts_form_one_neighborhood_from_every_seed() -> Non
     assert resolution.hold_required
 
 
+def test_m15_motion_intents_share_the_existing_conflict_gate() -> None:
+    snapshot = make_snapshot(2)
+    formation = make_intent(
+        IntentName.FORMATION_SET,
+        intent_id="formation",
+        t=100,
+        selection=snapshot.selection,
+        args={"name": "line"},
+    )
+    sweep = make_intent(
+        IntentName.SWEEP,
+        intent_id="sweep",
+        t=200,
+        selection=snapshot.selection,
+        confirm=True,
+    )
+
+    resolution = resolve_intent_group((formation, sweep), snapshot, conflict_window_ms=500)
+
+    assert resolution.accepted == ()
+    assert tuple(refusal.intent_id for refusal in resolution.refusals) == (
+        "formation",
+        "sweep",
+    )
+    assert resolution.hold_required
+
+
 def test_delivered_hold_survives_an_undelivered_estop_reservation() -> None:
     hold = _admission(IntentName.HOLD, "hold", t=100, delivered=True)
     estop = _admission(IntentName.ESTOP, "estop", t=200, delivered=False)
