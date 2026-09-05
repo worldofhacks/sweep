@@ -96,6 +96,9 @@ for the configured timeout raises `AdapterTimeout`. A nonterminal `accepted` or
 `executing` acknowledgement followed by silence is returned as is so the dispatcher stops
 dependent work and resumes on the later terminal fact. A `failed` acknowledgement keeps
 the node's reason in `detail` (for example `out_of_order_command`) and is never resent.
+`estop()` sends to every aircraft before waiting on any acknowledgement; a node that
+stays silent is reported as a failed `adapter_timeout` acknowledgement rather than
+aborting the fleet stop.
 Camera capabilities, captures, and retrievals require the node's `capabilities` or
 `media_file` frame to have arrived before the terminal acknowledgement; otherwise the
 adapter fails closed. `telemetry()` yields nothing because node telemetry reaches the
