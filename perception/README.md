@@ -8,5 +8,6 @@ Samples frames at 5 to 10 fps per stream from MediaMTX, runs a small detector (Y
 
 PRD: sections 4.8, 5.7.
 
-The bounded COCO detector and its event payloads are documented in
-[OBJECT_DETECTION.md](OBJECT_DETECTION.md).
+The bounded COCO detector library and its event payloads are documented in
+[OBJECT_DETECTION.md](OBJECT_DETECTION.md). Relay logging, attention promotion, confirmation,
+pose projection, and real-aircraft camera integration are not wired by that library slice.
