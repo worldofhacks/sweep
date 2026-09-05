@@ -113,8 +113,8 @@ def mapping() -> ClockMapping:
     return ClockMapping("camera-clock", "relay-monotonic", 0.0, 100_000, 1_000.0, 5, True)
 
 
-def payload() -> dict[str, object]:
-    return to_wire_payload(fresh_snapshot(), mapping(), "authenticated-adapter-signature")
+def payload(event_id: str = "localization-event") -> dict[str, object]:
+    return to_wire_payload(fresh_snapshot(), mapping(), "authenticated-adapter-signature", event_id)
 
 
 def store() -> ControlLocalizationStore:
@@ -130,6 +130,7 @@ def store() -> ControlLocalizationStore:
                 "camera-clock",
                 "relay-monotonic",
                 ("tag-camera", "msdk-velocity", "tof-height"),
+                mapping(),
             )
         },
         max_clock_error_ms=5,
@@ -139,18 +140,22 @@ def store() -> ControlLocalizationStore:
 
 def test_fuser_wire_store_replaces_generic_telemetry_pose_with_capture_timestamp():
     localization = fresh_snapshot()
-    wire_payload = to_wire_payload(localization, mapping(), "authenticated-adapter-signature")
+    wire_payload = to_wire_payload(
+        localization, mapping(), "authenticated-adapter-signature", "localization-event"
+    )
     decoded = ControlLocalizationWire.from_mapping(wire_payload)
     assert decoded.last_fix_capture_time_s == 0.9
     evidence = store()
-    evidence.ingest(wire_payload, 1, 1, 101_000)
+    assert evidence.ingest(wire_payload, 1, 1, 101_000).accepted
 
     applied = evidence.apply(make_snapshot(1, now_ms=101_000))
     aircraft = applied.aircraft[1]
     assert aircraft.pose.x == localization.position_map_enu_m[0]
     assert aircraft.pose.y == localization.position_map_enu_m[1]
     assert aircraft.position_quality == 1.0
-    assert aircraft.position_last_seen_ms == 100_900
+    assert aircraft.position_last_seen_ms == 100_895
+    assert aircraft.control_provenance is not None
+    assert aircraft.control_provenance.to_dict()["map_id"] == "map-sha"
 
 
 def test_stale_localization_replaces_quality_and_existing_safety_refuses_translation():
@@ -160,7 +165,7 @@ def test_stale_localization_replaces_quality_and_existing_safety_refuses_transla
     base = replace(base, aircraft={1: replace(base.aircraft[1], link_last_seen_ms=101_600)})
     stale = evidence.apply(base)
     assert stale.aircraft[1].position_quality == 0.0
-    assert stale.aircraft[1].position_last_seen_ms == 100_900
+    assert stale.aircraft[1].position_last_seen_ms == 100_895
 
     refusal = SafetyArbiter(safety_config()).check_intent(
         make_intent(IntentName.TRANSLATE, selection=(1,)), stale
@@ -210,3 +215,32 @@ def test_clock_uncertainty_and_capture_regression_are_loss_states():
     older["fix_age_s"] = 0.2
     evidence.ingest(older, 1, 1, 101_000)
     assert evidence.apply(make_snapshot(1, now_ms=101_000)).aircraft[1].position_quality == 0.0
+
+
+def test_reconnect_clock_mapping_covariance_and_duplicate_replay_are_rejected():
+    evidence = store()
+    accepted = evidence.ingest(payload(), 1, 1, 101_000)
+    assert accepted.accepted
+    reconnect = replace(
+        make_snapshot(1, now_ms=101_000),
+        aircraft={1: replace(make_snapshot(1, now_ms=101_000).aircraft[1], connection_epoch=2)},
+    )
+    assert evidence.apply(reconnect).aircraft[1].position_quality == 0.0
+
+    evidence = store()
+    altered_mapping = payload()
+    altered_mapping["clock_mapping"] = {
+        **altered_mapping["clock_mapping"],
+        "relay_reference_ms": 99_999,
+    }
+    assert not evidence.ingest(altered_mapping, 1, 1, 101_000).accepted
+
+    malformed_covariance = payload()
+    malformed_covariance["covariance_map_enu_m2"] = [[0.01, 0.0, 0.0], "bad", [0.0, 0.0, 0.01]]
+    assert not evidence.ingest(malformed_covariance, 1, 1, 101_000).accepted
+
+    evidence = store()
+    assert evidence.ingest(payload(), 1, 1, 101_000).accepted
+    duplicate = evidence.ingest(payload(), 1, 1, 101_000)
+    assert not duplicate.accepted
+    assert duplicate.reason == "duplicate_event"
