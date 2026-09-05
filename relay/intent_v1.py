@@ -68,7 +68,11 @@ class RejectedIntent:
 
 type ValidationResult = AcceptedIntent | RejectedIntent
 
-REGISTERED_SOURCES = frozenset({"console", "keyboard"})
+# Operator sources that may authenticate without an aircraft binding and emit
+# Intent v1. Console buttons, the keyboard network stop, and the webcam gesture
+# producer are each bound to their own connection; an intent never moves
+# between them. Adding a source changes this constant and its conformance tests.
+REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
 M20_SUPPORTED_NAMES = frozenset(
     {
         IntentName.ARM,
