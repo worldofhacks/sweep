@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -153,7 +154,13 @@ def _autonomy_outcome(socket: WebSocketTestSession, intent_id: str) -> dict[str,
 def test_env_example_autonomy_values_are_the_ci_fixtures() -> None:
     config = AutonomyConfig.from_env(_env_example())
 
-    assert config.planning == planning_config()
+    assert config.planning == replace(
+        planning_config(),
+        altitude_step_m=None,
+        altitude_floor_z_m=None,
+        altitude_configuration_id=None,
+        altitude_completion_tolerance_m=None,
+    )
     assert config.safety == safety_config()
     assert config.sim_camera == camera_config()
 
@@ -176,9 +183,19 @@ def test_missing_sim_camera_is_allowed_only_off_the_sim_backend(tmp_path: Path) 
 def test_autonomy_composition_threads_one_ungrounded_profile(
     tmp_path: Path, clock: MutableClock, event_ids: EventIds
 ) -> None:
+    config = replace(
+        _config(),
+        planning=replace(
+            planning_config(),
+            altitude_step_m=None,
+            altitude_floor_z_m=None,
+            altitude_configuration_id=None,
+            altitude_completion_tolerance_m=None,
+        ),
+    )
     app, composition = create_autonomy_app(
         _settings(tmp_path),
-        _config(),
+        config,
         clock=clock,
         event_ids=event_ids,
     )
