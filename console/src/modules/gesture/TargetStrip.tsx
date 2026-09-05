@@ -1,7 +1,8 @@
 import { formatDroneId, type ControlState, type RequestRecord } from '../../control/state'
-import type { ConsoleIntentName } from '../../relay/contract'
+import { isSupportedAtM20, selectionRule } from '../../relay/contract'
 import { isReady, sortedAircraft } from '../../shell/derive'
 import { formatPercent, humanizeCode } from '../../shell/format'
+import { rosterIds } from '../control/controls'
 import type { ModuleProps } from '../types'
 
 type Controller = ModuleProps['controller']
@@ -11,31 +12,44 @@ interface QuickCommandSpec {
   label: string
   /** The dock must confirm before anything is sent. */
   confirm: boolean
-  /** Design copy appended to the note; lower-case, ends with a full stop. */
+  /** Design copy appended to the note; one full sentence. */
   detail?: string
-  /** Drafts the preview; absent for names the control hook cannot build. */
-  draft?: (controller: Controller) => void
+  /** What a press does through the control hook: draft a preview, or send at once. */
+  run: (controller: Controller) => void
 }
 
-/** The design's quick commands, in its order. */
+/**
+ * The design's quick commands, in its order. Hold drafts a forced preview;
+ * takeoff and land_all are confirmation-gated by the contract, so issueIntent
+ * parks them in the dock; come_home is not, so issueIntent sends it at once.
+ */
 const QUICK_COMMANDS: readonly QuickCommandSpec[] = [
-  { name: 'takeoff', label: 'Takeoff', confirm: true },
-  { name: 'hold', label: 'Hold', confirm: true, draft: (controller) => controller.prepareHold('console') },
-  { name: 'come_home', label: 'Come home', confirm: false },
-  { name: 'land_all', label: 'Land all', confirm: true, detail: 'it targets every aircraft in the roster.' },
+  {
+    name: 'takeoff',
+    label: 'Takeoff',
+    confirm: true,
+    run: (controller) => controller.issueIntent({ name: 'takeoff', args: {} }),
+  },
+  { name: 'hold', label: 'Hold', confirm: true, run: (controller) => controller.prepareHold('console') },
+  {
+    name: 'come_home',
+    label: 'Come home',
+    confirm: false,
+    run: (controller) => controller.issueIntent({ name: 'come_home', args: {} }),
+  },
+  {
+    name: 'land_all',
+    label: 'Land all',
+    confirm: true,
+    detail: 'It targets every aircraft in the roster.',
+    run: (controller) =>
+      controller.issueIntent({ name: 'land_all', args: {}, targets: rosterIds(controller.state) }),
+  },
 ]
-
-/** The names the relay accepts from this console; everything else is listed as unsupported. */
-const CONSOLE_INTENT_NAMES: ReadonlySet<string> = new Set<ConsoleIntentName>([
-  'capture_room',
-  'estop',
-  'hold',
-  'select',
-])
 
 interface QuickCommandView {
   badge: 'confirm' | 'unsupported' | null
-  /** Why the button is disabled; null when a press drafts a preview. */
+  /** Why the button is disabled; null when a press drafts a preview or sends. */
   reason: string | null
   /** The title: the reason, or what a press does. */
   note: string
@@ -44,22 +58,24 @@ interface QuickCommandView {
 /**
  * Mirrors the design's control gating order: unsupported name, console
  * connection, network stop, pending preview, empty selection, readiness.
+ * land_all addresses the roster, so it needs a roster rather than a selection.
  */
 function quickCommandView(
   spec: QuickCommandSpec,
   state: ControlState,
   pending: RequestRecord | null,
 ): QuickCommandView {
-  if (!CONSOLE_INTENT_NAMES.has(spec.name) || !spec.draft) {
+  if (!isSupportedAtM20(spec.name)) {
     const sentences = [
-      `The relay does not accept ${spec.name} from this console at M2.0; it is listed until the relay accepts it.`,
+      `The relay refuses ${spec.name} as unsupported at M2.0; it is listed until the relay accepts it.`,
     ]
-    if (spec.confirm) {
-      sentences.push(`Confirmation would be required before send${spec.detail ? `; ${spec.detail}` : '.'}`)
-    }
+    if (spec.confirm) sentences.push('Confirmation would be required before send.')
+    if (spec.detail) sentences.push(spec.detail)
     return { badge: 'unsupported', reason: sentences.join(' '), note: sentences.join(' ') }
   }
   const badge = spec.confirm ? 'confirm' : null
+  const wholeRoster = selectionRule(spec.name) === 'all'
+  const targets = wholeRoster ? rosterIds(state) : state.selection
   let reason: string | null = null
   if (state.connection.status !== 'connected') {
     reason = `The console connection is ${state.connection.status}. Nothing can be sent.`
@@ -67,27 +83,29 @@ function quickCommandView(
     reason = 'The network stop is active. Motion intents are refused until the relay reports it clear.'
   } else if (pending) {
     reason = 'Confirm or cancel the pending preview first.'
-  } else if (state.selection.length === 0) {
-    reason = 'No aircraft selected.'
-  } else {
-    const notReady = state.selection.filter((id) => !isReady(state.aircraft[id]))
+  } else if (targets.length === 0) {
+    reason = wholeRoster ? 'No aircraft in the roster.' : 'No aircraft selected.'
+  } else if (!wholeRoster) {
+    const notReady = targets.filter((id) => !isReady(state.aircraft[id]))
     if (notReady.length > 0) {
       reason = `${notReady.map(formatDroneId).join(', ')} ${notReady.length > 1 ? 'are' : 'is'} not ready.`
     }
   }
-  const targets = state.selection.map(formatDroneId).join(', ')
-  const note =
-    reason ??
-    `Drafts a ${spec.name} preview for ${targets}; nothing is sent until the dock confirms it.`
+  const named = targets.map(formatDroneId).join(', ')
+  const action = spec.confirm
+    ? `Drafts a ${spec.name} preview for ${named}; nothing is sent until the dock confirms it.`
+    : `Sends ${spec.name} to ${named} at once; the relay's answer is recorded under Requests.`
+  const note = reason ?? (spec.detail ? `${action} ${spec.detail}` : action)
   return { badge, reason, note }
 }
 
 /**
  * The target strip the design shows above the Gesture and Speech panes: who is
  * selected, chips that toggle selection through the relay, the aircraft that
- * cannot be commanded, and the quick commands. "All ready" and Hold draft a
- * preview for the dock; the names the relay does not accept from this console
- * are listed as unsupported rather than sent.
+ * cannot be commanded, and the quick commands. "All ready", Hold, Takeoff and
+ * Land all draft a preview for the dock and Come home sends at once, all
+ * through the control hook; a name outside the relay's M2.0 set is listed as
+ * unsupported rather than sent.
  */
 export function TargetStrip({ controller }: { controller: Controller }) {
   const { state, pendingRequest, toggleAircraft, prepareSelect } = controller
@@ -178,7 +196,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
               aria-label={spec.label}
               disabled={view.reason !== null}
               title={view.note}
-              onClick={() => spec.draft?.(controller)}
+              onClick={() => spec.run(controller)}
             >
               <span>{spec.label}</span>
               {view.badge && <span className="tg-quick-badge">{view.badge}</span>}

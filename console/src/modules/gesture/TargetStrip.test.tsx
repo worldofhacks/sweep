@@ -58,35 +58,35 @@ const quick = () => within(screen.getByRole('group', { name: 'Quick commands' })
 const holdButton = () => quick().getByRole('button', { name: 'Hold' })
 
 describe('Target strip quick commands', () => {
-  test('lists the four quick commands in the design order; only hold is live on this contract', async () => {
+  test('lists the four quick commands in the design order, each wired through the control hook', async () => {
     mount()
     await screen.findByText(/Development fixture active/i)
     await act(async () => {})
 
     expect(quick().getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'Takeoffunsupported',
+      'Takeoffconfirm',
       'Holdconfirm',
-      'Come homeunsupported',
-      'Land allunsupported',
+      'Come home',
+      'Land allconfirm',
     ])
     const takeoff = quick().getByRole('button', { name: 'Takeoff' })
-    expect(takeoff).toBeDisabled()
-    expect(takeoff).toHaveClass('is-blocked')
+    expect(takeoff).toBeEnabled()
+    expect(takeoff).not.toHaveClass('is-blocked')
     expect(takeoff).toHaveAttribute(
       'title',
-      'The relay does not accept takeoff from this console at M2.0; it is listed until the relay accepts it. Confirmation would be required before send.',
+      'Drafts a takeoff preview for D-01; nothing is sent until the dock confirms it.',
     )
     const comeHome = quick().getByRole('button', { name: 'Come home' })
-    expect(comeHome).toBeDisabled()
+    expect(comeHome).toBeEnabled()
     expect(comeHome).toHaveAttribute(
       'title',
-      'The relay does not accept come_home from this console at M2.0; it is listed until the relay accepts it.',
+      "Sends come_home to D-01 at once; the relay's answer is recorded under Requests.",
     )
     const landAll = quick().getByRole('button', { name: 'Land all' })
-    expect(landAll).toBeDisabled()
+    expect(landAll).toBeEnabled()
     expect(landAll).toHaveAttribute(
       'title',
-      'The relay does not accept land_all from this console at M2.0; it is listed until the relay accepts it. Confirmation would be required before send; it targets every aircraft in the roster.',
+      'Drafts a land_all preview for D-01, D-02, D-03, D-04; nothing is sent until the dock confirms it. It targets every aircraft in the roster.',
     )
     expect(holdButton()).toBeEnabled()
     expect(holdButton()).not.toHaveClass('is-blocked')
@@ -94,6 +94,48 @@ describe('Target strip quick commands', () => {
       'title',
       'Drafts a hold preview for D-01; nothing is sent until the dock confirms it.',
     )
+  })
+
+  test('takeoff and land all park in the dock; come home sends at once', async () => {
+    const { clients } = mount()
+    const user = userEvent.setup()
+    await screen.findByText(/Development fixture active/i)
+    await act(async () => {})
+
+    await user.click(quick().getByRole('button', { name: 'Takeoff' }))
+    const takeoffDock = screen.getByRole('region', { name: 'Pending confirmation' })
+    expect(within(takeoffDock).getByText('Takeoff', { selector: '.sh-dock-title' })).toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(0)
+    await user.click(within(takeoffDock).getByRole('button', { name: 'Confirm and send' }))
+    expect(clients.console.sent).toHaveLength(1)
+    expect(clients.console.sent[0]).toMatchObject({
+      intent_id: 'strip-intent-1',
+      name: 'takeoff',
+      source: 'console',
+      selection: [1],
+      confirm: true,
+    })
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+
+    await user.click(quick().getByRole('button', { name: 'Come home' }))
+    expect(clients.console.sent).toHaveLength(2)
+    expect(clients.console.sent[1]).toMatchObject({
+      intent_id: 'strip-intent-2',
+      name: 'come_home',
+      source: 'console',
+      selection: [1],
+      confirm: false,
+    })
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+
+    await user.click(quick().getByRole('button', { name: 'Land all' }))
+    const landDock = screen.getByRole('region', { name: 'Pending confirmation' })
+    expect(within(landDock).getByText('Land all fleet', { selector: '.sh-dock-title' })).toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(2)
+    await user.click(within(landDock).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(2)
+    expect(clients.webcam.sent).toHaveLength(0)
   })
 
   test('hold drafts a preview through the dock and sends only on confirm', async () => {
