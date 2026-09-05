@@ -100,6 +100,7 @@ class FlightController(
     }
 
     var mapping: AxisMapping = config.mapping
+    var localization: LocalizationConfig? = config.localization
 
     /** Called on the loop thread whenever the observable status changes. */
     var onStatus: ((FlightStatus) -> Unit)? = null
@@ -351,9 +352,9 @@ class FlightController(
             fail(sink, FlightReason.NOT_AIRBORNE, "aircraft is ${facts.flightState}; goto needs a hovering aircraft")
             return
         }
-        val localization = config.localization
-        if (localization != null) {
-            val pose = freshPose(now, localization)
+        val configuredLocalization = localization
+        if (configuredLocalization != null) {
+            val pose = freshPose(now, configuredLocalization)
             if (pose == null || pose.status != org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.READY) {
                 fail(sink, FlightReason.LOCALIZATION_UNAVAILABLE, "localized navigation requires a fresh ready signed control pose")
                 return
@@ -641,7 +642,7 @@ class FlightController(
     }
 
     private fun advanceLocalizedGoto(current: Phase.LocalizedGoto, now: Long) {
-        val settings = config.localization ?: return
+        val settings = localization ?: return
         val pose = freshPose(now, settings)
         if (pose == null || pose.status == org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.HOLD) {
             val lostSince = current.lostSinceMs ?: now

@@ -27,7 +27,11 @@ data class NodeConfig(
         require(capabilities.isNotEmpty() && capabilities.toSet().size == capabilities.size) {
             "capabilities must be a non-empty list without duplicates"
         }
+        require("localized_navigation" !in capabilities) { "localized_navigation is derived from the pinned localization configuration" }
     }
+
+    val advertisedCapabilities: List<String>
+        get() = if (localization == null) capabilities else capabilities + "localized_navigation"
 
     val key: ByteArray
         get() = token.toByteArray(Charsets.UTF_8)

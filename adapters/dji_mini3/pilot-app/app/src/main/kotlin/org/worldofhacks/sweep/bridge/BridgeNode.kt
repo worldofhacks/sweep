@@ -124,6 +124,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
             logLine("relay network: $networkLabel")
             synchronized(lock) {
                 if (relayLink != null) return@launch
+                session.executor.setLocalization(setup.localization)
                 val config = NodeConfig(
                     relayUrl = setup.relayUrl,
                     session = setup.session,
@@ -131,6 +132,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     token = setup.token,
                     adapterId = "${BuildConfig.AIRCRAFT}-${setup.droneId}",
                     capabilities = AircraftVariant.capabilities,
+                    localization = setup.localization,
                 )
                 val link = RelayLink(
                     config = config,

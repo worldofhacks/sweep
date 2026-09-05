@@ -4,9 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.worldofhacks.sweep.bridge.core.flight.LocalizationConfig
 
 /** The four Setup values. The token is the per-node relay credential and HMAC key. */
-data class BridgeSetup(val relayUrl: String, val session: String, val droneId: Int, val token: String) {
+data class BridgeSetup(val relayUrl: String, val session: String, val droneId: Int, val token: String, val localization: LocalizationConfig? = null) {
     /** Never includes the token. */
     override fun toString(): String = "BridgeSetup(relayUrl=$relayUrl, session=$session, droneId=$droneId, token=<redacted>)"
 }
@@ -40,6 +41,7 @@ class BridgeSetupStore(context: Context) {
             session = prefs.getString(KEY_SESSION, DEFAULT_SESSION) ?: DEFAULT_SESSION,
             droneId = prefs.getInt(KEY_DRONE_ID, 1),
             token = token,
+            localization = localization(),
         )
     }
 
@@ -69,6 +71,26 @@ class BridgeSetupStore(context: Context) {
         prefs.edit().remove(KEY_TOKEN).apply()
     }
 
+    /** Enables localized navigation only when all map and calibration identities are explicitly pinned. */
+    fun saveLocalization(config: LocalizationConfig?) {
+        prefs.edit().apply {
+            if (config == null) {
+                remove(KEY_MAP_ID); remove(KEY_GEOMETRY_ID); remove(KEY_CAMERA_CALIBRATION_ID); remove(KEY_BODY_EXTRINSICS_ID)
+            } else {
+                putString(KEY_MAP_ID, config.mapId); putString(KEY_GEOMETRY_ID, config.geometryId)
+                putString(KEY_CAMERA_CALIBRATION_ID, config.cameraCalibrationId); putString(KEY_BODY_EXTRINSICS_ID, config.bodyExtrinsicsId)
+            }
+        }.apply()
+    }
+
+    private fun localization(): LocalizationConfig? {
+        val map = prefs.getString(KEY_MAP_ID, null) ?: return null
+        val geometry = prefs.getString(KEY_GEOMETRY_ID, null) ?: return null
+        val camera = prefs.getString(KEY_CAMERA_CALIBRATION_ID, null) ?: return null
+        val body = prefs.getString(KEY_BODY_EXTRINSICS_ID, null) ?: return null
+        return LocalizationConfig(map, geometry, camera, body)
+    }
+
     @Suppress("DEPRECATION")
     private fun open(): SharedPreferences {
         val masterKey = MasterKey.Builder(application)
@@ -91,5 +113,9 @@ class BridgeSetupStore(context: Context) {
         private const val KEY_SESSION = "session"
         private const val KEY_DRONE_ID = "drone_id"
         private const val KEY_TOKEN = "token"
+        private const val KEY_MAP_ID = "localization_map_id"
+        private const val KEY_GEOMETRY_ID = "localization_geometry_id"
+        private const val KEY_CAMERA_CALIBRATION_ID = "localization_camera_calibration_id"
+        private const val KEY_BODY_EXTRINSICS_ID = "localization_body_extrinsics_id"
     }
 }
