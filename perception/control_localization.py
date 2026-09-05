@@ -22,6 +22,18 @@ def _vector(value: object, name: str, size: int) -> tuple[float, ...]:
     return tuple(float(item) for item in array)
 
 
+def _identity(value: object, name: str, *, positive: bool = False) -> int:
+    if type(value) is not int or (positive and value <= 0) or (not positive and value < 0):
+        raise ValueError(f"{name} must be a valid integer identity")
+    return value
+
+
+def _verified(value: object, name: str) -> bool:
+    if value is not True:
+        raise ValueError(f"{name} must be true")
+    return True
+
+
 def _covariance(value: object) -> tuple[tuple[float, ...], ...]:
     array = np.asarray(value, dtype=float)
     if (
@@ -58,8 +70,15 @@ class BodyExtrinsics:
         ):
             raise ValueError("body extrinsics must be a measured rigid transform")
         capture = _finite(self.capture_time, "capture_time")
-        if self.gimbal_time != capture or self.attitude_time != capture:
+        gimbal = _finite(self.gimbal_time, "gimbal_time")
+        attitude = _finite(self.attitude_time, "attitude_time")
+        if gimbal != capture or attitude != capture:
             raise ValueError("gimbal and attitude transforms must be sampled at capture time")
+        normalized_matrix = tuple(tuple(float(item) for item in row) for row in matrix)
+        object.__setattr__(self, "matrix", normalized_matrix)
+        object.__setattr__(self, "capture_time", capture)
+        object.__setattr__(self, "gimbal_time", gimbal)
+        object.__setattr__(self, "attitude_time", attitude)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +100,8 @@ class ControlLocalizationConfig:
     max_velocity_age_s: float = 0.2
     max_height_age_s: float = 0.2
     land_after_fix_age_s: float = 2.0
+    max_tag_variance_m2: float = 0.0625
+    max_position_variance_m2: float = 0.0625
 
     def __post_init__(self) -> None:
         if (
@@ -115,6 +136,8 @@ class ControlLocalizationConfig:
             self.max_velocity_age_s,
             self.max_height_age_s,
             self.land_after_fix_age_s,
+            self.max_tag_variance_m2,
+            self.max_position_variance_m2,
         )
         if (
             not all(isfinite(value) and value > 0 for value in limits)
@@ -149,9 +172,18 @@ class TagFix:
             or not self.timing_verified
         ):
             raise ValueError("tag fix requires verified source and timing evidence")
+        _identity(self.drone_id, "drone_id", positive=True)
+        _identity(self.connection_epoch, "connection_epoch")
         _finite(self.capture_time, "capture_time")
-        _vector(self.position_map_enu_m, "position_map_enu_m", 3)
-        _covariance(self.covariance_map_enu_m2)
+        position = _vector(self.position_map_enu_m, "position_map_enu_m", 3)
+        covariance = _covariance(self.covariance_map_enu_m2)
+        _verified(self.source_verified, "source_verified")
+        _verified(self.timing_verified, "timing_verified")
+        if not isinstance(self.extrinsics, BodyExtrinsics):
+            raise ValueError("tag fix requires validated body extrinsics")
+        object.__setattr__(self, "capture_time", float(self.capture_time))
+        object.__setattr__(self, "position_map_enu_m", position)
+        object.__setattr__(self, "covariance_map_enu_m2", covariance)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,9 +209,16 @@ class VelocityObservation:
             or not self.timing_verified
         ):
             raise ValueError("velocity requires verified source and timing evidence")
+        _identity(self.drone_id, "drone_id", positive=True)
+        _identity(self.connection_epoch, "connection_epoch")
         _finite(self.capture_time, "capture_time")
-        _vector(self.velocity_map_enu_mps, "velocity_map_enu_mps", 3)
-        _covariance(self.covariance_m2ps2)
+        velocity = _vector(self.velocity_map_enu_mps, "velocity_map_enu_mps", 3)
+        covariance = _covariance(self.covariance_m2ps2)
+        _verified(self.source_verified, "source_verified")
+        _verified(self.timing_verified, "timing_verified")
+        object.__setattr__(self, "capture_time", float(self.capture_time))
+        object.__setattr__(self, "velocity_map_enu_mps", velocity)
+        object.__setattr__(self, "covariance_m2ps2", covariance)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,10 +244,18 @@ class HeightObservation:
             or not self.timing_verified
         ):
             raise ValueError("height requires verified source and timing evidence")
+        _identity(self.drone_id, "drone_id", positive=True)
+        _identity(self.connection_epoch, "connection_epoch")
         _finite(self.capture_time, "capture_time")
-        _finite(self.height_map_enu_m, "height_map_enu_m")
-        if not isfinite(self.variance_m2) or self.variance_m2 <= 0:
+        height = _finite(self.height_map_enu_m, "height_map_enu_m")
+        variance = _finite(self.variance_m2, "variance_m2")
+        if variance <= 0:
             raise ValueError("height variance must be positive")
+        _verified(self.source_verified, "source_verified")
+        _verified(self.timing_verified, "timing_verified")
+        object.__setattr__(self, "capture_time", float(self.capture_time))
+        object.__setattr__(self, "height_map_enu_m", height)
+        object.__setattr__(self, "variance_m2", variance)
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +327,7 @@ class ControlLocalization:
         }
         self._closed_through: float | None = None
         self._now = 0.0
+        self._started_at: float | None = None
         self._last_rejection: str | None = None
 
     def ingest_tag_fix(self, fix: TagFix, now: float) -> ControlLocalizationSnapshot:
@@ -291,8 +339,8 @@ class ControlLocalization:
             _Event(
                 fix.capture_time,
                 "tag",
-                np.asarray(fix.position_map_enu_m),
-                np.asarray(fix.covariance_map_enu_m2),
+                np.array(fix.position_map_enu_m, dtype=float, copy=True),
+                np.array(fix.covariance_map_enu_m2, dtype=float, copy=True),
             ),
             now,
         )
@@ -308,8 +356,8 @@ class ControlLocalization:
             _Event(
                 observation.capture_time,
                 "velocity",
-                np.asarray(observation.velocity_map_enu_mps),
-                np.asarray(observation.covariance_m2ps2),
+                np.array(observation.velocity_map_enu_mps, dtype=float, copy=True),
+                np.array(observation.covariance_m2ps2, dtype=float, copy=True),
             ),
             now,
         )
@@ -348,6 +396,8 @@ class ControlLocalization:
             return "extrinsics_source_mismatch"
         if fix.extrinsics.capture_time != fix.capture_time:
             return "extrinsics_capture_time_mismatch"
+        if self._largest_variance(fix.covariance_map_enu_m2) > self.config.max_tag_variance_m2:
+            return "tag_uncertainty_excessive"
         return None
 
     def _observation_reason(self, observation: object, source_id: str) -> str | None:
@@ -372,6 +422,8 @@ class ControlLocalization:
         self._check_now(now)
         if event_id in self._events:
             return self._reject("duplicate_event", now)
+        if any(self._same_measurement(event, existing) for existing in self._events.values()):
+            return self._reject("duplicate_measurement", now)
         if event.timestamp > now or event.timestamp < 0:
             return self._reject("capture_time_invalid", now)
         if event.timestamp < now - self.config.horizon_s or (
@@ -390,6 +442,32 @@ class ControlLocalization:
         if now < self._now:
             raise ValueError("evaluation time must be monotonic")
         self._now = now
+        if self._started_at is None:
+            self._started_at = now
+
+    @staticmethod
+    def _same_measurement(left: _Event, right: _Event) -> bool:
+        return (
+            left.kind == right.kind
+            and left.timestamp == right.timestamp
+            and np.array_equal(left.value, right.value)
+            and np.array_equal(left.covariance, right.covariance)
+        )
+
+    @staticmethod
+    def _largest_variance(covariance: object) -> float:
+        return float(np.linalg.eigvalsh(np.asarray(covariance, dtype=float)).max())
+
+    @staticmethod
+    def _event_sort_key(item: tuple[str, _Event]) -> tuple[object, ...]:
+        _, event = item
+        kind_order = {"tag": 0, "velocity": 1, "height": 2}
+        return (
+            event.timestamp,
+            kind_order[event.kind],
+            tuple(event.value.flat),
+            tuple(event.covariance.flat),
+        )
 
     def _predict(
         self, vector: np.ndarray | None, covariance: np.ndarray | None, start: float, until: float
@@ -430,7 +508,7 @@ class ControlLocalization:
         return updated, (updated_covariance + updated_covariance.T) / 2, True
 
     def _replay(self, now: float, *, prune: bool):
-        ordered = sorted(self._events.items(), key=lambda item: (item[1].timestamp, item[0]))
+        ordered = sorted(self._events.items(), key=self._event_sort_key)
         vector, covariance = self._checkpoint_vector, self._checkpoint_covariance
         previous = self._checkpoint_time
         last = dict(self._checkpoint_last)
@@ -489,9 +567,10 @@ class ControlLocalization:
         elif ages["tag"] is not None and ages["tag"] >= self.config.land_after_fix_age_s:
             status, reason = "land", "tag_fix_lost"
         elif ages["tag"] is None:
+            missing_for = now - self._started_at if self._started_at is not None else 0.0
             status, reason = (
                 ("land", "tag_fix_missing")
-                if now >= self.config.land_after_fix_age_s
+                if missing_for >= self.config.land_after_fix_age_s
                 else ("hold", reason)
             )
         elif self._last_rejection is not None:
@@ -502,6 +581,11 @@ class ControlLocalization:
             reason = "velocity_stale"
         elif ages["height"] is None or ages["height"] > self.config.max_height_age_s:
             reason = "height_stale"
+        elif (
+            covariance is None
+            or self._largest_variance(covariance[:3, :3]) > self.config.max_position_variance_m2
+        ):
+            reason = "position_uncertainty_excessive"
         elif self._last_rejection is None:
             status, reason = "ready", "fresh_verified_measurements"
         return ControlLocalizationSnapshot(

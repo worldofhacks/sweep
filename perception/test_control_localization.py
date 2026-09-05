@@ -202,9 +202,72 @@ def test_history_is_bounded_and_late_pruned_events_fail_closed():
 
 def test_sustained_tag_loss_lands_and_adapter_output_is_explicit():
     tracker = ControlLocalization(config())
+    assert tracker.snapshot(0.0).status == "hold"
     state = tracker.snapshot(2.0)
     assert state.status == "land"
     payload = state.to_relay_state()
     assert payload["localization_status"] == "land"
     assert payload["control_eligible"] is False
     assert payload["map_id"] == "map-sha"
+
+
+def test_observations_require_literal_verification_and_integer_identities():
+    with pytest.raises(ValueError, match="source_verified"):
+        tag("tag", 0.0, source_verified="false")
+    with pytest.raises(ValueError, match="timing_verified"):
+        velocity("velocity", 0.0, timing_verified=1)
+    with pytest.raises(ValueError, match="drone_id"):
+        height("height", 0.0, drone_id=True)
+    with pytest.raises(ValueError, match="connection_epoch"):
+        height("height", 0.0, connection_epoch=7.0)
+    with pytest.raises(ValueError, match="validated body extrinsics"):
+        tag("tag", 0.0, extrinsics=object())
+
+
+def test_retained_measurements_do_not_alias_caller_buffers():
+    position = np.array([0.0, 0.0, 1.0])
+    covariance = np.eye(3) * 0.01
+    tracker = ControlLocalization(config())
+    tracker.ingest_tag_fix(
+        tag("tag", 0.0, position=position, covariance_map_enu_m2=covariance), 0.0
+    )
+    tracker.ingest_velocity(velocity("velocity", 0.0), 0.0)
+    expected = tracker.ingest_height(height("height", 0.0), 0.0)
+
+    position[0] = 25.0
+    covariance[0, 0] = 25.0
+    actual = tracker.snapshot(0.0)
+
+    assert actual.position_map_enu_m == pytest.approx(expected.position_map_enu_m)
+    assert np.allclose(actual.covariance_map_enu_m2, expected.covariance_map_enu_m2)
+
+
+def test_missing_fix_grace_period_starts_at_first_evaluation():
+    tracker = ControlLocalization(config())
+
+    assert tracker.snapshot(100_000.0).status == "hold"
+    assert tracker.snapshot(100_002.0).status == "land"
+
+
+def test_uncertain_tag_and_posterior_never_enable_control():
+    uncertain = ((1e100, 0.0, 0.0), (0.0, 1e100, 0.0), (0.0, 0.0, 1e100))
+    tracker = ControlLocalization(config(max_tag_variance_m2=1e101))
+    tracker.ingest_tag_fix(tag("tag", 0.0, covariance_map_enu_m2=uncertain), 0.0)
+    tracker.ingest_velocity(velocity("velocity", 0.0), 0.0)
+    state = tracker.ingest_height(height("height", 0.0), 0.0)
+
+    assert state.status == "hold"
+    assert state.reason == "position_uncertainty_excessive"
+    assert not state.control_eligible
+
+
+def test_equal_time_fusion_has_semantic_order_and_deduplicates_evidence():
+    tracker = ControlLocalization(config())
+    tracker.ingest_velocity(velocity("a-velocity", 0.0), 0.0)
+    tracker.ingest_height(height("b-height", 0.0), 0.0)
+    state = tracker.ingest_tag_fix(tag("z-tag", 0.0), 0.0)
+
+    assert state.status == "ready"
+    duplicate = tracker.ingest_tag_fix(tag("another-tag", 0.0), 0.0)
+    assert duplicate.reason == "duplicate_measurement"
+    assert duplicate.retained_event_count == 3
