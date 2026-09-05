@@ -1,0 +1,226 @@
+package org.worldofhacks.sweep.bridge.flight
+
+import java.util.concurrent.CopyOnWriteArrayList
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import org.worldofhacks.sweep.bridge.core.flight.FlightConfig
+import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
+import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
+import org.worldofhacks.sweep.bridge.core.frames.PhoneThermalState
+import org.worldofhacks.sweep.bridge.core.json.JsonBool
+import org.worldofhacks.sweep.bridge.core.json.JsonObject
+import org.worldofhacks.sweep.bridge.core.json.JsonString
+import org.worldofhacks.sweep.bridge.node.FlightStates
+import org.worldofhacks.sweep.bridge.node.LinkTiming
+import org.worldofhacks.sweep.bridge.node.NodeConfig
+import org.worldofhacks.sweep.bridge.node.PhoneStatus
+import org.worldofhacks.sweep.bridge.node.PhoneStatusSource
+import org.worldofhacks.sweep.bridge.node.ReadinessInput
+import org.worldofhacks.sweep.bridge.node.RelayLink
+import org.worldofhacks.sweep.bridge.node.StubRelay
+
+/**
+ * The Phase E loop behind the relay link: acknowledgement sequences on the wire, the stick
+ * cadence, deadman hold and failsafe under relay silence, and the RC takeover as the relay
+ * sees it (readiness `control_authority=false`, `node_status.authority_change_reason`).
+ */
+class FlightExecutorTest {
+    private val key = "adapter-key-0123456789abcdef0123456789abcdef".toByteArray(Charsets.UTF_8)
+    private val timing = LinkTiming(telemetryHz = 10.0, watchdogPollMs = 20, initialBackoffMs = 50, maxBackoffMs = 200, authTimeoutMs = 2_000, joinFallbackMs = 500)
+    private val phone = PhoneStatusSource { PhoneStatus(batteryPercent = 81, thermalState = PhoneThermalState.NONE) }
+    private val logs = CopyOnWriteArrayList<String>()
+    private val config = FlightConfig(settleMs = 300, progressIntervalMs = 300, takeoffMinMs = 500, yawSettleMs = 200)
+
+    private class Node(val aircraft: FakeFlightAircraft, val executor: FlightExecutor, val link: RelayLink, private val keepAlive: Thread?) : AutoCloseable {
+        override fun close() {
+            keepAlive?.interrupt()
+            link.close()
+            executor.close()
+        }
+    }
+
+    /**
+     * The real relay fans state out at 10 Hz, which is what keeps the node's deadman fed; the
+     * stub sends nothing unprompted, so the tests that are not about the deadman run a state
+     * ticker. The deadman test leaves it off.
+     */
+    private fun node(stub: StubRelay, flying: Boolean, relayAlive: Boolean = true): Node {
+        val aircraft = FakeFlightAircraft()
+        aircraft.setConnected(true)
+        if (flying) aircraft.place(zUp = 1.2, flying = true)
+        val executor = FlightExecutor(aircraft, aircraft, aircraft.fake, config = config, log = { logs += it })
+        val nodeConfig = NodeConfig(stub.url, stub.session, 1, String(key, Charsets.UTF_8), "test-node-1", listOf("flight"))
+        val link = RelayLink(nodeConfig, aircraft, executor, phone, timing = timing, log = { logs += it })
+        // The loop's status feeds the snapshot fields the link reports (the sessions do this on the phone).
+        Thread {
+            var last = executor.status.value
+            while (!Thread.currentThread().isInterrupted) {
+                val current = executor.status.value
+                if (current != last) {
+                    aircraft.applyStatus(current)
+                    last = current
+                }
+                try {
+                    Thread.sleep(10)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+            }
+        }.apply {
+            isDaemon = true
+            start()
+        }
+        executor.observe(link.state)
+        link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
+        link.start()
+        val keepAlive = if (!relayAlive) {
+            null
+        } else {
+            Thread {
+                while (!Thread.currentThread().isInterrupted) {
+                    try {
+                        Thread.sleep(200)
+                    } catch (_: InterruptedException) {
+                        return@Thread
+                    }
+                    if (link.state.value.joined) runCatching { stub.sendState() }
+                }
+            }.apply {
+                isDaemon = true
+                start()
+            }
+        }
+        return Node(aircraft, executor, link, keepAlive)
+    }
+
+    private fun await(what: String, timeoutMs: Long = 10_000, predicate: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (predicate()) return
+            Thread.sleep(10)
+        }
+        throw AssertionError("timed out waiting for $what; log:\n" + logs.joinToString("\n"))
+    }
+
+    private fun JsonObject.str(key: String): String = (this[key] as JsonString).value
+
+    private fun JsonObject.bool(key: String): Boolean = (this[key] as JsonBool).value
+
+    private fun StubRelay.awaitAck(commandId: String, status: String, timeoutMs: Long = 10_000): JsonObject =
+        awaitFrame("acknowledgement", timeoutMs) { it.str("command_id") == commandId && it.str("status") == status }
+
+    private fun StubRelay.acks(commandId: String): List<JsonObject> = frames("acknowledgement") { it.str("command_id") == commandId }
+
+    @Test
+    fun `takeoff goto hover and land acknowledge accepted executing then completed with progress detail`() {
+        StubRelay(key).use { stub ->
+            node(stub, flying = false).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                val takeoff = stub.issueCommand(CommandArgs.Takeoff(zMm = 1200))
+                stub.awaitAck(takeoff.commandId, "completed")
+                val takeoffAcks = stub.acks(takeoff.commandId).map { it.str("status") }
+                assertEquals("accepted", takeoffAcks.first())
+                assertEquals("executing", takeoffAcks[1])
+                assertEquals("completed", takeoffAcks.last())
+                assertEquals(FlightStates.HOVERING, node.aircraft.snapshot.value.state)
+
+                val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 1000, zMm = 1200, speedMmS = 500))
+                stub.awaitFrame("node_status") { it.bool("virtual_stick_enabled") }
+                stub.awaitAck(goto.commandId, "completed")
+                val gotoAcks = stub.acks(goto.commandId)
+                assertEquals("accepted", gotoAcks.first().str("status"))
+                val executing = gotoAcks.filter { it.str("status") == "executing" }
+                assertTrue(executing.size >= 2, "progress acknowledgements: ${gotoAcks.map { it.str("status") }}")
+                assertTrue(executing.first().str("detail").contains("forward 0.50"))
+                assertTrue(gotoAcks.last().str("detail").contains("north 1.00"))
+                assertTrue(node.aircraft.snapshot.value.y in 0.75..1.05, "moved north ${node.aircraft.snapshot.value.y}")
+                await("virtual stick released") { !node.aircraft.model.virtualStickEnabled }
+                await("node_status reports virtual stick off again") {
+                    stub.frames("node_status").let { it.size >= 3 && !it.last().bool("virtual_stick_enabled") }
+                }
+
+                val hover = stub.issueCommand(CommandArgs.Hover)
+                stub.awaitAck(hover.commandId, "completed")
+                val land = stub.issueCommand(CommandArgs.Land)
+                stub.awaitAck(land.commandId, "completed")
+                assertEquals(FlightStates.LANDED, node.aircraft.snapshot.value.state)
+                assertTrue(stub.acks(land.commandId).any { it.str("status") == "executing" && it.str("detail").contains("auto-landing started") })
+
+                // Camera commands still reach the fake fixture.
+                val photo = stub.issueCommand(CommandArgs.CapturePhoto("cap-1"))
+                assertEquals("unsupported", stub.awaitAck(photo.commandId, "failed").str("reason"))
+            }
+        }
+    }
+
+    @Test
+    fun `the stick stream runs at the relay's virtual_stick_hz`() {
+        val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 20, watchdogHoldMs = 5000, watchdogFailsafeMs = 20000)
+        StubRelay(key, nodeSettings = settings).use { stub ->
+            node(stub, flying = true).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                val sends = CopyOnWriteArrayList<Long>()
+                node.executor.onStickSent = { _, _, now -> sends += now }
+                val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 1000, zMm = 1200, speedMmS = 500))
+                stub.awaitAck(goto.commandId, "completed")
+                val span = sends.last() - sends.first()
+                val rate = (sends.size - 1) * 1000.0 / span
+                assertTrue(rate in 16.0..24.0, "measured stick rate $rate Hz over ${sends.size} sends in $span ms")
+                assertTrue(node.executor.status.value.sticksSent >= sends.size.toLong())
+            }
+        }
+    }
+
+    @Test
+    fun `relay silence holds the stream then lands and the acknowledgement names watchdog_hold`() {
+        val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 400, watchdogFailsafeMs = 1500)
+        StubRelay(key, nodeSettings = settings).use { stub ->
+            node(stub, flying = true, relayAlive = false).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                // The stub sends nothing after the join: the command itself is the last relay activity.
+                val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 4000, zMm = 1200, speedMmS = 500))
+                stub.awaitAck(goto.commandId, "executing")
+                val hold = stub.awaitAck(goto.commandId, "failed")
+                assertEquals("watchdog_hold", hold.str("reason"))
+                assertTrue(hold.str("detail").contains("retryable"))
+                await("loop in hold") { node.executor.status.value.phase == "watchdog_hold" }
+                assertTrue(node.aircraft.model.virtualStickEnabled, "neutral sticks keep flowing during hold")
+                stub.awaitFrame("node_status") { it.str("watchdog_state") == "hold" }
+                stub.awaitFrame("node_status") { it.str("watchdog_state") == "failsafe" }
+                await("failsafe landing") { node.executor.status.value.landingReason == "watchdog_failsafe" || node.aircraft.snapshot.value.state == FlightStates.LANDED }
+                await("landed") { node.aircraft.snapshot.value.state == FlightStates.LANDED }
+                assertTrue(logs.any { it.contains("never return to home") })
+                assertTrue(node.aircraft.snapshot.value.y < 1.5, "the step was cut at hold, y ${node.aircraft.snapshot.value.y}")
+            }
+        }
+    }
+
+    @Test
+    fun `an RC takeover fails the command with authority_lost and drops readiness control authority until re-armed`() {
+        StubRelay(key).use { stub ->
+            node(stub, flying = true).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 4000, zMm = 1200, speedMmS = 500))
+                stub.awaitAck(goto.commandId, "executing")
+                node.executor.onTakeover("rc_takeover", "left stick 45%")
+                val failed = stub.awaitAck(goto.commandId, "failed")
+                assertEquals("authority_lost", failed.str("reason"))
+                assertTrue(failed.str("detail").contains("left stick 45%"))
+                val readiness = stub.awaitFrame("membership") { it.str("action") == "readiness" && !it.bool("control_authority") }
+                assertTrue(readiness.bool("rc_safety_operator_present"))
+                val status = stub.awaitFrame("node_status") { it["authority_change_reason"] == JsonString("rc_takeover") }
+                assertTrue(!status.bool("control_authority"))
+                await("degraded") { node.link.state.value.membership == "degraded" }
+                val refused = stub.issueCommand(CommandArgs.Hover)
+                assertEquals("authority_lost", stub.awaitAck(refused.commandId, "failed").str("reason"))
+
+                node.executor.rearmAuthority()
+                stub.awaitFrames("membership", 2) { it.str("action") == "readiness" && it.bool("control_authority") }
+                await("ready again") { node.link.state.value.membership == "ready" }
+                val hover = stub.issueCommand(CommandArgs.Hover)
+                stub.awaitAck(hover.commandId, "completed")
+            }
+        }
+    }
+}
