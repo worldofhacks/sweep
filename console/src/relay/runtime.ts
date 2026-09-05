@@ -1,4 +1,5 @@
 import { UnavailableRelayClient, WebSocketRelayClient, type RelayClient } from './client'
+import { HttpTranscriptClient, type TranscriptClient } from '../voice/client'
 
 export interface SweepRelayRuntimeConfig {
   baseUrl: string
@@ -9,6 +10,9 @@ export interface SweepRelayRuntimeConfig {
 export interface ConsoleRuntime {
   client: RelayClient
   keyboardClient: RelayClient
+  webcamClient: RelayClient
+  /** Null when no relay bootstrap exists: the Speech module renders language disabled. */
+  transcriptClient: TranscriptClient | null
   sessionId: string
 }
 
@@ -28,6 +32,10 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       keyboardClient: new UnavailableRelayClient(
         'Relay bootstrap is not configured. Keyboard network stop is unavailable; use the physical RC safety path.',
       ),
+      webcamClient: new UnavailableRelayClient(
+        'Relay bootstrap is not configured. Webcam gesture source is unavailable; use the console controls and the physical RC safety path.',
+      ),
+      transcriptClient: null,
     }
   }
 
@@ -45,5 +53,12 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       source: 'keyboard',
       token: config.token,
     }),
+    webcamClient: new WebSocketRelayClient({
+      baseUrl: config.baseUrl,
+      sessionId: config.sessionId,
+      source: 'webcam',
+      token: config.token,
+    }),
+    transcriptClient: new HttpTranscriptClient({ baseUrl: config.baseUrl, token: config.token }),
   }
 }
