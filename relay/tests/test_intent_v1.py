@@ -97,6 +97,67 @@ def test_m20_console_intents_match_the_planner_contract(
     assert result.intent.selection == (1, 2)
 
 
+@pytest.mark.parametrize(
+    ("name", "args", "confirm"),
+    [
+        ("altitude", {"delta": 1}, False),
+        ("formation_next", {}, False),
+        ("formation_set", {"name": "circle"}, False),
+        ("spacing", {"delta": 1}, False),
+        ("sweep", {}, True),
+        (
+            "sweep",
+            {"box": {"min_x": -2, "max_x": 2, "min_y": -3, "max_y": 3}},
+            True,
+        ),
+    ],
+)
+def test_m15_sim_intents_are_accepted_on_the_indoor_contract(
+    console_select_payload: dict[str, object],
+    name: str,
+    args: dict[str, object],
+    confirm: bool,
+) -> None:
+    console_select_payload.update(name=name, args=args, selection=[1, 2], confirm=confirm)
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, AcceptedIntent)
+    assert result.intent.name.value == name
+
+
+def test_sweep_requires_confirmation_before_planning(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(name="sweep", args={}, selection=[1, 2], confirm=False)
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+@pytest.mark.parametrize(
+    "box",
+    [
+        {"x": 0, "y": 0, "width": 4, "height": 3},
+        {"min_x": 0, "max_x": 0, "min_y": -1, "max_y": 1},
+        {"min_x": 1, "max_x": 0, "min_y": -1, "max_y": 1},
+        {"min_x": 0, "max_x": 1, "min_y": -1, "max_y": float("inf")},
+        {"min_x": False, "max_x": 1, "min_y": -1, "max_y": 1},
+    ],
+)
+def test_sweep_rejects_ambiguous_or_invalid_boxes(
+    console_select_payload: dict[str, object], box: dict[str, object]
+) -> None:
+    console_select_payload.update(name="sweep", args={"box": box}, selection=[1], confirm=True)
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
 def test_translate_rejects_source_owned_frame_and_step(
     console_select_payload: dict[str, object],
 ) -> None:
@@ -266,11 +327,6 @@ def test_unknown_intent_name_is_rejected(
     ("name", "args"),
     [
         ("disarm", {}),
-        ("altitude", {"delta": 1}),
-        ("formation_next", {}),
-        ("formation_set", {"name": "line"}),
-        ("spacing", {"delta": -1}),
-        ("sweep", {"box": {"x": 0, "y": 0, "width": 4, "height": 3}}),
         ("survey_area", {"area_id": "floor-1"}),
         ("map_area", {"area_id": "floor-1"}),
     ],
