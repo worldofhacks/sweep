@@ -197,7 +197,7 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(screen.getByLabelText('Latest outcome')).toHaveTextContent('formation_set refused')
   })
 
-  test('retry mints a new id with retry_of; a confirmation-gated retry re-enters the preview', async () => {
+  test('retry mints a new id with retry_of and sends at once, with no second preview for a confirmation-gated name', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
@@ -218,20 +218,34 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
       name: 'disarm',
       args: {},
       selection: [1],
+      confirm: false,
     })
     const retried = await screen.findAllByRole('listitem', { name: 'disarm refused' })
     expect(retried[0]).toHaveTextContent('Retry of')
     expect(retried[0]).toHaveTextContent('intent-1')
 
     const sweepRow = screen.getByRole('listitem', { name: 'sweep refused' })
-    expect(within(sweepRow).getByText(/opens a new preview to confirm/)).toBeInTheDocument()
+    expect(
+      within(sweepRow).getByText('Mints a new intent id and sets retry_of to this request.'),
+    ).toBeInTheDocument()
     await user.click(within(sweepRow).getByRole('button', { name: 'Retry as new intent' }))
-    expect(clients.console.sent).toHaveLength(3)
-    const dock = screen.getByRole('region', { name: 'Pending confirmation' })
-    expect(within(dock).getByText(/"retry_of": "intent-2"/)).toBeInTheDocument()
-    await confirmDock(user)
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     await waitFor(() => expect(clients.console.sent).toHaveLength(4))
-    expect(clients.console.sent[3]).toMatchObject({ intent_id: 'intent-4', retry_of: 'intent-2', name: 'sweep', confirm: true })
+    expect(clients.console.sent[3]).toMatchObject({
+      intent_id: 'intent-4',
+      retry_of: 'intent-2',
+      name: 'sweep',
+      args: {},
+      selection: [1],
+      confirm: true,
+    })
+    const sweepRows = await screen.findAllByRole('listitem', { name: 'sweep refused' })
+    expect(sweepRows).toHaveLength(2)
+    expect(sweepRows[0]).toHaveTextContent('Retry of')
+    expect(sweepRows[0]).toHaveTextContent('intent-2')
+    expect(within(sweepRows[0]).getByLabelText('Lifecycle timestamps')).not.toHaveTextContent(
+      'pending_confirmation',
+    )
   })
 
   test('the translate pad and the motion controls are disabled with a stated reason when nothing is selected', async () => {
@@ -319,6 +333,60 @@ describe('Control › Capture', () => {
       selection: [1],
       confirm: true,
     })
+  })
+
+  test('a failed capture_room retries at once with its confirmed envelope under a new id and no second preview', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
+    await screen.findByText('1 of 4 selected')
+    await openPane(user, 'Capture')
+
+    await user.click(screen.getByRole('button', { name: 'Capture room' }))
+    await confirmDock(user)
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    expect(clients.console.sent[0]).toMatchObject({ intent_id: 'intent-1', name: 'capture_room', confirm: true })
+
+    clients.console.emitServer({
+      v: 1,
+      t: t0 + 5,
+      type: 'acknowledgement',
+      event_id: 'capture-failed-1',
+      session,
+      intent_id: 'intent-1',
+      command_id: null,
+      status: 'failed',
+      source: 'relay',
+      drone_id: null,
+      connection_epoch: null,
+      roster_version: 7,
+      reason: 'command_failed',
+      detail: 'Capture failed after an adapter command failure.',
+    })
+
+    await openPane(user, 'Requests')
+    const failedRow = await screen.findByRole('listitem', { name: 'capture_room failed' })
+    expect(
+      within(failedRow).getByText('Mints a new intent id and sets retry_of to this request.'),
+    ).toBeInTheDocument()
+    await user.click(within(failedRow).getByRole('button', { name: 'Retry as new intent' }))
+
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+    expect(clients.console.sent[1]).toMatchObject({
+      intent_id: 'intent-2',
+      retry_of: 'intent-1',
+      name: 'capture_room',
+      args: { room_id: 'room-01', capture_id: 'capture-intent-1', pattern: 'pano_360' },
+      selection: [1],
+      confirm: true,
+    })
+    const retried = await screen.findByRole('listitem', { name: 'capture_room accepted' })
+    expect(retried).toHaveTextContent('Retry of')
+    expect(retried).toHaveTextContent('intent-1')
+    expect(within(retried).getByLabelText('Lifecycle timestamps')).not.toHaveTextContent(
+      'pending_confirmation',
+    )
   })
 
   test('the compass and gates render visual_advisory, registered_metric, and the unreported state', () => {

@@ -89,6 +89,16 @@ export function useControlConsole({
     }
   }, [clients])
 
+  /** Marks a recorded request sent and hands it to the client its source names. */
+  const sendNow = useCallback(
+    (intent: IntentV1, t: number) => {
+      dispatch({ type: 'request_sent', intentId: intent.intent_id, t })
+      const client = intent.source === 'keyboard' ? clients.keyboard : clients.console
+      sendToRelay(intent, client, t, intentDependencies.now, dispatch)
+    },
+    [clients.console, clients.keyboard, intentDependencies],
+  )
+
   /**
    * Records a freshly minted intent, then either parks it for confirmation
    * (with its plan preview) or sends it at once. The intent id never changes.
@@ -112,11 +122,9 @@ export function useControlConsole({
         })
         return
       }
-      dispatch({ type: 'request_sent', intentId: intent.intent_id, t })
-      const client = intent.source === 'keyboard' ? clients.keyboard : clients.console
-      sendToRelay(intent, client, t, intentDependencies.now, dispatch)
+      sendNow(intent, t)
     },
-    [clients.console, clients.keyboard, intentDependencies, state.requests, state.rosterVersion],
+    [intentDependencies, sendNow, state.requests, state.rosterVersion],
   )
 
   const sendExistingIntent = useCallback(
@@ -361,14 +369,19 @@ export function useControlConsole({
 
   /**
    * Retry a failed or refused request as a new intent: new id, retry_of set,
-   * same args and selection. Confirmation-gated intents re-enter the preview.
+   * same args, selection and confirmation. It sends at once and never opens a
+   * second preview, even for a confirmation-gated name: the operator already
+   * confirmed this exact envelope, and that confirmation carries over.
    */
   const retryRequest = useCallback(
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
-      stageIntent(retryIntent(request.intent, intentDependencies))
+      const intent = retryIntent(request.intent, intentDependencies)
+      const t = intentDependencies.now()
+      dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
+      sendNow(intent, t)
     },
-    [intentDependencies, stageIntent],
+    [intentDependencies, sendNow],
   )
 
   const pendingRequest = useMemo(

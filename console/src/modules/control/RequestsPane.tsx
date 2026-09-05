@@ -1,6 +1,5 @@
 import type { ControlState, RequestRecord, RequestStatus } from '../../control/state'
 import { formatDroneId, isTerminalRequest } from '../../control/state'
-import { requiresConfirmation } from '../../relay/contract'
 import { formatTime, shortId } from '../../shell/format'
 import { reasonSentence } from '../../shell/sentences'
 import type { ModuleProps } from '../types'
@@ -113,10 +112,7 @@ function RequestRow({
             Retry as new intent
           </button>
           <p className="ct-retry-note">
-            {retryBlocked ??
-              (requiresConfirmation(intent.name)
-                ? 'Mints a new intent id, sets retry_of to this request, and opens a new preview to confirm.'
-                : 'Mints a new intent id and sets retry_of to this request.')}
+            {retryBlocked ?? 'Mints a new intent id and sets retry_of to this request.'}
           </p>
         </div>
       )}

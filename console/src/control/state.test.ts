@@ -669,14 +669,14 @@ describe('request lifecycle', () => {
     expect(state.notices[0].title).toBe('Unmatched relay result')
   })
 
-  test('retries use a new ID, link the failed request, and require fresh confirmation', () => {
+  test('retries use a new ID, link the failed request, and keep the confirmation already given', () => {
     const original: IntentV1 = { ...captureIntent('failed-intent'), confirm: true }
     const retry = retryIntent(original, { now: () => t + 50, nextId: () => 'retry-intent' })
 
     expect(retry).toMatchObject({
       intent_id: 'retry-intent',
       retry_of: 'failed-intent',
-      confirm: false,
+      confirm: true,
       t: t + 50,
     })
     expect(retry.args).toEqual(original.args)

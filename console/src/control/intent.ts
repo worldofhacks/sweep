@@ -103,8 +103,11 @@ export function createTranslateArgs(direction: TranslateDirection, steps: number
 }
 
 /**
- * A retry mints a new intent id, points retry_of at the original, and drops
- * confirm so a confirmation-gated intent re-enters the preview.
+ * A retry mints a new intent id, points retry_of at the original, and carries
+ * the rest of the envelope over unchanged: args, selection and confirm. A
+ * confirmation-gated request only reaches failed or refused after the operator
+ * confirmed it, so the retry keeps that confirmation and sends at once rather
+ * than opening a second preview; the relay refuses capture_room without it.
  */
 export function retryIntent(
   failed: IntentV1,
@@ -117,7 +120,7 @@ export function retryIntent(
     retry_of: failed.intent_id,
     args: cloneArgs(failed.args),
     selection: [...failed.selection],
-    confirm: false,
+    confirm: failed.confirm,
   }
 }
 

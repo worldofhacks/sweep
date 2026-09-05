@@ -76,6 +76,8 @@ retry as a new intent with `retry_of`), and Fleet (registry rows and the departe
 Appendix E mission tracker under Reference › Mission. `controls.ts` holds the pure gating and
 geometry; every control builds its envelope through `control/intent.ts`, which now covers every
 Appendix E name the contract lists. `takeoff`, `land`, `land_all`, `sweep` and `capture_room` park
-in the dock until the operator confirms the exact envelope; the rest send at once. Names outside
-the M2.0 set stay pressable so the relay's `unsupported` refusal is recorded rather than hidden.
+in the dock until the operator confirms the exact envelope; the rest send at once. A retry of a
+failed or refused request re-sends the same envelope at once under a new intent id with `retry_of`
+set, keeping its confirmation rather than opening a second preview. Names outside the M2.0 set
+stay pressable so the relay's `unsupported` refusal is recorded rather than hidden.
 No relay event carries capture-readiness guidance yet, so the compass and gates render unreported.

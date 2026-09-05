@@ -193,13 +193,10 @@ describe('capture helpers', () => {
 })
 
 describe('retry', () => {
-  test('mints a new id, links retry_of, copies args, and drops confirm', () => {
-    const original: IntentV1 = confirmIntent(
-      createIntent(
-        { name: 'translate', args: { dx: 2, dy: 0 }, selection: [1, 2], source: 'console', session },
-        deps,
-      ),
-      t,
+  test('mints a new id, links retry_of, and copies args and selection', () => {
+    const original: IntentV1 = createIntent(
+      { name: 'translate', args: { dx: 2, dy: 0 }, selection: [1, 2], source: 'console', session },
+      deps,
     )
     const retry = retryIntent(original, { now: () => t + 50, nextId: () => 'intent-2' })
     expect(retry).toMatchObject({
@@ -213,6 +210,34 @@ describe('retry', () => {
     })
     expect(retry.args).not.toBe(original.args)
     expect(retry.selection).not.toBe(original.selection)
+    expect(isConsoleIntentV1(retry)).toBe(true)
+  })
+
+  test('keeps the confirmation of a confirmation-gated request so the retry sends without a second preview', () => {
+    const original: IntentV1 = confirmIntent(
+      createIntent(
+        {
+          name: 'capture_room',
+          args: createCaptureArgs('kitchen-01', 'intent-1', 'pano_360'),
+          selection: [1],
+          source: 'console',
+          session,
+        },
+        deps,
+      ),
+      t + 10,
+    )
+    const retry = retryIntent(original, { now: () => t + 50, nextId: () => 'intent-2' })
+    expect(retry).toMatchObject({
+      intent_id: 'intent-2',
+      retry_of: 'intent-1',
+      name: 'capture_room',
+      args: { room_id: 'kitchen-01', capture_id: 'capture-intent-1', pattern: 'pano_360' },
+      selection: [1],
+      confirm: true,
+      t: t + 50,
+    })
+    expect(isConsoleIntentV1(retry)).toBe(true)
   })
 })
 
