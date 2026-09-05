@@ -2,6 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { createMediaRuntime } from './media/runtime.ts'
+import { bootstrapMediaConfiguration } from './media/runtime-config.ts'
 import { createConsoleRuntime } from './relay/runtime.ts'
 import { FixtureRelayClient, isFixtureScenarioName } from './testing/fixture-relay-client.ts'
 
@@ -18,12 +20,19 @@ const runtime = fixtureScenario
       keyboardClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'keyboard', fixtureScenario),
     }
   : createConsoleRuntime()
+const clients = { console: runtime.client, keyboard: runtime.keyboardClient }
+const root = createRoot(document.getElementById('root')!)
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App
-      sessionId={runtime.sessionId}
-      clients={{ console: runtime.client, keyboard: runtime.keyboardClient }}
-    />
-  </StrictMode>,
-)
+// The console renders at once without media; a valid runtime configuration
+// re-renders the same tree with playback enabled. Relay state is unaffected.
+bootstrapMediaConfiguration((configuration) => {
+  root.render(
+    <StrictMode>
+      <App
+        sessionId={runtime.sessionId}
+        clients={clients}
+        media={configuration ? createMediaRuntime(configuration) : undefined}
+      />
+    </StrictMode>,
+  )
+})

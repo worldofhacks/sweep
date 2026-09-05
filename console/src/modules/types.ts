@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react'
 import type { useControlConsole } from '../control/use-control-console'
+import type { MediaRuntime } from '../media/runtime'
 
 /** Everything the hook returns: authoritative state plus the intent functions. */
 export type ConsoleController = ReturnType<typeof useControlConsole>
@@ -16,6 +17,8 @@ export type ModuleId =
 export interface ModuleProps {
   controller: ConsoleController
   now: () => number
+  /** Playback runtime; absent until the media bootstrap provides a configuration. */
+  media?: MediaRuntime
 }
 
 export interface ModuleDefinition {
