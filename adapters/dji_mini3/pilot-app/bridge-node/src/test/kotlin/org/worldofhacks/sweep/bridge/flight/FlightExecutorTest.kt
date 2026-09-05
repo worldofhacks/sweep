@@ -197,19 +197,20 @@ class FlightExecutorTest {
     }
 
     @Test
-    fun `an RC takeover fails the command with authority_lost and drops readiness control authority until re-armed`() {
+    fun `an RC takeover fails the command with authority_lost and drops readiness control authority until re-armed, every time`() {
         StubRelay(key).use { stub ->
             node(stub, flying = true).use { node ->
                 await("ready") { node.link.state.value.membership == "ready" }
+                // First takeover: the pause button during a goto.
                 val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 4000, zMm = 1200, speedMmS = 500))
                 stub.awaitAck(goto.commandId, "executing")
-                node.executor.onTakeover("rc_takeover", "left stick 45%")
+                node.executor.onTakeover("rc_pause", "pause button pressed")
                 val failed = stub.awaitAck(goto.commandId, "failed")
                 assertEquals("authority_lost", failed.str("reason"))
-                assertTrue(failed.str("detail").contains("left stick 45%"))
+                assertTrue(failed.str("detail").contains("pause button pressed"))
                 val readiness = stub.awaitFrame("membership") { it.str("action") == "readiness" && !it.bool("control_authority") }
                 assertTrue(readiness.bool("rc_safety_operator_present"))
-                val status = stub.awaitFrame("node_status") { it["authority_change_reason"] == JsonString("rc_takeover") }
+                val status = stub.awaitFrame("node_status") { it["authority_change_reason"] == JsonString("rc_pause") }
                 assertTrue(!status.bool("control_authority"))
                 await("degraded") { node.link.state.value.membership == "degraded" }
                 val refused = stub.issueCommand(CommandArgs.Hover)
@@ -220,6 +221,24 @@ class FlightExecutorTest {
                 await("ready again") { node.link.state.value.membership == "ready" }
                 val hover = stub.issueCommand(CommandArgs.Hover)
                 stub.awaitAck(hover.commandId, "completed")
+
+                // Second takeover after the re-arm: a stick past the threshold during the next
+                // goto must cancel it too; nothing between the RC and the loop may latch stale.
+                val again = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 4000, zMm = 1200, speedMmS = 500))
+                stub.awaitAck(again.commandId, "executing")
+                node.executor.onTakeover("rc_takeover", "right stick 60%")
+                val failedAgain = stub.awaitAck(again.commandId, "failed")
+                assertEquals("authority_lost", failedAgain.str("reason"))
+                assertTrue(failedAgain.str("detail").contains("right stick 60%"))
+                stub.awaitFrame("node_status") { it["authority_change_reason"] == JsonString("rc_takeover") }
+                await("virtual stick released") { !node.aircraft.model.virtualStickEnabled }
+                await("degraded again") { node.link.state.value.membership == "degraded" }
+                assertTrue(node.aircraft.snapshot.value.y < 2.0, "the second step was cut, y ${node.aircraft.snapshot.value.y}")
+
+                node.executor.rearmAuthority()
+                await("ready once more") { node.link.state.value.membership == "ready" }
+                val done = stub.issueCommand(CommandArgs.Hover)
+                stub.awaitAck(done.commandId, "completed")
             }
         }
     }

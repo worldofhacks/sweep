@@ -31,6 +31,16 @@ class FakeFlightModel(
     var takeoffResult: PortResult = PortResult.Ok
     var landingResult: PortResult = PortResult.Ok
 
+    /**
+     * How many [advance] calls an [enableVirtualStick] waits before it answers: 0 answers at
+     * once; N answers on the Nth advance, standing in for the SDK's asynchronous enable so a
+     * test can put the loop in `enabling_virtual_stick` across ticks.
+     */
+    var deferEnableTicks: Int = 0
+
+    private var pendingEnable: ((PortResult) -> Unit)? = null
+    private var pendingEnableTicks = 0
+
     var xEast = 0.0
         private set
     var yNorth = 0.0
@@ -106,6 +116,15 @@ class FakeFlightModel(
     }
 
     override fun enableVirtualStick(onResult: (PortResult) -> Unit) {
+        if (deferEnableTicks > 0) {
+            pendingEnable = onResult
+            pendingEnableTicks = deferEnableTicks
+            return
+        }
+        answerEnable(onResult)
+    }
+
+    private fun answerEnable(onResult: (PortResult) -> Unit) {
         if (!connected) {
             onResult(PortResult.Failed("aircraft not connected"))
             return
@@ -169,6 +188,13 @@ class FakeFlightModel(
 
     override fun advance(nowMs: Long) {
         this.nowMs = nowMs
+        pendingEnable?.let { waiting ->
+            pendingEnableTicks -= 1
+            if (pendingEnableTicks <= 0) {
+                pendingEnable = null
+                answerEnable(waiting)
+            }
+        }
         val previous = lastAdvanceMs
         lastAdvanceMs = nowMs
         if (previous == null) return

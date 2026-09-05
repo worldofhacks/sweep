@@ -22,18 +22,28 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  *    `watchdog_hold`; failsafe commands auto-landing (indoors: land, never return to home)
  *    and fails with `watchdog_failsafe`. Neutral sticks keep flowing while Virtual Stick is
  *    enabled, so the stream never stops silently.
- * 2. Authority. Losing the aircraft or the RC cancels everything with `authority_lost`. An RC
- *    takeover ([onTakeover]: stick deflection, pause, mode switch, or the flight controller
- *    dropping Virtual Stick) cancels with `authority_lost` and latches until the pilot calls
- *    [rearmAuthority] on screen; the latch is what the node reports as `control_authority`.
- * 3. Network stop. The relay's authoritative `estop` flag cuts any motion to neutral sticks at
- *    once (`estop_asserted`) and, if it stays asserted for [FlightConfig.estopLandAfterMs]
- *    while airborne, lands (PRD 5.5: hold, then land if held). The `estop` command does the
+ *    The deadman lands only what the node was flying: with the loop idle and Virtual Stick
+ *    off the aircraft is already under the flight controller and the RC operator, and after
+ *    an RC takeover the node never commands a landing underneath the pilot.
+ * 2. Authority. Losing the aircraft or the RC cancels everything with `authority_lost` and
+ *    releases Virtual Stick on the aircraft. An RC takeover ([onTakeover]: stick deflection,
+ *    pause, mode switch, or the flight controller dropping Virtual Stick) cancels with
+ *    `authority_lost` and latches until the pilot calls [rearmAuthority] on screen; the latch
+ *    is what the node reports as `control_authority`. The port forwards every stick
+ *    deflection past its threshold; this loop is the only judge of whether there is anything
+ *    to cancel (idle input is the pilot flying, latched input is already the pilot's).
+ * 3. Network stop. The relay's authoritative `estop` flag is level-triggered: on every tick
+ *    while it is asserted any running motion is cut to neutral sticks (`estop_asserted`),
+ *    including motion admitted before the flag arrived or whose Virtual Stick enable answered
+ *    after it, and new motion is refused. If the flag stays asserted for
+ *    [FlightConfig.estopLandAfterMs] while airborne the node lands (PRD 5.5: hold, then land
+ *    if held) unless the RC has the aircraft after a takeover. The `estop` command does the
  *    same hover and shares the latch.
  * 4. The command in flight, then one stick frame if Virtual Stick is enabled.
  *
  * Virtual Stick is enabled only while a command that needs it is active and disabled as soon
- * as it completes, so an idle aircraft is always under the flight controller and the RC.
+ * as it completes, so an idle aircraft is always under the flight controller and the RC; if
+ * the SDK reports it enabled for the node while the loop is idle, the loop disables it.
  */
 class FlightController(
     private val port: FlightPort,
@@ -88,6 +98,7 @@ class FlightController(
     private var active: Active? = null
     private var vsEnabled = false
     private var authorityLost: String? = null
+    private var pilotInputNoted = false
     private var estopLatched = false
     private var estopSinceMs = 0L
     private var estopLandStarted = false
@@ -151,7 +162,13 @@ class FlightController(
 
     fun onTakeover(reason: String, detail: String?) {
         if (phase == Phase.Idle && active == null && !vsEnabled) {
-            event("rc input while idle ($reason): the pilot has control; nothing to cancel")
+            // The port forwards every deflection past its threshold, so idle input arrives at
+            // the stick update rate while the pilot flies: note it once per idle stretch, and
+            // not at all once the latch already says the pilot has the aircraft.
+            if (authorityLost == null && !pilotInputNoted) {
+                pilotInputNoted = true
+                event("rc input while idle ($reason): the pilot has control; nothing to cancel")
+            }
             return
         }
         event("RC takeover ($reason${detail?.let { ": $it" } ?: ""}): loop cancelled, virtual stick released")
@@ -165,10 +182,20 @@ class FlightController(
         transition(Phase.Idle)
     }
 
-    /** The SDK's own view of Virtual Stick; losing it while the loop believes it is on is a takeover. */
+    /**
+     * The SDK's own view of Virtual Stick: losing it while the loop believes it is on is a
+     * takeover; finding it enabled for the node while the loop is idle (a link blip or an app
+     * restart mid-command left the flight controller waiting for frames nobody sends) is
+     * cleared at once so the aircraft goes back to the flight controller and the RC.
+     */
     fun onVirtualStickState(enabled: Boolean, ownedBySdk: Boolean, owner: String) {
         if (vsEnabled && phase !is Phase.Enabling && (!enabled || !ownedBySdk)) {
             onTakeover("virtual_stick_dropped", if (enabled) "flight control authority is $owner" else "flight controller disabled virtual stick")
+            return
+        }
+        if (!vsEnabled && enabled && ownedBySdk && phase == Phase.Idle) {
+            event("virtual stick found enabled while the loop is idle ($owner): disabling")
+            port.disableVirtualStick { result -> if (result is PortResult.Failed) log("virtual stick disable while idle failed: ${result.detail}") }
         }
     }
 
@@ -332,7 +359,9 @@ class FlightController(
             fail(sink, FlightReason.LANDING_IN_PROGRESS, "landing in progress (${landingReason ?: "unknown reason"})")
             return false
         }
-        if (estopLatched && link.estop) {
+        // The relay's live flag, not the latch the tick sets: a motion posted between the flag
+        // arriving and the next tick must be refused too.
+        if (link.estop) {
             fail(sink, FlightReason.ESTOP_ASSERTED, "relay network stop is asserted; only hover, land, and estop are accepted")
             return false
         }
@@ -423,13 +452,21 @@ class FlightController(
         val detail = "no relay activity for $elapsedMs ms (failsafe threshold ${settings?.failsafeMs} ms): auto-landing now, never return to home"
         event("watchdog failsafe: $detail")
         if (phase is Phase.Landing) return
+        // Decided before failActive clears the command: the node lands only what it was flying.
+        val flownByNode = vsEnabled || active != null || phase !is Phase.Idle
         failActive(FlightReason.WATCHDOG_FAILSAFE, detail)
-        if (!facts.onGround) {
-            startLanding(now, "watchdog_failsafe")
-        } else if (vsEnabled) {
-            releaseVirtualStick()
-        } else {
-            transition(Phase.Idle)
+        val lost = authorityLost
+        when {
+            lost != null -> {
+                event("failsafe: the RC has the aircraft ($lost); no landing commanded")
+                transition(Phase.Idle)
+            }
+            facts.onGround -> if (vsEnabled) releaseVirtualStick() else transition(Phase.Idle)
+            !flownByNode -> {
+                event("failsafe: the loop was idle with virtual stick off; the aircraft stays with the flight controller and the RC operator, no landing commanded")
+                transition(Phase.Idle)
+            }
+            else -> startLanding(now, "watchdog_failsafe")
         }
     }
 
@@ -439,7 +476,12 @@ class FlightController(
         val reason = if (!facts.aircraftConnected) "aircraft_disconnected" else "rc_disconnected"
         event("authority lost: $reason; loop cancelled, physical RC remains primary")
         failActive(FlightReason.AUTHORITY_LOST, "$reason: the loop cancelled; physical RC remains primary")
-        vsEnabled = false
+        if (vsEnabled) {
+            // Best effort: the SDK may be disconnected, but if only the RC dropped the flight
+            // controller must not be left waiting for frames nobody sends.
+            vsEnabled = false
+            port.disableVirtualStick { result -> if (result is PortResult.Failed) log("virtual stick disable after link loss failed: ${result.detail}") }
+        }
         landingReason = null
         transition(Phase.Idle)
     }
@@ -451,23 +493,31 @@ class FlightController(
                 estopSinceMs = now
                 estopLandStarted = false
                 event("network stop asserted by the relay: motion cut to neutral sticks")
-                when (phase) {
-                    is Phase.Running, is Phase.Bench -> {
-                        failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted: sticks neutral, hovering")
-                        transition(Phase.Settling(now + config.settleMs, "network stop hover"))
-                    }
-                    is Phase.TakingOff -> {
-                        failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted during takeoff; the aircraft finishes the takeoff under the flight controller")
-                        transition(Phase.Idle)
-                    }
-                    else -> Unit
-                }
             }
-            if (estopLatched && !estopLandStarted && !facts.onGround && phase !is Phase.Landing && now - estopSinceMs >= config.estopLandAfterMs) {
+            // Level-triggered, not edge-triggered: a motion admitted before the flag arrived, or
+            // whose Virtual Stick enable answered after it, reaches Running under an asserted
+            // stop and is cut on the first tick that sees it, before this tick's frame goes out.
+            when (phase) {
+                is Phase.Running, is Phase.Bench -> {
+                    failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted: sticks neutral, hovering")
+                    transition(Phase.Settling(now + config.settleMs, "network stop hover"))
+                }
+                is Phase.TakingOff -> {
+                    failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted during takeoff; the aircraft finishes the takeoff under the flight controller")
+                    transition(Phase.Idle)
+                }
+                else -> Unit
+            }
+            if (!estopLandStarted && !facts.onGround && phase !is Phase.Landing && now - estopSinceMs >= config.estopLandAfterMs) {
                 estopLandStarted = true
-                event("network stop held for ${now - estopSinceMs} ms: landing (PRD 5.5 hold, then land if held)")
-                failActive(FlightReason.ESTOP_ASSERTED, "network stop held; landing")
-                startLanding(now, "estop_held")
+                val lost = authorityLost
+                if (lost != null) {
+                    event("network stop held for ${now - estopSinceMs} ms but the RC has the aircraft ($lost): no landing commanded")
+                } else {
+                    event("network stop held for ${now - estopSinceMs} ms: landing (PRD 5.5 hold, then land if held)")
+                    failActive(FlightReason.ESTOP_ASSERTED, "network stop held; landing")
+                    startLanding(now, "estop_held")
+                }
             }
         } else if (estopLatched) {
             estopLatched = false
@@ -736,6 +786,7 @@ class FlightController(
     }
 
     private fun transition(next: Phase) {
+        if (next !is Phase.Idle) pilotInputNoted = false
         phase = next
         generation += 1
     }

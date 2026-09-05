@@ -258,6 +258,15 @@ so tearing the link down cannot stop the protection. With no relay activity:
   never return to home. New commands are refused with `watchdog_failsafe` until the next
   join re-arms the deadman.
 - a landing already in progress is never interrupted by the deadman.
+- the node lands only what it was flying. Failsafe commands the landing when the loop was
+  active at that moment: Virtual Stick on, a command in flight, or any phase other than
+  idle (hold included, since hold keeps Virtual Stick on). With the loop idle and Virtual
+  Stick off the aircraft is already under the flight controller and the RC operator and
+  the node commands nothing: an aircraft the RC operator took off by hand, or one hovering
+  after a completed command, stays in the RC operator's hands when the relay goes silent
+  (the Flight card shows `failsafe` and the last event says so). After an RC takeover the
+  node never commands a landing, whatever the loop was doing: the RC has the aircraft
+  until Re-arm control authority, and the deadman only logs `the RC has the aircraft`.
 
 The flight controller's own failsafe setting is read on every product connection
 (`KeyFailsafeAction`, one of `HOVER`, `LANDING`, `GOHOME`) and shown on the Flight card and
@@ -277,18 +286,31 @@ Stick, and latches: readiness reports `control_authority=false` with the reason 
 `node_status.authority_change_reason` (`rc_takeover`, `rc_pause`, `rc_lost`,
 `rc_mode_switch`, `virtual_stick_dropped`, ...), the relay shows `control_authority_missing`,
 and every command is refused with `authority_lost` until the pilot presses Re-arm control
-authority on the Flight card. Stick input while the loop is idle is the pilot flying and
-latches nothing. Losing the aircraft or the RC link cancels the loop with `authority_lost`
-too, without a latch: readiness recovers when the link does, as in Phase C.
+authority on the Flight card. Every stick event past the threshold and every button press
+is forwarded to the loop; the loop, on its own thread and in order with the commands it
+admits, is the only judge of whether there is anything to cancel, so a takeover works every
+time: after a re-arm, and for a stick moved in the window between a command's admission and
+its first tick. Stick input while the loop is idle is the pilot flying and latches nothing
+(the loop notes it once per idle stretch); input while the latch is already set changes
+nothing. Losing the aircraft or the RC link cancels the loop with `authority_lost` too,
+without a latch, and disables Virtual Stick on the aircraft (best effort while the SDK is
+down): readiness recovers when the link does, as in Phase C. If the SDK later reports
+Virtual Stick still enabled for the node while the loop is idle (a link blip or an app
+restart mid-command), the loop disables it at once, so the flight controller is never left
+waiting for frames nobody sends.
 
 ### Network stop
 
-The relay's authoritative `estop` flag in every `state` frame cuts any running motion to
-neutral sticks at once (`estop_asserted`, retryable) and latches: `takeoff`, `goto`, and
-`rotate_to` are refused while it is asserted, `hover`, `land`, and `estop` are accepted. If
-the stop stays asserted for 5 s while airborne, the node lands on its own (PRD 5.5: hold,
-then land if held); releasing the flag clears the latch. The `estop` command is the same
-hover with the same latch.
+The relay's authoritative `estop` flag in every `state` frame is level-triggered: on every
+stick tick while it is asserted, any running motion is cut to neutral sticks
+(`estop_asserted`, retryable), including a motion admitted before the flag arrived or whose
+Virtual Stick enable answered after it, and the flag latches: `takeoff`, `goto`, and
+`rotate_to` are refused while it is asserted (admission reads the live flag, so a command
+that arrives between the flag and the next tick is refused too), `hover`, `land`, and
+`estop` are accepted. If the stop stays asserted for 5 s while airborne, the node lands on
+its own (PRD 5.5: hold, then land if held), unless the RC has the aircraft after a takeover:
+then the node commands nothing, logs it, and the RC operator lands. Releasing the flag
+clears the latch. The `estop` command is the same hover with the same latch.
 
 ### Fake flavor end to end
 
@@ -310,6 +332,13 @@ Space and people:
 - One RC operator on the RC-N1 with thumbs on the sticks for the whole session; one node
   operator on the phone and laptop. The RC operator calls every step and can end it at any
   time by moving a stick (takeover), pressing pause, or landing; that is the primary path.
+- The RC operator is briefed on what the node does and does not do on its own: a stick past
+  a third of its travel or the pause button ends any node motion and keeps the aircraft
+  until Re-arm control authority is pressed; after a takeover the node lands nothing, not
+  on deadman failsafe and not on a held network stop, the RC operator lands. With the loop
+  idle (`virtual stick off`) the aircraft is the RC operator's and relay loss lands nothing.
+  A network stop held for 5 s lands an airborne aircraft the node is still authorized to fly,
+  idle or not; a stick or pause ends that too.
 - Battery above 50 %, propellers checked, the aircraft on its takeoff spot with the nose
   toward the room's `north`, the Mini 3 and RC-N1 firmware and MSDK 5.18.0 recorded in
   `hardware-profile.json` beforehand (the probe log repeats them in every entry).
@@ -342,7 +371,8 @@ Order of operations:
    operator moves one stick past a third of its travel. The card shows `Control authority
    LOST: rc_takeover` within a stick update, the aircraft answers the RC, and readiness
    reports `control_authority=false`. Land with the RC, press Re-arm control authority, sign
-   it off. Repeat once with the pause button.
+   it off. Repeat once with the pause button, and once more with a stick after that re-arm:
+   the second and third takeovers must show `Control authority LOST` as fast as the first.
 8. Command path through the relay: with the aircraft hovering, dispatch `hover`,
    `rotate_to` 90 deg, `goto` 0.5 m ahead, `estop`, and `land` through the remote adapter
    (`relay/tests/test_bridge_roundtrip.py` shows the in-process dispatcher); the Commands
@@ -374,10 +404,15 @@ failsafe with the contract reasons, a landing never interrupted, hold release, e
 hold, land-if-held and release, RC takeover latch and re-arm, idle stick input, flight
 controller dropping Virtual Stick, aircraft or RC loss, takeoff completion on flight state
 and climb, land completion, rotate_to in angle mode, preemption and busy, enable refusal,
-bench holds). `bridge-node`: `FlightExecutorTest` runs the loop behind `RelayLink` against
-the stub relay (acknowledgement sequences on the wire with progress detail, the measured
-stick rate at `virtual_stick_hz`, relay silence to hold and failsafe landing, the RC takeover
-as readiness and `node_status` report it).
+bench holds, a stop asserted while Virtual Stick is enabling cut before the first frame, a
+motion posted after the stop flag refused before the next tick, no landing underneath the
+pilot on failsafe or on a held stop after a takeover, the deadman landing only what the
+node flew, Virtual Stick released on link loss and a stale enable cleared while idle, every
+stick event reaching the loop and takeovers cancelling again after each re-arm).
+`bridge-node`: `FlightExecutorTest` runs the loop behind `RelayLink` against the stub relay
+(acknowledgement sequences on the wire with progress detail, the measured stick rate at
+`virtual_stick_hz`, relay silence to hold and failsafe landing, the RC takeover as readiness
+and `node_status` report it, twice across a re-arm).
 
 ## Phase B4 exit on the phone
 

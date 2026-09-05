@@ -32,14 +32,16 @@ import org.worldofhacks.sweep.bridge.core.flight.YawMode
  * the RC stick, pause, and RTH keys as the takeover signals (E4), and a read-only look at
  * `KeyFailsafeAction` (documented, never changed: the node's own deadman lands indoors).
  *
- * A physical stick past [STICK_TAKEOVER_FRACTION] of full deflection while the loop is active
- * is a takeover (WildBridge's latch pattern from the prior-art notes); plain stick input is
- * not a listed `FlightControlAuthorityChangeReason`, so the node watches the keys itself.
+ * A physical stick past [STICK_TAKEOVER_FRACTION] of full deflection is a takeover
+ * (WildBridge's latch pattern from the prior-art notes); plain stick input is not a listed
+ * `FlightControlAuthorityChangeReason`, so the node watches the keys itself. Every such event
+ * is forwarded: the loop, on its own thread and in order with the commands it admits, is the
+ * only judge of whether there is anything to cancel, so no state here can go stale between
+ * one activation and the next.
  */
 class DjiFlightPort(private val log: (name: String, detail: String) -> Unit) : FlightPort {
     private val holder = Any()
     private var executor: FlightExecutor? = null
-    private var forwarded = false
 
     private val manager
         get() = VirtualStickManager.getInstance()
@@ -148,22 +150,22 @@ class DjiFlightPort(private val log: (name: String, detail: String) -> Unit) : F
     }
 
     private fun listenButton(word: String, name: String, key: DJIKey<Boolean>) {
-        listen(key) { down -> if (down) takeover(word, "$name pressed") }
+        listen(key) { down ->
+            if (down) {
+                log("RC button", "$name pressed")
+                takeover(word, "$name pressed")
+            }
+        }
     }
 
-    /** Forwarded once per loop activation; the loop ignores input while idle (the pilot is flying). */
+    /**
+     * Every event goes to the loop. Stick keys fire at the RC update rate while the pilot
+     * flies, so nothing is logged here: the loop notes idle input once and logs the takeover
+     * itself when it cancels something. Reading the published status here would drop events
+     * in the window between a command's admission and the tick that publishes it.
+     */
     private fun takeover(word: String, detail: String) {
-        val current = executor ?: return
-        val status = current.status.value
-        val active = status.virtualStickEnabled || status.activeCommandId != null
-        if (!active) {
-            forwarded = false
-            return
-        }
-        if (forwarded) return
-        forwarded = true
-        log("RC takeover", "$word: $detail")
-        current.onTakeover(word, detail)
+        executor?.onTakeover(word, detail)
     }
 
     private fun readFailsafeSetting(executor: FlightExecutor) {

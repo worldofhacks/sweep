@@ -464,4 +464,193 @@ class FlightControllerTest {
         assertFalse(h.controller.startBench("fast", StickFrame.NEUTRAL.copy(roll = 5.0), 1_000, tooFast))
         assertEquals("unsupported", tooFast.terminal?.second)
     }
+
+    @Test
+    fun `a network stop asserted while virtual stick is enabling cuts the motion before its first frame`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        // The SDK's enable answers two ticks later, as the real one does asynchronously.
+        h.model.deferEnableTicks = 2
+        val goto = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        assertEquals("enabling_virtual_stick", h.controller.status.phase)
+        h.estop(true)
+        // The first tick latches the stop while the loop is still enabling: nothing to cut yet.
+        h.tick(1)
+        assertTrue(h.controller.status.estopLatched)
+        assertEquals("enabling_virtual_stick", h.controller.status.phase)
+        assertNull(goto.terminal)
+        // The enable answers on the next tick and the loop would start the step; the stop,
+        // latched a tick ago, must still cut it before the first frame goes out.
+        h.tick(1)
+        assertEquals("estop_asserted", goto.terminal?.second, goto.events.toString())
+        assertTrue(h.frames.isNotEmpty() && h.frames.all { it.isNeutral }, "frames ${h.frames}")
+        h.tick(4)
+        assertTrue(h.frames.all { it.isNeutral }, "frames ${h.frames}")
+        assertEquals("idle", h.controller.status.phase)
+        assertFalse(h.model.virtualStickEnabled)
+        assertEquals(0.0, h.model.yNorth, 1e-9)
+    }
+
+    @Test
+    fun `a motion posted after the stop flag arrives but before the next tick is refused`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        h.estop(true)
+        val refused = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        assertEquals("estop_asserted", refused.terminal?.second, refused.events.toString())
+        assertFalse(h.controller.status.estopLatched, "the tick sets the latch; admission reads the live flag")
+        h.tick(1)
+        assertTrue(h.frames.isEmpty())
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.controller.status.estopLatched)
+    }
+
+    @Test
+    fun `after an RC takeover the deadman never lands underneath the pilot`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        val goto = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        h.tickMs(300)
+        h.controller.onTakeover("rc_takeover", "left stick 45%")
+        assertEquals("authority_lost", goto.terminal?.second)
+        h.relayAlive = false
+        h.tickMs(2_500)
+        assertEquals("failsafe", h.controller.status.watchdog)
+        assertFalse(h.model.landing, "no auto-landing underneath the pilot")
+        assertEquals("hovering", h.model.flightState)
+        assertEquals("idle", h.controller.status.phase)
+        assertNull(h.controller.status.landingReason)
+        assertEquals("rc_takeover", h.controller.status.authorityLostReason)
+        assertTrue(h.log.any { it.contains("the RC has the aircraft (rc_takeover); no landing commanded") }, h.log.joinToString("\n"))
+    }
+
+    @Test
+    fun `the deadman lands only what the node was flying`() {
+        val h = Harness()
+        h.hovering() // the RC operator took off by hand; the loop never flew this aircraft
+        h.join()
+        h.relayAlive = false
+        h.tickMs(2_500)
+        assertEquals("failsafe", h.controller.status.watchdog)
+        assertFalse(h.model.landing, "an idle aircraft under the flight controller stays with the RC operator")
+        assertEquals("idle", h.controller.status.phase)
+        assertNull(h.controller.status.landingReason)
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.log.any { it.contains("the loop was idle with virtual stick off") }, h.log.joinToString("\n"))
+        // Silence while the node holds the aircraft under Virtual Stick still lands it.
+        h.leave()
+        h.relayAlive = true
+        h.join()
+        assertEquals("armed", h.controller.status.watchdog)
+        val goto = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        h.tickMs(300)
+        h.relayAlive = false
+        h.tickMs(2_500)
+        assertEquals("watchdog_hold", goto.terminal?.second, goto.events.toString())
+        assertEquals("watchdog_failsafe", h.controller.status.landingReason)
+        assertTrue(h.model.landing)
+    }
+
+    @Test
+    fun `a network stop held after an RC takeover never lands underneath the pilot`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        val goto = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        h.tickMs(300)
+        h.controller.onTakeover("rc_pause", "pause button pressed")
+        assertEquals("authority_lost", goto.terminal?.second)
+        h.estop(true)
+        h.tickMs(2_500)
+        assertTrue(h.controller.status.estopLatched)
+        assertFalse(h.model.landing, "no auto-landing underneath the pilot")
+        assertEquals("idle", h.controller.status.phase)
+        assertNull(h.controller.status.landingReason)
+        assertTrue(h.log.any { it.contains("but the RC has the aircraft (rc_pause): no landing commanded") }, h.log.joinToString("\n"))
+        // Released, re-armed, and asserted again: the node is authorized and a held stop lands.
+        h.estop(false)
+        h.tick(1)
+        assertFalse(h.controller.status.estopLatched)
+        h.controller.rearmAuthority()
+        h.estop(true)
+        h.tickMs(2_500)
+        assertEquals("estop_held", h.controller.status.landingReason)
+        assertTrue(h.model.landing)
+    }
+
+    @Test
+    fun `a link drop releases virtual stick on the aircraft and a stale enable found while idle is disabled`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        val goto = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        h.tickMs(300)
+        assertTrue(h.model.virtualStickEnabled)
+        h.model.connected = false
+        h.tick(1)
+        assertEquals("authority_lost", goto.terminal?.second)
+        assertFalse(h.model.virtualStickEnabled, "the loop disables virtual stick on the aircraft, not only in its own bookkeeping")
+        h.model.connected = true
+        h.tick(1)
+        assertEquals("idle", h.controller.status.phase)
+        // The SDK reports Virtual Stick enabled for the node while the loop is idle (as after an
+        // app restart mid-command): the loop clears it so the flight controller stops waiting.
+        h.model.enableVirtualStick { }
+        assertTrue(h.model.virtualStickEnabled)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.log.any { it.contains("virtual stick found enabled while the loop is idle (MSDK): disabling") }, h.log.joinToString("\n"))
+        assertNull(h.controller.status.authorityLostReason)
+        assertEquals("idle", h.controller.status.phase)
+        // Reported off while idle: nothing to do and nothing latched.
+        h.controller.onVirtualStickState(enabled = false, ownedBySdk = false, owner = "RC")
+        assertNull(h.controller.status.authorityLostReason)
+    }
+
+    @Test
+    fun `every stick event reaches the loop and each takeover after a re-arm cancels again`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        // The pilot flies by hand: the port forwards every deflection; the loop notes it once.
+        repeat(5) { h.controller.onTakeover("rc_takeover", "left stick 60%") }
+        assertEquals(1, h.log.count { it.contains("pilot has control") })
+        assertNull(h.controller.status.authorityLostReason)
+        // Pause during a goto latches.
+        val first = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        h.tickMs(300)
+        h.controller.onTakeover("rc_pause", "pause button pressed")
+        assertEquals("authority_lost", first.terminal?.second)
+        assertEquals("rc_pause", h.controller.status.authorityLostReason)
+        // Latched: the pilot's continuing input is not logged again and changes nothing.
+        val logged = h.log.size
+        repeat(5) { h.controller.onTakeover("rc_takeover", "right stick 50%") }
+        assertEquals(logged, h.log.size)
+        assertEquals("rc_pause", h.controller.status.authorityLostReason)
+        // Re-armed, the next goto runs and a stick past the threshold must latch again.
+        h.controller.rearmAuthority()
+        val second = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        h.tickMs(300)
+        assertTrue(h.model.virtualStickEnabled)
+        h.controller.onTakeover("rc_takeover", "right stick 50%")
+        assertEquals("authority_lost", second.terminal?.second, second.events.toString())
+        assertEquals("rc_takeover", h.controller.status.authorityLostReason)
+        assertFalse(h.model.virtualStickEnabled)
+        // A stick moved in the window between admission and the first tick is not lost either:
+        // the loop sees it in order, while the enable is still pending.
+        h.controller.rearmAuthority()
+        h.model.deferEnableTicks = 1
+        val framesBefore = h.frames.size
+        val third = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
+        assertEquals("enabling_virtual_stick", h.controller.status.phase)
+        h.controller.onTakeover("rc_takeover", "left stick 40%")
+        assertEquals("authority_lost", third.terminal?.second, third.events.toString())
+        h.tick(2)
+        assertEquals(framesBefore, h.frames.size, "no frame streamed for the cancelled step")
+        assertFalse(h.model.virtualStickEnabled, "the late enable answer is released again")
+        assertEquals("idle", h.controller.status.phase)
+    }
 }
