@@ -1,0 +1,771 @@
+"""Immutable, deterministic previews for known-map navigation."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from hashlib import sha256
+from heapq import heappop, heappush
+from math import ceil, dist, isfinite
+from pathlib import Path
+from typing import Literal
+
+import numpy as np
+
+from tools.map_validate import validate_bundle
+
+
+def _number(value: float, name: str, *, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not isfinite(value):
+        raise ValueError(f"{name} must be finite")
+    value = float(value)
+    if positive and value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class Pose:
+    x_m: float
+    y_m: float
+    z_m: float
+    floor_id: str
+
+    def __post_init__(self) -> None:
+        _number(self.x_m, "x_m")
+        _number(self.y_m, "y_m")
+        _number(self.z_m, "z_m")
+        if not self.floor_id:
+            raise ValueError("floor_id is required")
+
+    @property
+    def xyz(self) -> tuple[float, float, float]:
+        return (self.x_m, self.y_m, self.z_m)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPin:
+    version: str
+    content_sha256: str
+
+    def __post_init__(self) -> None:
+        if not self.version or len(self.content_sha256) != 64:
+            raise ValueError("artifact pin is incomplete")
+
+
+@dataclass(frozen=True, slots=True)
+class MotionConfig:
+    aircraft_radius_m: float
+    aircraft_height_m: float
+    map_uncertainty_m: float
+    pose_uncertainty_m: float
+    tracking_allowance_m: float
+    stopping_allowance_m: float
+
+    def __post_init__(self) -> None:
+        for name in (
+            "aircraft_radius_m",
+            "aircraft_height_m",
+            "map_uncertainty_m",
+            "pose_uncertainty_m",
+            "tracking_allowance_m",
+            "stopping_allowance_m",
+        ):
+            value = _number(
+                getattr(self, name),
+                name,
+                positive=name in {"aircraft_radius_m", "aircraft_height_m"},
+            )
+            if name not in {"aircraft_radius_m", "aircraft_height_m"} and value < 0:
+                raise ValueError(f"{name} must be nonnegative")
+
+    @property
+    def swept_radius_m(self) -> float:
+        return (
+            self.aircraft_radius_m
+            + self.map_uncertainty_m
+            + self.pose_uncertainty_m
+            + self.tracking_allowance_m
+            + self.stopping_allowance_m
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DronePose:
+    drone_id: int
+    connection_epoch: int
+    pose: Pose
+
+    def __post_init__(self) -> None:
+        if type(self.drone_id) is not int or self.drone_id < 0 or self.connection_epoch < 0:
+            raise ValueError("drone identity and epochs are required")
+
+
+@dataclass(frozen=True, slots=True)
+class ArrivalSlot:
+    slot_id: str
+    zone_id: str
+    pose: Pose
+    radius_m: float
+
+    def __post_init__(self) -> None:
+        if not self.slot_id or not self.zone_id:
+            raise ValueError("arrival slot identity is required")
+        _number(self.radius_m, "radius_m", positive=True)
+
+
+@dataclass(frozen=True, slots=True)
+class Zone:
+    zone_id: str
+    floor_id: str
+    navigation_allowed: bool
+    arrival_slots: tuple[ArrivalSlot, ...]
+    aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.zone_id or not self.floor_id:
+            raise ValueError("zone identity is required")
+        if len({slot.slot_id for slot in self.arrival_slots}) != len(self.arrival_slots):
+            raise ValueError("arrival slot ids must be unique")
+        if any(
+            slot.zone_id != self.zone_id or slot.pose.floor_id != self.floor_id
+            for slot in self.arrival_slots
+        ):
+            raise ValueError("arrival slot must belong to its zone and floor")
+        if any(not alias.strip() for alias in self.aliases) or len(set(self.aliases)) != len(
+            self.aliases
+        ):
+            raise ValueError("zone aliases must be distinct nonempty text")
+
+
+@dataclass(frozen=True, slots=True)
+class Connector:
+    connector_id: str
+    from_floor_id: str
+    to_floor_id: str
+    from_pose: Pose
+    to_pose: Pose
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.connector_id or not self.from_floor_id or not self.to_floor_id:
+            raise ValueError("connector identity is required")
+        if (
+            self.from_pose.floor_id != self.from_floor_id
+            or self.to_pose.floor_id != self.to_floor_id
+        ):
+            raise ValueError("connector poses must match declared floors")
+
+
+@dataclass(frozen=True, slots=True)
+class GridLevel:
+    floor_id: str
+    z_m: float
+    origin_xy_m: tuple[float, float]
+    cell_m: float
+    width: int
+    height: int
+    blocked_cells: frozenset[tuple[int, int]]
+
+    def __post_init__(self) -> None:
+        _number(self.z_m, "z_m")
+        if len(self.origin_xy_m) != 2:
+            raise ValueError("origin_xy_m must have two coordinates")
+        _number(self.origin_xy_m[0], "origin x")
+        _number(self.origin_xy_m[1], "origin y")
+        _number(self.cell_m, "cell_m", positive=True)
+        if not self.floor_id or self.width < 1 or self.height < 1:
+            raise ValueError("grid level dimensions are invalid")
+        if any(not (0 <= x < self.width and 0 <= y < self.height) for x, y in self.blocked_cells):
+            raise ValueError("blocked cell is outside grid")
+
+    def cell_for(self, pose: Pose) -> tuple[int, int]:
+        return (
+            int((pose.x_m - self.origin_xy_m[0]) // self.cell_m),
+            int((pose.y_m - self.origin_xy_m[1]) // self.cell_m),
+        )
+
+    def pose_for(self, cell: tuple[int, int]) -> Pose:
+        return Pose(
+            self.origin_xy_m[0] + (cell[0] + 0.5) * self.cell_m,
+            self.origin_xy_m[1] + (cell[1] + 0.5) * self.cell_m,
+            self.z_m,
+            self.floor_id,
+        )
+
+    def free(self, cell: tuple[int, int]) -> bool:
+        return (
+            0 <= cell[0] < self.width
+            and 0 <= cell[1] < self.height
+            and cell not in self.blocked_cells
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationArtifact:
+    map_pin: ArtifactPin
+    geometry_pin: ArtifactPin
+    grid_clearance_m: float
+    grids: tuple[GridLevel, ...]
+    zones: tuple[Zone, ...]
+    connectors: tuple[Connector, ...] = ()
+
+    def __post_init__(self) -> None:
+        _number(self.grid_clearance_m, "grid_clearance_m", positive=True)
+        if not self.grids:
+            raise ValueError("navigation artifact needs grids")
+        if len({(grid.floor_id, grid.z_m) for grid in self.grids}) != len(self.grids):
+            raise ValueError("grid levels must be unique")
+        if len({zone.zone_id for zone in self.zones}) != len(self.zones):
+            raise ValueError("zone ids must be unique")
+
+    @classmethod
+    def from_geometry_directory(
+        cls,
+        bundle: str | Path,
+        geometry_directory: str | Path,
+        accepted_versions: dict[str, str],
+        zones: tuple[Zone, ...],
+        connectors: tuple[Connector, ...] = (),
+    ) -> NavigationArtifact:
+        """Load a validated map bundle and its exact generated grid artifacts."""
+        validated = validate_bundle(bundle, accepted_versions)
+        directory = Path(geometry_directory)
+        report_path = directory / "geometry.json"
+        report = json.loads(report_path.read_bytes())
+        if (
+            report.get("bundle_version") != validated["bundle_version"]
+            or report.get("bundle_content_sha256") != validated["content_sha256"]
+        ):
+            raise ValueError("geometry artifact does not match accepted map")
+        files = report.get("files")
+        if not isinstance(files, dict):
+            raise ValueError("geometry artifact has no file pins")
+        grids = []
+        for band in report.get("bands_above_floor_m", []):
+            name = f"grid_{report['floor_id']}_{band}.npy"
+            path = directory / name
+            if files.get(name) != sha256(path.read_bytes()).hexdigest():
+                raise ValueError(f"geometry grid hash mismatch: {name}")
+            rows = np.load(path, allow_pickle=False)
+            if (
+                rows.dtype != np.uint8
+                or rows.ndim != 2
+                or tuple(rows.shape) != tuple(report["shape_yx"])
+            ):
+                raise ValueError(f"invalid geometry grid: {name}")
+            grids.append(
+                GridLevel(
+                    report["floor_id"],
+                    float(report["floor_elevation_m"]) + float(band),
+                    tuple(float(value) for value in report["origin_xy"]),
+                    float(report["cell_m"]),
+                    int(rows.shape[1]),
+                    int(rows.shape[0]),
+                    frozenset((int(x), int(y)) for y, x in zip(*np.where(rows != 0), strict=True)),
+                )
+            )
+        if not grids:
+            raise ValueError("geometry artifact has no grids")
+        return cls(
+            ArtifactPin(validated["bundle_version"], validated["content_sha256"]),
+            ArtifactPin(
+                str(report["authoring_sha256"]),
+                sha256(report_path.read_bytes()).hexdigest(),
+            ),
+            float(report["hazard_margin_m"]),
+            tuple(grids),
+            zones,
+            connectors,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationPermission:
+    permitted_zone_ids: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class FormationPermission:
+    permitted_zone_ids: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationRequest:
+    destination_zone_id: str
+    roster_version: int
+    selected: tuple[DronePose, ...]
+    all_positions: tuple[DronePose, ...]
+    motion: MotionConfig
+    permission: NavigationPermission
+
+    def __post_init__(self) -> None:
+        if not self.destination_zone_id or self.roster_version < 0 or not self.selected:
+            raise ValueError("destination and selected drones are required")
+        if len({drone.drone_id for drone in self.selected}) != len(self.selected):
+            raise ValueError("selected drone ids must be unique")
+        positions = {drone.drone_id: drone for drone in self.all_positions}
+        if len(positions) != len(self.all_positions) or any(
+            positions.get(drone.drone_id) != drone for drone in self.selected
+        ):
+            raise ValueError("all_positions must include each selected drone exactly")
+
+
+@dataclass(frozen=True, slots=True)
+class SweptSegment:
+    start: Pose
+    end: Pose
+    radius_m: float
+    height_m: float
+
+
+@dataclass(frozen=True, slots=True)
+class DroneRoute:
+    drone: DronePose
+    arrival_slot: ArrivalSlot
+    waypoints: tuple[Pose, ...]
+    swept_segments: tuple[SweptSegment, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationPlan:
+    map_pin: ArtifactPin
+    geometry_pin: ArtifactPin
+    config: MotionConfig
+    roster_version: int
+    destination_zone_id: str
+    selected: tuple[DronePose, ...]
+    arrival_slots: tuple[ArrivalSlot, ...]
+    routes: tuple[DroneRoute, ...]
+    execution_order: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationRefusal:
+    code: Literal[
+        "arrival_not_permitted",
+        "destination_unknown",
+        "destination_excluded",
+        "insufficient_arrival_slots",
+        "clearance_exceeds_geometry",
+        "wrong_floor",
+        "start_unreachable",
+        "route_unreachable",
+        "arrival_conflict",
+        "artifact_changed",
+        "connection_changed",
+        "position_drift",
+        "remaining_route_obstructed",
+    ]
+    detail: str
+
+
+class NavigationPlanner:
+    def plan(
+        self, request: NavigationRequest, artifact: NavigationArtifact
+    ) -> NavigationPlan | NavigationRefusal:
+        zone = next(
+            (item for item in artifact.zones if item.zone_id == request.destination_zone_id), None
+        )
+        if zone is None:
+            return NavigationRefusal(
+                "destination_unknown", f"unknown destination: {request.destination_zone_id}"
+            )
+        if zone.zone_id not in request.permission.permitted_zone_ids:
+            return NavigationRefusal(
+                "arrival_not_permitted", f"arrival permission is missing for {zone.zone_id}"
+            )
+        if not zone.navigation_allowed:
+            return NavigationRefusal(
+                "destination_excluded", f"destination is excluded: {zone.zone_id}"
+            )
+        if request.motion.swept_radius_m > artifact.grid_clearance_m + 1e-9:
+            return NavigationRefusal(
+                "clearance_exceeds_geometry", "motion clearance exceeds geometry inflation"
+            )
+        drones = tuple(sorted(request.selected, key=lambda drone: drone.drone_id))
+        slots = tuple(sorted(zone.arrival_slots, key=lambda slot: slot.slot_id))
+        if len(slots) < len(drones):
+            return NavigationRefusal(
+                "insufficient_arrival_slots", "destination has too few distinct arrival slots"
+            )
+        if any(slot.radius_m < request.motion.swept_radius_m for slot in slots[: len(drones)]):
+            return NavigationRefusal(
+                "arrival_conflict", "arrival slot cannot contain swept aircraft volume"
+            )
+        assigned = tuple(zip(drones, slots, strict=True))
+        reserved = [(drone.pose, request.motion.swept_radius_m) for drone in request.all_positions]
+        routes: list[DroneRoute] = []
+        for drone, slot in assigned:
+            if drone.pose.floor_id != slot.pose.floor_id and not any(
+                grid.floor_id == drone.pose.floor_id for grid in artifact.grids
+            ):
+                return NavigationRefusal(
+                    "wrong_floor", f"no route grid exists for {drone.drone_id} starting floor"
+                )
+            if not self._pose_on_free_grid(drone.pose, artifact.grids):
+                return NavigationRefusal(
+                    "start_unreachable",
+                    f"start position is outside known free space for {drone.drone_id}",
+                )
+            path = self._route(drone.pose, slot.pose, artifact, request.motion, reserved)
+            if path is None:
+                code = (
+                    "wrong_floor"
+                    if drone.pose.floor_id != slot.pose.floor_id
+                    else "route_unreachable"
+                )
+                return NavigationRefusal(
+                    code, f"no clearance-checked route for {drone.drone_id} to {slot.slot_id}"
+                )
+            route = DroneRoute(
+                drone,
+                slot,
+                tuple(path),
+                tuple(
+                    SweptSegment(
+                        start, end, request.motion.swept_radius_m, request.motion.aircraft_height_m
+                    )
+                    for start, end in zip(path, path[1:], strict=False)
+                ),
+            )
+            routes.append(route)
+            reserved = [item for item in reserved if item[0] != drone.pose]
+            reserved.append((slot.pose, request.motion.swept_radius_m))
+        return NavigationPlan(
+            artifact.map_pin,
+            artifact.geometry_pin,
+            request.motion,
+            request.roster_version,
+            zone.zone_id,
+            drones,
+            tuple(slot for _, slot in assigned),
+            tuple(routes),
+            tuple(drone.drone_id for drone in drones),
+        )
+
+    def revalidate(
+        self,
+        plan: NavigationPlan,
+        artifact: NavigationArtifact,
+        actual_positions: tuple[DronePose, ...],
+        route_index: int,
+        segment_index: int,
+        position_tolerance_m: float,
+    ) -> NavigationRefusal | None:
+        """Check a frozen route before dispatch without calculating a replacement route."""
+        _number(position_tolerance_m, "position_tolerance_m", positive=True)
+        if position_tolerance_m > plan.config.tracking_allowance_m:
+            raise ValueError("position_tolerance_m exceeds frozen tracking_allowance_m")
+        if artifact.map_pin != plan.map_pin or artifact.geometry_pin != plan.geometry_pin:
+            return NavigationRefusal("artifact_changed", "map or geometry pin changed")
+        if not 0 <= route_index < len(plan.routes):
+            raise ValueError("route_index is outside plan")
+        route = plan.routes[route_index]
+        if not 0 <= segment_index < len(route.swept_segments):
+            raise ValueError("segment_index is outside route")
+        current = {drone.drone_id: drone for drone in actual_positions}
+        if len(current) != len(actual_positions):
+            raise ValueError("actual_positions contains duplicate drone ids")
+        for selected in plan.selected:
+            actual = current.get(selected.drone_id)
+            if actual is None or actual.connection_epoch != selected.connection_epoch:
+                return NavigationRefusal(
+                    "connection_changed", "selected aircraft connection epoch changed"
+                )
+        active = current[route.drone.drone_id]
+        segment = route.swept_segments[segment_index]
+        if dist(active.pose.xyz, segment.start.xyz) > position_tolerance_m:
+            return NavigationRefusal(
+                "position_drift", "aircraft is not at the frozen segment start"
+            )
+        stationary = [
+            (drone.pose, plan.config.swept_radius_m)
+            for drone_id, drone in current.items()
+            if drone_id != route.drone.drone_id
+        ]
+        if active.pose != segment.start:
+            if active.pose.floor_id != segment.end.floor_id:
+                return NavigationRefusal(
+                    "remaining_route_obstructed", "drifted position cannot enter a frozen connector"
+                )
+            level = self._level_for(active.pose, artifact.grids)
+            if level is None or not _line_is_free(active.pose, segment.end, level):
+                return NavigationRefusal(
+                    "remaining_route_obstructed", "drifted approach enters blocked space"
+                )
+            if self._segment_hits_reservation(
+                active.pose, segment.end, stationary, segment.radius_m, active.pose
+            ):
+                return NavigationRefusal(
+                    "remaining_route_obstructed",
+                    "drifted approach conflicts with stationary aircraft",
+                )
+        remaining = route.swept_segments[segment_index:]
+        for candidate in remaining:
+            if candidate.start.floor_id != candidate.end.floor_id or (
+                candidate.start.xyz[:2] == candidate.end.xyz[:2]
+                and candidate.start.z_m != candidate.end.z_m
+            ):
+                if not self._valid_vertical_segment(candidate, artifact):
+                    return NavigationRefusal(
+                        "remaining_route_obstructed", "vertical connector changed"
+                    )
+            else:
+                level = self._level_for(candidate.start, artifact.grids)
+                if level is None or not _line_is_free(candidate.start, candidate.end, level):
+                    return NavigationRefusal(
+                        "remaining_route_obstructed", "remaining route enters blocked space"
+                    )
+            if self._segment_hits_reservation(
+                candidate.start, candidate.end, stationary, candidate.radius_m, active.pose
+            ):
+                return NavigationRefusal(
+                    "remaining_route_obstructed",
+                    "remaining route conflicts with stationary aircraft",
+                )
+        return None
+
+    @classmethod
+    def _valid_vertical_segment(cls, segment: SweptSegment, artifact: NavigationArtifact) -> bool:
+        if segment.start.floor_id == segment.end.floor_id:
+            return cls._vertical_levels(segment.start, segment.end, artifact.grids) is not None
+        return any(
+            connector.enabled
+            and connector.from_pose == segment.start
+            and connector.to_pose == segment.end
+            for connector in artifact.connectors
+        )
+
+    def _route(
+        self,
+        start: Pose,
+        goal: Pose,
+        artifact: NavigationArtifact,
+        motion: MotionConfig,
+        reserved: list[tuple[Pose, float]],
+    ) -> list[Pose] | None:
+        start_level = self._level_for(start, artifact.grids)
+        goal_level = self._level_for(goal, artifact.grids)
+        if start_level is None or goal_level is None:
+            return None
+        if start.floor_id != goal.floor_id:
+            for connector in artifact.connectors:
+                if (
+                    not connector.enabled
+                    or connector.from_floor_id != start.floor_id
+                    or connector.to_floor_id != goal.floor_id
+                ):
+                    continue
+                if (connector.from_pose.x_m, connector.from_pose.y_m) != (
+                    connector.to_pose.x_m,
+                    connector.to_pose.y_m,
+                ):
+                    continue
+                first = self._route_on_level(
+                    start, connector.from_pose, start_level, reserved, motion.swept_radius_m
+                )
+                if first is None:
+                    continue
+                if self._segment_hits_reservation(
+                    connector.from_pose,
+                    connector.to_pose,
+                    reserved,
+                    motion.swept_radius_m,
+                    start,
+                ):
+                    continue
+                second = self._route_on_level(
+                    connector.to_pose, goal, goal_level, reserved, motion.swept_radius_m
+                )
+                if second is not None:
+                    return [*first, *second]
+            return None
+        if start_level.z_m != goal_level.z_m:
+            intermediate = self._vertical_levels(start, goal, artifact.grids)
+            if intermediate is None:
+                return None
+            first = self._route_on_level(
+                start,
+                Pose(goal.x_m, goal.y_m, start_level.z_m, start.floor_id),
+                start_level,
+                reserved,
+                motion.swept_radius_m,
+            )
+            if first is None:
+                return None
+            points = [*first, *intermediate, goal]
+            if any(
+                self._segment_hits_reservation(a, b, reserved, motion.swept_radius_m, start)
+                for a, b in zip(points, points[1:], strict=False)
+            ):
+                return None
+            return points
+        if self._blocked_by_stationary(start, reserved, motion.swept_radius_m, exempt=start):
+            return None
+        return self._route_on_level(start, goal, start_level, reserved, motion.swept_radius_m)
+
+    def _route_on_level(
+        self,
+        start: Pose,
+        goal: Pose,
+        level: GridLevel,
+        reserved: list[tuple[Pose, float]],
+        radius: float,
+    ) -> list[Pose] | None:
+        if self._blocked_by_stationary(start, reserved, radius, exempt=start):
+            return None
+        start_cell, goal_cell = level.cell_for(start), level.cell_for(goal)
+        if not level.free(start_cell) or not level.free(goal_cell):
+            return None
+        cells = self._astar(level, start_cell, goal_cell, reserved, radius)
+        if cells is None:
+            return None
+        points = [start, *(level.pose_for(cell) for cell in cells[1:-1]), goal]
+        if any(
+            self._segment_hits_reservation(a, b, reserved, radius, exempt=start)
+            for a, b in zip(points, points[1:], strict=False)
+        ):
+            return None
+        return _simplify(points, level, reserved, radius)
+
+    @staticmethod
+    def _level_for(pose: Pose, levels: tuple[GridLevel, ...]) -> GridLevel | None:
+        candidates = [level for level in levels if level.floor_id == pose.floor_id]
+        return min(candidates, key=lambda level: abs(level.z_m - pose.z_m), default=None)
+
+    @classmethod
+    def _pose_on_free_grid(cls, pose: Pose, levels: tuple[GridLevel, ...]) -> bool:
+        level = cls._level_for(pose, levels)
+        return level is not None and level.free(level.cell_for(pose))
+
+    @staticmethod
+    def _vertical_levels(
+        start: Pose, goal: Pose, levels: tuple[GridLevel, ...]
+    ) -> list[Pose] | None:
+        floor_levels = sorted(
+            (level for level in levels if level.floor_id == start.floor_id),
+            key=lambda level: level.z_m,
+        )
+        low, high = sorted((start.z_m, goal.z_m))
+        relevant = [level for level in floor_levels if low <= level.z_m <= high]
+        if not relevant or any(
+            not level.free(level.cell_for(Pose(goal.x_m, goal.y_m, level.z_m, goal.floor_id)))
+            for level in relevant
+        ):
+            return None
+        return [
+            Pose(goal.x_m, goal.y_m, level.z_m, goal.floor_id)
+            for level in relevant
+            if level.z_m != start.z_m and level.z_m != goal.z_m
+        ]
+
+    def _astar(
+        self,
+        level: GridLevel,
+        start: tuple[int, int],
+        goal: tuple[int, int],
+        reserved: list[tuple[Pose, float]],
+        radius: float,
+    ) -> list[tuple[int, int]] | None:
+        frontier = [(0.0, 0.0, start)]
+        parents: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+        costs = {start: 0.0}
+        while frontier:
+            _, cost, current = heappop(frontier)
+            if current == goal:
+                path = []
+                while current is not None:
+                    path.append(current)
+                    current = parents[current]
+                return list(reversed(path))
+            for dx, dy in ((-1, 0), (0, -1), (0, 1), (1, 0)):
+                candidate = (current[0] + dx, current[1] + dy)
+                if not level.free(candidate):
+                    continue
+                pose = level.pose_for(candidate)
+                if self._blocked_by_stationary(pose, reserved, radius):
+                    continue
+                candidate_cost = cost + 1.0
+                if candidate_cost >= costs.get(candidate, float("inf")):
+                    continue
+                costs[candidate] = candidate_cost
+                parents[candidate] = current
+                heuristic = abs(candidate[0] - goal[0]) + abs(candidate[1] - goal[1])
+                heappush(frontier, (candidate_cost + heuristic, candidate_cost, candidate))
+        return None
+
+    @staticmethod
+    def _blocked_by_stationary(
+        pose: Pose,
+        reserved: list[tuple[Pose, float]],
+        radius: float,
+        exempt: Pose | None = None,
+    ) -> bool:
+        return any(
+            other != exempt
+            and other.floor_id == pose.floor_id
+            and dist(other.xyz, pose.xyz) < other_radius + radius - 1e-9
+            for other, other_radius in reserved
+        )
+
+    @staticmethod
+    def _segment_hits_reservation(
+        start: Pose,
+        end: Pose,
+        reserved: list[tuple[Pose, float]],
+        radius: float,
+        exempt: Pose,
+    ) -> bool:
+        length = dist(start.xyz, end.xyz)
+        for index in range(ceil(length / 0.05) + 1):
+            t = index / max(1, ceil(length / 0.05))
+            point = Pose(
+                start.x_m + (end.x_m - start.x_m) * t,
+                start.y_m + (end.y_m - start.y_m) * t,
+                start.z_m + (end.z_m - start.z_m) * t,
+                start.floor_id,
+            )
+            if NavigationPlanner._blocked_by_stationary(point, reserved, radius, exempt):
+                return True
+        return False
+
+
+def _simplify(
+    points: list[Pose],
+    level: GridLevel,
+    reserved: list[tuple[Pose, float]],
+    radius: float,
+) -> list[Pose]:
+    result = [points[0]]
+    index = 0
+    while index < len(points) - 1:
+        next_index = len(points) - 1
+        while next_index > index + 1:
+            if _line_is_free(
+                points[index], points[next_index], level
+            ) and not NavigationPlanner._segment_hits_reservation(
+                points[index], points[next_index], reserved, radius, points[0]
+            ):
+                break
+            next_index -= 1
+        result.append(points[next_index])
+        index = next_index
+    return result
+
+
+def _line_is_free(start: Pose, end: Pose, level: GridLevel) -> bool:
+    steps = max(1, ceil(dist(start.xyz, end.xyz) / (level.cell_m / 2)))
+    return all(
+        level.free(
+            level.cell_for(
+                Pose(
+                    start.x_m + (end.x_m - start.x_m) * index / steps,
+                    start.y_m + (end.y_m - start.y_m) * index / steps,
+                    start.z_m + (end.z_m - start.z_m) * index / steps,
+                    start.floor_id,
+                )
+            )
+        )
+        for index in range(steps + 1)
+    )
