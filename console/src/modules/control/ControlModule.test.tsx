@@ -234,6 +234,42 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(screen.getByLabelText('Latest outcome')).toHaveTextContent('formation_set refused')
   })
 
+  test('retrying selected landing waits for a fresh confirmation before sending', async () => {
+    let now = t0
+    const clients = fixtureClients(() => now)
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds(() => now)} />)
+    await screen.findByText('1 of 4 selected')
+    await openPane(user, 'Commands')
+    await user.click(screen.getByRole('button', { name: /^Land Confirmation required/ }))
+    await confirmDock(user)
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    const original = clients.console.sent[0]
+    act(() => {
+      clients.console.emitServer({
+        v: 1, t: t0 + 1, type: 'acknowledgement', event_id: 'land-failed', session,
+        intent_id: original.intent_id, command_id: null, status: 'failed',
+        source: 'autonomy', drone_id: null, connection_epoch: null, roster_version: 7,
+        reason: 'adapter_failure', detail: 'Landing failed.',
+      })
+    })
+    now += 10
+    await openPane(user, 'Requests')
+    const failed = screen.getByRole('listitem', { name: 'land failed' })
+    await user.click(within(failed).getByRole('button', { name: 'Retry as new intent' }))
+    expect(clients.console.sent).toHaveLength(1)
+    const dock = screen.getByRole('region', { name: 'Pending confirmation' })
+    const draft = JSON.parse(dock.querySelector('pre')!.textContent!)
+    expect(draft).toMatchObject({
+      name: 'land', intent_id: 'intent-2', retry_of: original.intent_id,
+      selection: [1], args: {}, confirm: false,
+    })
+    now += 10
+    await confirmDock(user)
+    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+    expect(clients.console.sent[1]).toEqual({ ...draft, t: now, confirm: true })
+  })
+
   test('retry mints a new id with retry_of and sends at once, with no second preview for a confirmation-gated name', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()

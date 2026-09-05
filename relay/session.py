@@ -132,6 +132,8 @@ class RelaySession:
         self._last_transport_t: dict[tuple[str, int | None], int] = {}
         self._intents: dict[str, _IntentLedgerEntry] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
+        self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
+        self._resuming_intents: set[str] = set()
         self._execution_lock = Lock()
         self._metrics = {
             "accepted_intents": 0,
@@ -327,6 +329,7 @@ class RelaySession:
         else:
             with self._execution_lock:
                 events = self._execute_pending(pending, sink)
+        events.extend(self._resume_acknowledgements(intent_id))
         with self._lock:
             self._pending_intents.pop(intent_id, None)
         return events
@@ -401,6 +404,7 @@ class RelaySession:
             if pending.executing or pending.operation_id is not None:
                 return []
             self._pending_intents.pop(intent_id)
+            self._acknowledgements.pop(intent_id, None)
             cancel = getattr(self.intent_sink, "cancel_intent", None)
             if callable(cancel):
                 cancel(intent_id)
@@ -499,12 +503,6 @@ class RelaySession:
                         detail=sink_result.detail,
                     )
                 )
-            resume = getattr(self.intent_sink, "resume_after_acknowledgement", None)
-            while pending.acknowledgements and callable(resume):
-                acknowledgement = pending.acknowledgements.pop(0)
-                resumed = resume(self, acknowledgement)
-                if resumed is not None:
-                    events.extend(resumed.relay_events)
         pending.events = events
         return events
 
@@ -639,14 +637,56 @@ class RelaySession:
                 resume = getattr(self.intent_sink, "resume_after_acknowledgement", None)
                 if callable(resume):
                     pending = self._pending_intents.get(acknowledgement.intent_id)
-                    if pending is not None and pending.executing and pending.events is None:
-                        # Adapter completion can precede installation of the router's owner.
-                        pending.acknowledgements.append(acknowledgement)
-                    else:
-                        resumed = resume(self, acknowledgement)
-                        if resumed is not None:
-                            events.extend(resumed.relay_events)
-            return events
+                    queue = self._acknowledgements.setdefault(
+                        acknowledgement.intent_id,
+                        pending.acknowledgements if pending is not None else [],
+                    )
+                    queue.append(acknowledgement)
+        events.extend(self._resume_acknowledgements(acknowledgement.intent_id))
+        return events
+
+    def _resume_acknowledgements(self, intent_id: str) -> list[dict[str, object]]:
+        with self._lock:
+            self._ensure_mutation_usable()
+            pending = self._pending_intents.get(intent_id)
+            if (
+                intent_id in self._resuming_intents
+                or not self._acknowledgements.get(intent_id)
+                or (pending is not None and pending.events is None)
+            ):
+                return []
+            self._resuming_intents.add(intent_id)
+        events = []
+        operation_id = None
+        try:
+            while True:
+                with self._lock:
+                    queue = self._acknowledgements.get(intent_id)
+                    if not queue:
+                        self._acknowledgements.pop(intent_id, None)
+                        self._resuming_intents.remove(intent_id)
+                        return events
+                    acknowledgement = queue[0]
+                    self._ensure_mutation_usable()
+                    operation_id = self.audit_log.begin_operation()
+                # Resume may perform adapter I/O; only audit mutations hold the session lock.
+                resumed = self.intent_sink.resume_after_acknowledgement(self, acknowledgement)
+                with self._lock, self._audit_operation(operation_id=operation_id):
+                    self._ensure_mutation_usable()
+                    if resumed is not None:
+                        events.extend(resumed.relay_events)
+                with self._lock:
+                    queue.pop(0)
+                operation_id = None
+        except BaseException:
+            with self._lock:
+                self._resuming_intents.discard(intent_id)
+                if operation_id is not None:
+                    self.audit_log.abandon_operation(operation_id)
+                    self._mutation_usable = False
+                    self._projection_usable = False
+                    self._replay_usable = False
+            raise
 
     def record_lifecycle(
         self,

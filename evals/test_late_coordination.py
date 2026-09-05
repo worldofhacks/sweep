@@ -141,17 +141,34 @@ def test_precreated_recovery_at_or_before_completed_stop_stays_superseded(
     assert harness.flight.aircraft[1].flight_state is FlightState.HOVERING
 
 
-@pytest.mark.parametrize(("name", "operation"), [("hold", "hover"), ("land_all", "land")])
-def test_undelivered_hold_cannot_erase_delivered_recovery(
-    airborne_session: tuple[Harness, RelaySession], name: str, operation: str
+@pytest.mark.parametrize(
+    ("name", "operation", "reservation"),
+    [
+        ("hold", "hover", "hold"),
+        ("land_all", "land", "hold"),
+        ("land", "land", "hold"),
+        ("land", "land", "estop"),
+    ],
+)
+def test_undelivered_safety_cannot_erase_delivered_recovery(
+    airborne_session: tuple[Harness, RelaySession],
+    name: str,
+    operation: str,
+    reservation: str,
 ) -> None:
     harness, session = airborne_session
     recovery = harness.intent(
-        name, selection=[1] if name == "hold" else [], confirm=name == "land_all"
+        name,
+        selection=[1] if name in {"hold", "land"} else [],
+        confirm=name in {"land", "land_all"},
     )
     _admit(session, recovery)
     harness.clock.advance(100)
-    reserved = harness.intent("hold", selection=[1], source="keyboard")
+    reserved = harness.intent(
+        reservation,
+        selection=[1] if reservation == "hold" else [],
+        source="keyboard",
+    )
     _admit(session, reserved)
 
     completed = _execute(session, recovery)

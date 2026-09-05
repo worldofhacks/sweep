@@ -232,11 +232,15 @@ class RelayRuntime:
         operation: Callable[[], list[dict[str, object]]],
         *,
         wait_for_connection_id: str | None = None,
+        resumes_execution: bool = False,
     ) -> list[dict[str, object]]:
         """Caller cancellation leaves the ordered mutation and publication running."""
         task = asyncio.create_task(
             self._process_and_publish(
-                session_id, operation, wait_for_connection_id=wait_for_connection_id
+                session_id,
+                operation,
+                wait_for_connection_id=wait_for_connection_id,
+                resumes_execution=resumes_execution,
             )
         )
         self._track_background_operation(task)
@@ -248,10 +252,14 @@ class RelayRuntime:
         operation: Callable[[], list[dict[str, object]]],
         *,
         wait_for_connection_id: str | None = None,
+        resumes_execution: bool = False,
     ) -> list[dict[str, object]]:
         deliveries: list[asyncio.Future[bool]] = []
-        async with self._session_operation(session_id):
+        if resumes_execution:
             events = await asyncio.to_thread(operation)
+        async with self._session_operation(session_id):
+            if not resumes_execution:
+                events = await asyncio.to_thread(operation)
             await self.publish(
                 session_id,
                 events,
@@ -619,6 +627,11 @@ def create_app(
                         session_id,
                         lambda received=frame: runtime.process_frame(session, received, principal),
                         wait_for_connection_id=subscription.connection_id,
+                        resumes_execution=(
+                            principal.source == "adapter"
+                            and isinstance(frame, Mapping)
+                            and frame.get("type") == "acknowledgement"
+                        ),
                     )
                     if (
                         principal.source in REGISTERED_SOURCES

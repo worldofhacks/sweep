@@ -457,7 +457,8 @@ class AutonomyRelayBridge:
             item.intent
             for item in admissions
             if item.delivered
-            and item.intent.name in {IntentName.ESTOP, IntentName.HOLD, IntentName.LAND_ALL}
+            and item.intent.name
+            in {IntentName.ESTOP, IntentName.HOLD, IntentName.LAND, IntentName.LAND_ALL}
             and item.intent.intent_id in resolution.invalidated_intent_ids
             and item.intent.intent_id in fallback_accepted
         )

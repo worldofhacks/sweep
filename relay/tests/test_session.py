@@ -946,7 +946,10 @@ def test_authenticated_terminal_acknowledgement_resumes_the_bound_execution(
     sink = ResumeSink()
     relay = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
     _join(relay, adapter_principal)
-    relay.process_intent(intent_payload(), console_principal)
+    intent = intent_payload()
+    relay.process_intent(intent, console_principal)
+    relay.mark_pending_intent_delivered(intent["intent_id"])
+    relay.execute_pending_intent(intent["intent_id"])
 
     executing = relay.process_acknowledgement(
         acknowledgement_payload(event_id="ack-executing"), adapter_principal

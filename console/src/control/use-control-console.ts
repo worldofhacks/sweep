@@ -500,8 +500,8 @@ export function useControlConsole({
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
       const intent = retryIntent(request.intent, intentDependencies)
-      if (['takeoff', 'land_all', 'capture_room'].includes(intent.name)) {
-        stageForConfirmation(intent)
+      if (['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
+        stageForConfirmation({ ...intent, confirm: false })
         return
       }
       const t = intentDependencies.now()

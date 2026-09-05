@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from threading import RLock
 from weakref import WeakSet
@@ -103,6 +104,13 @@ class PreparedExecutionRouter:
     def discard(self, intent_id: str) -> None:
         with self._lock:
             self._prepared.pop(intent_id, None)
+
+    def cancel_intent(self, intent_id: str) -> None:
+        """Release an undispatched preparation without disturbing execution ownership."""
+        with self._lock:
+            if intent_id in self._running or self._prepared.pop(intent_id, None) is None:
+                return
+            self._submitting_sessions.pop(intent_id, None)
 
     def relay_emitter(self, session: object, principal: object) -> PreparedIntentEmitter:
         from relay.auth import Principal
@@ -571,28 +579,32 @@ class PreparedExecutionRouter:
                     retired.append((prepared, pending))
         events = []
         for prepared, pending in retired:
-            invalidated = replace(
-                pending,
-                status=LifecycleStatus.INVALIDATED,
-                refusal=Refusal(
-                    intent_id=prepared.intent.intent_id,
-                    roster_version=pending.roster_version,
-                    drone_id=None,
-                    connection_epoch=None,
-                    reason=RefusalReason.CONFLICTING_MOTION,
-                    detail=f"execution superseded by {intent.name.value} {intent.intent_id}",
-                    status=LifecycleStatus.INVALIDATED,
-                ),
-            )
             intent_id = prepared.intent.intent_id
-            if intent_id not in retained:
-                self._pending_landings.pop(intent_id, None)
-            events.extend(
-                self._record_retirement(
-                    prepared, invalidated, session, retain_landing=intent_id in retained
+            with session._lock, self._lock:
+                current = self._running.get(intent_id)
+                if current is None:
+                    continue
+                prepared, pending, _owner = current
+                invalidated = replace(
+                    pending,
+                    status=LifecycleStatus.INVALIDATED,
+                    refusal=Refusal(
+                        intent_id=prepared.intent.intent_id,
+                        roster_version=pending.roster_version,
+                        drone_id=None,
+                        connection_epoch=None,
+                        reason=RefusalReason.CONFLICTING_MOTION,
+                        detail=f"execution superseded by {intent.name.value} {intent.intent_id}",
+                        status=LifecycleStatus.INVALIDATED,
+                    ),
                 )
-            )
-            with self._lock:
+                if intent_id not in retained:
+                    self._pending_landings.pop(intent_id, None)
+                events.extend(
+                    self._record_retirement(
+                        prepared, invalidated, session, retain_landing=intent_id in retained
+                    )
+                )
                 if intent_id in retained:
                     self._running[intent_id] = (prepared, invalidated, session)
                 else:
@@ -726,35 +738,42 @@ class PreparedExecutionRouter:
                     status=status,
                 ),
             )
-        if (
-            session is not None
-            and result.status is LifecycleStatus.COMPLETED
-            and prepared.intent.name in {IntentName.LAND, IntentName.LAND_ALL}
-        ):
-            self._pending_landings[intent_id] = (
-                max(session.clock(), self._landing_ack_times.get(intent_id, session.clock())),
-                self._pending_landings[intent_id][1],
-            )
-        elif result.status is not LifecycleStatus.EXECUTING:
-            self._pending_landings.pop(intent_id, None)
         relay_events = safety_events
-        if session is not None:
-            with self._lock:
-                self._running[intent_id] = (prepared, result, session)
-            relay_events += tuple(session.record_execution_result(prepared.intent, result))
-            if not safety_events:
-                relay_events += self._retain_ambiguous_stop(
-                    prepared.intent, result, session, prepared.snapshot
+        with session._lock if session is not None else nullcontext(), self._lock:
+            if self._running.get(intent_id) is not running:
+                return RelayExecution(
+                    result
+                    if safety_events
+                    else replace(pending, status=LifecycleStatus.INVALIDATED),
+                    safety_events,
                 )
-        with self._lock:
-            if result.status is LifecycleStatus.EXECUTING or intent_id in self._pending_landings:
-                self._running[intent_id] = (prepared, result, session)
-            else:
-                self._running.pop(intent_id, None)
-            if result.status is not LifecycleStatus.EXECUTING:
-                self._landing_ack_times.pop(intent_id, None)
-        if session is not None:
-            relay_events += self._restore_active_projection(session)
+            if (
+                session is not None
+                and result.status is LifecycleStatus.COMPLETED
+                and prepared.intent.name in {IntentName.LAND, IntentName.LAND_ALL}
+            ):
+                self._pending_landings[intent_id] = (
+                    max(session.clock(), self._landing_ack_times.get(intent_id, session.clock())),
+                    self._pending_landings[intent_id][1],
+                )
+            elif result.status is not LifecycleStatus.EXECUTING:
+                self._pending_landings.pop(intent_id, None)
+            committed = (prepared, result, session)
+            self._running[intent_id] = committed
+            if session is not None:
+                relay_events += tuple(session.record_execution_result(prepared.intent, result))
+        if session is not None and not safety_events:
+            relay_events += self._retain_ambiguous_stop(
+                prepared.intent, result, session, prepared.snapshot
+            )
+        with session._lock if session is not None else nullcontext(), self._lock:
+            if self._running.get(intent_id) is committed:
+                if result.status is not LifecycleStatus.EXECUTING:
+                    if intent_id not in self._pending_landings:
+                        self._running.pop(intent_id, None)
+                    self._landing_ack_times.pop(intent_id, None)
+            if session is not None:
+                relay_events += self._restore_active_projection(session)
         return RelayExecution(execution=result, relay_events=relay_events)
 
     def _restore_active_projection(self, session: object) -> tuple[dict[str, object], ...]:
@@ -967,14 +986,12 @@ class PreparedExecutionRouter:
                         landing[1],
                     )
                     return None
-                events = self._retain_ambiguous_stop(
-                    prepared.intent, pending, session, prepared.snapshot
-                )
-                if intent_id not in self._running:
-                    self._running.pop(intent_id, None)
-                    self._pending_landings.pop(intent_id, None)
-                    self._landing_ack_times.pop(intent_id, None)
-                else:
+        if pending.status is not LifecycleStatus.EXECUTING:
+            events = self._retain_ambiguous_stop(
+                prepared.intent, pending, session, prepared.snapshot
+            )
+            with session._lock, self._lock:
+                if self._running.get(intent_id) is running:
                     pending = replace(
                         pending,
                         acknowledgements=tuple(
@@ -987,8 +1004,11 @@ class PreparedExecutionRouter:
                         max(landing[0], acknowledgement.t),
                         landing[1],
                     )
+                elif intent_id not in self._running:
+                    self._pending_landings.pop(intent_id, None)
+                    self._landing_ack_times.pop(intent_id, None)
                 events += self._restore_active_projection(session)
-                return RelayExecution(pending, events)
+            return RelayExecution(pending, events)
         return self.resume(intent_id, terminal_ack, completed_at_ms=acknowledgement.t)
 
 
