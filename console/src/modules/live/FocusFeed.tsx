@@ -25,7 +25,7 @@ interface Row {
 export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
   const id = focused ? formatDroneId(focused.drone_id) : 'none'
   return (
-    <div data-two="1">
+    <section data-two="1" aria-label={`Focused aircraft ${id}`}>
       <div className="lv-column">
         {focused ? (
           <Feed drone={focused} now={now} media={media} />
@@ -59,7 +59,7 @@ export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
           fixture.
         </p>
       </div>
-      <section className="lv-column" aria-label={`Focused aircraft ${id}`}>
+      <div className="lv-column">
         <p className="lv-eyebrow">Focused aircraft</p>
         <p className="lv-id">{id}</p>
         {focused ? (
@@ -77,11 +77,15 @@ export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
             another aircraft.
           </p>
         )}
-      </section>
-    </div>
+      </div>
+    </section>
   )
 }
 
+/**
+ * The feed at size. The player mounts only while the relay reports the stream
+ * live and playback is configured; every other state is said in words.
+ */
 function Feed({
   drone,
   now,
@@ -96,7 +100,7 @@ function Feed({
   return (
     <div className={`lv-feed is-${stream.status}`}>
       {plays ? (
-        <LivePlayer droneId={drone.drone_id} media={media} />
+        <LivePlayer key={drone.drone_id} droneId={drone.drone_id} media={media} />
       ) : (
         <div className="lv-feed-reticle" aria-hidden="true" />
       )}

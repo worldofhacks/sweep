@@ -102,21 +102,22 @@ function Tile({
         <button
           type="button"
           className="lv-focus"
+          aria-label={`Focus ${id}`}
           aria-pressed={focused}
           onClick={() => onFocus(drone.drone_id)}
         >
-          Focus<span className="visually-hidden"> {id}</span>
+          Focus
         </button>
         <button
           type="button"
           className={selected ? 'lv-select is-selected' : 'lv-select'}
+          aria-label={`${selectLabel} ${id}`}
           aria-pressed={selected}
           disabled={selectDisabled}
           title={selectTitle}
           onClick={() => onToggleSelection(drone.drone_id)}
         >
           {selectLabel}
-          <span className="visually-hidden"> {id}</span>
         </button>
       </span>
     </article>

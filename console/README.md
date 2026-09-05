@@ -40,11 +40,21 @@ disconnected and network controls are unavailable.
 
 ## Camera dashboard
 
-The camera mosaic and focus pane are fixture-first. They use the authoritative aircraft ID,
-connection epoch, telemetry, membership, readiness reasons, and a closed media status with a
-last-frame timestamp. The console derives the display name `drone{id}` and does not render
-adapter-provided media URLs. MediaMTX endpoints, credentials, recording, latency measurement,
-and browser playback remain held for M3.1.
+The Live module's walls and focus feed use the authoritative aircraft ID, connection epoch,
+telemetry, membership, readiness reasons, and a closed media status with a last-frame timestamp.
+The console derives the display name `drone{id}` and does not render adapter-provided media URLs.
+Recording and latency measurement remain held for M3.1.
+
+## Live playback
+
+The focus feed plays the focused aircraft's stream over WHEP only while the relay reports it
+`live` and the page was served a media configuration; every other state is said in words. The
+configuration is read once from `/runtime-config.json` as
+`{ "media": { "webrtcOrigin", "readerUsername", "readerPassword" } }`, so credentials never enter
+the bundle. `pnpm dev` serves that endpoint from `SWEEP_MEDIA_WEBRTC_ORIGIN`,
+`SWEEP_MEDIA_READ_USERNAME`, and `SWEEP_MEDIA_READ_PASSWORD`; with any of them unset it answers
+503 and the console runs with playback disabled. The player files under `src/media/` come from
+PR #68 and will be reconciled when it merges.
 
 For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
 development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build
