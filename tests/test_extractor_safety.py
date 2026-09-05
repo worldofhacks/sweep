@@ -2,6 +2,7 @@ import copy
 import json
 import os
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -176,18 +177,29 @@ def test_second_replace_failure_restores_first_output_and_removes_temporary_file
         assert list(tmp_path.iterdir()) == [source]
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("tags.json", "TAGS.JSON"),
+        ("caf\u00e9.json", "cafe\u0301.JSON"),
+        ("\u00e9.json", "E\u0301.JSON"),
+    ],
+)
 def test_absent_case_alias_outputs_cannot_overwrite_json_on_case_insensitive_disk(
-    tmp_path, monkeypatch, survey
+    tmp_path, monkeypatch, survey, names
 ):
     source = tmp_path / "survey.json"
-    output = tmp_path / "tags.json"
-    preview = tmp_path / "TAGS.JSON"
+    output = tmp_path / names[0]
+    preview = tmp_path / names[1]
     source.write_text(json.dumps(survey))
     replace = os.replace
 
     def case_insensitive_replace(src, dst):
         destination = Path(dst)
-        if destination.name.casefold() == "tags.json":
+        if (
+            unicodedata.normalize("NFD", destination.name).casefold()
+            == unicodedata.normalize("NFD", output.name).casefold()
+        ):
             destination = output
         return replace(src, destination)
 
