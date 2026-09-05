@@ -356,7 +356,7 @@ class RelayLink(
             log.log("dropping control_pose with invalid timestamps")
             return
         }
-        if (relayNow - pose.fixTimeMs > pins.fixFreshnessMs || relayNow - pose.poseTimeMs > pins.poseFreshnessMs) {
+        if (pose.status == ControlPose.Status.READY && (relayNow - pose.fixTimeMs > pins.fixFreshnessMs || relayNow - pose.poseTimeMs > pins.poseFreshnessMs)) {
             log.log("dropping stale control_pose")
             return
         }
