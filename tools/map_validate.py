@@ -47,14 +47,14 @@ class ValidatedBundle(dict):
     def __init__(self, manifest, documents, sources):
         super().__init__(manifest)
         self._documents = dict(documents)
-        self._sources = dict(sources)
+        self._sources = {Path(name).as_posix(): payload for name, payload in sources.items()}
 
     def document(self, name):
         """Return a parsed copy of the exact bytes validated at load, without reopening paths."""
         return parse_document(self._documents[name], name)
 
     def source_bytes(self, name):
-        return self._sources[name]
+        return self._sources[Path(name).as_posix()]
 
 
 def seal_manifest(bundle):
@@ -349,6 +349,7 @@ def _validate_bundle(bundle, accepted_versions):
             _inside(polygon, position) and z_min <= position[2] <= z_max, "tag outside geofence"
         )
         if ident == 0:
+            _require(tag["floor_id"] == nodes["113"], "Tag 0 must share the Phase-1 origin floor")
             _require(all(abs(item) <= 1e-6 for item in position), "Tag 0 must be at origin")
             _require(abs(math.remainder(yaw, 2 * math.pi)) <= 1e-6, "Tag 0 yaw must be zero")
             _require(

@@ -174,3 +174,28 @@ def test_second_replace_failure_restores_first_output_and_removes_temporary_file
         assert not output.exists()
         assert not preview.exists()
         assert list(tmp_path.iterdir()) == [source]
+
+
+def test_absent_case_alias_outputs_cannot_overwrite_json_on_case_insensitive_disk(
+    tmp_path, monkeypatch, survey
+):
+    source = tmp_path / "survey.json"
+    output = tmp_path / "tags.json"
+    preview = tmp_path / "TAGS.JSON"
+    source.write_text(json.dumps(survey))
+    replace = os.replace
+
+    def case_insensitive_replace(src, dst):
+        destination = Path(dst)
+        if destination.name.casefold() == "tags.json":
+            destination = output
+        return replace(src, destination)
+
+    monkeypatch.setattr(tag_pose_extract.os, "replace", case_insensitive_replace)
+    monkeypatch.setattr(
+        sys, "argv", ["extract", str(source), str(output), "--preview", str(preview)]
+    )
+    assert not output.exists() and not preview.exists()
+    assert tag_pose_extract.main() == 1
+    assert not output.exists() and not preview.exists()
+    assert json.loads(source.read_text()) == survey

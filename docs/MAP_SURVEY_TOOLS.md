@@ -173,3 +173,5 @@ route tube, geofence insets, formation bounds and a cloud preview. Localization
 needs calibrated delivered video, ambiguity rejection, delayed-measurement replay,
 body/gimbal extrinsics and tested hold/land integration. A nearby tag alone does
 not establish visibility. Synthetic tests cannot close any of those physical gates.
+
+Output paths that differ only by letter case are refused on every platform, including when neither file exists. This keeps the same extraction command safe on case-insensitive filesystems. Retained source lookups normalize relative lexical aliases such as `./scan.ply` without reopening the file. Tag 0 must share the floor of graph node `113`.

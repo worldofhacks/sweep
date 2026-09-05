@@ -374,3 +374,21 @@ def test_excluded_node_cannot_relabel_itself_as_accepted_region(bundle):
     )
     with pytest.raises(ValueError, match="excluded region"):
         validate_bundle(bundle, accepted(bundle))
+
+
+@pytest.mark.parametrize(
+    "manifest_name,tag_name", [("scan.ply", "./scan.ply"), ("./scan.ply", "scan.ply")]
+)
+def test_accepted_source_alias_keeps_retained_bytes_accessible(bundle, manifest_name, tag_name):
+    change(bundle, "manifest.yaml", lambda d: d["sources"][0].update(path=manifest_name))
+    change(bundle, "tags.yaml", lambda d: d["source"].update(path=tag_name))
+    snapshot = validate_bundle(bundle, accepted(bundle))
+    (bundle / "scan.ply").unlink()
+    assert snapshot.source_bytes(tag_name) == b"synthetic source\n"
+    assert snapshot.source_bytes(manifest_name) == b"synthetic source\n"
+
+
+def test_origin_tag_cannot_move_to_mezzanine_floor(bundle):
+    change(bundle, "tags.yaml", lambda d: d["tags"][0].update(floor_id="mezzanine"))
+    with pytest.raises(ValueError, match="Tag 0.*floor"):
+        validate_bundle(bundle, accepted(bundle))

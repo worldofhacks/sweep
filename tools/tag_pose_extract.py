@@ -186,7 +186,7 @@ def _write_outputs(survey, output, preview, document):
     paths = [survey, output] + ([preview] if preview else [])
     for index, path in enumerate(paths):
         for other in paths[:index]:
-            if path.resolve() == other.resolve() or (
+            if str(path.resolve()).casefold() == str(other.resolve()).casefold() or (
                 path.exists() and other.exists() and path.samefile(other)
             ):
                 raise ValueError("survey, output, and preview must refer to distinct files")
