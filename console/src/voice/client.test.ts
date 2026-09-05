@@ -4,9 +4,7 @@ import { HttpTranscriptClient, UnavailableTranscriptClient } from './client'
 
 describe('transcript upload client', () => {
   test('calls the browser fetch implementation without rebinding its receiver', async () => {
-    let receiver: unknown = 'not called'
     const fetcher = function (this: unknown) {
-      receiver = this
       return Promise.resolve(
         new Response(
           JSON.stringify({
@@ -23,10 +21,11 @@ describe('transcript upload client', () => {
           { status: 200 },
         ),
       )
-    } as typeof fetch
+    }
+    const trackedFetcher = vi.fn(fetcher)
     const client = new HttpTranscriptClient(
       { baseUrl: 'ws://relay.example', token: 'relay-token' },
-      fetcher,
+      trackedFetcher as unknown as typeof fetch,
     )
 
     await client.transcribe({
@@ -36,7 +35,8 @@ describe('transcript upload client', () => {
       durationMs: 500,
     })
 
-    expect(receiver).toBeUndefined()
+    expect(trackedFetcher).toHaveBeenCalledTimes(1)
+    expect(trackedFetcher.mock.contexts[0]).toBeUndefined()
   })
 
   test('sends bounded recorded audio to the authenticated relay endpoint', async () => {
