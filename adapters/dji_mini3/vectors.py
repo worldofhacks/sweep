@@ -21,6 +21,7 @@ from pathlib import Path
 
 from relay.auth import canonical_event_bytes, sign_event, verify_event_signature
 from relay.contracts import MembershipAction, MembershipRequest, TelemetryV1
+from relay.settings import RelaySettings
 
 FIXTURE_DIR = (
     Path(__file__).resolve().parent
@@ -187,13 +188,8 @@ def _signed(unsigned: dict[str, object], key: str) -> dict[str, object]:
 
 
 def node_settings() -> dict[str, int]:
-    """The relay's default ``RelaySettings.node_settings()`` values."""
-    return {
-        "command_ttl_ms": 2000,
-        "virtual_stick_hz": 10,
-        "watchdog_hold_ms": 2000,
-        "watchdog_failsafe_ms": 10000,
-    }
+    """The relay's default ``RelaySettings.node_settings()`` values, from the settings."""
+    return RelaySettings(relay_token=NODE_KEY.encode()).node_settings()
 
 
 def frame_vectors() -> dict[str, object]:
