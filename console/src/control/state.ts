@@ -478,13 +478,8 @@ function reduceStateEvent(
     selection,
     formation: event.formation,
     spacing: event.spacing,
-    capabilityProfile:
-      typeof event.capability_profile === 'string'
-        ? event.capability_profile
-        : state.capabilityProfile,
-    enabledIntentNames: Array.isArray(event.enabled_intent_names)
-      ? [...event.enabled_intent_names]
-      : state.enabledIntentNames,
+    capabilityProfile: event.capability_profile,
+    enabledIntentNames: [...event.enabled_intent_names],
     armed: event.armed,
     estop: event.estop || (ambiguousOrder && state.estop),
     lastStateEvent: {

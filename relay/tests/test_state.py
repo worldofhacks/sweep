@@ -82,14 +82,19 @@ def test_all_readiness_gates_must_pass_before_aircraft_is_selectable() -> None:
     assert state["drones"][0]["home_pose"] == {"x": 1.0, "y": 2.0, "z": 0.5}
     assert state["capability_profile"] == "c1_basic_control"
     assert state["enabled_intent_names"] == [
+        "altitude",
         "arm",
         "capture_room",
         "come_home",
         "estop",
+        "formation_next",
+        "formation_set",
         "hold",
         "land",
         "land_all",
         "select",
+        "spacing",
+        "sweep",
         "takeoff",
         "translate",
     ]
