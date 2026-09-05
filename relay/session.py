@@ -559,7 +559,7 @@ class RelaySession:
         if status in terminal:
             completion_pending = getattr(self.intent_sink, "completion_pending", None)
             awaiting_landing = (
-                status is LifecycleStatus.COMPLETED
+                status in {LifecycleStatus.COMPLETED, LifecycleStatus.INVALIDATED}
                 and callable(completion_pending)
                 and completion_pending(intent.intent_id)
             )

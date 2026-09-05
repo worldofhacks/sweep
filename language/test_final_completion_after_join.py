@@ -21,16 +21,17 @@ from tests.autonomy_fixtures import (
 
 @pytest.mark.parametrize("enrich_newcomer", [False, True])
 @pytest.mark.parametrize(
-    "intent_name", [IntentName.TRANSLATE, IntentName.LAND, IntentName.LAND_ALL]
+    "intent_name", [IntentName.TRANSLATE, IntentName.LAND, IntentName.LAND_ALL, IntentName.HOLD]
 )
 def test_newcomer_join_does_not_invalidate_final_completion(
     tmp_path, monkeypatch, enrich_newcomer, intent_name
 ):
     degraded_land = intent_name in {IntentName.LAND, IntentName.LAND_ALL}
+    degraded_target = degraded_land or intent_name is IntentName.HOLD
     snapshot = make_snapshot(
         1 if intent_name is IntentName.LAND_ALL else 2, selection=(1,), roster_version=4
     )
-    if degraded_land:
+    if degraded_target:
         snapshot = replace_aircraft(snapshot, 1, membership=MembershipState.DEGRADED)
     controller, _, _, _, flight, _ = make_stack(snapshot)
     goto = flight.goto
@@ -44,7 +45,14 @@ def test_newcomer_join_does_not_invalidate_final_completion(
             "land",
             lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
         )
-    operation = "land" if degraded_land else "goto"
+    if intent_name is IntentName.HOLD:
+        hover = flight.hover
+        monkeypatch.setattr(
+            flight,
+            "hover",
+            lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+        )
+    operation = "land" if degraded_land else "hover" if intent_name is IntentName.HOLD else "goto"
     router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
     relay = RelaySession(
         session_id="test-session",
@@ -54,10 +62,25 @@ def test_newcomer_join_does_not_invalidate_final_completion(
         intent_sink=router,
     )
     _hydrate_relay_from_snapshot(relay, snapshot)
+    if degraded_target:
+        relay.process_membership(
+            membership_payload(
+                action="readiness",
+                event_id="degraded-target",
+                timestamp=snapshot.now_ms,
+                drone_id=1,
+                session=relay.session_id,
+                key=b"x" * 32,
+                home_pose_confirmed=False,
+            ),
+            Principal(source="adapter", drone_id=1, signing_key=b"x" * 32),
+        )
+        assert relay.current_state()["drones"][0]["membership"] == "degraded"
+        snapshot = replace(snapshot, roster_version=relay.registry.roster_version)
     intent = make_intent(
         intent_name,
         selection=(1,),
-        args={} if degraded_land else {"dx": 1, "dy": 0},
+        args={"dx": 1, "dy": 0} if intent_name is IntentName.TRANSLATE else {},
         confirm=degraded_land,
     )
     prepared = router.prepare(intent, snapshot)
@@ -86,6 +109,8 @@ def test_newcomer_join_does_not_invalidate_final_completion(
     assert after["roster_version"] > before["roster_version"]
     assert after["accepted_plan"] == before["accepted_plan"]
     assert after["selection"] == before["selection"]
+    if degraded_target:
+        assert after["drones"][0]["membership"] == "degraded"
     assert [call.operation.value for call in flight.calls] == [operation]
     assert not any(event.get("status") == "invalidated" for event in events)
     first = prepared.plan.commands[0]
