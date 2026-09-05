@@ -6,6 +6,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 from relay.auth import StaticCredentialResolver
@@ -14,6 +15,11 @@ from relay.session import RelayLimits
 
 class SettingsError(RuntimeError):
     pass
+
+
+class AdapterBackend(StrEnum):
+    SIM = "sim"
+    REMOTE = "remote"
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +33,12 @@ class RelaySettings:
     future_clock_skew_ms: int = 1_000
     telemetry_freshness_ms: int = 1_000
     fanout_hz: int = 10
+    adapter_backend: AdapterBackend = AdapterBackend.SIM
+    command_ttl_ms: int = 2_000
+    command_deadline_ms: int = 10_000
+    virtual_stick_hz: int = 10
+    node_watchdog_hold_ms: int = 2_000
+    node_watchdog_failsafe_ms: int = 10_000
 
     def __post_init__(self) -> None:
         if len(self.relay_token) < 32:
@@ -36,11 +48,23 @@ class RelaySettings:
                 raise SettingsError("adapter IDs must be positive and keys at least 32 characters")
         if self.fanout_hz != 10:
             raise SettingsError("state fan-out is frozen at 10 Hz")
+        if not isinstance(self.adapter_backend, AdapterBackend):
+            raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
+        if not 5 <= self.virtual_stick_hz <= 25:
+            raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
+        if self.command_deadline_ms < self.command_ttl_ms:
+            raise SettingsError("SWEEP_COMMAND_DEADLINE_MS must be at least SWEEP_COMMAND_TTL_MS")
+        if (
+            self.node_watchdog_hold_ms < 0
+            or self.node_watchdog_failsafe_ms <= self.node_watchdog_hold_ms
+        ):
+            raise SettingsError("node watchdog thresholds must satisfy 0 <= hold < failsafe")
         RelayLimits(
             intent_max_age_ms=self.intent_max_age_ms,
             transport_event_max_age_ms=self.transport_event_max_age_ms,
             future_clock_skew_ms=self.future_clock_skew_ms,
             telemetry_freshness_ms=self.telemetry_freshness_ms,
+            command_ttl_ms=self.command_ttl_ms,
         )
 
     @classmethod
@@ -73,6 +97,24 @@ class RelaySettings:
                 values.get("SWEEP_TELEMETRY_FRESHNESS_MS", "1000"),
                 "SWEEP_TELEMETRY_FRESHNESS_MS",
             ),
+            adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
+            command_ttl_ms=_positive_integer(
+                values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"
+            ),
+            command_deadline_ms=_positive_integer(
+                values.get("SWEEP_COMMAND_DEADLINE_MS", "10000"), "SWEEP_COMMAND_DEADLINE_MS"
+            ),
+            virtual_stick_hz=_positive_integer(
+                values.get("SWEEP_VIRTUAL_STICK_HZ", "10"), "SWEEP_VIRTUAL_STICK_HZ"
+            ),
+            node_watchdog_hold_ms=_nonnegative_integer(
+                values.get("SWEEP_NODE_WATCHDOG_HOLD_MS", "2000"),
+                "SWEEP_NODE_WATCHDOG_HOLD_MS",
+            ),
+            node_watchdog_failsafe_ms=_positive_integer(
+                values.get("SWEEP_NODE_WATCHDOG_FAILSAFE_MS", "10000"),
+                "SWEEP_NODE_WATCHDOG_FAILSAFE_MS",
+            ),
         )
 
     def credential_resolver(self) -> StaticCredentialResolver:
@@ -88,7 +130,17 @@ class RelaySettings:
             transport_event_max_age_ms=self.transport_event_max_age_ms,
             future_clock_skew_ms=self.future_clock_skew_ms,
             telemetry_freshness_ms=self.telemetry_freshness_ms,
+            command_ttl_ms=self.command_ttl_ms,
         )
+
+    def node_settings(self) -> dict[str, int]:
+        """Thresholds the relay distributes to every node inside ``auth.accepted``."""
+        return {
+            "command_ttl_ms": self.command_ttl_ms,
+            "virtual_stick_hz": self.virtual_stick_hz,
+            "watchdog_hold_ms": self.node_watchdog_hold_ms,
+            "watchdog_failsafe_ms": self.node_watchdog_failsafe_ms,
+        }
 
 
 def _adapter_keys(raw: str) -> dict[int, bytes]:
@@ -110,6 +162,13 @@ def _adapter_keys(raw: str) -> dict[int, bytes]:
             raise SettingsError("adapter credentials must be non-empty strings")
         result[drone_id] = raw_key.encode()
     return result
+
+
+def _backend(raw: str) -> AdapterBackend:
+    try:
+        return AdapterBackend(raw)
+    except ValueError:
+        raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote") from None
 
 
 def _boolean(raw: str, name: str) -> bool:

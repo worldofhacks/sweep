@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
@@ -9,17 +10,31 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock
 
+from planner.models import CommandOperation
 from relay.audit import AuditLogError, SessionAuditLog
-from relay.auth import Principal, verify_event_signature
+from relay.auth import Principal, sign_event, verify_event_signature
 from relay.contracts import (
+    NODE_FRAME_TYPES,
     AdapterAcknowledgement,
+    CapabilitiesFrame,
+    CaptureBundleFrame,
+    CaptureReadinessFrame,
     ContractError,
     LifecycleStatus,
+    MediaFileFrame,
+    MediaFileRecord,
     MembershipAction,
     MembershipRequest,
+    NodeStatusFrame,
     acknowledgement_event,
+    command_event,
     parse_adapter_acknowledgement,
+    parse_capabilities,
+    parse_capture_bundle,
+    parse_capture_readiness,
+    parse_media_file,
     parse_membership_request,
+    parse_node_status,
     parse_telemetry,
     refusal_event,
 )
@@ -30,7 +45,29 @@ Clock = Callable[[], int]
 EventIdFactory = Callable[[], str]
 IntentSink = Callable[[IntentV1, dict[str, object]], None]
 LeaveAuthorizer = Callable[[int, int, dict[str, object]], bool]
+NodeFrame = (
+    CapabilitiesFrame
+    | CaptureBundleFrame
+    | MediaFileFrame
+    | CaptureReadinessFrame
+    | NodeStatusFrame
+)
 _UNSET = object()
+_TERMINAL_STATUSES = frozenset(
+    {
+        LifecycleStatus.REFUSED,
+        LifecycleStatus.COMPLETED,
+        LifecycleStatus.FAILED,
+        LifecycleStatus.INVALIDATED,
+    }
+)
+_NODE_FRAME_PARSERS: dict[str, Callable[[object], NodeFrame]] = {
+    "capabilities": parse_capabilities,
+    "capture_bundle": parse_capture_bundle,
+    "media_file": parse_media_file,
+    "capture_readiness": parse_capture_readiness,
+    "node_status": parse_node_status,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +76,7 @@ class RelayLimits:
     transport_event_max_age_ms: int
     future_clock_skew_ms: int
     telemetry_freshness_ms: int
+    command_ttl_ms: int = 2_000
 
     def __post_init__(self) -> None:
         if (
@@ -46,6 +84,7 @@ class RelayLimits:
                 self.intent_max_age_ms,
                 self.transport_event_max_age_ms,
                 self.telemetry_freshness_ms,
+                self.command_ttl_ms,
             )
             <= 0
         ):
@@ -88,12 +127,19 @@ class RelaySession:
         self._seen_transport_event_ids: set[str] = set()
         self._last_transport_t: dict[tuple[str, int | None], int] = {}
         self._intents: dict[str, _IntentLedgerEntry] = {}
+        self._command_seq: dict[tuple[int, int], int] = {}
+        self._issued_command_ids: set[str] = set()
+        self._command_waiters: dict[str, queue.SimpleQueue[AdapterAcknowledgement]] = {}
+        self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
+        self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._metrics = {
             "accepted_intents": 0,
             "refused_intents": 0,
             "acknowledgements": 0,
             "membership_events": 0,
             "telemetry_events": 0,
+            "node_events": 0,
+            "commands_issued": 0,
         }
         self._mutation_usable = True
         self._projection_usable = True
@@ -114,6 +160,8 @@ class RelaySession:
                 return self.process_telemetry(raw, principal)
             if frame_type == "acknowledgement":
                 return self.process_acknowledgement(raw, principal)
+            if frame_type in NODE_FRAME_TYPES:
+                return self.process_node_frame(raw, principal)
         return [
             self.protocol_refusal(
                 reason="frame_not_allowed",
@@ -379,7 +427,187 @@ class RelaySession:
             self._record_adapter_ack_fact(acknowledgement)
             self._append_audit(event)
             self._metrics["acknowledgements"] += 1
+            waiter = self._command_waiters.get(acknowledgement.command_id)
+            if waiter is not None:
+                waiter.put(acknowledgement)
             return [event]
+
+    def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
+        """Accept a node-authored frame; only capabilities and node_status change state.
+
+        Media files and capture bundles are audited and retained for the command wire
+        but not fanned out; capture readiness is fanned out unchanged.
+        """
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if principal.source != "adapter" or principal.drone_id is None:
+                return [
+                    self._protocol_refusal(
+                        reason="source_not_allowed",
+                        detail="only an authenticated adapter may send node frames",
+                        now=now,
+                    )
+                ]
+            try:
+                frame = _parse_node_frame(raw)
+                drone_id, connection_epoch = _node_frame_identity(frame)
+                self._check_adapter_binding(drone_id, principal)
+                if frame.session != self.session_id:
+                    raise ContractError(
+                        "session_mismatch", "node frame session does not match the WebSocket path"
+                    )
+                self._claim_transport_event(frame.event_id, frame.t, principal, now)
+                self.registry.check_current(drone_id, connection_epoch)
+                if isinstance(frame, CapabilitiesFrame):
+                    self.registry.apply_capabilities(frame)
+                elif isinstance(frame, NodeStatusFrame):
+                    self.registry.apply_node_status(frame)
+                elif isinstance(frame, MediaFileFrame):
+                    self._retain_media(frame.file)
+                elif isinstance(frame, CaptureBundleFrame):
+                    for record in frame.media:
+                        self._retain_media(record)
+                elif isinstance(frame, CaptureReadinessFrame):
+                    self._capture_readiness[drone_id] = frame
+            except (ContractError, RegistryError) as error:
+                return [
+                    self._protocol_refusal(
+                        reason=error.code,
+                        detail=error.detail,
+                        now=now,
+                        drone_id=principal.drone_id,
+                        connection_epoch=self.registry.connection_epoch(principal.drone_id),
+                    )
+                ]
+
+            event = frame.to_event()
+            self._append_audit(event)
+            self._metrics["node_events"] += 1
+            if isinstance(frame, MediaFileFrame | CaptureBundleFrame):
+                return []
+            events: list[dict[str, object]] = [event]
+            if isinstance(frame, CapabilitiesFrame | NodeStatusFrame):
+                state = self._state_event(now)
+                self._append_audit(state)
+                events.append(state)
+            return events
+
+    def issue_command(
+        self,
+        *,
+        command_id: str,
+        intent_id: str,
+        roster_version: int,
+        drone_id: int,
+        connection_epoch: int,
+        operation: CommandOperation,
+        args: Mapping[str, object],
+        signing_key: bytes,
+    ) -> dict[str, object]:
+        """Sign, sequence, and audit one relay-authored command for a joined node.
+
+        Commands originate in-process, so an intent the session has not seen (an
+        autonomy-originated safety plan) is registered as executing so the node's
+        acknowledgements correlate; a terminal intent cannot receive new commands.
+        The audit record omits the signature; the returned frame carries it.
+        """
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if command_id in self._issued_command_ids:
+                raise ValueError("command_id has already been issued in this session")
+            self.registry.check_current(drone_id, connection_epoch)
+            entry = self._intents.get(intent_id)
+            if entry is not None and entry.status in _TERMINAL_STATUSES:
+                raise ValueError("intent is terminal and cannot receive new commands")
+            key = (drone_id, connection_epoch)
+            seq = self._command_seq.get(key, 0) + 1
+            event = command_event(
+                t=now,
+                event_id=self.event_ids(),
+                session=self.session_id,
+                command_id=command_id,
+                intent_id=intent_id,
+                roster_version=roster_version,
+                drone_id=drone_id,
+                connection_epoch=connection_epoch,
+                seq=seq,
+                issued_at=now,
+                ttl_ms=self.limits.command_ttl_ms,
+                operation=operation,
+                args=args,
+            )
+            if entry is None:
+                self._intents[intent_id] = _IntentLedgerEntry(
+                    status=LifecycleStatus.EXECUTING,
+                    selection=(drone_id,),
+                    command_statuses={},
+                )
+            self._command_seq[key] = seq
+            self._issued_command_ids.add(command_id)
+            self._command_waiters[command_id] = queue.SimpleQueue()
+            self._append_audit(event)
+            self._metrics["commands_issued"] += 1
+            return {**event, "signature": sign_event(event, signing_key)}
+
+    def await_command_acknowledgement(
+        self, command_id: str, *, timeout_ms: int
+    ) -> AdapterAcknowledgement | None:
+        """Block outside the session lock until the node acknowledges or the wait expires.
+
+        Each call returns the next acknowledgement for the command. The waiter is
+        released after a terminal acknowledgement or a timeout; later acknowledgements
+        remain audited facts but no longer wake a caller.
+        """
+        with self._lock:
+            waiter = self._command_waiters.get(command_id)
+        if waiter is None:
+            return None
+        try:
+            acknowledgement = waiter.get(timeout=max(timeout_ms, 0) / 1000)
+        except queue.Empty:
+            with self._lock:
+                self._command_waiters.pop(command_id, None)
+            return None
+        if acknowledgement.status in _TERMINAL_STATUSES:
+            with self._lock:
+                self._command_waiters.pop(command_id, None)
+        return acknowledgement
+
+    def discard_command_waiter(self, command_id: str) -> None:
+        """Stop waking a caller for a command that could not reach the node."""
+        with self._lock:
+            self._command_waiters.pop(command_id, None)
+
+    def capture_readiness(self, drone_id: int) -> CaptureReadinessFrame | None:
+        """Return the node's latest capture_readiness frame for its current epoch."""
+        with self._lock:
+            frame = self._capture_readiness.get(drone_id)
+            if frame is None:
+                return None
+            try:
+                self.registry.check_current(drone_id, frame.connection_epoch)
+            except RegistryError:
+                return None
+            return frame
+
+    def media_files(self, drone_id: int, capture_id: str) -> tuple[MediaFileRecord, ...]:
+        """Return media records the node reported for a capture in its current epoch."""
+        with self._lock:
+            epoch = self.registry.connection_epoch(drone_id)
+            if epoch is None:
+                return ()
+            return tuple(self._media_files.get((drone_id, epoch, capture_id), ()))
+
+    def _retain_media(self, record: MediaFileRecord) -> None:
+        key = (record.drone_id, record.connection_epoch, record.capture_id)
+        records = self._media_files.setdefault(key, [])
+        for index, existing in enumerate(records):
+            if existing.file_id == record.file_id:
+                records[index] = record
+                return
+        records.append(record)
 
     def record_lifecycle(
         self,
@@ -637,13 +865,7 @@ class RelaySession:
 
     @staticmethod
     def _transition_intent(entry: _IntentLedgerEntry, status: LifecycleStatus) -> None:
-        terminal = {
-            LifecycleStatus.REFUSED,
-            LifecycleStatus.COMPLETED,
-            LifecycleStatus.FAILED,
-            LifecycleStatus.INVALIDATED,
-        }
-        if entry.status in terminal and entry.status is not status:
+        if entry.status in _TERMINAL_STATUSES and entry.status is not status:
             raise ValueError(
                 f"cannot move terminal intent from {entry.status.value} to {status.value}"
             )
@@ -892,6 +1114,20 @@ def _thaw(value: object) -> object:
     if isinstance(value, tuple):
         return [_thaw(item) for item in value]
     return value
+
+
+def _parse_node_frame(raw: object) -> NodeFrame:
+    frame_type = raw.get("type") if isinstance(raw, Mapping) else None
+    parser = _NODE_FRAME_PARSERS.get(frame_type) if isinstance(frame_type, str) else None
+    if parser is None:
+        raise ContractError("frame_not_allowed", "frame type is not a node-authored frame")
+    return parser(raw)
+
+
+def _node_frame_identity(frame: NodeFrame) -> tuple[int, int]:
+    if isinstance(frame, MediaFileFrame):
+        return frame.file.drone_id, frame.file.connection_epoch
+    return frame.drone_id, frame.connection_epoch
 
 
 def _safe_string_field(raw: object, field: str) -> str | None:

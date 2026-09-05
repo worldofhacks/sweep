@@ -9,7 +9,7 @@ The accepted MVP has two concrete implementations (PRD Appendix C):
 | Package | Target | Milestone |
 |---|---|---|
 | `sim/` | Kinematic deterministic flight and camera fixtures for registry sizes 1–4 now, then 4–6; the first-class CI implementation before hardware | M1 |
-| DJI Mini 3 bridge | one Android node per Mini 3 and RC-N1 pair via the DJI Mobile SDK, proven on one exact hardware combination before duplication | M2 |
+| `dji_mini3/` | one Android node per Mini 3 and RC-N1 pair via the DJI Mobile SDK, proven on one exact hardware combination before duplication; the relay-side remote adapter and a fake node land first | M2 |
 
 ## Frozen protocols and dispatch
 
@@ -64,6 +64,51 @@ configuration rather than claimed hardware defaults.
 
 Hardware is a configuration choice behind these protocols; every earned feature is
 built and tested against `sim` first.
+
+## Remote bridge adapter
+
+`adapters.dji_mini3.remote.RemoteBridgeAdapter` implements the same `SwarmAdapter` and
+`CameraCapture` protocols as the simulator over a small `NodeLink`: the link reports a
+node's live connection epoch, sends a `CommandRequest`, awaits the acknowledgements for
+a `command_id` with a timeout, and retains the node's latest `capabilities` frame and
+`media_file` records. The link owns the wire envelope, the per-node sequence, and the
+signature; `relay.bridge.RelayNodeLink` is the implementation over a live relay runtime
+and must be driven from a worker thread, never the relay event loop: both `send` and
+`await_acknowledgement` block the calling thread and refuse the loop thread.
+`relay.bridge.build_adapters` reads the relay setting `SWEEP_ADAPTER_BACKEND` and
+returns the session's flight and camera pair: `sim` builds the simulator from the
+snapshot with an explicit `SimCameraConfig`, `remote` builds one `RemoteBridgeAdapter`
+over a `RelayNodeLink` whose delivery and acknowledgement waits are bounded by
+`SWEEP_COMMAND_TTL_MS`; `build_dispatcher` wraps that pair in an `AdapterDispatcher`.
+`relay.autonomy` calls it once per accepted intent from the snapshot the arbiter checks,
+so the adapter's connection epochs are the ones the plan was built against.
+`relay/README.md` documents the node protocol the adapter speaks.
+
+`AdapterDispatcher` opens `adapter.for_intent(intent_id, roster_version)` around every
+command it executes, including best-effort holds and estop, so each wire command carries
+the intent and roster it belongs to; a caller driving the adapter directly opens the
+scope itself, and scopes do not nest. The wire `command_id` is generated per request.
+Flight arguments travel as integer millimetre and millidegree
+units. Before sending, the adapter compares the connection epoch it was given (from the
+snapshot, or `update_connection_epoch`) with the link's live epoch and refuses without
+sending when they differ; the dispatcher then reports `stale_connection_epoch`. Silence
+for the configured timeout raises `AdapterTimeout`. A nonterminal `accepted` or
+`executing` acknowledgement followed by silence is returned as is so the dispatcher stops
+dependent work and resumes on the later terminal fact. A `failed` acknowledgement keeps
+the node's reason in `detail` (for example `out_of_order_command`) and is never resent.
+`estop()` sends to every aircraft before waiting on any acknowledgement; a node that
+stays silent is reported as a failed `adapter_timeout` acknowledgement rather than
+aborting the fleet stop.
+Camera capabilities, captures, and retrievals require the node's `capabilities` or
+`media_file` frame to have arrived before the terminal acknowledgement; otherwise the
+adapter fails closed. `telemetry()` yields nothing because node telemetry reaches the
+relay registry directly over the node socket.
+
+`adapters.dji_mini3.fake_node` behaves like the phone on the wire without hardware:
+`just fake-node` connects one to a running relay so the console shows a real registry
+entry, and `relay/tests/test_bridge_roundtrip.py` dispatches through `build_dispatcher`
+on the `remote` backend to drive it end to end; `relay/tests/test_autonomy_roundtrip.py`
+runs the M2.0 workflow from console intents through `relay.autonomy` to two fake nodes.
 
 The existing `crazyswarm2/` and `mavlink/` packages remain inactive placeholder stubs. They are not accepted hardware implementations and do not drive an abstraction change until a concrete second hardware integration is specified and proven.
 

@@ -13,6 +13,7 @@ PACKAGES = [
     "arbiter",
     "adapters",
     "adapters.sim",
+    "adapters.dji_mini3",
     "adapters.crazyswarm2",
     "adapters.mavlink",
     "perception",

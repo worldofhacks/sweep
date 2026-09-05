@@ -16,6 +16,7 @@ from threading import Lock, RLock
 
 from anyio import CancelScope
 from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import (
@@ -77,6 +78,7 @@ class RelayRuntime:
         self._fanout_failed_sessions: set[str] = set()
         self._fanout_task: asyncio.Task[None] | None = None
         self._fanout_session_tasks: dict[str, asyncio.Task[None]] = {}
+        self.loop: asyncio.AbstractEventLoop | None = None
 
     def session(self, session_id: str) -> RelaySession:
         _validate_session_id(session_id)
@@ -167,6 +169,7 @@ class RelayRuntime:
                 del self._activation_tasks[session_id]
 
     async def start(self) -> None:
+        self.loop = asyncio.get_running_loop()
         self._fanout_task = asyncio.create_task(self._fanout_loop())
 
     async def stop(self) -> None:
@@ -180,8 +183,34 @@ class RelayRuntime:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         while self._background_operations:
-            await asyncio.gather(*tuple(self._background_operations), return_exceptions=True)
+            pending = tuple(task for task in self._background_operations if not task.done())
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            # gather completes synchronously for finished tasks, so yield once so their
+            # queued done callbacks can run, then drop whatever has already finished.
+            await asyncio.sleep(0)
+            self._background_operations.difference_update(
+                task for task in tuple(self._background_operations) if task.done()
+            )
         self._fanout_task = None
+        self.loop = None
+
+    def node_connected(self, session_id: str, drone_id: int) -> bool:
+        return (session_id, drone_id) in self._adapter_connections
+
+    async def deliver_to_node(
+        self, session_id: str, drone_id: int, frame: dict[str, object]
+    ) -> bool:
+        """Queue a relay-authored frame for the one socket bound to this aircraft."""
+        async with self._connection_lock:
+            connection_id = self._adapter_connections.get((session_id, drone_id))
+            if connection_id is None:
+                return False
+            subscription = self._subscriptions.get(session_id, {}).get(connection_id)
+            if subscription is None:
+                return False
+            subscription.queue.put_nowait(frame)
+            return True
 
     async def subscribe(self, session_id: str, principal: Principal) -> _Subscription:
         """Freeze the initial snapshot at the same linearization point as activation."""
@@ -463,6 +492,12 @@ def create_app(
         except AuditLogError:
             with contextlib.suppress(WebSocketDisconnect, RuntimeError):
                 await websocket.close(code=1011)
+        except RuntimeError:
+            # A fan-out send that fails after the client leaves marks the socket
+            # disconnected; the next receive then raises RuntimeError, not
+            # WebSocketDisconnect. Anything else is a real programming error.
+            if websocket.application_state is not WebSocketState.DISCONNECTED:
+                raise
         finally:
             if sender is not None:
                 sender.cancel()
@@ -536,6 +571,7 @@ def _auth_accepted(
         "session": session_id,
         "source": principal.source,
         "drone_id": principal.drone_id,
+        "node": runtime.settings.node_settings() if principal.source == "adapter" else None,
     }
 
 
