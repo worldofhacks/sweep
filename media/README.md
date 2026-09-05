@@ -8,4 +8,6 @@ MediaMTX ingests each drone's stream (RTSP, UDP, or MJPEG over RTSP) and serves 
 
 Start it with `just media` (or `docker compose up mediamtx`). Config: `mediamtx.yml`; edits need `docker compose restart mediamtx` because the bind mount does not hot-reload. The image is distroless (no shell), so debug with `docker compose logs mediamtx`.
 
+The DJI Mini 3 pilot app publishes each aircraft's feed over WHIP to `http://<ground-station>:8889/drone{id}/whip` (`adapters/dji_mini3/README.md`, Phase F). Because MediaMTX runs in a container, it only knows its container address as an ICE candidate; `docker-compose.yml` passes `SWEEP_MEDIA_HOST` (the ground station's LAN IP) into `webrtcAdditionalHosts` so publishers and players on other machines can connect. Export it, or put it in `.env`, and recreate the container (`docker compose up -d mediamtx`) when it changes. Publishing needs no credentials: `all_others` accepts any publisher on the LAN until the deferred authentication lands.
+
 PRD: sections 5.7, 7.5, 8.3.

@@ -19,6 +19,8 @@ rootProject.name = "sweep-pilot-app"
 // The pure-JVM modules build anywhere a JDK exists (the bridge-jvm CI job has no Android SDK).
 include(":bridge-core")
 include(":bench")
+include(":bridge-node")
+include(":bridge-publish")
 
 // The Android module is only configured when an SDK location can be resolved, so
 // `./gradlew :bridge-core:test :bench:test` never trips over "SDK location not found".

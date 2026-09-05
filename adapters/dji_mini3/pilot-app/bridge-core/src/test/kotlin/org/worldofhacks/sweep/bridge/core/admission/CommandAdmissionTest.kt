@@ -120,8 +120,21 @@ class CommandAdmissionTest {
             AdmissionReason.STALE_CONNECTION_EPOCH,
             rejected(gate.admit(command(seq = 1, connectionEpoch = 2))).reason,
         )
-        assertEquals("stale_roster", AdmissionReason.STALE_ROSTER.wire)
-        assertEquals("stale_connection_epoch", AdmissionReason.STALE_CONNECTION_EPOCH.wire)
+        // The relay contract names exactly stale_command and out_of_order_command on the wire.
+        assertEquals("stale_command", AdmissionReason.STALE_ROSTER.wire)
+        assertEquals("stale_command", AdmissionReason.STALE_CONNECTION_EPOCH.wire)
+    }
+
+    @Test
+    fun `only contract reasons are acknowledged and forged or misaddressed frames are dropped`() {
+        assertEquals(
+            setOf("stale_command", "out_of_order_command"),
+            AdmissionReason.entries.filter { it.acknowledged }.map { it.wire }.toSet(),
+        )
+        assertEquals(
+            setOf(AdmissionReason.INVALID_SIGNATURE, AdmissionReason.INVALID_SELECTION),
+            AdmissionReason.entries.filterNot { it.acknowledged }.toSet(),
+        )
     }
 
     @Test

@@ -25,28 +25,53 @@
       "v": 1
     }
   },
+  "auth_accepted": {
+    "wire": {
+      "drone_id": 1,
+      "event_id": "evt-auth-1",
+      "node": {
+        "command_ttl_ms": 2000,
+        "virtual_stick_hz": 10,
+        "watchdog_failsafe_ms": 10000,
+        "watchdog_hold_ms": 2000
+      },
+      "session": "session-a",
+      "source": "adapter",
+      "t": 900,
+      "type": "auth.accepted",
+      "v": 1
+    }
+  },
+  "auth_refused": {
+    "wire": {
+      "detail": "persisted sessions are replay-only after a relay process restart; use a new session ID",
+      "event_id": "evt-auth-2",
+      "reason": "session_closed",
+      "session": "session-a",
+      "status": "refused",
+      "t": 901,
+      "type": "auth.refused",
+      "v": 1
+    }
+  },
   "capabilities": {
     "wire": {
+      "aircraft_firmware": "unreported",
+      "aircraft_model": "DJI Mini 3",
+      "android_version": "16",
       "connection_epoch": 1,
       "drone_id": 1,
       "event_id": "evt-cap-1",
       "gimbal_pitch_max_deg": 20.0,
       "gimbal_pitch_min_deg": -90.0,
-      "hardware_profile": {
-        "aircraft_firmware": null,
-        "aircraft_model": "DJI Mini 3",
-        "android_version": "16",
-        "horizontal_fov_deg": 82.1,
-        "msdk_version": "5.18.0",
-        "phone_model": "Solana Seeker",
-        "rc_firmware": null
-      },
       "horizontal_fov_deg": 82.1,
+      "measured_hfov_deg": null,
       "media_retrieval": true,
-      "native_panorama_modes": [
-        "sphere"
-      ],
+      "native_panorama_modes": [],
+      "phone_model": "Solana Seeker",
       "photo_capture": true,
+      "rc_firmware": "unreported",
+      "sdk_version": "5.18.0",
       "session": "session-a",
       "storage_remaining_bytes": 12000000000,
       "t": 5000,
@@ -61,19 +86,20 @@
       "clearance_ok": true,
       "connection_epoch": 1,
       "coverage_missing": [
-        90,
-        135
+        90.0,
+        135.0
       ],
       "drone_id": 1,
       "event_id": "evt-readiness-1",
       "guidance_mode": "visual_advisory",
       "image_quality_ok": false,
       "motion_ok": true,
-      "next_heading_deg": 90,
+      "next_heading_deg": 90.0,
       "pose_ok": true,
       "pose_source": "operator_approved",
       "room_id": "office-101",
       "session": "session-a",
+      "storage_ok": true,
       "suggested_delta": {
         "degrees": 12.0,
         "kind": "yaw"
@@ -87,10 +113,10 @@
     "key": "adapter-key-0123456789abcdef0123456789abcdef",
     "wire": {
       "args": {
-        "speed": 0.5,
-        "x": 1.0,
-        "y": 2.5,
-        "z": 1.2
+        "speed_mm_s": 500,
+        "x_mm": 1000,
+        "y_mm": 2500,
+        "z_mm": 1200
       },
       "command_id": "cmd-1",
       "connection_epoch": 1,
@@ -102,7 +128,7 @@
       "roster_version": 3,
       "seq": 7,
       "session": "session-a",
-      "signature": "3f807e48f50d46a07d48ed65ae9d2bdb738ed6a375ed3c4c579fc820e0766e63",
+      "signature": "3b3030a0bb9f83c766af97fbad5f1134e8e994c91655a5560e9c2763f7d39189",
       "t": 4000,
       "ttl_ms": 1500,
       "type": "command",
@@ -120,10 +146,10 @@
     },
     "estop": {},
     "goto": {
-      "speed": 0.5,
-      "x": 1.0,
-      "y": 2.5,
-      "z": 1.2
+      "speed_mm_s": 500,
+      "x_mm": 1000,
+      "y_mm": 2500,
+      "z_mm": 1200
     },
     "hover": {},
     "land": {},
@@ -131,14 +157,38 @@
       "file_id": "file-7"
     },
     "rotate_to": {
-      "speed": 30.0,
-      "yaw": 90.0
+      "speed_mdeg_s": 30000,
+      "yaw_mdeg": 90000
     },
     "set_gimbal_pitch": {
-      "pitch": -45.0
+      "pitch_mdeg": -45000
     },
     "takeoff": {
-      "z": 1.2
+      "z_mm": 1200
+    }
+  },
+  "membership_event": {
+    "wire": {
+      "action": "join",
+      "adapter_id": "dji_mini3",
+      "capabilities": [
+        "flight"
+      ],
+      "connection_epoch": 2,
+      "drone_id": 1,
+      "event_id": "evt-mem-1",
+      "membership": "registered",
+      "provenance": "adapter_signature",
+      "readiness_reasons": [
+        "telemetry_missing",
+        "home_pose_missing"
+      ],
+      "reason": "authenticated_rejoin",
+      "roster_version": 4,
+      "session": "session-a",
+      "t": 1100,
+      "type": "membership",
+      "v": 1
     }
   },
   "membership_graceful_leave": {
@@ -197,15 +247,81 @@
       "control_authority": true,
       "drone_id": 1,
       "event_id": "evt-status-1",
-      "phone_battery": 0.72,
+      "phone_battery_percent": 72,
       "phone_thermal_state": "none",
       "session": "session-a",
       "t": 7000,
       "type": "node_status",
       "v": 1,
-      "video_publish_state": "idle",
+      "video_publish_state": "stopped",
       "virtual_stick_enabled": false,
-      "watchdog_state": "armed"
+      "watchdog_state": "nominal"
+    }
+  },
+  "refusal": {
+    "wire": {
+      "command_id": null,
+      "connection_epoch": 1,
+      "detail": "transport event is outside the freshness window",
+      "drone_id": 1,
+      "event_id": "evt-ref-1",
+      "intent_id": null,
+      "reason": "stale_timestamp",
+      "roster_version": 3,
+      "session": "session-a",
+      "source": "adapter",
+      "status": "refused",
+      "t": 1200,
+      "type": "refusal",
+      "v": 1
+    }
+  },
+  "state": {
+    "wire": {
+      "accepted_plan": null,
+      "armed": false,
+      "drones": [
+        {
+          "adapter_capabilities": [
+            "flight"
+          ],
+          "adapter_id": "dji_mini3",
+          "battery": 0.87,
+          "camera_capabilities": null,
+          "camera_patterns": [],
+          "connection_epoch": 1,
+          "control_authority": true,
+          "drone_id": 1,
+          "flight_state": "landed",
+          "home_pose": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "last_seen_at": 1299,
+          "link": 0.95,
+          "membership": "ready",
+          "membership_history": [],
+          "node_status": null,
+          "pos_quality": 0.6,
+          "rc_safety_operator_present": true,
+          "readiness_reasons": [],
+          "selectable": true,
+          "telemetry": null
+        }
+      ],
+      "estop": false,
+      "event_id": "evt-state-1",
+      "formation": "line",
+      "mode": "indoor",
+      "pending": null,
+      "roster_version": 3,
+      "selection": [],
+      "session": "session-a",
+      "spacing": 1.0,
+      "t": 1300,
+      "type": "state",
+      "v": 1
     }
   },
   "telemetry": {

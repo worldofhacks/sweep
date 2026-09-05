@@ -67,4 +67,4 @@ jobs:
           cache-dependency-path: adapters/dji_mini3/pilot-app/gradle/wrapper/gradle-wrapper.properties
       # Pure-JVM modules only; the Android module is skipped by settings.gradle.kts when no SDK
       # location resolves, so no Android SDK is installed here.
-      - run: ./gradlew --no-daemon :bridge-core:test :bench:test
+      - run: ./gradlew --no-daemon :bridge-core:test :bench:test :bridge-node:test :bridge-publish:test
