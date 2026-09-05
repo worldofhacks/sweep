@@ -35,6 +35,7 @@ class RelaySettings:
     fanout_hz: int = 10
     adapter_backend: AdapterBackend = AdapterBackend.SIM
     command_ttl_ms: int = 2_000
+    command_deadline_ms: int = 10_000
     virtual_stick_hz: int = 10
     node_watchdog_hold_ms: int = 2_000
     node_watchdog_failsafe_ms: int = 10_000
@@ -51,6 +52,8 @@ class RelaySettings:
             raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
+        if self.command_deadline_ms < self.command_ttl_ms:
+            raise SettingsError("SWEEP_COMMAND_DEADLINE_MS must be at least SWEEP_COMMAND_TTL_MS")
         if (
             self.node_watchdog_hold_ms < 0
             or self.node_watchdog_failsafe_ms <= self.node_watchdog_hold_ms
@@ -97,6 +100,9 @@ class RelaySettings:
             adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
             command_ttl_ms=_positive_integer(
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"
+            ),
+            command_deadline_ms=_positive_integer(
+                values.get("SWEEP_COMMAND_DEADLINE_MS", "10000"), "SWEEP_COMMAND_DEADLINE_MS"
             ),
             virtual_stick_hz=_positive_integer(
                 values.get("SWEEP_VIRTUAL_STICK_HZ", "10"), "SWEEP_VIRTUAL_STICK_HZ"

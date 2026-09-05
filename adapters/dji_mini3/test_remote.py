@@ -497,3 +497,99 @@ def test_capture_without_a_media_file_and_unknown_retrieval_fail_closed() -> Non
     assert unknown.status is CameraResultStatus.FAILED
     assert unknown.reason is RefusalReason.DOWNLOAD_FAILURE
     assert [request.operation for request in link.sent] == [CommandOperation.CAPTURE_PHOTO]
+
+
+class _SilentFirstDroneLink(ScriptedLink):
+    """Scripted link whose aircraft 1 never answers; records the order of link calls."""
+
+    def __init__(self, **arguments: object) -> None:
+        super().__init__(**arguments)  # type: ignore[arg-type]
+        self.calls: list[tuple[str, object]] = []
+
+    def send(self, request: CommandRequest) -> None:
+        self.calls.append(("send", request.drone_id))
+        super().send(request)
+        if request.drone_id == 1:
+            self._pending[request.command_id].clear()
+
+    def await_acknowledgement(
+        self, command_id: str, *, timeout_ms: int
+    ) -> WireAcknowledgement | None:
+        self.calls.append(("await", command_id))
+        return super().await_acknowledgement(command_id, timeout_ms=timeout_ms)
+
+
+def test_estop_sends_to_every_aircraft_before_waiting_and_reports_a_silent_node() -> None:
+    snapshot = make_snapshot(2)
+    link = _SilentFirstDroneLink(epochs={1: 1, 2: 1})
+    adapter = _adapter(link)
+
+    with adapter.for_intent("intent-stop", snapshot.roster_version):
+        first, second = adapter.estop()
+
+    assert link.calls[:2] == [("send", 1), ("send", 2)], "both stops leave before any wait"
+    assert [call[0] for call in link.calls[2:]] == ["await", "await"]
+    assert first.status is LifecycleStatus.FAILED
+    assert first.detail.startswith("adapter_timeout")
+    assert second.status is LifecycleStatus.COMPLETED
+    stop = Command(
+        command_id="command-estop-1",
+        intent_id="intent-stop",
+        roster_version=snapshot.roster_version,
+        drone_id=1,
+        connection_epoch=1,
+        operation=CommandOperation.ESTOP,
+        safety_action=True,
+    )
+    validated = _dispatcher(adapter).validate_acknowledgement(stop, first, snapshot)
+    assert validated.status is LifecycleStatus.FAILED
+    assert validated.reason is RefusalReason.ADAPTER_FAILURE
+    assert validated.detail == first.detail
+
+
+class _HeartbeatLink(ScriptedLink):
+    """Scripted link whose node answers every wait with another executing heartbeat."""
+
+    def __init__(self, **arguments: object) -> None:
+        super().__init__(**arguments)  # type: ignore[arg-type]
+        self.waits = 0
+
+    def await_acknowledgement(
+        self, command_id: str, *, timeout_ms: int
+    ) -> WireAcknowledgement | None:
+        self.waits += 1
+        request = self.sent[-1]
+        self._clock += 1
+        return WireAcknowledgement(
+            1,
+            self._clock,
+            "acknowledgement",
+            f"ack-{command_id}-{self.waits}",
+            "test-session",
+            request.intent_id,
+            command_id,
+            WireLifecycleStatus.EXECUTING,
+            request.drone_id,
+            request.connection_epoch,
+            request.roster_version,
+            None,
+            None,
+        )
+
+
+def test_command_deadline_bounds_a_node_that_only_heartbeats() -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    link = _HeartbeatLink(epochs={1: 1})
+    adapter = RemoteBridgeAdapter(
+        link, epochs=link.epochs, acknowledgement_timeout_ms=TIMEOUT_MS, command_deadline_ms=60
+    )
+
+    with adapter.for_intent("intent-1", snapshot.roster_version):
+        (acknowledgement,) = adapter.hover([1])
+
+    assert acknowledgement.status is LifecycleStatus.EXECUTING
+    assert link.waits >= 1
+    with pytest.raises(ValueError, match="deadline"):
+        RemoteBridgeAdapter(
+            link, epochs=link.epochs, acknowledgement_timeout_ms=TIMEOUT_MS, command_deadline_ms=10
+        )
