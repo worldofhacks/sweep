@@ -6,7 +6,7 @@ import type { PlaybackDescriptor } from '../../media/playback'
 import type { PlaybackSession, PlaybackStateListener } from '../../media/player'
 import type { MediaRuntime } from '../../media/runtime'
 import { UnavailableRelayClient } from '../../relay/client'
-import type { DroneId, RelayAircraftState } from '../../relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, type DroneId, type RelayAircraftState } from '../../relay/contract'
 import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
 
 const session = 'live-module-session'
@@ -69,6 +69,8 @@ function emitState(
     formation: 'none',
     spacing: 0.8,
     mode: 'indoor',
+    capability_profile: 'c1_basic_control',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
     pending: null,
     accepted_plan: null,
     drones,
