@@ -1,0 +1,179 @@
+{
+  "entries": {
+    "22b3cd087e2f78ec8afcaf59638f75db824535875b429612af18cf5e2e6b9ea7": {
+      "input_units": 2893,
+      "latency_ms": 5003,
+      "output_units": 96,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1,
+                2
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "255a3ef897936250e7f2923180b8078ac35e381a872c67cd5b02aa129f22443d": {
+      "input_units": 2891,
+      "latency_ms": 17897,
+      "output_units": 120,
+      "payload": {
+        "detail": "The transcript says 'this room' but no specific room is identified; please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "unknown_reference"
+      }
+    },
+    "2c413b6fc383f0626cc87c362b2e4dbca4b7ce651330d35a04e904e68ae44e03": {
+      "input_units": 2891,
+      "latency_ms": 1750,
+      "output_units": 92,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "4777f46888a19b4f446b65d8b8920869fb68f1aa0eb1fee6db18afda7e578c49": {
+      "input_units": 2889,
+      "latency_ms": 2588,
+      "output_units": 96,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1,
+                2
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "5ea81023a65e46d2ddb4d5c9cfd3544f7b7fbaa761e874046f734c0b3ceb041e": {
+      "input_units": 2890,
+      "latency_ms": 2377,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "8322e27d3e1ce4f257741cb589c78296237d8728050976331e5ccc2bdcc4aadd": {
+      "input_units": 2886,
+      "latency_ms": 2346,
+      "output_units": 90,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "8a812835e1044bb1e900bf3b38c95c7c60bbe8f46d66b10cb7754bac01677aef": {
+      "input_units": 2885,
+      "latency_ms": 5283,
+      "output_units": 118,
+      "payload": {
+        "detail": "\"Launch.\" is not a recognized command; please clarify whether you mean arm, takeoff, or another action.",
+        "kind": "clarify",
+        "reason": "ambiguous_action"
+      }
+    },
+    "c2cdefb1cfb3925aa4cc401cfd543d0b57bfe05a1e067806cfb874dc6eb8687e": {
+      "input_units": 2899,
+      "latency_ms": 2129,
+      "output_units": 119,
+      "payload": {
+        "detail": "Preparing for flight (arm) requires a target selection context, but no aircraft are selected. Please select aircraft first.",
+        "kind": "refuse",
+        "reason": "no_selection"
+      }
+    },
+    "ed005f02cfed188989a29f96bd1f3a6451ab3b3c9a7378cd889aeb8fa403a568": {
+      "input_units": 2885,
+      "latency_ms": 3187,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "f0f8565d2df37da1602c101008021cb7a6c5cd45032c6a320307ab1de9c048c7": {
+      "input_units": 2891,
+      "latency_ms": 2740,
+      "output_units": 111,
+      "payload": {
+        "detail": "Room name not specified; only 'living-room' is known. Please confirm the room to capture.",
+        "kind": "clarify",
+        "reason": "unknown_reference"
+      }
+    },
+    "fc97fa4746213d7ea3bd210395f30487671ee8808e16bc6a29e12017e81b4ff2": {
+      "input_units": 2894,
+      "latency_ms": 2672,
+      "output_units": 128,
+      "payload": {
+        "detail": "\"Here\" doesn't specify a known room; capture requires a specific room_id (e.g., 'living-room'). Please confirm the room.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-4",
+  "recorded_origin": "anthropic",
+  "version": 3
+}

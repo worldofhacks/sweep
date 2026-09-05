@@ -1,0 +1,38 @@
+{
+  "entries": {
+    "255a3ef897936250e7f2923180b8078ac35e381a872c67cd5b02aa129f22443d": {
+      "input_units": 2891,
+      "latency_ms": 17897,
+      "output_units": 120,
+      "payload": {
+        "detail": "The transcript says 'this room' but no specific room is identified; please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "unknown_reference"
+      }
+    },
+    "f0f8565d2df37da1602c101008021cb7a6c5cd45032c6a320307ab1de9c048c7": {
+      "input_units": 2891,
+      "latency_ms": 2740,
+      "output_units": 111,
+      "payload": {
+        "detail": "Room name not specified; only 'living-room' is known. Please confirm the room to capture.",
+        "kind": "clarify",
+        "reason": "unknown_reference"
+      }
+    },
+    "fc97fa4746213d7ea3bd210395f30487671ee8808e16bc6a29e12017e81b4ff2": {
+      "input_units": 2894,
+      "latency_ms": 2672,
+      "output_units": 128,
+      "payload": {
+        "detail": "\"Here\" doesn't specify a known room; capture requires a specific room_id (e.g., 'living-room'). Please confirm the room.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-4",
+  "recorded_origin": "anthropic",
+  "version": 3
+}

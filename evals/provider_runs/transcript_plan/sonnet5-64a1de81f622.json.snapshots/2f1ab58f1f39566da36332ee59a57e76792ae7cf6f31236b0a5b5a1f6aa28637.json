@@ -1,0 +1,18 @@
+{
+  "entries": {
+    "255a3ef897936250e7f2923180b8078ac35e381a872c67cd5b02aa129f22443d": {
+      "input_units": 2891,
+      "latency_ms": 17897,
+      "output_units": 120,
+      "payload": {
+        "detail": "The transcript says 'this room' but no specific room is identified; please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "unknown_reference"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-4",
+  "recorded_origin": "anthropic",
+  "version": 3
+}

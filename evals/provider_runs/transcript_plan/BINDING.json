@@ -1,0 +1,35 @@
+{
+  "cassette": "sonnet5-64a1de81f622.json",
+  "cassette_sha256": "7734a0f2562fcb41b24e47502d6184e7ba85eaccd8559795b1647d70d03ff9b9",
+  "corpus_digest": "94da020a71522dbae39bd2257a1dcc60942c280661df8e3c77b6cc44b70adae3",
+  "failed": [
+    "capture-this-room",
+    "capture-the-room",
+    "prepare-the-aircraft",
+    "launch",
+    "unknown-id-seven",
+    "unknown-id-nine",
+    "unavailable-panorama",
+    "unavailable-room-capture",
+    "unresolved-three-doors-down",
+    "unresolved-kitchen"
+  ],
+  "models": [
+    "claude-sonnet-5"
+  ],
+  "origins": [
+    "anthropic",
+    "template"
+  ],
+  "passed": 40,
+  "prompt_schema_versions": [
+    "intent-v1-compiler-4"
+  ],
+  "recorded_at": "2026-09-05T00:29:18Z",
+  "run_id": "live-sonnet5-64a1de81f622",
+  "source_sha": "64a1de81f622bcd3b5dd69e95f06185d2345c0fa",
+  "sources": [
+    "anthropic",
+    "template"
+  ]
+}
