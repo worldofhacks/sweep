@@ -1,0 +1,54 @@
+{
+  "entries": {
+    "26ab0f36c53781fc849a81b869addbe22646f49e2d8a8ff68ce9f0c1171b9a0b": {
+      "input_units": 3428,
+      "latency_ms": 2635,
+      "output_units": 125,
+      "payload": {
+        "detail": "\"This room\" is deictic and not resolvable to a cataloged room. Please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "cc5f82c81293add67049b12a4a5b54df57c9345a9e747d97e07ab9095b5b3960": {
+      "input_units": 3428,
+      "latency_ms": 5772,
+      "output_units": 114,
+      "payload": {
+        "detail": "\"The room\" is a deictic reference; please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "cc890f02e6bdd82f3197458493036f0a16472b6fe6271e0a5a53009ec124cb28": {
+      "input_units": 3427,
+      "latency_ms": 1537,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "ddff7f3e4942755cd5c8b5b7aafaa2a9b040730647f13428f82b64072d9ffeee": {
+      "input_units": 3431,
+      "latency_ms": 2456,
+      "output_units": 117,
+      "payload": {
+        "detail": "\"Here\" is a deictic room reference; please specify which known room (e.g., living-room) to capture in.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-7",
+  "recorded_origin": "anthropic",
+  "version": 3
+}
