@@ -78,6 +78,7 @@ export interface ControlState {
   sessionId: string
   connection: RelayConnection
   keyboardConnection: RelayConnection
+  webcamConnection: RelayConnection
   rosterVersion: number
   aircraft: Record<DroneId, RelayAircraftState>
   selection: DroneId[]
@@ -98,6 +99,7 @@ export interface ControlState {
 export type ControlAction =
   | { type: 'connection_changed'; connection: RelayConnection }
   | { type: 'keyboard_connection_changed'; connection: RelayConnection }
+  | { type: 'webcam_connection_changed'; connection: RelayConnection }
   | { type: 'relay_event'; event: RelayServerEvent }
   | { type: 'request_created'; request: RequestRecord }
   | { type: 'request_pending_confirmation'; intentId: string; t: number; plan: PlanPreview }
@@ -123,6 +125,12 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
       transport: 'unavailable',
       changedAt: now,
       reason: 'Keyboard relay source is unavailable.',
+    },
+    webcamConnection: {
+      status: 'disconnected',
+      transport: 'unavailable',
+      changedAt: now,
+      reason: 'Webcam relay source is unavailable.',
     },
     rosterVersion: 0,
     aircraft: {},
@@ -155,6 +163,8 @@ export function controlReducer(state: ControlState, action: ControlAction): Cont
       return reduceConnection(state, action.connection)
     case 'keyboard_connection_changed':
       return reduceKeyboardConnection(state, action.connection)
+    case 'webcam_connection_changed':
+      return reduceWebcamConnection(state, action.connection)
     case 'relay_event':
       return reduceRelayEvent(state, action.event)
     case 'request_created':
@@ -230,6 +240,24 @@ function reduceKeyboardConnection(state: ControlState, connection: RelayConnecti
   return {
     ...state,
     keyboardConnection: connection,
+    notices: prependNotice(state.notices, notice),
+  }
+}
+
+function reduceWebcamConnection(state: ControlState, connection: RelayConnection): ControlState {
+  if (connection.status === 'connected' || connection.status === 'connecting') {
+    return { ...state, webcamConnection: connection }
+  }
+  const notice = makeNotice(
+    `webcam-connection-${connection.changedAt}`,
+    connection.status === 'degraded' ? 'warning' : 'danger',
+    connection.status === 'degraded' ? 'Webcam source degraded' : 'Webcam source unavailable',
+    connection.reason ?? 'No reason was provided.',
+    connection.changedAt,
+  )
+  return {
+    ...state,
+    webcamConnection: connection,
     notices: prependNotice(state.notices, notice),
   }
 }

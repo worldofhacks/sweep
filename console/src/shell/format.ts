@@ -38,3 +38,10 @@ export function formatElapsed(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000))
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
+
+/** Age of a reported timestamp; null means the relay never reported one. */
+export function formatAge(ageMs: number | null): string {
+  if (ageMs === null) return 'unreported'
+  const seconds = Math.round(Math.max(0, ageMs) / 1000)
+  return seconds < 1 ? 'just now' : `${seconds} s ago`
+}

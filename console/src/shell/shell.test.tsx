@@ -151,7 +151,7 @@ describe('persistent shell', () => {
     await draftCapture(user)
 
     await openModule(user, 'Live')
-    expect(screen.getByRole('heading', { name: 'Camera mosaic' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Wall of 4' })).toBeInTheDocument()
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(within(dock).getByText(/"intent_id": "survives-switch"/)).toBeInTheDocument()
 
@@ -304,7 +304,7 @@ describe('persistent shell', () => {
     await user.click(tabs.getByRole('button', { name: 'Health' }))
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Reference')
     expect(screen.getByText(/Connectivity and health — Nodes, services, metrics/)).toBeInTheDocument()
-    const empty = screen.getByText(/per-node health or shared-service status/)
+    const empty = screen.getByText(/does not report shared-service status/)
     expect(empty.closest('[role="status"]')).toHaveTextContent('Nothing to show')
   })
 })

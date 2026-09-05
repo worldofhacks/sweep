@@ -28,10 +28,20 @@ export interface ControlModuleProps extends ModuleProps {
   initialPane?: ControlPaneId
 }
 
-/** Control and capture: Swarm, Capture, Commands, Requests and Fleet on the authoritative state. */
-export function ControlModule({ controller, now, guidance = null, initialPane = 'swarm' }: ControlModuleProps) {
+/**
+ * Control and capture: Swarm, Capture, Commands, Requests and Fleet on the
+ * authoritative state. The room identifier lives in the shell because the
+ * gesture producer and the speech compiler draft against the same room.
+ */
+export function ControlModule({
+  controller,
+  now,
+  roomId,
+  onRoomIdChange,
+  guidance = null,
+  initialPane = 'swarm',
+}: ControlModuleProps) {
   const [pane, setPane] = useState<ControlPaneId>(initialPane)
-  const [roomId, setRoomId] = useState('room-01')
   const [steps, setSteps] = useState(2)
   const [formationPreview, setFormationPreview] = useState<string | null>(null)
 
@@ -54,7 +64,7 @@ export function ControlModule({ controller, now, guidance = null, initialPane = 
         />
       )}
       {pane === 'capture' && (
-        <CapturePane controller={controller} roomId={roomId} onRoomId={setRoomId} guidance={guidance} />
+        <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={guidance} />
       )}
       {pane === 'commands' && <CommandsPane controller={controller} steps={steps} onSteps={setSteps} />}
       {pane === 'requests' && <RequestsPane controller={controller} />}

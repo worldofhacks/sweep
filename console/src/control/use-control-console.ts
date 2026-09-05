@@ -29,7 +29,12 @@ import {
 export interface ControlClients {
   console: RelayClient
   keyboard: RelayClient
+  /** Optional gesture producer source; drafts with source webcam are sent through it. */
+  webcam?: RelayClient
 }
+
+/** Sources that draft previewed requests through the operator control flow. */
+export type DraftSource = Extract<IntentSource, 'console' | 'webcam'>
 
 export interface UseControlConsoleOptions {
   sessionId: string
@@ -64,76 +69,119 @@ export function useControlConsole({
         dispatch({ type: 'relay_event', event: event.event })
       }
     })
-    const unsubscribeKeyboard = clients.keyboard.subscribe((event) => {
-      if (event.kind === 'connection') {
-        dispatch({ type: 'keyboard_connection_changed', connection: event.connection })
-        return
-      }
-      if (
-        event.event.type === 'acknowledgement' ||
-        event.event.type === 'refusal' ||
-        event.event.type === 'auth.accepted' ||
-        event.event.type === 'auth.refused'
-      ) {
-        dispatch({ type: 'relay_event', event: event.event })
-      }
-    })
+    const subscribeLifecycleOnly = (
+      client: RelayClient,
+      connectionType: 'keyboard_connection_changed' | 'webcam_connection_changed',
+    ) =>
+      client.subscribe((event) => {
+        if (event.kind === 'connection') {
+          dispatch({ type: connectionType, connection: event.connection })
+          return
+        }
+        if (
+          event.event.type === 'acknowledgement' ||
+          event.event.type === 'refusal' ||
+          event.event.type === 'auth.accepted' ||
+          event.event.type === 'auth.refused'
+        ) {
+          dispatch({ type: 'relay_event', event: event.event })
+        }
+      })
+    const unsubscribeKeyboard = subscribeLifecycleOnly(clients.keyboard, 'keyboard_connection_changed')
+    const unsubscribeWebcam = clients.webcam
+      ? subscribeLifecycleOnly(clients.webcam, 'webcam_connection_changed')
+      : () => {}
 
     clients.console.start()
     clients.keyboard.start()
+    clients.webcam?.start()
     return () => {
       unsubscribeConsole()
       unsubscribeKeyboard()
+      unsubscribeWebcam()
       clients.console.stop()
       clients.keyboard.stop()
+      clients.webcam?.stop()
     }
   }, [clients])
+
+  const clientFor = useCallback(
+    (source: IntentSource): RelayClient | null => {
+      if (source === 'keyboard') return clients.keyboard
+      if (source === 'webcam') return clients.webcam ?? null
+      return clients.console
+    },
+    [clients],
+  )
 
   /** Marks a recorded request sent and hands it to the client its source names. */
   const sendNow = useCallback(
     (intent: IntentV1, t: number) => {
       dispatch({ type: 'request_sent', intentId: intent.intent_id, t })
-      const client = intent.source === 'keyboard' ? clients.keyboard : clients.console
+      const client = clientFor(intent.source)
+      if (!client) {
+        dispatch({
+          type: 'request_send_failed',
+          intentId: intent.intent_id,
+          t,
+          detail: `No relay connection is bound to source ${intent.source}; the intent was not sent.`,
+        })
+        return
+      }
       sendToRelay(intent, client, t, intentDependencies.now, dispatch)
     },
-    [clients.console, clients.keyboard, intentDependencies],
+    [clientFor, intentDependencies],
+  )
+
+  /**
+   * Records a freshly minted intent and parks it in the dock with its plan
+   * preview. One preview at a time: a new draft cancels an earlier, unconfirmed
+   * one. The intent id never changes. The speech compiler and the gesture
+   * producer draft through this so nothing leaves on a compile or a pose.
+   */
+  const stageForConfirmation = useCallback(
+    (intent: IntentV1): IntentV1 => {
+      const t = intentDependencies.now()
+      dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
+      state.requests
+        .filter((request) => request.status === 'pending_confirmation')
+        .forEach((request) => {
+          dispatch({ type: 'request_cancelled', intentId: request.intent.intent_id, t })
+        })
+      dispatch({
+        type: 'request_pending_confirmation',
+        intentId: intent.intent_id,
+        t,
+        plan: buildPlanPreview(intent, state.rosterVersion),
+      })
+      return intent
+    },
+    [intentDependencies, state.requests, state.rosterVersion],
   )
 
   /**
    * Records a freshly minted intent, then either parks it for confirmation
-   * (with its plan preview) or sends it at once. The intent id never changes.
+   * (with its plan preview) or sends it at once.
    */
   const stageIntent = useCallback(
     (intent: IntentV1) => {
-      const t = intentDependencies.now()
-      dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       if (requiresConfirmation(intent.name)) {
-        // One preview at a time: a new draft cancels an earlier, unconfirmed one.
-        state.requests
-          .filter((request) => request.status === 'pending_confirmation')
-          .forEach((request) => {
-            dispatch({ type: 'request_cancelled', intentId: request.intent.intent_id, t })
-          })
-        dispatch({
-          type: 'request_pending_confirmation',
-          intentId: intent.intent_id,
-          t,
-          plan: buildPlanPreview(intent, state.rosterVersion),
-        })
+        stageForConfirmation(intent)
         return
       }
+      const t = intentDependencies.now()
+      dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       sendNow(intent, t)
     },
-    [intentDependencies, sendNow, state.requests, state.rosterVersion],
+    [intentDependencies, sendNow, stageForConfirmation],
   )
 
   const sendExistingIntent = useCallback(
-    (intent: IntentV1, client: RelayClient, t: number) => {
+    (intent: IntentV1, t: number) => {
       dispatch({ type: 'request_confirmed', intent, t })
-      dispatch({ type: 'request_sent', intentId: intent.intent_id, t })
-      sendToRelay(intent, client, t, intentDependencies.now, dispatch)
+      sendNow(intent, t)
     },
-    [intentDependencies],
+    [sendNow],
   )
 
   const issueIntent = useCallback(
@@ -215,38 +263,104 @@ export function useControlConsole({
     sendSelection(ready)
   }, [sendSelection, state.aircraft])
 
+  /**
+   * Drafts a capture_room preview. The pattern defaults to the console's current
+   * pattern; the speech compiler passes the pattern the utterance named, and the
+   * gesture producer drafts with source webcam.
+   */
   const prepareCapture = useCallback(
-    (roomId: string) => {
+    (
+      roomId: string,
+      source: DraftSource = 'console',
+      pattern: CapturePattern = state.capturePattern,
+    ): IntentV1 | null => {
       const selectedId = state.selection[0]
-      if (state.selection.length !== 1 || !selectedId) return
+      if (state.selection.length !== 1 || !selectedId) return null
       const aircraft = state.aircraft[selectedId]
-      if (!aircraft || aircraft.membership !== 'ready' || !aircraft.selectable) return
-      if (!aircraft.camera_patterns.includes(state.capturePattern)) return
+      if (!aircraft || aircraft.membership !== 'ready' || !aircraft.selectable) return null
+      if (!aircraft.camera_patterns.includes(pattern)) return null
       const trimmedRoomId = roomId.trim()
-      if (!isValidRoomId(trimmedRoomId)) return
+      if (!isValidRoomId(trimmedRoomId)) return null
 
       const draft = createIntent(
         {
           name: 'capture_room',
-          args: { room_id: trimmedRoomId, capture_id: 'pending', pattern: state.capturePattern },
+          args: { room_id: trimmedRoomId, capture_id: 'pending', pattern },
           selection: [selectedId],
-          source: 'console',
+          source,
           session: state.sessionId,
         },
         intentDependencies,
       )
-      stageIntent({
+      return stageForConfirmation({
         ...draft,
-        args: createCaptureArgs(trimmedRoomId, draft.intent_id, state.capturePattern),
+        args: createCaptureArgs(trimmedRoomId, draft.intent_id, pattern),
       })
     },
-    [intentDependencies, stageIntent, state.aircraft, state.capturePattern, state.selection, state.sessionId],
+    [
+      intentDependencies,
+      stageForConfirmation,
+      state.aircraft,
+      state.capturePattern,
+      state.selection,
+      state.sessionId,
+    ],
+  )
+
+  /**
+   * Drafts a select that must be previewed and confirmed before it is sent; the
+   * speech compiler and the target strip use it so nothing leaves on a compile.
+   */
+  const prepareSelect = useCallback(
+    (ids: DroneId[], source: DraftSource): IntentV1 | null => {
+      const desired = [...new Set(ids)].sort((a, b) => a - b)
+      if (desired.length === 0) return null
+      const allReady = desired.every(
+        (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
+      )
+      if (!allReady) return null
+      const draft = createIntent(
+        {
+          name: 'select',
+          args: { ids: desired },
+          selection: state.selection,
+          source,
+          session: state.sessionId,
+        },
+        intentDependencies,
+      )
+      return stageForConfirmation(draft)
+    },
+    [intentDependencies, stageForConfirmation, state.aircraft, state.selection, state.sessionId],
+  )
+
+  /** Drafts a hold that must be previewed and confirmed before it is sent. */
+  const prepareHold = useCallback(
+    (source: DraftSource): IntentV1 | null => {
+      if (state.selection.length === 0) return null
+      const selectionReady = state.selection.every(
+        (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
+      )
+      if (!selectionReady) return null
+      const draft = createIntent(
+        {
+          name: 'hold',
+          args: {},
+          selection: state.selection,
+          source,
+          session: state.sessionId,
+        },
+        intentDependencies,
+      )
+      return stageForConfirmation(draft)
+    },
+    [intentDependencies, stageForConfirmation, state.aircraft, state.selection, state.sessionId],
   )
 
   const confirmRequest = useCallback(
-    (intentId: string) => {
+    (intentId: string): IntentV1 | null => {
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
-      if (!request || request.status !== 'pending_confirmation') return
+      if (!request || request.status !== 'pending_confirmation') return null
       if (request.plan?.rosterVersion !== state.rosterVersion) {
         dispatch({
           type: 'request_invalidated',
@@ -255,7 +369,7 @@ export function useControlConsole({
           reasonCode: 'stale_roster',
           detail: `Preview used roster version ${request.plan?.rosterVersion}; current roster is ${state.rosterVersion}.`,
         })
-        return
+        return null
       }
       const selectionStillValid =
         selectionRule(request.intent.name) === 'all'
@@ -271,19 +385,14 @@ export function useControlConsole({
           reasonCode: 'stale_selection',
           detail: 'An aircraft in the preview is no longer ready. No command was sent.',
         })
-        return
+        return null
       }
       const confirmedAt = intentDependencies.now()
-      sendExistingIntent(confirmIntent(request.intent, confirmedAt), clients.console, confirmedAt)
+      const confirmed = confirmIntent(request.intent, confirmedAt)
+      sendExistingIntent(confirmed, confirmedAt)
+      return confirmed
     },
-    [
-      clients.console,
-      intentDependencies,
-      sendExistingIntent,
-      state.aircraft,
-      state.requests,
-      state.rosterVersion,
-    ],
+    [intentDependencies, sendExistingIntent, state.aircraft, state.requests, state.rosterVersion],
   )
 
   const cancelRequest = useCallback(
@@ -299,7 +408,7 @@ export function useControlConsole({
   }, [issueIntent, state.selection.length])
 
   const issueNetworkStop = useCallback(
-    (source: IntentSource) => {
+    (source: Extract<IntentSource, 'console' | 'keyboard'>) => {
       const intent = createIntent(
         {
           name: 'estop',
@@ -347,18 +456,21 @@ export function useControlConsole({
   )
 
   /**
-   * A configuration change (the room identifier, for one) lands after a plan
-   * was built: every unconfirmed preview is invalidated with the reason stated.
+   * A change that lands while a preview is pending (the room identifier or an
+   * apply-now configuration save, for two) invalidates every unconfirmed
+   * preview visibly with the reason stated, exactly as a roster or selection
+   * change would.
    */
   const invalidatePending = useCallback(
     (reasonCode: string, detail: string) => {
+      const t = intentDependencies.now()
       state.requests
         .filter((request) => request.status === 'pending_confirmation')
         .forEach((request) => {
           dispatch({
             type: 'request_invalidated',
             intentId: request.intent.intent_id,
-            t: intentDependencies.now(),
+            t,
             reasonCode,
             detail,
           })
@@ -369,9 +481,9 @@ export function useControlConsole({
 
   /**
    * Retry a failed or refused request as a new intent: new id, retry_of set,
-   * same args, selection and confirmation. It sends at once and never opens a
-   * second preview, even for a confirmation-gated name: the operator already
-   * confirmed this exact envelope, and that confirmation carries over.
+   * same args, selection, source and confirmation. It sends at once and never
+   * opens a second preview, even for a confirmation-gated name: the operator
+   * already confirmed this exact envelope, and that confirmation carries over.
    */
   const retryRequest = useCallback(
     (request: RequestRecord) => {
@@ -397,6 +509,8 @@ export function useControlConsole({
     selectAircraft,
     selectAllReady,
     prepareCapture,
+    prepareHold,
+    prepareSelect,
     confirmRequest,
     cancelRequest,
     issueHold,
