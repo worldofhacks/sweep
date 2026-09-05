@@ -52,8 +52,10 @@ class DjiFpv(
         val manager = KeyManager.getInstance()
         val key = KeyTools.createKey(FlightControllerKey.KeyAircraftAttitude)
         if (!manager.isKeySupported(key)) {
-            log("Attitude key", "KeyAircraftAttitude is not supported by this product")
-            return
+            // Support is answered for the product connected right now, and registration
+            // usually completes before the aircraft is there. The listener is registered
+            // anyway; on a product that really lacks the key it simply never fires.
+            log("Attitude key", "KeyAircraftAttitude not reported as supported yet; listening anyway")
         }
         manager.listen(
             key,
@@ -87,6 +89,9 @@ class DjiCameraStream(
 
     override val logPath: StateFlow<String?>
         get() = tracker.logPath
+
+    override val lastFrameAtMs: StateFlow<Long?>
+        get() = tracker.lastFrameAtMs
 
     private var surface: Surface? = null
     private var width = 0

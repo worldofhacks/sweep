@@ -39,6 +39,7 @@ fun FlightDisplayScreen(node: BridgeNode, session: AircraftSession, fpv: FpvSess
     val attitude by fpv.attitude.collectAsStateWithLifecycle()
     val capture by fpv.captureProgress.progress.collectAsStateWithLifecycle()
     val evidence by fpv.cameraStream.evidence.collectAsStateWithLifecycle()
+    val lastFrameAt by fpv.cameraStream.lastFrameAtMs.collectAsStateWithLifecycle()
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -57,7 +58,7 @@ fun FlightDisplayScreen(node: BridgeNode, session: AircraftSession, fpv: FpvSess
         authorityChangeReason = link.authorityChangeReason,
         yawDeg = attitude.yawDeg,
         measuredHfovDeg = aircraft.hardware.measuredHfovDeg,
-        lastFrameAgeMs = evidence?.cadence?.lastFrameAtMs?.let { (now - it).coerceAtLeast(0) },
+        lastFrameAgeMs = lastFrameAt?.let { (now - it).coerceAtLeast(0) },
         capture = capture,
     )
     val state = FlightOverlay.derive(inputs)
