@@ -202,20 +202,6 @@ class _IssuedCommand:
 
 
 @dataclass(slots=True)
-class _IssuedCommand:
-    """The immutable command identity plus bounded late-result bookkeeping."""
-
-    intent_id: str
-    roster_version: int
-    drone_id: int
-    connection_epoch: int
-    operation: CommandOperation
-    issued_at: int
-    status: LifecycleStatus | None = None
-    waiter_active: bool = True
-
-
-@dataclass(slots=True)
 class _PendingIntent:
     intent: IntentV1
     executing: bool = False

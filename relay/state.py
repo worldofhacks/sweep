@@ -138,6 +138,9 @@ class FleetRegistry:
                 self._selection,
                 self._armed,
                 self._estop,
+                self._formation,
+                self._spacing,
+                self._mode,
                 self._pending,
                 self._accepted_plan,
             )
@@ -153,6 +156,9 @@ class FleetRegistry:
                     self._selection,
                     self._armed,
                     self._estop,
+                    self._formation,
+                    self._spacing,
+                    self._mode,
                     self._pending,
                     self._accepted_plan,
                 ) = scalars_before
