@@ -311,6 +311,18 @@ def test_takeoff_requires_confirmation_without_adapter_io() -> None:
     assert flight.calls == []
 
 
+@pytest.mark.parametrize("stopped", [False, True])
+def test_selection_scoped_land_executes_only_selected_aircraft(stopped: bool) -> None:
+    snapshot = replace(make_snapshot(2, selection=(1,)), estop_active=stopped)
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    result = controller.execute(
+        make_intent(IntentName.LAND, selection=(1,), confirm=True), snapshot
+    )
+    assert result.status is LifecycleStatus.COMPLETED
+    assert [call.drone_ids for call in flight.calls] == [(1,)]
+    assert all(call.operation is CommandOperation.LAND for call in flight.calls)
+
+
 def test_geofence_and_ceiling_are_checked_on_planned_command() -> None:
     snapshot = replace_aircraft(
         make_snapshot(1, selection=(1,)),
@@ -559,3 +571,125 @@ def test_non_safety_intents_require_physical_armed_evidence(
     assert result.refusal.reason is RefusalReason.ARMED_REQUIRED
     assert flight.calls == []
     assert camera.calls == []
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"flight_state": FlightState.LANDED}, RefusalReason.INVALID_STATE),
+        ({"control_authority": False}, RefusalReason.CONTROL_AUTHORITY),
+        ({"rc_safety_operator_present": False}, RefusalReason.RC_SAFETY_OPERATOR_ABSENT),
+        ({"physical_rc_available": False}, RefusalReason.CONTROL_AUTHORITY),
+        ({"link_last_seen_ms": NOW_MS - 2000}, RefusalReason.LINK_STALE),
+        ({"membership": MembershipState.REGISTERED}, RefusalReason.AIRCRAFT_NOT_READY),
+    ],
+)
+def test_selected_land_preflights_every_target_before_any_io(change, reason) -> None:
+    snapshot = replace_aircraft(make_snapshot(3, selection=(1, 2)), 2, **change)
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    result = controller.execute(
+        make_intent(IntentName.LAND, selection=(1, 2), confirm=True), snapshot
+    )
+    assert result.refusal is not None
+    assert result.refusal.reason is reason
+    assert flight.calls == []
+
+
+@pytest.mark.parametrize(
+    ("selection", "confirm", "reason"),
+    [
+        ((1,), False, RefusalReason.CONFIRMATION_REQUIRED),
+        ((2,), True, RefusalReason.STALE_SELECTION),
+        ((), True, RefusalReason.INVALID_SELECTION),
+    ],
+)
+def test_selected_land_requires_confirmation_and_current_nonempty_selection(
+    selection, confirm, reason
+) -> None:
+    snapshot = make_snapshot(2, selection=() if not selection else (1,))
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    result = controller.execute(
+        make_intent(IntentName.LAND, selection=selection, confirm=confirm), snapshot
+    )
+    assert result.refusal is not None
+    assert result.refusal.reason is reason
+    assert flight.calls == []
+
+
+def test_selected_land_can_descend_with_critical_battery_and_lost_position() -> None:
+    snapshot = replace_aircraft(make_snapshot(1), 1, battery=0.01, position_quality=0.0)
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+    result = controller.execute(
+        make_intent(IntentName.LAND, selection=(1,), confirm=True), snapshot
+    )
+    assert result.status is LifecycleStatus.COMPLETED
+    assert [call.operation for call in flight.calls] == [CommandOperation.LAND]
+
+
+def test_degraded_selected_land_passes_intent_plan_and_command_preflight() -> None:
+    snapshot = replace_aircraft(
+        make_snapshot(2, selection=(1,)), 1, membership=MembershipState.DEGRADED
+    )
+    controller, planner, arbiter, _, flight, _ = make_stack(snapshot)
+    intent = make_intent(IntentName.LAND, selection=(1,), confirm=True)
+
+    assert arbiter.check_intent(intent, snapshot) is None
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+    assert arbiter.check_plan(plan, snapshot) is None
+    assert arbiter.check_command(plan, plan.commands[0], snapshot) is None
+
+    result = controller.execute(intent, snapshot)
+
+    assert result.status is LifecycleStatus.COMPLETED
+    assert [(call.operation, call.drone_ids) for call in flight.calls] == [
+        (CommandOperation.LAND, (1,))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"control_authority": False}, RefusalReason.CONTROL_AUTHORITY),
+        ({"rc_safety_operator_present": False}, RefusalReason.RC_SAFETY_OPERATOR_ABSENT),
+        ({"link_last_seen_ms": NOW_MS - 2000}, RefusalReason.LINK_STALE),
+        ({"connection_epoch": 2}, RefusalReason.STALE_CONNECTION_EPOCH),
+    ],
+)
+def test_degraded_selected_land_rechecks_authority_link_and_epoch_before_io(change, reason) -> None:
+    snapshot = replace_aircraft(make_snapshot(1), 1, membership=MembershipState.DEGRADED)
+    _, planner, arbiter, dispatcher, flight, _ = make_stack(snapshot)
+    intent = make_intent(IntentName.LAND, selection=(1,), confirm=True)
+    assert arbiter.check_intent(intent, snapshot) is None
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+
+    result = dispatcher.dispatch(plan, replace_aircraft(snapshot, 1, **change))
+
+    assert result.refusal is not None
+    assert result.refusal.reason is reason
+    assert flight.calls == []
+
+
+@pytest.mark.parametrize("corruption", ["missing", "extra", "duplicate", "epoch", "bypass"])
+def test_selected_land_rejects_altered_plan_before_any_io(corruption: str) -> None:
+    snapshot = make_snapshot(3, selection=(1, 2))
+    _, planner, _, dispatcher, flight, _ = make_stack(snapshot)
+    plan = planner.plan(make_intent(IntentName.LAND, selection=(1, 2), confirm=True), snapshot)
+    assert isinstance(plan, Plan)
+    first, second = plan.commands
+    commands = {
+        "missing": (first,),
+        "extra": (first, second, replace(second, drone_id=3)),
+        "duplicate": (first, first),
+        "epoch": (first, replace(second, connection_epoch=2)),
+        "bypass": (first, replace(second, safety_action=True)),
+    }[corruption]
+    result = dispatcher.dispatch(replace(plan, commands=commands), snapshot)
+    assert result.refusal is not None
+    assert result.refusal.reason is (
+        RefusalReason.STALE_CONNECTION_EPOCH
+        if corruption == "epoch"
+        else RefusalReason.INVALID_PLAN
+    )
+    assert flight.calls == []

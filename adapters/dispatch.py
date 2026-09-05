@@ -34,6 +34,7 @@ from planner.models import (
     FleetSnapshot,
     HoldScope,
     LifecycleStatus,
+    MembershipState,
     Plan,
     Position,
     Refusal,
@@ -83,6 +84,7 @@ class AdapterDispatcher:
         snapshot: FleetSnapshot,
         *,
         current_snapshot: SnapshotProvider | None = None,
+        owner_still_valid: Callable[[], bool] | None = None,
     ) -> ExecutionResult:
         """Dispatch after whole-plan and immediate pre-I/O state validation.
 
@@ -99,9 +101,16 @@ class AdapterDispatcher:
         if plan.commands and all(
             command.operation is CommandOperation.ESTOP for command in plan.commands
         ):
-            return self._dispatch_estop(plan, provider)
+            if owner_still_valid is not None and not owner_still_valid():
+                return self._invalidated_resume(
+                    plan,
+                    initial,
+                    RefusalReason.STALE_CONNECTION_EPOCH,
+                    "execution ownership was retired before adapter launch",
+                )
+            return self._dispatch_estop(plan, provider, owner_still_valid=owner_still_valid)
 
-        return self._dispatch_checked(plan, provider, initial)
+        return self._dispatch_checked(plan, provider, initial, owner_still_valid=owner_still_valid)
 
     def _dispatch_checked(
         self,
@@ -111,9 +120,69 @@ class AdapterDispatcher:
         *,
         start_index: int = 0,
         prior_affected: tuple[Command, ...] = (),
+        owner_still_valid: Callable[[], bool] | None = None,
     ) -> ExecutionResult:
-        """Run a structurally preflighted plan from an explicit command cursor."""
+        """Keep possible I/O owned even when live state fails between adapter calls."""
+        last_snapshot = initial
+        attempted = list(prior_affected)
 
+        def tracked_snapshot() -> FleetSnapshot:
+            nonlocal last_snapshot
+            last_snapshot = provider()
+            return last_snapshot
+
+        try:
+            return self._dispatch_checked_commands(
+                plan,
+                tracked_snapshot,
+                initial,
+                start_index=start_index,
+                prior_affected=prior_affected,
+                attempted=attempted,
+                owner_still_valid=owner_still_valid,
+            )
+        except Exception as error:
+            acknowledgements = []
+            stop_commands = plan.commands if plan.intent_name is IntentName.HOLD else attempted
+            targets = {command.drone_id: command for command in stop_commands}
+            for command in targets.values():
+                acknowledgements.extend(
+                    self._best_effort_hold(
+                        plan,
+                        command,
+                        lambda: last_snapshot,
+                        owner_still_valid=owner_still_valid,
+                    )
+                )
+            return ExecutionResult(
+                intent_id=plan.intent_id,
+                roster_version=last_snapshot.roster_version,
+                status=LifecycleStatus.FAILED,
+                plan=plan,
+                acknowledgements=tuple(acknowledgements),
+                refusal=Refusal(
+                    intent_id=plan.intent_id,
+                    roster_version=last_snapshot.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.ADAPTER_FAILURE,
+                    detail=f"dispatch interrupted after possible I/O: {type(error).__name__}",
+                    status=LifecycleStatus.FAILED,
+                ),
+                degraded_aircraft=tuple(sorted(targets)),
+            )
+
+    def _dispatch_checked_commands(
+        self,
+        plan: Plan,
+        provider: SnapshotProvider,
+        initial: FleetSnapshot,
+        *,
+        start_index: int,
+        prior_affected: tuple[Command, ...],
+        attempted: list[Command],
+        owner_still_valid: Callable[[], bool] | None,
+    ) -> ExecutionResult:
         acknowledgements: list[CommandAcknowledgement] = []
         captures: dict[str, CaptureResult] = {}
         media_files: list[MediaFile] = []
@@ -141,6 +210,14 @@ class AdapterDispatcher:
         for command in plan.commands[start_index:]:
             if command.drone_id in degraded:
                 continue
+            if owner_still_valid is not None and not owner_still_valid():
+                return self._invalidated_resume(
+                    plan,
+                    initial,
+                    RefusalReason.CONFLICTING_MOTION,
+                    "execution ownership was retired before adapter launch",
+                    acknowledgements=tuple(acknowledgements),
+                )
             current = provider()
             refusal = self.arbiter.check_command(
                 plan,
@@ -151,7 +228,11 @@ class AdapterDispatcher:
             if refusal is not None:
                 if plan.intent_name is IntentName.CAPTURE_ROOM:
                     affected[command.drone_id] = command
-                acknowledgements.extend(self._hold_affected(plan, affected, provider))
+                acknowledgements.extend(
+                    self._hold_affected(
+                        plan, affected, provider, owner_still_valid=owner_still_valid
+                    )
+                )
                 return self._refused(
                     plan,
                     current,
@@ -161,6 +242,15 @@ class AdapterDispatcher:
                     degraded=degraded,
                 )
 
+            attempted.append(command)
+            if owner_still_valid is not None and not owner_still_valid():
+                return self._invalidated_resume(
+                    plan,
+                    current,
+                    RefusalReason.CONFLICTING_MOTION,
+                    "execution ownership was retired before adapter launch",
+                    acknowledgements=tuple(acknowledgements),
+                )
             try:
                 with self._intent_scope(command.intent_id, command.roster_version):
                     outcome = self._execute(command, captures, provider)
@@ -175,7 +265,15 @@ class AdapterDispatcher:
                 degraded.add(command.drone_id)
                 projected.pop(command.drone_id, None)
                 acknowledgements.append(self._failed_ack(command, failure))
-                acknowledgements.extend(self._best_effort_hold(plan, command, provider))
+                acknowledgements.extend(
+                    self._best_effort_hold(
+                        plan,
+                        command,
+                        provider,
+                        fallback_snapshot=current,
+                        owner_still_valid=owner_still_valid,
+                    )
+                )
                 continue
             except Exception as error:  # adapter exceptions never cross this boundary
                 failure = self._failure_for(
@@ -188,7 +286,15 @@ class AdapterDispatcher:
                 degraded.add(command.drone_id)
                 projected.pop(command.drone_id, None)
                 acknowledgements.append(self._failed_ack(command, failure))
-                acknowledgements.extend(self._best_effort_hold(plan, command, provider))
+                acknowledgements.extend(
+                    self._best_effort_hold(
+                        plan,
+                        command,
+                        provider,
+                        fallback_snapshot=current,
+                        owner_still_valid=owner_still_valid,
+                    )
+                )
                 continue
 
             if isinstance(outcome, Refusal):
@@ -210,7 +316,11 @@ class AdapterDispatcher:
                         status=status,
                     )
                 affected[command.drone_id] = command
-                acknowledgements.extend(self._hold_affected(plan, affected, provider))
+                acknowledgements.extend(
+                    self._hold_affected(
+                        plan, affected, provider, owner_still_valid=owner_still_valid
+                    )
+                )
                 return ExecutionResult(
                     intent_id=plan.intent_id,
                     roster_version=provider().roster_version,
@@ -247,7 +357,11 @@ class AdapterDispatcher:
                 )
                 if post_io_refusal is not None:
                     affected[command.drone_id] = command
-                    acknowledgements.extend(self._hold_affected(plan, affected, provider))
+                    acknowledgements.extend(
+                        self._hold_affected(
+                            plan, affected, provider, owner_still_valid=owner_still_valid
+                        )
+                    )
                     return self._refused(
                         plan,
                         after,
@@ -283,7 +397,11 @@ class AdapterDispatcher:
                         status=LifecycleStatus.REFUSED,
                     )
                     affected[command.drone_id] = command
-                    acknowledgements.extend(self._hold_affected(plan, affected, provider))
+                    acknowledgements.extend(
+                        self._hold_affected(
+                            plan, affected, provider, owner_still_valid=owner_still_valid
+                        )
+                    )
                     return self._refused(
                         plan,
                         provider(),
@@ -295,7 +413,11 @@ class AdapterDispatcher:
                 failures.append(failure)
                 degraded.add(command.drone_id)
                 projected.pop(command.drone_id, None)
-                acknowledgements.extend(self._best_effort_hold(plan, command, provider))
+                acknowledgements.extend(
+                    self._best_effort_hold(
+                        plan, command, provider, owner_still_valid=owner_still_valid
+                    )
+                )
             else:
                 target = self.arbiter.command_position(command, current.aircraft[command.drone_id])
                 if target is not None:
@@ -331,7 +453,14 @@ class AdapterDispatcher:
         bundle = self._completed_bundle(plan, media_files)
         if isinstance(bundle, Refusal):
             if plan.commands:
-                acknowledgements.extend(self._best_effort_hold(plan, plan.commands[-1], provider))
+                acknowledgements.extend(
+                    self._best_effort_hold(
+                        plan,
+                        plan.commands[-1],
+                        provider,
+                        owner_still_valid=owner_still_valid,
+                    )
+                )
             return ExecutionResult(
                 intent_id=plan.intent_id,
                 roster_version=provider().roster_version,
@@ -437,6 +566,7 @@ class AdapterDispatcher:
         snapshot: FleetSnapshot,
         *,
         current_snapshot: SnapshotProvider | None = None,
+        owner_still_valid: Callable[[], bool] | None = None,
     ) -> ExecutionResult:
         """Resume after an accepted/executing command receives a terminal ack.
 
@@ -509,17 +639,55 @@ class AdapterDispatcher:
         if (
             terminal_ack.command_id != waiting.command_id
             or not self._ack_matches_command(terminal_ack, command)
-            or terminal_ack.status is not LifecycleStatus.COMPLETED
+            or terminal_ack.status
+            not in {LifecycleStatus.COMPLETED, LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
         ):
             return self._invalid_resume(plan, current, "terminal acknowledgement is mismatched")
 
         prior_acks = [*pending.acknowledgements[:-1], terminal_ack]
         completed_prefix = plan.commands[: command_index + 1]
+        if (
+            plan.roster_version != current.roster_version
+            and command_index + 1 == len(plan.commands)
+            and terminal_ack.status is LifecycleStatus.COMPLETED
+            and not any(
+                completed.operation
+                in {
+                    CommandOperation.CAPTURE_PANORAMA,
+                    CommandOperation.CAPTURE_PHOTO,
+                    CommandOperation.RETRIEVE_MEDIA,
+                }
+                for completed in completed_prefix
+            )
+            and all(
+                (aircraft := current.aircraft.get(completed.drone_id)) is not None
+                and aircraft.connection_epoch == completed.connection_epoch
+                and (
+                    aircraft.membership is MembershipState.READY
+                    or (
+                        plan.intent_name in {IntentName.HOLD, IntentName.LAND, IntentName.LAND_ALL}
+                        and aircraft.membership is MembershipState.DEGRADED
+                        and snapshot.aircraft.get(completed.drone_id) is not None
+                        and snapshot.aircraft[completed.drone_id].membership
+                        is MembershipState.DEGRADED
+                    )
+                )
+                for completed in completed_prefix
+            )
+        ):
+            return ExecutionResult(
+                intent_id=plan.intent_id,
+                roster_version=current.roster_version,
+                status=LifecycleStatus.COMPLETED,
+                plan=plan,
+                acknowledgements=tuple(prior_acks),
+            )
         if plan.roster_version != current.roster_version:
             holds = self._hold_affected(
                 plan,
                 {completed.drone_id: completed for completed in completed_prefix},
                 provider,
+                owner_still_valid=owner_still_valid,
             )
             latest = provider()
             return self._invalidated_resume(
@@ -537,6 +705,7 @@ class AdapterDispatcher:
                 plan,
                 {completed.drone_id: completed for completed in completed_prefix},
                 provider,
+                owner_still_valid=owner_still_valid,
             )
             latest = provider()
             return self._invalidated_resume(
@@ -545,6 +714,33 @@ class AdapterDispatcher:
                 RefusalReason.STALE_CONNECTION_EPOCH,
                 "plan was invalidated by an aircraft connection-epoch change",
                 acknowledgements=(*prior_acks, *holds),
+            )
+        if terminal_ack.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}:
+            holds = self._hold_affected(
+                plan,
+                {affected.drone_id: affected for affected in completed_prefix},
+                provider,
+                owner_still_valid=owner_still_valid,
+            )
+            latest = provider()
+            reason = terminal_ack.reason or RefusalReason.ADAPTER_FAILURE
+            failure = Refusal(
+                intent_id=plan.intent_id,
+                roster_version=latest.roster_version,
+                drone_id=command.drone_id,
+                connection_epoch=command.connection_epoch,
+                reason=reason,
+                detail=terminal_ack.detail or reason.value,
+                status=terminal_ack.status,
+            )
+            return ExecutionResult(
+                intent_id=plan.intent_id,
+                roster_version=latest.roster_version,
+                status=terminal_ack.status,
+                plan=plan,
+                acknowledgements=(*prior_acks, *holds),
+                refusal=failure,
+                degraded_aircraft=(command.drone_id,),
             )
         completed_ids = frozenset(
             ack.command_id for ack in (*pending.acknowledgements[:-1], terminal_ack)
@@ -559,6 +755,7 @@ class AdapterDispatcher:
                 plan,
                 {completed.drone_id: completed for completed in completed_prefix},
                 provider,
+                owner_still_valid=owner_still_valid,
             )
             latest = provider()
             return self._invalidated_resume(
@@ -595,6 +792,7 @@ class AdapterDispatcher:
             current,
             start_index=command_index + 1,
             prior_affected=plan.commands[: command_index + 1],
+            owner_still_valid=owner_still_valid,
         )
         return ExecutionResult(
             intent_id=plan.intent_id,
@@ -646,7 +844,8 @@ class AdapterDispatcher:
             return self._invalid_resume(plan, current, "estop completion is not pending")
         command = plan.commands[command_index]
         if (
-            terminal_ack.status is not LifecycleStatus.COMPLETED
+            terminal_ack.status
+            not in {LifecycleStatus.COMPLETED, LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
             or not self._ack_matches_command(terminal_ack, command)
             or current.aircraft.get(command.drone_id) is None
             or current.aircraft[command.drone_id].connection_epoch != command.connection_epoch
@@ -654,6 +853,25 @@ class AdapterDispatcher:
             return self._invalid_resume(plan, current, "estop completion is stale or mismatched")
         acknowledgements = list(pending.acknowledgements)
         acknowledgements[command_index] = terminal_ack
+        if terminal_ack.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}:
+            reason = terminal_ack.reason or RefusalReason.ADAPTER_FAILURE
+            return ExecutionResult(
+                intent_id=plan.intent_id,
+                roster_version=current.roster_version,
+                status=terminal_ack.status,
+                plan=plan,
+                acknowledgements=tuple(acknowledgements),
+                refusal=Refusal(
+                    intent_id=plan.intent_id,
+                    roster_version=current.roster_version,
+                    drone_id=command.drone_id,
+                    connection_epoch=command.connection_epoch,
+                    reason=reason,
+                    detail=terminal_ack.detail or reason.value,
+                    status=terminal_ack.status,
+                ),
+                degraded_aircraft=(command.drone_id,),
+            )
         status = (
             LifecycleStatus.EXECUTING
             if any(
@@ -676,7 +894,7 @@ class AdapterDispatcher:
         pending: ExecutionResult,
         terminal_ack: CommandAcknowledgement,
     ) -> int | None:
-        """Correlate a completed stop ack without trusting current roster state."""
+        """Correlate a terminal stop ack without trusting current roster state."""
         if len(pending.acknowledgements) != len(plan.commands) or any(
             not AdapterDispatcher._ack_matches_command(ack, command)
             for ack, command in zip(pending.acknowledgements, plan.commands, strict=True)
@@ -704,10 +922,11 @@ class AdapterDispatcher:
         if command_index is None:
             return None
         command = plan.commands[command_index]
-        if (
-            terminal_ack.status is not LifecycleStatus.COMPLETED
-            or not AdapterDispatcher._ack_matches_command(terminal_ack, command)
-        ):
+        if terminal_ack.status not in {
+            LifecycleStatus.COMPLETED,
+            LifecycleStatus.FAILED,
+            LifecycleStatus.INVALIDATED,
+        } or not AdapterDispatcher._ack_matches_command(terminal_ack, command):
             return None
         return command_index
 
@@ -941,11 +1160,24 @@ class AdapterDispatcher:
             return [self._completed_ack(command, provider())], media_files
         raise ValueError(f"dispatcher has no implementation for {operation.value}")
 
-    def _dispatch_estop(self, plan: Plan, provider: SnapshotProvider) -> ExecutionResult:
+    def _dispatch_estop(
+        self,
+        plan: Plan,
+        provider: SnapshotProvider,
+        *,
+        owner_still_valid: Callable[[], bool] | None = None,
+    ) -> ExecutionResult:
         current = provider()
         preflight = self.arbiter.check_plan(plan, current)
         if preflight is not None:
             return self._refused(plan, current, preflight)
+        if owner_still_valid is not None and not owner_still_valid():
+            return self._invalidated_resume(
+                plan,
+                current,
+                RefusalReason.CONFLICTING_MOTION,
+                "execution ownership was retired before adapter launch",
+            )
         try:
             with self._intent_scope(plan.intent_id, plan.roster_version):
                 raw_by_id = {ack.drone_id: ack for ack in self.flight.estop()}
@@ -1047,9 +1279,23 @@ class AdapterDispatcher:
         )
 
     def _best_effort_hold(
-        self, plan: Plan, failed_command: Command, provider: SnapshotProvider
+        self,
+        plan: Plan,
+        failed_command: Command,
+        provider: SnapshotProvider,
+        *,
+        fallback_snapshot: FleetSnapshot | None = None,
+        owner_still_valid: Callable[[], bool] | None = None,
     ) -> list[CommandAcknowledgement]:
-        current = provider()
+        if owner_still_valid is not None and not owner_still_valid():
+            return []
+        try:
+            current = provider()
+        except Exception:
+            if fallback_snapshot is None:
+                raise
+            # Enrichment failure after I/O must not prevent stopping that same aircraft.
+            current = fallback_snapshot
         aircraft = current.aircraft.get(failed_command.drone_id)
         if aircraft is None or not aircraft.airborne:
             return []
@@ -1081,6 +1327,8 @@ class AdapterDispatcher:
             is not None
         ):
             return []
+        if owner_still_valid is not None and not owner_still_valid():
+            return []
         try:
             with self._intent_scope(hold.intent_id, hold.roster_version):
                 raw = self.flight.hover([failed_command.drone_id])[0]
@@ -1097,13 +1345,21 @@ class AdapterDispatcher:
                     detail="best-effort safety hold failed",
                 )
             ]
-        return [self.validate_acknowledgement(hold, raw, provider())]
+        try:
+            after = provider()
+        except Exception:
+            if fallback_snapshot is None:
+                raise
+            after = current
+        return [self.validate_acknowledgement(hold, raw, after)]
 
     def _hold_affected(
         self,
         plan: Plan,
         affected: dict[int, Command],
         provider: SnapshotProvider,
+        *,
+        owner_still_valid: Callable[[], bool] | None = None,
     ) -> list[CommandAcknowledgement]:
         acknowledgements: list[CommandAcknowledgement] = []
         for drone_id in sorted(affected):
@@ -1114,7 +1370,9 @@ class AdapterDispatcher:
                 CommandOperation.ESTOP,
             }:
                 continue
-            acknowledgements.extend(self._best_effort_hold(plan, command, provider))
+            acknowledgements.extend(
+                self._best_effort_hold(plan, command, provider, owner_still_valid=owner_still_valid)
+            )
         return acknowledgements
 
     @staticmethod

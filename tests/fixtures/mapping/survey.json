@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "units": "meters",
+  "T_map_scan": [
+    [
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      1
+    ]
+  ],
+  "tags": [
+    {
+      "id": 0,
+      "floor_id": "level_1",
+      "size": 0.16,
+      "orientation_confirmed": true,
+      "front_normal_scan": [
+        0,
+        0,
+        1
+      ],
+      "corners": [
+        [
+          -0.08,
+          0.08,
+          0
+        ],
+        [
+          0.08,
+          0.08,
+          0
+        ],
+        [
+          0.08,
+          -0.08,
+          0
+        ],
+        [
+          -0.08,
+          -0.08,
+          0
+        ]
+      ]
+    },
+    {
+      "id": 1,
+      "floor_id": "level_1",
+      "size": 0.24,
+      "orientation_confirmed": true,
+      "front_normal_scan": [
+        0,
+        -1,
+        0
+      ],
+      "corners": [
+        [
+          1.88,
+          1,
+          0.62
+        ],
+        [
+          2.12,
+          1,
+          0.62
+        ],
+        [
+          2.12,
+          1,
+          0.38
+        ],
+        [
+          1.88,
+          1,
+          0.38
+        ]
+      ]
+    },
+    {
+      "id": 2,
+      "floor_id": "mezzanine",
+      "size": 0.3,
+      "orientation_confirmed": true,
+      "front_normal_scan": [
+        1,
+        0,
+        0
+      ],
+      "corners": [
+        [
+          -1,
+          0.85,
+          1.65
+        ],
+        [
+          -1,
+          1.15,
+          1.65
+        ],
+        [
+          -1,
+          1.15,
+          1.35
+        ],
+        [
+          -1,
+          0.85,
+          1.35
+        ]
+      ]
+    }
+  ],
+  "source": {
+    "path": "scan.ply",
+    "sha256": "9f9ea697fbda7c4438539da165eef21a441cc41332d878566e6dfffbea870994"
+  }
+}

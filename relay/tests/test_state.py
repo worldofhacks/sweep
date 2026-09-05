@@ -208,6 +208,105 @@ def test_disconnect_history_and_rejoin_epoch_are_preserved_without_mutating_work
     assert state["accepted_plan"] == {"plan_id": "plan-1", "roster_version": 1}
 
 
+def test_airborne_readiness_changes_cannot_replace_the_confirmed_home_pose() -> None:
+    registry = FleetRegistry(telemetry_freshness_ms=1_000)
+    _join(registry, 1, "join-1")
+    registry.apply_telemetry(
+        parse_telemetry(telemetry_payload(event_id="telemetry-home", state="landed")),
+        transition_event_id="unused-home",
+    )
+    _ready(registry, "ready-1", 1_756_700_000_000)
+    airborne = telemetry_payload(
+        event_id="telemetry-airborne",
+        timestamp=1_756_700_000_101,
+        state="hovering",
+    )
+    airborne.update(x=9.0, y=8.0, z=1.5)
+    registry.apply_telemetry(
+        parse_telemetry(airborne),
+        transition_event_id="unused-airborne",
+    )
+    unconfirmed = membership_payload(
+        action="readiness",
+        event_id="ready-unconfirmed",
+        timestamp=1_756_700_000_101,
+        home_pose_confirmed=False,
+    )
+    transition = registry.apply_readiness(parse_membership_request(unconfirmed))
+    state = registry.state_event(
+        session=SESSION,
+        t=1_756_700_000_101,
+        event_id="state-unconfirmed",
+    )
+    assert transition.membership is Membership.DEGRADED
+    assert "home_pose_missing" in transition.readiness_reasons
+    assert state["drones"][0]["home_pose"] == {"x": 1.0, "y": 2.0, "z": 0.5}
+
+    registry.apply_readiness(
+        parse_membership_request(
+            membership_payload(
+                action="readiness",
+                event_id="ready-2",
+                timestamp=1_756_700_000_101,
+            )
+        )
+    )
+
+    state = registry.state_event(
+        session=SESSION,
+        t=1_756_700_000_101,
+        event_id="state-reconfirmed",
+    )
+
+    assert state["drones"][0]["home_pose"] == {"x": 1.0, "y": 2.0, "z": 0.5}
+
+
+def test_airborne_rejoin_cannot_replace_the_confirmed_home_pose() -> None:
+    registry = FleetRegistry(telemetry_freshness_ms=1_000)
+    _join(registry, 1, "join-1")
+    registry.apply_telemetry(
+        parse_telemetry(telemetry_payload(event_id="telemetry-home")),
+        transition_event_id="unused-home",
+    )
+    _ready(registry, "ready-1", 1_756_700_000_000)
+    registry.disconnect(
+        drone_id=1,
+        connection_epoch=1,
+        t=1_756_700_000_100,
+        event_id="loss-1",
+    )
+    _join(registry, 1, "join-2")
+    airborne = telemetry_payload(
+        event_id="telemetry-airborne",
+        timestamp=1_756_700_000_101,
+        connection_epoch=2,
+        state="hovering",
+    )
+    airborne.update(x=9.0, y=8.0, z=1.5)
+    registry.apply_telemetry(
+        parse_telemetry(airborne),
+        transition_event_id="unused-airborne",
+    )
+    registry.apply_readiness(
+        parse_membership_request(
+            membership_payload(
+                action="readiness",
+                event_id="ready-2",
+                timestamp=1_756_700_000_101,
+                connection_epoch=2,
+            )
+        )
+    )
+
+    state = registry.state_event(
+        session=SESSION,
+        t=1_756_700_000_101,
+        event_id="state-2",
+    )
+
+    assert state["drones"][0]["home_pose"] == {"x": 1.0, "y": 2.0, "z": 0.5}
+
+
 def test_graceful_leave_has_observable_leaving_then_disconnected_states() -> None:
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
     _join(registry, 1, "join-1")
@@ -250,6 +349,7 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
         "event_id",
         "session",
         "roster_version",
+        "state_sequence",
         "armed",
         "estop",
         "selection",
@@ -287,3 +387,14 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
     assert drone["flight_state"] == drone["telemetry"]["state"]
     assert drone["battery"] == drone["telemetry"]["battery"]
     assert drone["camera_patterns"] == ["pano_360"]
+
+
+def test_state_sequence_orders_equal_time_control_snapshots() -> None:
+    registry = FleetRegistry(telemetry_freshness_ms=1_000)
+    first = registry.state_event(session=SESSION, t=100, event_id="older")
+    registry.set_armed(True)
+    second = registry.state_event(session=SESSION, t=100, event_id="newer")
+    third = registry.state_event(session=SESSION, t=99, event_id="clock-backward")
+    assert [event["state_sequence"] for event in (first, second, third)] == [1, 2, 3]
+    assert first["armed"] is False
+    assert second["armed"] is True
