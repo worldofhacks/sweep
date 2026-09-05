@@ -23,7 +23,13 @@ from relay.contracts import (
     parse_telemetry,
     refusal_event,
 )
-from relay.intent_v1 import AcceptedIntent, IntentV1, RejectedIntent, validate_intent
+from relay.intent_v1 import (
+    REGISTERED_SOURCES,
+    AcceptedIntent,
+    IntentV1,
+    RejectedIntent,
+    validate_intent,
+)
 from relay.state import FleetRegistry, MembershipTransition, RegistryError
 
 Clock = Callable[[], int]
@@ -105,7 +111,7 @@ class RelaySession:
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Route one post-authentication frame according to its bound principal."""
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
-        if principal.source in {"console", "keyboard"} and frame_type == "intent":
+        if principal.source in REGISTERED_SOURCES and frame_type == "intent":
             return self.process_intent(raw, principal)
         if principal.source == "adapter":
             if frame_type == "membership":
@@ -130,7 +136,7 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            if principal.source not in {"console", "keyboard"} or principal.drone_id is not None:
+            if principal.source not in REGISTERED_SOURCES or principal.drone_id is not None:
                 return [
                     self._refuse_intent(
                         raw,
