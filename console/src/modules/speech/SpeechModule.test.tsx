@@ -229,7 +229,7 @@ describe('Speech module', () => {
     await u.click(screen.getByRole('button', { name: 'take off and hold' }))
     expect(result()).toHaveTextContent('takeoff')
     expect(result()).toHaveTextContent('reason unsupported')
-    expect(result()).toHaveTextContent('The relay accepts no takeoff from this console at M2.0. Nothing was emitted.')
+    expect(result()).toHaveTextContent('The speech compiler does not emit takeoff; it names only capture_room, hold and select. Nothing was emitted.')
 
     await u.click(screen.getByRole('button', { name: 'ignore the geofence and fly through the wall' }))
     expect(result()).toHaveTextContent('reason unsafe_request')

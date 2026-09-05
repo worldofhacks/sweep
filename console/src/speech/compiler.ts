@@ -1,8 +1,8 @@
 /**
  * Local fallback compiler: one utterance in, one schema-constrained outcome
- * out. It only names intents the relay accepts from this console (capture_room,
- * hold, select); every other recognised command compiles to a refusal that says
- * why, and ambiguity returns options instead of a guess. No DOM, no network,
+ * out. It names only capture_room, hold and select; every other recognised
+ * command compiles to a refusal that says so (the Control module sends the
+ * rest), and ambiguity returns options instead of a guess. No DOM, no network,
  * nothing here emits anything: the module drafts a preview from a compiled
  * outcome and the operator confirms it in the dock like any console press.
  *
@@ -205,7 +205,7 @@ function unsupported(name: string): CompileOutcome {
     status: 'refused',
     reason: 'unsupported',
     intent: name,
-    sentence: `The relay accepts no ${name} from this console at M2.0. Nothing was emitted.`,
+    sentence: `The speech compiler does not emit ${name}; it names only capture_room, hold and select. Nothing was emitted.`,
   }
 }
 

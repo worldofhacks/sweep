@@ -79,7 +79,7 @@ describe('compileUtterance', () => {
     })
   })
 
-  test('intents the relay does not accept from this console are refused by name', () => {
+  test('intents the compiler does not emit are refused by name', () => {
     expect(compileUtterance('take off and hold', context)).toMatchObject({
       status: 'refused',
       reason: 'unsupported',
