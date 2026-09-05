@@ -1,6 +1,8 @@
 package org.worldofhacks.sweep.bridge.node
 
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
+import org.worldofhacks.sweep.bridge.core.frames.ControlPose
+import org.worldofhacks.sweep.bridge.core.flight.LocalizationConfig
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusBody
 import org.worldofhacks.sweep.bridge.core.frames.RefusalEvent
@@ -14,6 +16,7 @@ data class NodeConfig(
     val token: String,
     val adapterId: String,
     val capabilities: List<String>,
+    val localization: LocalizationConfig? = null,
 ) {
     init {
         require(relayUrl.startsWith("ws://") || relayUrl.startsWith("wss://")) { "relay URL must start with ws:// or wss://" }
@@ -126,6 +129,8 @@ data class LinkState(
     val lastRelayFrameAtMs: Long? = null,
     /** When an authorized control heartbeat last arrived: the deadman's clock for the flight loop. */
     val lastRelayActivityMs: Long? = null,
+    val controlPose: ControlPose? = null,
+    val controlPoseFreshUntilMs: Long? = null,
     val estop: Boolean = false,
     val lastRefusal: RefusalEvent? = null,
     val lastAuthRefusal: AuthRefused? = null,

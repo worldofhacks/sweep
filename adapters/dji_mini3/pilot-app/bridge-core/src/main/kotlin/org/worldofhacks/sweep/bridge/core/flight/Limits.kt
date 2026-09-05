@@ -123,4 +123,23 @@ data class FlightConfig(
     /** PRD 5.5: network stop holds, then lands if the stop stays asserted this long. */
     val estopLandAfterMs: Long = 5_000,
     val defaultStickHz: Int = FlightSettings.DEFAULT_STICK_HZ,
+    val localization: LocalizationConfig? = null,
 )
+
+data class LocalizationConfig(
+    val mapId: String,
+    val geometryId: String,
+    val cameraCalibrationId: String,
+    val bodyExtrinsicsId: String,
+    val fixFreshnessMs: Long = 500,
+    val poseFreshnessMs: Long = 500,
+    val trackingTubeMm: Long = 500,
+    val targetToleranceMm: Long = 150,
+    val settledHoldMs: Long = 500,
+    val tagLossLandAfterMs: Long = 3_000,
+) {
+    init {
+        require(listOf(mapId, geometryId, cameraCalibrationId, bodyExtrinsicsId).all { it.isNotEmpty() }) { "localization identities must be pinned" }
+        require(fixFreshnessMs in 1..500 && poseFreshnessMs > 0 && trackingTubeMm > 0 && targetToleranceMm > 0 && settledHoldMs >= 0 && tagLossLandAfterMs > 0) { "localization bounds are invalid" }
+    }
+}
