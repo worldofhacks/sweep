@@ -59,6 +59,23 @@ def test_concave_notch_cannot_be_missed_by_corner_sampling():
     assert not rect_inside_polygon((-1, 0, 4, 4), SQUARE)
 
 
+def test_boundary_aligned_concave_slot_is_not_contained():
+    slot = [
+        [0, 0],
+        [4, 0],
+        [4, 4],
+        [2.1, 4],
+        [2.1, 1],
+        [1.9, 1],
+        [1.9, 4],
+        [0, 4],
+        [0, 0],
+    ]
+    assert all(point_inside(slot, point) for point in [(1.9, 1), (2.1, 1), (2.1, 4), (1.9, 4)])
+    assert not point_inside(slot, (2, 2.5))
+    assert not rect_inside_polygon((1.9, 1, 2.1, 4), slot)
+
+
 def test_segment_distance_projection_endpoints_and_degenerate_segments():
     assert distance_to_segment((2, 3), (0, 0), (4, 0)) == 3
     assert distance_to_segment((7, 4), (0, 0), (4, 0)) == 5

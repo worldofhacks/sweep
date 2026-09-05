@@ -100,7 +100,9 @@ def _segment_enters_rect(a, b, rect):
 
 def rect_inside_polygon(rect, poly):
     """Require full containment, including concave notches between rectangle corners."""
-    return all(point_inside(poly, p) for p in _rect_points(rect)[:-1]) and not any(
+    corners = _rect_points(rect)[:-1]
+    center = ((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
+    return all(point_inside(poly, p) for p in [*corners, center]) and not any(
         _segment_enters_rect(a, b, rect) for a, b in zip(poly, poly[1:], strict=False)
     )
 

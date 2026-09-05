@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
@@ -16,13 +17,20 @@ from tools.geometry_math import (
     rect_polygon_distance,
     rect_segment_distance,
 )
-from tools.map_common import finite_number, read_document, transform_point, write_document
+from tools.map_common import (
+    finite_number,
+    parse_document,
+    read_document,
+    transform_point,
+    write_document,
+)
 from tools.map_validate import validate_bundle
 
 CELL_M = 0.10
 HAZARD_MARGIN_M = 0.75
 WALL_INSET_M = 1.0
 BANDS_M = (0.8, 1.2, 1.6, 2.0, 2.4)
+PREVIEW_POINT_LIMIT = 5_000
 
 
 def _require(condition, message):
@@ -42,9 +50,13 @@ def _volume(value):
     return {**value, "polygon": boundary, "z_min": low, "z_max": high}
 
 
-def read_ply(path, transform):
-    """Read ASCII PLY vertex XYZ into the building frame; unsupported layouts raise ValueError."""
-    with Path(path).open(encoding="ascii") as stream:
+def _parse_ply(payload, transform):
+    """Parse one immutable ASCII PLY byte snapshot."""
+    try:
+        text = payload.decode("ascii")
+    except (AttributeError, UnicodeDecodeError) as exc:
+        raise ValueError("PLY payload must be ASCII bytes") from exc
+    with io.StringIO(text) as stream:
         _require(stream.readline().strip() == "ply", "expected PLY header")
         _require(stream.readline().strip() == "format ascii 1.0", "only ASCII PLY 1.0 is supported")
         count, properties, element = None, [], None
@@ -59,12 +71,10 @@ def read_ply(path, transform):
             if words[0] == "element":
                 _require(len(words) == 3, "invalid PLY element")
                 element = words[1]
-                if element == "vertex":
-                    _require(count is None, "duplicate PLY vertex element")
-                    count = int(words[2])
-                    _require(0 <= count <= 1_000_000, "PLY vertex count exceeds authoring limit")
-                elif count is None:
-                    raise ValueError("vertex must be the first PLY element")
+                _require(element == "vertex", "only a vertex PLY element is supported")
+                _require(count is None, "duplicate PLY vertex element")
+                count = int(words[2])
+                _require(0 <= count <= 1_000_000, "PLY vertex count exceeds authoring limit")
             elif words[0] == "property" and element == "vertex":
                 _require(len(words) == 3 and words[1] != "list", "unsupported vertex property")
                 _require(words[2] not in properties, "duplicate vertex property")
@@ -81,7 +91,23 @@ def read_ply(path, transform):
             _require(len(fields) == len(properties), "truncated or malformed PLY vertex")
             point = [finite_number(float(fields[i]), "PLY coordinate") for i in indices]
             points.append(transform_point(transform, point))
+        _require(not stream.read().strip(), "unexpected trailing PLY payload")
         return points
+
+
+def read_ply(path, transform):
+    """Read one ASCII PLY snapshot; unsupported or ambiguous layouts raise ValueError."""
+    return _parse_ply(Path(path).read_bytes(), transform)
+
+
+def _preview_sample(points):
+    """Return a deterministic bounded sample that includes both ends of the source order."""
+    if len(points) <= PREVIEW_POINT_LIMIT:
+        return list(points)
+    return [
+        points[index * (len(points) - 1) // (PREVIEW_POINT_LIMIT - 1)]
+        for index in range(PREVIEW_POINT_LIMIT)
+    ]
 
 
 def _rect(ix, iy, origin):
@@ -184,7 +210,8 @@ def generate(bundle, authoring, output, accepted_versions):
 
 def _generate(bundle, authoring, output, accepted_versions):
     manifest = validate_bundle(bundle, accepted_versions)
-    request = read_document(authoring)
+    authoring_payload = authoring.read_bytes()
+    request = parse_document(authoring_payload, str(authoring))
     _require(
         type(request["schema_version"]) is int and request["schema_version"] == 1,
         "unsupported geometry schema",
@@ -201,7 +228,7 @@ def _generate(bundle, authoring, output, accepted_versions):
     origin = flight[:2]
     width, height = (math.ceil((flight[i + 2] - flight[i]) / CELL_M) for i in range(2))
     _require(width * height <= 100_000, "grid exceeds offline authoring limit of 100000 cells")
-    zones_doc = read_document(bundle / "zones.yaml")
+    zones_doc = manifest.document("zones.yaml")
     geofence = _volume(zones_doc["geofence"])
     walls = polygon(request["wall_boundary"])
     sources = {s["path"]: s for s in manifest["sources"]}
@@ -219,16 +246,15 @@ def _generate(bundle, authoring, output, accepted_versions):
     points = []
     for source in request["cloud_sources"]:
         _require(source in sources, "cloud must reference a pinned source")
-        points.extend(read_ply(bundle / source, sources[source]["T_map_scan"]))
+        points.extend(_parse_ply(manifest.source_bytes(source), sources[source]["T_map_scan"]))
     _require(bool(points), "source clouds contain no observed vertices")
-    voxels = sorted(
-        {
-            _voxel(p)
-            for p in points
-            if flight[0] - HAZARD_MARGIN_M - CELL_M <= p[0] <= flight[2] + HAZARD_MARGIN_M + CELL_M
-            and flight[1] - HAZARD_MARGIN_M - CELL_M <= p[1] <= flight[3] + HAZARD_MARGIN_M + CELL_M
-        }
-    )
+    relevant_points = [
+        point
+        for point in points
+        if flight[0] - HAZARD_MARGIN_M - CELL_M <= point[0] <= flight[2] + HAZARD_MARGIN_M + CELL_M
+        and flight[1] - HAZARD_MARGIN_M - CELL_M <= point[1] <= flight[3] + HAZARD_MARGIN_M + CELL_M
+    ]
+    voxels = sorted({_voxel(point) for point in relevant_points})
     _require(isinstance(request["free_space"], list), "free_space must be a list")
     domain = []
     for item in request["free_space"]:
@@ -242,7 +268,7 @@ def _generate(bundle, authoring, output, accepted_versions):
             request["evidence_kind"] == "synthetic" or item["owner_approved"]
         )
         domain.append(volume)
-    obstacles = [_volume(v) for v in read_document(bundle / "obstacles.yaml")["obstacles"]]
+    obstacles = [_volume(v) for v in manifest.document("obstacles.yaml")["obstacles"]]
     _require(isinstance(request["no_fly"], list), "no_fly must be a list")
     obstacles.extend(_volume(v) for v in request["no_fly"])
     cells = [_rect(ix, iy, origin) for iy in range(height) for ix in range(width)]
@@ -312,7 +338,7 @@ def _generate(bundle, authoring, output, accepted_versions):
         "blocked_cells": sum(route_reasons[i] is not None for i in route_cells),
         "tube": route,
     }
-    tags = [t for t in read_document(bundle / "tags.yaml")["tags"] if t["floor_id"] == floor]
+    tags = [t for t in manifest.document("tags.yaml")["tags"] if t["floor_id"] == floor]
     route_report["tag_proximity"] = _proximity(route, tags)
     _require(isinstance(request["formations"], list), "formations must be a list")
     formations, names = [], set()
@@ -335,12 +361,12 @@ def _generate(bundle, authoring, output, accepted_versions):
             "formation must be an axis-aligned rectangle",
         )
         separation = finite_number(item["separation_m"], "separation")
-        envelope = sum(
-            finite_number(item[k], k) for k in ("stopping_m", "p95_error_m", "drone_radius_m")
-        )
+        stopping = finite_number(item["stopping_m"], "stopping_m")
+        p95_error = finite_number(item["p95_error_m"], "p95_error_m")
+        drone_radius = finite_number(item["drone_radius_m"], "drone_radius_m")
+        envelope = stopping + p95_error + drone_radius
         _require(
-            separation > 0
-            and all(item[k] >= 0 for k in ("stopping_m", "p95_error_m", "drone_radius_m")),
+            separation > 0 and stopping >= 0 and p95_error >= 0 and drone_radius > 0,
             "invalid formation envelope",
         )
         span_x, span_y = max(xs) - min(xs), max(ys) - min(ys)
@@ -384,7 +410,7 @@ def _generate(bundle, authoring, output, accepted_versions):
         "evidence_kind": request["evidence_kind"],
         "bundle_version": manifest["bundle_version"],
         "bundle_content_sha256": manifest["content_sha256"],
-        "authoring_sha256": hashlib.sha256(authoring.read_bytes()).hexdigest(),
+        "authoring_sha256": hashlib.sha256(authoring_payload).hexdigest(),
         "floor_id": floor,
         "floor_elevation_m": floor_z,
         "units": "meters",
@@ -397,6 +423,9 @@ def _generate(bundle, authoring, output, accepted_versions):
         "candidate_value": 0,
         "hazard_margin_m": HAZARD_MARGIN_M,
         "wall_inset_m": WALL_INSET_M,
+        "source_point_count": len(points),
+        "geometry_point_count": len(relevant_points),
+        "preview_point_limit": PREVIEW_POINT_LIMIT,
     }
     report = {
         **common,
@@ -424,11 +453,13 @@ def _generate(bundle, authoring, output, accepted_versions):
     )
     from tools.map_geometry_preview import write_preview
 
+    preview_points = _preview_sample(relevant_points)
+    report["preview_point_count"] = len(preview_points)
     write_preview(
         output / "preview.html",
         report,
         grids,
-        points,
+        preview_points,
         tags,
         [rect for rect, ok in zip(cells, inside, strict=True) if ok],
     )
@@ -444,10 +475,12 @@ def main():
     parser.add_argument("bundle", type=Path)
     parser.add_argument("authoring", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--accepted-version", action="append", required=True)
+    parser.add_argument("--accepted-versions", type=Path, required=True)
     args = parser.parse_args()
     try:
-        report = generate(args.bundle, args.authoring, args.output, args.accepted_version)
+        report = generate(
+            args.bundle, args.authoring, args.output, read_document(args.accepted_versions)
+        )
     except ValueError as exc:
         print(json.dumps({"valid": False, "error": str(exc)}))
         return 1

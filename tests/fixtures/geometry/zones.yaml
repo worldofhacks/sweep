@@ -178,15 +178,21 @@
     "nodes": [
       {
         "id": "113",
-        "floor_id": "level_1"
+        "floor_id": "level_1",
+        "region_id": "113",
+        "autonomous": true
       },
       {
         "id": "mezzanine",
-        "floor_id": "mezzanine"
+        "floor_id": "mezzanine",
+        "region_id": "mezzanine",
+        "autonomous": false
       },
       {
         "id": "north_hallway",
-        "floor_id": "level_1"
+        "floor_id": "level_1",
+        "region_id": "north_hallway",
+        "autonomous": false
       }
     ],
     "edges": [

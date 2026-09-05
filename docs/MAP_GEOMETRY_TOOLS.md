@@ -8,11 +8,17 @@ and `flight_approved: false`; they cannot authorize a flight.
 ## Run the example
 
 ```bash
+cat > /tmp/sweep-geometry-accepted-versions.json <<'JSON'
+{
+  "synthetic-geometry-v1": "286612fa8396e0b9a3f8ecacb50a0377c3b93c4e0b90e7531b80dec0798b3e69"
+}
+JSON
+
 .venv/bin/python -m tools.map_geometry \
   tests/fixtures/geometry \
   tests/fixtures/geometry/geometry_authoring.json \
   /tmp/sweep-geometry-example \
-  --accepted-version synthetic-geometry-v1
+  --accepted-versions /tmp/sweep-geometry-accepted-versions.json
 ```
 
 Use a fresh output path each time. The tool refuses an existing directory. The
@@ -29,11 +35,14 @@ The sample polygons have no owner approval.
 
 Start with the validated bundle from [the survey tools](MAP_SURVEY_TOOLS.md).
 `geometry_authoring.json` is a separate, editable authoring request pinned to that
-bundle's `content_sha256`. Copy the example structure and replace its geometry:
+bundle's `content_sha256`. Keep the accepted-version mapping under separate operator
+control rather than accepting a mapping supplied by the bundle. Copy the example
+structure and replace its geometry:
 
 1. In CloudCompare, export each registered source as **ASCII PLY** with XYZ vertex
-   properties. The reader accepts ASCII PLY 1.0, including extra scalar vertex
-   fields such as RGB. Binary PLY, OBJ, GLB and other phone export formats must
+   properties. The reader accepts one ASCII PLY 1.0 vertex element, including
+   extra scalar vertex fields such as RGB, and rejects undeclared trailing records.
+   Binary PLY, OBJ, GLB and other phone export formats must
    first be opened in CloudCompare and re-exported with the PLY ASCII option.
    Preserve scan-local coordinates and the saved `T_map_scan`; exporting already
    transformed building coordinates requires an identity transform to avoid
@@ -117,15 +126,20 @@ gimbal attitude, lighting and the measured 720p detection envelope remain open.
 | `preview.html` | Self-contained plan/elevation views for review. |
 
 Keep the directory together. `.npy` files alone do not contain the map identity;
-`geometry.json` supplies that identity and hashes every generated artifact. Hashes
-record content integrity and do not authenticate a survey or approve a flight.
+`geometry.json` supplies that identity and hashes every generated artifact. The
+bundle and authoring hashes identify the immutable byte snapshots used for the
+calculation. Hashes record content integrity and do not authenticate a survey or
+approve a flight.
 
 The initial authoring adapter caps each cloud at one million vertices, the grid
 at 100,000 cells, and routes at 1,000
 points and 1,000 m total length. Crop or split larger surveys. This implementation
 indexes altitude-relevant voxels into nearby one-meter XY bins. A 10 × 10 m
 room with 10,000 floor voxels runs in the regression suite and checks both blocked
-and free results. Open3D/binary-cloud import and
+and free results. Preview rendering is cropped to the geometry-relevant XY area
+and deterministically limited to 5,000 source points; `geometry.json` records the
+full, relevant, and rendered counts. Full relevant geometry still participates in
+collision computation. Open3D/binary-cloud import and
 large-site processing remain follow-on work.
 
 ## Physical acceptance still required

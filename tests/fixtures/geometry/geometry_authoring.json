@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "units": "meters",
-  "bundle_content_sha256": "57a6eb1b533d6ba4565dcb377376444bc5840b0a37077f4c722893dd64c97a15",
+  "bundle_content_sha256": "286612fa8396e0b9a3f8ecacb50a0377c3b93c4e0b90e7531b80dec0798b3e69",
   "evidence_kind": "synthetic",
   "floor_id": "level_1",
   "floor_elevation_m": 0,
