@@ -33,7 +33,7 @@ class FakeFlightAircraft(
     /** Stands in for the aircraft and RC link, as the Phase C Connect and Disconnect buttons do. */
     fun setConnected(aircraft: Boolean, rc: Boolean = aircraft) {
         fake.setConnected(aircraft, rc)
-        model.connected = aircraft && rc
+        mirrorConnection()
         publish()
     }
 
@@ -49,8 +49,15 @@ class FakeFlightAircraft(
     }
 
     override fun advance(nowMs: Long) {
+        mirrorConnection()
         model.advance(nowMs)
         publish()
+    }
+
+    /** The Phase C fixture's own Connect and Disconnect drive the model's link too. */
+    private fun mirrorConnection() {
+        val current = fake.snapshot.value
+        model.connected = current.aircraftConnected && current.rcConnected
     }
 
     override fun enableVirtualStick(onResult: (PortResult) -> Unit) = model.enableVirtualStick(onResult)

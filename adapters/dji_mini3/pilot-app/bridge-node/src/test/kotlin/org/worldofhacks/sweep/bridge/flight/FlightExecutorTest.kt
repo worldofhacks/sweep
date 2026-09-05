@@ -1,10 +1,14 @@
 package org.worldofhacks.sweep.bridge.flight
 
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.flight.FlightConfig
+import org.worldofhacks.sweep.bridge.core.flight.FlightReason
+import org.worldofhacks.sweep.bridge.core.flight.ReportSink
+import org.worldofhacks.sweep.bridge.core.flight.StickFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.PhoneThermalState
@@ -12,6 +16,7 @@ import org.worldofhacks.sweep.bridge.core.json.JsonBool
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonString
 import org.worldofhacks.sweep.bridge.node.FlightStates
+import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.LinkTiming
 import org.worldofhacks.sweep.bridge.node.NodeConfig
 import org.worldofhacks.sweep.bridge.node.PhoneStatus
@@ -241,5 +246,28 @@ class FlightExecutorTest {
                 stub.awaitAck(done.commandId, "completed")
             }
         }
+    }
+
+    @Test
+    fun `closing the executor mid-hold releases virtual stick instead of leaving the flight controller waiting`() {
+        val aircraft = FakeFlightAircraft()
+        aircraft.setConnected(true)
+        aircraft.place(zUp = 1.2, flying = true)
+        val executor = FlightExecutor(aircraft, aircraft, aircraft.fake, config = config, log = { logs += it })
+        val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 5000, watchdogFailsafeMs = 20000)
+        executor.observe(MutableStateFlow(LinkState(joined = true, nodeSettings = settings, lastRelayFrameAtMs = System.currentTimeMillis())))
+        await("deadman armed") { executor.status.value.watchdog == "armed" }
+        val sink = object : ReportSink {
+            override fun executing(detail: String?) = Unit
+
+            override fun completed(detail: String?) = Unit
+
+            override fun failed(reason: FlightReason, detail: String?) = Unit
+        }
+        executor.startBench("hold", StickFrame.NEUTRAL, 60_000, sink)
+        await("virtual stick enabled") { aircraft.model.virtualStickEnabled }
+        executor.close()
+        assertTrue(!aircraft.model.virtualStickEnabled, "virtual stick released when the ticker stopped; log:\n" + logs.joinToString("\n"))
+        assertTrue(logs.any { it.contains("flight loop stopped with virtual stick enabled") }, logs.joinToString("\n"))
     }
 }

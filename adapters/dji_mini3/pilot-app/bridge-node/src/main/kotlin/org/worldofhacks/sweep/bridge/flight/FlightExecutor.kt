@@ -1,6 +1,8 @@
 package org.worldofhacks.sweep.bridge.flight
 
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -43,6 +45,10 @@ import org.worldofhacks.sweep.bridge.node.NodeLog
  * mirrored into it, and every port callback is posted back onto that thread. It is the
  * node's [CommandExecutor]: flight operations go to the loop, everything else to [fallback]
  * (the flavor's own executor, which owns the camera path).
+ *
+ * The ticker is the stick stream, so it survives any failure of one tick, and if it is ever
+ * stopped ([close]) it sends neutral sticks and disables Virtual Stick before it exits, so
+ * the flight controller is never left waiting for frames nobody sends.
  */
 class FlightExecutor(
     port: FlightPort,
@@ -52,6 +58,7 @@ class FlightExecutor(
     config: FlightConfig = FlightConfig(),
     private val log: NodeLog = NodeLog { },
 ) : CommandExecutor, AutoCloseable {
+    private val rawPort: FlightPort = port
     private val loop = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "flight-loop").apply { isDaemon = true } }
     private val dispatcher = loop.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -75,16 +82,28 @@ class FlightExecutor(
 
     private suspend fun ticker() {
         var deadline = clock.nowMs()
-        while (true) {
-            val now = clock.nowMs()
-            try {
-                controller.tick(now)
-            } catch (error: RuntimeException) {
-                log.log("flight loop tick failed: $error")
+        try {
+            while (true) {
+                val now = clock.nowMs()
+                try {
+                    controller.tick(now)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    // One failed tick must not end the stream; the next tick runs on schedule.
+                    log.log("flight loop tick failed: $error")
+                }
+                deadline = controller.cadence.nextDeadline(deadline, now)
+                val wait = deadline - clock.nowMs()
+                if (wait > 0) delay(wait) else yield()
             }
-            deadline = controller.cadence.nextDeadline(deadline, now)
-            val wait = deadline - clock.nowMs()
-            if (wait > 0) delay(wait) else yield()
+        } finally {
+            // Only cancellation gets here; never leave Virtual Stick on with nobody streaming.
+            if (controller.virtualStickEnabled) {
+                rawPort.sendStick(StickFrame.NEUTRAL)
+                rawPort.disableVirtualStick { }
+                log.log("flight loop stopped with virtual stick enabled: neutral sticks sent and virtual stick disabled")
+            }
         }
     }
 
@@ -93,7 +112,15 @@ class FlightExecutor(
 
     override fun execute(command: CommandFrame, report: CommandReport) {
         if (FlightCommand.isFlight(command.args)) {
-            post { controller.execute(FlightCommand(command.commandId, command.args), ReportBridge(report)) }
+            post {
+                try {
+                    controller.execute(FlightCommand(command.commandId, command.args), ReportBridge(report))
+                } catch (error: RuntimeException) {
+                    // The relay must not wait out its timeout on a command the loop could not plan.
+                    log.log("flight command ${command.commandId} failed inside the loop: $error")
+                    report.failed("node_error", "the flight loop could not run the command: $error [terminal]")
+                }
+            }
         } else {
             val other = fallback
             if (other == null) {
@@ -132,6 +159,12 @@ class FlightExecutor(
     override fun close() {
         scope.cancel()
         loop.shutdown()
+        try {
+            // Lets the ticker's release of Virtual Stick run before the caller moves on.
+            loop.awaitTermination(2, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     /** Marshals every asynchronous port result back onto the loop thread. */
