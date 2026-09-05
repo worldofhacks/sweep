@@ -391,3 +391,8 @@
   .drone-state + .drone-state { border-top: 1px solid var(--color-hairline); border-left: 0; }
   .request-reason { align-items: flex-start; flex-direction: column; }
 }
+
+.whep-player { width: 100%; align-self: stretch; }
+.whep-player video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #111; }
+.whep-player p { margin: 8px 12px; }
+.whep-player button { margin: 0 12px 12px; }

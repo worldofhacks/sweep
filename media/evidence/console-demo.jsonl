@@ -1,0 +1,7 @@
+{"event":"canvas_whip_connected","t":1788574439415,"codec":"H264"}
+{"event":"console_video_advancing","t":1788574441863,"currentTime":0.378,"frames":13,"width":640,"height":360}
+{"event":"console_video_advancing","t":1788574442324,"currentTime":0.843,"frames":26,"width":640,"height":360}
+{"event":"shell_controls_preserved","t":1788574442501,"fixtureStopRequestAccepted":true,"whepSessionDeleted":true}
+{"event":"console_video_advancing","t":1788574444130,"currentTime":0.713,"frames":22,"width":640,"height":360}
+{"event":"live_module_reopened","t":1788574444131,"successfulOffers":2}
+{"event":"passed","t":1788574444132,"artifacts":"/home/gauntlet/sweep-agents/codex-general-dev/.scratch/pr68-console-demo/.sweep/media-demo"}

@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { WhepVideo } from './WhepVideo'
 import { formatDroneId } from '../../control/state'
 import type { DroneId, RelayAircraftState } from '../../relay/contract'
 import { Pane } from '../../shell/Pane'
@@ -7,7 +8,6 @@ import { formatPercent, formatTime, humanizeCode } from '../../shell/format'
 import { PanelHeading } from '../shared'
 import type { ModuleProps } from '../types'
 
-/** Camera mosaic and focus pane, moved from the checkpoint dashboard unchanged. */
 export function LiveModule({ controller }: ModuleProps) {
   const { state, selectFeed } = controller
   const aircraft = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
@@ -23,7 +23,7 @@ export function LiveModule({ controller }: ModuleProps) {
           <PanelHeading
             eyebrow="Authoritative media state"
             title="Camera mosaic"
-            meta={`${aircraft.length} sources · fixture first`}
+            meta={`${aircraft.length} sources`}
             id="mosaic-title"
           />
           <div className="camera-mosaic" aria-label="Camera sources">
@@ -114,17 +114,13 @@ function FocusPane({ drone }: { drone: RelayAircraftState | null }) {
   const source = mediaSource(drone)
   return (
     <section className={`focus-source is-${source.status}`} aria-label={`Focused camera ${formatDroneId(drone.drone_id)}`}>
-      <div className="focus-source-visual" aria-hidden="true">
-        <span className="reticle" />
-        <span className="cam-label">
-          <span className={`camera-signal is-${source.status}`} />
-          <span>{streamName(drone.drone_id)}</span>
-        </span>
+      <div className="focus-source-visual">
+        <WhepVideo key={`${drone.drone_id}:${drone.connection_epoch}`} droneId={drone.drone_id} />
       </div>
       <div className="focus-source-copy">
         <span className="eyebrow">{source.label}</span>
         <strong>{formatDroneId(drone.drone_id)} · stream {streamName(drone.drone_id)}</strong>
-        <p>{formatLastFrame(source.lastFrameAt)}. Browser playback stays held for M3.1 media integration.</p>
+        <p>{formatLastFrame(source.lastFrameAt)}.</p>
         <dl>
           <div><dt>Flight</dt><dd>{drone.flight_state ?? 'Awaiting telemetry'}</dd></div>
           <div><dt>Health</dt><dd>{humanizeCode(drone.membership)}</dd></div>
@@ -147,7 +143,7 @@ function mediaSource(drone: RelayAircraftState) {
   if (video.status === 'offline') {
     return { status: 'offline' as const, label: 'Video offline', lastFrameAt: video.last_frame_at }
   }
-  return { status: 'live' as const, label: 'Live fixture source', lastFrameAt: video.last_frame_at }
+  return { status: 'live' as const, label: 'Source reported live', lastFrameAt: video.last_frame_at }
 }
 
 function streamName(droneId: DroneId): string {

@@ -1,0 +1,19 @@
+logLevel: info
+rtsp: false
+rtmp: false
+hls: false
+srt: false
+moq: false
+api: false
+metrics: false
+webrtc: true
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcIPsFromInterfaces: false
+webrtcAdditionalHosts: [127.0.0.1]
+webrtcAllowOrigins: [http://localhost:5173, http://127.0.0.1:5173]
+pathDefaults:
+  record: false
+  overridePublisher: false
+paths:
+  ~^drone[1-6]$: {}

@@ -1,21 +1,10 @@
-# Ground-station services (PRD section 7.5). Start with: docker compose up
-#
-# relay      arrives in M1 once relay/ has an app and a Dockerfile.
-# perception arrives in M3.
-# No restart policy: a bad config makes `just media` exit with the error instead of looping.
 name: sweep
 
 services:
   mediamtx:
     image: bluenviron/mediamtx:1.20.1
-    container_name: sweep-mediamtx
     ports:
-      - "8554:8554"                 # RTSP ingest from drones and cameras
-      - "8000-8001:8000-8001/udp"   # RTSP RTP/RTCP for publishers that negotiate UDP (ffmpeg's default)
-      - "8889:8889"                 # WebRTC (WHIP publish, WHEP play) for the console
-      - "8189:8189/udp"             # WebRTC ICE
-      - "8888:8888"                 # HLS
+      - "127.0.0.1:8889:8889"
+      - "127.0.0.1:8189:8189/udp"
     volumes:
-      # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
-      - ./media/mediamtx.yml:/mediamtx.yml:ro
-      # M3: add ./recordings:/recordings and set recordPath in media/mediamtx.yml.
+      - ./media/demo.yml:/mediamtx.yml:ro

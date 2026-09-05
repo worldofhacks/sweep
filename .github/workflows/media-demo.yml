@@ -1,0 +1,49 @@
+name: Media console demo
+
+on:
+  pull_request:
+    paths:
+      - 'media/**'
+      - 'console/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/media-demo.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  media-console:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: console/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: console
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: console
+      - name: Render WHIP source in the console through WHEP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .sweep/media-demo
+          media_image_container=$(docker create bluenviron/mediamtx:1.20.1)
+          docker cp "$media_image_container:/mediamtx" .sweep/media-demo/mediamtx
+          docker rm "$media_image_container"
+          export MEDIAMTX_BINARY="$PWD/.sweep/media-demo/mediamtx"
+          pnpm --dir console test:media-demo
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: media-console-evidence
+          path: |
+            .sweep/media-demo/*.jsonl
+            .sweep/media-demo/*.log
+            .sweep/media-demo/*.png
