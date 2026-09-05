@@ -75,8 +75,10 @@ module (id, label, component, context renderer) in navigation order; module sele
 shell and a pending request survives switching. Modules the relay does not feed yet render an
 honest empty state.
 
-Fixture scenarios are data only: `/?fixture=control`, `pending4`, `six6`, or `down` select a
-`FixtureRelayClient` scenario for both the console and keyboard sources.
+Fixture scenarios are data only and exist only in development builds: `/?fixture=control`,
+`pending4`, `six6`, or `down` select a `FixtureRelayClient` scenario for the console, keyboard and
+webcam sources and the matching `FixtureCatalogClient` tables. Production runs on the real relay
+WebSocket with no fixture fallback.
 
 ## Control module
 
@@ -124,8 +126,8 @@ policy transitions, status changes, and intent events.
 
 Both panes share the target strip (`src/modules/gesture/TargetStrip.tsx`): the selection count,
 chips that toggle selection through the relay, All ready, the blockers line, and the design's quick
-commands. Hold drafts a hold preview for the dock; Takeoff, Come home, and Land all are listed as
-unsupported until the relay accepts those names from this console.
+commands, each wired through the control hook: Hold, Takeoff and Land all draft a preview for the
+dock and Come home sends at once; a name outside the relay's M2.0 set is listed as unsupported.
 
 Speech (`src/voice/`, `src/speech/`, panel in `src/modules/speech/`) is push-to-talk through the
 relay transcription endpoint: hold the button to record, release to upload; recording stops one
