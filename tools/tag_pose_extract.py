@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import tempfile
+import unicodedata
 from pathlib import Path
 
 from tools.map_common import (
@@ -186,7 +187,9 @@ def _write_outputs(survey, output, preview, document):
     paths = [survey, output] + ([preview] if preview else [])
     for index, path in enumerate(paths):
         for other in paths[:index]:
-            if str(path.resolve()).casefold() == str(other.resolve()).casefold() or (
+            if unicodedata.normalize(
+                "NFC", str(path.resolve())
+            ).casefold() == unicodedata.normalize("NFC", str(other.resolve())).casefold() or (
                 path.exists() and other.exists() and path.samefile(other)
             ):
                 raise ValueError("survey, output, and preview must refer to distinct files")
