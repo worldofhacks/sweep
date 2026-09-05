@@ -8,11 +8,16 @@ import pytest
 from relay.audit import SessionAuditLog
 from relay.auth import Principal, sign_event
 from relay.capabilities import C1_CAPABILITY_PROFILE
-from relay.session import CapabilityBoundIntentSink, RelayLimits, RelaySession
+from relay.session import CapabilityBoundIntentSink, IntentSink, RelayLimits, RelaySession
 
 SESSION = "session-test"
 CONSOLE_KEY = b"console-key-that-is-at-least-32-bytes"
 ADAPTER_KEY = b"adapter-one-key-that-is-at-least-32"
+
+
+def profiled_sink(sink: IntentSink) -> CapabilityBoundIntentSink:
+    """Bind an opaque test double to the relay's deployed capability contract."""
+    return CapabilityBoundIntentSink(sink, C1_CAPABILITY_PROFILE)
 
 
 @dataclass(slots=True)
@@ -58,7 +63,7 @@ def relay_session(tmp_path: Path, clock: MutableClock, event_ids: EventIds) -> R
         ),
         clock=clock,
         event_ids=event_ids,
-        intent_sink=CapabilityBoundIntentSink(lambda _intent, _state: None, C1_CAPABILITY_PROFILE),
+        intent_sink=profiled_sink(lambda _intent, _state: None),
     )
 
 
