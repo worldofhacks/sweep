@@ -924,7 +924,12 @@ def _number_or_default(raw: Mapping[str, object], key: str, default: float) -> f
 
 
 def _is_finite_number(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and isfinite(value)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _is_nonnegative_int(value: object) -> bool:

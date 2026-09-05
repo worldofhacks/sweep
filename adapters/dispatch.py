@@ -558,6 +558,9 @@ class AdapterDispatcher:
                 RefusalReason.POSITION_STALE,
                 "altitude completion lacks post-command position evidence",
             )
+        geometry_refusal = self.arbiter.check_altitude_outcome(plan, command, current)
+        if geometry_refusal is not None:
+            return geometry_refusal
         target = Position.from_mapping(target_command.parameters)
         if (
             aircraft.flight_state is not FlightState.HOVERING

@@ -13,6 +13,7 @@ from planner.models import (
     RefusalReason,
 )
 from planner.planner import DeterministicPlanner
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import AcceptedIntent, IntentName, RejectedIntent, validate_intent
 from tests.autonomy_fixtures import (
     make_intent,
@@ -22,16 +23,21 @@ from tests.autonomy_fixtures import (
     replace_aircraft,
 )
 
+NO_ALTITUDE_PROFILE = CapabilityProfile(
+    "c1_without_altitude",
+    C1_CAPABILITY_PROFILE.enabled_intent_names - {IntentName.ALTITUDE},
+)
+
 
 def config(**changes):
-    return replace(
+    configured = replace(
         planning_config(),
         altitude_step_m=0.5,
         altitude_floor_z_m=0,
         altitude_configuration_id="survey-floor-1-v1",
         altitude_completion_tolerance_m=0.05,
-        **changes,
     )
+    return replace(configured, **changes)
 
 
 def wire(args, selection=(1, 2)):
@@ -108,7 +114,18 @@ def test_malformed_altitude_forms_never_reach_planning(args):
 @pytest.mark.parametrize("args", [{"delta": 1}, {"height_m": 1.524}])
 def test_disabled_deployment_refuses_without_adapter_calls(args):
     snapshot = make_snapshot()
-    controller, planner, _, _, flight, _ = make_stack(snapshot)
+    disabled = replace(
+        planning_config(),
+        altitude_step_m=None,
+        altitude_floor_z_m=None,
+        altitude_configuration_id=None,
+        altitude_completion_tolerance_m=None,
+    )
+    controller, planner, _, _, flight, _ = make_stack(
+        snapshot,
+        config=disabled,
+        capability_profile=NO_ALTITUDE_PROFILE,
+    )
     result = controller.execute(make_intent(IntentName.ALTITUDE, args=args), snapshot)
     assert result.status is LifecycleStatus.REFUSED
     assert result.refusal.reason is RefusalReason.UNSUPPORTED
@@ -218,7 +235,8 @@ def test_grounding_change_invalidates_prepared_height_before_io(change):
         make_intent(IntentName.ALTITUDE, args={"height_m": 1.524}), snapshot
     )
     assert isinstance(prepared, PreparedExecution)
-    controller.planner = DeterministicPlanner(replace(config(), **change))
+    profile = NO_ALTITUDE_PROFILE if change == {"altitude_step_m": None} else C1_CAPABILITY_PROFILE
+    controller.planner = DeterministicPlanner(replace(config(), **change), profile)
     result = controller.dispatch_prepared(prepared)
     assert result.status is LifecycleStatus.REFUSED
     assert "configuration changed" in result.refusal.detail
@@ -322,6 +340,19 @@ def test_invalid_grounding_configuration_is_rejected(step, floor, identity, tole
         AltitudeGrounding(step, floor, identity, tolerance)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"altitude_step_m": 10**400},
+        {"altitude_floor_z_m": 10**400},
+        {"altitude_completion_tolerance_m": 10**400},
+    ],
+)
+def test_oversized_grounding_configuration_is_a_value_error(change):
+    with pytest.raises(ValueError):
+        config(**change)
+
+
 @pytest.mark.parametrize("kind", ["xy_drift", "stale_position", "configuration"])
 def test_changes_after_first_move_stop_later_dispatch_without_horizontal_correction(
     monkeypatch, kind
@@ -369,7 +400,9 @@ def test_configuration_change_while_waiting_for_completion_blocks_resume(monkeyp
     monkeypatch.setattr(flight, "goto", moving)
     pending = controller.execute(make_intent(IntentName.ALTITUDE, args={"delta": 1}), snapshot)
     assert pending.status is LifecycleStatus.EXECUTING
-    controller.planner = DeterministicPlanner(replace(config(), altitude_step_m=None))
+    controller.planner = DeterministicPlanner(
+        replace(config(), altitude_step_m=None), NO_ALTITUDE_PROFILE
+    )
     terminal = replace(pending.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
     result = dispatcher.resume_after_completion(pending.plan, pending, terminal, snapshot)
     assert result.status is LifecycleStatus.INVALIDATED
@@ -462,6 +495,65 @@ def test_final_hover_requires_fresh_measured_target_attainment():
     assert result.refusal.reason is RefusalReason.INVALID_STATE
     assert "has not reached" in result.refusal.detail
     assert sum(call.operation is CommandOperation.GOTO for call in flight.calls) == 1
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("violation", "expected_reason"),
+    [
+        ("ceiling", RefusalReason.CEILING),
+        ("floor", RefusalReason.INVALID_STATE),
+        ("spacing", RefusalReason.SPACING),
+    ],
+)
+def test_final_hover_rejects_hard_attained_geometry(
+    monkeypatch, asynchronous, violation, expected_reason
+):
+    count = 2 if violation == "spacing" else 1
+    snapshot = make_snapshot(count, selection=(1,))
+    altitude_config = (
+        replace(config(), altitude_floor_z_m=0.5) if violation == "floor" else config()
+    )
+    controller, _, _, dispatcher, flight, _ = make_stack(snapshot, config=altitude_config)
+    original = flight.hover
+
+    def hover(*args, **kwargs):
+        acknowledgements = original(*args, **kwargs)
+        if asynchronous:
+            return tuple(replace(ack, status=LifecycleStatus.EXECUTING) for ack in acknowledgements)
+        return acknowledgements
+
+    monkeypatch.setattr(flight, "hover", hover)
+    delta = {"ceiling": 5.98, "floor": -0.98, "spacing": 1.0}[violation]
+
+    def provider():
+        current = sim_snapshot(snapshot, flight)
+        if any(call.operation is CommandOperation.HOVER for call in flight.calls):
+            target_z = {"ceiling": 4.01, "floor": 0.49, "spacing": 1.5}[violation]
+            current = replace_aircraft(current, 1, pose=Position(0, 0, target_z))
+            if violation == "spacing":
+                current = replace_aircraft(current, 2, pose=Position(0.79, 0, target_z))
+        return current
+
+    result = controller.execute(
+        make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": delta}),
+        snapshot,
+        current_snapshot=provider,
+    )
+    if asynchronous:
+        assert result.status is LifecycleStatus.EXECUTING
+        terminal = replace(result.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
+        result = dispatcher.resume_after_completion(
+            result.plan,
+            result,
+            terminal,
+            snapshot,
+            current_snapshot=provider,
+        )
+
+    assert result.status in {LifecycleStatus.REFUSED, LifecycleStatus.INVALIDATED}
+    assert result.refusal is not None
+    assert result.refusal.reason is expected_reason
 
 
 def test_altitude_completion_without_new_position_evidence_fails_closed():

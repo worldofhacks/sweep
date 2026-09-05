@@ -75,34 +75,34 @@ class PlanningConfig:
             if (
                 isinstance(value, bool)
                 or not isinstance(value, int | float)
-                or not isfinite(value)
+                or not _is_finite_number(value)
                 or value <= 0
             ):
                 raise ValueError(f"{name} must be a finite positive number")
         if (
             isinstance(self.capture_gimbal_pitch_deg, bool)
             or not isinstance(self.capture_gimbal_pitch_deg, int | float)
-            or not isfinite(self.capture_gimbal_pitch_deg)
+            or not _is_finite_number(self.capture_gimbal_pitch_deg)
         ):
             raise ValueError("capture_gimbal_pitch_deg must be finite")
         if (
             isinstance(self.capture_yaw_tolerance_deg, bool)
             or not isinstance(self.capture_yaw_tolerance_deg, int | float)
-            or not isfinite(self.capture_yaw_tolerance_deg)
+            or not _is_finite_number(self.capture_yaw_tolerance_deg)
             or not 0 <= self.capture_yaw_tolerance_deg < 180
         ):
             raise ValueError("capture_yaw_tolerance_deg must be finite and in [0, 180)")
         if (
             isinstance(self.capture_pose_tolerance_m, bool)
             or not isinstance(self.capture_pose_tolerance_m, int | float)
-            or not isfinite(self.capture_pose_tolerance_m)
+            or not _is_finite_number(self.capture_pose_tolerance_m)
             or self.capture_pose_tolerance_m < 0
         ):
             raise ValueError("capture_pose_tolerance_m must be finite and non-negative")
         if (
             isinstance(self.capture_min_overlap_deg, bool)
             or not isinstance(self.capture_min_overlap_deg, int | float)
-            or not isfinite(self.capture_min_overlap_deg)
+            or not _is_finite_number(self.capture_min_overlap_deg)
             or not 0 < self.capture_min_overlap_deg < 180
         ):
             raise ValueError("capture_min_overlap_deg must be finite and in (0, 180)")
@@ -113,7 +113,7 @@ class PlanningConfig:
         if any(
             isinstance(heading, bool)
             or not isinstance(heading, int | float)
-            or not isfinite(heading)
+            or not _is_finite_number(heading)
             or not 0 <= heading < 360
             for heading in self.reconstruct_headings_deg
         ):
@@ -123,7 +123,7 @@ class PlanningConfig:
         if self.altitude_floor_z_m is not None and (
             isinstance(self.altitude_floor_z_m, bool)
             or not isinstance(self.altitude_floor_z_m, int | float)
-            or not isfinite(self.altitude_floor_z_m)
+            or not _is_finite_number(self.altitude_floor_z_m)
         ):
             raise ValueError("altitude floor reference must be finite")
         self.altitude_grounding()
@@ -168,9 +168,21 @@ class DeterministicPlanner:
     ) -> None:
         self.config = config
         self.capability_profile = capability_profile
+        if (
+            self.capability_profile.supports(IntentName.ALTITUDE)
+            and self.config.altitude_grounding() is None
+        ):
+            raise ValueError("an altitude-capable profile requires explicit altitude grounding")
 
     def supports(self, intent: IntentV1) -> bool:
-        return self.capability_profile.supports(intent.name)
+        if not self.capability_profile.supports(intent.name):
+            return False
+        if intent.name is IntentName.ALTITUDE:
+            grounding = self.config.altitude_grounding()
+            return grounding is not None and (
+                "height_m" not in intent.args or grounding.floor_z_m is not None
+            )
+        return True
 
     def plan(self, intent: IntentV1, snapshot: FleetSnapshot) -> PlanResult:
         if not self.supports(intent):
@@ -303,12 +315,25 @@ class DeterministicPlanner:
             grounding = self.config.altitude_grounding()
             if grounding is None:
                 return _refusal(intent, snapshot, RefusalReason.UNSUPPORTED, "altitude is disabled")
+            if "height_m" in intent.args and grounding.floor_z_m is None:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.UNSUPPORTED,
+                    "absolute altitude requires a surveyed floor",
+                )
             if set(intent.args) not in ({"delta"}, {"height_m"}):
                 return _refusal(
                     intent, snapshot, RefusalReason.INVALID_PLAN, "invalid altitude arguments"
                 )
-            value = next(iter(intent.args.values()))
-            if isinstance(value, bool) or not isinstance(value, int | float) or not isfinite(value):
+            raw_value = next(iter(intent.args.values()))
+            try:
+                value = float(raw_value)
+            except (OverflowError, TypeError, ValueError):
+                return _refusal(
+                    intent, snapshot, RefusalReason.INVALID_PLAN, "altitude must be finite"
+                )
+            if isinstance(raw_value, bool) or not isfinite(value):
                 return _refusal(
                     intent, snapshot, RefusalReason.INVALID_PLAN, "altitude must be finite"
                 )
@@ -888,3 +913,12 @@ def _refusal(
         reason=reason,
         detail=detail,
     )
+
+
+def _is_finite_number(value: object) -> bool:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False

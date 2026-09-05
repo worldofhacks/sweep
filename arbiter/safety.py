@@ -709,6 +709,85 @@ class SafetyArbiter:
                 return capture_refusal
         return None
 
+    def check_altitude_outcome(
+        self,
+        plan: Plan,
+        command: Command,
+        snapshot: FleetSnapshot,
+    ) -> Refusal | None:
+        """Validate the authoritative attained pose before altitude completion."""
+        if (
+            plan.intent_name is not IntentName.ALTITUDE
+            or command.operation is not CommandOperation.HOVER
+            or not isinstance(plan.altitude_grounding, AltitudeGrounding)
+        ):
+            return self._invalid_plan_refusal(
+                plan, snapshot, "altitude outcome requires a grounded hover command"
+            )
+        aircraft = snapshot.aircraft.get(command.drone_id)
+        if aircraft is None:
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.AIRCRAFT_NOT_REGISTERED,
+                "altitude outcome target is absent from the registry",
+            )
+        telemetry_refusal = self._check_telemetry(
+            command.intent_id,
+            snapshot,
+            aircraft,
+            require_position=True,
+            command=command,
+        )
+        if telemetry_refusal is not None:
+            return telemetry_refusal
+        floor_z = plan.altitude_grounding.floor_z_m
+        if aircraft.pose.z <= (floor_z if floor_z is not None else 0.0):
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.INVALID_STATE,
+                "attained altitude is at or below the configured floor",
+            )
+        if not self.config.geofence.contains(aircraft.pose):
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.GEOFENCE,
+                "attained altitude is outside the configured geofence",
+            )
+        if aircraft.pose.z > self.config.ceiling_m:
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.CEILING,
+                "attained altitude exceeds the configured ceiling",
+            )
+        for other_id, other in sorted(snapshot.aircraft.items()):
+            if (
+                other_id == aircraft.drone_id
+                or other.membership is not MembershipState.READY
+                or not other.airborne
+            ):
+                continue
+            telemetry_refusal = self._check_telemetry(
+                command.intent_id,
+                snapshot,
+                other,
+                require_position=True,
+                command=command,
+            )
+            if telemetry_refusal is not None:
+                return telemetry_refusal
+            if aircraft.pose.distance_to(other.pose) < self.config.min_spacing_m:
+                return self._command_refusal(
+                    command,
+                    snapshot,
+                    RefusalReason.SPACING,
+                    f"attained altitude violates spacing from aircraft {other_id}",
+                )
+        return None
+
     def check_plan_structure(
         self,
         plan: Plan,
