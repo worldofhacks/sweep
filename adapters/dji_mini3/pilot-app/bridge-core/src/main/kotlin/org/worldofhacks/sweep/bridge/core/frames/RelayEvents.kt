@@ -86,6 +86,70 @@ data class ControlHeartbeat(
     }
 }
 
+/** A relay-signed localization observation used only by explicitly configured local navigation. */
+data class ControlPose(
+    val t: Long,
+    val eventId: String,
+    val session: String,
+    val droneId: Int,
+    val connectionEpoch: Int,
+    val mapId: String,
+    val geometryId: String,
+    val cameraCalibrationId: String,
+    val bodyExtrinsicsId: String,
+    val poseTimeMs: Long,
+    val fixTimeMs: Long,
+    val xMm: Long,
+    val yMm: Long,
+    val zMm: Long,
+    val positionUncertaintyMm: Long,
+    val status: Status,
+    val signature: String,
+) {
+    enum class Status { READY, HOLD, LAND }
+
+    fun unsignedEvent(): JsonObject = JsonObject(linkedMapOf(
+        "v" to JsonInt(1), "t" to JsonInt(t), "type" to JsonString(TYPE), "event_id" to JsonString(eventId),
+        "session" to JsonString(session), "drone_id" to JsonInt(droneId.toLong()),
+        "connection_epoch" to JsonInt(connectionEpoch.toLong()), "map_id" to JsonString(mapId),
+        "geometry_id" to JsonString(geometryId), "camera_calibration_id" to JsonString(cameraCalibrationId),
+        "body_extrinsics_id" to JsonString(bodyExtrinsicsId), "pose_time_ms" to JsonInt(poseTimeMs),
+        "fix_time_ms" to JsonInt(fixTimeMs), "x_mm" to JsonInt(xMm), "y_mm" to JsonInt(yMm), "z_mm" to JsonInt(zMm),
+        "position_uncertainty_mm" to JsonInt(positionUncertaintyMm), "status" to JsonString(status.name.lowercase()),
+    ))
+
+    fun verifies(key: ByteArray): Boolean = Signing.verify(unsignedEvent(), signature, key)
+
+    companion object {
+        const val TYPE = "control_pose"
+        private const val CODE = "invalid_control_pose"
+        private val FIELDS = setOf("v", "type", "t", "event_id", "session", "drone_id", "connection_epoch", "map_id", "geometry_id", "camera_calibration_id", "body_extrinsics_id", "pose_time_ms", "fix_time_ms", "x_mm", "y_mm", "z_mm", "position_uncertainty_mm", "status", "signature")
+
+        fun parse(json: JsonObject): ControlPose {
+            Fields.exact(json, FIELDS, CODE)
+            Fields.envelope(json, TYPE, CODE)
+            val signature = Fields.nonEmptyString(json["signature"], "signature", CODE)
+            if (!Signing.isWellFormed(signature)) throw ContractError(CODE, "signature must be lowercase HMAC-SHA256 hex")
+            val status = when (val value = Fields.nonEmptyString(json["status"], "status", CODE)) {
+                "ready" -> Status.READY
+                "hold" -> Status.HOLD
+                "land" -> Status.LAND
+                else -> throw ContractError(CODE, "status must be ready, hold, or land (was $value)")
+            }
+            return ControlPose(
+                Fields.nonNegativeInt(json["t"], "t", CODE), Fields.nonEmptyString(json["event_id"], "event_id", CODE),
+                Fields.nonEmptyString(json["session"], "session", CODE), Fields.positiveInt32(json["drone_id"], "drone_id", CODE),
+                Fields.nonNegativeInt32(json["connection_epoch"], "connection_epoch", CODE),
+                Fields.nonEmptyString(json["map_id"], "map_id", CODE), Fields.nonEmptyString(json["geometry_id"], "geometry_id", CODE),
+                Fields.nonEmptyString(json["camera_calibration_id"], "camera_calibration_id", CODE), Fields.nonEmptyString(json["body_extrinsics_id"], "body_extrinsics_id", CODE),
+                Fields.nonNegativeInt(json["pose_time_ms"], "pose_time_ms", CODE), Fields.nonNegativeInt(json["fix_time_ms"], "fix_time_ms", CODE),
+                Fields.integer(json["x_mm"], "x_mm", CODE), Fields.integer(json["y_mm"], "y_mm", CODE), Fields.integer(json["z_mm"], "z_mm", CODE),
+                Fields.nonNegativeInt(json["position_uncertainty_mm"], "position_uncertainty_mm", CODE), status, signature,
+            )
+        }
+    }
+}
+
 /** `relay.state.MembershipTransition.to_event`: the relay's answer to join and readiness. */
 data class MembershipEvent(
     val t: Long,
