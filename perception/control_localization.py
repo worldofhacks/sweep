@@ -350,6 +350,7 @@ class ControlLocalizationSnapshot:
     position_map_enu_m: tuple[float, float, float] | None
     velocity_map_enu_mps: tuple[float, float, float] | None
     covariance_map_enu_m2: tuple[tuple[float, ...], ...] | None
+    last_fix_capture_time_s: float | None
     fix_age_s: float | None
     velocity_age_s: float | None
     height_age_s: float | None
@@ -376,6 +377,7 @@ class ControlLocalizationSnapshot:
             "position_map_enu_m": self.position_map_enu_m,
             "velocity_map_enu_mps": self.velocity_map_enu_mps,
             "covariance_map_enu_m2": self.covariance_map_enu_m2,
+            "last_fix_capture_time_s": self.last_fix_capture_time_s,
             "fix_age_s": self.fix_age_s,
             "velocity_age_s": self.velocity_age_s,
             "height_age_s": self.height_age_s,
@@ -682,6 +684,7 @@ class ControlLocalization:
             None
             if not state_is_finite
             else tuple(tuple(float(value) for value in row) for row in covariance[:3, :3]),
+            last["tag"],
             fix_age,
             ages["velocity"],
             ages["height"],
