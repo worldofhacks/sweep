@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from math import cos, isfinite, pi, sin
+from math import cos, isfinite, pi, radians, sin
 
 from planner.models import (
     Command,
@@ -17,6 +18,8 @@ from planner.models import (
     Position,
     Refusal,
     RefusalReason,
+    TranslationGrounding,
+    TranslationPolicy,
 )
 from relay.intent_v1 import IntentName, IntentV1
 
@@ -28,6 +31,7 @@ SUPPORTED_INTENTS = frozenset(
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
@@ -44,6 +48,7 @@ SELECTION_TARGETED_INTENTS = frozenset(
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.CAPTURE_ROOM,
         IntentName.ALTITUDE,
         IntentName.FORMATION_NEXT,
@@ -67,6 +72,7 @@ class PlanningConfig:
     capture_min_overlap_deg: float
     capture_gimbal_pitch_deg: float
     reconstruct_headings_deg: tuple[float, ...]
+    translation_frame: str = "world"
     altitude_step_m: float = 0.5
     spacing_step_m: float = 0.2
 
@@ -128,6 +134,25 @@ class PlanningConfig:
             raise ValueError("reconstruct_8 headings must be finite values in [0, 360)")
         if len(set(self.reconstruct_headings_deg)) != 8:
             raise ValueError("reconstruct_8 headings must be unique")
+        if self.translation_frame not in {"world", "aircraft_relative"}:
+            raise ValueError("translation_frame must be world or aircraft_relative")
+
+    def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding:
+        return TranslationGrounding(
+            policy=TranslationPolicy(
+                frame=self.translation_frame,
+                step_m=self.translation_step_m,
+            ),
+            headings=(
+                {
+                    drone_id: aircraft.heading_deg
+                    for drone_id, aircraft in snapshot.aircraft.items()
+                    if aircraft.heading_deg is not None
+                }
+                if self.translation_frame == "aircraft_relative"
+                else {}
+            ),
+        )
 
 
 class DeterministicPlanner:
@@ -148,9 +173,8 @@ class DeterministicPlanner:
                 f"{intent.name.value} has no earned M2.0 planner capability",
             )
 
-        if (
-            intent.name in SELECTION_TARGETED_INTENTS
-            and tuple(intent.selection) != snapshot.selection
+        if intent.name in SELECTION_TARGETED_INTENTS and tuple(sorted(intent.selection)) != tuple(
+            sorted(snapshot.selection)
         ):
             return _refusal(
                 intent,
@@ -189,8 +213,56 @@ class DeterministicPlanner:
                 )
 
         elif intent.name is IntentName.TRANSLATE:
-            dx = float(intent.args["dx"]) * self.config.translation_step_m
-            dy = float(intent.args["dy"]) * self.config.translation_step_m
+            translation_frame = self.config.translation_frame
+            try:
+                dx = float(intent.args["dx"]) * self.config.translation_step_m
+                dy = float(intent.args["dy"]) * self.config.translation_step_m
+            except OverflowError:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "translation exceeds numeric limits",
+                )
+            if not isfinite(dx) or not isfinite(dy):
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "translation exceeds numeric limits",
+                )
+            displacements: dict[int, tuple[float, float]] = {}
+            for drone_id in selected:
+                if translation_frame == "world":
+                    displacements[drone_id] = (dx, dy)
+                else:
+                    heading = snapshot.aircraft[drone_id].heading_deg
+                    if heading is None:
+                        return _refusal(
+                            intent,
+                            snapshot,
+                            RefusalReason.INVALID_STATE,
+                            f"aircraft {drone_id} has no current heading",
+                            drone_id,
+                        )
+                    angle = radians(heading)
+                    displacements[drone_id] = (
+                        dx * cos(angle) - dy * sin(angle),
+                        dx * sin(angle) + dy * cos(angle),
+                    )
+                drone_dx, drone_dy = displacements[drone_id]
+                pose = snapshot.aircraft[drone_id].pose
+                if not all(
+                    isfinite(value)
+                    for value in (drone_dx, drone_dy, pose.x + drone_dx, pose.y + drone_dy)
+                ):
+                    return _refusal(
+                        intent,
+                        snapshot,
+                        RefusalReason.INVALID_PLAN,
+                        "translation target exceeds numeric limits",
+                        drone_id,
+                    )
             ordered = selected
             if dx != 0 or dy != 0:
                 ordered = tuple(
@@ -198,8 +270,8 @@ class DeterministicPlanner:
                         selected,
                         key=lambda drone_id: (
                             -(
-                                snapshot.aircraft[drone_id].pose.x * dx
-                                + snapshot.aircraft[drone_id].pose.y * dy
+                                snapshot.aircraft[drone_id].pose.x * displacements[drone_id][0]
+                                + snapshot.aircraft[drone_id].pose.y * displacements[drone_id][1]
                             ),
                             drone_id,
                         ),
@@ -207,28 +279,53 @@ class DeterministicPlanner:
                 )
             for drone_id in ordered:
                 pose = snapshot.aircraft[drone_id].pose
+                drone_dx, drone_dy = displacements[drone_id]
                 builder.add(
                     drone_id,
                     CommandOperation.GOTO,
                     {
-                        "x": pose.x + dx,
-                        "y": pose.y + dy,
+                        "x": pose.x + drone_dx,
+                        "y": pose.y + drone_dy,
                         "z": pose.z,
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
 
         elif intent.name is IntentName.ALTITUDE:
-            dz = float(intent.args["delta"]) * self.config.altitude_step_m
+            try:
+                dz = float(intent.args["delta"]) * self.config.altitude_step_m
+            except (KeyError, OverflowError, TypeError, ValueError):
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "altitude change exceeds numeric limits",
+                )
+            if not isfinite(dz):
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "altitude change exceeds numeric limits",
+                )
             for drone_id in selected:
                 pose = snapshot.aircraft[drone_id].pose
+                target_z = pose.z + dz
+                if not isfinite(target_z):
+                    return _refusal(
+                        intent,
+                        snapshot,
+                        RefusalReason.INVALID_PLAN,
+                        "altitude target exceeds numeric limits",
+                        drone_id,
+                    )
                 builder.add(
                     drone_id,
                     CommandOperation.GOTO,
                     {
                         "x": pose.x,
                         "y": pose.y,
-                        "z": pose.z + dz,
+                        "z": target_z,
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
@@ -242,7 +339,10 @@ class DeterministicPlanner:
             targets = _formation_targets(name, selected, snapshot, snapshot.spacing)
             if targets is None:
                 return _refusal(
-                    intent, snapshot, RefusalReason.PLANNER_FAILURE, f"unknown formation: {name}"
+                    intent,
+                    snapshot,
+                    RefusalReason.PLANNER_FAILURE,
+                    f"unknown or unavailable formation: {name}",
                 )
             formation_update = name
             for drone_id, target in targets:
@@ -258,16 +358,35 @@ class DeterministicPlanner:
                 )
 
         elif intent.name is IntentName.SPACING:
-            spacing_update = (
-                snapshot.spacing + float(intent.args["delta"]) * self.config.spacing_step_m
-            )
-            if spacing_update <= 0:
+            try:
+                spacing_update = (
+                    snapshot.spacing + float(intent.args["delta"]) * self.config.spacing_step_m
+                )
+            except (KeyError, OverflowError, TypeError, ValueError):
                 return _refusal(
-                    intent, snapshot, RefusalReason.PLANNER_FAILURE, "spacing must remain positive"
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "spacing change exceeds numeric limits",
+                )
+            if not isfinite(spacing_update) or spacing_update <= 0:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "spacing must remain finite and positive",
                 )
 
         elif intent.name is IntentName.SWEEP:
-            for drone_id, start, end in _sweep_lanes(selected, snapshot):
+            lanes = _sweep_lanes(selected, snapshot, intent.args.get("box"))
+            if lanes is None:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "sweep box cannot be expanded into finite lanes",
+                )
+            for drone_id, start, end in lanes:
                 builder.add(
                     drone_id,
                     CommandOperation.GOTO,
@@ -288,6 +407,7 @@ class DeterministicPlanner:
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
+
         elif intent.name is IntentName.HOLD:
             hold_scope = HoldScope.OPERATOR_SELECTION
             for drone_id in selected:
@@ -314,6 +434,10 @@ class DeterministicPlanner:
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
+
+        elif intent.name is IntentName.LAND:
+            for drone_id in selected:
+                builder.add(drone_id, CommandOperation.LAND)
 
         elif intent.name is IntentName.LAND_ALL:
             for drone_id, aircraft in sorted(snapshot.aircraft.items()):
@@ -565,7 +689,7 @@ def _validate_selection(
     return None
 
 
-_FORMATIONS = ("line", "column", "circle", "grid", "v")
+_FORMATIONS = ("line", "column", "circle", "grid", "V")
 
 
 def _next_formation(current: str) -> str:
@@ -580,36 +704,41 @@ def _formation_targets(
 ) -> tuple[tuple[int, Position], ...] | None:
     if name not in _FORMATIONS or len(selected) < 2:
         return None
-    center_x = sum(snapshot.aircraft[drone_id].pose.x for drone_id in selected) / len(selected)
-    center_y = sum(snapshot.aircraft[drone_id].pose.y for drone_id in selected) / len(selected)
-    z = sum(snapshot.aircraft[drone_id].pose.z for drone_id in selected) / len(selected)
+    count = len(selected)
+    center_x = sum(snapshot.aircraft[drone_id].pose.x / count for drone_id in selected)
+    center_y = sum(snapshot.aircraft[drone_id].pose.y / count for drone_id in selected)
+    z = sum(snapshot.aircraft[drone_id].pose.z / count for drone_id in selected)
+    if not all(isfinite(value) for value in (center_x, center_y, z, spacing)):
+        return None
     if name == "line":
-        offsets = tuple((index - (len(selected) - 1) / 2, 0.0) for index in range(len(selected)))
+        offsets = tuple((index - (count - 1) / 2, 0.0) for index in range(count))
     elif name == "column":
-        offsets = tuple((0.0, index - (len(selected) - 1) / 2) for index in range(len(selected)))
+        offsets = tuple((0.0, index - (count - 1) / 2) for index in range(count))
     elif name == "circle":
-        radius = 1.01 / (2 * sin(pi / len(selected)))
+        radius = 1.01 / (2 * sin(pi / count))
         offsets = tuple(
             (
-                radius * cos(2 * pi * index / len(selected)),
-                radius * sin(2 * pi * index / len(selected)),
+                radius * cos(2 * pi * index / count),
+                radius * sin(2 * pi * index / count),
             )
-            for index in range(len(selected))
+            for index in range(count)
         )
     elif name == "grid":
-        width = int(len(selected) ** 0.5)
-        if width * width < len(selected):
+        width = int(count**0.5)
+        if width * width < count:
             width += 1
         offsets = tuple(
             (index % width - (width - 1) / 2, index // width - (width - 1) / 2)
-            for index in range(len(selected))
+            for index in range(count)
         )
     else:
         offsets = tuple(
-            ((index - (len(selected) - 1) / 2), abs(index - (len(selected) - 1) / 2))
-            for index in range(len(selected))
+            (index - (count - 1) / 2, abs(index - (count - 1) / 2)) for index in range(count)
         )
-    targets = tuple(Position(center_x + x * spacing, center_y + y * spacing, z) for x, y in offsets)
+    raw_targets = tuple((center_x + x * spacing, center_y + y * spacing, z) for x, y in offsets)
+    if any(not all(isfinite(value) for value in target) for target in raw_targets):
+        return None
+    targets = tuple(Position(*target) for target in raw_targets)
     remaining = set(selected)
     assignments: list[tuple[int, Position]] = []
     for target in targets:
@@ -634,27 +763,52 @@ def _formation_targets(
 
 
 def _sweep_lanes(
-    selected: tuple[int, ...], snapshot: FleetSnapshot
-) -> tuple[tuple[int, Position, Position], ...]:
-    center_x = sum(snapshot.aircraft[drone_id].pose.x for drone_id in selected) / len(selected)
-    center_y = sum(snapshot.aircraft[drone_id].pose.y for drone_id in selected) / len(selected)
-    z = sum(snapshot.aircraft[drone_id].pose.z for drone_id in selected) / len(selected)
-    width = max(snapshot.spacing, 1.0) * len(selected)
-    half_length = max(snapshot.spacing, 1.0) * 2
+    selected: tuple[int, ...],
+    snapshot: FleetSnapshot,
+    raw_box: object,
+) -> tuple[tuple[int, Position, Position], ...] | None:
+    if not selected:
+        return None
+    count = len(selected)
+    z = sum(snapshot.aircraft[drone_id].pose.z / count for drone_id in selected)
+    if raw_box is None:
+        center_x = sum(snapshot.aircraft[drone_id].pose.x / count for drone_id in selected)
+        center_y = sum(snapshot.aircraft[drone_id].pose.y / count for drone_id in selected)
+        width = max(snapshot.spacing, 1.0) * count
+        half_length = max(snapshot.spacing, 1.0) * 2
+        min_x = center_x - width / 2
+        max_x = center_x + width / 2
+        min_y = center_y - half_length
+        max_y = center_y + half_length
+    else:
+        expected = {"min_x", "max_x", "min_y", "max_y"}
+        if not isinstance(raw_box, Mapping) or set(raw_box) != expected:
+            return None
+        values = tuple(raw_box[key] for key in ("min_x", "max_x", "min_y", "max_y"))
+        if any(
+            isinstance(value, bool) or not isinstance(value, int | float) or not isfinite(value)
+            for value in values
+        ):
+            return None
+        min_x, max_x, min_y, max_y = (float(value) for value in values)
+        if min_x >= max_x or min_y >= max_y:
+            return None
+    if not all(isfinite(value) for value in (min_x, max_x, min_y, max_y, z)):
+        return None
     lanes = tuple(
         (
             Position(
-                center_x - width / 2 + (index + 0.5) * width / len(selected),
-                center_y - half_length,
+                min_x * (1 - (index + 0.5) / count) + max_x * ((index + 0.5) / count),
+                min_y,
                 z,
             ),
             Position(
-                center_x - width / 2 + (index + 0.5) * width / len(selected),
-                center_y + half_length,
+                min_x * (1 - (index + 0.5) / count) + max_x * ((index + 0.5) / count),
+                max_y,
                 z,
             ),
         )
-        for index in range(len(selected))
+        for index in range(count)
     )
     remaining = set(selected)
     assignments: list[tuple[int, Position, Position]] = []

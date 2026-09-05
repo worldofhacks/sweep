@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Probe flavor additions, ported from techmexdev/drone-maps app/src/probe/AndroidManifest.xml:
+     DJI location and legacy-storage permissions, the USB accessory feature, extractNativeLibs
+     for the MSDK's native libraries, and the com.dji.sdk.API_KEY meta-data. The USB attach
+     filter now points at a real res/xml/accessory_filter.xml. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <!-- The RC-N1 connects as a USB accessory (Android Open Accessory); there is no install-time
+         USB permission, the attach intent below grants access to the accessory. -->
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.usb.accessory"
+        android:required="true" />
+
+    <application
+        android:extractNativeLibs="true"
+        tools:replace="android:extractNativeLibs">
+        <meta-data
+            android:name="com.dji.sdk.API_KEY"
+            android:value="${DJI_API_KEY}" />
+
+        <!-- Merged into the main activity: plugging the RC-N1 in launches the app. -->
+        <activity android:name=".MainActivity">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
+                android:resource="@xml/accessory_filter" />
+        </activity>
+    </application>
+</manifest>

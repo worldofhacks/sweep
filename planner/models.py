@@ -11,11 +11,46 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from math import dist, isfinite
 from types import MappingProxyType
+from typing import Literal
 
-from relay.intent_v1 import IntentName
+from relay.intent_v1 import IntentName, IntentV1
 
 type JsonScalar = None | bool | int | float | str
 type JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationPolicy:
+    frame: Literal["world", "aircraft_relative"]
+    step_m: float
+
+    def __post_init__(self) -> None:
+        if (
+            self.frame not in {"world", "aircraft_relative"}
+            or not _is_finite_number(self.step_m)
+            or self.step_m <= 0
+        ):
+            raise ValueError("translation policy requires a supported frame and positive step")
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationGrounding:
+    policy: TranslationPolicy
+    headings: Mapping[int, float]
+
+    def __post_init__(self) -> None:
+        normalized: dict[int, float] = {}
+        for drone_id, heading in self.headings.items():
+            if (
+                not isinstance(drone_id, int)
+                or isinstance(drone_id, bool)
+                or drone_id <= 0
+                or not _is_finite_number(heading)
+                or not 0 <= float(heading) < 360
+            ):
+                raise ValueError("translation headings must map aircraft IDs to degrees")
+            normalized[drone_id] = float(heading)
+        object.__setattr__(self, "headings", MappingProxyType(normalized))
 
 
 class MembershipState(StrEnum):
@@ -192,6 +227,7 @@ class AircraftState:
     physical_rc_available: bool
     storage_remaining_bytes: int
     camera_ready: bool
+    heading_deg: float | None = None
     active_task_id: str | None = None
     position_loss_since_ms: int | None = None
 
@@ -216,6 +252,10 @@ class AircraftState:
             raise ValueError("home must be a Position or null")
         if not isinstance(self.flight_state, FlightState):
             raise ValueError("flight_state must be a FlightState")
+        if self.heading_deg is not None and (
+            not _is_finite_number(self.heading_deg) or not 0 <= self.heading_deg < 360
+        ):
+            raise ValueError("heading_deg must be null or finite degrees in [0, 360)")
         for name, value in (
             ("armed", self.armed),
             ("control_authority", self.control_authority),
@@ -288,6 +328,7 @@ class AircraftState:
             physical_rc_available=_boolean(raw, "physical_rc_available"),
             storage_remaining_bytes=_nonnegative_int(raw, "storage_remaining_bytes"),
             camera_ready=_boolean(raw, "camera_ready"),
+            heading_deg=_optional_heading(raw.get("heading_deg")),
             active_task_id=_optional_string(raw.get("active_task_id")),
             position_loss_since_ms=_optional_nonnegative_int(raw.get("position_loss_since_ms")),
         )
@@ -311,6 +352,7 @@ class AircraftState:
             "physical_rc_available": self.physical_rc_available,
             "storage_remaining_bytes": self.storage_remaining_bytes,
             "camera_ready": self.camera_ready,
+            "heading_deg": self.heading_deg,
             "active_task_id": self.active_task_id,
             "position_loss_since_ms": self.position_loss_since_ms,
         }
@@ -506,6 +548,15 @@ class FleetSnapshot:
                     physical_rc_available=safety.physical_rc_available,
                     storage_remaining_bytes=safety.storage_remaining_bytes,
                     camera_ready=safety.camera_ready,
+                    heading_deg=_optional_heading(
+                        item.get("heading_deg")
+                        if item.get("heading_deg") is not None
+                        else (
+                            None
+                            if telemetry_mapping is None
+                            else telemetry_mapping.get("heading_deg")
+                        )
+                    ),
                     active_task_id=safety.active_task_id,
                     position_loss_since_ms=safety.position_loss_since_ms,
                 )
@@ -610,6 +661,13 @@ class Plan:
             "hold_scope": self.hold_scope.value if self.hold_scope is not None else None,
             "status": self.status.value,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedExecution:
+    intent: IntentV1
+    plan: Plan
+    snapshot: FleetSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -900,6 +958,14 @@ def _optional_nonnegative_int(value: object) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError("optional timestamp must be null or non-negative")
     return value
+
+
+def _optional_heading(value: object) -> float | None:
+    if value is None:
+        return None
+    if not _is_finite_number(value) or not 0 <= value < 360:
+        raise ValueError("heading_deg must be null or finite degrees in [0, 360)")
+    return float(value)
 
 
 def _relay_pose(

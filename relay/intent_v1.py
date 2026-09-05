@@ -68,8 +68,12 @@ class RejectedIntent:
 
 type ValidationResult = AcceptedIntent | RejectedIntent
 
-REGISTERED_SOURCES = frozenset({"console", "keyboard"})
-M15_SUPPORTED_NAMES = frozenset(
+# Operator sources that may authenticate without an aircraft binding and emit
+# Intent v1. Console buttons, the keyboard network stop, and the webcam gesture
+# producer are each bound to their own connection; an intent never moves
+# between them. Adding a source changes this constant and its conformance tests.
+REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
+M20_SUPPORTED_NAMES = frozenset(
     {
         IntentName.ARM,
         IntentName.SELECT,
@@ -77,6 +81,7 @@ M15_SUPPORTED_NAMES = frozenset(
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
@@ -141,7 +146,7 @@ def validate_intent(raw: object) -> ValidationResult:
             RejectionReason.UNSUPPORTED, f"{mode} is outside the M2.0 capability set"
         )
 
-    if name not in M15_SUPPORTED_NAMES:
+    if name not in M20_SUPPORTED_NAMES:
         return RejectedIntent(
             RejectionReason.UNSUPPORTED, f"{name} is outside the M2.0 capability set"
         )
@@ -226,7 +231,9 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({"ids": tuple(value["ids"])})
 
     if name is IntentName.TRANSLATE:
-        if set(value) != {"dx", "dy"} or not all(_is_finite_number(value[key]) for key in value):
+        if set(value) != {"dx", "dy"}:
+            raise ValueError
+        if not _is_finite_number(value["dx"]) or not _is_finite_number(value["dy"]):
             raise ValueError
         return MappingProxyType({"dx": value["dx"], "dy": value["dy"]})
 
@@ -256,11 +263,30 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({"name": value["name"]})
 
     if name is IntentName.SWEEP:
-        if not set(value) <= {"box"}:
+        if not value:
+            return MappingProxyType({})
+        if set(value) != {"box"} or not isinstance(value["box"], Mapping):
             raise ValueError
-        if "box" in value and not isinstance(value["box"], Mapping):
+        box = value["box"]
+        expected = {"min_x", "max_x", "min_y", "max_y"}
+        if set(box) != expected or not all(
+            isinstance(key, str) and _is_finite_number(box[key]) for key in expected
+        ):
             raise ValueError
-        return MappingProxyType({"box": _freeze_json(value["box"])} if "box" in value else {})
+        if float(box["min_x"]) >= float(box["max_x"]) or float(box["min_y"]) >= float(box["max_y"]):
+            raise ValueError
+        return MappingProxyType(
+            {
+                "box": MappingProxyType(
+                    {
+                        "min_x": float(box["min_x"]),
+                        "max_x": float(box["max_x"]),
+                        "min_y": float(box["min_y"]),
+                        "max_y": float(box["max_y"]),
+                    }
+                )
+            }
+        )
 
     if name in {IntentName.SURVEY_AREA, IntentName.MAP_AREA}:
         if (

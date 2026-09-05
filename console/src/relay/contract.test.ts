@@ -28,24 +28,48 @@ function aircraft(overrides: Record<string, unknown> = {}) {
 }
 
 describe('M1.1 wire compatibility', () => {
-  test('accepts the M1.5 console outcome requests and keeps sweep confirmed', () => {
-    const base = {
-      v: 1,
-      t: 1_756_700_000_000,
-      type: 'intent',
-      intent_id: 'm15-intent',
-      retry_of: null,
-      source: 'console',
-      session,
-      selection: [1, 2],
-      mode: 'indoor',
-    } as const
+  test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
+    const event = parseRelayServerEvent({
+      v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,
+      roster_version: 1, state_sequence: sequence, armed: false, estop: false,
+      selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      pending: null, accepted_plan: null, drones: [aircraft()],
+    })
+    if (sequence === undefined || sequence === 1 || sequence === 2) {
+      expect(event).not.toBeNull()
+    } else {
+      expect(event).toBeNull()
+    }
+  })
 
-    expect(isConsoleIntentV1({ ...base, name: 'altitude', args: { delta: 1 }, confirm: false })).toBe(true)
-    expect(isConsoleIntentV1({ ...base, name: 'formation_set', args: { name: 'circle' }, confirm: false })).toBe(true)
-    expect(isConsoleIntentV1({ ...base, name: 'spacing', args: { delta: 1 }, confirm: false })).toBe(true)
-    expect(isConsoleIntentV1({ ...base, name: 'sweep', args: {}, confirm: true })).toBe(true)
-    expect(isConsoleIntentV1({ ...base, name: 'sweep', args: {}, confirm: false })).toBe(false)
+  test('refuses an adapter-supplied media URL', () => {
+    expect(
+      parseRelayServerEvent({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'state',
+        event_id: 'state-media-url',
+        session,
+        roster_version: 4,
+        armed: true,
+        estop: false,
+        selection: [1],
+        formation: 'line',
+        spacing: 0.8,
+        mode: 'indoor',
+        pending: null,
+        accepted_plan: null,
+        drones: [
+          aircraft({
+            video: {
+              status: 'live',
+              last_frame_at: 1_756_700_000_000,
+              url: 'https://adapter.example.invalid/stream',
+            },
+          }),
+        ],
+      }),
+    ).toBeNull()
   })
 
   test('accepts the exact authoritative state projection with forward-compatible fields', () => {
@@ -154,6 +178,23 @@ describe('M1.1 wire compatibility', () => {
       drone: 1,
       connection_epoch: 2,
     })
+  })
+
+  test('accepts node-local safety actions as operator-visible evidence', () => {
+    const event = parseRelayServerEvent({
+      v: 1,
+      t: 1_756_700_000_016,
+      type: 'safety_action',
+      event_id: 'safety-1',
+      session,
+      drone_id: 1,
+      connection_epoch: 2,
+      reason: 'link_loss',
+      action: 'failsafe',
+      loss_behavior: 'failsafe',
+    })
+
+    expect(event).toMatchObject({ type: 'safety_action', drone_id: 1, action: 'failsafe' })
   })
 
   test('accepts intent-level and command-scoped acknowledgement variants', () => {
@@ -281,12 +322,90 @@ describe('M1.1 wire compatibility', () => {
   })
 })
 
+describe('M1.4 production control intents', () => {
+  test.each([
+    ['arm', {}, [], false],
+    ['select', { ids: [1, 2] }, [1, 2], false],
+    ['takeoff', {}, [1, 2], true],
+    ['translate', { dx: 1, dy: 0 }, [1, 2], false],
+    ['hold', {}, [1, 2], false],
+    ['come_home', {}, [1, 2], false],
+    ['land_all', {}, [], true],
+    ['estop', {}, [], false],
+  ])('accepts the production %s envelope', (name, args, selection, confirm) => {
+    expect(
+      isConsoleIntentV1({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'intent',
+        intent_id: `intent-${name}`,
+        retry_of: null,
+        source: 'console',
+        session,
+        name,
+        args,
+        selection,
+        mode: 'indoor',
+        confirm,
+      }),
+    ).toBe(true)
+  })
+
+  test('keeps takeoff and land-all behind confirmation', () => {
+    for (const name of ['takeoff', 'land_all']) {
+      expect(
+        isConsoleIntentV1({
+          v: 1,
+          t: 1_756_700_000_000,
+          type: 'intent',
+          intent_id: `intent-${name}`,
+          retry_of: null,
+          source: 'console',
+          session,
+          name,
+          args: {},
+          selection: name === 'takeoff' ? [1, 2] : [],
+          mode: 'indoor',
+          confirm: false,
+        }),
+      ).toBe(false)
+    }
+  })
+})
+
 describe('console Intent v1 mirror', () => {
   test.each([
     ['console', 'hold', {}, [1], false],
     ['console', 'estop', {}, [], false],
     ['keyboard', 'estop', {}, [], false],
+    ['webcam', 'hold', {}, [1], true],
+    [
+      'webcam',
+      'capture_room',
+      { room_id: 'room-1', capture_id: 'capture-1', pattern: 'pano_360' },
+      [1],
+      true,
+    ],
     ['console', 'select', { ids: [1, 2] }, [1], false],
+    ['console', 'arm', {}, [1], false],
+    ['console', 'disarm', {}, [], false],
+    ['console', 'takeoff', {}, [1, 2], true],
+    ['console', 'land', {}, [1], true],
+    ['console', 'land_all', {}, [1, 2, 3, 4], true],
+    ['console', 'translate', { dx: -2, dy: 0 }, [1], false],
+    ['console', 'altitude', { delta: 1 }, [1], false],
+    ['console', 'formation_next', {}, [1], false],
+    ['console', 'formation_set', { name: 'V' }, [1, 2], false],
+    ['console', 'spacing', { delta: -1 }, [1], false],
+    ['console', 'come_home', {}, [1], false],
+    ['console', 'sweep', {}, [1], true],
+    [
+      'console',
+      'sweep',
+      { box: { min_x: -1, max_x: 1, min_y: -1, max_y: 1 } },
+      [1],
+      true,
+    ],
     [
       'console',
       'capture_room',
@@ -311,5 +430,28 @@ describe('console Intent v1 mirror', () => {
         confirm,
       }),
     ).toBe(true)
+  })
+
+  test('rejects ambiguous or unordered sweep boxes', () => {
+    const base = {
+      v: 1,
+      t: 1_756_700_000_000,
+      type: 'intent',
+      intent_id: 'intent-sweep-box',
+      retry_of: null,
+      source: 'console',
+      session,
+      name: 'sweep',
+      selection: [1],
+      mode: 'indoor',
+      confirm: true,
+    }
+    expect(isConsoleIntentV1({ ...base, args: { box: { x: 0, y: 0, w: 2, h: 2 } } })).toBe(false)
+    expect(
+      isConsoleIntentV1({
+        ...base,
+        args: { box: { min_x: 1, max_x: -1, min_y: -1, max_y: 1 } },
+      }),
+    ).toBe(false)
   })
 })

@@ -1,0 +1,36 @@
+[versions]
+# Android Studio 2026.1 bundles AGP 9.4.0, whose default Gradle is 9.6.0 (see gradle-wrapper.properties).
+agp = "9.4.0"
+kotlin = "2.4.10"
+coroutines = "1.11.0"
+# Newest Compose BOM whose members still accept compileSdk 35 (DJI MSDK's supported maximum);
+# activity-compose 1.11+, core 1.17+ and Compose 1.12+ require compileSdk 36 or 37.
+composeBom = "2026.02.00"
+activityCompose = "1.10.1"
+lifecycle = "2.9.4"
+coreKtx = "1.16.0"
+junit = "6.1.3"
+dji = "5.18.0"
+
+[libraries]
+coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-foundation = { module = "androidx.compose.foundation:foundation" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
+dji-aircraft = { module = "com.dji:dji-sdk-v5-aircraft", version.ref = "dji" }
+dji-aircraft-provided = { module = "com.dji:dji-sdk-v5-aircraft-provided", version.ref = "dji" }
+dji-network = { module = "com.dji:dji-sdk-v5-networkImp", version.ref = "dji" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

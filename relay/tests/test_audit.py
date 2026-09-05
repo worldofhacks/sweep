@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -36,6 +40,169 @@ def test_append_replay_and_reopen_preserve_contiguous_order(tmp_path: Path) -> N
     assert reopened.last_sequence == 3
 
 
+def test_operation_batch_preserves_one_jsonl_record_per_event(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+
+    records = log.append_batch([_event("event-1", "membership"), _event("event-2", "state")])
+
+    assert [record["seq"] for record in records] == [1, 2]
+    assert len(log.path.read_text(encoding="utf-8").splitlines()) == 2
+    assert SessionAuditLog(tmp_path, "session-1").replay() == records
+
+
+@pytest.mark.parametrize("reopen", [False, True])
+def test_live_append_does_not_read_or_reencode_existing_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reopen: bool
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append_batch(_event(f"event-{index}") for index in range(1000))
+    if reopen:
+        log = SessionAuditLog(tmp_path, "session-1")
+    encode_record = log._encode_record
+    encoded_sequences: list[int] = []
+
+    def reject_history_read(*_args: object) -> None:
+        pytest.fail("live append read existing history")
+
+    def record_encoding(record: dict[str, object]) -> bytes:
+        encoded_sequences.append(record["seq"])
+        return encode_record(record)
+
+    with monkeypatch.context() as live:
+        live.setattr(log, "_database_records", reject_history_read)
+        live.setattr(Path, "read_bytes", reject_history_read)
+        live.setattr(log, "_encode_record", record_encoding)
+        records = []
+        for index in range(50):
+            encoded_sequences.clear()
+            batch = log.append_batch([_event(f"telemetry-{index}"), _event(f"state-{index}")])
+            assert set(encoded_sequences) == {1001 + 2 * index, 1002 + 2 * index}
+            records.extend(batch)
+
+    assert [record["seq"] for record in records] == list(range(1001, 1101))
+    assert log.replay(after_sequence=1000) == records
+
+
+@pytest.mark.parametrize("mutation", ["same-size", "replace", "truncate", "remove"])
+def test_live_append_detects_mirror_changes_before_committing_new_records(
+    tmp_path: Path, mutation: str
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    original = log.path.read_bytes()
+    metadata = log.path.stat()
+    if mutation == "same-size":
+        log.path.write_bytes(original.replace(b"event-1", b"event-2"))
+        os.utime(log.path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    elif mutation == "replace":
+        replacement = tmp_path / "replacement.jsonl"
+        replacement.write_bytes(original.replace(b"event-1", b"event-2"))
+        os.replace(replacement, log.path)
+    elif mutation == "truncate":
+        log.path.write_bytes(original[:-5])
+    else:
+        log.path.unlink()
+
+    with pytest.raises(AuditLogError):
+        log.append(_event("new-record"))
+
+    with sqlite3.connect(log.database_path) as database:
+        assert database.execute("SELECT COUNT(*) FROM records").fetchone() == (1,)
+
+
+def test_initial_database_and_jsonl_creation_sync_the_log_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    real_fsync = os.fsync
+    directory_syncs = 0
+
+    def record_fsync(descriptor: int) -> None:
+        nonlocal directory_syncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_syncs += 1
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+
+    log.append(_event("event-1"))
+
+    assert directory_syncs >= 2
+
+
+@pytest.mark.parametrize("failure_point", ["database_fsync", "publish"])
+def test_legacy_migration_publishes_database_only_after_complete_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_point: str
+) -> None:
+    seed = SessionAuditLog(tmp_path, "session-1")
+    legacy_record = {"seq": 1, "event": _event("event-1")}
+    legacy_bytes = (
+        json.dumps(legacy_record, separators=(",", ":"), sort_keys=True) + "\n"
+    ).encode()
+    seed.path.write_bytes(legacy_bytes)
+    real_replace = os.replace
+
+    def fail_database_publish(source: object, target: object) -> None:
+        if Path(target) == seed.database_path:
+            raise OSError("injected migration publish failure")
+        real_replace(source, target)
+
+    def fail_database_fsync(_log: SessionAuditLog, _path: Path) -> None:
+        raise OSError("injected migration fsync failure")
+
+    if failure_point == "database_fsync":
+        monkeypatch.setattr(SessionAuditLog, "_fsync_path", fail_database_fsync)
+    else:
+        monkeypatch.setattr(os, "replace", fail_database_publish)
+    with pytest.raises(AuditLogError, match="cannot migrate legacy audit log"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert seed.path.read_bytes() == legacy_bytes
+    assert not seed.database_path.exists()
+
+    monkeypatch.undo()
+    assert SessionAuditLog(tmp_path, "session-1").replay() == [legacy_record]
+
+
+def test_committed_database_recovers_missing_or_torn_jsonl_mirror(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    record = log.append(_event("event-1"))
+    expected = log.path.read_bytes()
+
+    log.path.unlink()
+    assert SessionAuditLog(tmp_path, "session-1").replay() == [record]
+    assert log.path.read_bytes() == expected
+
+    log.path.write_bytes(expected[:-5])
+    assert SessionAuditLog(tmp_path, "session-1").replay() == [record]
+    assert log.path.read_bytes() == expected
+
+
+def test_interrupted_mirror_replacement_preserves_recoverable_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    record = log.append(_event("event-1"))
+    torn = log.path.read_bytes()[:-5]
+    log.path.write_bytes(torn)
+    real_replace = os.replace
+
+    def fail_mirror_publish(source: object, target: object) -> None:
+        if Path(target) == log.path:
+            raise OSError("injected mirror publish failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", fail_mirror_publish)
+    with pytest.raises(AuditLogError, match="cannot repair"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert log.path.read_bytes() == torn
+    assert log.database_path.exists()
+
+    monkeypatch.setattr(os, "replace", real_replace)
+    assert SessionAuditLog(tmp_path, "session-1").replay() == [record]
+
+
 @pytest.mark.parametrize("field", ["token", "signature", "authorization", "secret"])
 def test_sensitive_fields_are_refused_at_any_depth(tmp_path: Path, field: str) -> None:
     log = SessionAuditLog(tmp_path, "session-1")
@@ -45,6 +212,53 @@ def test_sensitive_fields_are_refused_at_any_depth(tmp_path: Path, field: str) -
     with pytest.raises(AuditLogError, match="sensitive field"):
         log.append(event)
     assert not log.path.exists()
+
+
+@pytest.mark.parametrize("value", [float("nan"), {1, 2}])
+def test_rejected_append_does_not_poison_next_append(tmp_path: Path, value: object) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    event = _event("event-1")
+    event["value"] = value
+
+    with pytest.raises(AuditLogError):
+        log.append(event)
+
+    if log.database_path.exists():
+        with sqlite3.connect(log.database_path) as database:
+            assert database.execute(
+                "SELECT COUNT(*) FROM operations WHERE status = 'pending'"
+            ).fetchone() == (0,)
+    assert not log.path.exists()
+    assert log.append(_event("valid"))["seq"] == 1
+    assert len(log.replay()) == 1
+    assert len(SessionAuditLog(tmp_path, "session-1").replay()) == 1
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        b'{"seq":1,"event":{"session":"session-1","event_id":"bad","value":'
+        + b"9" * 5000
+        + b"}}\n",
+        b'{"seq":1,"event":{"session":"session-1","event_id":"bad","value":'
+        + b"[" * 2000
+        + b"0"
+        + b"]" * 2000
+        + b"}}\n",
+    ],
+    ids=["integer-limit", "nesting-limit"],
+)
+def test_legacy_decoder_resource_limits_are_audit_errors_without_mutation(
+    tmp_path: Path, encoded: bytes
+) -> None:
+    seed = SessionAuditLog(tmp_path, "session-1")
+    seed.path.write_bytes(encoded)
+
+    with pytest.raises(AuditLogError, match="cannot replay"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert seed.path.read_bytes() == encoded
+    assert not seed.database_path.exists()
 
 
 def test_corrupt_or_reordered_log_fails_closed(tmp_path: Path) -> None:
@@ -73,3 +287,266 @@ def test_session_name_is_hashed_and_cannot_escape_log_root(tmp_path: Path) -> No
     assert log.path.parent == tmp_path
     assert log.path.name.endswith(".jsonl")
     assert ".." not in log.path.name
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="requires no-follow file opens")
+def test_sqlite_database_symlink_is_refused(tmp_path: Path) -> None:
+    target = tmp_path / "outside.sqlite3"
+    target.touch()
+    digest = hashlib.sha256(b"session-1").hexdigest()
+    (tmp_path / f"{digest}.sqlite3").symlink_to(target)
+
+    with pytest.raises(AuditLogError, match="cannot initialize audit database"):
+        SessionAuditLog(tmp_path, "session-1")
+
+
+def test_reopen_repairs_only_an_unterminated_tail(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    valid_prefix = log.path.read_bytes()
+    torn = json.dumps({"seq": 2, "event": _event("event-2")}).encode()[:19]
+    log.path.write_bytes(valid_prefix + torn)
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+
+    assert [record["seq"] for record in reopened.replay()] == [1]
+    assert reopened.last_sequence == 1
+    assert reopened.recovered_tail_bytes == len(torn)
+    assert reopened.path.read_bytes() == valid_prefix
+    assert stat.S_IMODE(reopened.path.stat().st_mode) == 0o600
+    assert f"removed_bytes={len(torn)}" in caplog.text
+    assert "event-2" not in caplog.text
+
+    replayed = SessionAuditLog(tmp_path, "session-1")
+    assert replayed.recovered_tail_bytes == 0
+    assert replayed.replay() == reopened.replay()
+
+
+def test_torn_first_record_remains_persisted_session_evidence(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.path.write_bytes(b'{"seq":1')
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+
+    assert reopened.last_sequence == 0
+    assert reopened.had_persisted_log is True
+    assert reopened.path.read_bytes() == b""
+
+
+def test_complete_corrupt_tail_fails_without_mutation(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    corrupted = log.path.read_bytes() + b'{"seq":2,not-json}\n'
+    log.path.write_bytes(corrupted)
+
+    with pytest.raises(AuditLogError):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert log.path.read_bytes() == corrupted
+
+
+def test_torn_tail_does_not_hide_a_corrupt_complete_prefix(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    corrupted = b'{"seq":1,not-json}\n{"seq":2'
+    log.path.write_bytes(corrupted)
+
+    with pytest.raises(AuditLogError):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert log.path.read_bytes() == corrupted
+
+
+def test_torn_tail_does_not_hide_nonfinite_complete_record(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    corrupted = b'{"seq":1,"event":{"session":"session-1","event_id":"bad","value":NaN}}\n{"seq":2'
+    log.path.write_bytes(corrupted)
+
+    with pytest.raises(AuditLogError, match="non-finite"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert log.path.read_bytes() == corrupted
+
+
+def test_short_write_retries_until_record_is_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    real_write = os.write
+    calls = 0
+
+    def short_then_complete(descriptor: int, data: bytes | memoryview) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, data[:7])
+        if calls == 2:
+            raise InterruptedError
+        return real_write(descriptor, data)
+
+    monkeypatch.setattr(os, "write", short_then_complete)
+
+    record = log.append(_event("event-1"))
+
+    assert record["seq"] == 1
+    assert log.replay() == [record]
+
+
+def test_failed_partial_mirror_write_fences_writer_and_reopen_recovers_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    first = log.append(_event("event-1"))
+    real_write = os.write
+    calls = 0
+
+    def partial_then_fail(descriptor: int, data: bytes | memoryview) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, data[:5])
+        raise OSError("injected append failure")
+
+    monkeypatch.setattr(os, "write", partial_then_fail)
+    with pytest.raises(AuditLogError, match="cannot append"):
+        log.append(_event("event-2"))
+
+    with pytest.raises(AuditLogError, match="cursor is uncertain"):
+        _ = log.last_sequence
+    with pytest.raises(AuditLogError, match="replay is uncertain"):
+        log.replay()
+
+    monkeypatch.setattr(os, "write", real_write)
+    reopened = SessionAuditLog(tmp_path, "session-1")
+    assert [record["seq"] for record in reopened.replay()] == [1, 2]
+    third = reopened.append(_event("event-3"))
+    assert [first["seq"], third["seq"]] == [1, 3]
+
+
+def test_failed_mirror_write_never_uses_in_place_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    real_write = os.write
+    writes = 0
+
+    def partial_then_fail(descriptor: int, data: bytes | memoryview) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            return real_write(descriptor, data[:5])
+        raise OSError("injected append failure")
+
+    truncates = 0
+
+    def failed_truncate(_descriptor: int, _length: int) -> None:
+        nonlocal truncates
+        truncates += 1
+        raise OSError("injected rollback failure")
+
+    monkeypatch.setattr(os, "write", partial_then_fail)
+    monkeypatch.setattr(os, "ftruncate", failed_truncate)
+
+    with pytest.raises(AuditLogError, match="cannot append session log"):
+        log.append(_event("event-1"))
+    writes_after_failure = writes
+    with pytest.raises(AuditLogError, match="unusable"):
+        log.append(_event("event-2"))
+
+    assert writes == writes_after_failure
+    with pytest.raises(AuditLogError, match="cursor is uncertain"):
+        _ = log.last_sequence
+    with pytest.raises(AuditLogError, match="replay is uncertain"):
+        log.replay()
+    assert truncates == 0
+
+    monkeypatch.setattr(os, "write", real_write)
+    assert [record["seq"] for record in SessionAuditLog(tmp_path, "session-1").replay()] == [1]
+
+
+def test_close_failure_fences_writer_and_reopen_continues_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    real_close = os.close
+    real_open = os.open
+    mirror_descriptors: set[int] = set()
+
+    def track_mirror_open(path: object, flags: int, *args: object) -> int:
+        descriptor = real_open(path, flags, *args)
+        if flags & os.O_APPEND:
+            mirror_descriptors.add(descriptor)
+        return descriptor
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        if descriptor in mirror_descriptors:
+            raise OSError("injected close failure")
+
+    monkeypatch.setattr(os, "open", track_mirror_open)
+    monkeypatch.setattr(os, "close", close_then_fail)
+
+    with pytest.raises(AuditLogError, match="cannot close session log"):
+        log.append(_event("event-1"))
+    with pytest.raises(AuditLogError, match="unusable"):
+        log.append(_event("event-2"))
+    with pytest.raises(AuditLogError, match="cursor is uncertain"):
+        _ = log.last_sequence
+    with pytest.raises(AuditLogError, match="replay is uncertain"):
+        log.replay()
+
+    monkeypatch.setattr(os, "close", real_close)
+    reopened = SessionAuditLog(tmp_path, "session-1")
+    assert [record["seq"] for record in reopened.replay()] == [1]
+    second = reopened.append(_event("event-2"))
+
+    assert second["seq"] == 2
+    assert [record["seq"] for record in reopened.replay()] == [1, 2]
+
+
+def test_open_failure_is_normalized_as_an_audit_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    real_open = os.open
+
+    def failing_open(path: object, flags: int, *args: object) -> int:
+        if flags & os.O_APPEND:
+            raise PermissionError("injected open failure")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(os, "open", failing_open)
+
+    with pytest.raises(AuditLogError, match="cannot open session log"):
+        log.append(_event("event-1"))
+
+
+def test_fstat_failure_closes_the_open_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    descriptors: list[int] = []
+    real_open = os.open
+    real_fstat = os.fstat
+
+    def recording_open(path: object, flags: int, *args: object) -> int:
+        descriptor = real_open(path, flags, *args)
+        if flags & os.O_APPEND:
+            descriptors.append(descriptor)
+        return descriptor
+
+    def failing_fstat(descriptor: int) -> os.stat_result:
+        if descriptor in descriptors:
+            raise OSError("injected fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "fstat", failing_fstat)
+
+    with pytest.raises(AuditLogError, match="cannot inspect session log"):
+        log.append(_event("event-1"))
+
+    monkeypatch.setattr(os, "fstat", real_fstat)
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(descriptors[0])

@@ -11,7 +11,12 @@ MOTION_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
+        IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
+        IntentName.SWEEP,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.CAPTURE_ROOM,
     }
@@ -39,26 +44,64 @@ def resolve_intent_pair(
     safety hold.  Two selection changes keep only the later event.  Stop and hold
     always win over a simultaneous non-safety request.
     """
+    return resolve_intent_group(
+        (first, second),
+        snapshot,
+        conflict_window_ms=conflict_window_ms,
+    )
+
+
+def resolve_intent_group(
+    intents: tuple[IntentV1, ...],
+    snapshot: FleetSnapshot,
+    *,
+    conflict_window_ms: int,
+) -> ConflictResolution:
+    if not intents:
+        raise ValueError("intent group cannot be empty")
     if conflict_window_ms < 0:
         raise ValueError("conflict_window_ms cannot be negative")
-    earlier, later = sorted((first, second), key=lambda intent: intent.t)
-    if later.t - earlier.t > conflict_window_ms:
-        return ConflictResolution((first, second), (), (), False)
-
-    if first.name is IntentName.ESTOP or second.name is IntentName.ESTOP:
-        winner = first if first.name is IntentName.ESTOP else second
-        loser = second if winner is first else first
-        return ConflictResolution((winner,), (), (loser.intent_id,), False)
-    if first.name is IntentName.HOLD or second.name is IntentName.HOLD:
-        winner = first if first.name is IntentName.HOLD else second
-        loser = second if winner is first else first
-        return ConflictResolution((winner,), (), (loser.intent_id,), False)
-    if first.name is IntentName.SELECT and second.name is IntentName.SELECT:
-        return ConflictResolution((later,), (), (earlier.intent_id,), False)
-    if first.name in MOTION_INTENTS and second.name in MOTION_INTENTS:
-        refusals = tuple(_motion_refusal(intent, snapshot) for intent in (first, second))
+    ordered = tuple(sorted(intents, key=lambda intent: (intent.t, intent.intent_id)))
+    earlier, later = ordered[0], ordered[-1]
+    for safety_name in (IntentName.ESTOP, IntentName.HOLD):
+        safety = tuple(intent for intent in ordered if intent.name is safety_name)
+        if not safety:
+            continue
+        winner = safety[-1]
+        neighbors = tuple(
+            intent for intent in ordered if abs(intent.t - winner.t) <= conflict_window_ms
+        )
+        remaining = tuple(intent for intent in ordered if intent not in neighbors)
+        rest = (
+            resolve_intent_group(remaining, snapshot, conflict_window_ms=conflict_window_ms)
+            if remaining
+            else ConflictResolution((), (), (), False)
+        )
+        return ConflictResolution(
+            tuple(
+                sorted((winner, *rest.accepted), key=lambda intent: (intent.t, intent.intent_id))
+            ),
+            rest.refusals,
+            tuple(intent.intent_id for intent in neighbors if intent is not winner)
+            + rest.invalidated_intent_ids,
+            rest.hold_required,
+        )
+    if all(intent.name is IntentName.SELECT for intent in ordered):
+        if later.t - earlier.t > conflict_window_ms:
+            return ConflictResolution(intents, (), (), False)
+        return ConflictResolution(
+            (later,), (), tuple(intent.intent_id for intent in ordered[:-1]), False
+        )
+    motions = tuple(intent for intent in ordered if intent.name in MOTION_INTENTS)
+    if any(
+        later_motion.t - earlier_motion.t <= conflict_window_ms
+        for earlier_motion, later_motion in zip(motions, motions[1:], strict=False)
+    ):
+        refusals = tuple(_motion_refusal(intent, snapshot) for intent in motions)
         return ConflictResolution((), refusals, (), True)
-    return ConflictResolution((first, second), (), (), False)
+    if later.t - earlier.t > conflict_window_ms:
+        return ConflictResolution(intents, (), (), False)
+    return ConflictResolution(intents, (), (), False)
 
 
 def _motion_refusal(intent: IntentV1, snapshot: FleetSnapshot) -> Refusal:

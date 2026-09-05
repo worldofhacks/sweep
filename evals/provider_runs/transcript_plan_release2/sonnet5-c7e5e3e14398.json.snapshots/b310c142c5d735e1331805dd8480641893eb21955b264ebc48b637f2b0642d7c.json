@@ -1,0 +1,18 @@
+{
+  "entries": {
+    "26ab0f36c53781fc849a81b869addbe22646f49e2d8a8ff68ce9f0c1171b9a0b": {
+      "input_units": 3428,
+      "latency_ms": 2635,
+      "output_units": 125,
+      "payload": {
+        "detail": "\"This room\" is deictic and not resolvable to a cataloged room. Please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-7",
+  "recorded_origin": "anthropic",
+  "version": 3
+}

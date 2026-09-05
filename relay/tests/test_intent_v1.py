@@ -56,7 +56,7 @@ def test_validated_intent_is_detached_from_input(
     assert result.intent.selection == ()
 
 
-@pytest.mark.parametrize("source", ["console", "keyboard"])
+@pytest.mark.parametrize("source", ["console", "keyboard", "webcam"])
 def test_registered_sources_share_the_validator(
     console_select_payload: dict[str, object], source: str
 ) -> None:
@@ -76,6 +76,7 @@ def test_registered_sources_share_the_validator(
         ("translate", {"dx": 2, "dy": -1}, False),
         ("hold", {}, False),
         ("come_home", {}, False),
+        ("land", {}, True),
         ("land_all", {}, True),
         ("estop", {}, False),
     ],
@@ -104,6 +105,11 @@ def test_m20_console_intents_match_the_planner_contract(
         ("formation_set", {"name": "circle"}, False),
         ("spacing", {"delta": 1}, False),
         ("sweep", {}, True),
+        (
+            "sweep",
+            {"box": {"min_x": -2, "max_x": 2, "min_y": -3, "max_y": 3}},
+            True,
+        ),
     ],
 )
 def test_m15_sim_intents_are_accepted_on_the_indoor_contract(
@@ -120,25 +126,48 @@ def test_m15_sim_intents_are_accepted_on_the_indoor_contract(
     assert result.intent.name.value == name
 
 
-def test_sweep_requires_confirmation_before_planning() -> None:
-    result = validate_intent(
-        {
-            "v": 1,
-            "t": 1_756_700_000_000,
-            "type": "intent",
-            "intent_id": "sweep-unconfirmed",
-            "source": "console",
-            "session": "2026-09-02T09-00-00Z",
-            "name": "sweep",
-            "args": {},
-            "selection": [1, 2],
-            "mode": "indoor",
-            "confirm": False,
-        }
-    )
+def test_sweep_requires_confirmation_before_planning(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(name="sweep", args={}, selection=[1, 2], confirm=False)
+
+    result = validate_intent(console_select_payload)
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+@pytest.mark.parametrize(
+    "box",
+    [
+        {"x": 0, "y": 0, "width": 4, "height": 3},
+        {"min_x": 0, "max_x": 0, "min_y": -1, "max_y": 1},
+        {"min_x": 1, "max_x": 0, "min_y": -1, "max_y": 1},
+        {"min_x": 0, "max_x": 1, "min_y": -1, "max_y": float("inf")},
+        {"min_x": False, "max_x": 1, "min_y": -1, "max_y": 1},
+    ],
+)
+def test_sweep_rejects_ambiguous_or_invalid_boxes(
+    console_select_payload: dict[str, object], box: dict[str, object]
+) -> None:
+    console_select_payload.update(name="sweep", args={"box": box}, selection=[1], confirm=True)
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+def test_translate_rejects_source_owned_frame_and_step(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(
+        name="translate",
+        args={"dx": 1, "dy": 0, "frame": "world", "step_m": 9.0},
+        selection=[1],
+    )
+
+    assert isinstance(validate_intent(console_select_payload), RejectedIntent)
 
 
 @pytest.mark.parametrize("mode", ["outdoorC", "outdoorF"])
@@ -207,7 +236,7 @@ def test_invalid_intent_id_or_retry_of_is_rejected(
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
-@pytest.mark.parametrize("source", ["webcam", "language", "glasses"])
+@pytest.mark.parametrize("source", ["language", "band", "Webcam"])
 def test_unregistered_source_is_rejected(
     console_select_payload: dict[str, object], source: str
 ) -> None:
@@ -298,12 +327,11 @@ def test_unknown_intent_name_is_rejected(
     ("name", "args"),
     [
         ("disarm", {}),
-        ("land", {}),
         ("survey_area", {"area_id": "floor-1"}),
         ("map_area", {"area_id": "floor-1"}),
     ],
 )
-def test_valid_intents_outside_m15_are_unsupported(
+def test_valid_intents_outside_m20_are_unsupported(
     console_select_payload: dict[str, object],
     name: str,
     args: dict[str, object],

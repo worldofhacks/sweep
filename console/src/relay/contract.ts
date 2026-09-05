@@ -8,17 +8,130 @@
 
 export type DroneId = number
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
-export type IntentSource = 'console' | 'keyboard'
+export type IntentSource = 'console' | 'keyboard' | 'webcam'
+export type FormationName = 'line' | 'column' | 'circle' | 'grid' | 'V'
+
+/**
+ * Every intent name this console can build. Mirrors relay/intent_v1.py
+ * IntentName minus survey_area and map_area, which the brief marks as later.
+ */
 export type ConsoleIntentName =
-  | 'altitude'
-  | 'capture_room'
+  | 'arm'
+  | 'disarm'
   | 'estop'
+  | 'select'
+  | 'takeoff'
+  | 'land'
+  | 'land_all'
+  | 'hold'
+  | 'translate'
+  | 'altitude'
   | 'formation_next'
   | 'formation_set'
-  | 'hold'
-  | 'select'
   | 'spacing'
+  | 'come_home'
   | 'sweep'
+  | 'capture_room'
+
+export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
+  'arm',
+  'disarm',
+  'estop',
+  'select',
+  'takeoff',
+  'land',
+  'land_all',
+  'hold',
+  'translate',
+  'altitude',
+  'formation_next',
+  'formation_set',
+  'spacing',
+  'come_home',
+  'sweep',
+  'capture_room',
+]
+
+/**
+ * Mirror of relay/intent_v1.py M20_SUPPORTED_NAMES, including the earned M1.5
+ * simulator behaviors. The relay refuses every other name with reason
+ * `unsupported`; the console still sends it so the refusal is recorded.
+ */
+export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  'arm',
+  'select',
+  'takeoff',
+  'translate',
+  'hold',
+  'come_home',
+  'land',
+  'land_all',
+  'estop',
+  'capture_room',
+  'altitude',
+  'formation_next',
+  'formation_set',
+  'spacing',
+  'sweep',
+])
+
+export function isSupportedIntent(name: ConsoleIntentName): boolean {
+  return SUPPORTED_INTENTS.has(name)
+}
+
+/**
+ * Console policy from the design brief: these intents never leave the console
+ * without the operator confirming the exact envelope. The relay itself only
+ * enforces confirmation for capture_room.
+ */
+export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  'takeoff',
+  'land',
+  'land_all',
+  'sweep',
+  'capture_room',
+])
+
+export function requiresConfirmation(name: ConsoleIntentName): boolean {
+  return CONFIRM_REQUIRED_INTENTS.has(name)
+}
+
+/** Selection rule per intent, from the brief's controls table. */
+export type SelectionRule = 'any' | 'at least one' | 'selected' | 'all' | 'exactly one' | 'fleet'
+
+export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>> = {
+  arm: 'any',
+  disarm: 'any',
+  estop: 'fleet',
+  select: 'at least one',
+  takeoff: 'selected',
+  land: 'selected',
+  land_all: 'all',
+  hold: 'selected',
+  translate: 'selected',
+  altitude: 'selected',
+  formation_next: 'selected',
+  formation_set: 'selected',
+  spacing: 'selected',
+  come_home: 'selected',
+  sweep: 'selected',
+  capture_room: 'exactly one',
+}
+
+export function selectionRule(name: ConsoleIntentName): SelectionRule {
+  return SELECTION_RULES[name]
+}
+
+/**
+ * True when the intent's selection is the authoritative selection, so a change
+ * to that selection invalidates a pending preview. `all` and `fleet` intents
+ * address the roster instead and are invalidated by roster changes only.
+ */
+export function followsSelection(name: ConsoleIntentName): boolean {
+  const rule = SELECTION_RULES[name]
+  return rule === 'selected' || rule === 'exactly one' || rule === 'at least one'
+}
+
 export type MembershipState =
   | 'registered'
   | 'ready'
@@ -26,12 +139,56 @@ export type MembershipState =
   | 'disconnected'
   | 'degraded'
 
-export type IntentArgs =
-  | Record<string, never>
-  | { ids: DroneId[] }
-  | { delta: number }
-  | { name: string }
-  | { room_id: string; capture_id: string; pattern: CapturePattern }
+export type EmptyArgs = Record<string, never>
+export interface SelectArgs {
+  ids: DroneId[]
+}
+export interface TranslateArgs {
+  /** Steps in the room frame, east positive. */
+  dx: number
+  /** Steps in the room frame, north positive. */
+  dy: number
+}
+export interface DeltaArgs {
+  delta: number
+}
+export interface FormationSetArgs {
+  name: FormationName
+}
+export interface SweepBox {
+  min_x: number
+  max_x: number
+  min_y: number
+  max_y: number
+}
+export type SweepArgs = EmptyArgs | { box: SweepBox }
+export interface CaptureRoomArgs {
+  room_id: string
+  capture_id: string
+  pattern: CapturePattern
+}
+
+/** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
+export interface IntentArgsByName {
+  arm: EmptyArgs
+  disarm: EmptyArgs
+  estop: EmptyArgs
+  select: SelectArgs
+  takeoff: EmptyArgs
+  land: EmptyArgs
+  land_all: EmptyArgs
+  hold: EmptyArgs
+  translate: TranslateArgs
+  altitude: DeltaArgs
+  formation_next: EmptyArgs
+  formation_set: FormationSetArgs
+  spacing: DeltaArgs
+  come_home: EmptyArgs
+  sweep: SweepArgs
+  capture_room: CaptureRoomArgs
+}
+
+export type IntentArgs = IntentArgsByName[ConsoleIntentName]
 
 export interface IntentV1 {
   v: 1
@@ -48,10 +205,11 @@ export interface IntentV1 {
   confirm: boolean
 }
 
-export interface VideoStreamState {
-  status: 'live' | 'offline'
-  url?: string
-  last_frame_at?: number
+export type MediaStreamStatus = 'live' | 'offline' | 'unreported'
+
+export interface MediaStreamState {
+  status: MediaStreamStatus
+  last_frame_at: number | null
 }
 
 export interface RelayAircraftState {
@@ -73,7 +231,7 @@ export interface RelayAircraftState {
   home_pose: unknown
   telemetry: unknown
   membership_history: unknown[]
-  video?: VideoStreamState
+  video?: MediaStreamState
 }
 
 export interface RelayStateEvent {
@@ -83,6 +241,7 @@ export interface RelayStateEvent {
   event_id: string
   session: string
   roster_version: number
+  state_sequence?: number
   armed: boolean
   estop: boolean
   selection: DroneId[]
@@ -213,6 +372,19 @@ export interface RelayTelemetryEvent {
   pos_quality: number
 }
 
+export interface RelaySafetyActionEvent {
+  v: 1
+  t: number
+  type: 'safety_action'
+  event_id: string
+  session: string
+  drone_id: DroneId
+  connection_epoch: number
+  reason: 'link_loss'
+  action: 'hold' | 'failsafe'
+  loss_behavior: 'hold' | 'failsafe'
+}
+
 export type RelayServerEvent =
   | RelayAcknowledgementEvent
   | RelayAuthAcceptedEvent
@@ -220,6 +392,7 @@ export type RelayServerEvent =
   | RelayMembershipEvent
   | RelayRefusalEvent
   | RelayStateEvent
+  | RelaySafetyActionEvent
   | RelayTelemetryEvent
 
 export interface RelayAuthFrame {
@@ -237,6 +410,8 @@ const MEMBERSHIP_STATES = new Set<MembershipState>([
   'degraded',
 ])
 const CAPTURE_PATTERNS = new Set<CapturePattern>(['pano_360', 'reconstruct_8'])
+/** Mirror of relay REGISTERED_SOURCES: operator sources bound to their own connection. */
+const INTENT_SOURCES = new Set<IntentSource>(['console', 'keyboard', 'webcam'])
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -251,10 +426,6 @@ function isDroneId(value: unknown): value is DroneId {
 
 function isDroneIds(value: unknown): value is DroneId[] {
   return Array.isArray(value) && value.every(isDroneId) && new Set(value).size === value.length
-}
-
-function isOptionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === 'string'
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -318,13 +489,15 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
   )
 }
 
-function isVideoStreamState(value: unknown): value is VideoStreamState | undefined {
+function isVideoStreamState(value: unknown): value is MediaStreamState | undefined {
   if (value === undefined) return true
   if (!isRecord(value)) return false
   return (
-    (value.status === 'live' || value.status === 'offline') &&
-    isOptionalString(value.url) &&
-    (value.last_frame_at === undefined || isNonNegativeInteger(value.last_frame_at))
+    Object.keys(value).length === 2 &&
+    Object.hasOwn(value, 'status') &&
+    Object.hasOwn(value, 'last_frame_at') &&
+    (value.status === 'live' || value.status === 'offline' || value.status === 'unreported') &&
+    (value.last_frame_at === null || isNonNegativeInteger(value.last_frame_at))
   )
 }
 
@@ -346,6 +519,8 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
   if (value.type === 'state') {
     if (
       !isNonNegativeInteger(value.roster_version) ||
+      (value.state_sequence !== undefined &&
+        (!Number.isSafeInteger(value.state_sequence) || Number(value.state_sequence) < 1)) ||
       typeof value.armed !== 'boolean' ||
       typeof value.estop !== 'boolean' ||
       !isDroneIds(value.selection) ||
@@ -405,7 +580,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
 
   if (value.type === 'auth.accepted') {
     if (
-      !['console', 'keyboard', 'adapter'].includes(String(value.source)) ||
+      !(INTENT_SOURCES.has(value.source as IntentSource) || value.source === 'adapter') ||
       !isNullableDroneId(value.drone_id)
     ) {
       return null
@@ -444,6 +619,19 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       return null
     }
     return value as unknown as RelayTelemetryEvent
+  }
+
+  if (value.type === 'safety_action') {
+    if (
+      !isDroneId(value.drone_id) ||
+      !isNonNegativeInteger(value.connection_epoch) ||
+      value.reason !== 'link_loss' ||
+      !['hold', 'failsafe'].includes(String(value.action)) ||
+      !['hold', 'failsafe'].includes(String(value.loss_behavior))
+    ) {
+      return null
+    }
+    return value as unknown as RelaySafetyActionEvent
   }
 
   if (value.type === 'acknowledgement') {
@@ -522,20 +710,10 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
         value.retry_of.length > 0 &&
         value.retry_of !== value.intent_id)
     ) ||
-    (value.source !== 'console' && value.source !== 'keyboard') ||
+    !INTENT_SOURCES.has(value.source as IntentSource) ||
     typeof value.session !== 'string' ||
     value.session.length === 0 ||
-    ![
-      'altitude',
-      'capture_room',
-      'estop',
-      'formation_next',
-      'formation_set',
-      'hold',
-      'select',
-      'spacing',
-      'sweep',
-    ].includes(String(value.name)) ||
+    !(CONSOLE_INTENT_NAMES as readonly string[]).includes(String(value.name)) ||
     !isRecord(value.args) ||
     !isDroneIds(value.selection) ||
     value.mode !== 'indoor' ||
@@ -543,37 +721,80 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   ) {
     return false
   }
+  const name = value.name as ConsoleIntentName
+  const selection = value.selection as DroneId[]
+  if (!hasValidArgs(name, value.args)) return false
+  if (requiresConfirmation(name) && !value.confirm) return false
+  return hasValidSelection(name, selection)
+}
 
-  if (value.name === 'select') {
-    return Object.keys(value.args).length === 1 && isDroneIds(value.args.ids) && value.args.ids.length > 0
+const FORMATION_NAMES = new Set<FormationName>(['line', 'column', 'circle', 'grid', 'V'])
+
+/** Mirrors relay/intent_v1.py _parse_args for the console-built subset. */
+function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): boolean {
+  const keys = Object.keys(args)
+  switch (name) {
+    case 'select':
+      return keys.length === 1 && isDroneIds(args.ids) && args.ids.length > 0
+    case 'translate':
+      return keys.length === 2 && isFiniteNumber(args.dx) && isFiniteNumber(args.dy)
+    case 'altitude':
+    case 'spacing':
+      return keys.length === 1 && isFiniteNumber(args.delta)
+    case 'formation_set':
+      return keys.length === 1 && FORMATION_NAMES.has(args.name as FormationName)
+    case 'sweep':
+      return keys.length === 0 || (keys.length === 1 && isSweepBox(args.box))
+    case 'capture_room':
+      return (
+        keys.length === 3 &&
+        typeof args.room_id === 'string' &&
+        args.room_id.length > 0 &&
+        typeof args.capture_id === 'string' &&
+        args.capture_id.length > 0 &&
+        CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
+      )
+    case 'arm':
+    case 'disarm':
+    case 'estop':
+    case 'takeoff':
+    case 'land':
+    case 'land_all':
+    case 'hold':
+    case 'formation_next':
+    case 'come_home':
+      return keys.length === 0
   }
-  if (value.name === 'capture_room') {
-    return (
-      Object.keys(value.args).length === 3 &&
-      typeof value.args.room_id === 'string' &&
-      value.args.room_id.length > 0 &&
-      typeof value.args.capture_id === 'string' &&
-      value.args.capture_id.length > 0 &&
-      CAPTURE_PATTERNS.has(value.args.pattern as CapturePattern) &&
-      value.confirm &&
-      value.selection.length === 1
-    )
+}
+
+function isSweepBox(value: unknown): value is SweepBox {
+  if (!isRecord(value)) return false
+  const keys = Object.keys(value)
+  if (
+    keys.length !== 4 ||
+    !['min_x', 'max_x', 'min_y', 'max_y'].every((key) => keys.includes(key)) ||
+    !isFiniteNumber(value.min_x) ||
+    !isFiniteNumber(value.max_x) ||
+    !isFiniteNumber(value.min_y) ||
+    !isFiniteNumber(value.max_y)
+  ) {
+    return false
   }
-  if (value.name === 'altitude' || value.name === 'spacing') {
-    return (
-      Object.keys(value.args).length === 1 &&
-      isFiniteNumber(value.args.delta)
-    )
+  return value.min_x < value.max_x && value.min_y < value.max_y
+}
+
+/** The brief's selection rules; capture_room's is also the relay's own scope check. */
+function hasValidSelection(name: ConsoleIntentName, selection: DroneId[]): boolean {
+  switch (SELECTION_RULES[name]) {
+    case 'any':
+    case 'all':
+      return true
+    case 'fleet':
+      return selection.length === 0
+    case 'at least one':
+    case 'selected':
+      return selection.length > 0
+    case 'exactly one':
+      return selection.length === 1
   }
-  if (value.name === 'formation_set') {
-    return (
-      Object.keys(value.args).length === 1 &&
-      typeof value.args.name === 'string' &&
-      value.args.name.length > 0
-    )
-  }
-  if (value.name === 'sweep') {
-    return Object.keys(value.args).length === 0 && value.confirm && value.selection.length > 0
-  }
-  return Object.keys(value.args).length === 0
 }

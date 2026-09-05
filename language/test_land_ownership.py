@@ -1,0 +1,642 @@
+from dataclasses import replace
+
+import pytest
+
+from evals.language_corpus import StaticResponseTransport
+from language.compiler import (
+    ConfirmationError,
+    ConfirmedPlan,
+    InMemoryAuditSink,
+    TranscriptCompiler,
+)
+from language.test_compiler import _hydrate_relay_from_snapshot
+from planner.controller import PreparedExecutionRouter
+from planner.models import FlightState, LifecycleStatus, Position
+from relay.audit import SessionAuditLog
+from relay.auth import Principal
+from relay.session import RelayLimits, RelaySession
+from tests.autonomy_fixtures import make_snapshot, make_stack, planning_config, replace_aircraft
+
+
+@pytest.fixture
+def landing_session(tmp_path, request):
+    current = [make_snapshot(getattr(request, "param", 1), selection=(1,))]
+    controller, _, _, _, flight, _ = make_stack(current[0])
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: current[0])
+    relay = RelaySession(
+        session_id="language-eval",
+        audit_log=SessionAuditLog(tmp_path, "language-eval"),
+        limits=RelayLimits(5000, 5000, 1000, 1000),
+        clock=lambda: current[0].now_ms,
+        intent_sink=router,
+    )
+    _hydrate_relay_from_snapshot(relay, current[0])
+    return current, flight, router, relay
+
+
+def _compiled_command(current, router, relay, name, intent_id, *, selection=None):
+    selected = list(current[0].selection if selection is None else selection)
+    _, compiled = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": name,
+                        "args": (
+                            {"dx": 1, "dy": 0}
+                            if name == "translate"
+                            else ({"ids": selected} if name == "select" else {})
+                        ),
+                        "selection": [] if name == "land_all" else selected,
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "Move right." if name == "translate" else "Land drone one.",
+        relay.current_state(),
+        capability_version="test",
+        rooms=(),
+        translation=planning_config().translation_grounding(current[0]),
+        now_ms=current[0].now_ms,
+    )
+    assert compiled is not None
+    pending = ConfirmedPlan(compiled, session=relay.session_id, audit=InMemoryAuditSink())
+    prepared = pending.prepare_next(
+        relay.current_state(),
+        capability_version="test",
+        rooms=(),
+        now_ms=current[0].now_ms,
+        intent_id=intent_id,
+        router=router,
+        snapshot=current[0],
+    )
+    pending.confirm_next(
+        relay.current_state(),
+        capability_version="test",
+        rooms=(),
+        now_ms=current[0].now_ms,
+        intent_id=intent_id,
+        emit=router.relay_emitter(
+            relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
+        ),
+        prepared=prepared,
+    )
+    return prepared
+
+
+def _ack(relay, current, command, status, *, timestamp=None, event_id=None):
+    return relay.process_frame(
+        {
+            "v": 1,
+            "t": current[0].now_ms if timestamp is None else timestamp,
+            "type": "acknowledgement",
+            "event_id": event_id or f"{command.command_id}-{status}",
+            "session": relay.session_id,
+            "intent_id": command.intent_id,
+            "command_id": command.command_id,
+            "status": status,
+            "drone_id": command.drone_id,
+            "connection_epoch": command.connection_epoch,
+            "roster_version": command.roster_version,
+            "reason": "adapter_failure" if status in {"failed", "invalidated"} else None,
+            "detail": None,
+        },
+        Principal(source="adapter", drone_id=command.drone_id, signing_key=b"x" * 32),
+    )
+
+
+def _attempt_fresh_motion(current, router, relay, delay_ms=501):
+    current[0] = replace(current[0], now_ms=current[0].now_ms + delay_ms)
+    with pytest.raises(ConfirmationError, match="relay returned terminal status refused"):
+        _compiled_command(current, router, relay, "translate", "independent-motion")
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("delay_ms", [1, 501])
+def test_completed_land_owns_aircraft_until_landed_telemetry(
+    landing_session, monkeypatch, asynchronous, delay_ms
+):
+    current, flight, router, relay = landing_session
+    if asynchronous:
+        land = flight.land
+        monkeypatch.setattr(
+            flight,
+            "land",
+            lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+        )
+    prepared = _compiled_command(current, router, relay, "land", "landing")
+    if asynchronous:
+        events = _ack(relay, current, prepared.execution.plan.commands[0], "completed")
+        assert any(
+            event.get("source") == "autonomy" and event["status"] == "completed" for event in events
+        )
+    assert router.completion_pending("landing")
+    assert "landing" in router._running
+    assert relay.current_state()["accepted_plan"]["intent_id"] == "landing"
+
+    _attempt_fresh_motion(current, router, relay, delay_ms)
+
+    assert [call.operation.value for call in flight.calls] == ["land"]
+    assert "landing" in router._running
+    assert relay.current_state()["accepted_plan"]["intent_id"] == "landing"
+    telemetry = relay.current_state()["drones"][0]["telemetry"]
+    events = relay.process_frame(
+        {
+            **telemetry,
+            "v": 1,
+            "t": current[0].now_ms,
+            "type": "telemetry",
+            "session": relay.session_id,
+            "drone": 1,
+            "connection_epoch": 1,
+            "event_id": "landed-evidence",
+            "state": "landed",
+            "z": 0.0,
+        },
+        Principal(source="adapter", drone_id=1, signing_key=b"x" * 32),
+    )
+    assert not any(event["type"] == "refusal" for event in events)
+    assert not router.completion_pending("landing")
+    assert "landing" not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+
+
+def test_failed_authenticated_land_keeps_registered_safety_hold_owned(landing_session, monkeypatch):
+    current, flight, router, relay = landing_session
+    land, hover = flight.land, flight.hover
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    monkeypatch.setattr(
+        flight,
+        "hover",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "land", "failed-landing")
+    events = _ack(relay, current, prepared.execution.plan.commands[0], "failed")
+    assert any(
+        event.get("source") == "autonomy" and event["status"] == "failed" for event in events
+    )
+    assert [call.operation.value for call in flight.calls] == ["land", "hover"]
+    safety_id = relay.current_state()["accepted_plan"]["intent_id"]
+    assert safety_id != "failed-landing"
+    assert safety_id in router._running
+
+    _attempt_fresh_motion(current, router, relay)
+
+    assert [call.operation.value for call in flight.calls] == ["land", "hover"]
+    assert relay.current_state()["accepted_plan"]["intent_id"] == safety_id
+    safety, _, _ = router._running[safety_id]
+    events = _ack(relay, current, safety.plan.commands[0], "completed")
+    assert not any(event.get("reason") == "unknown_intent_id" for event in events)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_hold_retires_landing_that_is_waiting_for_telemetry(
+    landing_session, monkeypatch, asynchronous
+):
+    current, flight, router, relay = landing_session
+    if asynchronous:
+        land = flight.land
+        monkeypatch.setattr(
+            flight,
+            "land",
+            lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+        )
+    prepared = _compiled_command(current, router, relay, "land", "landing")
+    command = prepared.execution.plan.commands[0]
+    if asynchronous:
+        _ack(relay, current, command, "completed")
+    assert router.completion_pending("landing")
+    assert relay.current_state()["accepted_plan"]["intent_id"] == "landing"
+
+    _compiled_command(current, router, relay, "hold", "superseding-hold")
+
+    assert [call.operation.value for call in flight.calls] == ["land", "hover"]
+    assert "landing" not in router._running
+    assert not router.completion_pending("landing")
+    assert relay.current_state()["accepted_plan"] is None
+    current[0] = replace(current[0], now_ms=current[0].now_ms + 1)
+    _ack(relay, current, command, "completed")
+    assert [call.operation.value for call in flight.calls] == ["land", "hover"]
+    assert "landing" not in router._running
+    assert not router.completion_pending("landing")
+    assert relay.current_state()["accepted_plan"] is None
+
+
+def _landed_telemetry(relay, drone_id, timestamp):
+    drone = next(
+        drone for drone in relay.current_state()["drones"] if drone["drone_id"] == drone_id
+    )
+    return relay.process_frame(
+        {
+            **drone["telemetry"],
+            "v": 1,
+            "t": timestamp,
+            "type": "telemetry",
+            "session": relay.session_id,
+            "drone": drone_id,
+            "connection_epoch": 1,
+            "event_id": f"landed-{drone_id}-{timestamp}",
+            "state": "landed",
+            "z": 0.0,
+        },
+        Principal(source="adapter", drone_id=drone_id, signing_key=b"x" * 32),
+    )
+
+
+@pytest.mark.parametrize("landing_session", [2], indirect=True)
+def test_partial_hold_preserves_untouched_landing_until_its_own_telemetry(landing_session):
+    current, flight, router, relay = landing_session
+    _compiled_command(current, router, relay, "land_all", "fleet-landing")
+    assert router.completion_pending("fleet-landing")
+
+    _compiled_command(current, router, relay, "hold", "hold-one")
+
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
+        ("land", (1,)),
+        ("land", (2,)),
+        ("hover", (1,)),
+    ]
+    assert router.completion_pending("fleet-landing")
+    assert relay.current_state()["accepted_plan"]["intent_id"] == "fleet-landing"
+    current[0] = replace(current[0], selection=(2,))
+    relay.update_control_projection(selection=(2,))
+    _attempt_fresh_motion(current, router, relay)
+    assert all(call.operation.value != "goto" for call in flight.calls)
+    assert "fleet-landing" in router._running
+    events = _landed_telemetry(relay, 2, current[0].now_ms)
+    assert not any(event["type"] == "refusal" for event in events)
+    assert not router.completion_pending("fleet-landing")
+    assert "fleet-landing" not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+    first = next(drone for drone in relay.current_state()["drones"] if drone["drone_id"] == 1)
+    assert first["flight_state"] == "hovering"
+
+
+def test_landing_fence_uses_authenticated_ack_time_ahead_of_relay_clock(
+    landing_session, monkeypatch
+):
+    current, flight, router, relay = landing_session
+    land = flight.land
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "land", "future-ack-landing")
+    signed_at = current[0].now_ms + 100
+    events = _ack(
+        relay, current, prepared.execution.plan.commands[0], "completed", timestamp=signed_at
+    )
+    assert any(
+        event.get("source") == "autonomy" and event["status"] == "completed" for event in events
+    )
+    assert router.completion_pending("future-ack-landing")
+
+    events = _landed_telemetry(relay, 1, signed_at)
+
+    assert not any(event["type"] == "refusal" for event in events)
+    assert router.completion_pending("future-ack-landing")
+    assert "future-ack-landing" in router._running
+    assert relay.current_state()["accepted_plan"]["intent_id"] == "future-ack-landing"
+    events = _landed_telemetry(relay, 1, signed_at + 1)
+    assert not any(event["type"] == "refusal" for event in events)
+    assert not router.completion_pending("future-ack-landing")
+    assert "future-ack-landing" not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+
+
+@pytest.mark.parametrize("landing_session", [2], indirect=True)
+def test_fleet_landing_fence_preserves_earlier_aircraft_future_ack(landing_session, monkeypatch):
+    current, flight, router, relay = landing_session
+    land = flight.land
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "land_all", "fleet-future-ack")
+    first, second = prepared.execution.plan.commands
+    first_signed_at = current[0].now_ms + 100
+    events = _ack(relay, current, first, "completed", timestamp=first_signed_at)
+    assert not any(event["type"] == "refusal" for event in events)
+    events = _ack(relay, current, second, "completed")
+    assert any(
+        event.get("source") == "autonomy" and event["status"] == "completed" for event in events
+    )
+    for drone_id in (1, 2):
+        events = _landed_telemetry(relay, drone_id, first_signed_at)
+        assert not any(event["type"] == "refusal" for event in events)
+    assert router.completion_pending("fleet-future-ack")
+    assert "fleet-future-ack" in router._running
+    for drone_id in (1, 2):
+        events = _landed_telemetry(relay, drone_id, first_signed_at + 1)
+        assert not any(event["type"] == "refusal" for event in events)
+    assert not router.completion_pending("fleet-future-ack")
+    assert "fleet-future-ack" not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+
+
+@pytest.mark.parametrize("landing_session", [2], indirect=True)
+@pytest.mark.parametrize("held_drone", [1, 2])
+def test_partial_hold_during_async_fleet_landing_preserves_only_untouched_aircraft(
+    landing_session, monkeypatch, held_drone
+):
+    current, flight, router, relay = landing_session
+    land = flight.land
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "land_all", "async-fleet-landing")
+    first, second = prepared.execution.plan.commands
+    events = _ack(relay, current, first, "completed")
+    assert not any(event["type"] == "refusal" for event in events)
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
+        ("land", (1,)),
+        ("land", (2,)),
+    ]
+    current[0] = replace(current[0], selection=(held_drone,))
+    relay.update_control_projection(selection=(held_drone,))
+
+    _compiled_command(current, router, relay, "hold", "partial-hold")
+
+    assert "async-fleet-landing" in router._running
+    assert relay.current_state()["accepted_plan"]["intent_id"] == "async-fleet-landing"
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
+        ("land", (1,)),
+        ("land", (2,)),
+        ("hover", (held_drone,)),
+    ]
+    current[0] = replace(current[0], now_ms=current[0].now_ms + 1)
+    _ack(relay, current, second, "completed")
+    assert router.completion_pending("async-fleet-landing")
+    untouched = 3 - held_drone
+    current[0] = replace(current[0], selection=(untouched,))
+    relay.update_control_projection(selection=(untouched,))
+    _attempt_fresh_motion(current, router, relay)
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
+        ("land", (1,)),
+        ("land", (2,)),
+        ("hover", (held_drone,)),
+    ]
+
+    events = _landed_telemetry(relay, untouched, current[0].now_ms)
+
+    assert not any(event["type"] == "refusal" for event in events)
+    assert not router.completion_pending("async-fleet-landing")
+    assert "async-fleet-landing" not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+    held = next(
+        drone for drone in relay.current_state()["drones"] if drone["drone_id"] == held_drone
+    )
+    assert held["flight_state"] == "hovering"
+
+
+@pytest.mark.parametrize("landing_session", [2], indirect=True)
+def test_hold_before_first_land_ack_cancels_unissued_fleet_suffix(landing_session, monkeypatch):
+    current, flight, router, relay = landing_session
+    land = flight.land
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "land_all", "unissued-fleet-landing")
+    first, _ = prepared.execution.plan.commands
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [("land", (1,))]
+
+    _compiled_command(current, router, relay, "hold", "cancel-first-landing")
+
+    assert not router.completion_pending("unissued-fleet-landing")
+    assert "unissued-fleet-landing" not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+    _ack(relay, current, first, "completed")
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
+        ("land", (1,)),
+        ("hover", (1,)),
+    ]
+    assert not router.completion_pending("unissued-fleet-landing")
+    assert "unissued-fleet-landing" not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+
+
+@pytest.mark.parametrize("landing_session", [2], indirect=True)
+@pytest.mark.parametrize("ack_clock_skew", [0, 100])
+def test_hold_of_unissued_landing_target_prevents_later_landing_dispatch(
+    landing_session, monkeypatch, ack_clock_skew
+):
+    current, flight, router, relay = landing_session
+    land = flight.land
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "land_all", "held-suffix-landing")
+    first, _ = prepared.execution.plan.commands
+    current[0] = replace(current[0], selection=(2,))
+    relay.update_control_projection(selection=(2,))
+    _compiled_command(current, router, relay, "hold", "hold-unissued-target")
+    assert "held-suffix-landing" in router._running
+    assert relay.current_state()["accepted_plan"]["intent_id"] == "held-suffix-landing"
+
+    completed_at = current[0].now_ms + ack_clock_skew
+    _ack(relay, current, first, "completed", timestamp=completed_at)
+
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
+        ("land", (1,)),
+        ("hover", (2,)),
+    ]
+    current[0] = replace(current[0], now_ms=completed_at)
+    _landed_telemetry(relay, 1, completed_at)
+    assert router.completion_pending("held-suffix-landing")
+    current[0] = replace(current[0], now_ms=completed_at + 1)
+    events = _landed_telemetry(relay, 1, current[0].now_ms)
+    assert not any(event["type"] == "refusal" for event in events)
+    assert not router.completion_pending("held-suffix-landing")
+    assert "held-suffix-landing" not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+
+
+@pytest.mark.parametrize("landing_session", [3], indirect=True)
+@pytest.mark.parametrize("failure", ["failed", "invalidated"])
+@pytest.mark.parametrize("async_recovery", [False, True])
+@pytest.mark.parametrize("async_suffix_hold", [False, True])
+def test_retained_inflight_landing_failure_starts_registered_stop(
+    landing_session, monkeypatch, failure, async_recovery, async_suffix_hold
+):
+    current, flight, router, relay = landing_session
+    land = flight.land
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "land_all", "retained-failure")
+    first, second, _ = prepared.execution.plan.commands
+    _ack(relay, current, first, "completed")
+    current[0] = replace(current[0], selection=(3,))
+    relay.update_control_projection(selection=(3,))
+    hover = flight.hover
+    if async_suffix_hold:
+        monkeypatch.setattr(
+            flight,
+            "hover",
+            lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+        )
+    suffix = _compiled_command(current, router, relay, "hold", "cancel-unissued-third")
+    monkeypatch.setattr(flight, "hover", hover)
+    if async_recovery:
+        monkeypatch.setattr(
+            flight,
+            "hover",
+            lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+        )
+    events = _ack(relay, current, second, failure)
+    safety_id = "safety:ambiguous:retained-failure"
+    assert any(event.get("intent_id") == safety_id for event in events)
+    assert "retained-failure" not in router._running
+    assert not router.completion_pending("retained-failure")
+    if async_recovery:
+        assert safety_id in router._running
+        _attempt_fresh_motion(current, router, relay)
+        for command in router._running[safety_id][0].plan.commands:
+            _ack(relay, current, command, "completed")
+        assert safety_id not in router._running
+    assert not router._running
+    assert relay.current_state()["accepted_plan"] is None
+    if async_suffix_hold:
+        _ack(relay, current, suffix.execution.plan.commands[0], "completed")
+        assert not router._running
+        assert relay.current_state()["accepted_plan"] is None
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
+        ("land", (1,)),
+        ("land", (2,)),
+        ("hover", (3,)),
+        ("hover", (1,)),
+        ("hover", (2,)),
+        ("hover", (3,)),
+    ]
+
+
+@pytest.mark.parametrize("landing_session", [2], indirect=True)
+def test_async_partial_hold_completion_restores_retained_landing_projection(
+    landing_session, monkeypatch
+):
+    current, flight, router, relay = landing_session
+    _compiled_command(current, router, relay, "land_all", "retained-projection")
+    hover = flight.hover
+    monkeypatch.setattr(
+        flight,
+        "hover",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "hold", "async-partial-hold")
+    events = _ack(relay, current, prepared.execution.plan.commands[0], "completed")
+    assert relay.current_state()["accepted_plan"]["intent_id"] == "retained-projection"
+    assert any(
+        event.get("accepted_plan", {}).get("intent_id") == "retained-projection"
+        for event in events
+        if event.get("accepted_plan") is not None
+    )
+    current[0] = replace(current[0], now_ms=current[0].now_ms + 1)
+    _landed_telemetry(relay, 2, current[0].now_ms)
+    assert relay.current_state()["accepted_plan"] is None
+
+
+@pytest.mark.parametrize("landing_session", [3], indirect=True)
+@pytest.mark.parametrize("public_recovery", [False, True])
+def test_failed_recovery_preserves_viable_hold_and_allows_later_fleet_stop(
+    landing_session, monkeypatch, public_recovery
+):
+    current, flight, router, relay = landing_session
+    land = flight.land
+    hover = flight.hover
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    landing = _compiled_command(current, router, relay, "land_all", "failed-recovery-owner")
+    first, second, _ = landing.execution.plan.commands
+    _ack(relay, current, first, "completed")
+    current[0] = replace(current[0], selection=(3,))
+    relay.update_control_projection(selection=(3,))
+    monkeypatch.setattr(
+        flight,
+        "hover",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+    )
+    suffix = _compiled_command(current, router, relay, "hold", "viable-suffix")
+    monkeypatch.setattr(
+        flight,
+        "hover",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.FAILED) for ack in hover(ids)),
+    )
+    _ack(relay, current, second, "failed")
+    assert "viable-suffix" in router._running
+    assert "failed-recovery-owner" in router._running
+    calls = list(flight.calls)
+    repeated = _ack(relay, current, second, "failed", event_id="fresh-event-repeated-terminal-ack")
+    assert not any(event["type"] == "refusal" for event in repeated)
+    assert flight.calls == calls
+    assert "viable-suffix" in router._running
+    assert "failed-recovery-owner" in router._running
+    _attempt_fresh_motion(current, router, relay)
+    _ack(relay, current, suffix.execution.plan.commands[0], "completed")
+    assert "viable-suffix" not in router._running
+    monkeypatch.setattr(flight, "hover", hover)
+    if public_recovery:
+        current[0] = replace(current[0], now_ms=current[0].now_ms + 1)
+        for drone_id in (1, 2):
+            events = _landed_telemetry(relay, drone_id, current[0].now_ms)
+            assert not any(event["type"] == "refusal" for event in events)
+            aircraft = current[0].aircraft[drone_id]
+            current[0] = replace_aircraft(
+                current[0],
+                drone_id,
+                flight_state=FlightState.LANDED,
+                pose=Position(aircraft.pose.x, aircraft.pose.y, 0.0),
+                position_last_seen_ms=current[0].now_ms,
+                link_last_seen_ms=current[0].now_ms,
+            )
+        assert relay.current_state()["accepted_plan"] is None
+        _compiled_command(
+            current, router, relay, "select", "select-all-for-recovery", selection=(1, 2, 3)
+        )
+        assert relay.current_state()["selection"] == [1, 2, 3]
+        current[0] = replace(current[0], selection=tuple(relay.current_state()["selection"]))
+        _compiled_command(
+            current, router, relay, "select", "select-airborne-for-recovery", selection=(3,)
+        )
+        current[0] = replace(current[0], selection=tuple(relay.current_state()["selection"]))
+        assert current[0].selection == (3,)
+        _compiled_command(current, router, relay, "hold", "stop-remaining-airborne")
+        assert not router._running
+        assert relay.current_state()["accepted_plan"] is None
+        _compiled_command(current, router, relay, "translate", "motion-after-public-recovery")
+        assert [(call.operation.value, call.drone_ids) for call in flight.calls][-1] == (
+            "goto",
+            (3,),
+        )
+        return
+    current[0] = replace(current[0], selection=(1,))
+    relay.update_control_projection(selection=(1,))
+    _compiled_command(current, router, relay, "hold", "partial-successful-stop")
+    assert "safety:ambiguous:failed-recovery-owner" in router._running
+    assert "failed-recovery-owner" in router._running
+    assert relay.current_state()["accepted_plan"] is not None
+    current[0] = replace(current[0], selection=(1, 2, 3))
+    relay.update_control_projection(selection=(1, 2, 3))
+    _compiled_command(current, router, relay, "hold", "successful-fleet-stop")
+    assert not router._running
+    assert relay.current_state()["accepted_plan"] is None
