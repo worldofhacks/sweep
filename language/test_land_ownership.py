@@ -97,7 +97,7 @@ def _ack(relay, current, command, status, *, timestamp=None):
             "drone_id": command.drone_id,
             "connection_epoch": command.connection_epoch,
             "roster_version": command.roster_version,
-            "reason": "adapter_failure" if status == "failed" else None,
+            "reason": "adapter_failure" if status in {"failed", "invalidated"} else None,
             "detail": None,
         },
         Principal(source="adapter", drone_id=command.drone_id, signing_key=b"x" * 32),
@@ -459,4 +459,77 @@ def test_hold_of_unissued_landing_target_prevents_later_landing_dispatch(
     assert not any(event["type"] == "refusal" for event in events)
     assert not router.completion_pending("held-suffix-landing")
     assert "held-suffix-landing" not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+
+
+@pytest.mark.parametrize("landing_session", [3], indirect=True)
+@pytest.mark.parametrize("failure", ["failed", "invalidated"])
+@pytest.mark.parametrize("async_recovery", [False, True])
+def test_retained_inflight_landing_failure_starts_registered_stop(
+    landing_session, monkeypatch, failure, async_recovery
+):
+    current, flight, router, relay = landing_session
+    land = flight.land
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "land_all", "retained-failure")
+    first, second, _ = prepared.execution.plan.commands
+    _ack(relay, current, first, "completed")
+    current[0] = replace(current[0], selection=(3,))
+    relay.update_control_projection(selection=(3,))
+    _compiled_command(current, router, relay, "hold", "cancel-unissued-third")
+    if async_recovery:
+        hover = flight.hover
+        monkeypatch.setattr(
+            flight,
+            "hover",
+            lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+        )
+    events = _ack(relay, current, second, failure)
+    safety_id = "safety:ambiguous:retained-failure"
+    assert any(event.get("intent_id") == safety_id for event in events)
+    assert "retained-failure" not in router._running
+    assert not router.completion_pending("retained-failure")
+    if async_recovery:
+        assert safety_id in router._running
+        _attempt_fresh_motion(current, router, relay)
+        for command in router._running[safety_id][0].plan.commands:
+            _ack(relay, current, command, "completed")
+        assert safety_id not in router._running
+    assert relay.current_state()["accepted_plan"] is None
+    assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
+        ("land", (1,)),
+        ("land", (2,)),
+        ("hover", (3,)),
+        ("hover", (1,)),
+        ("hover", (2,)),
+        ("hover", (3,)),
+    ]
+
+
+@pytest.mark.parametrize("landing_session", [2], indirect=True)
+def test_async_partial_hold_completion_restores_retained_landing_projection(
+    landing_session, monkeypatch
+):
+    current, flight, router, relay = landing_session
+    _compiled_command(current, router, relay, "land_all", "retained-projection")
+    hover = flight.hover
+    monkeypatch.setattr(
+        flight,
+        "hover",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+    )
+    prepared = _compiled_command(current, router, relay, "hold", "async-partial-hold")
+    events = _ack(relay, current, prepared.execution.plan.commands[0], "completed")
+    assert relay.current_state()["accepted_plan"]["intent_id"] == "retained-projection"
+    assert any(
+        event.get("accepted_plan", {}).get("intent_id") == "retained-projection"
+        for event in events
+        if event.get("accepted_plan") is not None
+    )
+    current[0] = replace(current[0], now_ms=current[0].now_ms + 1)
+    _landed_telemetry(relay, 2, current[0].now_ms)
     assert relay.current_state()["accepted_plan"] is None
