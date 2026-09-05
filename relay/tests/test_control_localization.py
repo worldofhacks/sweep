@@ -183,6 +183,19 @@ def test_mismatched_pins_and_unverified_webcam_shape_cannot_fall_back_to_telemet
     assert webcam.aircraft[1].position_quality == 0.0
 
 
+def test_missing_signature_or_non_boolean_eligibility_are_invalid_payloads():
+    evidence = store()
+    unsigned = payload()
+    del unsigned["signature"]
+    evidence.ingest(unsigned, 1, 1, 101_000)
+    assert evidence.apply(make_snapshot(1, now_ms=101_000)).aircraft[1].position_quality == 0.0
+
+    invalid_boolean = payload()
+    invalid_boolean["control_eligible"] = "true"
+    evidence.ingest(invalid_boolean, 1, 1, 101_000)
+    assert evidence.apply(make_snapshot(1, now_ms=101_000)).aircraft[1].position_quality == 0.0
+
+
 def test_clock_uncertainty_and_capture_regression_are_loss_states():
     evidence = store()
     wire_payload = payload()
