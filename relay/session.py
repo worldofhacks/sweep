@@ -500,6 +500,7 @@ class RelaySession:
                         detail=sink_result.detail,
                     )
                 )
+
         pending.events = events
         return events
 
@@ -679,7 +680,7 @@ class RelaySession:
 
     def prepare_resume(self, intent_id: str | None = None) -> _ResumeWork | None:
         """Claim queued completion work while the runtime owns its session operation."""
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             for index, work in enumerate(self._resume_continuations):
                 if intent_id is None or work.acknowledgement.intent_id == intent_id:
@@ -727,6 +728,8 @@ class RelaySession:
         """Commit owned results for publication in the same runtime operation."""
         with self._lock, self._audit_operation(operation_id=work.operation_id):
             self._ensure_mutation_usable()
+            self._remember_intent(work.acknowledgement.intent_id)
+            self._remember_resume(work)
             committed = (
                 self.intent_sink.commit_resume(work.token, outcome) if work.phased else outcome
             )
@@ -838,6 +841,7 @@ class RelaySession:
                 raise ValueError("expected a safety stop for this session")
             if intent.intent_id in self._intents:
                 raise ValueError("duplicate safety intent_id")
+            self._remember_intent(intent.intent_id)
             self._intents[intent.intent_id] = _IntentLedgerEntry(
                 status=LifecycleStatus.ACCEPTED,
                 selection=intent.selection,
@@ -1376,6 +1380,9 @@ class RelaySession:
         )
 
         pending = self._pending_intents.get(intent_id)
+        acknowledgements = None if pending is None else pending.acknowledgements.copy()
+        queue = self._acknowledgements.get(intent_id)
+        queued = None if queue is None else queue.copy()
 
         def undo_intent() -> None:
             if before is None:
@@ -1385,10 +1392,35 @@ class RelaySession:
             if pending is None:
                 self._pending_intents.pop(intent_id, None)
             else:
+                assert acknowledgements is not None
+                pending.acknowledgements[:] = acknowledgements
                 self._pending_intents[intent_id] = pending
+            if queue is None:
+                self._acknowledgements.pop(intent_id, None)
+            else:
+                assert queued is not None
+                queue[:] = queued
+                self._acknowledgements[intent_id] = queue
 
         assert self._audit_undo is not None
         self._audit_undo.append(undo_intent)
+
+    def _remember_resume(self, work: _ResumeWork) -> None:
+        token = work.token
+        blocked_ids = work.blocked_ids.copy()
+        resuming = self._resuming_intents.copy()
+        continuations = self._resume_continuations.copy()
+
+        def undo_resume() -> None:
+            work.token = token
+            work.blocked_ids.clear()
+            work.blocked_ids.update(blocked_ids)
+            self._resuming_intents.clear()
+            self._resuming_intents.update(resuming)
+            self._resume_continuations[:] = continuations
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_resume)
 
     def _append_audit(self, event: Mapping[str, object]) -> dict[str, object]:
         self._ensure_mutation_usable()

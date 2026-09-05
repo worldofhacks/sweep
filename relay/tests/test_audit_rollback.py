@@ -170,3 +170,31 @@ def test_execution_result_audit_failure_restores_projection_without_permitting_r
             intent_payload(intent_id="retry", retry_of="intent-1"), console_principal
         )
     assert calls == ["adapter-io"]
+
+
+@pytest.mark.parametrize("failure_at", ["begin_operation", "append_batch"])
+@pytest.mark.parametrize("stop_name", ["hold", "estop"])
+def test_disk_full_does_not_leave_unaudited_safety_stop_ownership(
+    relay_session: RelaySession,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_at: str,
+    stop_name: str,
+) -> None:
+    from relay.intent_v1 import AcceptedIntent, validate_intent
+
+    raw = intent_payload(intent_id="safety:controller-stop")
+    raw.update(name=stop_name, selection=[1] if stop_name == "hold" else [])
+    validated = validate_intent(raw)
+    assert isinstance(validated, AcceptedIntent)
+    before = snapshot(relay_session)
+
+    def disk_full(*args: object, **kwargs: object) -> None:
+        raise AuditLogError("disk full")
+
+    monkeypatch.setattr(relay_session.audit_log, failure_at, disk_full)
+    with pytest.raises(AuditLogError, match="disk full"):
+        relay_session.admit_safety_stop(validated.intent)
+
+    assert snapshot(relay_session) == before
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        relay_session.admit_safety_stop(validated.intent)

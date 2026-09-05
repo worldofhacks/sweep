@@ -137,7 +137,7 @@ Each normalized event is one append-only JSONL record shaped as `{"seq": N, "eve
 
 Events from one relay operation are committed as a single audit batch. A per-session SQLite database in WAL mode records the pending operation before irreversible work begins and makes its events visible only when the whole operation completes. JSONL remains the public replay mirror with the same per-event record shape. An incomplete operation fences replay across restart.
 
-If an operation fails, the relay restores its registry, intent ledger, transport deduplication and counters to their prior values. Audit failures still fence the session because adapter side effects cannot be rolled back. Registry readers remain locked until the audit batch commits.
+If an operation fails, the relay restores its registry, intent ledger (including controller-generated stops), buffered early acknowledgements, transport deduplication and counters to their prior values. Audit failures still fence the session because adapter side effects cannot be rolled back. Registry readers remain locked until the audit batch commits.
 
 Control projection updates record their pending operation before changing any field. If copying a later field fails, the session rejects further mutations, state reads, and replay, including when a planner callback catches the original exception.
 
