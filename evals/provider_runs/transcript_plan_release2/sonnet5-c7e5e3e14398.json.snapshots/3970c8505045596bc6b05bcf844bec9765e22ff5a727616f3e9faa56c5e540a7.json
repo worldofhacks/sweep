@@ -1,0 +1,237 @@
+{
+  "entries": {
+    "26ab0f36c53781fc849a81b869addbe22646f49e2d8a8ff68ce9f0c1171b9a0b": {
+      "input_units": 3428,
+      "latency_ms": 2635,
+      "output_units": 125,
+      "payload": {
+        "detail": "\"This room\" is deictic and not resolvable to a cataloged room. Please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "447d027816f5dc8bee867a255f2c3e5bd6206595fc055c9d405130a4e76ece2b": {
+      "input_units": 3464,
+      "latency_ms": 8401,
+      "output_units": 174,
+      "payload": {
+        "detail": "Right in aircraft_relative frame is negative dy; 0.5m / step_m 0.5 = 1 step multiplier applied to selected drones 1,2.",
+        "intents": [
+          {
+            "args": {
+              "dx": 0,
+              "dy": -1
+            },
+            "mode": "indoor",
+            "name": "translate",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "711cf7d0ded7ef867d206164a48e27ec8cca67181e9760fdf8e03db45645c9f8": {
+      "input_units": 3422,
+      "latency_ms": 1837,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "859dc4b38a5a35ee4f4082c5557fd7517990bd61f6dccbd1e4e04101fc77cac7": {
+      "input_units": 3423,
+      "latency_ms": 2195,
+      "output_units": 90,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "a99dc356bf7d6a83d556bf54d68a670c5f7e3612e02d0d3c74d9f6eb5d42b6f9": {
+      "input_units": 3430,
+      "latency_ms": 2263,
+      "output_units": 96,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1,
+                2
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "af616a0f2e0e06aaed32fca5006357be7eead80e97ec422a237eaf40088b3581": {
+      "input_units": 3428,
+      "latency_ms": 2221,
+      "output_units": 92,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "b19ebf3f02332842f02167da2a26ee9ef38f630b09a1fe20649385bdeda81f96": {
+      "input_units": 3422,
+      "latency_ms": 2238,
+      "output_units": 90,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "be2135f05ab82a59c2120cb682ef7273a215e1e68efd843dc3984ef2daffab7b": {
+      "input_units": 3428,
+      "latency_ms": 2608,
+      "output_units": 145,
+      "payload": {
+        "detail": "Interpreted 'Lift off now' as takeoff command for the currently selected aircraft (1,2).",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "cc5f82c81293add67049b12a4a5b54df57c9345a9e747d97e07ab9095b5b3960": {
+      "input_units": 3428,
+      "latency_ms": 5772,
+      "output_units": 114,
+      "payload": {
+        "detail": "\"The room\" is a deictic reference; please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "cc890f02e6bdd82f3197458493036f0a16472b6fe6271e0a5a53009ec124cb28": {
+      "input_units": 3427,
+      "latency_ms": 1537,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "db7be6a7ffde2f15f4ef5d8e9de325432512f26e5e5845ca911014e93d455db6": {
+      "input_units": 3436,
+      "latency_ms": 4565,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "ddff7f3e4942755cd5c8b5b7aafaa2a9b040730647f13428f82b64072d9ffeee": {
+      "input_units": 3431,
+      "latency_ms": 2456,
+      "output_units": 117,
+      "payload": {
+        "detail": "\"Here\" is a deictic room reference; please specify which known room (e.g., living-room) to capture in.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "e9511ff054a49bf0314c79022b785b660027dbacda99bd09c7ca9deb79ec7a25": {
+      "input_units": 3426,
+      "latency_ms": 1578,
+      "output_units": 96,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1,
+                2
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-7",
+  "recorded_origin": "anthropic",
+  "version": 3
+}
