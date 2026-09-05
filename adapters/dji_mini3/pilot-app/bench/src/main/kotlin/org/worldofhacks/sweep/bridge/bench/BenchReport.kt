@@ -184,6 +184,7 @@ object BenchAnalysis {
                     }
                 }
                 RecordKind.NOTE -> record.string("text")?.let(notes::add)
+                RecordKind.PROBE -> notes.add("probe ${record.string("name") ?: "?"}: ${record.string("summary") ?: ""}")
             }
         }
         val jitter = if (rtts.size >= 2) rtts.zipWithNext { a, b -> abs(b - a).toDouble() }.average() else null

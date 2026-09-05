@@ -12,7 +12,9 @@ enum class RecordKind(val wire: String) {
     STICK_SENT("stick_sent"),
     TELEMETRY("telemetry"),
     VIDEO_FRAME("video_frame"),
-    NOTE("note");
+    NOTE("note"),
+    /** Issue #85 first-flight probe entries (axis probe results, drill transitions, operator sign-off). */
+    PROBE("probe");
 
     companion object {
         fun fromWire(value: String): RecordKind? = entries.firstOrNull { it.wire == value }
@@ -68,6 +70,11 @@ class BenchRecorder(private val sink: Appendable, private val clock: Clock) {
 
     fun note(text: String) {
         write(RecordKind.NOTE, clock.nowMs(), "text" to text)
+    }
+
+    /** One #85 probe entry: a `name`, a display `summary`, and structured fields for analysis. */
+    fun probe(name: String, summary: String, vararg fields: Pair<String, Any?>) {
+        write(RecordKind.PROBE, clock.nowMs(), "name" to name, "summary" to summary, *fields)
     }
 
     val pendingCommands: Set<String>
