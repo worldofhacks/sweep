@@ -83,13 +83,13 @@ def _compiled_command(current, router, relay, name, intent_id):
     return prepared
 
 
-def _ack(relay, current, command, status, *, timestamp=None):
+def _ack(relay, current, command, status, *, timestamp=None, event_id=None):
     return relay.process_frame(
         {
             "v": 1,
             "t": current[0].now_ms if timestamp is None else timestamp,
             "type": "acknowledgement",
-            "event_id": f"{command.command_id}-{status}",
+            "event_id": event_id or f"{command.command_id}-{status}",
             "session": relay.session_id,
             "intent_id": command.intent_id,
             "command_id": command.command_id,
@@ -545,4 +545,58 @@ def test_async_partial_hold_completion_restores_retained_landing_projection(
     )
     current[0] = replace(current[0], now_ms=current[0].now_ms + 1)
     _landed_telemetry(relay, 2, current[0].now_ms)
+    assert relay.current_state()["accepted_plan"] is None
+
+
+@pytest.mark.parametrize("landing_session", [3], indirect=True)
+def test_failed_recovery_preserves_viable_hold_and_allows_later_fleet_stop(
+    landing_session, monkeypatch
+):
+    current, flight, router, relay = landing_session
+    land = flight.land
+    hover = flight.hover
+    monkeypatch.setattr(
+        flight,
+        "land",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in land(ids)),
+    )
+    landing = _compiled_command(current, router, relay, "land_all", "failed-recovery-owner")
+    first, second, _ = landing.execution.plan.commands
+    _ack(relay, current, first, "completed")
+    current[0] = replace(current[0], selection=(3,))
+    relay.update_control_projection(selection=(3,))
+    monkeypatch.setattr(
+        flight,
+        "hover",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+    )
+    suffix = _compiled_command(current, router, relay, "hold", "viable-suffix")
+    monkeypatch.setattr(
+        flight,
+        "hover",
+        lambda ids: tuple(replace(ack, status=LifecycleStatus.FAILED) for ack in hover(ids)),
+    )
+    _ack(relay, current, second, "failed")
+    assert "viable-suffix" in router._running
+    assert "failed-recovery-owner" in router._running
+    calls = list(flight.calls)
+    repeated = _ack(relay, current, second, "failed", event_id="fresh-event-repeated-terminal-ack")
+    assert not any(event["type"] == "refusal" for event in repeated)
+    assert flight.calls == calls
+    assert "viable-suffix" in router._running
+    assert "failed-recovery-owner" in router._running
+    _attempt_fresh_motion(current, router, relay)
+    _ack(relay, current, suffix.execution.plan.commands[0], "completed")
+    assert "viable-suffix" not in router._running
+    monkeypatch.setattr(flight, "hover", hover)
+    current[0] = replace(current[0], selection=(1,))
+    relay.update_control_projection(selection=(1,))
+    _compiled_command(current, router, relay, "hold", "partial-successful-stop")
+    assert "safety:ambiguous:failed-recovery-owner" in router._running
+    assert "failed-recovery-owner" in router._running
+    assert relay.current_state()["accepted_plan"] is not None
+    current[0] = replace(current[0], selection=(1, 2, 3))
+    relay.update_control_projection(selection=(1, 2, 3))
+    _compiled_command(current, router, relay, "hold", "successful-fleet-stop")
+    assert not router._running
     assert relay.current_state()["accepted_plan"] is None

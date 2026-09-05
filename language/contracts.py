@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from math import isfinite
+from math import cos, isfinite, radians, sin
 from types import MappingProxyType
 from typing import Literal
 
@@ -643,6 +643,26 @@ def _validate_proposed_intent(
         )
     ):
         return None
+    if result.intent.name is IntentName.TRANSLATE:
+        dx = float(result.intent.args["dx"]) * facts.translation_step_m
+        dy = float(result.intent.args["dy"]) * facts.translation_step_m
+        if not isfinite(dx) or not isfinite(dy):
+            return None
+        for drone_id in result.intent.selection:
+            drone = known[drone_id]
+            if facts.translation_frame == "aircraft_relative":
+                angle = radians(drone["heading_deg"])
+                world_dx = dx * cos(angle) - dy * sin(angle)
+                world_dy = dx * sin(angle) + dy * cos(angle)
+            else:
+                world_dx, world_dy = dx, dy
+            if not isfinite(world_dx) or not isfinite(world_dy):
+                return None
+            position = drone["position"]
+            if position is not None and (
+                not isfinite(position[0] + world_dx) or not isfinite(position[1] + world_dy)
+            ):
+                return None
     if result.intent.name in {
         IntentName.ARM,
         IntentName.DISARM,

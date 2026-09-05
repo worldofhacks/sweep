@@ -1,4 +1,5 @@
 from dataclasses import replace
+from sys import float_info
 
 import pytest
 
@@ -78,3 +79,57 @@ def test_representable_model_arguments_retain_their_values(number):
 
     assert outcome.kind is OutcomeKind.PLAN
     assert dict(outcome.intents[0].args) == args
+
+
+@pytest.mark.parametrize(
+    ("dx", "dy", "step", "heading", "position"),
+    [
+        (float_info.max, 0.0, 2.0, 0.0, 0.0),
+        (
+            float_info.max,
+            -float_info.max,
+            1.0,
+            45.0,
+            0.0,
+        ),
+        (
+            float_info.max,
+            0.0,
+            1.0,
+            0.0,
+            float_info.max,
+        ),
+    ],
+    ids=["scaled", "rotated", "target-addition"],
+)
+def test_finite_arguments_cannot_overflow_derived_translation(dx, dy, step, heading, position):
+    facts = _facts()
+    facts = replace(
+        facts,
+        translation_frame="aircraft_relative",
+        translation_step_m=step,
+        drones=tuple(
+            {**drone, "heading_deg": heading, "position": (position, 0.0, 1.0)}
+            for drone in facts.drones
+        ),
+    )
+    outcome = validate_model_outcome(
+        {
+            "kind": "plan",
+            "intents": [
+                {
+                    "name": "translate",
+                    "args": {"dx": dx, "dy": dy},
+                    "selection": [1, 2],
+                    "mode": "indoor",
+                }
+            ],
+        },
+        facts,
+        capture_id=lambda _: "unused",
+        source="synthetic",
+        transcript="Move as requested.",
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT

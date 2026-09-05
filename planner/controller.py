@@ -395,7 +395,11 @@ class PreparedExecutionRouter:
                     session,
                 )
         events.extend(session.record_execution_result(safety_intent, safety))
-        if intent.name in {IntentName.HOLD, IntentName.LAND, IntentName.LAND_ALL}:
+        if intent.name in {
+            IntentName.HOLD,
+            IntentName.LAND,
+            IntentName.LAND_ALL,
+        } and safety.status in {LifecycleStatus.EXECUTING, LifecycleStatus.COMPLETED}:
             # The registered recovery owns every target even while its suffix is pending.
             events.extend(
                 self._retire_held_motion(
@@ -516,10 +520,22 @@ class PreparedExecutionRouter:
                                 command.drone_id for command in prepared.plan.commands
                             )
                         )
-                        or held_aircraft.intersection(
-                            ack.drone_id
-                            for ack in pending.acknowledgements
-                            if ack.status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}
+                        or (
+                            prepared.intent.name is IntentName.HOLD
+                            and pending.status
+                            in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
+                            and held_aircraft.issuperset(
+                                command.drone_id for command in prepared.plan.commands
+                            )
+                        )
+                        or (
+                            pending.status is LifecycleStatus.EXECUTING
+                            and held_aircraft.intersection(
+                                ack.drone_id
+                                for ack in pending.acknowledgements
+                                if ack.status
+                                in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}
+                            )
                         )
                     )
                     and not (
@@ -925,9 +941,24 @@ class PreparedExecutionRouter:
                 events = self._retain_ambiguous_stop(
                     prepared.intent, pending, session, prepared.snapshot
                 )
-                self._running.pop(intent_id, None)
-                self._pending_landings.pop(intent_id, None)
-                self._landing_ack_times.pop(intent_id, None)
+                recovery = self._running.get(f"safety:ambiguous:{intent_id}")
+                if recovery is None or recovery[1].status is LifecycleStatus.EXECUTING:
+                    self._running.pop(intent_id, None)
+                    self._pending_landings.pop(intent_id, None)
+                    self._landing_ack_times.pop(intent_id, None)
+                else:
+                    pending = replace(
+                        pending,
+                        acknowledgements=tuple(
+                            terminal_ack if ack.command_id == command_id else ack
+                            for ack in pending.acknowledgements
+                        ),
+                    )
+                    self._running[intent_id] = (prepared, pending, session)
+                    self._pending_landings[intent_id] = (
+                        max(landing[0], acknowledgement.t),
+                        landing[1],
+                    )
                 events += self._restore_active_projection(session)
                 return RelayExecution(pending, events)
         return self.resume(intent_id, terminal_ack, completed_at_ms=acknowledgement.t)
