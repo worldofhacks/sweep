@@ -618,7 +618,7 @@ class NavigationPlanner:
         start_cell, goal_cell = level.cell_for(start), level.cell_for(goal)
         if not level.free(start_cell) or not level.free(goal_cell):
             return None
-        cells = self._astar(level, start_cell, goal_cell, reserved, radius)
+        cells = self._astar(level, start_cell, goal_cell, reserved, radius, start)
         if cells is None:
             return None
         points = [start, *(level.pose_for(cell) for cell in cells[1:-1]), goal]
@@ -667,6 +667,7 @@ class NavigationPlanner:
         goal: tuple[int, int],
         reserved: list[tuple[Pose, float]],
         radius: float,
+        exempt: Pose,
     ) -> list[tuple[int, int]] | None:
         frontier = [(0.0, 0.0, start)]
         parents: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
@@ -685,6 +686,10 @@ class NavigationPlanner:
                     continue
                 pose = level.pose_for(candidate)
                 if self._blocked_by_stationary(pose, reserved, radius):
+                    continue
+                if self._segment_hits_reservation(
+                    level.pose_for(current), pose, reserved, radius, exempt
+                ):
                     continue
                 candidate_cost = cost + 1.0
                 if candidate_cost >= costs.get(candidate, float("inf")):
