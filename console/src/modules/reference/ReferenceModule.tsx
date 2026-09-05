@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { Pane, type PaneTab } from '../../shell/Pane'
+import { ConfigModule } from '../config/ConfigModule'
+import { ConnectivityModule } from '../connectivity/ConnectivityModule'
 import { EmptyModule } from '../shared'
+import type { ModuleProps } from '../types'
+import { StatesGallery } from './StatesGallery'
 
 type ReferenceTab = 'mission' | 'health' | 'config' | 'ledger' | 'map' | 'gallery'
 
@@ -46,7 +50,12 @@ const SECTIONS: Record<ReferenceTab, { title: string; note: string; what: string
   },
 }
 
-export function ReferenceModule() {
+/**
+ * The Reference group: Health is the Connectivity module, Config is the
+ * Configuration module, States is the vocabulary gallery. Mission, Ledger and
+ * Map stay honest empties until the relay feeds them.
+ */
+export function ReferenceModule(props: ModuleProps) {
   const [tab, setTab] = useState<ReferenceTab>('mission')
   const section = SECTIONS[tab]
   return (
@@ -59,7 +68,15 @@ export function ReferenceModule() {
       tabsLabel="Reference sections"
       tabsVariant="reference"
     >
-      <EmptyModule what={section.what} />
+      {tab === 'health' ? (
+        <ConnectivityModule {...props} />
+      ) : tab === 'config' ? (
+        <ConfigModule {...props} />
+      ) : tab === 'gallery' ? (
+        <StatesGallery />
+      ) : (
+        <EmptyModule what={section.what} />
+      )}
     </Pane>
   )
 }

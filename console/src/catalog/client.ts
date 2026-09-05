@@ -13,6 +13,8 @@ export interface CatalogClient {
   stop(): void
   submitGeneration(roomId: string, bundle: BundleRef): Promise<void>
   retryGeneration(roomId: string): Promise<void>
+  /** Records phone photos added on the Worlds page for the manual fallback. */
+  addManualPhotos(roomId: string, count: number): Promise<void>
   /** Stages a capture's file set for download; resolves with the outcome sentence. */
   stageCaptureSet(captureId: string): Promise<string>
   exportCaptureMetadata(captureId: string): Promise<string>
@@ -53,6 +55,10 @@ export class UnreportedCatalogClient implements CatalogClient {
   }
 
   async retryGeneration(): Promise<void> {
+    throw new Error(CATALOG_UNREPORTED_REASON)
+  }
+
+  async addManualPhotos(): Promise<void> {
     throw new Error(CATALOG_UNREPORTED_REASON)
   }
 

@@ -395,6 +395,26 @@ export class FixtureCatalogClient implements CatalogClient {
     this.startJob(roomId, job.bundle)
   }
 
+  async addManualPhotos(roomId: string, count: number): Promise<void> {
+    this.requireLink()
+    const building = this.snapshot.building
+    if (!building || !building.rooms.some((room) => room.room_id === roomId)) {
+      throw new Error(`No room ${roomId} is catalogued; no photos were added.`)
+    }
+    this.snapshot = {
+      ...this.snapshot,
+      building: {
+        ...building,
+        rooms: building.rooms.map((room) =>
+          room.room_id === roomId
+            ? { ...room, manual_photos: room.manual_photos + Math.max(0, Math.floor(count)) }
+            : room,
+        ),
+      },
+    }
+    this.emit()
+  }
+
   async stageCaptureSet(captureId: string): Promise<string> {
     this.requireLink()
     const capture = this.snapshot.captures?.find((item) => item.capture_id === captureId)
@@ -460,7 +480,7 @@ export class FixtureCatalogClient implements CatalogClient {
 
   private startJob(roomId: string, bundle: BundleRef): void {
     this.sequence += 1
-    const operationId = `op_${String(0x8f31c2 + this.sequence * 0x1d3).toString(16)}`
+    const operationId = `op_${(0x8f31c2 + this.sequence * 0x1d3).toString(16)}`
     const worldId = `wld_${7742 + this.sequence * 61}`
     this.setJob(roomId, {
       room_id: roomId,
