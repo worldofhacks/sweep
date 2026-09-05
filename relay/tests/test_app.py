@@ -311,7 +311,7 @@ def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
 
     assert [event["type"] for event in events[:2]] == ["auth.accepted", "state"]
     assert events[1]["roster_version"] == 0
-    assert any(event["type"] == "state" and event["roster_version"] == 1 for event in events)
+    assert [event["roster_version"] for event in events if event["type"] == "membership"] == [1, 2]
     state_rosters = [event["roster_version"] for event in events if event["type"] == "state"]
     assert state_rosters[-1] == 2
     assert state_rosters == sorted(state_rosters)
@@ -373,7 +373,8 @@ def test_session_operations_publish_whole_batches_in_mutation_order(
         await asyncio.gather(first_operation, second_operation)
         joined = await joining_subscription
         queued_versions = [
-            int(existing.queue.get_nowait().event["roster_version"]) for _ in range(4)
+            int(existing.queue.get_nowait().event["roster_version"])
+            for _ in range(existing.queue.qsize())
         ]
         return (
             queued_versions,
@@ -383,7 +384,7 @@ def test_session_operations_publish_whole_batches_in_mutation_order(
 
     queued_versions, initial_roster, new_backlog = asyncio.run(exercise_race())
 
-    assert queued_versions == [1, 1, 2, 2]
+    assert queued_versions == [1, 2, 2]
     assert (initial_roster, new_backlog) == (2, 0)
 
 
@@ -429,10 +430,9 @@ def test_same_roster_operations_publish_in_mutation_order(
         await asyncio.gather(older, newer)
         return [
             bool(subscription.queue.get_nowait().event["estop"]),
-            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
-    assert asyncio.run(exercise_race()) == [False, True]
+    assert asyncio.run(exercise_race()) == [True]
 
 
 def test_cancelled_session_operation_finishes_publishing_before_releasing_order(
@@ -471,10 +471,9 @@ def test_cancelled_session_operation_finishes_publishing_before_releasing_order(
         )
         return [
             bool(subscription.queue.get_nowait().event["estop"]),
-            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
-    assert asyncio.run(exercise()) == [True, False]
+    assert asyncio.run(exercise()) == [False]
 
 
 def test_bad_authentication_is_refused_without_creating_a_session_log(

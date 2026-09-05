@@ -68,10 +68,9 @@ def test_cancelled_worker_finishes_mutation_and_publish_before_next_operation(
         await second
         return [
             bool(subscription.queue.get_nowait().event["estop"]),
-            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
-    assert asyncio.run(exercise()) == [True, False]
+    assert asyncio.run(exercise()) == [False]
 
 
 def test_cancelled_publish_waiting_for_connection_lock_keeps_session_order(
@@ -108,10 +107,9 @@ def test_cancelled_publish_waiting_for_connection_lock_keeps_session_order(
         await second
         return [
             bool(subscription.queue.get_nowait().event["estop"]),
-            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
-    assert asyncio.run(exercise()) == [True, False]
+    assert asyncio.run(exercise()) == [False]
 
 
 def test_cancelled_cleanup_eventually_releases_adapter_binding(

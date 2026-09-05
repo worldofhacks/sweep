@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field, replace
 from threading import Lock, RLock
 
 from relay.audit import AuditLogError, SessionAuditLog
@@ -93,6 +93,7 @@ class _IntentLedgerEntry:
     status: LifecycleStatus
     selection: tuple[int, ...]
     command_statuses: dict[str, LifecycleStatus]
+    retryable: bool = True
 
 
 @dataclass(slots=True)
@@ -157,6 +158,7 @@ class RelaySession:
         self._replay_usable = True
         self._audit_batch: list[dict[str, object]] | None = None
         self._audit_operation_id: int | None = None
+        self._audit_undo: list[Callable[[], None]] | None = None
         self._lock = RLock()
 
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
@@ -263,13 +265,7 @@ class RelaySession:
                     )
                 ]
             if intent.retry_of is not None:
-                previous = self._intents.get(intent.retry_of)
-                retryable = {
-                    LifecycleStatus.REFUSED,
-                    LifecycleStatus.FAILED,
-                    LifecycleStatus.INVALIDATED,
-                }
-                if previous is None or previous.status not in retryable:
+                if not self._can_retry(intent.retry_of):
                     return [
                         self._refuse_intent(
                             raw,
@@ -293,6 +289,7 @@ class RelaySession:
                     )
                 ]
 
+            self._remember_intent(intent.intent_id)
             self._intents[intent.intent_id] = _IntentLedgerEntry(
                 status=LifecycleStatus.ACCEPTED,
                 selection=intent.selection,
@@ -302,6 +299,7 @@ class RelaySession:
             self._pending_intents[intent.intent_id] = _PendingIntent(
                 intent=intent,
             )
+
             event = acknowledgement_event(
                 t=now,
                 event_id=self.event_ids(),
@@ -416,6 +414,7 @@ class RelaySession:
                 return pending.events
             if pending.executing or pending.operation_id is not None:
                 return []
+            self._remember_intent(intent_id)
             self._pending_intents.pop(intent_id)
             self._acknowledgements.pop(intent_id, None)
             cancel = getattr(self.intent_sink, "cancel_intent", None)
@@ -433,7 +432,6 @@ class RelaySession:
     def _execute_pending(
         self, pending: _PendingIntent, sink: IntentSink
     ) -> list[dict[str, object]]:
-        intent_id = pending.intent.intent_id
         now = self.clock()
         with self._lock:
             if pending.events is not None:
@@ -453,21 +451,7 @@ class RelaySession:
                 self._ensure_mutation_usable()
                 if not isinstance(error, Exception):
                     raise
-                self._intents[intent_id].status = LifecycleStatus.REFUSED
-                self._log_intent(
-                    pending.intent,
-                    outcome=LifecycleStatus.REFUSED,
-                    reason="downstream_error",
-                    now=now,
-                )
-                return [
-                    self._refusal(
-                        intent_id=intent_id,
-                        reason="downstream_error",
-                        detail="the downstream intent consumer did not accept the request",
-                        now=now,
-                    )
-                ]
+                return [self._record_downstream_error(pending.intent, now)]
         with self._lock:
             return self._complete_pending(pending, sink_result, relay_events=events)
 
@@ -518,6 +502,32 @@ class RelaySession:
                 )
         pending.events = events
         return events
+
+    def _record_downstream_error(self, intent: IntentV1, now: int) -> dict[str, object]:
+        self._remember_intent(intent.intent_id)
+        entry = self._intents[intent.intent_id]
+        entry.retryable = False
+        if entry.status is LifecycleStatus.ACCEPTED:
+            entry.status = LifecycleStatus.REFUSED
+        self._log_intent(intent, outcome=entry.status, reason="downstream_error", now=now)
+        detail = "downstream execution is uncertain; this request cannot be retried"
+        if entry.status is LifecycleStatus.REFUSED:
+            return self._refusal(
+                intent_id=intent.intent_id, reason="downstream_error", detail=detail, now=now
+            )
+        event = acknowledgement_event(
+            t=now,
+            event_id=self.event_ids(),
+            session=self.session_id,
+            intent_id=intent.intent_id,
+            status=entry.status,
+            roster_version=self.registry.roster_version,
+            reason="downstream_error",
+            detail=detail,
+        )
+        self._append_audit(event)
+        self._metrics["acknowledgements"] += 1
+        return event
 
     def process_membership(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -777,6 +787,7 @@ class RelaySession:
                 reason=reason,
                 detail=detail,
             )
+            self._remember_intent(intent_id)
             self._transition_intent(entry, status)
             self._append_audit(event)
             self._metrics["acknowledgements"] += 1
@@ -810,6 +821,7 @@ class RelaySession:
                 connection_epoch=connection_epoch,
             )
             if intent_id is not None and intent_id in self._intents:
+                self._remember_intent(intent_id)
                 self._transition_intent(self._intents[intent_id], LifecycleStatus.REFUSED)
             self._append_audit(event)
             self._metrics["refused_intents"] += 1
@@ -1100,6 +1112,7 @@ class RelaySession:
 
     def _record_adapter_ack_fact(self, acknowledgement: AdapterAcknowledgement) -> None:
         """Retain command facts; only the autonomy owner terminalizes an intent."""
+        self._remember_intent(acknowledgement.intent_id)
         entry = self._intents[acknowledgement.intent_id]
         entry.command_statuses[acknowledgement.command_id] = acknowledgement.status
 
@@ -1131,6 +1144,16 @@ class RelaySession:
         previous_t = self._last_transport_t.get(key)
         if previous_t is not None and timestamp < previous_t:
             raise ContractError("out_of_order_event", "event timestamp precedes the prior event")
+
+        def undo_claim() -> None:
+            self._seen_transport_event_ids.discard(event_id)
+            if previous_t is None:
+                self._last_transport_t.pop(key, None)
+            else:
+                self._last_transport_t[key] = previous_t
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_claim)
         self._seen_transport_event_ids.add(event_id)
         self._last_transport_t[key] = timestamp
 
@@ -1169,12 +1192,25 @@ class RelaySession:
             now=now,
         )
         if intent_id is not None and add_to_ledger and intent_id not in self._intents:
+            retry_of = _safe_string_field(raw, "retry_of")
+            self._remember_intent(intent_id)
             self._intents[intent_id] = _IntentLedgerEntry(
                 status=LifecycleStatus.REFUSED,
                 selection=() if normalized is None else normalized.selection,
                 command_statuses={},
+                retryable=reason != "invalid_retry"
+                and (retry_of is None or self._can_retry(retry_of)),
             )
         return self._refusal(intent_id=intent_id, reason=reason, detail=detail, now=now)
+
+    def _can_retry(self, intent_id: str) -> bool:
+        entry = self._intents.get(intent_id)
+        return (
+            entry is not None
+            and entry.retryable
+            and entry.status
+            in {LifecycleStatus.REFUSED, LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
+        )
 
     def _refusal(
         self, *, intent_id: str | None, reason: str, detail: str, now: int
@@ -1289,28 +1325,70 @@ class RelaySession:
         if outermost:
             self._audit_batch = []
             self._audit_operation_id = operation_id
+        registry_transaction = self.registry.transaction() if outermost else nullcontext()
+        with registry_transaction, self._rollback_session_state(outermost):
+            try:
+                yield
+                batch = self._audit_batch
+                if outermost and (batch or self._audit_operation_id is not None):
+                    assert batch is not None
+                    self._commit_audit_batch(batch)
+            except BaseException as error:
+                if (
+                    self._audit_batch
+                    or self._audit_operation_id is not None
+                    or isinstance(error, AuditLogError)
+                ):
+                    self._mutation_usable = False
+                    self._projection_usable = False
+                    self._replay_usable = False
+                    if self._audit_operation_id is not None:
+                        self.audit_log.abandon_operation(self._audit_operation_id)
+                raise
+            finally:
+                if outermost:
+                    self._audit_batch = None
+                    self._audit_operation_id = None
+
+    @contextmanager
+    def _rollback_session_state(self, outermost: bool) -> Iterator[None]:
+        if not outermost:
+            yield
+            return
+        before_metrics = self._metrics.copy()
+        self._audit_undo = []
         try:
             yield
-            batch = self._audit_batch
-            if outermost and (batch or self._audit_operation_id is not None):
-                assert batch is not None
-                self._commit_audit_batch(batch)
-        except BaseException as error:
-            if (
-                self._audit_batch
-                or self._audit_operation_id is not None
-                or isinstance(error, AuditLogError)
-            ):
-                self._mutation_usable = False
-                self._projection_usable = False
-                self._replay_usable = False
-                if self._audit_operation_id is not None:
-                    self.audit_log.abandon_operation(self._audit_operation_id)
+        except BaseException:
+            for undo in reversed(self._audit_undo):
+                undo()
+            self._metrics = before_metrics
             raise
         finally:
-            if outermost:
-                self._audit_batch = None
-                self._audit_operation_id = None
+            self._audit_undo = None
+
+    def _remember_intent(self, intent_id: str) -> None:
+        entry = self._intents.get(intent_id)
+        before = (
+            None
+            if entry is None
+            else replace(entry, command_statuses=entry.command_statuses.copy())
+        )
+
+        pending = self._pending_intents.get(intent_id)
+
+        def undo_intent() -> None:
+            if before is None:
+                self._intents.pop(intent_id, None)
+            else:
+                self._intents[intent_id] = before
+            if pending is None:
+                self._pending_intents.pop(intent_id, None)
+            else:
+                self._pending_intents[intent_id] = pending
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_intent)
 
     def _append_audit(self, event: Mapping[str, object]) -> dict[str, object]:
         self._ensure_mutation_usable()

@@ -32,6 +32,8 @@ IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
 _LOGGER = logging.getLogger(__name__)
 ShutdownCallback = Callable[[], None]
+_OUTBOUND_LIMIT = 128
+_CLOSE_TIMEOUT_SECONDS = 1.0
 
 
 @dataclass(eq=False, slots=True)
@@ -40,9 +42,37 @@ class _Subscription:
     principal: Principal
     initial_state: dict[str, object]
     roster_version: int
-    queue: asyncio.Queue[_Outbound] = field(default_factory=asyncio.Queue)
+    queue: asyncio.Queue[_Outbound] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=_OUTBOUND_LIMIT)
+    )
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sender_failed: asyncio.Event = field(default_factory=asyncio.Event)
+    overflowed: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def enqueue(self, outbound: _Outbound) -> None:
+        if self.overflowed.is_set() or self.sender_failed.is_set():
+            if outbound.delivered is not None and not outbound.delivered.done():
+                outbound.delivered.set_result(False)
+            return
+        if outbound.event.get("type") == "state":
+            retained = []
+            while not self.queue.empty():
+                pending = self.queue.get_nowait()
+                self.queue.task_done()
+                if (
+                    pending.event.get("type") != "state"
+                    or pending.delivered is not None
+                    or pending.event.get("invalidation_reason") is not None
+                ):
+                    retained.append(pending)
+            for pending in retained:
+                self.queue.put_nowait(pending)
+        try:
+            self.queue.put_nowait(outbound)
+        except asyncio.QueueFull:
+            self.overflowed.set()
+            if outbound.delivered is not None and not outbound.delivered.done():
+                outbound.delivered.set_result(False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,7 +514,7 @@ class RelayRuntime:
                     )
                     if delivered is not None:
                         deliveries.append(delivered)
-                    subscription.queue.put_nowait(_Outbound(event, delivered))
+                    subscription.enqueue(_Outbound(event, delivered))
         if deferred_deliveries is not None:
             deferred_deliveries.extend(deliveries)
             return bool(deliveries) or wait_for_connection_id is None
@@ -756,13 +786,17 @@ def create_app(
                         runtime._track_background_operation(execution)
         except WebSocketDisconnect:
             pass
+        except (RuntimeError, OSError):
+            await _close_failed_socket(websocket, code=1011)
         except AuditLogError:
             with contextlib.suppress(WebSocketDisconnect, RuntimeError):
                 await websocket.close(code=1011)
         finally:
             if sender is not None:
                 sender.cancel()
-                with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
+                with contextlib.suppress(
+                    asyncio.CancelledError, WebSocketDisconnect, RuntimeError, OSError
+                ):
                     await sender
             await runtime.cleanup_connection(session_id, session, principal, subscription)
 
@@ -805,37 +839,59 @@ def create_app(
     return application
 
 
+async def _close_failed_socket(websocket: WebSocket, *, code: int) -> None:
+    with contextlib.suppress(TimeoutError, WebSocketDisconnect, RuntimeError, OSError):
+        await asyncio.wait_for(websocket.close(code=code), timeout=_CLOSE_TIMEOUT_SECONDS)
+
+
 async def _send_events(websocket: WebSocket, subscription: _Subscription) -> None:
+    worker = asyncio.create_task(_send_outbound(websocket, subscription))
+    overflow = asyncio.create_task(subscription.overflowed.wait())
     try:
-        while True:
-            outbound = await subscription.queue.get()
-            sent = False
-            try:
-                async with subscription.send_lock:
-                    await websocket.send_json(outbound.event)
-                sent = True
-            finally:
-                if outbound.delivered is not None and not outbound.delivered.done():
-                    outbound.delivered.set_result(sent)
+        done, _ = await asyncio.wait({worker, overflow}, return_when=asyncio.FIRST_COMPLETED)
+        if overflow in done:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+            await _close_failed_socket(websocket, code=1013)
+            raise WebSocketDisconnect(code=1013)
+        await worker
     finally:
+        worker.cancel()
+        overflow.cancel()
+        await asyncio.gather(worker, overflow, return_exceptions=True)
         subscription.sender_failed.set()
         while not subscription.queue.empty():
             outbound = subscription.queue.get_nowait()
+            subscription.queue.task_done()
             if outbound.delivered is not None and not outbound.delivered.done():
                 outbound.delivered.set_result(False)
 
 
+async def _send_outbound(websocket: WebSocket, subscription: _Subscription) -> None:
+    while True:
+        outbound = await subscription.queue.get()
+        sent = False
+        try:
+            async with subscription.send_lock:
+                await websocket.send_json(outbound.event)
+            sent = True
+        finally:
+            subscription.queue.task_done()
+            if outbound.delivered is not None and not outbound.delivered.done():
+                outbound.delivered.set_result(sent)
+
+
 async def _receive_or_sender_failure(websocket: WebSocket, sender: asyncio.Task[None]) -> object:
     receive = asyncio.create_task(websocket.receive_json())
-    done, _ = await asyncio.wait({receive, sender}, return_when=asyncio.FIRST_COMPLETED)
-    if sender in done:
-        receive.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await receive
-        with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
+    try:
+        done, _ = await asyncio.wait({receive, sender}, return_when=asyncio.FIRST_COMPLETED)
+        if sender in done:
             await sender
-        raise WebSocketDisconnect(code=1006)
-    return await receive
+            raise WebSocketDisconnect(code=1006)
+        return await receive
+    finally:
+        receive.cancel()
+        await asyncio.gather(receive, return_exceptions=True)
 
 
 def _log_background_failure(task: asyncio.Task[object]) -> None:

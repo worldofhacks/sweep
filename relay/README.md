@@ -93,7 +93,7 @@ Telemetry and adapter acknowledgements rely on the authenticated drone binding a
 
 Adapter command acknowledgements are audit facts; they never complete the overall intent. The autonomy owner reports the terminal intent result through `RelaySession.record_lifecycle`. Lifecycle values are exactly `accepted`, `refused`, `executing`, `completed`, `failed`, and `invalidated`. Reasons are machine-readable snake_case; detail is display-only.
 
-An Intent v1 request is acknowledged as `accepted` only after the configured `intent_sink_factory` hands it to a planner/arbiter consumer. The standalone relay intentionally returns `downstream_unavailable`; it never claims that Hold, E-stop, or another action entered an execution path when no consumer is configured. A sink exception produces a terminal `downstream_error` refusal and matching replay records.
+An Intent v1 request is acknowledged as `accepted` only after the configured `intent_sink_factory` hands it to a planner/arbiter consumer. The standalone relay intentionally returns `downstream_unavailable`; it never claims that Hold, E-stop, or another action entered an execution path when no consumer is configured. A sink exception records `downstream_error` and blocks retries of that request, including retry chains through invalid requests, because adapter I/O may already have occurred. Already-recorded execution or terminal lifecycle evidence is preserved. Explicit pre-dispatch refusals remain retryable; a fresh E-stop is still available.
 
 Coordinated dispatch creates a durable operation marker for every delivered group member before adapter I/O. The relay commits each member's outcome and includes sibling lifecycle evidence in the coordinator's response, so a sibling worker can retrieve its result without repeating adapter work. An interruption before those outcomes commit leaves replay fail-closed.
 
@@ -109,7 +109,7 @@ Every accepted membership transition is immediately followed, in the same ordere
 
 `graceful_leave` defaults closed. Integration must provide `leave_authorizer_factory` to `create_app`; its per-session callback receives `(drone_id, connection_epoch, current_state)` and returns true only after the autonomy path proves landed, disarmed, and task-free. Without that approval, the relay emits `graceful_leave_not_authorized`. After approval, the registry atomically removes the aircraft from selection and clears pending confirmation and the accepted prior-roster plan while entering `leaving`. That membership event is followed by a one-shot state carrying `invalidated_intent_ids`, `invalidation_reason: "graceful_leave_roster_change"`, `prior_roster_version`, and `cleared_control_fields`; periodic states do not repeat this transition metadata. A socket closing without an authorized leave is recorded as unexpected loss.
 
-State is fanned out at 10 Hz. Its required top-level keys are:
+State is fanned out at 10 Hz. Each connection keeps the latest replaceable state snapshot and at most 128 queued events. Invalidation metadata, delivery-tracked states and other one-shot events retain their order; overflow closes the slow connection with code 1013. A sender failure closes the connection and releases its subscription and adapter binding. Its required top-level keys are:
 
 ```text
 v, t, type="state", event_id, session, roster_version, armed, estop,
@@ -136,6 +136,8 @@ Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, 
 Each normalized event is one append-only JSONL record shaped as `{"seq": N, "event": {...}}`, with a contiguous per-session sequence. Session names are SHA-256 hashed for filenames under `SWEEP_SESSION_LOG_DIR`. Any attempt to log a token, signature, authorization value, credential, password, or secret is rejected recursively.
 
 Events from one relay operation are committed as a single audit batch. A per-session SQLite database in WAL mode records the pending operation before irreversible work begins and makes its events visible only when the whole operation completes. JSONL remains the public replay mirror with the same per-event record shape. An incomplete operation fences replay across restart.
+
+If an operation fails, the relay restores its registry, intent ledger, transport deduplication and counters to their prior values. Audit failures still fence the session because adapter side effects cannot be rolled back. Registry readers remain locked until the audit batch commits.
 
 Control projection updates record their pending operation before changing any field. If copying a later field fails, the session rejects further mutations, state reads, and replay, including when a planner callback catches the original exception.
 

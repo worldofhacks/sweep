@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from threading import RLock
 
 from relay.contracts import (
@@ -102,6 +104,38 @@ class FleetRegistry:
         self._pending: dict[str, object] | None = None
         self._accepted_plan: dict[str, object] | None = None
         self._lock = RLock()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Hold registry readers until the caller commits; restore state on failure."""
+        with self._lock:
+            before = (
+                {
+                    drone_id: replace(record, history=record.history.copy())
+                    for drone_id, record in self._aircraft.items()
+                },
+                self._roster_version,
+                self._state_sequence,
+                self._selection,
+                self._armed,
+                self._estop,
+                self._pending,
+                self._accepted_plan,
+            )
+            try:
+                yield
+            except BaseException:
+                (
+                    self._aircraft,
+                    self._roster_version,
+                    self._state_sequence,
+                    self._selection,
+                    self._armed,
+                    self._estop,
+                    self._pending,
+                    self._accepted_plan,
+                ) = before
+                raise
 
     @property
     def roster_version(self) -> int:
