@@ -1,0 +1,88 @@
+{
+  "cases": [
+    {
+      "canonical": "{\"action\":\"join\",\"adapter_id\":\"dji_mini3\",\"capabilities\":[\"flight\",\"camera\"],\"drone_id\":1,\"event_id\":\"evt-join-1\",\"session\":\"session-a\",\"t\":1000,\"type\":\"membership\",\"v\":1}",
+      "key": "adapter-key-0123456789abcdef0123456789abcdef",
+      "name": "membership_join",
+      "signature": "c992fa018ab4d157cb5ce0df05917016ea6e9a0aba260c961522f07c724f5402",
+      "unsigned_event": {
+        "action": "join",
+        "adapter_id": "dji_mini3",
+        "capabilities": [
+          "flight",
+          "camera"
+        ],
+        "drone_id": 1,
+        "event_id": "evt-join-1",
+        "session": "session-a",
+        "t": 1000,
+        "type": "membership",
+        "v": 1
+      }
+    },
+    {
+      "canonical": "{\"action\":\"readiness\",\"connection_epoch\":1,\"control_authority\":true,\"drone_id\":1,\"event_id\":\"evt-ready-1\",\"home_pose_confirmed\":true,\"rc_safety_operator_present\":true,\"session\":\"session-a\",\"t\":1001,\"type\":\"membership\",\"v\":1}",
+      "key": "adapter-key-0123456789abcdef0123456789abcdef",
+      "name": "membership_readiness",
+      "signature": "21f7c2af25d64e49589edfdbf04f58f51b5ada8f831f2a53de49b8a1065155bf",
+      "unsigned_event": {
+        "action": "readiness",
+        "connection_epoch": 1,
+        "control_authority": true,
+        "drone_id": 1,
+        "event_id": "evt-ready-1",
+        "home_pose_confirmed": true,
+        "rc_safety_operator_present": true,
+        "session": "session-a",
+        "t": 1001,
+        "type": "membership",
+        "v": 1
+      }
+    },
+    {
+      "canonical": "{\"n\":[1,2.5,null,false],\"text\":\"ünïcödé 🚀\",\"type\":\"note\",\"v\":1}",
+      "key": "k",
+      "name": "unicode_event_short_key",
+      "signature": "462f1eea2dfd5bd3688239e95c6c88e7723882a0596b034f818ec6b6b3a1bfa9",
+      "unsigned_event": {
+        "n": [
+          1,
+          2.5,
+          null,
+          false
+        ],
+        "text": "ünïcödé 🚀",
+        "type": "note",
+        "v": 1
+      }
+    },
+    {
+      "canonical": "{\"args\":{\"speed\":0.5,\"x\":1.0,\"y\":2.5,\"z\":1.2},\"command_id\":\"cmd-1\",\"connection_epoch\":1,\"drone_id\":1,\"event_id\":\"evt-cmd-1\",\"intent_id\":\"intent-1\",\"issued_at\":4000,\"operation\":\"goto\",\"roster_version\":3,\"seq\":7,\"session\":\"session-a\",\"t\":4000,\"ttl_ms\":1500,\"type\":\"command\",\"v\":1}",
+      "key": "adapter-key-0123456789abcdef0123456789abcdef",
+      "name": "command",
+      "signature": "3f807e48f50d46a07d48ed65ae9d2bdb738ed6a375ed3c4c579fc820e0766e63",
+      "unsigned_event": {
+        "args": {
+          "speed": 0.5,
+          "x": 1.0,
+          "y": 2.5,
+          "z": 1.2
+        },
+        "command_id": "cmd-1",
+        "connection_epoch": 1,
+        "drone_id": 1,
+        "event_id": "evt-cmd-1",
+        "intent_id": "intent-1",
+        "issued_at": 4000,
+        "operation": "goto",
+        "roster_version": 3,
+        "seq": 7,
+        "session": "session-a",
+        "t": 4000,
+        "ttl_ms": 1500,
+        "type": "command",
+        "v": 1
+      }
+    }
+  ]
+}

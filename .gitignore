@@ -26,3 +26,13 @@ node_modules/
 
 # Media
 recordings/
+
+# Android and Gradle (adapters/dji_mini3/pilot-app)
+.gradle/
+.kotlin/
+local.properties
+*.apk
+*.aab
+*.iml
+captures/
+.cxx/
