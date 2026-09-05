@@ -164,9 +164,8 @@ def test_nonterminal_and_malformed_acknowledgements_do_not_prepare_resume(
         monkeypatch.setattr(session, "process_acknowledgement", ordered_receipt)
         monkeypatch.setattr(session, "prepare_resume", unexpected_prepare)
         events = await runtime.process_acknowledgement_and_publish(SESSION, session, raw, adapter)
-        if status == "malformed":
-            assert events[0]["reason"] == "invalid_acknowledgement"
-        else:
-            assert events[0]["status"] == status
+        assert events[0]["reason"] == (
+            "invalid_acknowledgement" if status == "malformed" else "unknown_command_id"
+        )
 
     asyncio.run(exercise())

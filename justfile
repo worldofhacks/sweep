@@ -42,6 +42,17 @@ console:
 media:
     docker compose up mediamtx
 
+# Run the relay with the planner, arbiter, and the SWEEP_ADAPTER_BACKEND adapters; reads .env
+relay host="127.0.0.1" port="8000": _dotenv
+    uv run --env-file .env python -m relay.main --host {{host}} --port {{port}}
+
+# Connect a fake bridge node to a running relay (Ctrl-C stops it); reads .env credentials
+fake-node drone_id="1" session="demo" relay="ws://127.0.0.1:8000": _dotenv
+    uv run --env-file .env python -m adapters.dji_mini3.fake_node --drone-id {{drone_id}} --session {{session}} --relay {{relay}}
+
+_dotenv:
+    @test -f .env || { echo "copy .env.example to .env and fill in SWEEP_RELAY_TOKEN first"; exit 1; }
+
 # Requires a prior: glab auth login --hostname labs.gauntletai.com
 # Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main
 gitlab-remote:
