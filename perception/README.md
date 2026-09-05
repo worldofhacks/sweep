@@ -51,3 +51,6 @@ the selected map and geometry, measured camera/body calibration, source identiti
 clock provenance, and recorded physical evidence. Signed transport, relay/arbiter
 wiring, active-tag coverage drills, and real flight approval remain outside this
 component.
+
+The bounded COCO detector and its event payloads are documented in
+[OBJECT_DETECTION.md](OBJECT_DETECTION.md).
