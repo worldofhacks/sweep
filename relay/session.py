@@ -26,6 +26,7 @@ from relay.contracts import (
 from relay.intent_v1 import (
     REGISTERED_SOURCES,
     AcceptedIntent,
+    IntentName,
     IntentV1,
     RejectedIntent,
     validate_intent,
@@ -34,7 +35,7 @@ from relay.state import FleetRegistry, MembershipTransition, RegistryError
 
 Clock = Callable[[], int]
 EventIdFactory = Callable[[], str]
-IntentSink = Callable[[IntentV1, dict[str, object]], None]
+IntentSink = Callable[[IntentV1, dict[str, object]], object]
 LeaveAuthorizer = Callable[[int, int, dict[str, object]], bool]
 _UNSET = object()
 
@@ -136,6 +137,17 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
+            public_id = _safe_string_field(raw, "intent_id")
+            if public_id is not None and public_id.startswith("safety:"):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="reserved_intent_id",
+                        detail="safety: intent IDs are reserved for controller-generated stops",
+                        now=now,
+                        add_to_ledger=False,
+                    )
+                ]
             if principal.source not in REGISTERED_SOURCES or principal.drone_id is not None:
                 return [
                     self._refuse_intent(
@@ -237,24 +249,6 @@ class RelaySession:
                 command_statuses={},
             )
             self._log_intent(intent, outcome=LifecycleStatus.ACCEPTED, reason=None, now=now)
-            try:
-                self.intent_sink(intent, self.current_state())
-            except Exception:
-                self._intents[intent.intent_id].status = LifecycleStatus.REFUSED
-                self._log_intent(
-                    intent,
-                    outcome=LifecycleStatus.REFUSED,
-                    reason="downstream_error",
-                    now=now,
-                )
-                return [
-                    self._refusal(
-                        intent_id=intent.intent_id,
-                        reason="downstream_error",
-                        detail="the downstream intent consumer did not accept the request",
-                        now=now,
-                    )
-                ]
             event = acknowledgement_event(
                 t=now,
                 event_id=self.event_ids(),
@@ -266,7 +260,36 @@ class RelaySession:
             self._append_audit(event)
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
-            return [event]
+            events = [event]
+            try:
+                process = getattr(self.intent_sink, "process_relay_intent", None)
+                if callable(process):
+                    delivered = process(intent, self.current_state(), self)
+                    downstream = delivered.execution
+                    events.extend(delivered.relay_events)
+                else:
+                    downstream = self.intent_sink(intent, self.current_state())
+            except Exception:
+                self._intents[intent.intent_id].status = LifecycleStatus.REFUSED
+                self._log_intent(
+                    intent,
+                    outcome=LifecycleStatus.REFUSED,
+                    reason="downstream_error",
+                    now=now,
+                )
+                return [
+                    event,
+                    self._refusal(
+                        intent_id=intent.intent_id,
+                        reason="downstream_error",
+                        detail="the downstream intent consumer did not accept the request",
+                        now=now,
+                    ),
+                ]
+            self._ensure_mutation_usable()
+            if downstream is not None:
+                events.extend(self._record_execution_result(intent, downstream))
+            return events
 
     def process_membership(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -353,6 +376,11 @@ class RelaySession:
             state = self._state_event(now)
             self._append_audit(state)
             events.append(state)
+            if transition is not None:
+                events.extend(self._reconcile_membership())
+            reconcile = getattr(self.intent_sink, "reconcile_landing", None)
+            if callable(reconcile):
+                events.extend(reconcile(self))
             return events
 
     def process_acknowledgement(self, raw: object, principal: Principal) -> list[dict[str, object]]:
@@ -385,7 +413,18 @@ class RelaySession:
             self._record_adapter_ack_fact(acknowledgement)
             self._append_audit(event)
             self._metrics["acknowledgements"] += 1
-            return [event]
+            events = [event]
+            if acknowledgement.status in {
+                LifecycleStatus.COMPLETED,
+                LifecycleStatus.FAILED,
+                LifecycleStatus.INVALIDATED,
+            }:
+                resume = getattr(self.intent_sink, "resume_after_acknowledgement", None)
+                if callable(resume):
+                    resumed = resume(self, acknowledgement)
+                    if resumed is not None:
+                        events.extend(resumed.relay_events)
+            return events
 
     def record_lifecycle(
         self,
@@ -468,6 +507,115 @@ class RelaySession:
             self._metrics["refused_intents"] += 1
             return event
 
+    def admit_safety_stop(self, intent: IntentV1) -> dict[str, object]:
+        """Register a controller-generated safety stop before adapter I/O."""
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if (
+                intent.name not in {IntentName.HOLD, IntentName.ESTOP}
+                or intent.session != self.session_id
+            ):
+                raise ValueError("expected a safety stop for this session")
+            if intent.intent_id in self._intents:
+                raise ValueError("duplicate safety intent_id")
+            self._intents[intent.intent_id] = _IntentLedgerEntry(
+                status=LifecycleStatus.ACCEPTED,
+                selection=intent.selection,
+                command_statuses={},
+            )
+            now = self.clock()
+            self._log_intent(intent, outcome=LifecycleStatus.ACCEPTED, reason=None, now=now)
+            event = acknowledgement_event(
+                t=now,
+                event_id=self.event_ids(),
+                session=self.session_id,
+                intent_id=intent.intent_id,
+                status=LifecycleStatus.ACCEPTED,
+                roster_version=self.registry.roster_version,
+            )
+            self._append_audit(event)
+            self._metrics["accepted_intents"] += 1
+            self._metrics["acknowledgements"] += 1
+            return event
+
+    def record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:
+        with self._lock:
+            if intent.intent_id not in self._intents:
+                raise ValueError("unknown intent_id")
+            return self._record_execution_result(intent, result)
+
+    def _record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:
+        raw_status = getattr(getattr(result, "status", None), "value", None)
+        try:
+            status = LifecycleStatus(raw_status)
+        except (TypeError, ValueError):
+            raise ValueError("intent sink returned an invalid execution status") from None
+        if getattr(result, "intent_id", None) != intent.intent_id:
+            raise ValueError("intent sink returned an execution for another intent")
+        plan = getattr(result, "plan", None)
+        if plan is None:
+            raise ValueError("intent sink returned execution without its accepted plan")
+        plan_dict = plan.to_dict()
+        events: list[dict[str, object]] = []
+        terminal = {
+            LifecycleStatus.COMPLETED,
+            LifecycleStatus.REFUSED,
+            LifecycleStatus.FAILED,
+            LifecycleStatus.INVALIDATED,
+        }
+        if status in terminal:
+            completion_pending = getattr(self.intent_sink, "completion_pending", None)
+            awaiting_landing = (
+                status in {LifecycleStatus.COMPLETED, LifecycleStatus.INVALIDATED}
+                and callable(completion_pending)
+                and completion_pending(intent.intent_id)
+            )
+            active = self.current_state()["accepted_plan"]
+            events.append(
+                self.update_control_projection(
+                    selection=(
+                        getattr(plan, "selection_update", None)
+                        if status is LifecycleStatus.COMPLETED
+                        else None
+                    ),
+                    accepted_plan=(
+                        plan_dict
+                        if awaiting_landing
+                        else (
+                            None
+                            if active is None or active.get("intent_id") == intent.intent_id
+                            else _UNSET
+                        )
+                    ),
+                    armed=(
+                        getattr(plan, "armed_update", None)
+                        if status is LifecycleStatus.COMPLETED
+                        else None
+                    ),
+                    estop=(True if getattr(plan, "estop_update", None) is True else None),
+                )
+            )
+        elif status is LifecycleStatus.EXECUTING:
+            events.append(
+                self.update_control_projection(
+                    accepted_plan=plan_dict,
+                    estop=True if getattr(plan, "estop_update", None) is True else None,
+                )
+            )
+        refusal = getattr(result, "refusal", None)
+        reason = getattr(getattr(refusal, "reason", None), "value", None)
+        detail = getattr(refusal, "detail", None)
+        events.append(
+            self.record_lifecycle(
+                intent_id=intent.intent_id,
+                status=status,
+                source="autonomy",
+                reason=reason,
+                detail=detail,
+            )
+        )
+        return events
+
     def handle_adapter_disconnect(
         self, *, drone_id: int, connection_epoch: int | None
     ) -> list[dict[str, object]]:
@@ -502,6 +650,8 @@ class RelaySession:
             if transitions:
                 self._append_audit(state)
             events.append(state)
+            if transitions:
+                events.extend(self._reconcile_membership())
             return events
 
     def current_state(self) -> dict[str, object]:
@@ -615,7 +765,11 @@ class RelaySession:
         self._append_audit(event)
         self._append_audit(state)
         self._metrics["membership_events"] += 1
-        return [event, state]
+        return [event, state, *self._reconcile_membership()]
+
+    def _reconcile_membership(self) -> tuple[dict[str, object], ...]:
+        reconcile = getattr(self.intent_sink, "reconcile_membership", None)
+        return tuple(reconcile(self)) if callable(reconcile) else ()
 
     def _check_acknowledgement(
         self, acknowledgement: AdapterAcknowledgement, principal: Principal, now: int

@@ -12,6 +12,7 @@ MOTION_INTENTS = frozenset(
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.CAPTURE_ROOM,
     }

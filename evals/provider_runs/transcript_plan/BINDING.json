@@ -1,0 +1,24 @@
+{
+  "cassette": "sonnet5-57163a25f093.json",
+  "cassette_sha256": "718f22a234fe3d9451986eb040371660e344f308dd1854e1b394f4a5f9aeaaf9",
+  "corpus_digest": "94da020a71522dbae39bd2257a1dcc60942c280661df8e3c77b6cc44b70adae3",
+  "failed": [],
+  "models": [
+    "claude-sonnet-5"
+  ],
+  "origins": [
+    "anthropic",
+    "template"
+  ],
+  "passed": 50,
+  "prompt_schema_versions": [
+    "intent-v1-compiler-6"
+  ],
+  "recorded_at": "2026-09-05T00:41:33Z",
+  "run_id": "live-sonnet5-57163a25f093",
+  "source_sha": "57163a25f093f0c1b5b7958b87551fb46aedd0f1",
+  "sources": [
+    "anthropic",
+    "template"
+  ]
+}
