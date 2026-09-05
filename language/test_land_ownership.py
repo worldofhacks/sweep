@@ -11,11 +11,11 @@ from language.compiler import (
 )
 from language.test_compiler import _hydrate_relay_from_snapshot
 from planner.controller import PreparedExecutionRouter
-from planner.models import LifecycleStatus
+from planner.models import FlightState, LifecycleStatus, Position
 from relay.audit import SessionAuditLog
 from relay.auth import Principal
 from relay.session import RelayLimits, RelaySession
-from tests.autonomy_fixtures import make_snapshot, make_stack, planning_config
+from tests.autonomy_fixtures import make_snapshot, make_stack, planning_config, replace_aircraft
 
 
 @pytest.fixture
@@ -34,7 +34,8 @@ def landing_session(tmp_path, request):
     return current, flight, router, relay
 
 
-def _compiled_command(current, router, relay, name, intent_id):
+def _compiled_command(current, router, relay, name, intent_id, *, selection=None):
+    selected = list(current[0].selection if selection is None else selection)
     _, compiled = TranscriptCompiler(
         StaticResponseTransport(
             {
@@ -42,8 +43,12 @@ def _compiled_command(current, router, relay, name, intent_id):
                 "intents": [
                     {
                         "name": name,
-                        "args": {"dx": 1, "dy": 0} if name == "translate" else {},
-                        "selection": [] if name == "land_all" else list(current[0].selection),
+                        "args": (
+                            {"dx": 1, "dy": 0}
+                            if name == "translate"
+                            else ({"ids": selected} if name == "select" else {})
+                        ),
+                        "selection": [] if name == "land_all" else selected,
                         "mode": "indoor",
                     }
                 ],
@@ -549,8 +554,9 @@ def test_async_partial_hold_completion_restores_retained_landing_projection(
 
 
 @pytest.mark.parametrize("landing_session", [3], indirect=True)
+@pytest.mark.parametrize("public_recovery", [False, True])
 def test_failed_recovery_preserves_viable_hold_and_allows_later_fleet_stop(
-    landing_session, monkeypatch
+    landing_session, monkeypatch, public_recovery
 ):
     current, flight, router, relay = landing_session
     land = flight.land
@@ -589,6 +595,40 @@ def test_failed_recovery_preserves_viable_hold_and_allows_later_fleet_stop(
     _ack(relay, current, suffix.execution.plan.commands[0], "completed")
     assert "viable-suffix" not in router._running
     monkeypatch.setattr(flight, "hover", hover)
+    if public_recovery:
+        current[0] = replace(current[0], now_ms=current[0].now_ms + 1)
+        for drone_id in (1, 2):
+            events = _landed_telemetry(relay, drone_id, current[0].now_ms)
+            assert not any(event["type"] == "refusal" for event in events)
+            aircraft = current[0].aircraft[drone_id]
+            current[0] = replace_aircraft(
+                current[0],
+                drone_id,
+                flight_state=FlightState.LANDED,
+                pose=Position(aircraft.pose.x, aircraft.pose.y, 0.0),
+                position_last_seen_ms=current[0].now_ms,
+                link_last_seen_ms=current[0].now_ms,
+            )
+        assert relay.current_state()["accepted_plan"] is None
+        _compiled_command(
+            current, router, relay, "select", "select-all-for-recovery", selection=(1, 2, 3)
+        )
+        assert relay.current_state()["selection"] == [1, 2, 3]
+        current[0] = replace(current[0], selection=tuple(relay.current_state()["selection"]))
+        _compiled_command(
+            current, router, relay, "select", "select-airborne-for-recovery", selection=(3,)
+        )
+        current[0] = replace(current[0], selection=tuple(relay.current_state()["selection"]))
+        assert current[0].selection == (3,)
+        _compiled_command(current, router, relay, "hold", "stop-remaining-airborne")
+        assert not router._running
+        assert relay.current_state()["accepted_plan"] is None
+        _compiled_command(current, router, relay, "translate", "motion-after-public-recovery")
+        assert [(call.operation.value, call.drone_ids) for call in flight.calls][-1] == (
+            "goto",
+            (3,),
+        )
+        return
     current[0] = replace(current[0], selection=(1,))
     relay.update_control_projection(selection=(1,))
     _compiled_command(current, router, relay, "hold", "partial-successful-stop")

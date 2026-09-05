@@ -286,6 +286,12 @@ class PreparedExecutionRouter:
                 prepared.intent.name is IntentName.ESTOP for prepared, _ in active
             ):
                 return None
+            if intent.name is IntentName.SELECT and all(
+                pending.status is not LifecycleStatus.EXECUTING
+                and prepared.intent.name is not IntentName.ESTOP
+                for prepared, pending in active
+            ):
+                return None
             if not candidate.plan.commands and intent.name is not IntentName.SELECT:
                 return None
             conflicting = [
@@ -319,7 +325,7 @@ class PreparedExecutionRouter:
                 )
                 events.extend(self._record_retirement(prepared, invalidated, session))
                 with self._lock:
-                    self._running.pop(prepared.intent.intent_id, None)
+                    self._running[prepared.intent.intent_id] = (prepared, invalidated, session)
                 self._pending_landings.pop(prepared.intent.intent_id, None)
                 self._landing_ack_times.pop(prepared.intent.intent_id, None)
             try:
@@ -387,7 +393,11 @@ class PreparedExecutionRouter:
         except Exception:
             # Repeating a safety stop is safe when enrichment fails after possible I/O.
             safety = self.controller.dispatcher.dispatch(hold, current)
-        if safety.status is not LifecycleStatus.COMPLETED:
+        if safety.status in {
+            LifecycleStatus.EXECUTING,
+            LifecycleStatus.FAILED,
+            LifecycleStatus.INVALIDATED,
+        }:
             with self._lock:
                 self._running[hold.intent_id] = (
                     PreparedExecution(safety_intent, hold, current),
@@ -395,15 +405,13 @@ class PreparedExecutionRouter:
                     session,
                 )
         events.extend(session.record_execution_result(safety_intent, safety))
-        if intent.name in {
-            IntentName.HOLD,
-            IntentName.LAND,
-            IntentName.LAND_ALL,
-        } and safety.status in {LifecycleStatus.EXECUTING, LifecycleStatus.COMPLETED}:
+        if not estop and safety.status in {LifecycleStatus.EXECUTING, LifecycleStatus.COMPLETED}:
             # The registered recovery owns every target even while its suffix is pending.
             events.extend(
                 self._retire_held_motion(
-                    replace(intent, name=IntentName.HOLD),
+                    safety_intent
+                    if intent.name is not IntentName.HOLD
+                    else replace(intent, name=IntentName.HOLD),
                     replace(safety, status=LifecycleStatus.EXECUTING),
                     session,
                 )
@@ -473,6 +481,7 @@ class PreparedExecutionRouter:
             held_aircraft.update(command.drone_id for command in result.plan.commands)
         if not held_aircraft and intent.name is not IntentName.ESTOP:
             return ()
+        drones = {drone["drone_id"]: drone for drone in session.current_state()["drones"]}
         retired = []
         retained = set()
         with self._lock:
@@ -521,11 +530,19 @@ class PreparedExecutionRouter:
                             )
                         )
                         or (
-                            prepared.intent.name is IntentName.HOLD
+                            prepared.intent.name is not IntentName.ESTOP
                             and pending.status
                             in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
-                            and held_aircraft.issuperset(
-                                command.drone_id for command in prepared.plan.commands
+                            and all(
+                                command.drone_id in held_aircraft
+                                or (
+                                    (drone := drones.get(command.drone_id)) is not None
+                                    and drone["connection_epoch"] == command.connection_epoch
+                                    and (telemetry := drone.get("telemetry")) is not None
+                                    and telemetry["t"] > prepared.snapshot.now_ms
+                                    and telemetry["state"] in {"landed", "disarmed"}
+                                )
+                                for command in prepared.plan.commands
                             )
                         )
                         or (
@@ -713,6 +730,8 @@ class PreparedExecutionRouter:
             self._pending_landings.pop(intent_id, None)
         relay_events = safety_events
         if session is not None:
+            with self._lock:
+                self._running[intent_id] = (prepared, result, session)
             relay_events += tuple(session.record_execution_result(prepared.intent, result))
             if not safety_events:
                 relay_events += self._retain_ambiguous_stop(
@@ -733,8 +752,9 @@ class PreparedExecutionRouter:
         active = session.current_state()["accepted_plan"]
         owned = {
             intent_id: prepared.plan
-            for intent_id, (prepared, _, owner) in self._running.items()
+            for intent_id, (prepared, pending, owner) in self._running.items()
             if owner is session
+            and (pending.status is LifecycleStatus.EXECUTING or intent_id in self._pending_landings)
         }
         if active is not None and active["intent_id"] in owned:
             return ()
@@ -941,8 +961,7 @@ class PreparedExecutionRouter:
                 events = self._retain_ambiguous_stop(
                     prepared.intent, pending, session, prepared.snapshot
                 )
-                recovery = self._running.get(f"safety:ambiguous:{intent_id}")
-                if recovery is None or recovery[1].status is LifecycleStatus.EXECUTING:
+                if intent_id not in self._running:
                     self._running.pop(intent_id, None)
                     self._pending_landings.pop(intent_id, None)
                     self._landing_ack_times.pop(intent_id, None)
