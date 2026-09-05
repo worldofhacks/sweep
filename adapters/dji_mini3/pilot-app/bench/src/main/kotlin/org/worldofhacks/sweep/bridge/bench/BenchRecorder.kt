@@ -12,6 +12,7 @@ enum class RecordKind(val wire: String) {
     STICK_SENT("stick_sent"),
     TELEMETRY("telemetry"),
     VIDEO_FRAME("video_frame"),
+    VIDEO_PUBLISH("video_publish"),
     NOTE("note");
 
     companion object {
@@ -63,6 +64,43 @@ class BenchRecorder(private val sink: Appendable, private val clock: Clock) {
             "keyframe" to keyframe,
             "decode_ms" to decodeMs,
             "dropped" to dropped,
+        )
+    }
+
+    /**
+     * One-second window of the WHIP publisher (Phase F): sender bitrate and frame rate,
+     * cumulative frames sent and dropped, ICE state, the selected candidate pair's round trip
+     * (the LAN leg), and the Android processing time per frame (the phone leg).
+     */
+    fun videoPublish(
+        source: String,
+        bitrateKbps: Double?,
+        fps: Double?,
+        framesSent: Long,
+        droppedFrames: Long,
+        iceState: String,
+        rttMs: Double?,
+        processingMs: Double? = null,
+        codec: String? = null,
+        width: Int = 0,
+        height: Int = 0,
+        keyframeIntervalMs: Long? = null,
+    ) {
+        write(
+            RecordKind.VIDEO_PUBLISH,
+            clock.nowMs(),
+            "source" to source,
+            "bitrate_kbps" to bitrateKbps,
+            "fps" to fps,
+            "frames_sent" to framesSent,
+            "dropped_frames" to droppedFrames,
+            "ice_state" to iceState,
+            "rtt_ms" to rttMs,
+            "processing_ms" to processingMs,
+            "codec" to codec,
+            "width" to width,
+            "height" to height,
+            "keyframe_interval_ms" to keyframeIntervalMs,
         )
     }
 
