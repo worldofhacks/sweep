@@ -27,6 +27,10 @@ try {
           1: 'm14-browser-adapter-one-key-32-bytes',
           2: 'm14-browser-adapter-two-key-32-bytes',
         }),
+        // Keep runner scheduling jitter from manufacturing a telemetry-loss
+        // transition between accepted and execution. The independent node
+        // watchdog below still proves hold at 2 s and failsafe at 10 s.
+        SWEEP_TELEMETRY_FRESHNESS_MS: '5000',
         SWEEP_SESSION_LOG_DIR: logDirectory,
       },
       stdio: 'inherit',

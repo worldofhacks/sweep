@@ -5,7 +5,12 @@ from math import isfinite
 from types import MappingProxyType
 from typing import Literal
 
-from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    C1_IMPLEMENTED_INTENT_NAMES,
+    CapabilityProfile,
+    IntentName,
+)
 
 
 class Mode(StrEnum):
@@ -19,6 +24,7 @@ class RejectionReason(StrEnum):
     UNKNOWN_SOURCE = "unknown_source"
     UNKNOWN_INTENT = "unknown_intent"
     UNSUPPORTED = "unsupported"
+    SOURCE_NOT_ALLOWED = "source_not_allowed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +61,21 @@ type ValidationResult = AcceptedIntent | RejectedIntent
 # producer are each bound to their own connection; an intent never moves
 # between them. Adding a source changes this constant and its conformance tests.
 REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
+# Intent v1 names each registered source may emit. The console owns every C1
+# name; the keyboard socket carries only the Shift+Escape network stop; the
+# webcam gesture producer drafts only the two names its gesture policy may emit
+# (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES), so the console's
+# never-gesture-emittable list is enforced by the relay as well. A name outside
+# its source's set is refused with `source_not_allowed` only after the effective
+# capability profile accepts it. The console aliases the single implemented-name
+# registry rather than maintaining another capability list.
+SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
+    {
+        "console": C1_IMPLEMENTED_INTENT_NAMES,
+        "keyboard": frozenset({IntentName.ESTOP}),
+        "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
+    }
+)
 _REQUIRED_FIELDS = frozenset(
     {
         "v",
@@ -115,6 +136,11 @@ def validate_intent(
         return RejectedIntent(
             RejectionReason.UNSUPPORTED,
             f"{name} is outside capability profile {capability_profile.name}",
+        )
+
+    if name not in SOURCE_ALLOWED_NAMES[source]:
+        return RejectedIntent(
+            RejectionReason.SOURCE_NOT_ALLOWED, f"{name} is not allowed from source {source}"
         )
 
     return AcceptedIntent(

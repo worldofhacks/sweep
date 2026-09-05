@@ -12,7 +12,7 @@ Run from the repo root: `uv run python -m relay.<module>`.
 
 ## Intent v1 contract
 
-`relay.intent_v1.validate_intent(raw)` is the shared validation seam. It returns `AcceptedIntent` with an immutable `IntentV1`, or `RejectedIntent` with one of four reasons: `invalid_payload`, `unknown_source`, `unknown_intent`, or `unsupported`. Input failures are values, so callers do not catch validation exceptions or parse error text.
+`relay.intent_v1.validate_intent(raw)` is the shared validation seam. It returns `AcceptedIntent` with an immutable `IntentV1`, or `RejectedIntent` with one of five reasons: `invalid_payload`, `unknown_source`, `unknown_intent`, `unsupported`, or `source_not_allowed`. Input failures are values, so callers do not catch validation exceptions or parse error text.
 
 The validator makes these schema choices where Appendix A leaves details open:
 
@@ -23,11 +23,11 @@ The validator makes these schema choices where Appendix A leaves details open:
 - Motion values are finite JSON numbers in planner-owned steps. The validator does not convert them to metres or impose mode bounds.
 - `intent_id` is a non-empty stable identifier. A retry gets a new identifier and may link to a different request through `retry_of`. This function validates the reference shape; the relay lifecycle validates same-session failure, deduplication, and terminal-state semantics.
 - `confirm` records the source's confirmation state. `capture_room` requires confirmation and exactly one selected drone; the arbiter enforces the remaining action-specific checks.
-- Rejection precedence is envelope, registered source, intent name, argument shape, scope, mode capability, then intent-name capability.
+- Rejection precedence is envelope, registered source, intent name, argument shape, scope, mode capability, intent-name capability, then the per-source allowlist.
 - `c1_basic_control` enables `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land`, `land_all`, `estop`, `capture_room`, `altitude`, `formation_next`, `formation_set`, `spacing`, and `sweep`. The outdoor mode values remain schema-reserved and return `unsupported`; `disarm`, `survey_area`, and `map_area` keep their v1 argument shapes and also return `unsupported`.
 - `come_home` returns selected drones to their home positions through planner-generated `goto` calls. Confirmed `land` maps the current selection to adapter `land`; `land_all` applies landing fleet-wide.
 
-The current source registry is `console`, `keyboard`, and `webcam`; `webcam` is the console-hosted gesture producer and authenticates on its own connection with the same relay token. Language joins only when its real producer and conformance tests land. Registering another source or enabling another Intent v1 name changes the shared constants and conformance tests in this module.
+The current source registry is `console`, `keyboard`, and `webcam`; `webcam` is the console-hosted gesture producer and authenticates on its own connection with the same relay token. Each source may emit only the names in `SOURCE_ALLOWED_NAMES`: `console` every implemented name allowed by the effective capability profile, `keyboard` only `estop` (the Shift+Escape network stop), and `webcam` only `capture_room` and `hold`, the two names the console gesture policy may draft, so its never-gesture-emittable list is enforced on both sides. A profile-disabled name is refused as `unsupported`; a profile-enabled name outside its source's set is refused with `source_not_allowed`, and the detail names the intent and source. The session uses the same reason for a connection that cannot emit intents at all. Language joins only when its real producer and conformance tests land. Registering another source, implementing another Intent v1 name, or widening a source's allowlist changes the shared constants and conformance tests in this module.
 
 ## Run the relay
 
