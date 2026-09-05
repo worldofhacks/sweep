@@ -3,6 +3,7 @@ import type {
   CapturePattern,
   DroneId,
   IntentV1,
+  IntentSource,
   MembershipAction,
   RelayAircraftState,
   RelayServerEvent,
@@ -94,13 +95,14 @@ export interface ControlState {
   lastOutcome: OutcomeSummary | null
   notices: OperatorNotice[]
   seenEventIds: string[]
+  lastStateEvent: { rosterVersion: number; t: number; source: IntentSource | null; sequence?: number } | null
 }
 
 export type ControlAction =
   | { type: 'connection_changed'; connection: RelayConnection }
   | { type: 'keyboard_connection_changed'; connection: RelayConnection }
   | { type: 'webcam_connection_changed'; connection: RelayConnection }
-  | { type: 'relay_event'; event: RelayServerEvent }
+  | { type: 'relay_event'; event: RelayServerEvent; source?: IntentSource }
   | { type: 'request_created'; request: RequestRecord }
   | { type: 'request_pending_confirmation'; intentId: string; t: number; plan: PlanPreview }
   | { type: 'request_confirmed'; intent: IntentV1; t: number }
@@ -146,6 +148,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     lastOutcome: null,
     notices: [],
     seenEventIds: [],
+    lastStateEvent: null,
   }
 }
 
@@ -166,7 +169,7 @@ export function controlReducer(state: ControlState, action: ControlAction): Cont
     case 'webcam_connection_changed':
       return reduceWebcamConnection(state, action.connection)
     case 'relay_event':
-      return reduceRelayEvent(state, action.event)
+      return reduceRelayEvent(state, action.event, action.source ?? 'console')
     case 'request_created':
       return { ...state, requests: [action.request, ...state.requests] }
     case 'request_pending_confirmation':
@@ -262,7 +265,11 @@ function reduceWebcamConnection(state: ControlState, connection: RelayConnection
   }
 }
 
-function reduceRelayEvent(state: ControlState, event: RelayServerEvent): ControlState {
+function reduceRelayEvent(
+  state: ControlState,
+  event: RelayServerEvent,
+  source: IntentSource,
+): ControlState {
   if (state.seenEventIds.includes(event.event_id)) return state
   const stateWithEvent = {
     ...state,
@@ -290,7 +297,7 @@ function reduceRelayEvent(state: ControlState, event: RelayServerEvent): Control
     case 'auth.refused':
       return reduceAuthRefusal(stateWithEvent, event)
     case 'state':
-      return reduceStateEvent(stateWithEvent, event)
+      return reduceStateEvent(stateWithEvent, event, source)
     case 'membership':
       return reduceMembershipEvent(stateWithEvent, event)
     case 'telemetry':
@@ -298,6 +305,20 @@ function reduceRelayEvent(state: ControlState, event: RelayServerEvent): Control
       // projection. Retain the event ID for dedupe, but do not build a second
       // client-side source of aircraft truth here.
       return stateWithEvent
+    case 'safety_action':
+      return {
+        ...stateWithEvent,
+        notices: prependNotice(
+          stateWithEvent.notices,
+          makeNotice(
+            `safety-action-${event.event_id}`,
+            'danger',
+            event.action === 'failsafe' ? 'Aircraft failsafe' : 'Aircraft hold',
+            `D-${String(event.drone_id).padStart(2, '0')} applied ${event.action} after ${event.reason}.`,
+            event.t,
+          ),
+        ),
+      }
     case 'acknowledgement':
       if (event.command_id !== null || event.source === 'adapter') {
         return reduceCommandAcknowledgement(stateWithEvent, event)
@@ -403,7 +424,24 @@ function reduceCommandAcknowledgement(
 function reduceStateEvent(
   state: ControlState,
   event: Extract<RelayServerEvent, { type: 'state' }>,
+  source: IntentSource,
 ): ControlState {
+  const lastStateEvent = state.lastStateEvent
+  const sequenced = event.state_sequence !== undefined
+  if (lastStateEvent?.sequence !== undefined &&
+    (event.state_sequence === undefined || event.state_sequence <= lastStateEvent.sequence)) return state
+  if (
+    event.roster_version < state.rosterVersion ||
+    (!sequenced && lastStateEvent !== null &&
+      event.roster_version === lastStateEvent.rosterVersion &&
+      event.t < lastStateEvent.t)
+  ) {
+    return state
+  }
+  // Equal timestamps order one socket, but cannot order competing socket snapshots.
+  const ambiguousOrder = !sequenced && lastStateEvent !== null &&
+    event.roster_version === lastStateEvent.rosterVersion &&
+    event.t === lastStateEvent.t && lastStateEvent.source !== source
   const aircraft = Object.fromEntries(event.drones.map((drone) => [drone.drone_id, drone]))
   const staleSelection = event.selection.filter(
     (id) => aircraft[id]?.membership !== 'ready' || !aircraft[id]?.selectable,
@@ -419,7 +457,13 @@ function reduceStateEvent(
     formation: event.formation,
     spacing: event.spacing,
     armed: event.armed,
-    estop: event.estop,
+    estop: event.estop || (ambiguousOrder && state.estop),
+    lastStateEvent: {
+      rosterVersion: event.roster_version,
+      t: event.t,
+      source: ambiguousOrder ? null : source,
+      sequence: event.state_sequence,
+    },
   }
 
   if (
@@ -509,38 +553,37 @@ function reduceMembershipEvent(
   state: ControlState,
   event: Extract<RelayServerEvent, { type: 'membership' }>,
 ): ControlState {
+  const staleProjection = event.roster_version < state.rosterVersion ||
+    (state.lastStateEvent !== null && event.roster_version <= state.lastStateEvent.rosterVersion)
   const previous = state.aircraft[event.drone_id]
-  const drone = projectMembershipEvent(event, previous)
-  const aircraft = { ...state.aircraft, [event.drone_id]: drone }
+  const drone = projectMembershipEvent(
+    event, previous?.connection_epoch === event.connection_epoch ? previous : undefined,
+  )
   const isDeparture =
     event.action === 'graceful_leave_completed' || event.action === 'unexpected_loss'
-  const wasSelected = state.selection.includes(event.drone_id)
-  const selection =
-    isDeparture || event.membership !== 'ready'
+  let next = state
+  if (!staleProjection) {
+    const selection = isDeparture || event.membership !== 'ready'
       ? state.selection.filter((id) => id !== event.drone_id)
       : state.selection
-  let next: ControlState = {
-    ...state,
-    rosterVersion: event.roster_version,
-    aircraft,
-    selection,
-    selectedFeedId: state.selectedFeedId,
-  }
-
-  const staleRosterRequests = next.requests
-    .filter(
-      (request) =>
-        request.status === 'pending_confirmation' &&
-        request.plan?.rosterVersion !== event.roster_version,
+    next = {
+      ...state,
+      rosterVersion: event.roster_version,
+      aircraft: { ...state.aircraft, [event.drone_id]: drone },
+      selection,
+    }
+    const staleRosterRequests = next.requests
+      .filter((request) => request.status === 'pending_confirmation' &&
+        request.plan?.rosterVersion !== event.roster_version)
+      .map((request) => request.intent.intent_id)
+    next = invalidateRequests(
+      next, staleRosterRequests, event.t, 'stale_roster',
+      `Fleet roster changed to version ${event.roster_version}. Build and confirm a new preview.`,
     )
-    .map((request) => request.intent.intent_id)
-  next = invalidateRequests(
-    next,
-    staleRosterRequests,
-    event.t,
-    'stale_roster',
-    `Fleet roster changed to version ${event.roster_version}. Build and confirm a new preview.`,
-  )
+    if (state.selection.includes(event.drone_id) && !selection.includes(event.drone_id)) {
+      next = addStaleSelectionNotice(next, [event.drone_id], event.t)
+    }
+  }
 
   if (isDeparture) {
     const departure: DepartureRecord = {
@@ -557,17 +600,12 @@ function reduceMembershipEvent(
           : 'Aircraft connection was lost unexpectedly.',
     }
     next = { ...next, departed: [departure, ...next.departed] }
-    next = invalidateRequestsForDrone(next, event.drone_id, event.t, departure.reasonCode, departure.detail)
+    if (!staleProjection) {
+      next = invalidateRequestsForDrone(next, event.drone_id, event.t, departure.reasonCode, departure.detail)
+    }
   }
 
-  if (wasSelected && !selection.includes(event.drone_id)) {
-    next = addStaleSelectionNotice(next, [event.drone_id], event.t)
-  }
-  if (
-    event.action === 'join' &&
-    previous &&
-    event.connection_epoch > previous.connection_epoch
-  ) {
+  if (event.action === 'join' && event.connection_epoch > 1) {
     next = {
       ...next,
       notices: prependNotice(

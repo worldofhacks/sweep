@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from threading import RLock
 from weakref import WeakSet
@@ -48,6 +49,33 @@ class PositioningLossResult:
 class RelayExecution:
     execution: ExecutionResult
     relay_events: tuple[dict[str, object], ...]
+    continuation: ResumeToken | RecoveryToken | None = None
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ResumeToken:
+    intent_id: str
+    running: tuple[PreparedExecution, ExecutionResult, object]
+    acknowledgement: CommandAcknowledgement
+    stop_generation: int
+    completed_at_ms: int | None = None
+    landing: tuple[int, frozenset[int]] | None = None
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RecoveryToken:
+    intent_id: str
+    original: ResumeToken
+    prepared: PreparedExecution
+    original_result: ExecutionResult
+    commit_original_after: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeOutcome:
+    execution: ExecutionResult
+    recovery_id: str | None = None
+    recovery_before_result: bool = False
 
 
 @dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
@@ -70,6 +98,8 @@ class PreparedExecutionRouter:
         self.controller = controller
         self.current_snapshot = current_snapshot
         self._prepared: dict[str, PreparedExecution] = {}
+        self._recoveries: dict[str, RecoveryToken] = {}
+        self._stop_generations: dict[object, int] = {}
         self._running: dict[str, tuple[PreparedExecution, ExecutionResult, object]] = {}
         self._submitting_sessions: dict[str, object] = {}
         self._pending_landings: dict[str, tuple[int, frozenset[int]]] = {}
@@ -104,6 +134,13 @@ class PreparedExecutionRouter:
         with self._lock:
             self._prepared.pop(intent_id, None)
 
+    def cancel_intent(self, intent_id: str) -> None:
+        """Release an undispatched preparation without disturbing execution ownership."""
+        with self._lock:
+            if intent_id in self._running or self._prepared.pop(intent_id, None) is None:
+                return
+            self._submitting_sessions.pop(intent_id, None)
+
     def relay_emitter(self, session: object, principal: object) -> PreparedIntentEmitter:
         from relay.auth import Principal
         from relay.session import RelaySession
@@ -119,7 +156,16 @@ class PreparedExecutionRouter:
             with self._lock:
                 self._submitting_sessions[intent.intent_id] = session
             try:
-                return session.process_intent(_intent_payload(intent), principal)
+                events = session.process_intent(_intent_payload(intent), principal)
+                if any(
+                    event.get("type") == "acknowledgement"
+                    and event.get("intent_id") == intent.intent_id
+                    and event.get("status") == "accepted"
+                    for event in events
+                ):
+                    session.mark_pending_intent_delivered(intent.intent_id)
+                    events.extend(session.execute_pending_intent(intent.intent_id))
+                return events
             finally:
                 with self._lock:
                     self._submitting_sessions.pop(intent.intent_id, None)
@@ -424,13 +470,12 @@ class PreparedExecutionRouter:
         except Exception:
             return fallback
 
-    def _retain_ambiguous_stop(
-        self, intent: IntentV1, result: ExecutionResult, session: object, fallback: FleetSnapshot
-    ) -> tuple[dict[str, object], ...]:
+    @staticmethod
+    def _needs_ambiguous_stop(intent: IntentV1, result: ExecutionResult) -> bool:
         if intent.name is IntentName.ESTOP:
-            return ()
+            return False
         if result.status not in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}:
-            return ()
+            return False
         command_ids = (
             {command.command_id for command in result.plan.commands} if result.plan else set()
         )
@@ -440,6 +485,13 @@ class PreparedExecutionRouter:
             in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING, LifecycleStatus.FAILED}
             for ack in result.acknowledgements
         ):
+            return False
+        return True
+
+    def _retain_ambiguous_stop(
+        self, intent: IntentV1, result: ExecutionResult, session: object, fallback: FleetSnapshot
+    ) -> tuple[dict[str, object], ...]:
+        if not self._needs_ambiguous_stop(intent, result):
             return ()
         return self._dispatch_safety_hold(
             intent,
@@ -471,6 +523,9 @@ class PreparedExecutionRouter:
     ) -> tuple[dict[str, object], ...]:
         if intent.name not in {IntentName.HOLD, IntentName.ESTOP}:
             return ()
+        if intent.name is IntentName.ESTOP:
+            with self._lock:
+                self._stop_generations[session] = self._stop_generations.get(session, 0) + 1
         held_aircraft = {
             ack.drone_id
             for ack in result.acknowledgements
@@ -562,28 +617,32 @@ class PreparedExecutionRouter:
                     retired.append((prepared, pending))
         events = []
         for prepared, pending in retired:
-            invalidated = replace(
-                pending,
-                status=LifecycleStatus.INVALIDATED,
-                refusal=Refusal(
-                    intent_id=prepared.intent.intent_id,
-                    roster_version=pending.roster_version,
-                    drone_id=None,
-                    connection_epoch=None,
-                    reason=RefusalReason.CONFLICTING_MOTION,
-                    detail=f"execution superseded by {intent.name.value} {intent.intent_id}",
-                    status=LifecycleStatus.INVALIDATED,
-                ),
-            )
             intent_id = prepared.intent.intent_id
-            if intent_id not in retained:
-                self._pending_landings.pop(intent_id, None)
-            events.extend(
-                self._record_retirement(
-                    prepared, invalidated, session, retain_landing=intent_id in retained
+            with session._lock, self._lock:
+                current = self._running.get(intent_id)
+                if current is None:
+                    continue
+                prepared, pending, _owner = current
+                invalidated = replace(
+                    pending,
+                    status=LifecycleStatus.INVALIDATED,
+                    refusal=Refusal(
+                        intent_id=prepared.intent.intent_id,
+                        roster_version=pending.roster_version,
+                        drone_id=None,
+                        connection_epoch=None,
+                        reason=RefusalReason.CONFLICTING_MOTION,
+                        detail=f"execution superseded by {intent.name.value} {intent.intent_id}",
+                        status=LifecycleStatus.INVALIDATED,
+                    ),
                 )
-            )
-            with self._lock:
+                if intent_id not in retained:
+                    self._pending_landings.pop(intent_id, None)
+                events.extend(
+                    self._record_retirement(
+                        prepared, invalidated, session, retain_landing=intent_id in retained
+                    )
+                )
                 if intent_id in retained:
                     self._running[intent_id] = (prepared, invalidated, session)
                 else:
@@ -591,35 +650,84 @@ class PreparedExecutionRouter:
                 self._landing_ack_times.pop(intent_id, None)
         return tuple(events)
 
+    def _owns_resume(self, token: ResumeToken | RecoveryToken) -> bool:
+        with self._lock:
+            if isinstance(token, RecoveryToken):
+                return self._recoveries.get(token.intent_id) is token and self._owns_resume(
+                    token.original
+                )
+            return (
+                self._running.get(token.intent_id) is token.running
+                and self._stop_generations.get(token.running[2], 0) == token.stop_generation
+            )
+
     def resume(
         self,
         intent_id: str,
         terminal_ack: CommandAcknowledgement,
         *,
         completed_at_ms: int | None = None,
-    ) -> RelayExecution:
+    ) -> RelayExecution | None:
+        """Run all phases synchronously for callers outside the relay runtime."""
         with self._lock:
             running = self._running.get(intent_id)
-        if running is None:
-            raise RuntimeError("intent has no executing prepared plan")
-        prepared, pending, session = running
+            if running is None or running[1].status is not LifecycleStatus.EXECUTING:
+                return None
+            token = ResumeToken(
+                intent_id,
+                running,
+                terminal_ack,
+                self._stop_generations.get(running[2], 0),
+                completed_at_ms,
+            )
+        return self._drive_resume(token)
+
+    def _drive_resume(self, token: ResumeToken | RecoveryToken) -> RelayExecution | None:
+        events = ()
+        while True:
+            outcome = self.resume_io(token)
+            committed = self.commit_resume(token, outcome)
+            if committed is None:
+                return None
+            events += committed.relay_events
+            if committed.continuation is None:
+                return replace(committed, relay_events=events)
+            token = committed.continuation
+
+    def resume_io(
+        self,
+        token: ResumeToken | RecoveryToken,
+        current_snapshot: SnapshotProvider | None = None,
+    ) -> ResumeOutcome:
+        """Perform adapter work without changing router ownership or relay projections."""
+        if isinstance(token, RecoveryToken):
+            prepared = token.prepared
+            session = token.original.running[2]
+            try:
+                result = self.controller.dispatcher.dispatch(
+                    prepared.plan,
+                    prepared.snapshot,
+                    current_snapshot=current_snapshot or (lambda: self._relay_snapshot(session)),
+                    owner_still_valid=lambda: self._owns_resume(token),
+                )
+            except Exception:
+                result = self.controller.dispatcher.dispatch(
+                    prepared.plan,
+                    prepared.snapshot,
+                    owner_still_valid=lambda: self._owns_resume(token),
+                )
+            return ResumeOutcome(result)
+        prepared, pending, session = token.running
+        intent_id = token.intent_id
+        terminal_ack = token.acknowledgement
         if pending.status is not LifecycleStatus.EXECUTING:
-            raise RuntimeError("intent has no executing prepared plan")
-        if (
-            prepared.intent.name in {IntentName.LAND, IntentName.LAND_ALL}
-            and terminal_ack.status is LifecycleStatus.COMPLETED
-        ):
-            acknowledged_at = (
-                completed_at_ms
-                if completed_at_ms is not None
-                else (session.clock() if session is not None else prepared.snapshot.now_ms)
+            recovery = (
+                f"safety:ambiguous:{intent_id}"
+                if terminal_ack.status is not LifecycleStatus.COMPLETED
+                and self._needs_ambiguous_stop(prepared.intent, pending)
+                else None
             )
-            self._landing_ack_times[intent_id] = max(
-                self._landing_ack_times.get(intent_id, acknowledged_at), acknowledged_at
-            )
-            if intent_id in self._pending_landings:
-                fence, targets = self._pending_landings[intent_id]
-                self._pending_landings[intent_id] = (max(fence, acknowledged_at), targets)
+            return ResumeOutcome(pending, recovery)
 
         class ResumeSnapshotUnavailable(Exception):
             pass
@@ -671,24 +779,16 @@ class PreparedExecutionRouter:
                         )
                 raise ResumeSnapshotUnavailable from error
 
-        safety_events = ()
         try:
             result = self.controller.dispatcher.resume_after_completion(
                 prepared.plan,
                 pending,
                 terminal_ack,
                 prepared.snapshot,
-                current_snapshot=live_snapshot,
+                current_snapshot=current_snapshot or live_snapshot,
+                owner_still_valid=lambda: self._owns_resume(token),
             )
         except Exception as error:
-            if session is not None:
-                safety_events = self._dispatch_safety_hold(
-                    prepared.intent,
-                    self._safety_snapshot(session, prepared.snapshot),
-                    session,
-                    intent_id=f"safety:resume:{intent_id}",
-                    estop=prepared.intent.name is IntentName.ESTOP,
-                )
             status = (
                 terminal_ack.status
                 if terminal_ack.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
@@ -717,36 +817,185 @@ class PreparedExecutionRouter:
                     status=status,
                 ),
             )
+            return ResumeOutcome(result, f"safety:resume:{intent_id}", True)
+        return ResumeOutcome(
+            result,
+            f"safety:ambiguous:{intent_id}"
+            if self._needs_ambiguous_stop(prepared.intent, result)
+            else None,
+        )
+
+    def _commit_resumed_result(
+        self, token: ResumeToken, result: ExecutionResult, *, retain: bool = False
+    ) -> tuple[ResumeToken, tuple[dict[str, object], ...]]:
+        prepared, _pending, session = token.running
+        intent_id = token.intent_id
+        if (
+            prepared.intent.name in {IntentName.LAND, IntentName.LAND_ALL}
+            and token.acknowledgement.status is LifecycleStatus.COMPLETED
+        ):
+            acknowledged_at = token.completed_at_ms or (
+                session.clock() if session is not None else prepared.snapshot.now_ms
+            )
+            self._landing_ack_times[intent_id] = max(
+                self._landing_ack_times.get(intent_id, acknowledged_at), acknowledged_at
+            )
+            landing = self._pending_landings.get(intent_id)
+            if landing is not None:
+                self._pending_landings[intent_id] = (max(landing[0], acknowledged_at), landing[1])
         if (
             session is not None
             and result.status is LifecycleStatus.COMPLETED
             and prepared.intent.name in {IntentName.LAND, IntentName.LAND_ALL}
         ):
-            self._pending_landings[intent_id] = (
-                max(session.clock(), self._landing_ack_times.get(intent_id, session.clock())),
-                self._pending_landings[intent_id][1],
-            )
+            landing = self._pending_landings.get(intent_id)
+            if landing is not None:
+                acknowledged_at = token.completed_at_ms or session.clock()
+                self._pending_landings[intent_id] = (
+                    max(
+                        session.clock(),
+                        self._landing_ack_times.get(intent_id, acknowledged_at),
+                        acknowledged_at,
+                    ),
+                    landing[1],
+                )
         elif result.status is not LifecycleStatus.EXECUTING:
             self._pending_landings.pop(intent_id, None)
-        relay_events = safety_events
-        if session is not None:
-            with self._lock:
-                self._running[intent_id] = (prepared, result, session)
-            relay_events += tuple(session.record_execution_result(prepared.intent, result))
-            if not safety_events:
-                relay_events += self._retain_ambiguous_stop(
-                    prepared.intent, result, session, prepared.snapshot
-                )
-        with self._lock:
-            if result.status is LifecycleStatus.EXECUTING or intent_id in self._pending_landings:
-                self._running[intent_id] = (prepared, result, session)
-            else:
+        running = (prepared, result, session)
+        self._running[intent_id] = running
+        events = (
+            tuple(session.record_execution_result(prepared.intent, result))
+            if session is not None
+            else ()
+        )
+        if result.status is not LifecycleStatus.EXECUTING and not retain:
+            if intent_id not in self._pending_landings:
                 self._running.pop(intent_id, None)
-            if result.status is not LifecycleStatus.EXECUTING:
-                self._landing_ack_times.pop(intent_id, None)
-        if session is not None:
-            relay_events += self._restore_active_projection(session)
-        return RelayExecution(execution=result, relay_events=relay_events)
+            self._landing_ack_times.pop(intent_id, None)
+        return replace(token, running=running), events
+
+    def commit_resume(
+        self, token: ResumeToken | RecoveryToken, outcome: ResumeOutcome
+    ) -> RelayExecution | None:
+        """Commit an owned result; a recovery continuation must run outside the operation lock."""
+        original = token.original if isinstance(token, RecoveryToken) else token
+        prepared, pending, session = original.running
+        with session._lock if session is not None else nullcontext(), self._lock:
+            if isinstance(token, RecoveryToken):
+                return self._commit_recovery(token, outcome)
+            if not self._owns_resume(token):
+                return None
+            if pending.status is not LifecycleStatus.EXECUTING:
+                if token.acknowledgement.status is LifecycleStatus.COMPLETED:
+                    landing = self._pending_landings.get(token.intent_id)
+                    if landing is not None:
+                        self._pending_landings[token.intent_id] = (
+                            max(landing[0], token.completed_at_ms or landing[0]),
+                            landing[1],
+                        )
+                    return RelayExecution(pending, ())
+            if outcome.recovery_id is None:
+                _updated, events = self._commit_resumed_result(token, outcome.execution)
+                if session is not None:
+                    events += self._restore_active_projection(session)
+                return RelayExecution(outcome.execution, events)
+            events = ()
+            if not outcome.recovery_before_result and pending.status is LifecycleStatus.EXECUTING:
+                token, events = self._commit_resumed_result(token, outcome.execution, retain=True)
+            current = self._safety_snapshot(session, prepared.snapshot)
+            safety_intent = replace(
+                prepared.intent,
+                intent_id=outcome.recovery_id,
+                name=(
+                    IntentName.ESTOP
+                    if prepared.intent.name is IntentName.ESTOP
+                    else IntentName.HOLD
+                ),
+                args={},
+                retry_of=None,
+                confirm=True,
+            )
+            if safety_intent.name is IntentName.ESTOP:
+                plan = self.controller.planner.plan(safety_intent, current)
+                if isinstance(plan, Refusal):
+                    raise ValueError(plan.detail)
+            else:
+                plan = self.controller.planner.emergency_hold_plan(
+                    intent_id=safety_intent.intent_id, snapshot=current
+                )
+            safety_intent = replace(safety_intent, selection=plan.selection)
+            recovery = RecoveryToken(
+                safety_intent.intent_id,
+                token,
+                PreparedExecution(safety_intent, plan, current),
+                outcome.execution,
+                outcome.recovery_before_result,
+            )
+            events += (session.admit_safety_stop(safety_intent),)
+            self._recoveries[recovery.intent_id] = recovery
+            return RelayExecution(outcome.execution, events, recovery)
+
+    def _commit_recovery(
+        self, token: RecoveryToken, outcome: ResumeOutcome
+    ) -> RelayExecution | None:
+        if self._recoveries.get(token.intent_id) is not token:
+            return None
+        owns_original = self._owns_resume(token)
+        self._recoveries.pop(token.intent_id)
+        original_prepared, _pending, session = token.original.running
+        safety = outcome.execution
+        if not owns_original:
+            safety = replace(safety, status=LifecycleStatus.INVALIDATED)
+            events = tuple(session.record_execution_result(token.prepared.intent, safety))
+            return RelayExecution(token.original_result, events)
+        if safety.status in {
+            LifecycleStatus.EXECUTING,
+            LifecycleStatus.FAILED,
+            LifecycleStatus.INVALIDATED,
+        }:
+            self._running[token.intent_id] = (token.prepared, safety, session)
+        events = tuple(session.record_execution_result(token.prepared.intent, safety))
+        if token.prepared.intent.name is not IntentName.ESTOP and safety.status in {
+            LifecycleStatus.EXECUTING,
+            LifecycleStatus.COMPLETED,
+        }:
+            retirement_intent = (
+                original_prepared.intent
+                if original_prepared.intent.name is IntentName.HOLD
+                else token.prepared.intent
+            )
+            events += self._retire_held_motion(
+                retirement_intent, replace(safety, status=LifecycleStatus.EXECUTING), session
+            )
+        if self._running.get(token.original.intent_id) is token.original.running:
+            if token.commit_original_after:
+                _updated, result_events = self._commit_resumed_result(
+                    token.original, token.original_result
+                )
+                events += result_events
+            elif token.original.landing is not None:
+                updated = replace(
+                    token.original_result,
+                    acknowledgements=tuple(
+                        token.original.acknowledgement
+                        if ack.command_id == token.original.acknowledgement.command_id
+                        else ack
+                        for ack in token.original_result.acknowledgements
+                    ),
+                )
+                self._running[token.original.intent_id] = (original_prepared, updated, session)
+                landing = self._pending_landings.get(token.original.intent_id)
+                if landing is not None:
+                    self._pending_landings[token.original.intent_id] = (
+                        max(landing[0], token.original.completed_at_ms or landing[0]),
+                        landing[1],
+                    )
+            elif token.original_result.status is not LifecycleStatus.EXECUTING:
+                if token.original.intent_id not in self._pending_landings:
+                    self._running.pop(token.original.intent_id, None)
+                self._landing_ack_times.pop(token.original.intent_id, None)
+        events += self._restore_active_projection(session)
+        return RelayExecution(token.original_result, events)
 
     def _restore_active_projection(self, session: object) -> tuple[dict[str, object], ...]:
         active = session.current_state()["accepted_plan"]
@@ -883,12 +1132,12 @@ class PreparedExecutionRouter:
                 self._landing_ack_times.pop(prepared.intent.intent_id, None)
         return tuple(events)
 
-    def resume_after_acknowledgement(
+    def prepare_resume(
         self,
         session: object,
         acknowledgement: object,
-    ) -> RelayExecution | None:
-        """Resume only the session-owned execution waiting for this terminal adapter ack."""
+    ) -> ResumeToken | None:
+        """Capture a validated acknowledgement and its exact execution owner without dispatching."""
         status_value = getattr(getattr(acknowledgement, "status", None), "value", None)
         try:
             status = LifecycleStatus(status_value)
@@ -948,39 +1197,25 @@ class PreparedExecutionRouter:
                 or terminal_ack.connection_epoch != command.connection_epoch
             ):
                 return None
+            landing = None
             if pending.status is not LifecycleStatus.EXECUTING:
                 landing = self._pending_landings.get(intent_id)
                 if landing is None or terminal_ack.drone_id not in landing[1]:
                     return None
-                if terminal_ack.status is LifecycleStatus.COMPLETED:
-                    self._pending_landings[intent_id] = (
-                        max(landing[0], acknowledgement.t),
-                        landing[1],
-                    )
-                    return None
-                events = self._retain_ambiguous_stop(
-                    prepared.intent, pending, session, prepared.snapshot
-                )
-                if intent_id not in self._running:
-                    self._running.pop(intent_id, None)
-                    self._pending_landings.pop(intent_id, None)
-                    self._landing_ack_times.pop(intent_id, None)
-                else:
-                    pending = replace(
-                        pending,
-                        acknowledgements=tuple(
-                            terminal_ack if ack.command_id == command_id else ack
-                            for ack in pending.acknowledgements
-                        ),
-                    )
-                    self._running[intent_id] = (prepared, pending, session)
-                    self._pending_landings[intent_id] = (
-                        max(landing[0], acknowledgement.t),
-                        landing[1],
-                    )
-                events += self._restore_active_projection(session)
-                return RelayExecution(pending, events)
-        return self.resume(intent_id, terminal_ack, completed_at_ms=acknowledgement.t)
+            return ResumeToken(
+                intent_id,
+                running,
+                terminal_ack,
+                self._stop_generations.get(session, 0),
+                acknowledgement.t,
+                landing,
+            )
+
+    def resume_after_acknowledgement(
+        self, session: object, acknowledgement: object
+    ) -> RelayExecution | None:
+        token = self.prepare_resume(session, acknowledgement)
+        return self._drive_resume(token) if token is not None else None
 
 
 def _intent_payload(intent: IntentV1) -> dict[str, object]:

@@ -148,6 +148,165 @@ describe('control reducer fleet lifecycle', () => {
     expect(rosterMoved.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_roster' })
   })
 
+  test('preserves loss and rejoin evidence in all 15 valid socket interleavings', () => {
+    const loss: RelayServerEvent = {
+      v: 1, t: t + 2, type: 'membership', event_id: 'loss', session,
+      roster_version: 2, action: 'unexpected_loss', drone_id: 1, connection_epoch: 1,
+      membership: 'disconnected', readiness_reasons: ['disconnected'], adapter_id: 'adapter-1',
+      capabilities: ['flight'], provenance: 'relay_transport_attestation', reason: 'adapter_connection_lost',
+    }
+    const join: RelayServerEvent = {
+      ...loss, t: t + 3, event_id: 'rejoin', roster_version: 3, action: 'join',
+      connection_epoch: 2, membership: 'registered', readiness_reasons: ['readiness_not_declared'],
+      provenance: 'adapter_signature', reason: null,
+    }
+    const lostState = { ...stateEvent('lost-state', 2, [drone({ membership: 'disconnected', selectable: false })], []), state_sequence: 2 }
+    const joinedState = { ...stateEvent('joined-state', 3, [drone({ connection_epoch: 2, membership: 'registered', selectable: false })], []), state_sequence: 3 }
+    const consoleEvents = [loss, lostState, join, joinedState]
+    const keyboardEvents = [lostState, joinedState]
+    let schedules = 0
+    for (let first = 0; first < 5; first++) {
+      for (let second = first + 1; second < 6; second++) {
+        let state = withPendingCapture()
+        let consoleIndex = 0
+        let keyboardIndex = 0
+        for (let step = 0; step < 6; step++) {
+          const keyboard = step === first || step === second
+          const event = keyboard ? keyboardEvents[keyboardIndex++] : consoleEvents[consoleIndex++]
+          const priorRoster = state.rosterVersion
+          state = controlReducer(state, { type: 'relay_event', source: keyboard ? 'keyboard' : 'console', event })
+          expect(state.rosterVersion).toBeGreaterThanOrEqual(priorRoster)
+        }
+        expect(state.rosterVersion).toBe(3)
+        expect(state.aircraft[1].connection_epoch).toBe(2)
+        expect(state.selection).toEqual([])
+        expect(state.departed).toHaveLength(1)
+        expect(state.departed[0].drone.connection_epoch).toBe(1)
+        expect(state.notices.filter((notice) => notice.title === 'D-01 rejoined')).toHaveLength(1)
+        expect(state.requests[0].status).toBe('invalidated')
+        for (const event of [loss, join]) state = controlReducer(state, { type: 'relay_event', event })
+        expect(state.departed).toHaveLength(1)
+        expect(state.notices.filter((notice) => notice.title === 'D-01 rejoined')).toHaveLength(1)
+        schedules++
+      }
+    }
+    expect(schedules).toBe(15)
+  })
+
+  test.each([0, 1, 2])('applies membership only beyond authoritative roster (incoming %s)', (rosterVersion) => {
+    const current = withPendingCapture()
+    const next = controlReducer(current, {
+      type: 'relay_event', source: 'keyboard',
+      event: {
+        v: 1, t: t + 10, type: 'membership', event_id: 'delayed-join', session,
+        roster_version: rosterVersion, action: 'join', drone_id: 1, connection_epoch: 1,
+        membership: 'registered', readiness_reasons: ['readiness_not_declared'],
+        adapter_id: 'adapter-1', capabilities: ['flight'], provenance: 'adapter_signature', reason: null,
+      },
+    })
+    if (rosterVersion <= 1) {
+      expect(next.rosterVersion).toBe(1)
+      expect(next.aircraft).toEqual(current.aircraft)
+      expect(next.selection).toEqual([1])
+      expect(next.requests[0].status).toBe('pending_confirmation')
+      expect(next.notices).toEqual(current.notices)
+    } else {
+      expect(next.rosterVersion).toBe(2)
+      expect(next.selection).toEqual([])
+      expect(next.requests[0].status).toBe('invalidated')
+    }
+  })
+
+  test.each(['console', 'keyboard'] as const)('orders all tied projection fields when %s delivers newer first', (source) => {
+    const newer = {
+      ...stateEvent('newer', 1, [drone(), drone({ drone_id: 2 })], [2]),
+      state_sequence: 2,
+      armed: true,
+    }
+    let state = controlReducer(createInitialControlState(session, t), { type: 'relay_event', source, event: newer })
+    state = controlReducer(state, {
+      type: 'relay_event', source: source === 'console' ? 'keyboard' : 'console',
+      event: { ...stateEvent('older', 1, [drone()], [1]), state_sequence: 1, armed: false },
+    })
+    expect(state.selection).toEqual([2])
+    expect(state.armed).toBe(true)
+    expect(Object.keys(state.aircraft)).toEqual(['1', '2'])
+    state = controlReducer(state, {
+      type: 'relay_event', source,
+      event: { ...newer, event_id: 'clock-backward', state_sequence: 3, t: t - 1, armed: false },
+    })
+    expect(state.armed).toBe(false)
+  })
+
+  test('accepts ordered same-socket E-stop transitions within one millisecond', () => {
+    let state = createInitialControlState(session, t)
+    for (const [index, estop] of [false, true, false].entries()) {
+      state = controlReducer(state, {
+        type: 'relay_event',
+        source: 'console',
+        event: { ...stateEvent(`same-socket-${index}`, 1, [drone()], [1]), estop },
+      })
+      expect(state.estop).toBe(estop)
+    }
+  })
+
+  test('keeps a fleet-wide land preview when the authoritative selection is nonempty', () => {
+    const intent: IntentV1 = {
+      v: 1,
+      t,
+      type: 'intent',
+      intent_id: 'land-all-after-stop',
+      retry_of: null,
+      source: 'console',
+      session,
+      name: 'land_all',
+      args: {},
+      selection: [],
+      mode: 'indoor',
+      confirm: false,
+    }
+    let state = withReadyState()
+    state = controlReducer(state, {
+      type: 'request_created',
+      request: createRequestRecord(intent, t + 2),
+    })
+    state = controlReducer(state, {
+      type: 'request_pending_confirmation',
+      intentId: intent.intent_id,
+      t: t + 3,
+      plan: { title: 'land all', steps: ['preview'], rosterVersion: 1 },
+    })
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: stateEvent('state-after-estop', 1, [drone()], [1]),
+    })
+
+    expect(state.requests[0].status).toBe('pending_confirmation')
+  })
+
+  test('surfaces node-local hold and failsafe evidence without degrading transport', () => {
+    const initial = withReadyState()
+    const next = controlReducer(initial, {
+      type: 'relay_event',
+      event: {
+        v: 1,
+        t: t + 1,
+        type: 'safety_action',
+        event_id: 'safety-action-1',
+        session,
+        drone_id: 1,
+        connection_epoch: 1,
+        reason: 'link_loss',
+        action: 'failsafe',
+        loss_behavior: 'failsafe',
+      },
+    })
+
+    expect(next.connection.status).toBe(initial.connection.status)
+    expect(next.notices[0]).toMatchObject({ level: 'danger', title: 'Aircraft failsafe' })
+  })
+
   test('focuses a single authoritative selection and retains explicit focus through video loss', () => {
     let state = controlReducer(createInitialControlState(session, t), {
       type: 'relay_event',

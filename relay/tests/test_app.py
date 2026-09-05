@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock, Timer
+from time import sleep
 
 import pytest
 from fastapi.testclient import TestClient
@@ -91,6 +92,8 @@ def test_first_frame_authentication_precedes_state_and_intent_results(
             socket.send_json(intent_payload())
             acknowledgement = _receive_type(socket, "acknowledgement")
 
+        assert client.portal is not None
+        client.portal.call(app.state.relay_runtime.stop)
         replay = client.get(
             f"/session/{SESSION}",
             headers={"Authorization": f"Bearer {CONSOLE_KEY.decode()}"},
@@ -110,6 +113,144 @@ def test_first_frame_authentication_precedes_state_and_intent_results(
     assert replay.status_code == 200
     assert all(record["event"]["type"] != "auth.accepted" for record in replay.json()["events"])
     assert CONSOLE_KEY.decode() not in replay.text
+
+
+def test_relay_publishes_acceptance_before_downstream_execution_finishes(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    started = Event()
+    release = Event()
+
+    def blocking_sink(_intent: object, _state: object) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+
+    app = create_app(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=lambda _session: blocking_sink,
+    )
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as socket:
+            _authenticate_console(socket)
+            socket.send_json(intent_payload())
+            acknowledgement = _receive_type(socket, "acknowledgement")
+            assert started.wait(timeout=1)
+            release.set()
+
+    assert acknowledgement["status"] == "accepted"
+
+
+def test_duplicate_intent_from_another_console_cannot_execute_the_pending_owner(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    executed: list[str] = []
+
+    def sink(intent: object, _state: object) -> None:
+        executed.append(intent.intent_id)  # type: ignore[attr-defined]
+
+    app = create_app(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=lambda _session: sink,
+    )
+
+    with TestClient(app) as client:
+        session = app.state.relay_runtime.session(SESSION)
+        pending = intent_payload()
+        accepted = session.process_intent(
+            pending,
+            Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY),
+        )
+        assert accepted[0]["status"] == "accepted"
+
+        with client.websocket_connect(f"/ws/{SESSION}") as second_console:
+            _authenticate_console(second_console)
+            second_console.send_json(pending)
+            refusal = _receive_type(second_console, "refusal")
+
+        assert refusal["reason"] == "duplicate_intent"
+        assert executed == []
+
+
+def test_failed_intent_acceptance_delivery_prevents_downstream_execution(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed = Event()
+    app = create_app(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=lambda _session: lambda _intent, _state: executed.set(),
+    )
+    original_send_json = WebSocket.send_json
+
+    async def fail_intent_acceptance(
+        websocket: WebSocket, data: object, mode: str = "text"
+    ) -> None:
+        if (
+            isinstance(data, dict)
+            and data.get("type") == "acknowledgement"
+            and data.get("status") == "accepted"
+        ):
+            raise WebSocketDisconnect(code=1006)
+        await original_send_json(websocket, data, mode=mode)
+
+    monkeypatch.setattr(WebSocket, "send_json", fail_intent_acceptance)
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as socket:
+            _authenticate_console(socket)
+            socket.send_json(intent_payload())
+            assert not executed.wait(timeout=0.2)
+
+    assert not executed.is_set()
+
+
+def test_dead_sender_cannot_leave_a_buffered_intent_accepted(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed = Event()
+    app = create_app(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=lambda _session: lambda _intent, _state: executed.set(),
+    )
+    original_send_json = WebSocket.send_json
+    state_sends = 0
+
+    async def fail_periodic_state(websocket: WebSocket, data: object, mode: str = "text") -> None:
+        nonlocal state_sends
+        if isinstance(data, dict) and data.get("type") == "state":
+            state_sends += 1
+            if state_sends == 2:
+                raise WebSocketDisconnect(code=1006)
+        await original_send_json(websocket, data, mode=mode)
+
+    monkeypatch.setattr(WebSocket, "send_json", fail_periodic_state)
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as socket:
+            _authenticate_console(socket)
+            sleep(0.2)
+            socket.send_json(intent_payload(intent_id="buffered-after-sender-failure"))
+        replay = app.state.relay_runtime.session(SESSION).replay()
+
+    recorded_ids = {
+        record["event"]["intent"]["intent_id"]
+        for record in replay["events"]
+        if record["event"].get("type") == "intent_record"
+    }
+    assert "buffered-after-sender-failure" not in recorded_ids
+    assert not executed.is_set()
 
 
 def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
@@ -170,7 +311,7 @@ def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
 
     assert [event["type"] for event in events[:2]] == ["auth.accepted", "state"]
     assert events[1]["roster_version"] == 0
-    assert any(event["type"] == "state" and event["roster_version"] == 1 for event in events)
+    assert [event["roster_version"] for event in events if event["type"] == "membership"] == [1, 2]
     state_rosters = [event["roster_version"] for event in events if event["type"] == "state"]
     assert state_rosters[-1] == 2
     assert state_rosters == sorted(state_rosters)
@@ -195,13 +336,15 @@ def test_session_operations_publish_whole_batches_in_mutation_order(
         real_publish = runtime.publish
         publish_count = 0
 
-        async def paused_first_publish(session_id: str, events: list[dict[str, object]]) -> None:
+        async def paused_first_publish(
+            session_id: str, events: list[dict[str, object]], **kwargs: object
+        ) -> None:
             nonlocal publish_count
             publish_count += 1
             if publish_count == 1:
                 publish_started.set()
                 await resume_publish.wait()
-            await real_publish(session_id, events)
+            await real_publish(session_id, events, **kwargs)
 
         monkeypatch.setattr(runtime, "publish", paused_first_publish)
         first_operation = asyncio.create_task(
@@ -229,7 +372,10 @@ def test_session_operations_publish_whole_batches_in_mutation_order(
         resume_publish.set()
         await asyncio.gather(first_operation, second_operation)
         joined = await joining_subscription
-        queued_versions = [int(existing.queue.get_nowait()["roster_version"]) for _ in range(4)]
+        queued_versions = [
+            int(existing.queue.get_nowait().event["roster_version"])
+            for _ in range(existing.queue.qsize())
+        ]
         return (
             queued_versions,
             int(joined.initial_state["roster_version"]),
@@ -238,7 +384,7 @@ def test_session_operations_publish_whole_batches_in_mutation_order(
 
     queued_versions, initial_roster, new_backlog = asyncio.run(exercise_race())
 
-    assert queued_versions == [1, 1, 2, 2]
+    assert queued_versions == [1, 2, 2]
     assert (initial_roster, new_backlog) == (2, 0)
 
 
@@ -259,13 +405,15 @@ def test_same_roster_operations_publish_in_mutation_order(
         real_publish = runtime.publish
         publish_count = 0
 
-        async def paused_first_publish(session_id: str, events: list[dict[str, object]]) -> None:
+        async def paused_first_publish(
+            session_id: str, events: list[dict[str, object]], **kwargs: object
+        ) -> None:
             nonlocal publish_count
             publish_count += 1
             if publish_count == 1:
                 publish_started.set()
                 await resume_publish.wait()
-            await real_publish(session_id, events)
+            await real_publish(session_id, events, **kwargs)
 
         monkeypatch.setattr(runtime, "publish", paused_first_publish)
         older = asyncio.create_task(runtime.process_and_publish(SESSION, session.periodic_events))
@@ -281,11 +429,10 @@ def test_same_roster_operations_publish_in_mutation_order(
         resume_publish.set()
         await asyncio.gather(older, newer)
         return [
-            bool(subscription.queue.get_nowait()["estop"]),
-            bool(subscription.queue.get_nowait()["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
-    assert asyncio.run(exercise_race()) == [False, True]
+    assert asyncio.run(exercise_race()) == [True]
 
 
 def test_cancelled_session_operation_finishes_publishing_before_releasing_order(
@@ -323,11 +470,10 @@ def test_cancelled_session_operation_finishes_publishing_before_releasing_order(
             SESSION, lambda: [session.update_control_projection(estop=False)]
         )
         return [
-            bool(subscription.queue.get_nowait()["estop"]),
-            bool(subscription.queue.get_nowait()["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
-    assert asyncio.run(exercise()) == [True, False]
+    assert asyncio.run(exercise()) == [False]
 
 
 def test_bad_authentication_is_refused_without_creating_a_session_log(
@@ -440,8 +586,11 @@ def test_authenticated_console_receives_periodic_state_fanout_at_frozen_rate(
 def test_restart_keeps_persisted_session_replay_only(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:
-    def accepting_sink(_intent: object, _state: object) -> None:
-        return None
+    from relay.contracts import LifecycleStatus
+    from relay.session import IntentSinkResult
+
+    def accepting_sink(_intent: object, _state: object) -> IntentSinkResult:
+        return IntentSinkResult(status=LifecycleStatus.COMPLETED, source="planner")
 
     first_app = create_app(
         app_settings,
@@ -456,9 +605,11 @@ def test_restart_keeps_persisted_session_replay_only(
             _authenticate_console(socket)
             socket.send_json(intent_payload())
             acknowledgement = _receive_type(socket, "acknowledgement")
+            completion = _receive_type(socket, "acknowledgement")
         original_replay = client.get(f"/session/{SESSION}", headers=headers).json()
 
     assert acknowledgement["status"] == "accepted"
+    assert completion["status"] == "completed"
     assert original_replay["last_sequence"] > 0
     log_path = next(app_settings.log_dir.glob("*.jsonl"))
     original_log = log_path.read_bytes()
@@ -973,3 +1124,38 @@ def test_initial_send_failure_releases_adapter_binding_and_records_loss(
             rejoined = _receive_type(retry_socket, "membership")
 
         assert rejoined["connection_epoch"] == 2
+
+
+def test_new_membership_does_not_discard_committed_arm_completion(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    from relay.contracts import LifecycleStatus
+    from relay.session import IntentSinkResult
+
+    async def exercise_race() -> None:
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        subscription = await runtime.subscribe(SESSION, console)
+        session.intent_sink = lambda _intent, _state: IntentSinkResult(
+            status=LifecycleStatus.COMPLETED, source="planner", armed_update=True
+        )
+        raw = {**intent_payload(), "name": "arm", "selection": []}
+        session.process_intent(raw, console)
+        completed_batch = session.execute_pending_intent("intent-1")
+        assert [event["type"] for event in completed_batch] == ["state", "acknowledgement"]
+        assert completed_batch[-1]["status"] == "completed"
+        membership = session.process_membership(
+            membership_payload(action="join", event_id="join-before-publish"), adapter
+        )
+        await runtime.publish(SESSION, membership)
+        assert await runtime.publish(SESSION, completed_batch)
+        queued = []
+        while not subscription.queue.empty():
+            queued.append(subscription.queue.get_nowait().event)
+        assert completed_batch[-1] in queued
+        assert completed_batch[0] not in queued
+        assert [event["roster_version"] for event in queued if event["type"] == "state"] == [1]
+
+    asyncio.run(exercise_race())

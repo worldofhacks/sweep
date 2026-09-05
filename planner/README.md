@@ -70,6 +70,13 @@ decision as audit metadata. A disconnected aircraft does not wait for that relay
 result: its node-local activity clock independently enters hold and then its configured
 adapter failsafe; #17/M1.4 owns production runtime wiring.
 
+`AutonomyRelayBridge` is that runtime boundary. Supply it through
+`create_app(intent_sink_factory=...)` with an explicit controller and safety-enrichment
+provider. The relay records the accepted request, complete autonomy result, authoritative
+control projection, and terminal lifecycle in one session log. Simulator and hardware
+composition roots supply their own measured planner, arbiter, adapter, watchdog, and enrichment
+configuration.
+
 Later formation, altitude, sweep, `map_area`, and route-allocation behavior remains
 future scope and must earn a capability before planning.
 

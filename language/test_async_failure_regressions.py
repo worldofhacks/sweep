@@ -207,6 +207,10 @@ def test_async_stop_failure_preserves_terminal_status_and_latch(tmp_path, monkey
     }
     operator = Principal(source="keyboard", drone_id=None, signing_key=b"x" * 32)
     events = relay.process_frame(intent, operator)
+    assert events[0]["status"] == "accepted"
+    assert flight.calls == []
+    relay.mark_pending_intent_delivered(intent["intent_id"])
+    events.extend(relay.execute_pending_intent(intent["intent_id"]))
     assert events[-1]["status"] == "executing", events
     calls_after_stop = list(flight.calls)
     command = relay.current_state()["accepted_plan"]["commands"][0]
@@ -238,5 +242,8 @@ def test_async_stop_failure_preserves_terminal_status_and_latch(tmp_path, monkey
         {**intent, "intent_id": "motion-after-stop", "name": "takeoff", "selection": [1, 2]},
         operator,
     )
+    assert events[0]["status"] == "accepted"
+    relay.mark_pending_intent_delivered("motion-after-stop")
+    events.extend(relay.execute_pending_intent("motion-after-stop"))
     assert events[-1]["status"] == "refused", events
     assert flight.calls == calls_after_stop

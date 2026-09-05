@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
 import App from '../../App'
@@ -75,7 +75,7 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
       intent_id: 'intent-1',
       name: 'arm',
       args: {},
-      selection: [1],
+      selection: [],
       confirm: false,
       retry_of: null,
     })
@@ -118,13 +118,13 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     await user.click(motionGroup().getByRole('button', { name: /^Land all/ }))
     const landDock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(landDock).toHaveTextContent('Land all fleet')
-    expect(landDock).toHaveTextContent('D-01 D-02 D-03 D-04')
+    expect(landDock).toHaveTextContent('whole roster')
     await confirmDock(user)
     await waitFor(() => expect(clients.console.sent).toHaveLength(7))
     expect(clients.console.sent[6]).toMatchObject({
       intent_id: 'intent-7',
       name: 'land_all',
-      selection: [1, 2, 3, 4],
+      selection: [],
       confirm: true,
     })
     expect(clients.console.sent.every((intent) => intent.retry_of === null)).toBe(true)
@@ -141,10 +141,47 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(stamps).toHaveTextContent('accepted')
     expect(screen.getByRole('listitem', { name: 'translate accepted' })).toHaveTextContent('source console')
     const landAll = screen.getByRole('listitem', { name: 'land_all accepted' })
-    expect(landAll).toHaveTextContent('D-01 D-02 D-03 D-04')
+    expect(landAll).toHaveTextContent('fleet')
     expect(landAll).toHaveTextContent('Accepted by the explicit development fixture.')
     // Accepted is not terminal, so no outcome card claims a result the relay has not reported.
     expect(screen.queryByLabelText('Latest outcome')).not.toBeInTheDocument()
+  })
+
+  test.each(['land', 'land_all'] as const)('completed E-stop permits confirmed %s while other motion remains blocked', async (name) => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
+    await screen.findByText('1 of 4 selected')
+    await user.click(screen.getByRole('button', { name: 'Network stop' }))
+    expect(clients.console.sent[0]).toMatchObject({ name: 'estop', selection: [] })
+    act(() => {
+      clients.console.emitServer({
+        v: 1, t: t0 + 1, type: 'acknowledgement', event_id: 'completed-estop', session,
+        intent_id: clients.console.sent[0].intent_id, command_id: null, status: 'completed',
+        source: 'relay', drone_id: null, connection_epoch: null, roster_version: 7,
+        reason: null, detail: 'Fleet stopped.',
+      })
+      clients.console.emitServer({
+        v: 1, t: t0 + 1, type: 'state', event_id: 'stopped-state', session,
+        state_sequence: 1, roster_version: 7, armed: true, estop: true, selection: [1],
+        formation: 'none', spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
+        drones: fixtureAircraft(t0),
+      })
+    })
+    expect(screen.getByRole('button', { name: 'Translate north' })).toBeDisabled()
+    expect(motionGroup().getByRole('button', { name: /^Takeoff/ })).toBeDisabled()
+    expect(motionGroup().getByRole('button', { name: 'Come home' })).toBeDisabled()
+    if (name === 'land') await openPane(user, 'Commands')
+    const land = name === 'land'
+      ? screen.getByRole('button', { name: /^Land Confirmation required/ })
+      : motionGroup().getByRole('button', { name: /^Land all/ })
+    expect(land).toBeEnabled()
+    await user.click(land)
+    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent(name === 'land' ? 'D-01' : 'whole roster')
+    expect(clients.console.sent).toHaveLength(1)
+    await confirmDock(user)
+    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+    expect(clients.console.sent[1]).toMatchObject({ name, selection: name === 'land' ? [1] : [], confirm: true })
   })
 
   test('unsupported controls are greyed with the refusal copy, stay pressable, and the refusal is recorded', async () => {
@@ -195,6 +232,42 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
       expect(within(row).getByLabelText('Lifecycle timestamps')).toHaveTextContent('refused')
     }
     expect(screen.getByLabelText('Latest outcome')).toHaveTextContent('formation_set refused')
+  })
+
+  test('retrying selected landing waits for a fresh confirmation before sending', async () => {
+    let now = t0
+    const clients = fixtureClients(() => now)
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds(() => now)} />)
+    await screen.findByText('1 of 4 selected')
+    await openPane(user, 'Commands')
+    await user.click(screen.getByRole('button', { name: /^Land Confirmation required/ }))
+    await confirmDock(user)
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    const original = clients.console.sent[0]
+    act(() => {
+      clients.console.emitServer({
+        v: 1, t: t0 + 1, type: 'acknowledgement', event_id: 'land-failed', session,
+        intent_id: original.intent_id, command_id: null, status: 'failed',
+        source: 'autonomy', drone_id: null, connection_epoch: null, roster_version: 7,
+        reason: 'adapter_failure', detail: 'Landing failed.',
+      })
+    })
+    now += 10
+    await openPane(user, 'Requests')
+    const failed = screen.getByRole('listitem', { name: 'land failed' })
+    await user.click(within(failed).getByRole('button', { name: 'Retry as new intent' }))
+    expect(clients.console.sent).toHaveLength(1)
+    const dock = screen.getByRole('region', { name: 'Pending confirmation' })
+    const draft = JSON.parse(dock.querySelector('pre')!.textContent!)
+    expect(draft).toMatchObject({
+      name: 'land', intent_id: 'intent-2', retry_of: original.intent_id,
+      selection: [1], args: {}, confirm: false,
+    })
+    now += 10
+    await confirmDock(user)
+    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+    expect(clients.console.sent[1]).toEqual({ ...draft, t: now, confirm: true })
   })
 
   test('retry mints a new id with retry_of and sends at once, with no second preview for a confirmation-gated name', async () => {
@@ -249,11 +322,16 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
   })
 
   test('the translate pad and the motion controls are disabled with a stated reason when nothing is selected', async () => {
-    const clients = fixtureClients()
+    let frameTime = t0
+    const clients = {
+      console: new FixtureRelayClient(session, () => frameTime, 'console'),
+      keyboard: new FixtureRelayClient(session, () => frameTime, 'keyboard'),
+    }
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
     await screen.findByText('1 of 4 selected')
 
+    frameTime++
     clients.console.emitServer({
       v: 1,
       t: t0 + 1,
@@ -335,7 +413,7 @@ describe('Control › Capture', () => {
     })
   })
 
-  test('a failed capture_room retries at once with its confirmed envelope under a new id and no second preview', async () => {
+  test('a failed capture_room requires confirmation before sending its preserved retry envelope', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
@@ -371,7 +449,9 @@ describe('Control › Capture', () => {
     ).toBeInTheDocument()
     await user.click(within(failedRow).getByRole('button', { name: 'Retry as new intent' }))
 
-    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(1)
+    await confirmDock(user)
     await waitFor(() => expect(clients.console.sent).toHaveLength(2))
     expect(clients.console.sent[1]).toMatchObject({
       intent_id: 'intent-2',
@@ -384,7 +464,7 @@ describe('Control › Capture', () => {
     const retried = await screen.findByRole('listitem', { name: 'capture_room accepted' })
     expect(retried).toHaveTextContent('Retry of')
     expect(retried).toHaveTextContent('intent-1')
-    expect(within(retried).getByLabelText('Lifecycle timestamps')).not.toHaveTextContent(
+    expect(within(retried).getByLabelText('Lifecycle timestamps')).toHaveTextContent(
       'pending_confirmation',
     )
   })
@@ -455,7 +535,7 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     expect(motion.getByRole('button', { name: /^Map area/ })).toBeDisabled()
     const rows = motion.getAllByRole('button')
     expect(rows[3]).toHaveTextContent('Land')
-    expect(rows[3]).toHaveTextContent('unsupported')
+    expect(rows[3]).toHaveTextContent('accepted at M2.0')
     expect(rows[3]).toBeEnabled()
     expect(rows[0]).toHaveTextContent('Takeoff')
     expect(rows[0]).toHaveTextContent('accepted at M2.0')
