@@ -83,6 +83,9 @@ class FakeCameraStream(
     override val logPath: StateFlow<String?>
         get() = tracker.logPath
 
+    override val lastFrameAtMs: StateFlow<Long?>
+        get() = tracker.lastFrameAtMs
+
     private var surface: Surface? = null
     private var drawer: Thread? = null
 

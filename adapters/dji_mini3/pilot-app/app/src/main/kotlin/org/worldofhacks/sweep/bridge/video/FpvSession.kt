@@ -28,6 +28,13 @@ interface CameraStream {
     /** Path of the bench JSONL the evidence is written to, once a Surface has opened one. */
     val logPath: StateFlow<String?>
 
+    /**
+     * Arrival time of the newest frame. Unlike [evidence] it survives a reset, so after a
+     * disconnect the display can say how long the picture has been gone instead of claiming
+     * that no frame was ever received; null until the first frame.
+     */
+    val lastFrameAtMs: StateFlow<Long?>
+
     fun attachSurface(surface: Surface, width: Int, height: Int)
 
     fun detachSurface(surface: Surface)

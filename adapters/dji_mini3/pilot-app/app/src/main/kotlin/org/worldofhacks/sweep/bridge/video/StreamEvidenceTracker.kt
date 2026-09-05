@@ -44,6 +44,11 @@ class StreamEvidenceTracker(
     private val _logPath = MutableStateFlow<String?>(null)
     val logPath: StateFlow<String?> = _logPath.asStateFlow()
 
+    private val _lastFrameAt = MutableStateFlow<Long?>(null)
+
+    /** Arrival time of the newest frame; [reset] leaves it so a stall or a disconnect can be aged. */
+    val lastFrameAtMs: StateFlow<Long?> = _lastFrameAt.asStateFlow()
+
     @Volatile
     private var lastPublishAt = 0L
 
@@ -58,6 +63,7 @@ class StreamEvidenceTracker(
         if (changed || now - lastPublishAt >= publishIntervalMs) {
             lastPublishAt = now
             _evidence.value = monitor.evidence(now)
+            _lastFrameAt.value = now
         }
         val sizeBytes = frame.sizeBytes
         val keyframe = frame.keyFrame
@@ -78,7 +84,10 @@ class StreamEvidenceTracker(
         worker.execute { recorder?.note(text) }
     }
 
-    /** Forgets the stream (aircraft disconnect, Surface detach) so stale evidence never shows. */
+    /**
+     * Forgets the stream (aircraft disconnect, Surface detach) so stale evidence never shows.
+     * [lastFrameAtMs] is kept: when the picture was last seen is a fact about the loss.
+     */
     fun reset() {
         monitor.reset()
         lastPublishAt = 0

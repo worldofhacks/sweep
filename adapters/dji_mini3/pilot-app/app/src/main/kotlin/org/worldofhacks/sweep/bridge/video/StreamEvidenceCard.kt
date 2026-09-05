@@ -23,6 +23,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 fun StreamEvidenceCard(fpv: FpvSession, now: Long, onOpenFlightDisplay: () -> Unit) {
     val evidence by fpv.cameraStream.evidence.collectAsStateWithLifecycle()
     val logPath by fpv.cameraStream.logPath.collectAsStateWithLifecycle()
+    val lastFrameAt by fpv.cameraStream.lastFrameAtMs.collectAsStateWithLifecycle()
     val attitude by fpv.attitude.collectAsStateWithLifecycle()
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -32,8 +33,11 @@ fun StreamEvidenceCard(fpv: FpvSession, now: Long, onOpenFlightDisplay: () -> Un
                 style = MaterialTheme.typography.bodySmall,
             )
             val current = evidence
-            if (current == null) {
+            val last = lastFrameAt
+            if (current == null && last == null) {
                 Text("No frame received yet. Open the Flight display with the aircraft powered (fake flavor: after Connect).")
+            } else if (current == null) {
+                Text("Stream reset (aircraft disconnected or Surface released); last frame ${age(now, last)}.", color = MaterialTheme.colorScheme.error)
             } else {
                 val cadence = current.cadence
                 val measured = cadence.measuredFrameRateHz?.let { "%.1f".format(it) } ?: "-"
