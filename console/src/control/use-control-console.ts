@@ -363,6 +363,28 @@ export function useControlConsole({
     [intentDependencies, state.requests],
   )
 
+  /**
+   * A change that lands while a preview is pending invalidates it visibly with
+   * the stated reason, exactly as a roster or selection change would.
+   */
+  const invalidatePendingRequests = useCallback(
+    (reasonCode: string, detail: string) => {
+      const t = intentDependencies.now()
+      state.requests
+        .filter((request) => request.status === 'pending_confirmation')
+        .forEach((request) => {
+          dispatch({
+            type: 'request_invalidated',
+            intentId: request.intent.intent_id,
+            t,
+            reasonCode,
+            detail,
+          })
+        })
+    },
+    [intentDependencies, state.requests],
+  )
+
   const retryFailedRequest = useCallback(
     (request: RequestRecord) => {
       if (request.status !== 'failed') return
@@ -413,6 +435,7 @@ export function useControlConsole({
     issueHold,
     issueNetworkStop,
     changeCapturePattern,
+    invalidatePendingRequests,
     retryFailedRequest,
     selectFeed: (droneId: DroneId) => dispatch({ type: 'feed_selected', droneId }),
   }

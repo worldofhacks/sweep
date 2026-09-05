@@ -1,6 +1,8 @@
 import type { ComponentType } from 'react'
+import type { CatalogController } from '../catalog/use-catalog'
 import type { useControlConsole } from '../control/use-control-console'
 import type { GestureProducerDependencies } from '../gesture/use-gesture-producer'
+import type { MediaRuntime } from '../media/runtime'
 import type { TranscriptClient } from '../voice/client'
 import type { UsePushToTalkOptions } from '../voice/use-push-to-talk'
 
@@ -12,8 +14,8 @@ export type ModuleId =
   | 'live'
   | 'gesture'
   | 'speech'
-  | 'library'
-  | 'builder'
+  | 'captures'
+  | 'worlds'
   | 'reference'
 
 /** Browser seams for the push-to-talk recorder; tests inject fakes. */
@@ -34,11 +36,15 @@ export interface ModuleServices {
 
 export interface ModuleProps {
   controller: ConsoleController
+  /** Captures, worlds, node details, and configuration; unreported in production. */
+  catalog: CatalogController
   now: () => number
   /** Room identifier shared by Control › Capture, the gesture producer and the speech compiler. */
   roomId: string
   onRoomIdChange: (roomId: string) => void
   services: ModuleServices
+  /** Playback runtime; absent until the media bootstrap provides a configuration. */
+  media?: MediaRuntime
 }
 
 export interface ModuleDefinition {

@@ -1,5 +1,7 @@
 import { useEffect, useReducer, useState } from 'react'
 import './shell.css'
+import type { CatalogController } from '../catalog/use-catalog'
+import type { MediaRuntime } from '../media/runtime'
 import { MODULES, getModule } from '../modules/registry'
 import type { ConsoleController, ModuleId, ModuleServices } from '../modules/types'
 import { ContextColumn } from './ContextColumn'
@@ -20,15 +22,25 @@ import {
 
 export interface ShellProps {
   controller: ConsoleController
+  catalog: CatalogController
   now?: () => number
   initialModule?: ModuleId
   services?: ModuleServices
+  /** Playback runtime handed to every module; absent without a media bootstrap. */
+  media?: MediaRuntime
 }
 
 const TICK_MS = 1_000
 const DEFAULT_ROOM_ID = 'room-01'
 
-export function Shell({ controller, now = Date.now, initialModule = 'control', services = {} }: ShellProps) {
+export function Shell({
+  controller,
+  catalog,
+  now = Date.now,
+  initialModule = 'control',
+  services = {},
+  media,
+}: ShellProps) {
   const { state, pendingRequest, confirmRequest, cancelRequest, issueNetworkStop } = controller
   const [activeId, setActiveId] = useState<ModuleId>(initialModule)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -50,7 +62,7 @@ export function Shell({ controller, now = Date.now, initialModule = 'control', s
   // gesture producer says so itself and the header stays as it was.
   const webcam =
     state.webcamConnection.transport === 'unavailable' ? undefined : state.webcamConnection.status
-  const moduleProps = { controller, now, roomId, onRoomIdChange: setRoomId, services }
+  const moduleProps = { controller, catalog, now, roomId, onRoomIdChange: setRoomId, services, media }
 
   return (
     <Frame

@@ -1,11 +1,11 @@
 import { FleetContext } from './FleetContext'
-import { BuilderModule } from './builder/BuilderModule'
+import { CapturesModule } from './captures/CapturesModule'
 import { ControlModule } from './control/ControlModule'
 import { GestureModule } from './gesture/GestureModule'
-import { LibraryModule } from './library/LibraryModule'
 import { LiveModule } from './live/LiveModule'
 import { ReferenceModule } from './reference/ReferenceModule'
 import { SpeechModule } from './speech/SpeechModule'
+import { WorldsModule } from './worlds/WorldsModule'
 import type { ModuleDefinition, ModuleId } from './types'
 
 /** Navigation order from the design: Control, Live, Gesture, Speech, Captures, Worlds, Reference. */
@@ -43,19 +43,19 @@ export const MODULES: readonly ModuleDefinition[] = [
     context: FleetContext,
   },
   {
-    id: 'library',
+    id: 'captures',
     label: 'Captures',
     title: 'Capture library',
     note: 'Captured media by room, capture, aircraft and time.',
-    component: LibraryModule,
+    component: CapturesModule,
     context: FleetContext,
   },
   {
-    id: 'builder',
+    id: 'worlds',
     label: 'Worlds',
     title: 'World Builder',
     note: 'Rooms, bundles, and generation jobs. A generated world is never a safety record.',
-    component: BuilderModule,
+    component: WorldsModule,
     context: FleetContext,
   },
   {

@@ -1,7 +1,7 @@
 /*
- * Panels that moved from the checkpoint dashboard into modules/control and
- * modules/live. Layout and class names are unchanged; every colour, radius,
- * shadow and duration now comes from tokens.css.
+ * Panels that moved from the checkpoint dashboard into modules/control. Layout
+ * and class names are unchanged; every colour, radius, shadow and duration now
+ * comes from tokens.css. The Live module styles itself in modules/live/live.css.
  */
 .eyebrow {
   display: block;
@@ -237,92 +237,6 @@
 .empty-slot strong { margin-top: 8px; color: var(--color-ink-2); font-size: var(--text-13); }
 .empty-slot p { margin: 8px 0 0; font-size: var(--text-11-5); }
 
-/* Camera mosaic and focus pane */
-.camera-mosaic {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  padding: 12px;
-}
-.camera-tile {
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid var(--color-border-secondary);
-  border-radius: var(--radius-tab-group);
-  background: var(--color-surface);
-}
-.camera-tile.is-focused { border-color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-ink); }
-.camera-tile-visual, .focus-source-visual {
-  position: relative;
-  display: flex;
-  min-height: 92px;
-  align-items: flex-end;
-  overflow: hidden;
-  border-radius: var(--radius-chip);
-  background: var(--stripe-live);
-}
-.camera-tile.is-offline .camera-tile-visual, .camera-tile.is-unreported .camera-tile-visual,
-.focus-source.is-offline .focus-source-visual, .focus-source.is-unreported .focus-source-visual { background: var(--stripe-idle); }
-.cam-label {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  background: var(--color-cam-label-bg);
-  color: var(--color-cam-label);
-  font: var(--weight-500) var(--text-11)/1 var(--font-mono);
-  letter-spacing: var(--tracking-metric);
-  text-transform: uppercase;
-}
-.camera-signal { width: var(--size-dot-7); height: var(--size-dot-7); flex: 0 0 auto; border-radius: var(--radius-dot); background: var(--color-stream-unreported); }
-.camera-signal.is-live { background: var(--color-stream-live); }
-.camera-signal.is-offline { background: var(--color-stream-offline); }
-.camera-tile-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-top: 10px; }
-.camera-tile-header > div { display: grid; gap: 2px; }
-.camera-tile-header strong { font-size: var(--text-16); font-weight: var(--weight-600); letter-spacing: var(--tracking-tight); }
-.camera-tile-header span { color: var(--color-ink-2); font-size: var(--text-11-5); }
-.camera-tile-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 10px 0 0; }
-.camera-tile-metrics div { display: grid; gap: 2px; }
-.camera-tile-metrics dt { color: var(--color-ink-3); font-size: var(--text-11); letter-spacing: var(--tracking-metric); text-transform: uppercase; }
-.camera-tile-metrics dd { margin: 0; color: var(--color-ink); font: var(--weight-400) var(--text-13-5)/1 var(--font-mono); font-variant-numeric: tabular-nums; }
-.camera-tile-detail { margin: 10px 0 0; color: var(--color-ink-2); font-size: var(--text-11-5); line-height: 1.35; }
-.focus-source { display: grid; min-height: 322px; grid-template-rows: minmax(164px, 1fr) auto; }
-.focus-source-visual { margin: 12px 12px 0; }
-.focus-source-copy { padding: 14px 16px 16px; }
-.focus-source-copy strong {
-  display: block;
-  margin-top: 5px;
-  font-family: var(--font-mono);
-  font-size: var(--text-19);
-  font-weight: var(--weight-600);
-  letter-spacing: var(--tracking-tight-2);
-}
-.focus-source-copy p { margin: 6px 0 0; color: var(--color-ink-2); font-size: var(--text-12-5); line-height: var(--leading-1-45); }
-.focus-source-copy dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--color-rule-inner); }
-.focus-source-copy dl div { display: grid; gap: 3px; }
-.focus-source-copy dt { color: var(--color-ink-3); font-size: var(--text-11); letter-spacing: var(--tracking-metric); text-transform: uppercase; }
-.focus-source-copy dd { margin: 0; color: var(--color-ink); font-size: var(--text-13-5); }
-.focus-empty {
-  display: grid;
-  min-height: 320px;
-  place-content: center;
-  justify-items: center;
-  padding: 24px;
-  border-radius: 0 0 var(--radius-card) var(--radius-card);
-  background: var(--color-panel);
-  text-align: center;
-}
-.reticle { position: relative; width: 40px; height: 40px; margin: 16px; border: 1px solid var(--color-cam-reticle); border-radius: var(--radius-dot); }
-.focus-source-visual .reticle { position: absolute; top: 50%; left: 50%; margin: -20px 0 0 -20px; }
-.reticle::before, .reticle::after { position: absolute; content: ''; background: var(--color-cam-reticle); }
-.reticle::before { top: 19px; left: -8px; width: 56px; height: 1px; }
-.reticle::after { top: -8px; left: 19px; width: 1px; height: 56px; }
-.focus-empty .reticle { margin: 0 0 16px; border-color: var(--color-border-secondary); }
-.focus-empty .reticle::before, .focus-empty .reticle::after { background: var(--color-border-secondary); }
-.focus-empty strong { font-size: var(--text-13); }
-.focus-empty p { margin: 8px 0 0; color: var(--color-ink-2); font-size: var(--text-11-5); }
-
 /* Requests */
 .last-outcome {
   margin: 16px;
@@ -387,7 +301,7 @@
   .aircraft-epoch { display: none; }
   .aircraft-detail { grid-template-columns: 1fr auto; }
   .aircraft-detail > span:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
-  .pattern-options, .active-state-grid, .camera-mosaic { grid-template-columns: 1fr; }
+  .pattern-options, .active-state-grid { grid-template-columns: 1fr; }
   .drone-state + .drone-state { border-top: 1px solid var(--color-hairline); border-left: 0; }
   .request-reason { align-items: flex-start; flex-direction: column; }
 }

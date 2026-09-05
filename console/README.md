@@ -42,11 +42,21 @@ disconnected and network controls are unavailable.
 
 ## Camera dashboard
 
-The camera mosaic and focus pane are fixture-first. They use the authoritative aircraft ID,
-connection epoch, telemetry, membership, readiness reasons, and a closed media status with a
-last-frame timestamp. The console derives the display name `drone{id}` and does not render
-adapter-provided media URLs. MediaMTX endpoints, credentials, recording, latency measurement,
-and browser playback remain held for M3.1.
+The Live module's walls and focus feed use the authoritative aircraft ID, connection epoch,
+telemetry, membership, readiness reasons, and a closed media status with a last-frame timestamp.
+The console derives the display name `drone{id}` and does not render adapter-provided media URLs.
+Recording and latency measurement remain held for M3.1.
+
+## Live playback
+
+The focus feed plays the focused aircraft's stream over WHEP only while the relay reports it
+`live` and the page was served a media configuration; every other state is said in words. The
+configuration is read once from `/runtime-config.json` as
+`{ "media": { "webrtcOrigin", "readerUsername", "readerPassword" } }`, so credentials never enter
+the bundle. `pnpm dev` serves that endpoint from `SWEEP_MEDIA_WEBRTC_ORIGIN`,
+`SWEEP_MEDIA_READ_USERNAME`, and `SWEEP_MEDIA_READ_PASSWORD`; with any of them unset it answers
+503 and the console runs with playback disabled. The player files under `src/media/` come from
+PR #68 and will be reconciled when it merges.
 
 For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
 development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build
@@ -67,6 +77,20 @@ honest empty state.
 
 Fixture scenarios are data only: `/?fixture=control`, `pending4`, `six6`, or `down` select a
 `FixtureRelayClient` scenario for both the console and keyboard sources.
+
+## Catalog modules
+
+Captures, Worlds, and the Reference group's Health (Connectivity), Config and States sections read
+a `CatalogClient` from `src/catalog/`: captures, the building and its rooms, generation jobs,
+per-node details, shared services, health metrics and configuration groups. The relay exposes no
+endpoint for any of these yet, so production wires `UnreportedCatalogClient`: every surface reads
+unreported and every action refuses with its reason. The fixture scenarios carry the design's
+tables through `FixtureCatalogClient` (`control` present but empty, `pending4` and `six6`
+populated, `down` keeping the last snapshot while the console link is down and refusing actions);
+job chains run on an injectable scheduler so tests advance them by hand. Relay-owned facts on
+those pages (node membership, telemetry staleness, video, the two sockets, the pending plan) come
+from the control state, never the catalog, and an apply-now configuration save invalidates a
+pending plan through the control hook so the shell states it.
 
 ## Gesture and Speech modules
 
