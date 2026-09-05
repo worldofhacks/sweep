@@ -5,7 +5,7 @@ import pytest
 from adapters.sim.flight import SimFlightAdapter
 from planner.models import FleetSnapshot, FlightState, LifecycleStatus, Plan
 from relay.intent_v1 import IntentName
-from tests.autonomy_fixtures import make_intent, make_snapshot, make_stack
+from tests.autonomy_fixtures import make_intent, make_snapshot, make_stack, planning_config
 
 
 @pytest.mark.parametrize("count", [4, 6])
@@ -16,7 +16,16 @@ def test_simulated_m15_path_reaches_confirmed_land_all(count: int) -> None:
         flight_state=FlightState.DISARMED,
         armed=False,
     )
-    controller, _, _, _, flight, _ = make_stack(snapshot)
+    controller, _, _, _, flight, _ = make_stack(
+        snapshot,
+        config=replace(
+            planning_config(),
+            altitude_step_m=0.5,
+            altitude_floor_z_m=0.0,
+            altitude_configuration_id="m15-sim-floor-v1",
+            altitude_completion_tolerance_m=0.05,
+        ),
+    )
 
     intents = (
         make_intent(IntentName.ARM, selection=()),
@@ -65,7 +74,11 @@ def test_simulated_m15_path_reaches_confirmed_land_all(count: int) -> None:
     )
 
     for intent in intents:
-        result = controller.execute(intent, snapshot)
+        result = controller.execute(
+            intent,
+            snapshot,
+            current_snapshot=lambda current=snapshot: _live_sim_snapshot(current, flight),
+        )
         assert result.status is LifecycleStatus.COMPLETED, result.to_dict()
         assert result.plan is not None
         snapshot = _apply_simulated_plan(snapshot, result.plan, flight)
@@ -76,19 +89,9 @@ def test_simulated_m15_path_reaches_confirmed_land_all(count: int) -> None:
 def _apply_simulated_plan(
     snapshot: FleetSnapshot, plan: Plan, flight: SimFlightAdapter
 ) -> FleetSnapshot:
-    aircraft = {
-        drone_id: replace(
-            state,
-            pose=simulated.pose,
-            flight_state=simulated.flight_state,
-            armed=simulated.armed,
-        )
-        for drone_id, state in snapshot.aircraft.items()
-        for simulated in (flight.aircraft[drone_id],)
-    }
+    current = _live_sim_snapshot(snapshot, flight)
     return replace(
-        snapshot,
-        aircraft=aircraft,
+        current,
         selection=(
             plan.selection_update if plan.selection_update is not None else snapshot.selection
         ),
@@ -98,3 +101,20 @@ def _apply_simulated_plan(
         ),
         spacing=plan.spacing_update if plan.spacing_update is not None else snapshot.spacing,
     )
+
+
+def _live_sim_snapshot(snapshot: FleetSnapshot, flight: SimFlightAdapter) -> FleetSnapshot:
+    now_ms = snapshot.now_ms + len(flight.calls) + 1
+    aircraft = {
+        drone_id: replace(
+            state,
+            pose=simulated.pose,
+            flight_state=simulated.flight_state,
+            armed=simulated.armed,
+            link_last_seen_ms=now_ms,
+            position_last_seen_ms=now_ms,
+        )
+        for drone_id, state in snapshot.aircraft.items()
+        for simulated in (flight.aircraft[drone_id],)
+    }
+    return replace(snapshot, aircraft=aircraft, now_ms=now_ms, operator_last_seen_ms=now_ms)

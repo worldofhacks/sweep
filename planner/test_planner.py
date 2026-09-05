@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from planner.models import CommandOperation, FlightState, Plan, Position, Refusal, RefusalReason
@@ -9,6 +11,16 @@ from tests.autonomy_fixtures import (
     planning_config,
     replace_aircraft,
 )
+
+
+def altitude_config():
+    return replace(
+        planning_config(),
+        altitude_step_m=0.5,
+        altitude_floor_z_m=0.0,
+        altitude_configuration_id="planner-test-floor-v1",
+        altitude_completion_tolerance_m=0.05,
+    )
 
 
 @pytest.mark.parametrize("count", [1, 2, 3, 4])
@@ -245,7 +257,7 @@ def test_formation_and_spacing_plans_carry_authoritative_projection_updates() ->
 
 def test_altitude_and_confirmed_sweep_expand_for_six_simulated_aircraft() -> None:
     snapshot = make_snapshot(6)
-    planner = DeterministicPlanner(planning_config())
+    planner = DeterministicPlanner(altitude_config())
 
     altitude = planner.plan(
         make_intent(IntentName.ALTITUDE, selection=snapshot.selection, args={"delta": 1}),
@@ -257,7 +269,11 @@ def test_altitude_and_confirmed_sweep_expand_for_six_simulated_aircraft() -> Non
     )
 
     assert isinstance(altitude, Plan)
-    assert [command.parameters["z"] for command in altitude.commands] == [1.5] * 6
+    assert [
+        command.parameters["z"]
+        for command in altitude.commands
+        if command.operation is CommandOperation.GOTO
+    ] == [1.5] * 6
     assert isinstance(sweep, Plan)
     assert len(sweep.commands) == 12
     assert {command.operation for command in sweep.commands} == {CommandOperation.GOTO}
@@ -287,8 +303,9 @@ def test_requested_sweep_box_is_the_exact_source_of_lane_coordinates() -> None:
 @pytest.mark.parametrize("name", [IntentName.ALTITUDE, IntentName.SPACING])
 def test_m15_delta_overflow_is_a_typed_refusal(name: IntentName) -> None:
     snapshot = make_snapshot(2)
+    config = altitude_config() if name is IntentName.ALTITUDE else planning_config()
 
-    result = DeterministicPlanner(planning_config()).plan(
+    result = DeterministicPlanner(config).plan(
         make_intent(name, selection=snapshot.selection, args={"delta": 10**400}),
         snapshot,
     )

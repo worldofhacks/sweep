@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from math import cos, isfinite, pi, radians, sin
 
 from planner.models import (
+    AltitudeGrounding,
     Command,
     CommandOperation,
     FleetSnapshot,
+    FlightState,
     HoldScope,
     JsonValue,
     MembershipState,
@@ -28,11 +30,11 @@ SELECTION_TARGETED_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
         IntentName.HOLD,
         IntentName.COME_HOME,
         IntentName.LAND,
         IntentName.CAPTURE_ROOM,
-        IntentName.ALTITUDE,
         IntentName.FORMATION_NEXT,
         IntentName.FORMATION_SET,
         IntentName.SPACING,
@@ -55,7 +57,10 @@ class PlanningConfig:
     capture_gimbal_pitch_deg: float
     reconstruct_headings_deg: tuple[float, ...]
     translation_frame: str = "world"
-    altitude_step_m: float = 0.5
+    altitude_step_m: float | None = None
+    altitude_floor_z_m: float | None = None
+    altitude_configuration_id: str | None = None
+    altitude_completion_tolerance_m: float | None = None
     spacing_step_m: float = 0.2
 
     def __post_init__(self) -> None:
@@ -64,41 +69,40 @@ class PlanningConfig:
             "translation_step_m": self.translation_step_m,
             "flight_speed_m_s": self.flight_speed_m_s,
             "capture_yaw_speed_deg_s": self.capture_yaw_speed_deg_s,
-            "altitude_step_m": self.altitude_step_m,
             "spacing_step_m": self.spacing_step_m,
         }
         for name, value in positive.items():
             if (
                 isinstance(value, bool)
                 or not isinstance(value, int | float)
-                or not isfinite(value)
+                or not _is_finite_number(value)
                 or value <= 0
             ):
                 raise ValueError(f"{name} must be a finite positive number")
         if (
             isinstance(self.capture_gimbal_pitch_deg, bool)
             or not isinstance(self.capture_gimbal_pitch_deg, int | float)
-            or not isfinite(self.capture_gimbal_pitch_deg)
+            or not _is_finite_number(self.capture_gimbal_pitch_deg)
         ):
             raise ValueError("capture_gimbal_pitch_deg must be finite")
         if (
             isinstance(self.capture_yaw_tolerance_deg, bool)
             or not isinstance(self.capture_yaw_tolerance_deg, int | float)
-            or not isfinite(self.capture_yaw_tolerance_deg)
+            or not _is_finite_number(self.capture_yaw_tolerance_deg)
             or not 0 <= self.capture_yaw_tolerance_deg < 180
         ):
             raise ValueError("capture_yaw_tolerance_deg must be finite and in [0, 180)")
         if (
             isinstance(self.capture_pose_tolerance_m, bool)
             or not isinstance(self.capture_pose_tolerance_m, int | float)
-            or not isfinite(self.capture_pose_tolerance_m)
+            or not _is_finite_number(self.capture_pose_tolerance_m)
             or self.capture_pose_tolerance_m < 0
         ):
             raise ValueError("capture_pose_tolerance_m must be finite and non-negative")
         if (
             isinstance(self.capture_min_overlap_deg, bool)
             or not isinstance(self.capture_min_overlap_deg, int | float)
-            or not isfinite(self.capture_min_overlap_deg)
+            or not _is_finite_number(self.capture_min_overlap_deg)
             or not 0 < self.capture_min_overlap_deg < 180
         ):
             raise ValueError("capture_min_overlap_deg must be finite and in (0, 180)")
@@ -109,15 +113,46 @@ class PlanningConfig:
         if any(
             isinstance(heading, bool)
             or not isinstance(heading, int | float)
-            or not isfinite(heading)
+            or not _is_finite_number(heading)
             or not 0 <= heading < 360
             for heading in self.reconstruct_headings_deg
         ):
             raise ValueError("reconstruct_8 headings must be finite values in [0, 360)")
         if len(set(self.reconstruct_headings_deg)) != 8:
             raise ValueError("reconstruct_8 headings must be unique")
+        if self.altitude_floor_z_m is not None and (
+            isinstance(self.altitude_floor_z_m, bool)
+            or not isinstance(self.altitude_floor_z_m, int | float)
+            or not _is_finite_number(self.altitude_floor_z_m)
+        ):
+            raise ValueError("altitude floor reference must be finite")
+        self.altitude_grounding()
         if self.translation_frame not in {"world", "aircraft_relative"}:
             raise ValueError("translation_frame must be world or aircraft_relative")
+
+    def altitude_grounding(self) -> AltitudeGrounding | None:
+        if self.altitude_step_m is None:
+            return None
+        if self.altitude_completion_tolerance_m is None:
+            raise ValueError("enabled altitude requires a completion tolerance")
+        return AltitudeGrounding(
+            self.altitude_step_m,
+            self.altitude_floor_z_m,
+            self.altitude_configuration_id,
+            self.altitude_completion_tolerance_m,
+        )
+
+    def effective_capability_profile(
+        self, requested: CapabilityProfile = C1_CAPABILITY_PROFILE
+    ) -> CapabilityProfile:
+        """Return the immutable deployment profile implied by configured grounding."""
+        if self.altitude_grounding() is not None or not requested.supports(IntentName.ALTITUDE):
+            return requested
+        suffix = ".no_altitude"
+        return CapabilityProfile(
+            f"{requested.name[: 64 - len(suffix)]}{suffix}",
+            requested.enabled_intent_names - {IntentName.ALTITUDE},
+        )
 
     def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding:
         return TranslationGrounding(
@@ -144,7 +179,7 @@ class DeterministicPlanner:
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     ) -> None:
         self.config = config
-        self.capability_profile = capability_profile
+        self.capability_profile = config.effective_capability_profile(capability_profile)
 
     def supports(self, intent: IntentV1) -> bool:
         return self.capability_profile.supports(intent.name)
@@ -277,43 +312,69 @@ class DeterministicPlanner:
                 )
 
         elif intent.name is IntentName.ALTITUDE:
+            grounding = self.config.altitude_grounding()
+            if grounding is None:
+                return _refusal(intent, snapshot, RefusalReason.UNSUPPORTED, "altitude is disabled")
+            if set(intent.args) != {"delta"}:
+                return _refusal(
+                    intent, snapshot, RefusalReason.INVALID_PLAN, "invalid altitude arguments"
+                )
+            raw_value = intent.args["delta"]
             try:
-                dz = float(intent.args["delta"]) * self.config.altitude_step_m
-            except (KeyError, OverflowError, TypeError, ValueError):
+                value = float(raw_value)
+            except (OverflowError, TypeError, ValueError):
                 return _refusal(
-                    intent,
-                    snapshot,
-                    RefusalReason.INVALID_PLAN,
-                    "altitude change exceeds numeric limits",
+                    intent, snapshot, RefusalReason.INVALID_PLAN, "altitude must be finite"
                 )
-            if not isfinite(dz):
+            if isinstance(raw_value, bool) or not isfinite(value):
                 return _refusal(
-                    intent,
-                    snapshot,
-                    RefusalReason.INVALID_PLAN,
-                    "altitude change exceeds numeric limits",
+                    intent, snapshot, RefusalReason.INVALID_PLAN, "altitude must be finite"
                 )
+            targets = {}
             for drone_id in selected:
-                pose = snapshot.aircraft[drone_id].pose
-                target_z = pose.z + dz
-                if not isfinite(target_z):
+                aircraft = snapshot.aircraft[drone_id]
+                if aircraft.flight_state not in {FlightState.AIRBORNE, FlightState.HOVERING}:
                     return _refusal(
                         intent,
                         snapshot,
-                        RefusalReason.INVALID_PLAN,
-                        "altitude target exceeds numeric limits",
+                        RefusalReason.INVALID_STATE,
+                        "altitude requires an airborne aircraft",
                         drone_id,
                     )
+                target_z = aircraft.pose.z + value * grounding.step_m
+                if not isfinite(target_z):
+                    return _refusal(
+                        intent, snapshot, RefusalReason.INVALID_PLAN, "altitude target overflow"
+                    )
+                if target_z <= (grounding.floor_z_m if grounding.floor_z_m is not None else 0.0):
+                    return _refusal(
+                        intent,
+                        snapshot,
+                        RefusalReason.INVALID_STATE,
+                        "altitude cannot descend to or below the reference floor",
+                        drone_id,
+                    )
+                targets[drone_id] = target_z
+
+            # Move the leading aircraft first so stacked columns retain separation.
+            def vertical_order(drone_id: int) -> tuple[int, float, int]:
+                start = snapshot.aircraft[drone_id].pose.z
+                target = targets[drone_id]
+                return (0, -start, drone_id) if target > start else (1, start, drone_id)
+
+            for drone_id in sorted(selected, key=vertical_order):
+                pose = snapshot.aircraft[drone_id].pose
                 builder.add(
                     drone_id,
                     CommandOperation.GOTO,
                     {
                         "x": pose.x,
                         "y": pose.y,
-                        "z": target_z,
+                        "z": targets[drone_id],
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
+                builder.add(drone_id, CommandOperation.HOVER)
 
         elif intent.name in {IntentName.FORMATION_NEXT, IntentName.FORMATION_SET}:
             name = (
@@ -467,6 +528,9 @@ class DeterministicPlanner:
             formation_update=formation_update,
             spacing_update=spacing_update,
             hold_scope=hold_scope,
+            altitude_grounding=(
+                self.config.altitude_grounding() if intent.name is IntentName.ALTITUDE else None
+            ),
         )
 
     def emergency_hold_plan(
@@ -834,3 +898,12 @@ def _refusal(
         reason=reason,
         detail=detail,
     )
+
+
+def _is_finite_number(value: object) -> bool:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False

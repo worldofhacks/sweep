@@ -77,7 +77,11 @@ control projection, and terminal lifecycle in one session log. Simulator and har
 composition roots supply their own measured planner, arbiter, adapter, watchdog, and enrichment
 configuration.
 
-Later formation, altitude, sweep, `map_area`, and route-allocation behavior remains
+The opt-in altitude path and its floor-reference contract are described in
+[Altitude controls](../docs/ALTITUDE_CONTROLS.md). It is disabled by default and
+requires explicit deployment configuration plus the existing live acceptance gates.
+
+Later formation, sweep, `map_area`, and route-allocation behavior remains
 future scope and must earn a capability before planning.
 
 PRD: sections 5.3 and 5.4 (modes: indoor constrained is the capstone mode).
