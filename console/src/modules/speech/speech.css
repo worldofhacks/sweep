@@ -97,7 +97,8 @@
 .sp-result-status.is-refused { color: var(--color-danger); }
 .sp-result-intent { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 3px 14px; align-items: baseline; font-family: var(--font-mono); font-size: var(--text-12-5); }
 .sp-result-intent .is-name { font-size: var(--text-19); font-weight: var(--weight-600); }
-.sp-result-intent .is-args { color: var(--color-ink-2); }
+/* Args are one JSON string with no break opportunities; wrap anywhere rather than overflow. */
+.sp-result-intent .is-args { min-width: 0; overflow-wrap: anywhere; color: var(--color-ink-2); }
 .sp-result-line { margin: 6px 0 0; font-size: var(--text-12-5); color: var(--color-ink-2); }
 .sp-result-line .mono { font-family: var(--font-mono); }
 .sp-result-sentence { margin: 6px 0 0; font-size: var(--text-13-5); }

@@ -175,7 +175,8 @@
 .wld-open-id { font-family: var(--font-mono); font-size: var(--text-16); font-weight: var(--weight-600); }
 .wld-open-model { font-size: var(--text-12); color: var(--color-ink-2); }
 .wld-open p { margin: 6px 0 0; font-size: var(--text-12); color: var(--color-ink-2); }
-.wld-sources { margin: 6px 0 0; padding: 0; list-style: none; font-family: var(--font-mono); font-size: var(--text-11); color: var(--color-ink-2); }
+/* The source line carries a checksum with no break opportunities; wrap anywhere rather than overflow. */
+.wld-sources { margin: 6px 0 0; padding: 0; list-style: none; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-11); color: var(--color-ink-2); }
 .wld-sources li { padding: 2px 0; }
 .wld-footnote {
   margin: 22px 0 0;
@@ -330,7 +331,8 @@
 .gal-chip-note { color: var(--color-ink-3); }
 .gal-table { padding: 20px 0; border-top: 1px solid var(--color-ink); }
 .gal-table-name { margin: 0 0 10px; }
-.gal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 0 26px; margin: 0; padding: 0; list-style: none; }
+/* The 330px track never exceeds the pane: one full-width column on the narrowest phones. */
+.gal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(330px, 100%), 1fr)); gap: 0 26px; margin: 0; padding: 0; list-style: none; }
 .gal-row {
   margin: 0;
   display: grid;
@@ -342,3 +344,15 @@
 }
 .gal-row code { font-family: var(--font-mono); }
 .gal-row.is-danger code { color: var(--color-danger); }
+
+/* Phone (below --bp-two-column): a mode's note and facts are sentences; they wrap
+   instead of holding one line wider than the pane. A capture's coverage code is one
+   token that can outgrow the copy column beside the thumbnail; it wraps anywhere. */
+@media (max-width: 759px) {
+  .cfg-mode-note,
+  .cfg-mode-facts span { white-space: normal; }
+  .cap-coverage { overflow-wrap: anywhere; }
+  /* A gallery row's code sits over its sentence; two columns leave the sentence too
+     narrow for its longest word on the narrowest phones. */
+  .gal-row { grid-template-columns: minmax(0, 1fr); row-gap: var(--space-2); }
+}

@@ -2,6 +2,9 @@
 [data-scroll] { overflow: auto; min-height: 0; scrollbar-gutter: stable; }
 [data-frame] {
   display: grid;
+  /* One bounded column: an implicit auto column would grow to the widest nowrap row
+     (the header's pill strip) and lay the whole shell out past a phone viewport. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100dvh;
   overflow: hidden;
@@ -567,3 +570,25 @@
 }
 .sh-invalidated strong { font-weight: var(--weight-700); }
 .sh-invalidated code { font-family: var(--font-mono); }
+
+/*
+ * Phone: below the design's single-column breakpoint (--bp-two-column). The design
+ * source carries no phone rules of its own; these follow the brief's phone rules —
+ * the header wraps into rows and wide strips scroll inside their own container, so
+ * the page never scrolls sideways.
+ */
+@media (max-width: 759px) {
+  /* The RC authority line is safety state: wrap it instead of ellipsising. */
+  .sh-rc { white-space: normal; overflow: visible; text-overflow: clip; }
+  /* A multi-aircraft selection wraps between ids instead of running off the row. */
+  .sh-selection { flex-wrap: wrap; white-space: normal; }
+  /* Connection pills take a full row and scroll horizontally within it; the console
+     and keyboard pills stay in view, and the detail toggle sits right-aligned beneath. */
+  .sh-header-right { flex: 1 1 100%; flex-wrap: wrap; min-width: 0; }
+  .sh-links { flex: 1 1 100%; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .sh-links::-webkit-scrollbar { display: none; }
+  .sh-links > li { flex: 0 0 auto; }
+  .sh-detail-toggle { margin-left: auto; }
+  /* Roster, source and intent id wrap inside the dock summary. */
+  .sh-dock-meta { white-space: normal; }
+}
