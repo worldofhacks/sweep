@@ -288,18 +288,25 @@ without an aircraft or a relay; the probe flavor publishes the aircraft.
    aircraft connected for the automatic start, and either loss stops the session.
 2. Fake flavor: on the Connectivity card press `Start publish` (no relay needed). The
    publish line walks `connecting` then `publishing` with the negotiated codec: `H264
-   (phone encoder)` on a phone libwebrtc drives with hardware H.264 (Qualcomm or Exynos
-   allowlist), otherwise `VP8 (no H.264 encoder on this phone)`, which the console decodes
-   too. Then the one-second metrics line: bitrate, frame rate, 1280x720, dropped frames,
-   RTT, ICE state. Scripted, with the screen off: `adb shell am start -n
+   (phone encoder)` when libwebrtc offers the phone's hardware H.264 encoder (the pinned
+   Seeker offers `H264 (42e01f)`), otherwise `VP8 (no H.264 encoder on this phone)`, which
+   the console decodes too. Then the one-second metrics line: bitrate, frame rate, 1280x720,
+   dropped frames, RTT, ICE state (the Seeker against this Mac: 30 fps, RTT 5 to 11 ms, about
+   9 ms of processing per frame, no drops). Scripted, with the screen off: `adb shell am start -n
    org.worldofhacks.sweep.bridge/.MainActivity --es publish_host 10.10.1.60 --ei publish_port
    8889 --es publish start` (`--es publish stop` ends the session, `auto` returns to the
    automatic policy); `adb logcat -s SweepPublish WhipPublisher` shows the same lines as the card.
 3. `docker compose logs -f mediamtx` on the ground station shows, in order:
-   `[WebRTC] [session ...] created by <phone ip>:<port>`, `[path drone1] stream is available
-   and online, 1 track (H264)` (or VP8), `[WebRTC] [session ...] is publishing to path
-   'drone1'`. A session that is created and then closed with an ICE error means the phone
-   could not reach the advertised candidates: check `SWEEP_MEDIA_HOST`.
+   `[WebRTC] [session ...] created by <phone ip>:<port>` (Docker Desktop on a Mac shows its
+   gateway, `192.168.65.1`, instead of the phone), `peer connection established, local
+   candidate: host/udp/..., remote candidate: prflx/udp/...`, `[path drone1] stream is
+   available and online, 1 track (H264)` (or VP8), `[WebRTC] [session ...] is publishing to
+   path 'drone1'`. A session that is created and then `closed: deadline exceeded while
+   waiting connection` means the phone could not reach the advertised candidates: the phone
+   logs `publish failed: ice_failed (no ICE connection within 10 s ...)` and retries after 1,
+   2, 4, 8, 16, then 30 s; set `SWEEP_MEDIA_HOST`, recreate the container, and the next
+   attempt connects. The `DELETE 404` on those failed attempts is MediaMTX declining to
+   delete a session that never connected.
 4. First look: `http://<ground-station>:8889/drone1` in any browser is MediaMTX's built-in
    WHEP page; the test pattern's clock and sweeping block make a frozen or late feed obvious
    (the clock against the browser machine's clock is the glass-to-glass estimate). Then the
