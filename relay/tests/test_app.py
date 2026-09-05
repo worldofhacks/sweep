@@ -92,6 +92,8 @@ def test_first_frame_authentication_precedes_state_and_intent_results(
             socket.send_json(intent_payload())
             acknowledgement = _receive_type(socket, "acknowledgement")
 
+        assert client.portal is not None
+        client.portal.call(app.state.relay_runtime.stop)
         replay = client.get(
             f"/session/{SESSION}",
             headers={"Authorization": f"Bearer {CONSOLE_KEY.decode()}"},

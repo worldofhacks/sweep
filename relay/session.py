@@ -104,6 +104,15 @@ class _PendingIntent:
     acknowledgements: list[AdapterAcknowledgement] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class _ResumeWork:
+    acknowledgement: AdapterAcknowledgement
+    token: object
+    operation_id: int
+    blocked_ids: set[str]
+    phased: bool
+
+
 class RelaySession:
     """Own one authenticated session's ordering, state, audit, and replay."""
 
@@ -134,6 +143,7 @@ class RelaySession:
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
+        self._resume_continuations: list[_ResumeWork] = []
         self._execution_lock = Lock()
         self._metrics = {
             "accepted_intents": 0,
@@ -308,7 +318,9 @@ class RelaySession:
             self._metrics["acknowledgements"] += 1
             return [event]
 
-    def execute_pending_intent(self, intent_id: str) -> list[dict[str, object]]:
+    def execute_pending_intent(
+        self, intent_id: str, *, defer_resume: bool = False
+    ) -> list[dict[str, object]]:
         """Execute accepted work or return a group outcome already committed for it."""
         with self._lock:
             self._ensure_mutation_usable()
@@ -329,7 +341,8 @@ class RelaySession:
         else:
             with self._execution_lock:
                 events = self._execute_pending(pending, sink)
-        events.extend(self._resume_acknowledgements(intent_id))
+        if not defer_resume:
+            events.extend(self._resume_acknowledgements(intent_id))
         with self._lock:
             self._pending_intents.pop(intent_id, None)
         return events
@@ -598,7 +611,9 @@ class RelaySession:
                 events.extend(reconcile(self))
             return events
 
-    def process_acknowledgement(self, raw: object, principal: Principal) -> list[dict[str, object]]:
+    def process_acknowledgement(
+        self, raw: object, principal: Principal, *, defer_resume: bool = False
+    ) -> list[dict[str, object]]:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
@@ -642,51 +657,82 @@ class RelaySession:
                         pending.acknowledgements if pending is not None else [],
                     )
                     queue.append(acknowledgement)
-        events.extend(self._resume_acknowledgements(acknowledgement.intent_id))
+        if not defer_resume:
+            events.extend(self._resume_acknowledgements(acknowledgement.intent_id))
         return events
 
     def _resume_acknowledgements(self, intent_id: str) -> list[dict[str, object]]:
+        events = []
+        while (work := self.prepare_resume(intent_id)) is not None:
+            events.extend(self.commit_resume(work, self.resume_io(work)))
+        return events
+
+    def prepare_resume(self, intent_id: str | None = None) -> _ResumeWork | None:
+        """Claim queued completion work while the runtime owns its session operation."""
         with self._lock:
             self._ensure_mutation_usable()
-            pending = self._pending_intents.get(intent_id)
-            if (
-                intent_id in self._resuming_intents
-                or not self._acknowledgements.get(intent_id)
-                or (pending is not None and pending.events is None)
-            ):
-                return []
-            self._resuming_intents.add(intent_id)
-        events = []
-        operation_id = None
-        try:
-            while True:
-                with self._lock:
-                    queue = self._acknowledgements.get(intent_id)
-                    if not queue:
-                        self._acknowledgements.pop(intent_id, None)
-                        self._resuming_intents.remove(intent_id)
-                        return events
+            for index, work in enumerate(self._resume_continuations):
+                if intent_id is None or work.acknowledgement.intent_id == intent_id:
+                    work.operation_id = self.audit_log.begin_operation()
+                    return self._resume_continuations.pop(index)
+            for queued_id, queue in tuple(self._acknowledgements.items()):
+                if intent_id is not None and queued_id != intent_id:
+                    continue
+                pending = self._pending_intents.get(queued_id)
+                if queued_id in self._resuming_intents or (
+                    pending is not None and pending.events is None
+                ):
+                    continue
+                while queue:
                     acknowledgement = queue[0]
-                    self._ensure_mutation_usable()
+                    prepare = getattr(self.intent_sink, "prepare_resume", None)
+                    phased = callable(prepare)
+                    token = prepare(self, acknowledgement) if phased else acknowledgement
+                    if token is None:
+                        queue.pop(0)
+                        continue
                     operation_id = self.audit_log.begin_operation()
-                # Resume may perform adapter I/O; only audit mutations hold the session lock.
-                resumed = self.intent_sink.resume_after_acknowledgement(self, acknowledgement)
-                with self._lock, self._audit_operation(operation_id=operation_id):
-                    self._ensure_mutation_usable()
-                    if resumed is not None:
-                        events.extend(resumed.relay_events)
-                with self._lock:
-                    queue.pop(0)
-                operation_id = None
+                    blocked_ids = {queued_id, getattr(token, "intent_id", queued_id)}
+                    self._resuming_intents.update(blocked_ids)
+                    return _ResumeWork(acknowledgement, token, operation_id, blocked_ids, phased)
+                self._acknowledgements.pop(queued_id, None)
+            return None
+
+    def resume_io(self, work: _ResumeWork) -> object:
+        """Run claimed adapter work without runtime or relay mutation locks."""
+        try:
+            if work.phased:
+                return self.intent_sink.resume_io(work.token)
+            return self.intent_sink.resume_after_acknowledgement(self, work.acknowledgement)
         except BaseException:
             with self._lock:
-                self._resuming_intents.discard(intent_id)
-                if operation_id is not None:
-                    self.audit_log.abandon_operation(operation_id)
-                    self._mutation_usable = False
-                    self._projection_usable = False
-                    self._replay_usable = False
+                self.audit_log.abandon_operation(work.operation_id)
+                self._resuming_intents.difference_update(work.blocked_ids)
+                self._mutation_usable = False
+                self._projection_usable = False
+                self._replay_usable = False
             raise
+
+    def commit_resume(self, work: _ResumeWork, outcome: object) -> list[dict[str, object]]:
+        """Commit owned results for publication in the same runtime operation."""
+        with self._lock, self._audit_operation(operation_id=work.operation_id):
+            self._ensure_mutation_usable()
+            committed = (
+                self.intent_sink.commit_resume(work.token, outcome) if work.phased else outcome
+            )
+            events = list(committed.relay_events) if committed is not None else []
+            continuation = getattr(committed, "continuation", None)
+            if continuation is not None:
+                work.token = continuation
+                work.blocked_ids.add(continuation.intent_id)
+                self._resuming_intents.add(continuation.intent_id)
+                self._resume_continuations.append(work)
+            else:
+                queue = self._acknowledgements.get(work.acknowledgement.intent_id)
+                if queue and queue[0] is work.acknowledgement:
+                    queue.pop(0)
+                self._resuming_intents.difference_update(work.blocked_ids)
+            return events
 
     def record_lifecycle(
         self,

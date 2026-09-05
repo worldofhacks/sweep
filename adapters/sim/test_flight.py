@@ -113,6 +113,22 @@ def test_land_remains_available_after_estop() -> None:
     )
 
 
+def test_estop_rejects_unsafe_launches_without_recording_them() -> None:
+    adapter = SimFlightAdapter.from_snapshot(make_snapshot(1))
+    before = adapter.aircraft[1]
+    adapter.estop()
+
+    takeoff = adapter.takeoff([1], 2.0)
+    goto = adapter.goto(1, 1.0, 0.0, 1.0, 0.5)
+    rotate = adapter.rotate_to(1, 90.0, 30.0)
+
+    assert [ack.status for ack in (*takeoff, goto, rotate)] == [LifecycleStatus.FAILED] * 3
+    assert [call.operation for call in adapter.calls] == [CommandOperation.ESTOP]
+    assert adapter.aircraft[1].pose == before.pose
+    assert adapter.aircraft[1].yaw_deg == before.yaw_deg
+    assert adapter.aircraft[1].flight_state is FlightState.HOVERING
+
+
 def test_estop_preserves_a_grounded_disarmed_state() -> None:
     adapter = SimFlightAdapter.from_snapshot(
         make_snapshot(1, flight_state=FlightState.DISARMED, armed=False)

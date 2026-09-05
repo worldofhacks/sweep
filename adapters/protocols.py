@@ -88,7 +88,8 @@ class SwarmAdapter(Protocol):
 
     def land(self, ids: list[int]) -> tuple[AdapterAcknowledgement, ...]: ...
 
-    def estop(self) -> tuple[AdapterAcknowledgement, ...]: ...
+    def estop(self) -> tuple[AdapterAcknowledgement, ...]:
+        """Latch emergency stop atomically; reject later takeoff/goto/rotate but allow land."""
 
     def telemetry(self) -> Iterator[Telemetry]: ...
 

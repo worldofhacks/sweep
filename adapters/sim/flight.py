@@ -111,7 +111,10 @@ class SimFlightAdapter:
                 self._node_safety_latched.discard(drone_id)
 
     def takeoff(self, ids: list[int], z: float) -> tuple[AdapterAcknowledgement, ...]:
-        self.calls.append(AdapterCall(CommandOperation.TAKEOFF, tuple(ids), (("z", float(z)),)))
+        with self._lock:
+            launch_permitted = all(not self._is_safety_latched(drone_id) for drone_id in ids)
+        if launch_permitted:
+            self.calls.append(AdapterCall(CommandOperation.TAKEOFF, tuple(ids), (("z", float(z)),)))
         acknowledgements = []
         for drone_id in ids:
             failure = self._take_failure(drone_id, CommandOperation.TAKEOFF)
@@ -136,20 +139,37 @@ class SimFlightAdapter:
     def goto(
         self, drone_id: int, x: float, y: float, z: float, speed: float
     ) -> AdapterAcknowledgement:
-        self.calls.append(
-            AdapterCall(
-                CommandOperation.GOTO,
-                (drone_id,),
-                tuple(sorted({"speed": speed, "x": x, "y": y, "z": z}.items())),
+        try:
+            failure = self._take_failure(drone_id, CommandOperation.GOTO)
+        except AdapterTimeout:
+            self.calls.append(
+                AdapterCall(
+                    CommandOperation.GOTO,
+                    (drone_id,),
+                    tuple(sorted({"speed": speed, "x": x, "y": y, "z": z}.items())),
+                )
             )
-        )
-        failure = self._take_failure(drone_id, CommandOperation.GOTO)
+            raise
         if failure is not None:
+            self.calls.append(
+                AdapterCall(
+                    CommandOperation.GOTO,
+                    (drone_id,),
+                    tuple(sorted({"speed": speed, "x": x, "y": y, "z": z}.items())),
+                )
+            )
             return failure
         with self._lock:
             blocked = self._blocked_motion(drone_id, CommandOperation.GOTO)
             if blocked is not None:
                 return blocked
+            self.calls.append(
+                AdapterCall(
+                    CommandOperation.GOTO,
+                    (drone_id,),
+                    tuple(sorted({"speed": speed, "x": x, "y": y, "z": z}.items())),
+                )
+            )
             aircraft = self._require_aircraft(drone_id)
             self._aircraft[drone_id] = replace(
                 aircraft,
@@ -159,13 +179,6 @@ class SimFlightAdapter:
             return self._ack(drone_id, CommandOperation.GOTO)
 
     def rotate_to(self, drone_id: int, yaw: float, speed: float) -> AdapterAcknowledgement:
-        self.calls.append(
-            AdapterCall(
-                CommandOperation.ROTATE_TO,
-                (drone_id,),
-                tuple(sorted({"speed": speed, "yaw": yaw}.items())),
-            )
-        )
         failure = self._take_failure(drone_id, CommandOperation.ROTATE_TO)
         if failure is not None:
             return failure
@@ -173,6 +186,13 @@ class SimFlightAdapter:
             blocked = self._blocked_motion(drone_id, CommandOperation.ROTATE_TO)
             if blocked is not None:
                 return blocked
+            self.calls.append(
+                AdapterCall(
+                    CommandOperation.ROTATE_TO,
+                    (drone_id,),
+                    tuple(sorted({"speed": speed, "yaw": yaw}.items())),
+                )
+            )
             aircraft = self._require_aircraft(drone_id)
             self._aircraft[drone_id] = replace(aircraft, yaw_deg=float(yaw))
             return self._ack(drone_id, CommandOperation.ROTATE_TO)

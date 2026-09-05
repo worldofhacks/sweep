@@ -232,7 +232,6 @@ class RelayRuntime:
         operation: Callable[[], list[dict[str, object]]],
         *,
         wait_for_connection_id: str | None = None,
-        resumes_execution: bool = False,
     ) -> list[dict[str, object]]:
         """Caller cancellation leaves the ordered mutation and publication running."""
         task = asyncio.create_task(
@@ -240,7 +239,6 @@ class RelayRuntime:
                 session_id,
                 operation,
                 wait_for_connection_id=wait_for_connection_id,
-                resumes_execution=resumes_execution,
             )
         )
         self._track_background_operation(task)
@@ -252,14 +250,10 @@ class RelayRuntime:
         operation: Callable[[], list[dict[str, object]]],
         *,
         wait_for_connection_id: str | None = None,
-        resumes_execution: bool = False,
     ) -> list[dict[str, object]]:
         deliveries: list[asyncio.Future[bool]] = []
-        if resumes_execution:
-            events = await asyncio.to_thread(operation)
         async with self._session_operation(session_id):
-            if not resumes_execution:
-                events = await asyncio.to_thread(operation)
+            events = await asyncio.to_thread(operation)
             await self.publish(
                 session_id,
                 events,
@@ -281,6 +275,107 @@ class RelayRuntime:
                     )
                     await self.publish(session_id, failed)
             raise WebSocketDisconnect(code=1006)
+        return events
+
+    async def process_acknowledgement_and_publish(
+        self,
+        session_id: str,
+        session: RelaySession,
+        frame: object,
+        principal: Principal,
+        *,
+        wait_for_connection_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Keep acknowledgement commits ordered while adapter I/O yields to safety work."""
+        task = asyncio.create_task(
+            self._process_acknowledgement_and_publish(
+                session_id,
+                session,
+                frame,
+                principal,
+                wait_for_connection_id=wait_for_connection_id,
+            )
+        )
+        self._track_background_operation(task)
+        return await asyncio.shield(task)
+
+    async def _process_acknowledgement_and_publish(
+        self,
+        session_id: str,
+        session: RelaySession,
+        frame: object,
+        principal: Principal,
+        *,
+        wait_for_connection_id: str | None,
+    ) -> list[dict[str, object]]:
+        deliveries: list[asyncio.Future[bool]] = []
+        async with self._session_operation(session_id):
+            events = await asyncio.to_thread(
+                session.process_acknowledgement,
+                frame,
+                principal,
+                defer_resume=True,
+            )
+            terminal = any(
+                event.get("type") == "acknowledgement"
+                and event.get("command_id") is not None
+                and event.get("status") in {"completed", "failed", "invalidated"}
+                for event in events
+            )
+            if not any(event.get("type") == "refusal" for event in events):
+                assert principal.drone_id is not None
+                events.extend(
+                    await asyncio.to_thread(
+                        self.adapter_activity,
+                        session,
+                        drone_id=principal.drone_id,
+                    )
+                )
+            await self.publish(
+                session_id,
+                events,
+                wait_for_connection_id=wait_for_connection_id,
+                deferred_deliveries=deliveries,
+            )
+            work = await asyncio.to_thread(session.prepare_resume) if terminal else None
+        events.extend(
+            await self._resume_and_publish(
+                session_id,
+                session,
+                work,
+                wait_for_connection_id=wait_for_connection_id,
+                deliveries=deliveries,
+            )
+        )
+        delivered = (
+            all(await asyncio.gather(*deliveries)) if deliveries else wait_for_connection_id is None
+        )
+        if not delivered:
+            raise WebSocketDisconnect(code=1006)
+        return events
+
+    async def _resume_and_publish(
+        self,
+        session_id: str,
+        session: RelaySession,
+        work: object,
+        *,
+        wait_for_connection_id: str | None = None,
+        deliveries: list[asyncio.Future[bool]] | None = None,
+    ) -> list[dict[str, object]]:
+        events = []
+        while work is not None:
+            outcome = await asyncio.to_thread(session.resume_io, work)
+            async with self._session_operation(session_id):
+                committed = await asyncio.to_thread(session.commit_resume, work, outcome)
+                events.extend(committed)
+                await self.publish(
+                    session_id,
+                    committed,
+                    wait_for_connection_id=wait_for_connection_id,
+                    deferred_deliveries=deliveries,
+                )
+                work = await asyncio.to_thread(session.prepare_resume)
         return events
 
     def _track_background_operation(self, task: asyncio.Task[object]) -> None:
@@ -623,16 +718,26 @@ def create_app(
                         ],
                     )
                 else:
-                    events = await runtime.process_and_publish(
-                        session_id,
-                        lambda received=frame: runtime.process_frame(session, received, principal),
-                        wait_for_connection_id=subscription.connection_id,
-                        resumes_execution=(
-                            principal.source == "adapter"
-                            and isinstance(frame, Mapping)
-                            and frame.get("type") == "acknowledgement"
-                        ),
-                    )
+                    if (
+                        principal.source == "adapter"
+                        and isinstance(frame, Mapping)
+                        and frame.get("type") == "acknowledgement"
+                    ):
+                        events = await runtime.process_acknowledgement_and_publish(
+                            session_id,
+                            session,
+                            frame,
+                            principal,
+                            wait_for_connection_id=subscription.connection_id,
+                        )
+                    else:
+                        events = await runtime.process_and_publish(
+                            session_id,
+                            lambda received=frame: runtime.process_frame(
+                                session, received, principal
+                            ),
+                            wait_for_connection_id=subscription.connection_id,
+                        )
                     if (
                         principal.source in REGISTERED_SOURCES
                         and isinstance(frame, Mapping)
@@ -749,8 +854,11 @@ async def _execute_and_publish(
     session: RelaySession,
     intent_id: str,
 ) -> None:
-    outcome = await asyncio.to_thread(session.execute_pending_intent, intent_id)
-    await runtime.publish(session_id, outcome)
+    outcome = await asyncio.to_thread(session.execute_pending_intent, intent_id, defer_resume=True)
+    async with runtime._session_operation(session_id):
+        await runtime.publish(session_id, outcome)
+        work = await asyncio.to_thread(session.prepare_resume)
+    await runtime._resume_and_publish(session_id, session, work)
 
 
 def _auth_accepted(
