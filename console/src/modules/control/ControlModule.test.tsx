@@ -184,7 +184,7 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(clients.console.sent[1]).toMatchObject({ name, selection: name === 'land' ? [1] : [], confirm: true })
   })
 
-  test('unsupported controls are greyed with the refusal copy, stay pressable, and the refusal is recorded', async () => {
+  test('M1.5 controls use the current shell while the remaining unsupported control records a refusal', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
@@ -198,7 +198,7 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     for (const label of [/^Sweep/, /^Spacing tighter/, /^Spacing wider/, /^Formation next/]) {
       const button = motionGroup().getByRole('button', { name: label })
       expect(button).toBeEnabled()
-      expect(button).toHaveClass('is-soft')
+      expect(button).not.toHaveClass('is-soft')
     }
 
     await user.click(disarm)
@@ -220,18 +220,19 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(clients.console.sent[3]).toMatchObject({ name: 'formation_set', args: { name: 'circle' } })
     expect(screen.getByRole('button', { name: 'circle' })).toHaveAttribute('aria-pressed', 'true')
     expect(
-      screen.getByText('Previewing circle. The relay still reports none — formation_set is refused as unsupported at M2.0.'),
+      screen.getByText('Requested circle. The relay still reports none until execution completes.'),
     ).toBeInTheDocument()
 
     await openPane(user, 'Requests')
-    for (const name of ['disarm', 'formation_next', 'sweep', 'formation_set']) {
-      const row = screen.getByRole('listitem', { name: `${name} refused` })
-      expect(row).toHaveTextContent('unsupported')
-      expect(row).toHaveTextContent('The relay does not accept this intent at this milestone.')
-      expect(row).toHaveTextContent(`${name} is outside the M2.0 capability set`)
-      expect(within(row).getByLabelText('Lifecycle timestamps')).toHaveTextContent('refused')
+    const disarmRow = screen.getByRole('listitem', { name: 'disarm refused' })
+    expect(disarmRow).toHaveTextContent('unsupported')
+    expect(disarmRow).toHaveTextContent('The relay does not accept this intent at this milestone.')
+    expect(disarmRow).toHaveTextContent('disarm is outside the M2.0 capability set')
+    for (const name of ['formation_next', 'sweep', 'formation_set']) {
+      const row = screen.getByRole('listitem', { name: `${name} accepted` })
+      expect(within(row).getByLabelText('Lifecycle timestamps')).toHaveTextContent('accepted')
     }
-    expect(screen.getByLabelText('Latest outcome')).toHaveTextContent('formation_set refused')
+    expect(screen.getByLabelText('Latest outcome')).toHaveTextContent('disarm refused')
   })
 
   test('retrying selected landing waits for a fresh confirmation before sending', async () => {
@@ -280,6 +281,15 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     await user.click(motionGroup().getByRole('button', { name: /^Sweep/ }))
     await confirmDock(user)
     await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+    const sweepIntent = clients.console.sent[1]
+    act(() => {
+      clients.console.emitServer({
+        v: 1, t: t0 + 1, type: 'acknowledgement', event_id: 'sweep-failed', session,
+        intent_id: sweepIntent.intent_id, command_id: null, status: 'failed',
+        source: 'autonomy', drone_id: null, connection_epoch: null, roster_version: 7,
+        reason: 'adapter_failure', detail: 'Sweep failed.',
+      })
+    })
 
     await openPane(user, 'Requests')
     const disarmRow = screen.getByRole('listitem', { name: 'disarm refused' })
@@ -297,7 +307,7 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(retried[0]).toHaveTextContent('Retry of')
     expect(retried[0]).toHaveTextContent('intent-1')
 
-    const sweepRow = screen.getByRole('listitem', { name: 'sweep refused' })
+    const sweepRow = screen.getByRole('listitem', { name: 'sweep failed' })
     expect(
       within(sweepRow).getByText('Mints a new intent id and sets retry_of to this request.'),
     ).toBeInTheDocument()
@@ -312,11 +322,10 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
       selection: [1],
       confirm: true,
     })
-    const sweepRows = await screen.findAllByRole('listitem', { name: 'sweep refused' })
-    expect(sweepRows).toHaveLength(2)
-    expect(sweepRows[0]).toHaveTextContent('Retry of')
-    expect(sweepRows[0]).toHaveTextContent('intent-2')
-    expect(within(sweepRows[0]).getByLabelText('Lifecycle timestamps')).not.toHaveTextContent(
+    const retriedSweep = await screen.findByRole('listitem', { name: 'sweep accepted' })
+    expect(retriedSweep).toHaveTextContent('Retry of')
+    expect(retriedSweep).toHaveTextContent('intent-2')
+    expect(within(retriedSweep).getByLabelText('Lifecycle timestamps')).not.toHaveTextContent(
       'pending_confirmation',
     )
   })
@@ -535,10 +544,10 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     expect(motion.getByRole('button', { name: /^Map area/ })).toBeDisabled()
     const rows = motion.getAllByRole('button')
     expect(rows[3]).toHaveTextContent('Land')
-    expect(rows[3]).toHaveTextContent('accepted at M2.0')
+    expect(rows[3]).toHaveTextContent('available')
     expect(rows[3]).toBeEnabled()
     expect(rows[0]).toHaveTextContent('Takeoff')
-    expect(rows[0]).toHaveTextContent('accepted at M2.0')
+    expect(rows[0]).toHaveTextContent('available')
     expect(screen.getByText('Relay reports none at 0.8 m.')).toBeInTheDocument()
 
     await user.click(motion.getByRole('button', { name: /^Come home/ }))
@@ -614,11 +623,11 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     let now = t0
     const user = userEvent.setup()
     const { rerender } = render(<MissionTracker now={() => now} />)
-    const rows = screen.getAllByRole('button', { name: /accepted at M2\.0|unsupported/ })
+    const rows = screen.getAllByRole('button', { name: /available|unsupported/ })
     expect(rows).toHaveLength(10)
     expect(rows[0]).toHaveAttribute('aria-current', 'step')
     expect(rows[4]).toHaveTextContent('formation_set')
-    expect(rows[4]).toHaveTextContent('unsupported')
+    expect(rows[4]).toHaveTextContent('available')
     expect(screen.getByLabelText('Elapsed')).toHaveTextContent('0:00')
     expect(screen.getByText(/Pass requires all ten steps/)).toBeInTheDocument()
 

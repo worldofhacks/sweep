@@ -284,6 +284,10 @@ describe('plan preview', () => {
 
     const sweep = createIntent({ name: 'sweep', args: {}, selection: [1], source: 'console', session }, deps)
     expect(planTitle(sweep)).toBe('Sweep area')
-    expect(planSteps(sweep)).toEqual(['Send sweep to D-01.'])
+    expect(planSteps(sweep)).toEqual([
+      'Assign one deterministic lawnmower lane per aircraft inside a box derived from the authoritative aircraft positions and spacing.',
+      'Refuse before dispatch if the requested box or any lane leaves the configured geofence.',
+      'Send the frozen lanes to D-01.',
+    ])
   })
 })

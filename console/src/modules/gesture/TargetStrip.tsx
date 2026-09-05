@@ -1,5 +1,5 @@
 import { formatDroneId, type ControlState, type RequestRecord } from '../../control/state'
-import { isSupportedAtM20, selectionRule } from '../../relay/contract'
+import { isSupportedIntent, selectionRule } from '../../relay/contract'
 import { isReady, sortedAircraft } from '../../shell/derive'
 import { formatPercent, humanizeCode } from '../../shell/format'
 import { rosterIds } from '../control/controls'
@@ -65,9 +65,9 @@ function quickCommandView(
   state: ControlState,
   pending: RequestRecord | null,
 ): QuickCommandView {
-  if (!isSupportedAtM20(spec.name)) {
+  if (!isSupportedIntent(spec.name)) {
     const sentences = [
-      `The relay refuses ${spec.name} as unsupported at M2.0; it is listed until the relay accepts it.`,
+      `The relay refuses ${spec.name} as unsupported; it is listed until the relay accepts it.`,
     ]
     if (spec.confirm) sentences.push('Confirmation would be required before send.')
     if (spec.detail) sentences.push(spec.detail)
@@ -104,7 +104,7 @@ function quickCommandView(
  * selected, chips that toggle selection through the relay, the aircraft that
  * cannot be commanded, and the quick commands. "All ready", Hold, Takeoff and
  * Land all draft a preview for the dock and Come home sends at once, all
- * through the control hook; a name outside the relay's M2.0 set is listed as
+ * through the control hook; a name outside the relay's capability set is listed as
  * unsupported rather than sent.
  */
 export function TargetStrip({ controller }: { controller: Controller }) {
