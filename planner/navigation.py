@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 from heapq import heappop, heappush
-from math import ceil, dist, isfinite
+from math import dist, isfinite
 from pathlib import Path
 from typing import Literal
 
@@ -396,7 +396,10 @@ class NavigationPlanner:
                 "arrival_conflict", "arrival slot cannot contain swept aircraft volume"
             )
         assigned = tuple(zip(drones, slots[: len(drones)], strict=True))
-        reserved = [(drone.pose, request.motion.swept_radius_m) for drone in request.all_positions]
+        reserved = [
+            (drone.pose, request.motion.swept_radius_m, request.motion.aircraft_height_m)
+            for drone in request.all_positions
+        ]
         routes: list[DroneRoute] = []
         for drone, slot in assigned:
             if drone.pose.floor_id != slot.pose.floor_id and not any(
@@ -433,7 +436,9 @@ class NavigationPlanner:
             )
             routes.append(route)
             reserved = [item for item in reserved if item[0] != drone.pose]
-            reserved.append((slot.pose, request.motion.swept_radius_m))
+            reserved.append(
+                (slot.pose, request.motion.swept_radius_m, request.motion.aircraft_height_m)
+            )
         return NavigationPlan(
             artifact.map_pin,
             artifact.geometry_pin,
@@ -494,7 +499,7 @@ class NavigationPlanner:
                 "position_drift", "aircraft is not at the frozen segment start"
             )
         stationary = [
-            (drone.pose, plan.config.swept_radius_m)
+            (drone.pose, plan.config.swept_radius_m, plan.config.aircraft_height_m)
             for drone_id, drone in current.items()
             if drone_id != route.drone.drone_id
         ]
@@ -509,7 +514,12 @@ class NavigationPlanner:
                     "remaining_route_obstructed", "drifted approach enters blocked space"
                 )
             if self._segment_hits_reservation(
-                active.pose, segment.end, stationary, segment.radius_m, active.pose
+                active.pose,
+                segment.end,
+                stationary,
+                segment.radius_m,
+                active.pose,
+                segment.height_m,
             ):
                 return NavigationRefusal(
                     "remaining_route_obstructed",
@@ -532,7 +542,12 @@ class NavigationPlanner:
                         "remaining_route_obstructed", "remaining route enters blocked space"
                     )
             if self._segment_hits_reservation(
-                candidate.start, candidate.end, stationary, candidate.radius_m, active.pose
+                candidate.start,
+                candidate.end,
+                stationary,
+                candidate.radius_m,
+                active.pose,
+                candidate.height_m,
             ):
                 return NavigationRefusal(
                     "remaining_route_obstructed",
@@ -557,7 +572,7 @@ class NavigationPlanner:
         goal: Pose,
         artifact: NavigationArtifact,
         motion: MotionConfig,
-        reserved: list[tuple[Pose, float]],
+        reserved: list[tuple[Pose, float, float]],
     ) -> list[Pose] | None:
         start_level = self._level_for(start, artifact.grids)
         goal_level = self._level_for(goal, artifact.grids)
@@ -587,6 +602,7 @@ class NavigationPlanner:
                     reserved,
                     motion.swept_radius_m,
                     start,
+                    motion.aircraft_height_m,
                 ):
                     continue
                 second = self._route_on_level(
@@ -610,7 +626,9 @@ class NavigationPlanner:
                 return None
             points = [*first, *intermediate, goal]
             if any(
-                self._segment_hits_reservation(a, b, reserved, motion.swept_radius_m, start)
+                self._segment_hits_reservation(
+                    a, b, reserved, motion.swept_radius_m, start, motion.aircraft_height_m
+                )
                 for a, b in zip(points, points[1:], strict=False)
             ):
                 return None
@@ -624,7 +642,7 @@ class NavigationPlanner:
         start: Pose,
         goal: Pose,
         level: GridLevel,
-        reserved: list[tuple[Pose, float]],
+        reserved: list[tuple[Pose, float, float]],
         radius: float,
     ) -> list[Pose] | None:
         if self._blocked_by_stationary(start, reserved, radius, exempt=start):
@@ -679,7 +697,7 @@ class NavigationPlanner:
         level: GridLevel,
         start: tuple[int, int],
         goal: tuple[int, int],
-        reserved: list[tuple[Pose, float]],
+        reserved: list[tuple[Pose, float, float]],
         radius: float,
         exempt: Pose,
     ) -> list[tuple[int, int]] | None:
@@ -717,35 +735,32 @@ class NavigationPlanner:
     @staticmethod
     def _blocked_by_stationary(
         pose: Pose,
-        reserved: list[tuple[Pose, float]],
+        reserved: list[tuple[Pose, float, float]],
         radius: float,
         exempt: Pose | None = None,
     ) -> bool:
         return any(
             other != exempt
-            and other.floor_id == pose.floor_id
-            and dist(other.xyz, pose.xyz) < other_radius + radius - 1e-9
-            for other, other_radius in reserved
+            and _horizontal_distance(other, pose) < other_radius + radius - 1e-9
+            and _vertical_overlap(other.z_m, other_height, pose.z_m, 0.0)
+            for other, other_radius, other_height in reserved
         )
 
     @staticmethod
     def _segment_hits_reservation(
         start: Pose,
         end: Pose,
-        reserved: list[tuple[Pose, float]],
+        reserved: list[tuple[Pose, float, float]],
         radius: float,
         exempt: Pose,
+        height: float = 0.0,
     ) -> bool:
-        length = dist(start.xyz, end.xyz)
-        for index in range(ceil(length / 0.05) + 1):
-            t = index / max(1, ceil(length / 0.05))
-            point = Pose(
-                start.x_m + (end.x_m - start.x_m) * t,
-                start.y_m + (end.y_m - start.y_m) * t,
-                start.z_m + (end.z_m - start.z_m) * t,
-                start.floor_id,
-            )
-            if NavigationPlanner._blocked_by_stationary(point, reserved, radius, exempt):
+        for other, other_radius, other_height in reserved:
+            if other == exempt:
+                continue
+            if _segment_horizontal_distance(start, end, other) >= radius + other_radius - 1e-9:
+                continue
+            if _segment_vertical_overlap(start, end, height, other.z_m, other_height):
                 return True
         return False
 
@@ -753,7 +768,7 @@ class NavigationPlanner:
 def _simplify(
     points: list[Pose],
     level: GridLevel,
-    reserved: list[tuple[Pose, float]],
+    reserved: list[tuple[Pose, float, float]],
     radius: float,
 ) -> list[Pose]:
     result = [points[0]]
@@ -811,3 +826,34 @@ def _supercover(start: Pose, end: Pose, level: GridLevel) -> set[tuple[int, int]
 def _approval_digest(artifact: NavigationArtifact) -> str:
     payload = repr((artifact.zones, artifact.connectors)).encode()
     return sha256(payload).hexdigest()
+
+
+def _horizontal_distance(first: Pose, second: Pose) -> float:
+    return dist((first.x_m, first.y_m), (second.x_m, second.y_m))
+
+
+def _vertical_overlap(
+    first_z: float, first_height: float, second_z: float, second_height: float
+) -> bool:
+    return abs(first_z - second_z) < (first_height + second_height) / 2 - 1e-9
+
+
+def _segment_horizontal_distance(start: Pose, end: Pose, point: Pose) -> float:
+    dx, dy = end.x_m - start.x_m, end.y_m - start.y_m
+    length_sq = dx * dx + dy * dy
+    t = (
+        0.0
+        if length_sq == 0
+        else max(
+            0.0, min(1.0, ((point.x_m - start.x_m) * dx + (point.y_m - start.y_m) * dy) / length_sq)
+        )
+    )
+    return dist((start.x_m + dx * t, start.y_m + dy * t), (point.x_m, point.y_m))
+
+
+def _segment_vertical_overlap(
+    start: Pose, end: Pose, height: float, z: float, other_height: float
+) -> bool:
+    low = min(start.z_m, end.z_m) - height / 2
+    high = max(start.z_m, end.z_m) + height / 2
+    return low < z + other_height / 2 - 1e-9 and high > z - other_height / 2 + 1e-9

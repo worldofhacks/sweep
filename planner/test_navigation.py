@@ -210,6 +210,37 @@ def test_conflicting_arrival_slot_is_refused() -> None:
     assert result.code == "arrival_conflict"
 
 
+def test_surplus_arrival_slots_are_allowed() -> None:
+    slots = (
+        ArrivalSlot("atrium-a", "atrium", pose(6.5, 1.5), 0.5),
+        ArrivalSlot("atrium-b", "atrium", pose(6.5, 3.5), 0.5),
+    )
+    result = NavigationPlanner().plan(request(drone(1, 0.5, 1.5)), artifact(slots=slots))
+    assert not isinstance(result, NavigationRefusal)
+
+
+def test_diagonal_supercover_blocks_simplified_segment() -> None:
+    level = GridLevel("level_1", 1.0, (0.0, 0.0), 1.0, 4, 3, frozenset({(1, 1)}))
+    from planner.navigation import _line_is_free
+
+    assert not _line_is_free(pose(0.5, 1.35), pose(2.5, 0.35), level)
+
+
+def test_vertical_connector_hits_stationary_aircraft_volume() -> None:
+    planner = NavigationPlanner()
+    motion = MotionConfig(0.01, 2.0, 0, 0, 0, 0)
+    start = pose(2.5, 1.5, 1.0)
+    end = pose(2.5, 1.5, 3.0, "mezzanine")
+    assert planner._segment_hits_reservation(
+        start,
+        end,
+        [(pose(2.5, 1.5, 2.0, "mezzanine"), 0.01, 2.0)],
+        0.01,
+        start,
+        motion.aircraft_height_m,
+    )
+
+
 def test_sequential_route_avoids_aircraft_waiting_at_its_start_and_arrival() -> None:
     slots = (
         ArrivalSlot("atrium-a", "atrium", pose(6.5, 1.5), 0.5),
