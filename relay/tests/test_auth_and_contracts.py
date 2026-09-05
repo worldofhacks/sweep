@@ -43,6 +43,29 @@ def test_console_and_keyboard_authentication_are_bound_to_their_source() -> None
     assert console.drone_id is None
 
 
+def test_webcam_authentication_is_an_operator_source_without_an_aircraft() -> None:
+    resolver = StaticCredentialResolver(relay_token=CONSOLE_KEY)
+
+    webcam = authenticate(
+        {"v": 1, "type": "auth", "source": "webcam", "token": CONSOLE_KEY.decode()},
+        resolver,
+    )
+
+    assert webcam.source == "webcam"
+    assert webcam.drone_id is None
+    with pytest.raises(AuthenticationError, match="invalid"):
+        authenticate(
+            {
+                "v": 1,
+                "type": "auth",
+                "source": "webcam",
+                "drone_id": 1,
+                "token": CONSOLE_KEY.decode(),
+            },
+            resolver,
+        )
+
+
 def test_adapter_authentication_uses_the_bound_aircraft_key() -> None:
     resolver = StaticCredentialResolver(
         relay_token=CONSOLE_KEY,

@@ -56,7 +56,7 @@ def test_validated_intent_is_detached_from_input(
     assert result.intent.selection == ()
 
 
-@pytest.mark.parametrize("source", ["console", "keyboard"])
+@pytest.mark.parametrize("source", ["console", "keyboard", "webcam"])
 def test_registered_sources_share_the_validator(
     console_select_payload: dict[str, object], source: str
 ) -> None:
@@ -162,7 +162,7 @@ def test_invalid_intent_id_or_retry_of_is_rejected(
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
-@pytest.mark.parametrize("source", ["webcam", "language", "glasses"])
+@pytest.mark.parametrize("source", ["language", "band", "Webcam"])
 def test_unregistered_source_is_rejected(
     console_select_payload: dict[str, object], source: str
 ) -> None:

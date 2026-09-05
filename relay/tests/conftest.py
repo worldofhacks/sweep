@@ -72,6 +72,11 @@ def keyboard_principal() -> Principal:
 
 
 @pytest.fixture
+def webcam_principal() -> Principal:
+    return Principal(source="webcam", drone_id=None, signing_key=CONSOLE_KEY)
+
+
+@pytest.fixture
 def adapter_principal() -> Principal:
     return Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
 
