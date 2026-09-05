@@ -582,6 +582,7 @@ sweep/
   planner/          formations, sweep, allocation, modes
   arbiter/          safety rules, e-stop, battery return
   adapters/         deterministic sim and DJI Mini 3 bridge contract
+  calibration/      offline camera intrinsics and latency artifacts
   media/            MediaMTX config, stream naming
   perception/       detector, world-position estimate
   language/         plan compiler, resolvers, prompts, fallback

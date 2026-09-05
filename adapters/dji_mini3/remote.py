@@ -27,6 +27,7 @@ from adapters.protocols import (
     Telemetry,
 )
 from planner.models import (
+    Command,
     CommandOperation,
     FleetSnapshot,
     LifecycleStatus,
@@ -77,6 +78,7 @@ class NodeLink(Protocol):
 class _IntentContext:
     intent_id: str
     roster_version: int
+    command_ids: Mapping[tuple[int, CommandOperation], str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +178,35 @@ class RemoteBridgeAdapter:
         """
         if self._context is not None:
             raise AdapterError("an intent context is already bound")
-        self._context = _IntentContext(intent_id, roster_version)
+        self._context = _IntentContext(intent_id, roster_version, MappingProxyType({}))
+        try:
+            yield
+        finally:
+            self._context = None
+
+    @contextmanager
+    def for_commands(
+        self,
+        intent_id: str,
+        roster_version: int,
+        commands: tuple[Command, ...],
+    ) -> Iterator[None]:
+        """Bind planner command IDs to the exact signed commands emitted in this scope."""
+        if self._context is not None:
+            raise AdapterError("an intent context is already bound")
+        identities: dict[tuple[int, CommandOperation], str] = {}
+        for command in commands:
+            if command.intent_id != intent_id or command.roster_version != roster_version:
+                raise AdapterError("command scope contains a command from another intent")
+            key = (command.drone_id, command.operation)
+            if key in identities:
+                raise AdapterError("command scope contains an ambiguous aircraft operation")
+            identities[key] = command.command_id
+        self._context = _IntentContext(
+            intent_id,
+            roster_version,
+            MappingProxyType(identities),
+        )
         try:
             yield
         finally:
@@ -393,8 +423,9 @@ class RemoteBridgeAdapter:
         if context is None:
             raise AdapterError("no intent context is bound; open for_intent first")
         expected_epoch = self._require_aircraft(drone_id)
+        scoped_command_id = context.command_ids.get((drone_id, operation))
         request = CommandRequest(
-            command_id=self._command_ids(),
+            command_id=scoped_command_id or self._command_ids(),
             intent_id=context.intent_id,
             roster_version=context.roster_version,
             drone_id=drone_id,

@@ -387,6 +387,7 @@ def test_translate_plan_dispatches_through_the_remote_adapter() -> None:
 
     assert result.status is LifecycleStatus.COMPLETED
     assert [request.operation for request in link.sent] == [CommandOperation.GOTO]
+    assert [request.command_id for request in link.sent] == [plan.commands[0].command_id]
     assert link.sent[0].intent_id == plan.intent_id
     assert link.sent[0].roster_version == plan.roster_version
     assert link.sent[0].connection_epoch == 1
@@ -408,8 +409,16 @@ def test_autonomy_controller_drives_the_remote_adapter_without_a_caller_scope() 
 
     assert result.status is LifecycleStatus.COMPLETED, result.refusal
     assert [
-        (request.operation, request.intent_id, request.roster_version) for request in link.sent
-    ] == [(CommandOperation.HOVER, intent.intent_id, snapshot.roster_version)]
+        (request.command_id, request.operation, request.intent_id, request.roster_version)
+        for request in link.sent
+    ] == [
+        (
+            result.plan.commands[0].command_id,
+            CommandOperation.HOVER,
+            intent.intent_id,
+            snapshot.roster_version,
+        )
+    ]
     assert [ack.status for ack in result.acknowledgements] == [LifecycleStatus.COMPLETED]
 
 

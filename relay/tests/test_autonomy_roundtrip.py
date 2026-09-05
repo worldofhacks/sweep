@@ -524,6 +524,42 @@ def test_acknowledgement_timeout_degrades_and_holds_only_the_silent_aircraft(
     assert fleet.node_acks(translate_id, 1) == ["accepted", "executing", "completed"]
 
 
+def test_terminal_acknowledgement_after_timeout_resumes_the_original_plan(
+    relay_server: RelayServer,
+) -> None:
+    delay_s = relay_server.runtime.settings.command_ttl_ms / 1000 + 0.4
+    fleet = _Fleet(
+        relay_server,
+        {1: {"slow_operations": ("goto",), "slow_ack_delay_s": delay_s}},
+    )
+    fleet.start()
+    try:
+        takeoff_id = fleet.airborne()
+        translate_id = fleet.send("translate", selection=[1], args={"dx": 1, "dy": 0})
+        waiting = fleet.console.wait_for(
+            "acknowledgement",
+            intent_id=translate_id,
+            source=LIFECYCLE_SOURCE,
+            status="executing",
+        )
+        projected = relay_server.runtime.sessions[SESSION].current_state()["accepted_plan"]
+        completed = fleet.console.wait_for(
+            "acknowledgement",
+            intent_id=translate_id,
+            source=LIFECYCLE_SOURCE,
+            status="completed",
+        )
+        _wait_until(lambda: fleet.telemetry(1, "x") == 0.5, what="late completed telemetry")
+    finally:
+        fleet.stop()
+
+    assert waiting["status"] == "executing"
+    assert projected is not None and projected["intent_id"] == translate_id
+    assert completed["status"] == "completed"
+    assert fleet.commands_for(1) == [("takeoff", takeoff_id), ("goto", translate_id)]
+    assert fleet.node_acks(translate_id, 1) == ["accepted", "executing", "completed"]
+
+
 def test_node_disconnect_mid_plan_refuses_the_rest_as_stale_roster(
     relay_server: RelayServer,
 ) -> None:

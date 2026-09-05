@@ -52,7 +52,12 @@ own last authenticated activity in `NodeWatchdogState`; elapsed local time cause
 and then the configured adapter failsafe without depending on a relay loss callback or
 sending a central command to a disconnected node. Roster reconciliation's
 `LossResponse` is audit/integration metadata, while #17/M1.4 owns production runtime
-wiring. `SimCamera`
+wiring. Run `uvicorn adapters.sim.app:app` with the normal relay environment variables
+to exercise the deployable two-aircraft simulator composition. Configure credentials for
+simulated drones 1 and 2; each new relay session registers both signed nodes and streams
+their telemetry at the relay cadence. It binds the production relay, autonomy controller,
+arbiter, simulator, explicit safety enrichment, and the configured hold-then-failsafe
+watchdog. `SimCamera`
 provides a full 2:1 equirectangular `pano_360`, an acknowledged-yaw `reconstruct_8`
 sequence whose retrieved files must match the eight requested headings in order within
 the plan's explicit measured yaw tolerance and measured overlap target. Completion also
@@ -87,7 +92,8 @@ so the adapter's connection epochs are the ones the plan was built against.
 `AdapterDispatcher` opens `adapter.for_intent(intent_id, roster_version)` around every
 command it executes, including best-effort holds and estop, so each wire command carries
 the intent and roster it belongs to; a caller driving the adapter directly opens the
-scope itself, and scopes do not nest. The wire `command_id` is generated per request.
+scope itself, and scopes do not nest. Dispatcher-owned calls preserve the planner's
+`command_id` on the wire; direct diagnostic calls generate a unique ID per request.
 Flight arguments travel as integer millimetre and millidegree
 units. Before sending, the adapter compares the connection epoch it was given (from the
 snapshot, or `update_connection_epoch`) with the link's live epoch and refuses without

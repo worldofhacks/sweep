@@ -222,6 +222,41 @@ def test_issue_command_registers_autonomy_intents_and_refuses_terminal_ones(
         _issue_hover(relay_session, "command-bad", intent_id="intent-bad")
 
 
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"command_id": "never-issued"}, "unknown_command_id"),
+        ({"intent_id": "intent-other"}, "command_intent_mismatch"),
+        ({"roster_version": 2}, "command_roster_mismatch"),
+    ],
+)
+def test_acknowledgement_must_match_the_exact_issued_command(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    console_principal: Principal,
+    changes: dict[str, object],
+    reason: str,
+) -> None:
+    _join(relay_session, adapter_principal)
+    relay_session.process_intent(intent_payload(), console_principal)
+    _issue_hover(relay_session, "command-1")
+
+    refused = relay_session.process_acknowledgement(
+        acknowledgement_payload(event_id=f"ack-{reason}", status="completed", **changes),
+        adapter_principal,
+    )
+
+    assert refused[0]["type"] == "refusal"
+    assert refused[0]["reason"] == reason
+    audited_adapter_acks = [
+        record["event"]
+        for record in relay_session.replay()["events"]
+        if record["event"]["type"] == "acknowledgement"
+        and record["event"].get("source") == "adapter"
+    ]
+    assert audited_adapter_acks == []
+
+
 def test_await_command_acknowledgement_returns_node_acknowledgements_in_order(
     relay_session: RelaySession,
     adapter_principal: Principal,

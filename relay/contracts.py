@@ -742,7 +742,17 @@ def parse_telemetry(raw: object) -> TelemetryV1:
     _common_envelope(value, expected_type="telemetry", code="invalid_telemetry")
     values = {
         field: _finite_number(value[field], field, "invalid_telemetry")
-        for field in ("x", "y", "z", "vx", "vy", "vz", "battery", "link", "pos_quality")
+        for field in (
+            "x",
+            "y",
+            "z",
+            "vx",
+            "vy",
+            "vz",
+            "battery",
+            "link",
+            "pos_quality",
+        )
     }
     for field in ("battery", "link", "pos_quality"):
         if not 0 <= values[field] <= 1:

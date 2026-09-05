@@ -56,7 +56,7 @@ def test_validated_intent_is_detached_from_input(
     assert result.intent.selection == ()
 
 
-@pytest.mark.parametrize("source", ["console", "keyboard"])
+@pytest.mark.parametrize("source", ["console", "keyboard", "webcam"])
 def test_registered_sources_share_the_validator(
     console_select_payload: dict[str, object], source: str
 ) -> None:
@@ -76,6 +76,7 @@ def test_registered_sources_share_the_validator(
         ("translate", {"dx": 2, "dy": -1}, False),
         ("hold", {}, False),
         ("come_home", {}, False),
+        ("land", {}, True),
         ("land_all", {}, True),
         ("estop", {}, False),
     ],
@@ -94,6 +95,18 @@ def test_m20_console_intents_match_the_planner_contract(
     assert result.intent.name.value == name
     assert result.intent.args == args
     assert result.intent.selection == (1, 2)
+
+
+def test_translate_rejects_source_owned_frame_and_step(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(
+        name="translate",
+        args={"dx": 1, "dy": 0, "frame": "world", "step_m": 9.0},
+        selection=[1],
+    )
+
+    assert isinstance(validate_intent(console_select_payload), RejectedIntent)
 
 
 @pytest.mark.parametrize("mode", ["outdoorC", "outdoorF"])
@@ -162,7 +175,7 @@ def test_invalid_intent_id_or_retry_of_is_rejected(
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
-@pytest.mark.parametrize("source", ["webcam", "language", "glasses"])
+@pytest.mark.parametrize("source", ["language", "band", "Webcam"])
 def test_unregistered_source_is_rejected(
     console_select_payload: dict[str, object], source: str
 ) -> None:
@@ -253,7 +266,6 @@ def test_unknown_intent_name_is_rejected(
     ("name", "args"),
     [
         ("disarm", {}),
-        ("land", {}),
         ("altitude", {"delta": 1}),
         ("formation_next", {}),
         ("formation_set", {"name": "line"}),

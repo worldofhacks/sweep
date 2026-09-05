@@ -26,9 +26,11 @@ from planner.planner import SELECTION_TARGETED_INTENTS
 from relay.intent_v1 import IntentName, IntentV1
 
 _CONFIRMED_INTENTS: Final = frozenset(
-    {IntentName.TAKEOFF, IntentName.LAND_ALL, IntentName.CAPTURE_ROOM}
+    {IntentName.TAKEOFF, IntentName.LAND, IntentName.LAND_ALL, IntentName.CAPTURE_ROOM}
 )
-_SAFE_WHILE_STOPPED: Final = frozenset({IntentName.ESTOP, IntentName.HOLD, IntentName.LAND_ALL})
+_SAFE_WHILE_STOPPED: Final = frozenset(
+    {IntentName.ESTOP, IntentName.HOLD, IntentName.LAND, IntentName.LAND_ALL}
+)
 _SAFE_OPERATIONS: Final = frozenset(
     {CommandOperation.ESTOP, CommandOperation.HOVER, CommandOperation.LAND}
 )
@@ -146,9 +148,8 @@ class SafetyArbiter:
 
     def check_intent(self, intent: IntentV1, snapshot: FleetSnapshot) -> Refusal | None:
         """Check intent-level state before the planner can create adapter work."""
-        if (
-            intent.name in SELECTION_TARGETED_INTENTS
-            and tuple(intent.selection) != snapshot.selection
+        if intent.name in SELECTION_TARGETED_INTENTS and tuple(sorted(intent.selection)) != tuple(
+            sorted(snapshot.selection)
         ):
             return self._intent_refusal(
                 intent,
@@ -236,15 +237,19 @@ class SafetyArbiter:
                     intent.intent_id,
                     snapshot,
                     aircraft,
-                    require_position=True,
+                    require_position=intent.name is not IntentName.LAND,
                 )
                 if telemetry_refusal is not None:
                     return telemetry_refusal
-                battery_refusal = self._check_battery(
-                    intent.intent_id,
-                    snapshot,
-                    aircraft,
-                    aircraft.pose,
+                battery_refusal = (
+                    None
+                    if intent.name is IntentName.LAND
+                    else self._check_battery(
+                        intent.intent_id,
+                        snapshot,
+                        aircraft,
+                        aircraft.pose,
+                    )
                 )
                 if battery_refusal is not None:
                     return battery_refusal
@@ -530,7 +535,8 @@ class SafetyArbiter:
             command.intent_id,
             snapshot,
             aircraft,
-            safe_action=command.safety_action,
+            safe_action=command.safety_action
+            or (plan.intent_name is IntentName.LAND and command.operation is CommandOperation.LAND),
         )
         if membership_refusal is not None:
             return membership_refusal
@@ -678,6 +684,7 @@ class SafetyArbiter:
             IntentName.TRANSLATE: frozenset({CommandOperation.GOTO}),
             IntentName.HOLD: frozenset({CommandOperation.HOVER}),
             IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
+            IntentName.LAND: frozenset({CommandOperation.LAND}),
             IntentName.LAND_ALL: frozenset({CommandOperation.LAND}),
             IntentName.ESTOP: frozenset({CommandOperation.ESTOP}),
             IntentName.CAPTURE_ROOM: _CAMERA_OPERATIONS | frozenset({CommandOperation.ROTATE_TO}),
@@ -850,6 +857,7 @@ class SafetyArbiter:
             IntentName.TAKEOFF,
             IntentName.TRANSLATE,
             IntentName.COME_HOME,
+            IntentName.LAND,
         }:
             expected = tuple(sorted(plan.selection))
             actual = tuple(sorted(command.drone_id for command in plan.commands))
@@ -872,6 +880,12 @@ class SafetyArbiter:
 
     @staticmethod
     def _valid_normal_command(intent_name: IntentName, command: Command) -> bool:
+        if intent_name is IntentName.LAND:
+            return (
+                command.operation is CommandOperation.LAND
+                and not command.parameters
+                and not command.safety_action
+            )
         if intent_name is IntentName.TAKEOFF:
             return (
                 command.operation is CommandOperation.TAKEOFF
@@ -1218,6 +1232,8 @@ class SafetyArbiter:
 
     @staticmethod
     def _is_allowed_while_stopped(plan: Plan, command: Command) -> bool:
+        if plan.intent_name is IntentName.LAND:
+            return command.operation is CommandOperation.LAND and plan.confirmed is True
         return (
             command.safety_action
             and _STOPPED_OPERATION_BY_INTENT.get(plan.intent_name) is command.operation
@@ -1423,12 +1439,12 @@ class SafetyArbiter:
                 "hold requires an airborne aircraft",
                 aircraft.drone_id,
             )
-        elif intent.name is IntentName.LAND_ALL and not aircraft.airborne:
+        elif intent.name in {IntentName.LAND, IntentName.LAND_ALL} and not aircraft.airborne:
             return self._intent_refusal(
                 intent,
                 snapshot,
                 RefusalReason.INVALID_STATE,
-                "land_all targets must be airborne",
+                f"{intent.name.value} targets must be airborne",
                 aircraft.drone_id,
             )
         elif (

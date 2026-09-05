@@ -221,7 +221,7 @@ def test_hover_round_trips_through_the_node_socket_and_remote_adapter(
         ("hover", HOLD_INTENT, 2),
         ("hover", "intent-1", 3),
     ]
-    assert commands[1]["command_id"] != hold.command_id
+    assert commands[1]["command_id"] == hold.command_id
     assert all("signature" not in command for command in commands)
     hover_acks = [
         (record["status"], record["reason"])

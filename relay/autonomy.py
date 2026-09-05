@@ -33,11 +33,13 @@ from typing import get_origin, get_type_hints
 
 from fastapi import FastAPI
 
+from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink
 from adapters.sim.camera import SimCameraConfig
 from arbiter.safety import SafetyArbiter, SafetyConfig
-from planner.controller import AutonomyController
+from planner.controller import AutonomyController, RelayExecution
 from planner.models import (
+    CommandAcknowledgement,
     ExecutionResult,
     FleetSnapshot,
     FlightState,
@@ -328,6 +330,22 @@ class _Job:
             raise PlanPreempted(self.cancelled_by)
 
 
+@dataclass(slots=True)
+class _AwaitingExecution:
+    job: _Job
+    session: RelaySession
+    dispatcher: AdapterDispatcher
+    snapshot: FleetSnapshot
+    pending: ExecutionResult
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _ResumeToken:
+    intent_id: str
+    owner: _AwaitingExecution
+    acknowledgement: CommandAcknowledgement
+
+
 class _Lane:
     """One worker thread and its queue; ``pending`` and ``running`` share the session lock."""
 
@@ -403,6 +421,7 @@ class AutonomySession:
         self._hold = _Lane("hold", self._lock)
         self._estop = _Lane("estop", self._lock)
         self._lanes = (self._normal, self._hold, self._estop)
+        self._awaiting: dict[str, _AwaitingExecution] = {}
         self._workers = [
             threading.Thread(
                 target=self._run,
@@ -431,6 +450,9 @@ class AutonomySession:
         with lane.ready:
             lane.pending.append(job)
             lane.ready.notify()
+
+    def __call__(self, intent: IntentV1, state: dict[str, object]) -> None:
+        self.submit(intent, state)
 
     def authorize_leave(
         self, drone_id: int, connection_epoch: int, state: dict[str, object]
@@ -530,6 +552,11 @@ class AutonomySession:
                 for job in self._normal.pending
                 if job.cancelled_by is None and job.intent.name in HOLD_PREEMPTS
             )
+            victims.extend(
+                owner.job
+                for owner in self._awaiting.values()
+                if owner.job.cancelled_by is None and owner.job.intent.name in running_names
+            )
         session = stop.session
         if not victims or session is None:
             return
@@ -549,6 +576,7 @@ class AutonomySession:
                 continue
             with self._lock:
                 victim.cancelled_by = reason
+                self._awaiting.pop(victim.intent.intent_id, None)
             stop.publications.append(event)
 
     def _run(self, lane: _Lane) -> None:
@@ -624,11 +652,149 @@ class AutonomySession:
             )
             result = _composition_failure(intent, session, error)
         with self._lock:
-            job.finished = True
+            if result.status is LifecycleStatus.EXECUTING:
+                self._awaiting[intent.intent_id] = _AwaitingExecution(
+                    job=job,
+                    session=session,
+                    dispatcher=dispatcher,
+                    snapshot=snapshot,
+                    pending=result,
+                )
+                job.finished = False
+            else:
+                self._awaiting.pop(intent.intent_id, None)
+                job.finished = True
             cancelled = job.cancelled_by
         if cancelled is not None:
             return  # a stop already recorded this plan's terminal lifecycle
         self._report(runtime, session, job, result)
+
+    def prepare_resume(
+        self, session: RelaySession, acknowledgement: WireAcknowledgement
+    ) -> _ResumeToken | None:
+        """Claim a late terminal result only for this session's exact waiting command."""
+        if acknowledgement.status not in {
+            WireLifecycleStatus.COMPLETED,
+            WireLifecycleStatus.FAILED,
+            WireLifecycleStatus.INVALIDATED,
+        }:
+            return None
+        with self._lock:
+            owner = self._awaiting.get(acknowledgement.intent_id)
+            if (
+                owner is None
+                or owner.session is not session
+                or owner.job.cancelled_by is not None
+                or owner.pending.status is not LifecycleStatus.EXECUTING
+            ):
+                return None
+            waiting = next(
+                (
+                    item
+                    for item in owner.pending.acknowledgements
+                    if item.command_id == acknowledgement.command_id
+                    and item.status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}
+                ),
+                None,
+            )
+            command = (
+                next(
+                    (
+                        item
+                        for item in owner.pending.plan.commands
+                        if item.command_id == acknowledgement.command_id
+                    ),
+                    None,
+                )
+                if owner.pending.plan is not None
+                else None
+            )
+            if waiting is None or command is None:
+                return None
+            reason = _domain_refusal_reason(acknowledgement.reason)
+            terminal = CommandAcknowledgement(
+                command_id=acknowledgement.command_id,
+                intent_id=acknowledgement.intent_id,
+                roster_version=acknowledgement.roster_version,
+                drone_id=acknowledgement.drone_id,
+                connection_epoch=acknowledgement.connection_epoch,
+                status=LifecycleStatus(acknowledgement.status.value),
+                reason=reason,
+                detail=acknowledgement.detail or "",
+            )
+            if (
+                terminal.intent_id != command.intent_id
+                or terminal.roster_version != command.roster_version
+                or terminal.drone_id != command.drone_id
+                or terminal.connection_epoch != command.connection_epoch
+            ):
+                return None
+            return _ResumeToken(acknowledgement.intent_id, owner, terminal)
+
+    def resume_io(self, token: _ResumeToken) -> ExecutionResult:
+        """Resume dependent commands outside relay/session locks after a late result."""
+        owner = token.owner
+
+        def current() -> FleetSnapshot:
+            return self.snapshot(
+                owner.session.current_state(),
+                capture_readiness=owner.session.capture_readiness,
+            )
+
+        try:
+            assert owner.pending.plan is not None
+            return owner.dispatcher.resume_after_completion(
+                owner.pending.plan,
+                owner.pending,
+                token.acknowledgement,
+                owner.snapshot,
+                current_snapshot=current,
+                owner_still_valid=lambda: self._owns_resume(token),
+            )
+        except Exception as error:
+            return _resume_failure(token, error)
+
+    def commit_resume(self, token: _ResumeToken, result: ExecutionResult) -> RelayExecution | None:
+        """Commit a still-owned late result and retain ownership if another command waits."""
+        with self._lock:
+            if (
+                self._awaiting.get(token.intent_id) is not token.owner
+                or token.owner.job.cancelled_by is not None
+            ):
+                return None
+            owner = token.owner
+            owner.pending = result
+            if result.status is LifecycleStatus.EXECUTING:
+                owner.snapshot = self.snapshot(
+                    owner.session.current_state(),
+                    capture_readiness=owner.session.capture_readiness,
+                )
+            else:
+                self._awaiting.pop(token.intent_id, None)
+                owner.job.finished = True
+        try:
+            events = apply_result(owner.session, owner.job.intent, result)
+        except ValueError:
+            if owner.job.cancelled_by is None:
+                raise
+            return None
+        return RelayExecution(result, tuple(events))
+
+    def resume_after_acknowledgement(
+        self, session: RelaySession, acknowledgement: WireAcknowledgement
+    ) -> RelayExecution | None:
+        """Synchronous compatibility path used outside the asynchronous relay runtime."""
+        token = self.prepare_resume(session, acknowledgement)
+        if token is None:
+            return None
+        return self.commit_resume(token, self.resume_io(token))
+
+    def _owns_resume(self, token: _ResumeToken) -> bool:
+        with self._lock:
+            return (
+                self._awaiting.get(token.intent_id) is token.owner
+                and token.owner.job.cancelled_by is None
+            )
 
     def _report(
         self, runtime: RelayRuntime, session: RelaySession, job: _Job, result: ExecutionResult
@@ -713,8 +879,8 @@ class AutonomyComposition:
     def runtime_if_bound(self) -> RelayRuntime | None:
         return self._runtime_source()
 
-    def intent_sink_factory(self, session_id: str) -> IntentSink:
-        return self.session(session_id).submit
+    def intent_sink_factory(self, session: RelaySession) -> IntentSink:
+        return self.session(session.session_id)
 
     def leave_authorizer_factory(self, session_id: str) -> LeaveAuthorizer:
         return self.session(session_id).authorize_leave
@@ -775,6 +941,39 @@ def _composition_failure(
         status=LifecycleStatus.FAILED,
         refusal=refusal,
     )
+
+
+def _resume_failure(token: _ResumeToken, error: Exception) -> ExecutionResult:
+    pending = token.owner.pending
+    acknowledgements = tuple(
+        token.acknowledgement if item.command_id == token.acknowledgement.command_id else item
+        for item in pending.acknowledgements
+    )
+    return ExecutionResult(
+        intent_id=token.intent_id,
+        roster_version=pending.roster_version,
+        status=LifecycleStatus.FAILED,
+        plan=pending.plan,
+        acknowledgements=acknowledgements,
+        refusal=Refusal(
+            intent_id=token.intent_id,
+            roster_version=pending.roster_version,
+            drone_id=token.acknowledgement.drone_id,
+            connection_epoch=token.acknowledgement.connection_epoch,
+            reason=RefusalReason.ADAPTER_FAILURE,
+            detail=f"late command completion resume raised {type(error).__name__}",
+            status=LifecycleStatus.FAILED,
+        ),
+    )
+
+
+def _domain_refusal_reason(value: str | None) -> RefusalReason | None:
+    if value is None:
+        return None
+    try:
+        return RefusalReason(value)
+    except ValueError:
+        return RefusalReason.ADAPTER_FAILURE
 
 
 def _no_runtime() -> RelayRuntime | None:

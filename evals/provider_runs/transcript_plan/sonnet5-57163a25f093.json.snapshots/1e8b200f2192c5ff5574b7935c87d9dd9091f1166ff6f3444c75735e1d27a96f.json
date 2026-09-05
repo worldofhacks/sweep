@@ -1,0 +1,402 @@
+{
+  "entries": {
+    "08fe3611659605bb547ce1c1a23c0b589653b22460e9dff122671cbdbd461623": {
+      "input_units": 3270,
+      "latency_ms": 2564,
+      "output_units": 129,
+      "payload": {
+        "detail": "\"Freeze in place\" interpreted as hold for current selection.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "hold",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "0b85e03857f59881291eaa069a13a44d4c10a798f0bb1c118d097e1fe4f2f712": {
+      "input_units": 3266,
+      "latency_ms": 3095,
+      "output_units": 121,
+      "payload": {
+        "detail": "\"this room\" is deictic and not resolvable to a catalog room. Please specify a known room (e.g., living-room).",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "1a180f15a90a19e38b516872062bb7680e63f097857c043eeceafe912331828a": {
+      "input_units": 3266,
+      "latency_ms": 1981,
+      "output_units": 92,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "2a821453183af60ab1259bc4a228bbff83e6b40e99b80cedd6eaea99d093291a": {
+      "input_units": 3269,
+      "latency_ms": 2505,
+      "output_units": 120,
+      "payload": {
+        "detail": "\"Here\" is a deictic room reference with no spatial grounding; please specify a known room (e.g., living-room).",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "4fb04acadc1da566d699f81ddc23e8c08421ca34725d0dd8f993c4282020b3f4": {
+      "input_units": 3266,
+      "latency_ms": 2512,
+      "output_units": 114,
+      "payload": {
+        "detail": "\"The room\" is a deictic reference; please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "5a29b11c7b95f20e5752a8e1e017c02d21f22eb0c08878b37129471998e900ef": {
+      "input_units": 3265,
+      "latency_ms": 2239,
+      "output_units": 134,
+      "payload": {
+        "detail": "\"Stay there\" interpreted as hold command for the currently selected aircraft.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "hold",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "5d3e72b1dceef5c0c6e2ae4a5ca6cd8136bf8d0bc839e69a54645b1278d65bda": {
+      "input_units": 3274,
+      "latency_ms": 3574,
+      "output_units": 140,
+      "payload": {
+        "detail": "Prepare the aircraft for flight = arm the fleet (fleet-scoped, no selection needed).",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "63dcaf60fca23e29cdc1374a358ff096312a67c04faf3c5be5bcf32d7a58b5f6": {
+      "input_units": 3266,
+      "latency_ms": 2683,
+      "output_units": 129,
+      "payload": {
+        "detail": "Returning currently selected aircraft (1,2) to home.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "come_home",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "8e18a743893c4131bf8871809a7872277cd680dc770c1b08cd34b39cefcc39cb": {
+      "input_units": 3299,
+      "latency_ms": 7763,
+      "output_units": 157,
+      "payload": {
+        "detail": "Move forward 0.5m = 1 step (step_m=0.5), dy=1, using current selection [1,2].",
+        "intents": [
+          {
+            "args": {
+              "dx": 0,
+              "dy": 1
+            },
+            "mode": "indoor",
+            "name": "translate",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "93dd48a28343f6be4db41425eaa8e5ae95bf5ed37f7ec1aa7ef367630ec2f9c3": {
+      "input_units": 3264,
+      "latency_ms": 2274,
+      "output_units": 96,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1,
+                2
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "97f4fe68a4a97560542e1cc9b8b616b57be168c3bc8d1e762f6696b9e14ff732": {
+      "input_units": 3263,
+      "latency_ms": 3979,
+      "output_units": 89,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "come_home",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "9f5d2d6658928966936133aad82b8937f289e546d7b2752eef8b24993601f85e": {
+      "input_units": 3293,
+      "latency_ms": 2867,
+      "output_units": 159,
+      "payload": {
+        "detail": "Left = -1 step in x (aircraft_relative frame), one configured step (0.5m) since no distance was stated.",
+        "intents": [
+          {
+            "args": {
+              "dx": -1,
+              "dy": 0
+            },
+            "mode": "indoor",
+            "name": "translate",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "a44f6b2213910eef9183f8d8af3e472725807ab692e165bb2461d4450e8b45da": {
+      "input_units": 3265,
+      "latency_ms": 4607,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "a6194bfdb70da846268f0d6645fcd6d14f103ec1e64acde7e00ea20c36468c90": {
+      "input_units": 3268,
+      "latency_ms": 5104,
+      "output_units": 96,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1,
+                2
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "ae51824c78c028217ffe78ad550d8af62502a3a7d310a235cdc02e51e58976e8": {
+      "input_units": 3260,
+      "latency_ms": 2330,
+      "output_units": 90,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "bc568ba2764e4f20beaf364ad5b0d1aad55a97ab8d1dcb664e640e68fa36aa97": {
+      "input_units": 3265,
+      "latency_ms": 2447,
+      "output_units": 88,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "hold",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "bff91fcb026ae1c95d0323b2fb091b324884fb56571e5aecdb4b08f0359a5ba1": {
+      "input_units": 3260,
+      "latency_ms": 2694,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "d7083dee0f192d210ac2a17b1504c9d0a0a9f9b02cb5c631cd13b8292e677219": {
+      "input_units": 3269,
+      "latency_ms": 2394,
+      "output_units": 142,
+      "payload": {
+        "detail": "Interpreted 'Go back to home' as come_home for the currently selected aircraft [1,2].",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "come_home",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "e67784401f40554f4e1bf2b0df9ac560759e88d99f7a43034d334279d0834867": {
+      "input_units": 3261,
+      "latency_ms": 2367,
+      "output_units": 90,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "e9d323fa9b23118eba8300ce7b611d92b4e0de9dd84f465fdf63cb73105585ca": {
+      "input_units": 3266,
+      "latency_ms": 1853,
+      "output_units": 134,
+      "payload": {
+        "detail": "Lift off now interpreted as takeoff for current selection [1,2].",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "eb0bbaaa87b26d8a295ef6f31a30ea2b3c3a15fd73b5bf7e1c7f9349e8337674": {
+      "input_units": 3302,
+      "latency_ms": 2906,
+      "output_units": 164,
+      "payload": {
+        "detail": "0.5m right / step_m 0.5 = 1 step multiplier in x; aircraft_relative frame rotates per drone heading.",
+        "intents": [
+          {
+            "args": {
+              "dx": 1,
+              "dy": 0
+            },
+            "mode": "indoor",
+            "name": "translate",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-6",
+  "recorded_origin": "anthropic",
+  "version": 3
+}

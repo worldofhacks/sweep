@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "bundle_version": "synthetic-three-tags-v1",
+  "created_at": "2026-09-04T00:00:00Z",
+  "units": "meters",
+  "frame": {
+    "name": "building",
+    "x": "toward_elevator",
+    "y": "toward_street_wall",
+    "z": "up",
+    "origin_tag_id": 0,
+    "tag0_yaw_rad": 0
+  },
+  "floor_ids": [
+    "level_1",
+    "mezzanine"
+  ],
+  "sources": [
+    {
+      "path": "scan.ply",
+      "sha256": "9f9ea697fbda7c4438539da165eef21a441cc41332d878566e6dfffbea870994",
+      "T_map_scan": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ],
+      "rms_m": 0
+    }
+  ],
+  "files": {
+    "obstacles.yaml": "e742a1404cdc3e1f4c9b9fa6200faea5f63045fb4d22c0f7cdb0e989a6fda677",
+    "tags.yaml": "a557a3e710219a9689d0254dc5ac82673ba126685ee6764aeb37f00f97e212df",
+    "zones.yaml": "0b20a3654065a30c61c9ee78d30566b0ef18e7ffb7d516dde5ff26a2ac656b4d"
+  },
+  "content_sha256": "9569ddab2c99fad1911f78b54ae58e5298b355489bf0a4c6c092eca58d4be594"
+}
