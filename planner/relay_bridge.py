@@ -21,6 +21,7 @@ from planner.models import (
 from planner.models import (
     LifecycleStatus as AutonomyStatus,
 )
+from relay.capabilities import CapabilityProfile
 from relay.contracts import LifecycleStatus as RelayStatus
 from relay.intent_v1 import IntentName, IntentV1
 from relay.session import IntentSinkResult, RelaySession
@@ -69,6 +70,11 @@ class AutonomyRelayBridge:
         self._admissions: dict[str, _CoordinatedIntent] = {}
         self._completed_ordering: list[_CompletedOrdering] = []
         self._coordinator_active = False
+
+    @property
+    def capability_profile(self) -> CapabilityProfile:
+        """Expose the live planner contract at the relay composition boundary."""
+        return self.controller.planner.capability_profile
 
     def __call__(self, intent: IntentV1, _relay_state: dict[str, object]) -> IntentSinkResult:
         if intent.name in _COORDINATED_INTENTS:

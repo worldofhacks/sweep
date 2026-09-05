@@ -20,9 +20,11 @@ import {
 } from './intent'
 import { buildPlanPreview } from './plan'
 import {
+  capabilityBlockedReason,
   controlReducer,
   createInitialControlState,
   createRequestRecord,
+  isIntentEnabled,
   type RequestRecord,
 } from './state'
 
@@ -120,6 +122,15 @@ export function useControlConsole({
   /** Marks a recorded request sent and hands it to the client its source names. */
   const sendNow = useCallback(
     (intent: IntentV1, t: number) => {
+      if (!isIntentEnabled(state, intent.name)) {
+        dispatch({
+          type: 'request_send_failed',
+          intentId: intent.intent_id,
+          t,
+          detail: capabilityBlockedReason(state, intent.name) ?? 'The intent is disabled.',
+        })
+        return
+      }
       dispatch({ type: 'request_sent', intentId: intent.intent_id, t })
       const client = clientFor(intent.source)
       if (!client) {
@@ -133,7 +144,7 @@ export function useControlConsole({
       }
       sendToRelay(intent, client, t, intentDependencies.now, dispatch)
     },
-    [clientFor, intentDependencies],
+    [clientFor, intentDependencies, state],
   )
 
   /**
@@ -196,6 +207,7 @@ export function useControlConsole({
 
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>) => {
+      if (!isIntentEnabled(state, request.name)) return
       const intent = createIntent(
         {
           name: request.name,
@@ -208,7 +220,7 @@ export function useControlConsole({
       )
       stageIntent(intent)
     },
-    [intentDependencies, stageIntent, state.selection, state.sessionId],
+    [intentDependencies, stageIntent, state],
   )
 
   /**
@@ -218,7 +230,7 @@ export function useControlConsole({
    */
   const sendSelection = useCallback(
     (desired: DroneId[]) => {
-      if (desired.length === 0) return
+      if (!isIntentEnabled(state, 'select') || desired.length === 0) return
       const intent = createIntent(
         {
           name: 'select',
@@ -231,7 +243,7 @@ export function useControlConsole({
       )
       stageIntent(intent)
     },
-    [intentDependencies, stageIntent, state.sessionId],
+    [intentDependencies, stageIntent, state],
   )
 
   /** Registry and mosaic toggles are additive and never empty the selection. */
@@ -284,6 +296,7 @@ export function useControlConsole({
       source: DraftSource = 'console',
       pattern: CapturePattern = state.capturePattern,
     ): IntentV1 | null => {
+      if (!state.enabledIntentNames.includes('capture_room')) return null
       const selectedId = state.selection[0]
       if (state.selection.length !== 1 || !selectedId) return null
       const aircraft = state.aircraft[selectedId]
@@ -314,6 +327,7 @@ export function useControlConsole({
       state.capturePattern,
       state.selection,
       state.sessionId,
+      state.enabledIntentNames,
     ],
   )
 
@@ -323,6 +337,7 @@ export function useControlConsole({
    */
   const prepareSelect = useCallback(
     (ids: DroneId[], source: DraftSource): IntentV1 | null => {
+      if (!isIntentEnabled(state, 'select')) return null
       const desired = [...new Set(ids)].sort((a, b) => a - b)
       if (desired.length === 0) return null
       const allReady = desired.every(
@@ -341,12 +356,13 @@ export function useControlConsole({
       )
       return stageForConfirmation(draft)
     },
-    [intentDependencies, stageForConfirmation, state.aircraft, state.selection, state.sessionId],
+    [intentDependencies, stageForConfirmation, state],
   )
 
   /** Drafts a hold that must be previewed and confirmed before it is sent. */
   const prepareHold = useCallback(
     (source: DraftSource): IntentV1 | null => {
+      if (!isIntentEnabled(state, 'hold')) return null
       if (state.selection.length === 0) return null
       const selectionReady = state.selection.every(
         (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
@@ -364,13 +380,23 @@ export function useControlConsole({
       )
       return stageForConfirmation(draft)
     },
-    [intentDependencies, stageForConfirmation, state.aircraft, state.selection, state.sessionId],
+    [intentDependencies, stageForConfirmation, state],
   )
 
   const confirmRequest = useCallback(
     (intentId: string): IntentV1 | null => {
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
       if (!request || request.status !== 'pending_confirmation') return null
+      if (!isIntentEnabled(state, request.intent.name)) {
+        dispatch({
+          type: 'request_invalidated',
+          intentId,
+          t: intentDependencies.now(),
+          reasonCode: 'capability_disabled',
+          detail: capabilityBlockedReason(state, request.intent.name) ?? 'The capability was disabled.',
+        })
+        return null
+      }
       if (request.plan?.rosterVersion !== state.rosterVersion) {
         dispatch({
           type: 'request_invalidated',
@@ -409,7 +435,7 @@ export function useControlConsole({
       sendExistingIntent(confirmed, confirmedAt)
       return confirmed
     },
-    [intentDependencies, sendExistingIntent, state.aircraft, state.requests, state.rosterVersion, state.selection],
+    [intentDependencies, sendExistingIntent, state],
   )
 
   const cancelRequest = useCallback(

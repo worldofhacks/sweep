@@ -10,8 +10,9 @@ from planner.models import LifecycleStatus, PreparedExecution
 from relay.app import create_app
 from relay.audit import SessionAuditLog
 from relay.auth import Principal
+from relay.capabilities import C1_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
-from relay.session import RelayLimits, RelaySession
+from relay.session import CapabilityBoundIntentSink, RelayLimits, RelaySession
 from relay.settings import RelaySettings
 from relay.tests.conftest import CONSOLE_KEY, SESSION, intent_payload
 from tests.autonomy_fixtures import make_intent, make_snapshot, make_stack
@@ -141,7 +142,11 @@ def test_webcam_socket_executes_only_after_its_acceptance_is_delivered(tmp_path,
     def sink(_intent, _state):
         dispatched.set()
 
-    app = create_app(settings, clock=clock, intent_sink_factory=lambda _session: sink)
+    app = create_app(
+        settings,
+        clock=clock,
+        intent_sink_factory=lambda _session: CapabilityBoundIntentSink(sink, C1_CAPABILITY_PROFILE),
+    )
     with TestClient(app) as client, client.websocket_connect(f"/ws/{SESSION}") as socket:
         socket.send_json(
             {"v": 1, "type": "auth", "source": "webcam", "token": CONSOLE_KEY.decode()}

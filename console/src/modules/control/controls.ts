@@ -4,7 +4,7 @@
  * input is authoritative relay state; nothing here invents a value.
  */
 import type { ControlState, RequestRecord, RequestStatus } from '../../control/state'
-import { formatDroneId } from '../../control/state'
+import { capabilityBlockedReason, formatDroneId } from '../../control/state'
 import type { TranslateDirection } from '../../control/intent'
 import type {
   ConsoleIntentName,
@@ -35,10 +35,8 @@ export interface ControlSpec {
   press: ControlPress
   confirm: boolean
   supported: boolean
-  /** A press drafts or sends. Soft controls stay enabled although the relay refuses them. */
+  /** A press drafts or sends. Capability-disabled controls always remain inert. */
   enabled: boolean
-  /** Unsupported while connected: pressable so the refusal is recorded. */
-  soft: boolean
   badge: ControlBadge
   /** The one sentence under the control: the blocking reason, the refusal copy, or what a press does. */
   note: string
@@ -58,10 +56,6 @@ export const STOP_ACTIVE_REASON =
   'The network stop is active. Motion intents are refused until the relay reports it clear.'
 export const NO_SELECTION_REASON = 'No aircraft selected.'
 export const NO_READY_REASON = 'No aircraft is ready.'
-
-export function refusalCopy(name: ConsoleIntentName): string {
-  return `The relay refuses ${name} as unsupported at M2.0. Press it and the refusal is recorded.`
-}
 
 export function readyIds(state: ControlState): DroneId[] {
   return sortedAircraft(state.aircraft)
@@ -91,26 +85,27 @@ interface GateOptions {
 
 interface Gate {
   reason: string | null
-  soft: boolean
 }
 
 /**
- * Reason order: connection, then the selection rule, then the capability set (soft:
- * the refusal is worth recording, so the control stays pressable), then the
- * network stop. A control with no reason drafts or sends.
+ * Reason order: connection, authoritative relay capability, selection rule,
+ * then the local implementation set and network stop. Capability metadata is
+ * authoritative; unsupported names stay visible but never draft or dispatch.
  */
 export function gateControl(state: ControlState, name: ConsoleIntentName, options: GateOptions = {}): Gate {
   const connection = connectionReason(state)
-  if (connection) return { reason: connection, soft: false }
-  if (options.sel && state.selection.length === 0) return { reason: NO_SELECTION_REASON, soft: false }
+  if (connection) return { reason: connection }
+  const capability = capabilityBlockedReason(state, name)
+  if (capability) return { reason: capability }
+  if (options.sel && state.selection.length === 0) return { reason: NO_SELECTION_REASON }
   if (options.ready) {
     const notReady = notReadySentence(state)
-    if (notReady) return { reason: notReady, soft: false }
+    if (notReady) return { reason: notReady }
   }
-  if (options.extra) return { reason: options.extra, soft: false }
-  if (!isSupportedIntent(name)) return { reason: refusalCopy(name), soft: true }
-  if (state.estop && name !== 'estop' && name !== 'land' && name !== 'land_all') return { reason: STOP_ACTIVE_REASON, soft: false }
-  return { reason: null, soft: false }
+  if (options.extra) return { reason: options.extra }
+  if (!isSupportedIntent(name)) return { reason: `${name} is not implemented by this console.` }
+  if (state.estop && name !== 'estop' && name !== 'land' && name !== 'land_all') return { reason: STOP_ACTIVE_REASON }
+  return { reason: null }
 }
 
 function control(
@@ -124,7 +119,7 @@ function control(
   const confirm = requiresConfirmation(name)
   const supported = isSupportedIntent(name)
   const gate = gateControl(state, name, options)
-  const enabled = gate.reason === null || gate.soft
+  const enabled = gate.reason === null
   const note =
     gate.reason ??
     options.okNote ??
@@ -137,7 +132,6 @@ function control(
     confirm,
     supported,
     enabled,
-    soft: gate.soft,
     badge: supported ? (confirm ? 'confirm' : '') : 'unsupported',
     note,
     noteTone: gate.reason ? 'warn' : 'muted',
@@ -301,6 +295,7 @@ export const DPAD_CELLS: readonly DpadCell[] = [
 export function dpadBlockedReason(state: ControlState): string | null {
   return (
     connectionReason(state) ??
+    capabilityBlockedReason(state, 'translate') ??
     (state.estop ? STOP_ACTIVE_REASON : state.selection.length === 0 ? NO_SELECTION_REASON : null)
   )
 }
@@ -418,18 +413,19 @@ export interface ChipView {
 
 export function aircraftChips(state: ControlState): ChipView[] {
   return sortedAircraft(state.aircraft).map((drone) => {
-    const selectable = isReady(drone)
+    const selectCapability = capabilityBlockedReason(state, 'select')
+    const selectable = selectCapability === null && isReady(drone)
     return {
       droneId: drone.drone_id,
       id: formatDroneId(drone.drone_id),
       sub: `${drone.flight_state ?? 'flight state unreported'} · ${drone.battery === null ? '—' : `${Math.round(drone.battery * 100)}%`}`,
       selected: state.selection.includes(drone.drone_id),
       selectable,
-      reason: selectable
+      reason: selectCapability ?? (selectable
         ? ''
         : drone.readiness_reasons[0]
           ? drone.readiness_reasons[0].replaceAll('_', ' ')
-          : drone.membership,
+          : drone.membership),
     }
   })
 }
@@ -540,6 +536,8 @@ export function captureGate(
   if (!isLinkUp(state.connection.status)) {
     return { ready: false, text: `The console connection is ${state.connection.status}. Capture room cannot be sent.` }
   }
+  const capability = capabilityBlockedReason(state, 'capture_room')
+  if (capability) return { ready: false, text: capability }
   if (state.estop) {
     return { ready: false, text: 'The network stop is active. Capture room is refused until the relay reports it clear.' }
   }
@@ -711,6 +709,8 @@ export function retryBlockedReason(request: RequestRecord, state: ControlState):
   if (!isLinkUp(connection.status)) {
     return `Disabled: the ${request.intent.source} connection is ${connection.status}.`
   }
+  const capability = capabilityBlockedReason(state, request.intent.name)
+  if (capability) return `Disabled: ${capability}`
   if (followsSelection(request.intent.name)) {
     const gone = request.intent.selection.find((id) => !isReady(state.aircraft[id]))
     if (gone !== undefined) {
