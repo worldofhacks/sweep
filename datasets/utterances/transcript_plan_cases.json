@@ -47,7 +47,7 @@
         ]
       },
       "context": {"capability_version": "sim-v1", "rooms": ["living-room"], "now_ms": 1756700000000, "translation": {"frame": "aircraft_relative", "step_m": 0.5}},
-      "expected": {"kind": "plan", "intents": [{"name": "translate", "args": {"dx": 0.5, "dy": 0.0}, "selection": [1, 2], "mode": "indoor"}]}
+      "expected": {"kind": "plan", "intents": [{"name": "translate", "args": {"dx": 0.0, "dy": -1.0}, "selection": [1, 2], "mode": "indoor"}]}
     },
     {
       "id": "capture-known-room",
