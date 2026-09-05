@@ -80,6 +80,7 @@ class PlanningConfig:
     altitude_step_m: float | None = None
     altitude_floor_z_m: float | None = None
     altitude_configuration_id: str | None = None
+    altitude_completion_tolerance_m: float | None = None
     spacing_step_m: float = 0.2
 
     def __post_init__(self) -> None:
@@ -152,8 +153,13 @@ class PlanningConfig:
     def altitude_grounding(self) -> AltitudeGrounding | None:
         if self.altitude_step_m is None:
             return None
+        if self.altitude_completion_tolerance_m is None:
+            raise ValueError("enabled altitude requires a completion tolerance")
         return AltitudeGrounding(
-            self.altitude_step_m, self.altitude_floor_z_m, self.altitude_configuration_id
+            self.altitude_step_m,
+            self.altitude_floor_z_m,
+            self.altitude_configuration_id,
+            self.altitude_completion_tolerance_m,
         )
 
     def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding:

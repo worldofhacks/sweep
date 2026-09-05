@@ -55,11 +55,12 @@ class TranslationGrounding:
 
 @dataclass(frozen=True, slots=True)
 class AltitudeGrounding:
-    """Deployment scale and surveyed floor Z in the authoritative position frame."""
+    """Deployment scale, floor, and completion evidence policy."""
 
     step_m: float
     floor_z_m: float | None
     configuration_id: str
+    completion_tolerance_m: float
 
     def __post_init__(self) -> None:
         if not _is_finite_number(self.step_m) or self.step_m <= 0:
@@ -68,12 +69,15 @@ class AltitudeGrounding:
             raise ValueError("altitude floor reference must be finite")
         if not isinstance(self.configuration_id, str) or not self.configuration_id.strip():
             raise ValueError("altitude requires an explicit configuration identity")
+        if not _is_finite_number(self.completion_tolerance_m) or self.completion_tolerance_m <= 0:
+            raise ValueError("altitude completion tolerance must be finite and positive")
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {
             "step_m": self.step_m,
             "floor_z_m": self.floor_z_m,
             "configuration_id": self.configuration_id,
+            "completion_tolerance_m": self.completion_tolerance_m,
         }
 
 

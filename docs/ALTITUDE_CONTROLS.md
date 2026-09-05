@@ -42,12 +42,14 @@ configured = replace(
     altitude_step_m=0.5,
     altitude_floor_z_m=0.0,
     altitude_configuration_id="level-1-survey-v1",
+    altitude_completion_tolerance_m=0.05,
 )
 ```
 
 `PlanningConfig.altitude_grounding()` returns either `None` when disabled or an
-immutable `AltitudeGrounding(step_m, floor_z_m, configuration_id)`. A positive
-step requires an explicit nonempty configuration identity. A missing floor
+immutable grounding containing the step, floor, configuration identity, and measured
+completion tolerance. A positive step requires an explicit nonempty configuration
+identity and a finite positive completion tolerance. A missing floor
 reference still permits configured relative motion. The C1 capability projection
 must advertise altitude only when grounding exists, and absolute height only
 when `floor_z_m` exists.
@@ -60,6 +62,12 @@ before every subsequent adapter call, including resumption after an asynchronous
 completion. A dispatcher without that provider refuses altitude work. Already
 affected aircraft receive the existing best-effort safety hold when later work
 is refused. A changed configuration requires a new preview.
+
+A terminal hover acknowledgement is necessary but not sufficient for success. The
+dispatcher also requires position telemetry newer than the pre-command baseline,
+the hovering flight state, and a measured pose within the configured tolerance of
+the confirmed target. Missing or contradictory evidence fails closed and holds the
+affected aircraft.
 
 The relay accepts the expanded shape, but the planner remains the deployment
 capability gate. This PR does not enable a live deployment or add spoken phrase

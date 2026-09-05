@@ -32,6 +32,7 @@ from planner.models import (
     CommandOperation,
     ExecutionResult,
     FleetSnapshot,
+    FlightState,
     HoldScope,
     LifecycleStatus,
     MembershipState,
@@ -93,7 +94,13 @@ class AdapterDispatcher:
                 )
             return self._dispatch_estop(plan, provider, owner_still_valid=owner_still_valid)
 
-        return self._dispatch_checked(plan, provider, initial, owner_still_valid=owner_still_valid)
+        return self._dispatch_checked(
+            plan,
+            provider,
+            initial,
+            evidence_baseline=initial,
+            owner_still_valid=owner_still_valid,
+        )
 
     def _dispatch_checked(
         self,
@@ -101,6 +108,7 @@ class AdapterDispatcher:
         provider: SnapshotProvider,
         initial: FleetSnapshot,
         *,
+        evidence_baseline: FleetSnapshot,
         start_index: int = 0,
         prior_affected: tuple[Command, ...] = (),
         owner_still_valid: Callable[[], bool] | None = None,
@@ -119,6 +127,7 @@ class AdapterDispatcher:
                 plan,
                 tracked_snapshot,
                 initial,
+                evidence_baseline=evidence_baseline,
                 start_index=start_index,
                 prior_affected=prior_affected,
                 attempted=attempted,
@@ -161,6 +170,7 @@ class AdapterDispatcher:
         provider: SnapshotProvider,
         initial: FleetSnapshot,
         *,
+        evidence_baseline: FleetSnapshot,
         start_index: int,
         prior_affected: tuple[Command, ...],
         attempted: list[Command],
@@ -202,11 +212,14 @@ class AdapterDispatcher:
                     acknowledgements=tuple(acknowledgements),
                 )
             current = provider()
+            effective_projected = self._effective_projected_positions(
+                projected, evidence_baseline, current
+            )
             refusal = self.arbiter.check_command(
                 plan,
                 command,
                 current,
-                projected_positions=projected,
+                projected_positions=effective_projected,
             )
             if refusal is None:
                 refusal = self._altitude_grounding_refusal(plan, command, current)
@@ -328,14 +341,21 @@ class AdapterDispatcher:
             # Preserve completed I/O evidence while refusing stale mission completion.
             if plan.intent_name in {IntentName.CAPTURE_ROOM, IntentName.ALTITUDE}:
                 after = provider()
+                effective_projected = self._effective_projected_positions(
+                    projected, evidence_baseline, after
+                )
                 post_io_refusal = self.arbiter.check_command(
                     plan,
                     command,
                     after,
-                    projected_positions=projected,
+                    projected_positions=effective_projected,
                 )
                 if post_io_refusal is None:
                     post_io_refusal = self._altitude_grounding_refusal(plan, command, after)
+                if post_io_refusal is None and latest.status is LifecycleStatus.COMPLETED:
+                    post_io_refusal = self._altitude_attainment_refusal(
+                        plan, command, evidence_baseline, after
+                    )
                 if post_io_refusal is not None:
                     affected[command.drone_id] = command
                     acknowledgements.extend(
@@ -480,6 +500,76 @@ class AdapterDispatcher:
             reason=RefusalReason.INVALID_STATE,
             detail="altitude configuration changed or unavailable; preview again",
         )
+
+    @staticmethod
+    def _effective_projected_positions(
+        projected: Mapping[int, Position],
+        baseline: FleetSnapshot,
+        current: FleetSnapshot,
+    ) -> dict[int, Position]:
+        """Keep a projection only until newer authoritative position evidence arrives."""
+        return {
+            drone_id: target
+            for drone_id, target in projected.items()
+            if (before := baseline.aircraft.get(drone_id)) is not None
+            and (observed := current.aircraft.get(drone_id)) is not None
+            and observed.position_last_seen_ms <= before.position_last_seen_ms
+        }
+
+    def _altitude_attainment_refusal(
+        self,
+        plan: Plan,
+        command: Command,
+        baseline: FleetSnapshot,
+        current: FleetSnapshot,
+    ) -> Refusal | None:
+        if (
+            plan.intent_name is not IntentName.ALTITUDE
+            or command.operation is not CommandOperation.HOVER
+        ):
+            return None
+        grounding = plan.altitude_grounding
+        aircraft = current.aircraft.get(command.drone_id)
+        before = baseline.aircraft.get(command.drone_id)
+        try:
+            command_index = plan.commands.index(command)
+        except ValueError:
+            command_index = -1
+        target_command = next(
+            (
+                candidate
+                for candidate in reversed(plan.commands[:command_index])
+                if candidate.drone_id == command.drone_id
+                and candidate.operation is CommandOperation.GOTO
+            ),
+            None,
+        )
+        if grounding is None or aircraft is None or before is None or target_command is None:
+            return self._command_refusal(
+                command,
+                current,
+                RefusalReason.INVALID_PLAN,
+                "altitude completion is missing its grounded target",
+            )
+        if aircraft.position_last_seen_ms <= before.position_last_seen_ms:
+            return self._command_refusal(
+                command,
+                current,
+                RefusalReason.POSITION_STALE,
+                "altitude completion lacks post-command position evidence",
+            )
+        target = Position.from_mapping(target_command.parameters)
+        if (
+            aircraft.flight_state is not FlightState.HOVERING
+            or aircraft.pose.distance_to(target) > grounding.completion_tolerance_m
+        ):
+            return self._command_refusal(
+                command,
+                current,
+                RefusalReason.INVALID_STATE,
+                "aircraft has not reached the confirmed altitude target",
+            )
+        return None
 
     def validate_acknowledgement(
         self,
@@ -650,6 +740,7 @@ class AdapterDispatcher:
         completed_prefix = plan.commands[: command_index + 1]
         if (
             plan.roster_version != current.roster_version
+            and plan.intent_name is not IntentName.ALTITUDE
             and command_index + 1 == len(plan.commands)
             and terminal_ack.status is LifecycleStatus.COMPLETED
             and not any(
@@ -788,11 +879,14 @@ class AdapterDispatcher:
                 )
                 if target is not None:
                     projected[completed.drone_id] = target
+            effective_projected = self._effective_projected_positions(projected, snapshot, current)
             refusal = self.arbiter.check_command(
-                plan, command, current, projected_positions=projected
+                plan, command, current, projected_positions=effective_projected
             )
             if refusal is None:
                 refusal = self._altitude_grounding_refusal(plan, command, current)
+            if refusal is None and terminal_ack.status is LifecycleStatus.COMPLETED:
+                refusal = self._altitude_attainment_refusal(plan, command, snapshot, current)
             if refusal is not None:
                 holds = self._hold_affected(
                     plan, {done.drone_id: done for done in completed_prefix}, provider
@@ -817,6 +911,7 @@ class AdapterDispatcher:
             plan,
             provider,
             current,
+            evidence_baseline=snapshot,
             start_index=command_index + 1,
             prior_affected=plan.commands[: command_index + 1],
             owner_still_valid=owner_still_valid,

@@ -29,6 +29,7 @@ def config(**changes):
         altitude_step_m=0.5,
         altitude_floor_z_m=0,
         altitude_configuration_id="survey-floor-1-v1",
+        altitude_completion_tolerance_m=0.05,
         **changes,
     )
 
@@ -47,6 +48,31 @@ def wire(args, selection=(1, 2)):
         "mode": "indoor",
         "confirm": True,
     }
+
+
+def sim_snapshot(snapshot, flight):
+    """Project the simulator's terminal state as fresh authoritative telemetry."""
+    now_ms = snapshot.now_ms + len(flight.calls)
+    current = replace(snapshot, now_ms=now_ms)
+    for drone_id, simulated in flight.aircraft.items():
+        current = replace_aircraft(
+            current,
+            drone_id,
+            pose=simulated.pose,
+            flight_state=simulated.flight_state,
+            armed=simulated.armed,
+            position_last_seen_ms=now_ms,
+            link_last_seen_ms=now_ms,
+        )
+    return current
+
+
+def execute_with_sim_state(controller, flight, intent, snapshot):
+    return controller.execute(
+        intent,
+        snapshot,
+        current_snapshot=lambda: sim_snapshot(snapshot, flight),
+    )
 
 
 @pytest.mark.parametrize(
@@ -68,6 +94,7 @@ def test_altitude_forms_validate_without_changing_step_units(args):
         {"height_m": True},
         {"delta": False},
         {"delta": nan},
+        {"delta": 10**400},
         {"height_m": inf},
         {"height_m": "5"},
         {"meters": 1},
@@ -98,7 +125,9 @@ def test_missing_floor_allows_relative_but_refuses_absolute():
     )
     assert absolute.refusal.reason is RefusalReason.UNSUPPORTED
     assert flight.calls == []
-    relative = controller.execute(make_intent(IntentName.ALTITUDE, args={"delta": 1}), snapshot)
+    relative = execute_with_sim_state(
+        controller, flight, make_intent(IntentName.ALTITUDE, args={"delta": 1}), snapshot
+    )
     assert relative.status is LifecycleStatus.COMPLETED
     assert all(a.pose.z == 1.5 for a in flight.aircraft.values())
 
@@ -111,7 +140,7 @@ def test_one_foot_relative_motion_preserves_starting_offsets_and_holds(delta, ex
     accepted = validate_intent(wire({"delta": delta}))
     assert isinstance(accepted, AcceptedIntent)
     controller, _, _, _, flight, _ = make_stack(snapshot, config=config())
-    result = controller.execute(accepted.intent, snapshot)
+    result = execute_with_sim_state(controller, flight, accepted.intent, snapshot)
     assert result.status is LifecycleStatus.COMPLETED
     for drone_id, height in zip((1, 2), expected, strict=True):
         assert flight.aircraft[drone_id].pose == Position(
@@ -131,13 +160,14 @@ def test_absolute_height_above_explicit_floor_converges_different_starting_heigh
         snapshot, config=replace(config(), altitude_floor_z_m=1)
     )
     accepted = validate_intent(wire({"height_m": 1.524}))
-    result = controller.execute(accepted.intent, snapshot)
+    result = execute_with_sim_state(controller, flight, accepted.intent, snapshot)
     assert result.status is LifecycleStatus.COMPLETED
     assert [a.pose.z for a in flight.aircraft.values()] == [2.524, 2.524]
     assert result.plan.to_dict()["altitude_grounding"] == {
         "step_m": 0.5,
         "floor_z_m": 1,
         "configuration_id": "survey-floor-1-v1",
+        "completion_tolerance_m": 0.05,
     }
 
 
@@ -147,7 +177,12 @@ def test_vertical_column_moves_leading_aircraft_first(delta, heights, order):
     for drone_id, height in zip((1, 2), heights, strict=True):
         snapshot = replace_aircraft(snapshot, drone_id, pose=Position(0, 0, height))
     controller, _, _, _, flight, _ = make_stack(snapshot, config=config())
-    result = controller.execute(make_intent(IntentName.ALTITUDE, args={"delta": delta}), snapshot)
+    result = execute_with_sim_state(
+        controller,
+        flight,
+        make_intent(IntentName.ALTITUDE, args={"delta": delta}),
+        snapshot,
+    )
     assert result.status is LifecycleStatus.COMPLETED
     assert (
         tuple(call.drone_ids[0] for call in flight.calls if call.operation is CommandOperation.GOTO)
@@ -173,6 +208,7 @@ def test_intermediate_stationary_aircraft_blocks_vertical_path_before_io():
         {"altitude_step_m": 1},
         {"altitude_floor_z_m": 1},
         {"altitude_configuration_id": "resurvey-v2"},
+        {"altitude_completion_tolerance_m": 0.1},
     ],
 )
 def test_grounding_change_invalidates_prepared_height_before_io(change):
@@ -238,11 +274,17 @@ def test_hold_waits_for_terminal_movement_ack(monkeypatch):
 
     monkeypatch.setattr(flight, "goto", moving)
     intent = make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1})
-    pending = controller.execute(intent, snapshot)
+
+    def provider():
+        return sim_snapshot(snapshot, flight)
+
+    pending = controller.execute(intent, snapshot, current_snapshot=provider)
     assert pending.status is LifecycleStatus.EXECUTING
     assert [call.operation for call in flight.calls] == [CommandOperation.GOTO]
     terminal = replace(pending.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
-    result = dispatcher.resume_after_completion(pending.plan, pending, terminal, snapshot)
+    result = dispatcher.resume_after_completion(
+        pending.plan, pending, terminal, snapshot, current_snapshot=provider
+    )
     assert result.status is LifecycleStatus.COMPLETED
     assert [call.operation for call in flight.calls] == [
         CommandOperation.GOTO,
@@ -263,19 +305,21 @@ def test_altitude_and_horizontal_motion_conflict_holds_without_moving():
 
 
 @pytest.mark.parametrize(
-    "step,floor,identity",
+    "step,floor,identity,tolerance",
     [
-        (0, 0, "v1"),
-        (nan, 0, "v1"),
-        (True, 0, "v1"),
-        (0.5, inf, "v1"),
-        (0.5, False, "v1"),
-        (0.5, 0, ""),
+        (0, 0, "v1", 0.05),
+        (nan, 0, "v1", 0.05),
+        (True, 0, "v1", 0.05),
+        (0.5, inf, "v1", 0.05),
+        (0.5, False, "v1", 0.05),
+        (0.5, 0, "", 0.05),
+        (0.5, 0, "v1", 0),
+        (0.5, 0, "v1", inf),
     ],
 )
-def test_invalid_grounding_configuration_is_rejected(step, floor, identity):
+def test_invalid_grounding_configuration_is_rejected(step, floor, identity, tolerance):
     with pytest.raises(ValueError):
-        AltitudeGrounding(step, floor, identity)
+        AltitudeGrounding(step, floor, identity, tolerance)
 
 
 @pytest.mark.parametrize("kind", ["xy_drift", "stale_position", "configuration"])
@@ -341,8 +385,11 @@ def test_signed_building_height_uses_surveyed_floor(monkeypatch):
         snapshot, config=replace(config(), altitude_floor_z_m=-2)
     )
     arbiter.config = replace(arbiter.config, geofence=Geofence(-10, 10, -10, 10, -3, 5))
-    result = controller.execute(
-        make_intent(IntentName.ALTITUDE, selection=(1,), args={"height_m": 1.524}), snapshot
+    result = execute_with_sim_state(
+        controller,
+        flight,
+        make_intent(IntentName.ALTITUDE, selection=(1,), args={"height_m": 1.524}),
+        snapshot,
     )
     assert result.status is LifecycleStatus.COMPLETED
     assert flight.aircraft[1].pose.z == pytest.approx(-0.476)
@@ -387,3 +434,115 @@ def test_final_hover_cannot_complete_with_changed_grounding_or_stale_position(
     assert result.status in {LifecycleStatus.REFUSED, LifecycleStatus.INVALIDATED}
     assert result.refusal is not None
     assert sum(call.operation is CommandOperation.GOTO for call in flight.calls) == 1
+
+
+def test_final_hover_requires_fresh_measured_target_attainment():
+    snapshot = make_snapshot(1)
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config())
+
+    def wrong_altitude_after_hover():
+        current = sim_snapshot(snapshot, flight)
+        if any(call.operation is CommandOperation.HOVER for call in flight.calls):
+            current = replace_aircraft(
+                current,
+                1,
+                pose=Position(0, 0, 1.2),
+                position_last_seen_ms=current.now_ms,
+            )
+        return current
+
+    result = controller.execute(
+        make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1}),
+        snapshot,
+        current_snapshot=wrong_altitude_after_hover,
+    )
+
+    assert result.status is LifecycleStatus.REFUSED
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.INVALID_STATE
+    assert "has not reached" in result.refusal.detail
+    assert sum(call.operation is CommandOperation.GOTO for call in flight.calls) == 1
+
+
+def test_altitude_completion_without_new_position_evidence_fails_closed():
+    snapshot = make_snapshot(1)
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config())
+
+    result = controller.execute(
+        make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1}), snapshot
+    )
+
+    assert result.status is LifecycleStatus.REFUSED
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.POSITION_STALE
+    assert "post-command position evidence" in result.refusal.detail
+    assert sum(call.operation is CommandOperation.GOTO for call in flight.calls) == 1
+
+
+def test_newer_peer_measurement_supersedes_a_completed_position_projection():
+    baseline = make_snapshot(2)
+    controller, _, arbiter, dispatcher, _, _ = make_stack(baseline, config=config())
+    prepared = controller.prepare(make_intent(IntentName.ALTITUDE, args={"delta": 1}), baseline)
+    assert isinstance(prepared, PreparedExecution)
+    second_move = next(
+        command
+        for command in prepared.plan.commands
+        if command.drone_id == 2 and command.operation is CommandOperation.GOTO
+    )
+    current = replace(
+        replace_aircraft(
+            baseline,
+            1,
+            pose=Position(2, 0, 1.25),
+            position_last_seen_ms=baseline.now_ms + 1,
+        ),
+        now_ms=baseline.now_ms + 1,
+    )
+    projected = {1: Position(0, 0, 1.5)}
+
+    effective = dispatcher._effective_projected_positions(projected, baseline, current)
+    refusal = arbiter.check_command(
+        prepared.plan, second_move, current, projected_positions=effective
+    )
+
+    assert effective == {}
+    assert refusal is not None
+    assert refusal.reason is RefusalReason.SPACING
+
+
+def test_roster_change_cannot_shortcut_final_altitude_revalidation(monkeypatch):
+    snapshot = make_snapshot(1)
+    controller, _, _, dispatcher, flight, _ = make_stack(snapshot, config=config())
+    original = flight.hover
+
+    def waiting_hover(*args, **kwargs):
+        acknowledgements = original(*args, **kwargs)
+        return tuple(replace(ack, status=LifecycleStatus.EXECUTING) for ack in acknowledgements)
+
+    monkeypatch.setattr(flight, "hover", waiting_hover)
+
+    def provider():
+        return sim_snapshot(snapshot, flight)
+
+    pending = controller.execute(
+        make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1}),
+        snapshot,
+        current_snapshot=provider,
+    )
+    assert pending.status is LifecycleStatus.EXECUTING
+    controller.planner = DeterministicPlanner(
+        replace(config(), altitude_configuration_id="resurvey-v2")
+    )
+    terminal = replace(pending.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
+
+    result = dispatcher.resume_after_completion(
+        pending.plan,
+        pending,
+        terminal,
+        snapshot,
+        current_snapshot=lambda: replace(provider(), roster_version=snapshot.roster_version + 1),
+    )
+
+    assert result.status is LifecycleStatus.INVALIDATED
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.STALE_ROSTER

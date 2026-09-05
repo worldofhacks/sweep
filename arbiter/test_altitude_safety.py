@@ -52,7 +52,7 @@ def altitude_plan(snapshot: FleetSnapshot, targets: tuple[tuple[int, float], ...
         intent_name=IntentName.ALTITUDE,
         roster_version=snapshot.roster_version,
         selection=snapshot.selection,
-        altitude_grounding=AltitudeGrounding(0.3048, 0.0, "test-floor"),
+        altitude_grounding=AltitudeGrounding(0.3048, 0.0, "test-floor", 0.05),
         confirmed=False,
         commands=tuple(commands),
     )
@@ -187,7 +187,7 @@ def test_altitude_uses_signed_building_floor_reference(target: float, accepted: 
     snapshot = replace_aircraft(make_snapshot(1), 1, pose=Position(0, 0, -1))
     plan = replace(
         altitude_plan(snapshot, ((1, target),)),
-        altitude_grounding=AltitudeGrounding(0.3048, -2.0, "lower-floor"),
+        altitude_grounding=AltitudeGrounding(0.3048, -2.0, "lower-floor", 0.05),
     )
     arbiter = SafetyArbiter(replace(safety_config(), geofence=Geofence(-10, 10, -10, 10, -3, 5)))
     refusal = arbiter.check_plan(plan, snapshot)
