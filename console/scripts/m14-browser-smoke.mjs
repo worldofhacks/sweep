@@ -14,6 +14,7 @@ const logDirectory = await mkdtemp(join(tmpdir(), 'sweep-m14-browser-'))
 const processes = []
 let browser
 let page
+let voiceUpload
 
 try {
   processes.push(
@@ -45,6 +46,77 @@ try {
   ])
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  await page.route(`http://127.0.0.1:${relayPort}/api/sessions/${sessionId}/transcripts`, async (route) => {
+    const request = route.request()
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': `http://127.0.0.1:${consolePort}`,
+      'Access-Control-Allow-Methods': 'POST',
+      'Access-Control-Allow-Headers':
+        'Authorization, Content-Type, X-Sweep-Correlation-Id, X-Sweep-Audio-Duration-Ms',
+    }
+    if (request.method() === 'OPTIONS') {
+      await route.fulfill({ status: 204, headers: corsHeaders })
+      return
+    }
+    const headers = request.headers()
+    const body = request.postDataBuffer()
+    voiceUpload = {
+      authorization: headers.authorization,
+      contentType: headers['content-type'],
+      correlationId: headers['x-sweep-correlation-id'],
+      durationMs: Number(headers['x-sweep-audio-duration-ms']),
+      bytes: body?.byteLength ?? 0,
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: corsHeaders,
+      body: JSON.stringify({
+        v: 1,
+        type: 'voice_outcome',
+        session: sessionId,
+        correlation_id: voiceUpload.correlationId,
+        status: 'transcribed',
+        source: 'whisper',
+        reason: null,
+        transcript: 'hold position',
+        emissions: [],
+      }),
+    })
+  })
+  await page.addInitScript(() => {
+    class BrowserSmokeMediaRecorder {
+      state = 'inactive'
+      mimeType = 'audio/webm'
+      ondataavailable = null
+      onstop = null
+      onerror = null
+
+      start() {
+        this.state = 'recording'
+      }
+
+      stop() {
+        if (this.state !== 'recording') return
+        this.state = 'inactive'
+        const data = new Blob(['browser-smoke-voice'], { type: this.mimeType })
+        queueMicrotask(() => {
+          this.ondataavailable?.(new BlobEvent('dataavailable', { data }))
+          this.onstop?.(new Event('stop'))
+        })
+      }
+    }
+    Object.defineProperty(window, 'MediaRecorder', {
+      configurable: true,
+      value: BrowserSmokeMediaRecorder,
+    })
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }),
+      },
+    })
+  })
   await page.addInitScript(
     ({ baseUrl, sessionId, token }) => {
       window.__SWEEP_RELAY_CONFIG__ = { baseUrl, sessionId, token }
@@ -77,7 +149,26 @@ try {
     throw new Error('browser translation did not target both production simulator nodes')
   }
 
-  await pressSwarm(page, 'Hold')
+  await page.getByRole('navigation', { name: 'Modules' }).getByRole('button', { name: 'Speech', exact: true }).click()
+  const talk = page.locator('.sp-listen')
+  await talk.getByText('Hold to talk, or type below', { exact: true }).waitFor()
+  await talk.dispatchEvent('pointerdown', { buttons: 1 })
+  await page.getByRole('button', { name: /Listening — release to transcribe/ }).waitFor()
+  await talk.dispatchEvent('pointerup', { buttons: 0 })
+  const compilerResult = page.getByRole('region', { name: 'Compiler result' })
+  await compilerResult.getByText('hold', { exact: true }).waitFor()
+  if (
+    voiceUpload?.authorization !== `Bearer ${relayToken}` ||
+    voiceUpload.contentType !== 'audio/webm' ||
+    !voiceUpload.correlationId ||
+    voiceUpload.bytes === 0 ||
+    !Number.isFinite(voiceUpload.durationMs)
+  ) {
+    throw new Error(`browser voice upload did not preserve its authenticated bounded contract: ${JSON.stringify(voiceUpload)}`)
+  }
+  await compilerResult.getByRole('button', { name: 'Draft for confirmation', exact: true }).click()
+  await page.getByRole('button', { name: 'Confirm and send', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Modules' }).getByRole('button', { name: 'Control', exact: true }).click()
   await waitForRequest(page, 'Hold', 'completed')
   await pressSwarm(page, 'Come home')
   await waitForRequest(page, 'Come home', 'completed')
@@ -155,6 +246,8 @@ async function reportFailure() {
       reason: request.querySelector('.ct-request-reason code')?.textContent,
     }))),
     page?.locator('.ct-registry-card, .sh-context, .sh-tags, .sh-links').allTextContents(),
+    page?.locator('.sp-state, .sp-error, .sp-result').allTextContents(),
+    Promise.resolve(voiceUpload),
     (async () => {
       const response = await fetch(`http://127.0.0.1:${relayPort}/session/${sessionId}`, {
         headers: { Authorization: `Bearer ${relayToken}` },
@@ -176,7 +269,7 @@ async function reportFailure() {
         }))
     })(),
   ])
-  for (const [index, label] of ['requests', 'fleet', 'replay'].entries()) {
+  for (const [index, label] of ['requests', 'fleet', 'speech', 'voice upload', 'replay'].entries()) {
     const result = diagnostics[index]
     console.error(`Browser failure ${label}: ${result.status === 'fulfilled'
       ? JSON.stringify(result.value ?? null)
