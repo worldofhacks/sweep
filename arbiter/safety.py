@@ -967,7 +967,6 @@ class SafetyArbiter:
         if plan.intent_name in {
             IntentName.TAKEOFF,
             IntentName.TRANSLATE,
-            IntentName.ALTITUDE,
             IntentName.FORMATION_NEXT,
             IntentName.FORMATION_SET,
             IntentName.COME_HOME,
