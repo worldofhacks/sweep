@@ -45,6 +45,13 @@ data class AircraftSnapshot(
     val hardware: HardwareProfile,
     val camera: CameraProbe = CameraProbe(),
     val keyRatesHz: Map<String, Double> = emptyMap(),
+    // Phase E flight hooks: compass heading (degrees, 0 north, clockwise) for body-frame
+    // steps, whether the loop has Virtual Stick enabled (reported in `node_status`), and
+    // the snake_case reason the loop lost control authority (an RC takeover latched until the
+    // pilot re-arms; reported as `control_authority=false` in readiness).
+    val yawDeg: Double = 0.0,
+    val virtualStickEnabled: Boolean = false,
+    val authorityLostReason: String? = null,
 )
 
 interface AircraftSource {
@@ -53,21 +60,23 @@ interface AircraftSource {
 
 /**
  * How an executor reports progress on an admitted command. The link has already sent
- * `accepted`; `executing` then `completed` or `failed` follow. Reports after a terminal state,
- * or after the connection epoch changed underneath the command, are dropped and logged.
+ * `accepted`; `executing` then `completed` or `failed` follow. `executing` may repeat with a
+ * progress detail for long operations (the MAVLink `IN_PROGRESS` shape adopted on issue #43;
+ * the relay audits every one and the remote adapter keeps waiting). Reports after a terminal
+ * state, or after the connection epoch changed underneath the command, are dropped and logged.
  */
 interface CommandReport {
-    fun executing()
+    fun executing(detail: String? = null)
 
-    fun completed()
+    fun completed(detail: String? = null)
 
     fun failed(reason: String, detail: String? = null)
 }
 
 /**
- * Runs an admitted command. The `fake` flavor's [FakeAircraft] moves a kinematic fixture;
- * the `probe` flavor fails every command with `control_loop_unavailable` until the Phase E
- * Virtual Stick control loop lands.
+ * Runs an admitted command. Flight operations go to the Phase E `FlightExecutor` in both
+ * flavors; the `fake` flavor's [FakeAircraft] keeps the camera and gimbal fixture semantics
+ * of `fake_node.py` and the `probe` flavor's camera path lands with Phase G.
  */
 fun interface CommandExecutor {
     fun execute(command: CommandFrame, report: CommandReport)

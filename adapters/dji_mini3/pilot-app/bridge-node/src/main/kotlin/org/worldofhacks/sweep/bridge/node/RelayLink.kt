@@ -113,6 +113,7 @@ class RelayLink(
     private var previousEpoch: Int? = null
     private var lastAircraftConnected: Boolean? = null
     private var lastRcConnected: Boolean? = null
+    private var lastAuthorityLost: String? = null
     private var lastNodeStatus: NodeStatusBody? = null
     private val telemetryTimes = ArrayDeque<Long>()
     private val commands = LinkedHashMap<String, CommandRecord>()
@@ -366,6 +367,7 @@ class RelayLink(
         val snapshot = aircraft.snapshot.value
         lastAircraftConnected = snapshot.aircraftConnected
         lastRcConnected = snapshot.rcConnected
+        lastAuthorityLost = snapshot.authorityLostReason
         update {
             it.copy(
                 joined = true,
@@ -519,7 +521,7 @@ class RelayLink(
         val snapshot = aircraft.snapshot.value
         val phoneStatus = phone.current()
         return NodeStatusBody(
-            virtualStickEnabled = false, // Virtual Stick is Phase E
+            virtualStickEnabled = snapshot.virtualStickEnabled, // set by the Phase E flight loop
             controlAuthority = effectiveAuthority(snapshot),
             authorityChangeReason = authorityReason(snapshot),
             watchdogState = (watchdog?.state ?: WatchdogState.DISARMED).toNodeStatus(),
@@ -620,18 +622,18 @@ class RelayLink(
     private inner class Report(private val command: CommandFrame) : CommandReport {
         private var terminal = false
 
-        override fun executing() = post {
+        override fun executing(detail: String?) = post {
             if (live()) {
-                sendAck(command, LifecycleStatus.EXECUTING)
-                record(command, "executing")
+                sendAck(command, LifecycleStatus.EXECUTING, detail = detail)
+                record(command, "executing", detail = detail)
             }
         }
 
-        override fun completed() = post {
+        override fun completed(detail: String?) = post {
             if (live()) {
                 terminal = true
-                sendAck(command, LifecycleStatus.COMPLETED)
-                record(command, "completed")
+                sendAck(command, LifecycleStatus.COMPLETED, detail = detail)
+                record(command, "completed", detail = detail)
             }
         }
 
@@ -697,8 +699,8 @@ class RelayLink(
     private fun watchdogTick() {
         watchdog?.poll()?.let { transition ->
             val action = when (transition.to) {
-                WatchdogState.HOLD -> " (Phase E action at hold: neutral sticks and hover)"
-                WatchdogState.FAILSAFE -> " (Phase E action at failsafe: land indoors, never return to home)"
+                WatchdogState.HOLD -> " (flight loop action at hold: neutral sticks and hover)"
+                WatchdogState.FAILSAFE -> " (flight loop action at failsafe: land indoors, never return to home)"
                 else -> ""
             }
             log.log("watchdog ${transition.from} -> ${transition.to} after ${transition.elapsedMs} ms without relay activity$action")
@@ -708,7 +710,10 @@ class RelayLink(
         sendNodeStatusIfChanged()
     }
 
-    /** Aircraft or RC loss reports `control_authority=false` and a `node_status`; the socket stays up. */
+    /**
+     * Aircraft or RC loss reports `control_authority=false` and a `node_status`; the socket
+     * stays up. A Phase E authority latch (RC takeover) or its re-arm does the same.
+     */
     private fun checkAircraft() {
         val snapshot = aircraft.snapshot.value
         val previousAircraft = lastAircraftConnected
@@ -716,15 +721,18 @@ class RelayLink(
         if (previousAircraft == null || previousRc == null) {
             lastAircraftConnected = snapshot.aircraftConnected
             lastRcConnected = snapshot.rcConnected
+            lastAuthorityLost = snapshot.authorityLostReason
             return
         }
-        if (snapshot.aircraftConnected == previousAircraft && snapshot.rcConnected == previousRc) return
+        if (snapshot.aircraftConnected == previousAircraft && snapshot.rcConnected == previousRc && snapshot.authorityLostReason == lastAuthorityLost) return
         lastAircraftConnected = snapshot.aircraftConnected
         lastRcConnected = snapshot.rcConnected
+        lastAuthorityLost = snapshot.authorityLostReason
         log.log(
             "aircraft ${if (snapshot.aircraftConnected) "connected" else "disconnected"}, " +
-                "rc ${if (snapshot.rcConnected) "connected" else "disconnected"}; " +
-                "control authority ${effectiveAuthority(snapshot)}; relay socket stays up",
+                "rc ${if (snapshot.rcConnected) "connected" else "disconnected"}" +
+                (snapshot.authorityLostReason?.let { ", authority latched: $it" } ?: "") +
+                "; control authority ${effectiveAuthority(snapshot)}; relay socket stays up",
         )
         if (_state.value.joined) {
             if (snapshot.aircraftConnected && snapshot.rcConnected) sendTelemetry(snapshot)
@@ -736,13 +744,14 @@ class RelayLink(
     // ---- helpers ----
 
     private fun effectiveAuthority(snapshot: AircraftSnapshot): Boolean =
-        readiness.controlAuthority && snapshot.aircraftConnected && snapshot.rcConnected
+        readiness.controlAuthority && snapshot.aircraftConnected && snapshot.rcConnected && snapshot.authorityLostReason == null
 
     /** Why control authority is what it is; snake_case for `node_status.authority_change_reason`. */
     private fun authorityReason(snapshot: AircraftSnapshot): String? = when {
         !readiness.controlAuthority -> "not_granted"
         !snapshot.aircraftConnected -> "aircraft_disconnected"
         !snapshot.rcConnected -> "rc_disconnected"
+        snapshot.authorityLostReason != null -> snapshot.authorityLostReason // Phase E: RC takeover, latched until the pilot re-arms
         else -> null
     }
 

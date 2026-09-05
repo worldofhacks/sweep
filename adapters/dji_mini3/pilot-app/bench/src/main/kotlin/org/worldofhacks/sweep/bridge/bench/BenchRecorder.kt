@@ -11,6 +11,8 @@ enum class RecordKind(val wire: String) {
     COMMAND_ACKED("command_acked"),
     COMMAND_DROPPED("command_dropped"),
     STICK_SENT("stick_sent"),
+    /** Issue #85 first-flight probe entries (axis probe results, drill transitions, operator sign-off). */
+    PROBE("probe"),
     TELEMETRY("telemetry"),
     VIDEO_FRAME("video_frame"),
     STREAM_INFO("stream_info"),
@@ -51,6 +53,11 @@ class BenchRecorder(private val sink: Appendable, private val clock: Clock) {
 
     fun stickSent(seq: Long) {
         write(RecordKind.STICK_SENT, clock.nowMs(), "seq" to seq)
+    }
+
+    /** One #85 probe entry: a `name`, a display `summary`, and structured fields for analysis. */
+    fun probe(name: String, summary: String, vararg fields: Pair<String, Any?>) {
+        write(RecordKind.PROBE, clock.nowMs(), "name" to name, "summary" to summary, *fields)
     }
 
     fun telemetry(droneId: Int, eventId: String) {

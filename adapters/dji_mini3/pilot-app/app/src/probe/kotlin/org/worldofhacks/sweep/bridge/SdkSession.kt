@@ -15,6 +15,9 @@ import dji.v5.manager.KeyManager
 import dji.v5.manager.SDKManager
 import dji.v5.manager.interfaces.SDKManagerCallback
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.flight.DjiFlightPort
+import org.worldofhacks.sweep.bridge.flight.FlightExecutor
+import org.worldofhacks.sweep.bridge.flight.FlightNode
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.session.AircraftIdentity
@@ -56,7 +59,25 @@ class SdkSession(private val application: Application) : AircraftSession, FpvSes
         get() = probe
 
     override val executor: CommandExecutor
-        get() = probe
+        get() = flightExecutor
+
+    // Phase E hook: DjiFlightPort and FlightExecutor run the Virtual Stick loop. The port's
+    // takeover signals attach when ProbeAircraft attaches (SDK registered), and the flight
+    // controller's failsafe setting is read, never changed, on every product connection.
+    private val port = DjiFlightPort { name, detail -> model.event(name, detail) }
+    private val flightExecutor = FlightExecutor(port, probe, fallback = probe, log = { line -> model.event("Flight", line) })
+    override val flight: FlightNode = FlightNode(
+        flightExecutor,
+        probe,
+        application.filesDir,
+        onStatus = { status -> probe.setFlightStatus(status.virtualStickEnabled, status.authorityLostReason) },
+        log = { line -> model.event("Probe", line) },
+    )
+
+    init {
+        probe.onAttached = { port.attach(flightExecutor) }
+        probe.onProductConnected = { port.onProductConnected() }
+    }
 
     private val callback = object : SDKManagerCallback {
         override fun onRegisterSuccess() {

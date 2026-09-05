@@ -50,6 +50,11 @@ class FakeAircraft(
         _snapshot.update { it.copy(hardware = hardware) }
     }
 
+    /** Phase E hook: the kinematic flight fixture writes its position, velocity, heading, and flight state here. */
+    fun update(transform: (AircraftSnapshot) -> AircraftSnapshot) {
+        _snapshot.update(transform)
+    }
+
     /** Deterministic drift so consecutive telemetry frames differ: slow drain, link ripple. */
     fun advance(nowMs: Long) {
         _snapshot.update { current ->

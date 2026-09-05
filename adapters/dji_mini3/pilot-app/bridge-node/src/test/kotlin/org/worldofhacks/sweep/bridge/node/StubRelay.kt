@@ -121,7 +121,8 @@ class StubRelay(
     }
 
     override fun close() {
-        sockets.forEach { it.cancel() }
+        // A server-side socket the node already closed has no call behind it; cancelling it throws.
+        sockets.forEach { runCatching { it.cancel() } }
         server.shutdown()
     }
 

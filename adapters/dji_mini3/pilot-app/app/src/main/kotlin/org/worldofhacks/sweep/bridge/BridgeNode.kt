@@ -64,6 +64,8 @@ class BridgeNode(private val application: Application, val session: AircraftSess
     init {
         // EncryptedSharedPreferences opens the keystore-backed keyset; keep it off the main thread.
         scope.launch(Dispatchers.IO) { _setup.value = store.summary() }
+        // Phase E hook: the flight loop reads the link state (thresholds, join, estop, relay activity) for its deadman.
+        session.flight?.executor?.observe(link)
     }
 
     /** Saves the Setup fields (a null token keeps the stored one) and optionally (re)connects. */

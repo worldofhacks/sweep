@@ -5,6 +5,10 @@ import java.io.File
 import kotlin.concurrent.fixedRateTimer
 import kotlinx.coroutines.flow.StateFlow
 import org.worldofhacks.sweep.bridge.core.frames.HardwareProfile
+import org.worldofhacks.sweep.bridge.flight.FakeFlightAircraft
+import org.worldofhacks.sweep.bridge.flight.FlightExecutor
+import org.worldofhacks.sweep.bridge.flight.FlightNode
+import org.worldofhacks.sweep.bridge.flight.FlightSimulation
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.node.FakeAircraft
@@ -47,10 +51,31 @@ class FakeAircraftSession(private val filesDir: File, phone: PhoneStatusSource? 
     override val state: StateFlow<SessionState> = model.state
 
     override val aircraft: AircraftSource
-        get() = fake
+        get() = flightAircraft
 
     override val executor: CommandExecutor
-        get() = fake
+        get() = flightExecutor
+
+    // Phase E hook: the fixture flies through the same Virtual Stick loop the probe flavor
+    // runs (FakeFlightAircraft, simple kinematics, driven by FlightExecutor), so the command
+    // path, deadman, and takeover run end to end on a phone without an aircraft. Non-flight
+    // commands still reach the Phase C fixture; the simulation buttons stand in for the RC.
+    private val flightAircraft = FakeFlightAircraft(fake)
+    private val flightExecutor = FlightExecutor(flightAircraft, flightAircraft, fallback = fake, log = { line -> model.event("Flight", line) })
+    override val flight: FlightNode = FlightNode(
+        flightExecutor,
+        flightAircraft,
+        filesDir,
+        onStatus = flightAircraft::applyStatus,
+        log = { line -> model.event("Probe", line) },
+        simulation = object : FlightSimulation {
+            override fun simulateRcStick() = flightExecutor.onTakeover("rc_takeover", "simulated left stick 45%")
+
+            override fun simulateRcPause() = flightExecutor.onTakeover("rc_pause", "simulated pause button")
+
+            override fun simulateVirtualStickDropped() = flightExecutor.onVirtualStickState(enabled = false, ownedBySdk = false, owner = "RC")
+        },
+    )
 
     init {
         model.initProgress("fake SDK ready")

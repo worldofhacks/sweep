@@ -1,6 +1,6 @@
 # DJI Mini 3 bridge
 
-Capability area: Autonomy, with Platform support. Issue #43 (M1.9), Phases B3, B4, and C.
+Capability area: Autonomy, with Platform support. Issue #43 (M1.9), Phases B3, B4, C, and E.
 
 One Android phone per DJI Mini 3 and RC-N1 pair runs the pilot app under `pilot-app/`. The
 app registers with the DJI Mobile SDK, proves the aircraft identity, and keeps one
@@ -21,10 +21,10 @@ dependency, and dangling `@xml/accessory_filter` reference were not carried over
 
 | Module | Kind | Contents |
 |---|---|---|
-| `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, the relay-signed `command` (integer-only `args`), `capabilities`, `capture_readiness`, `node_status`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; canonical JSON that byte-matches `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`; HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence |
-| `bridge-node` | Kotlin/JVM | `RelayLink`, the node's OkHttp WebSocket client: auth, join, readiness, telemetry at 10 Hz, capabilities, node_status, command admission and acknowledgement, reconnect with bounded backoff, the watchdog under relay silence; `FakeAircraft`, the kinematic fixture with the command semantics of `fake_node.py`; tested against a stub relay on MockWebServer |
-| `bench` | Kotlin/JVM | JSONL recorder for command round-trip time, jitter, drops, stick send rate, telemetry rate, and video frame stats, plus the report writer |
-| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`; the Compose page with Setup, Connectivity, Readiness, node status, the command log, and the Phase B4 registration and identity cards |
+| `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, the relay-signed `command` (integer-only `args`), `capabilities`, `capture_readiness`, `node_status`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; canonical JSON that byte-matches `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`; HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence; `core/flight`, the Phase E Virtual Stick loop as a pure tick-driven state machine (axis mapping, time-boxed steps from millimetre arguments, deadman actions, estop and takeover latches), the kinematic `FakeFlightModel`, and the #85 axis-probe classifier |
+| `bridge-node` | Kotlin/JVM | `RelayLink`, the node's OkHttp WebSocket client: auth, join, readiness, telemetry at 10 Hz, capabilities, node_status, command admission and acknowledgement, reconnect with bounded backoff, the watchdog under relay silence; `FakeAircraft`, the kinematic fixture with the command semantics of `fake_node.py`; `flight/FlightExecutor`, the loop's coroutine ticker and command executor, and `FakeFlightAircraft`, the fixture flown by the loop; tested against a stub relay on MockWebServer |
+| `bench` | Kotlin/JVM | JSONL recorder for command round-trip time, jitter, drops, stick send rate, telemetry rate, video frame stats, and the #85 `probe` entries, plus the report writer |
+| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates, and `DjiFlightPort` on `IVirtualStickManager`) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`; the Compose page with Setup, Connectivity, Readiness, node status, the Flight and First-flight probes cards, the command log, and the Phase B4 registration and identity cards |
 
 The JVM tests read fixtures under `bridge-core/src/test/resources/vectors/` that
 `adapters/dji_mini3/vectors.py` generates from the relay code itself; `test_vectors.py`
@@ -85,10 +85,9 @@ frame for frame: `auth`, then the signed `join`, then, once the relay answers wi
 connection epoch, one telemetry frame, the signed `readiness`, `capabilities`, and
 `node_status`, then telemetry at 10 Hz. Commands are verified against the node key and
 admitted (epoch, roster, monotonic `seq`, `issued_at + ttl_ms` on the relay clock);
-`accepted` is acknowledged on admission, then `executing` and `completed` (fake flavor) or
-`failed` with `control_loop_unavailable` (probe flavor, until Phase E). Rejections use
-`stale_command` or `out_of_order_command`; a frame whose signature does not verify is dropped
-without a reply.
+`accepted` is acknowledged on admission, then `executing` and `completed` or `failed` from
+the Phase E flight loop (both flavors; see below). Rejections use `stale_command` or
+`out_of_order_command`; a frame whose signature does not verify is dropped without a reply.
 
 ### Relay
 
@@ -168,8 +167,8 @@ A relay process restart closes the session id: the phone shows `Auth refused: se
 on the Connectivity card and stops reconnecting until a new session id is saved, which the
 relay then serves from epoch 1. Relay silence with the socket up (or the socket down) drives
 the watchdog to `hold` after `watchdog_hold_ms` and `failsafe` after `watchdog_failsafe_ms`,
-visible in `node_status` and on the phone; the flight action for those states is Phase E
-(neutral sticks and hover at hold, land indoors at failsafe, never return to home).
+visible in `node_status` and on the phone; the flight loop acts on the same clock (neutral
+sticks at hold, land indoors at failsafe, never return to home; see Phase E).
 
 ### Probe flavor
 
@@ -181,9 +180,255 @@ failure. Once registered, `ProbeAircraft` listens to `KeyAircraftLocation3D`,
 `KeyFlightMode`, `KeyAreMotorsOn`, `KeyIsFlying`, `KeyConnection` (aircraft and RC),
 `KeyChargeRemainingInPercent`, and `KeySignalQuality`, assembles Telemetry v1 from the latest
 values, and shows each key's measured update rate on the node status card. The `x`, `y`,
-`pos_quality`, and flight-state mappings are provisional until measured with the aircraft;
-the probe flavor acknowledges every command `failed` with `control_loop_unavailable` until
-the Phase E Virtual Stick loop lands.
+`pos_quality`, and flight-state mappings are provisional until measured with the aircraft.
+`KeyAircraftVelocity` is N-E-D, so its `y` is the planner's `vx` (east) and its `x` the
+planner's `vy` (north); `KeyAircraftAttitude.yaw` (degrees, 0 north, clockwise) is the
+heading the flight loop rotates body-frame steps with. Flight commands run in the Phase E
+loop below; the camera and media commands acknowledge `failed` with `unsupported` until
+Phase G.
+
+## Phase E: Virtual Stick loop, deadman, and RC takeover
+
+Phase E connects admitted commands to the aircraft. The loop lives in
+`bridge-core/.../core/flight` as a pure state machine (`FlightController`) driven by
+`bridge-node/.../flight/FlightExecutor`, a dedicated single-threaded coroutine ticker at the
+relay's `virtual_stick_hz` (clamped to DJI's 5 to 25 Hz, drift-free; it survives any failure
+of one tick, and if it is ever stopped it sends neutral sticks and disables Virtual Stick on
+its way out). The probe flavor's
+port is `DjiFlightPort` on `IVirtualStickManager` (advanced mode, `VirtualStickFlightControlParam`
+in velocity mode with the BODY coordinate system, yaw angle mode for `rotate_to`) plus the
+`KeyStartTakeoff` and `KeyStartAutoLanding` actions; the fake flavor's port is
+`FakeFlightAircraft`, simple kinematics that hover when frames stop and drop Virtual Stick on
+landing, so the whole path runs on any phone.
+
+Virtual Stick is enabled only while a command that needs it is active and disabled the
+moment it completes: an idle aircraft is always under the flight controller and the RC.
+
+### Commands and acknowledgements
+
+`accepted` is sent on admission by the link; the loop sends `executing` when the first stick
+frame goes out (or the takeoff or landing action is accepted), repeats `executing` with a
+progress detail about once a second for long operations (the MAVLink `IN_PROGRESS` shape;
+the relay audits each one and the remote adapter keeps waiting), then `completed` or
+`failed` with a snake_case reason. Every failure detail ends in `[retryable]` or
+`[terminal]`, the refusal class the wire has no field for.
+
+| Operation | What the loop does | Completes on |
+|---|---|---|
+| `takeoff {z_mm}` | `KeyStartTakeoff`, wait for the reported flight state to settle in a hover, then a vertical velocity step to `z_mm` if it differs by more than 0.2 m | hover at the requested altitude |
+| `goto {x_mm, y_mm, z_mm, speed_mm_s}` | one time-boxed body-frame velocity step: the displacement from the position the node reports (0,0 indoors until M3 localization) rotated into the body frame at the current heading, held for exactly `distance / speed`; speed is clamped to the node limit (0.5 m/s horizontal, 0.3 m/s vertical, PRD 5.4) and the acknowledgement says when it was slowed | the time box plus a 500 ms neutral settle |
+| `rotate_to {yaw_mdeg, speed_mdeg_s}` | yaw angle mode to the compass heading, shortest way, rate clamped to 30 deg/s | heading within 5 deg for 500 ms; `yaw_not_reached` past the deadline |
+| `hover` | neutral sticks (velocity zero) | 500 ms settle |
+| `land` | neutral sticks, Virtual Stick off, `KeyStartAutoLanding` | the reported `landed` state |
+| `estop` | neutral sticks and hover at once, plus the network-stop latch below | 500 ms settle |
+
+Reasons the loop returns, besides the contract's `authority_lost`, `watchdog_hold`, and
+`watchdog_failsafe`: `watchdog_disarmed`, `estop_asserted`, `not_airborne`, `already_airborne`,
+`aircraft_unavailable`, `virtual_stick_unavailable`, `takeoff_failed`, `takeoff_timeout`,
+`landing_failed`, `landing_timeout`, `landing_in_progress`, `yaw_not_reached`, `node_busy`,
+`superseded` (a `hover`, `land`, or `estop` preempted the active motion), and
+`unsupported`. `FlightReason` in `core/flight/FlightPort.kt` is the list with each one's class.
+
+### Axis mapping (issue #85)
+
+DJI documents the velocity-mode fields as "the roll property represents the X direction
+velocity; the pitch property represents the Y direction velocity" (MSDK 5.18.0 docs; the v4
+API says the same: `setRoll` is velocity along the x-axis, `setPitch` along the y-axis). In
+the BODY coordinate system X is the nose axis and Y the starboard axis, so the loop's default
+is `roll = forward`, `pitch = right`, positive up on `verticalThrottle`, yaw clockwise
+positive. That is exactly the "transpose" lis-epfl measured in GROUND frame (`pitch` drove
+east, `roll` drove north). `AxisMapping` in `core/flight/Axes.kt` is the one place the
+mapping lives; `AxesTest` writes the signs down. The #85 axis probe below confirms it on the
+exact Mini 3 and MSDK 5.18.0 pair; if the aircraft moves the other way, the Axis transpose
+switch on the Flight card flips the mapping in the bridge, never downstream, and the
+constant in `FlightConfig.mapping` is then changed in code.
+
+### Deadman (local and mandatory)
+
+The flight controller has no link-loss failsafe under Virtual Stick: it hovers forever when
+stick frames stop (prior-art notes on #43). The loop therefore keeps its own `Watchdog` on
+the relay-distributed `watchdog_hold_ms` and `watchdog_failsafe_ms`, fed by the relay frames
+it sees through the link state and by admitted commands, independently of the link object,
+so tearing the link down cannot stop the protection. With no relay activity:
+
+- at `hold`: the active command fails with `watchdog_hold` (retryable) and the stream decays
+  to neutral sticks; the frames keep flowing while Virtual Stick is enabled, so the stream
+  never stops silently. Relay activity releases the hold and disables Virtual Stick.
+- at `failsafe`: the active command fails with `watchdog_failsafe` (terminal), the stream
+  sends one neutral frame, Virtual Stick is disabled, and `KeyStartAutoLanding` is issued
+  (retried up to five times if the flight controller refuses). Indoors the failsafe is land,
+  never return to home. New commands are refused with `watchdog_failsafe` until the next
+  join re-arms the deadman.
+- a landing already in progress is never interrupted by the deadman.
+- the node lands only what it was flying. Failsafe commands the landing when the loop was
+  active at that moment: Virtual Stick on, a command in flight, or any phase other than
+  idle (hold included, since hold keeps Virtual Stick on), and when the hold itself
+  interrupted a node takeoff or a Virtual Stick enable still pending (that leaves the loop
+  idle with Virtual Stick off while the flight controller finishes the takeoff; the loop
+  remembers it was flying until relay activity re-arms the deadman). With the loop idle and
+  Virtual Stick off otherwise, the aircraft is already under the flight controller and the
+  RC operator and the node commands nothing: an aircraft the RC operator took off by hand,
+  or one hovering after a completed command, stays in the RC operator's hands when the relay
+  goes silent (the Flight card shows `failsafe` and the last event says so). After an RC
+  takeover the node never commands a landing, whatever the loop was doing: the RC has the
+  aircraft until Re-arm control authority, and the deadman only logs `the RC has the
+  aircraft`.
+- nothing streams without the deadman: a Virtual Stick enable or a bench hold is refused
+  with `watchdog_disarmed` until the relay's thresholds have arrived and the node has joined
+  (a bench takeoff without a relay still works and hovers under the flight controller), and
+  with `watchdog_failsafe` after a failsafe until the next join re-arms it.
+
+The flight controller's own failsafe setting is read on every product connection
+(`KeyFailsafeAction`, one of `HOVER`, `LANDING`, `GOHOME`) and shown on the Flight card and
+in the bench log for the record. The node never changes it: the RC link is the physical RC
+path and its setting stays whatever the pilot configured in DJI Fly.
+
+### RC takeover and control authority
+
+Physical RC input drops the aircraft out of Virtual Stick: any stick past 30 % of full
+deflection (`KeyStickLeft/RightHorizontal/Vertical`, the WildBridge latch pattern), the
+pause or RTH button, and every `FlightControlAuthorityChangeReason` other than the node's
+own `MSDK_REQUEST` (`RC_LOST`, `RC_NOT_P_MODE`, `RC_SWITCH`, `RC_PAUSE_STOP`,
+`RC_ONE_KEY_GO_HOME`, the battery reasons, `NEAR_BOUNDARY`), and the Virtual Stick state
+listener reporting Virtual Stick off or owned by someone else while the loop believes it is
+on. The loop fails the active command with `authority_lost` (terminal), disables Virtual
+Stick, and latches: readiness reports `control_authority=false` with the reason in
+`node_status.authority_change_reason` (`rc_takeover`, `rc_pause`, `rc_lost`,
+`rc_mode_switch`, `virtual_stick_dropped`, ...), the relay shows `control_authority_missing`,
+and every command is refused with `authority_lost` until the pilot presses Re-arm control
+authority on the Flight card. Every stick event past the threshold and every button press
+is forwarded to the loop; the loop, on its own thread and in order with the commands it
+admits, is the only judge of whether there is anything to cancel, so a takeover works every
+time: after a re-arm, and for a stick moved in the window between a command's admission and
+its first tick. Stick input while the loop is idle is the pilot flying and latches nothing
+(the loop notes it once per idle stretch); input while the latch is already set changes
+nothing. Losing the aircraft or the RC link cancels the loop with `authority_lost` too,
+without a latch, and disables Virtual Stick on the aircraft (best effort while the SDK is
+down): readiness recovers when the link does, as in Phase C. If the SDK later reports
+Virtual Stick still enabled for the node while the loop is idle (a link blip or an app
+restart mid-command), the loop disables it at once, so the flight controller is never left
+waiting for frames nobody sends.
+
+### Network stop
+
+The relay's authoritative `estop` flag in every `state` frame is level-triggered: on every
+stick tick while it is asserted, any running motion is cut to neutral sticks
+(`estop_asserted`, retryable), including a motion admitted before the flag arrived or whose
+Virtual Stick enable answered after it, and the flag latches: `takeoff`, `goto`, and
+`rotate_to` are refused while it is asserted (admission reads the live flag, so a command
+that arrives between the flag and the next tick is refused too), `hover`, `land`, and
+`estop` are accepted. If the stop stays asserted for 5 s while airborne, the node lands on
+its own (PRD 5.5: hold, then land if held), unless the RC has the aircraft after a takeover:
+then the node commands nothing, logs it, and the RC operator lands. Releasing the flag
+clears the latch. The `estop` command is the same hover with the same latch.
+
+### Fake flavor end to end
+
+Install `app-fake-debug.apk`, connect to a relay as in Phase C, press Connect on the Fake
+aircraft controls, then dispatch commands through the relay's remote adapter (or use Takeoff
+1.2 m and Land on the probes card): the telemetry moves kinematically, the Flight card shows
+the phase, the stick rate and the last frame, and `node_status.virtual_stick_enabled` flips
+in the audit log. Stick 45 %, Pause, and FC drops VS on the Flight card stand in for the RC;
+killing the relay drives hold, failsafe, and a landing on the fixture. The same JVM tests run
+this path without a phone.
+
+### Guarded-hover checklist (first flight)
+
+Space and people:
+
+- An empty room with at least 4 m by 4 m of clear floor, a patterned floor for vision
+  positioning, no people or props inside the flight volume, 2.5 m or more of ceiling. GPS
+  is not expected; note the flight mode the RC shows (P or ATTI).
+- One RC operator on the RC-N1 with thumbs on the sticks for the whole session; one node
+  operator on the phone and laptop. The RC operator calls every step and can end it at any
+  time by moving a stick (takeover), pressing pause, or landing; that is the primary path.
+- The RC operator is briefed on what the node does and does not do on its own: a stick past
+  a third of its travel or the pause button ends any node motion and keeps the aircraft
+  until Re-arm control authority is pressed; after a takeover the node lands nothing, not
+  on deadman failsafe and not on a held network stop, the RC operator lands. With the loop
+  idle (`virtual stick off`) the aircraft is the RC operator's and relay loss lands nothing,
+  except an aircraft whose node takeoff the relay loss interrupted: the failsafe lands that
+  one.
+  A network stop held for 5 s lands an airborne aircraft the node is still authorized to fly,
+  idle or not; a stick or pause ends that too.
+- Battery above 50 %, propellers checked, the aircraft on its takeoff spot with the nose
+  toward the room's `north`, the Mini 3 and RC-N1 firmware and MSDK 5.18.0 recorded in
+  `hardware-profile.json` beforehand (the probe log repeats them in every entry).
+
+Order of operations:
+
+1. Relay up with the `remote` backend and a session id, no other node bound to this drone id.
+2. Phone: probe flavor registered, RC plugged in, aircraft powered, identity card confirmed
+   `DJI_MINI_3`. Save and connect on the Setup card; Connectivity shows `connected,
+   authenticated`, the relay thresholds (`stick 10 Hz`, `hold 2000 ms`, `failsafe 10000 ms`
+   for the demo values), and `Membership: ready` once the three readiness toggles are on.
+3. Flight card: `Phase: idle`, `virtual stick off`, `Loop deadman: armed` with the same
+   thresholds (the probes and every Virtual Stick enable are refused with
+   `watchdog_disarmed` until it is), `Control authority: armed`, the failsafe setting line
+   present, the axis transpose switch off.
+4. Takeoff: the RC operator takes off manually to about 1.2 m and hovers, or the node
+   operator presses Takeoff 1.2 m on the probes card with the RC operator ready. Wait for the
+   node status card to show `state hovering`.
+5. Axis-transpose probe: Pure pitch, then Pure roll. Each holds 0.3 m/s for 1.5 s. The RC
+   operator says out loud which way the aircraft went (nose direction is `forward`, starboard
+   is `right`); the result line says which axis the telemetry saw and whether it agrees with
+   the mapping. Sign each one off with the operator's name and the observed motion. If the
+   probe says `TRANSPOSED`, flip the Axis transpose switch and repeat both.
+6. Hover drill, Deadman: press Deadman, wait for `virtual stick ENABLED` and the stick rate
+   near the relay's value, then stop the relay process (or kill the LAN for Relay kill). The
+   Flight card shows `watchdog hold` after the hold window with neutral sticks, then
+   `failsafe` and `Landing: watchdog_failsafe` after the failsafe window; the aircraft lands.
+   The drill's transitions list the times and the measured stick rate; sign it off. Restart
+   the relay with a new session id before the next drill.
+7. Hover drill, RC takeover: press RC takeover, wait for `virtual stick ENABLED`, then the RC
+   operator moves one stick past a third of its travel. The card shows `Control authority
+   LOST: rc_takeover` within a stick update, the aircraft answers the RC, and readiness
+   reports `control_authority=false`. Land with the RC, press Re-arm control authority, sign
+   it off. Repeat once with the pause button, and once more with a stick after that re-arm:
+   the second and third takeovers must show `Control authority LOST` as fast as the first.
+8. Command path through the relay: with the aircraft hovering, dispatch `hover`,
+   `rotate_to` 90 deg, `goto` 0.5 m ahead, `estop`, and `land` through the remote adapter
+   (`relay/tests/test_bridge_roundtrip.py` shows the in-process dispatcher); the Commands
+   card and the audit JSONL show `accepted`, `executing` with progress, `completed`.
+
+Abort criteria (the RC operator takes over, lands, and the session ends until the cause is
+understood): the aircraft moves on an axis the probe did not command; the stick rate on the
+Flight card reads below 5 Hz or `Phase` and the aircraft disagree for more than a second;
+`watchdog hold` appears while the relay is running; a takeover does not show
+`Control authority LOST` within a second; any drift toward a wall past 1 m of clearance; the
+RC flight-mode switch leaves P mode; battery below 30 %.
+
+What each screen shows during the run: Connectivity (relay link, thresholds, telemetry
+rate), Readiness (the three toggles and the relay's answer, `control_authority_missing`
+after a takeover), Node status (watchdog word, aircraft and RC connection, measured key
+rates, `virtual stick` in the last `node_status`), Flight (phase, deadman, sticks sent and
+rate, last frame, authority latch and Re-arm, axis transpose, last event), First-flight
+probes (procedures, result, transitions, sign-off, log path), Commands (every command with
+its outcome and detail). The probe log is `filesDir/bench/first-flight-<time>.jsonl`; copy
+it with `adb` and attach it to #85 with the videos.
+
+### Tests that prove the safety behaviours
+
+`bridge-core`: `AxesTest` (BODY-frame signs and the transpose), `LimitsTest` (5 to 25 Hz
+clamp, drift-free cadence, node limits), `MotionPlannerTest` (time-boxed steps from
+millimetre arguments, heading rotation, speed clamps, shortest yaw), `FakeFlightModelTest`,
+`AxisProbeTest`, and `FlightControllerTest` (hover, goto with progress, deadman hold then
+failsafe with the contract reasons, a landing never interrupted, hold release, estop cut,
+hold, land-if-held and release, RC takeover latch and re-arm, idle stick input, flight
+controller dropping Virtual Stick, aircraft or RC loss, takeoff completion on flight state
+and climb, land completion, rotate_to in angle mode, preemption and busy, enable refusal,
+bench holds, a stop asserted while Virtual Stick is enabling cut before the first frame, a
+motion posted after the stop flag refused before the next tick, no landing underneath the
+pilot on failsafe or on a held stop after a takeover, the deadman landing only what the
+node flew, Virtual Stick released on link loss and a stale enable cleared while idle, every
+stick event reaching the loop and takeovers cancelling again after each re-arm, bench holds
+and Virtual Stick refused while the deadman is disarmed or in failsafe, a hold-interrupted
+takeoff landed at failsafe unless the relay came back).
+`bridge-node`: `FlightExecutorTest` runs the loop behind `RelayLink` against the stub relay
+(acknowledgement sequences on the wire with progress detail, the measured stick rate at
+`virtual_stick_hz`, relay silence to hold and failsafe landing, the RC takeover as readiness
+and `node_status` report it, twice across a re-arm) and checks that closing the executor
+mid-hold releases Virtual Stick.
 
 ## Phase D bring-up: local FPV and codec evidence
 
