@@ -24,10 +24,10 @@ The validator makes these schema choices where Appendix A leaves details open:
 - `intent_id` is a non-empty stable identifier. A retry gets a new identifier and may link to a different request through `retry_of`. This function validates the reference shape; the relay lifecycle validates same-session failure, deduplication, and terminal-state semantics.
 - `confirm` records the source's confirmation state. `capture_room` requires confirmation and exactly one selected drone; the arbiter enforces the remaining action-specific checks.
 - Rejection precedence is envelope, registered source, intent name, argument shape, scope, mode capability, then intent-name capability.
-- M2.0 accepts indoor requests for the eight flight-control names plus the previously accepted `capture_room` path. The outdoor mode values remain schema-reserved and return `unsupported`; the remaining intent names keep their v1 argument shapes and also return `unsupported`.
-- `come_home` returns selected drones to their home positions through planner-generated `goto` calls. The separate confirmed `land_all` intent maps to adapter `land`.
+- M2.0 accepts indoor requests for the nine flight-control names plus the previously accepted `capture_room` path. The outdoor mode values remain schema-reserved and return `unsupported`; the remaining intent names keep their v1 argument shapes and also return `unsupported`.
+- `come_home` returns selected drones to their home positions through planner-generated `goto` calls. Confirmed `land` maps the current selection to adapter `land`; `land_all` applies landing fleet-wide.
 
-The current source registry is `console` and `keyboard`. Language and webcam join only when their real producers and conformance tests land. Registering another source or enabling another Intent v1 name changes the shared constants and conformance tests in this module.
+The current source registry is `console`, `keyboard`, and `webcam`; `webcam` is the console-hosted gesture producer and authenticates on its own connection with the same relay token. Language joins only when its real producer and conformance tests land. Registering another source or enabling another Intent v1 name changes the shared constants and conformance tests in this module.
 
 ## Run the relay
 
@@ -55,6 +55,7 @@ Connect to `/ws/{session_id}`. The first and only unauthenticated frame is one o
 ```json
 {"v":1,"type":"auth","source":"console","token":"..."}
 {"v":1,"type":"auth","source":"keyboard","token":"..."}
+{"v":1,"type":"auth","source":"webcam","token":"..."}
 {"v":1,"type":"auth","source":"adapter","drone_id":1,"token":"..."}
 ```
 
@@ -64,7 +65,7 @@ The first successful server event is `auth.accepted`; the browser must not mark 
 {"v":1,"t":1756700000000,"type":"auth.accepted","event_id":"...","session":"demo","source":"console","drone_id":null}
 ```
 
-`auth.refused` contains `event_id`, `session`, `status: "refused"`, and machine-readable `reason` plus display-only `detail`, then the server closes with policy code 1008. Auth frames, credentials, and signatures are never written to the audit log. After authentication, an Intent v1 `source` must exactly equal the bound `console` or `keyboard` source. An adapter connection is bound to one configured `drone_id`, and a second live connection for that ID is refused.
+`auth.refused` contains `event_id`, `session`, `status: "refused"`, and machine-readable `reason` plus display-only `detail`, then the server closes with policy code 1008. Auth frames, credentials, and signatures are never written to the audit log. After authentication, an Intent v1 `source` must exactly equal the bound `console`, `keyboard`, or `webcam` source. An adapter connection is bound to one configured `drone_id`, and a second live connection for that ID is refused.
 
 ## Adapter frames and signed membership
 
@@ -137,3 +138,5 @@ Authenticate HTTP requests with `Authorization: Bearer $SWEEP_RELAY_TOKEN`. `GET
 A live session ID is scoped to one relay process lifetime. After restart, any ID whose persisted log is nonempty is replay-only: a correctly authenticated WebSocket receives `auth.refused` with `reason: "session_closed"` and must reconnect under a new session ID. The replay endpoint reads that closed log without constructing mutable fleet state. This deliberately prevents a restarted relay from appending new roster versions or connection epochs starting at one; safe live-state restoration also requires autonomy-owned plan/confirmation invalidation and loss handling and is not part of M1.1.
 
 On first reopen of a legacy JSONL log, the relay removes only a nonempty, unterminated EOF fragment after validating every complete record, then imports that prefix into the transaction database. Later recovery verifies the JSONL mirror against completed database operations. Complete malformed records and divergent mirrors fail closed. A repaired log remains evidence of prior session use even when its first record was torn, so that session ID stays replay-only.
+
+Controller-generated safety stops reserve the `safety:` intent ID prefix. Public requests using that prefix are refused without occupying the intent ledger.

@@ -1,0 +1,133 @@
+{
+  "entries": {
+    "0b85e03857f59881291eaa069a13a44d4c10a798f0bb1c118d097e1fe4f2f712": {
+      "input_units": 3266,
+      "latency_ms": 3095,
+      "output_units": 121,
+      "payload": {
+        "detail": "\"this room\" is deictic and not resolvable to a catalog room. Please specify a known room (e.g., living-room).",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "1a180f15a90a19e38b516872062bb7680e63f097857c043eeceafe912331828a": {
+      "input_units": 3266,
+      "latency_ms": 1981,
+      "output_units": 92,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "2a821453183af60ab1259bc4a228bbff83e6b40e99b80cedd6eaea99d093291a": {
+      "input_units": 3269,
+      "latency_ms": 2505,
+      "output_units": 120,
+      "payload": {
+        "detail": "\"Here\" is a deictic room reference with no spatial grounding; please specify a known room (e.g., living-room).",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "4fb04acadc1da566d699f81ddc23e8c08421ca34725d0dd8f993c4282020b3f4": {
+      "input_units": 3266,
+      "latency_ms": 2512,
+      "output_units": 114,
+      "payload": {
+        "detail": "\"The room\" is a deictic reference; please specify which room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "5d3e72b1dceef5c0c6e2ae4a5ca6cd8136bf8d0bc839e69a54645b1278d65bda": {
+      "input_units": 3274,
+      "latency_ms": 3574,
+      "output_units": 140,
+      "payload": {
+        "detail": "Prepare the aircraft for flight = arm the fleet (fleet-scoped, no selection needed).",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "93dd48a28343f6be4db41425eaa8e5ae95bf5ed37f7ec1aa7ef367630ec2f9c3": {
+      "input_units": 3264,
+      "latency_ms": 2274,
+      "output_units": 96,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1,
+                2
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "a44f6b2213910eef9183f8d8af3e472725807ab692e165bb2461d4450e8b45da": {
+      "input_units": 3265,
+      "latency_ms": 4607,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "bff91fcb026ae1c95d0323b2fb091b324884fb56571e5aecdb4b08f0359a5ba1": {
+      "input_units": 3260,
+      "latency_ms": 2694,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-6",
+  "recorded_origin": "anthropic",
+  "version": 3
+}

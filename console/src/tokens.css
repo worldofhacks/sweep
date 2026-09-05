@@ -1,0 +1,223 @@
+/*
+ * Design tokens ported from the Sweep Console v4 design (inventory section 1).
+ * Values are copied exactly; the three drifted JS palettes in the prototype
+ * collapse to one ink, one danger, one warn, and one ok here.
+ */
+:root {
+  /* 1.1 Colour — grounds and surfaces */
+  --color-ground: #F3F1EC;
+  --color-surface: #ffffff;
+  --color-panel: #FBFAF8;
+  --color-disabled-bg: #faf9f6;
+  --color-disabled-alt: #FBFAF7;
+  --color-recovering-bg: #FBF7EF;
+  --color-pill-bg: #F7F5F1;
+  --color-map-grid: #F8F7F4;
+  --color-nav-reference-active: #F1EFE9;
+
+  /* 1.1 Colour — ink */
+  --color-ink: #16150F;
+  --color-ink-hover: #312F27;
+  --color-ink-hover-alt: #2C2A24;
+  --color-ink-2: #5C5A52;
+  --color-ink-2-reference: #5B5951;
+  --color-ink-3: #63605A;
+  --color-eyebrow: #6E6B62;
+  --color-ink-v2-2: #6A6862;
+  --color-ink-v2-3: #66635C;
+  --color-stamp: #78756C;
+
+  /* 1.1 Colour — rules and borders */
+  --color-hairline: #E9E6DE;
+  --color-rule-inner: #EEEBE3;
+  --color-rule: #e3e1db;
+  --color-rule-v2: #E6E3DB;
+  --color-rule-reference: #E7E4DC;
+  --color-scrollbar-thumb: #DCD8CE;
+  --color-border-secondary: #DAD6CA;
+  --color-border-input: #CFCBBE;
+  --color-border-chip: #B9B5A9;
+
+  /* 1.1 Colour — semantic */
+  --color-danger: #A3160B;
+  --color-danger-tint: #FCF5F4;
+  --color-stop-active-tag: #FBECEA;
+  --color-warn: #8A5A00;
+  --color-ok: #1B6A3F;
+  --color-dwell-fill: rgba(28, 107, 65, .14);
+  --color-stream-live: #5FBF86;
+  --color-stream-offline: #E8A33D;
+  --color-stream-unreported: #B9B5A8;
+  --color-cam-tracking: #7FD09B;
+  --color-cam-label: #D9D5CA;
+  --color-cam-label-bg: rgba(22, 21, 15, .72);
+  --color-cam-reticle: rgba(255, 255, 255, .55);
+  --stripe-live: repeating-linear-gradient(135deg, #e8e6e0 0 8px, #f4f2ee 8px 16px);
+  --stripe-idle: repeating-linear-gradient(135deg, #efede8 0 8px, #f8f7f4 8px 16px);
+  --stripe-thumb: repeating-linear-gradient(135deg, #efede8 0 6px, #f8f7f4 6px 12px);
+
+  /* 1.2 Type — families */
+  --font-sans: 'Public Sans', Helvetica, Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+
+  /* 1.2 Type — scale */
+  --text-11: 11px;
+  --text-11-5: 11.5px;
+  --text-12: 12px;
+  --text-12-5: 12.5px;
+  --text-13: 13px;
+  --text-13-5: 13.5px;
+  --text-14: 14px;
+  --text-14-5: 14.5px;
+  --text-15: 15px;
+  --text-16: 16px;
+  --text-16-5: 16.5px;
+  --text-17: 17px;
+  --text-18: 18px;
+  --text-19: 19px;
+  --text-20: 20px;
+  --text-21: 21px;
+  --text-22: 22px;
+  --text-23: 23px;
+  --text-28: 28px;
+  --text-30: 30px;
+  --text-32: 32px;
+  --text-34: 34px;
+  --text-stop-title: clamp(14px, 1.8vw, 17px);
+  --text-module-h1: clamp(18px, 2.2vw, 23px);
+  --text-dock-title: clamp(16px, 2.2vw, 19px);
+  --text-capture-button: clamp(16px, 2.2vw, 18px);
+  --text-body: 15px;
+
+  /* 1.2 Type — weights */
+  --weight-300: 300;
+  --weight-400: 400;
+  --weight-450: 450;
+  --weight-500: 500;
+  --weight-550: 550;
+  --weight-600: 600;
+  --weight-650: 650;
+  --weight-700: 700;
+  --weight-800: 800;
+
+  /* 1.2 Type — tracking */
+  --tracking-tight-3: -.025em;
+  --tracking-tight-2: -.02em;
+  --tracking-tight-1: -.015em;
+  --tracking-tight: -.01em;
+  --tracking-stop-sub: .07em;
+  --tracking-metric: .08em;
+  --tracking-eyebrow-12: .12em;
+  --tracking-eyebrow-13: .13em;
+  --tracking-eyebrow-14: .14em;
+
+  /* 1.2 Type — line heights */
+  --leading-1-1: 1.1;
+  --leading-1-15: 1.15;
+  --leading-1-2: 1.2;
+  --leading-1-4: 1.4;
+  --leading-1-45: 1.45;
+  --leading-1-5: 1.5;
+  --leading-1-55: 1.55;
+
+  /* Spacing and sizes read from the frame anatomy */
+  --space-1: 1px;
+  --space-2: 2px;
+  --space-3: 3px;
+  --space-4: 4px;
+  --space-5: 5px;
+  --space-6: 6px;
+  --space-7: 7px;
+  --space-8: 8px;
+  --space-9: 9px;
+  --space-10: 10px;
+  --space-11: 11px;
+  --space-12: 12px;
+  --space-13: 13px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-18: 18px;
+  --space-19: 19px;
+  --space-20: 20px;
+  --space-22: 22px;
+  --space-24: 24px;
+  --space-28: 28px;
+  --gutter-header: clamp(12px, 2vw, 20px);
+  --gutter-pane: clamp(12px, 2vw, 22px);
+  --gutter-pane-top: clamp(14px, 1.8vw, 22px);
+  --gutter-context: clamp(12px, 1.4vw, 18px);
+  --size-rail: 184px;
+  --size-context-min: 280px;
+  --size-context-max: 320px;
+  --size-tabbar-item: 84px;
+  --size-dot-5: 5px;
+  --size-dot-6: 6px;
+  --size-dot-7: 7px;
+  --size-mark: 28px;
+  --size-dpad-cell: 44px;
+  --size-dpad-cell-commands: 46px;
+  --size-compass: 156px;
+  --size-thumb: 136px;
+  --size-sheet-notices-max: 210px;
+  --size-json-max: 190px;
+  --size-json-request-max: 150px;
+  --min-h-34: 34px;
+  --min-h-36: 36px;
+  --min-h-38: 38px;
+  --min-h-42: 42px;
+  --min-h-44: 44px;
+  --min-h-46: 46px;
+  --min-h-48: 48px;
+  --min-h-50: 50px;
+  --min-h-52: 52px;
+  --min-h-54: 54px;
+  --min-h-88: 88px;
+
+  /* 1.3 Radii */
+  --radius-pill: 999px;
+  --radius-card: 14px;
+  --radius-tab-group: 12px;
+  --radius-control: 10px;
+  --radius-chip-unsupported: 9px;
+  --radius-chip: 8px;
+  --radius-dot: 50%;
+  --radius-track: 2px;
+
+  /* 1.3 Elevation */
+  --shadow-rest: 0 1px 2px rgba(22, 21, 15, .12);
+  --shadow-hover: 0 3px 14px rgba(22, 21, 15, .22);
+  --shadow-hover-capture: 0 3px 14px rgba(22, 21, 15, .2);
+  --shadow-confirm: 0 1px 2px rgba(22, 21, 15, .14);
+  --shadow-focus-input: 0 0 0 3px rgba(22, 21, 15, .08);
+  --shadow-inset-ring: inset 0 0 0 1px #E9E6DE;
+  --shadow-accent-ok: inset 3px 0 0 #1B6A3F;
+  --shadow-accent-warn: inset 3px 0 0 #8A5A00;
+  --shadow-accent-danger: inset 3px 0 0 #A3160B;
+  --shadow-accent-ink: inset 3px 0 0 #16150F;
+
+  /* 1.3 Motion */
+  --ease-out: cubic-bezier(.2, .7, .3, 1);
+  --duration-press: .1s;
+  --duration-fast: .15s;
+  --duration-swap: .18s;
+  --duration-dock: .2s;
+  --duration-sector: .3s;
+  --duration-plot: .5s;
+  --duration-meter: .6s;
+  --duration-dwell: .04s;
+  --duration-livepulse: 2.4s;
+  --transition-button: background-color .15s cubic-bezier(.2, .7, .3, 1), color .15s, border-color .15s, box-shadow .18s, transform .1s;
+  --transition-input: border-color .15s, box-shadow .15s;
+  --transition-meter: width .6s cubic-bezier(.2, .7, .3, 1);
+  --transition-plot: left .5s cubic-bezier(.2, .7, .3, 1), top .5s cubic-bezier(.2, .7, .3, 1);
+  --transition-sector: background-color .3s;
+  --transition-dwell: width .04s linear;
+  --focus-ring: 2px solid #16150F;
+  --focus-ring-offset: 2px;
+
+  /* 1.4 Breakpoints — media queries repeat these literals; custom properties cannot be read there */
+  --bp-two-column: 760px;
+  --bp-rail: 1100px;
+  --bp-context: 1240px;
+  --bp-touch-max: 879px;
+}

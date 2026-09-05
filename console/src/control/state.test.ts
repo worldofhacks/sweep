@@ -100,6 +100,54 @@ function withPendingCapture(): ControlState {
 }
 
 describe('control reducer fleet lifecycle', () => {
+  test('keeps the formation and spacing the relay reports, and nothing before the first frame', () => {
+    const initial = createInitialControlState(session, t)
+    expect(initial.formation).toBeNull()
+    expect(initial.spacing).toBeNull()
+
+    const event = stateEvent('state-formation', 1, [drone()], [1])
+    event.formation = 'line'
+    event.spacing = 1.5
+    const state = controlReducer(initial, { type: 'relay_event', event })
+    expect(state.formation).toBe('line')
+    expect(state.spacing).toBe(1.5)
+  })
+
+  test('a roster-wide land_all preview survives selection changes but not roster changes', () => {
+    const landAll: IntentV1 = {
+      ...captureIntent('intent-land-all'),
+      name: 'land_all',
+      args: {},
+      selection: [1, 2],
+    }
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: stateEvent('state-two', 1, [drone(), drone({ drone_id: 2 })], [1]),
+    })
+    state = controlReducer(state, {
+      type: 'request_created',
+      request: createRequestRecord(landAll, t + 2),
+    })
+    state = controlReducer(state, {
+      type: 'request_pending_confirmation',
+      intentId: landAll.intent_id,
+      t: t + 3,
+      plan: { title: 'Land all fleet', steps: ['land'], rosterVersion: 1 },
+    })
+
+    const selectionMoved = controlReducer(state, {
+      type: 'relay_event',
+      event: stateEvent('state-selection-moved', 1, [drone(), drone({ drone_id: 2 })], [2]),
+    })
+    expect(selectionMoved.requests[0].status).toBe('pending_confirmation')
+
+    const rosterMoved = controlReducer(selectionMoved, {
+      type: 'relay_event',
+      event: stateEvent('state-roster-moved', 2, [drone(), drone({ drone_id: 2 })], [2]),
+    })
+    expect(rosterMoved.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_roster' })
+  })
+
   test('focuses a single authoritative selection and retains explicit focus through video loss', () => {
     let state = controlReducer(createInitialControlState(session, t), {
       type: 'relay_event',
@@ -621,14 +669,14 @@ describe('request lifecycle', () => {
     expect(state.notices[0].title).toBe('Unmatched relay result')
   })
 
-  test('retries use a new ID, link the failed request, and require fresh confirmation', () => {
+  test('retries use a new ID, link the failed request, and keep the confirmation already given', () => {
     const original: IntentV1 = { ...captureIntent('failed-intent'), confirm: true }
     const retry = retryIntent(original, { now: () => t + 50, nextId: () => 'retry-intent' })
 
     expect(retry).toMatchObject({
       intent_id: 'retry-intent',
       retry_of: 'failed-intent',
-      confirm: false,
+      confirm: true,
       t: t + 50,
     })
     expect(retry.args).toEqual(original.args)

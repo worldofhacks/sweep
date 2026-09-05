@@ -5,13 +5,16 @@ description = "One person creates AI-generated room worlds and commands four ind
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "langfuse>=4.15,<5",
+  "numpy>=2,<3",
+  "opencv-python-headless>=4.13,<5",
   "uvicorn>=0.35,<1",
   "websockets>=15,<17",
 ]
 
 [dependency-groups]
 dev = [
-  "httpx>=0.28,<1",
   "pytest>=9,<10",
   "ruff>=0.16,<0.17",
 ]
