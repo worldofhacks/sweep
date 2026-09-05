@@ -79,6 +79,13 @@ data class FlightCommand(val commandId: String, val args: CommandArgs, val label
     val operation: String
         get() = label ?: args.operation.wire
 
+    /**
+     * A wire motion command (`takeoff`, `goto`, `rotate_to`) the pilot's Control authority
+     * toggle gates; bench procedures carry a label and are the pilot's own.
+     */
+    val relayMotion: Boolean
+        get() = label == null && (args is CommandArgs.Takeoff || args is CommandArgs.Goto || args is CommandArgs.RotateTo)
+
     companion object {
         /** The operations the loop owns; everything else stays with the flavor's own executor. */
         fun isFlight(args: CommandArgs): Boolean = when (args) {

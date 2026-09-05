@@ -26,7 +26,9 @@ import org.worldofhacks.sweep.bridge.core.signing.Signing
  * A stub relay on OkHttp's MockWebServer speaking just enough of the node protocol for the
  * link tests: auth, the initial state, membership join and readiness answers (with the
  * relay-assigned connection epoch incrementing on every join), signed commands, and
- * relay-side socket drops. Every node frame is recorded in arrival order.
+ * relay-side socket drops. Every node frame is recorded in arrival order. With
+ * [echoTelemetry] it also sends each telemetry frame straight back on the socket, as the
+ * real relay's fan-out does for every node frame, and nothing else unprompted.
  */
 class StubRelay(
     private val key: ByteArray,
@@ -36,12 +38,15 @@ class StubRelay(
     private val clockOffsetMs: Long = 0,
     initialRosterVersion: Int = 3,
     private val refuseAuth: Pair<String, String>? = null,
+    private val echoTelemetry: Boolean = false,
 ) : AutoCloseable {
     private val server = MockWebServer()
     private val sockets = CopyOnWriteArrayList<WebSocket>()
     private val events = AtomicLong()
 
     val frames = CopyOnWriteArrayList<JsonObject>()
+    /** Telemetry frames sent back to the node under [echoTelemetry]. */
+    val echoed = AtomicLong()
     val connections = AtomicInteger()
     val epoch = AtomicInteger()
     val rosterVersion = AtomicInteger(initialRosterVersion)
@@ -227,6 +232,7 @@ class StubRelay(
                 webSocket.send(Json.canonical(stateEvent()))
                 return
             }
+            if (echoTelemetry && type == "telemetry" && webSocket.send(text)) echoed.incrementAndGet()
             if (type != "membership") return
             val signature = (frame["signature"] as JsonString).value
             if (!Signing.verify(frame.without("signature"), signature, key)) {

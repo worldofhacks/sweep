@@ -216,7 +216,9 @@ class FlightExecutor(
         fun linkFacts(state: LinkState): LinkFacts = LinkFacts(
             joined = state.joined,
             estop = state.estop,
-            lastRelayActivityMs = state.lastRelayFrameAtMs,
+            // Relay-authored frames only; the echo of the node's own telemetry never feeds the deadman.
+            lastRelayActivityMs = state.lastRelayActivityMs,
+            controlAuthorityGranted = state.readiness.controlAuthority,
             settings = state.nodeSettings?.let { FlightSettings(it.virtualStickHz, it.watchdogHoldMs, it.watchdogFailsafeMs) },
         )
     }

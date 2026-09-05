@@ -60,13 +60,17 @@ data class FlightSettings(
 
 /**
  * What the loop needs from the relay link: whether the node is joined, the relay's
- * authoritative network-stop flag, the time of the last authenticated relay frame (the
- * loop's own deadman clock, kept independently of the link object so the stick stream can
- * never stop silently when the link is torn down), and the thresholds.
+ * authoritative network-stop flag, the time of the last relay-authored frame (the loop's
+ * own deadman clock, kept independently of the link object so the stick stream can never
+ * stop silently when the link is torn down; never the relay's echo of this node's own
+ * frames, which prove nothing about the relay attending), the pilot's Control authority
+ * toggle as the readiness frame reports it (false until the pilot grants it: relay motion
+ * is refused with `authority_lost` while it is off), and the thresholds.
  */
 data class LinkFacts(
     val joined: Boolean = false,
     val estop: Boolean = false,
     val lastRelayActivityMs: Long? = null,
+    val controlAuthorityGranted: Boolean = false,
     val settings: FlightSettings? = null,
 )
