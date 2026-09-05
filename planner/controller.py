@@ -395,11 +395,13 @@ class PreparedExecutionRouter:
                     session,
                 )
         events.extend(session.record_execution_result(safety_intent, safety))
-        if intent.name is IntentName.HOLD:
+        if intent.name in {IntentName.HOLD, IntentName.LAND, IntentName.LAND_ALL}:
             # The registered recovery owns every target even while its suffix is pending.
             events.extend(
                 self._retire_held_motion(
-                    intent, replace(safety, status=LifecycleStatus.EXECUTING), session
+                    replace(intent, name=IntentName.HOLD),
+                    replace(safety, status=LifecycleStatus.EXECUTING),
+                    session,
                 )
             )
         return tuple(events)

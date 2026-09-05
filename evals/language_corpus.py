@@ -42,7 +42,7 @@ LEGACY_SYNTHETIC_RESPONSES_PATH = (
     / "fixtures"
     / "transcript_plan_responses.synthetic.json"
 )
-REVIEWED_CORPUS_DIGEST = "94da020a71522dbae39bd2257a1dcc60942c280661df8e3c77b6cc44b70adae3"
+REVIEWED_CORPUS_DIGEST = "7fcc2097ccedfe84a65e161b9793e803973608f6194b243da15693885cedd458"
 REVIEWED_CORPUS_CASES = 50
 _HOST_MINTED_EXPECTATIONS = {
     "capture-explicit-living-room": "capture-living-room-4",

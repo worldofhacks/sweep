@@ -19,7 +19,7 @@ import httpx
 from language.contracts import CompilerReason
 
 PINNED_COMPILER_MODEL = "claude-sonnet-5"
-PROMPT_SCHEMA_VERSION = "intent-v1-compiler-6"
+PROMPT_SCHEMA_VERSION = "intent-v1-compiler-7"
 _CASSETTE_LOCK = Lock()
 _COMPILER_INTENT_NAMES = (
     "arm",
@@ -336,11 +336,16 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "capability is available. Capture needs exactly one selected aircraft, a known "
             "room, and a supported camera pattern. Never invent area geometry or room location.\n"
             "Translation uses facts.translation.frame and step_m. dx and dy are dimensionless "
-            "step multipliers: right/left is positive/negative x, forward/back is "
-            "positive/negative y. "
-            "Without a stated distance, use one configured step. For a stated distance in meters, "
-            "divide by step_m. In aircraft_relative frame the planner rotates each vector by that "
-            "aircraft's heading; do not rotate it yourself. In world frame the shared axes apply. "
+            "step multipliers. In aircraft_relative frame, forward/back is positive/negative dx "
+            "and left/right is positive/negative dy. The planner rotates this local vector by "
+            "each aircraft's heading: world_x=dx*cos(heading)-dy*sin(heading), "
+            "world_y=dx*sin(heading)+dy*cos(heading), then scales by step_m. "
+            "Do not rotate it yourself. In world frame right/left uses positive/negative dx "
+            "and forward/back uses positive/negative dy, independent of aircraft heading. "
+            "An omitted movement distance means one foot, exactly 0.3048 meters. Convert "
+            "explicit feet to meters using 0.3048 meters per foot; explicit meters stay meters. "
+            "For every direction, divide by step_m to obtain the signed step multiplier. "
+            "Preserve conversion precision; do not round feet or step multipliers. "
             "If translation is absent or a required heading is missing, return clarify with "
             "ambiguous_location. Do not infer a location from an ID or room name.\n"
             "Preserve order and fold state after each step: arm authorizes takeoff; takeoff "
