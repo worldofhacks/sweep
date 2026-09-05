@@ -28,6 +28,20 @@ function aircraft(overrides: Record<string, unknown> = {}) {
 }
 
 describe('M1.1 wire compatibility', () => {
+  test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
+    const event = parseRelayServerEvent({
+      v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,
+      roster_version: 1, state_sequence: sequence, armed: false, estop: false,
+      selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      pending: null, accepted_plan: null, drones: [aircraft()],
+    })
+    if (sequence === undefined || sequence === 1 || sequence === 2) {
+      expect(event).not.toBeNull()
+    } else {
+      expect(event).toBeNull()
+    }
+  })
+
   test('refuses an adapter-supplied media URL', () => {
     expect(
       parseRelayServerEvent({
@@ -166,6 +180,23 @@ describe('M1.1 wire compatibility', () => {
     })
   })
 
+  test('accepts node-local safety actions as operator-visible evidence', () => {
+    const event = parseRelayServerEvent({
+      v: 1,
+      t: 1_756_700_000_016,
+      type: 'safety_action',
+      event_id: 'safety-1',
+      session,
+      drone_id: 1,
+      connection_epoch: 2,
+      reason: 'link_loss',
+      action: 'failsafe',
+      loss_behavior: 'failsafe',
+    })
+
+    expect(event).toMatchObject({ type: 'safety_action', drone_id: 1, action: 'failsafe' })
+  })
+
   test('accepts intent-level and command-scoped acknowledgement variants', () => {
     const accepted = parseRelayServerEvent({
       v: 1,
@@ -288,6 +319,57 @@ describe('M1.1 wire compatibility', () => {
         detail: 'Intent frame was malformed.',
       }),
     ).toMatchObject({ type: 'refusal', intent_id: null })
+  })
+})
+
+describe('M1.4 production control intents', () => {
+  test.each([
+    ['arm', {}, [], false],
+    ['select', { ids: [1, 2] }, [1, 2], false],
+    ['takeoff', {}, [1, 2], true],
+    ['translate', { dx: 1, dy: 0 }, [1, 2], false],
+    ['hold', {}, [1, 2], false],
+    ['come_home', {}, [1, 2], false],
+    ['land_all', {}, [], true],
+    ['estop', {}, [], false],
+  ])('accepts the production %s envelope', (name, args, selection, confirm) => {
+    expect(
+      isConsoleIntentV1({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'intent',
+        intent_id: `intent-${name}`,
+        retry_of: null,
+        source: 'console',
+        session,
+        name,
+        args,
+        selection,
+        mode: 'indoor',
+        confirm,
+      }),
+    ).toBe(true)
+  })
+
+  test('keeps takeoff and land-all behind confirmation', () => {
+    for (const name of ['takeoff', 'land_all']) {
+      expect(
+        isConsoleIntentV1({
+          v: 1,
+          t: 1_756_700_000_000,
+          type: 'intent',
+          intent_id: `intent-${name}`,
+          retry_of: null,
+          source: 'console',
+          session,
+          name,
+          args: {},
+          selection: name === 'takeoff' ? [1, 2] : [],
+          mode: 'indoor',
+          confirm: false,
+        }),
+      ).toBe(false)
+    }
   })
 })
 

@@ -98,6 +98,14 @@ def test_relay_rechecks_preview_after_interleaved_telemetry(tmp_path, monkeypatc
         emissions.extend(result)
         return result
 
+    execute_pending_intent = relay.execute_pending_intent
+
+    def record_execution(intent_id):
+        result = execute_pending_intent(intent_id)
+        emissions.extend(result)
+        return result
+
+    monkeypatch.setattr(relay, "execute_pending_intent", record_execution)
     monkeypatch.setattr(relay, "process_intent", interleaved_intent)
     emitter = router.relay_emitter(
         relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)

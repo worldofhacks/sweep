@@ -101,9 +101,9 @@ retry as a new intent with `retry_of`), and Fleet (registry rows and the departe
 Appendix E mission tracker under Reference › Mission. `controls.ts` holds the pure gating and
 geometry; every control builds its envelope through `control/intent.ts`, which now covers every
 Appendix E name the contract lists. `takeoff`, `land`, `land_all`, `sweep` and `capture_room` park
-in the dock until the operator confirms the exact envelope; the rest send at once. A retry of a
-failed or refused request re-sends the same envelope at once under a new intent id with `retry_of`
-set, keeping its confirmation rather than opening a second preview. Names outside the M2.0 set
+in the dock until the operator confirms the exact envelope; the rest send at once. A retry creates a new intent id with `retry_of` set. Takeoff, fleet landing and capture retries
+return to the dock for fresh confirmation of the same arguments; other retries retain their
+confirmation and send immediately. Names outside the M2.0 set
 stay pressable so the relay's `unsupported` refusal is recorded rather than hidden.
 No relay event carries capture-readiness guidance yet, so the compass and gates render unreported.
 
@@ -148,3 +148,9 @@ name, ambiguity returns options, and the outcome card says the local fallback ra
 nothing: the intent leaves on the console connection only after the dock confirms it. Without a
 relay bootstrap, and in fixture mode, the module reports language disabled and still compiles typed
 text.
+
+The M2.0 control panel emits the production Intent v1 sequence for session arm, aircraft
+selection, confirmed takeoff, configured-step translation, hold, come home, and confirmed
+land-all. Takeoff and land-all stay in preview until the operator confirms the exact request,
+selection, and roster version. The network E-stop remains available from both its button and the
+separately authenticated keyboard connection.

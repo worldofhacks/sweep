@@ -38,6 +38,7 @@ function mount() {
       v: 1,
       t: wall(),
       event_id: `strip-state-${++sequence}`,
+      state_sequence: sequence,
       type: 'state',
       session,
       roster_version: 7,

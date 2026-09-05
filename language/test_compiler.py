@@ -330,8 +330,9 @@ def _prepare_and_confirm(
     now_ms: int,
 ):
     class DeferredOutcomeRelay(RelaySession):
-        def process_intent(self, raw, principal):
-            return super().process_intent(raw, principal)[:1]
+        def execute_pending_intent(self, intent_id):
+            super().execute_pending_intent(intent_id)
+            return []
 
     current_snapshot = [snapshot]
     router = PreparedExecutionRouter(controller, current_snapshot=lambda: current_snapshot[0])
