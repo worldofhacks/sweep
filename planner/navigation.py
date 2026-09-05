@@ -558,7 +558,10 @@ class NavigationPlanner:
     @classmethod
     def _valid_vertical_segment(cls, segment: SweptSegment, artifact: NavigationArtifact) -> bool:
         if segment.start.floor_id == segment.end.floor_id:
-            return cls._vertical_levels(segment.start, segment.end, artifact.grids) is not None
+            return (
+                cls._vertical_levels(segment.start, segment.end, artifact.grids, segment.height_m)
+                is not None
+            )
         return any(
             connector.enabled
             and connector.from_pose == segment.start
@@ -612,7 +615,9 @@ class NavigationPlanner:
                     return [*first, *second]
             return None
         if start_level.z_m != goal_level.z_m:
-            intermediate = self._vertical_levels(start, goal, artifact.grids)
+            intermediate = self._vertical_levels(
+                start, goal, artifact.grids, motion.aircraft_height_m
+            )
             if intermediate is None:
                 return None
             first = self._route_on_level(
@@ -673,14 +678,18 @@ class NavigationPlanner:
 
     @staticmethod
     def _vertical_levels(
-        start: Pose, goal: Pose, levels: tuple[GridLevel, ...]
+        start: Pose, goal: Pose, levels: tuple[GridLevel, ...], height_m: float = 0.0
     ) -> list[Pose] | None:
         floor_levels = sorted(
             (level for level in levels if level.floor_id == start.floor_id),
             key=lambda level: level.z_m,
         )
         low, high = sorted((start.z_m, goal.z_m))
-        relevant = [level for level in floor_levels if low <= level.z_m <= high]
+        relevant = [
+            level
+            for level in floor_levels
+            if low - height_m / 2 <= level.z_m <= high + height_m / 2
+        ]
         if not relevant or any(
             not level.free(level.cell_for(Pose(goal.x_m, goal.y_m, level.z_m, goal.floor_id)))
             for level in relevant

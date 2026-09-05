@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from math import ceil, dist
 
 import pytest
@@ -239,6 +240,94 @@ def test_vertical_connector_hits_stationary_aircraft_volume() -> None:
         start,
         motion.aircraft_height_m,
     )
+
+
+def test_dense_grid_exempts_the_active_aircraft_reservation() -> None:
+    dense = GridLevel("level_1", 1.0, (0.0, 0.0), 0.1, 80, 20, frozenset())
+    slots = (ArrivalSlot("atrium-a", "atrium", pose(6.5, 1.5), 0.5),)
+    map_artifact = NavigationArtifact(
+        ArtifactPin("map-v2", "a" * 64),
+        ArtifactPin("geometry-v2", "b" * 64),
+        0.5,
+        (dense,),
+        (Zone("atrium", "level_1", True, slots),),
+    )
+    result = NavigationPlanner().plan(request(drone(1, 0.05, 1.55)), map_artifact)
+    assert not isinstance(result, NavigationRefusal)
+
+
+def test_revalidation_refuses_missing_frozen_obstacle_roster() -> None:
+    first, second = drone(1, 0.5, 1.5), drone(2, 0.5, 3.5)
+    slots = (ArrivalSlot("atrium-a", "atrium", pose(6.5, 1.5), 0.5),)
+    plan = NavigationPlanner().plan(
+        NavigationRequest("atrium", 4, (first,), (first, second), MOTION, PERMISSION),
+        artifact(slots=slots),
+    )
+    assert not isinstance(plan, NavigationRefusal)
+    assert (
+        NavigationPlanner().revalidate(plan, artifact(slots=slots), (first,), 0, 0, 0.1).code
+        == "connection_changed"
+    )
+
+
+def test_revalidation_binds_zone_approval_to_frozen_plan() -> None:
+    plan = NavigationPlanner().plan(request(drone(1, 0.5, 1.5)), artifact())
+    assert not isinstance(plan, NavigationRefusal)
+    changed = artifact(navigation_allowed=False)
+    assert (
+        NavigationPlanner().revalidate(plan, changed, (drone(1, 0.5, 1.5),), 0, 0, 0.1).code
+        == "artifact_changed"
+    )
+
+
+def test_revalidation_binds_arrival_slots_and_connector_approval() -> None:
+    plan = NavigationPlanner().plan(request(drone(1, 0.5, 1.5)), artifact())
+    assert not isinstance(plan, NavigationRefusal)
+    base = artifact()
+    altered_slot = replace(
+        base,
+        zones=(
+            replace(
+                base.zones[0], arrival_slots=(ArrivalSlot("other", "atrium", pose(5.5, 1.5), 0.5),)
+            ),
+        ),
+    )
+    assert (
+        NavigationPlanner().revalidate(plan, altered_slot, (drone(1, 0.5, 1.5),), 0, 0, 0.1).code
+        == "artifact_changed"
+    )
+    altered_connector = replace(
+        base,
+        connectors=(Connector("disabled", "level_1", "level_1", pose(1, 1), pose(1, 1), False),),
+    )
+    assert (
+        NavigationPlanner()
+        .revalidate(plan, altered_connector, (drone(1, 0.5, 1.5),), 0, 0, 0.1)
+        .code
+        == "artifact_changed"
+    )
+
+
+def test_tall_aircraft_vertical_body_rejects_blocked_band() -> None:
+    low = GridLevel("level_1", 1.0, (0, 0), 1.0, 8, 5, frozenset())
+    blocked = GridLevel("level_1", 2.0, (0, 0), 1.0, 8, 5, frozenset({(6, 1)}))
+    high = GridLevel("level_1", 3.0, (0, 0), 1.0, 8, 5, frozenset())
+    slots = (ArrivalSlot("atrium-a", "atrium", pose(6.5, 1.5, 3), 0.5),)
+    map_artifact = NavigationArtifact(
+        ArtifactPin("map-v2", "a" * 64),
+        ArtifactPin("geometry-v2", "b" * 64),
+        0.5,
+        (low, blocked, high),
+        (Zone("atrium", "level_1", True, slots),),
+    )
+    tall = MotionConfig(0.01, 2.0, 0, 0, 0, 0)
+    result = NavigationPlanner().plan(
+        NavigationRequest(
+            "atrium", 4, (drone(1, 0.5, 1.5),), (drone(1, 0.5, 1.5),), tall, PERMISSION
+        ),
+        map_artifact,
+    )
+    assert isinstance(result, NavigationRefusal)
 
 
 def test_sequential_route_avoids_aircraft_waiting_at_its_start_and_arrival() -> None:
