@@ -125,7 +125,7 @@ def build_report(rows, checkpoints):
         if error is not None:
             _number(error)
         results.append({"id": identifier, "time_offset_s": offset, "error_m": error})
-    coverage_pass = end > 0 and max_gap <= 0.5 + 1e-9
+    coverage_pass = bool(candidates) and end > 0 and max_gap <= 0.5 + 1e-9
     checkpoint_pass = len(results) >= 6 and all(
         result["error_m"] is not None and result["error_m"] <= 0.10 for result in results
     )
