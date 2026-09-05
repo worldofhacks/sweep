@@ -149,8 +149,8 @@
         {
           "name": "translate",
           "args": {
-            "dx": 1.0,
-            "dy": 0
+            "dx": 0.0,
+            "dy": -1.0
           },
           "selection": [
             1,
@@ -166,8 +166,8 @@
         {
           "name": "translate",
           "args": {
-            "dx": -1.0,
-            "dy": 0
+            "dx": 0.0,
+            "dy": 0.6096
           },
           "selection": [
             1,
@@ -183,8 +183,8 @@
         {
           "name": "translate",
           "args": {
-            "dx": 0,
-            "dy": 1.0
+            "dx": 1.0,
+            "dy": 0.0
           },
           "selection": [
             1,
@@ -467,8 +467,8 @@
         {
           "name": "translate",
           "args": {
-            "dx": 1.0,
-            "dy": 0.0
+            "dx": 0.0,
+            "dy": -1.0
           },
           "selection": [
             1,
@@ -500,8 +500,8 @@
         {
           "name": "translate",
           "args": {
-            "dx": 2.0,
-            "dy": 0.0
+            "dx": 0.0,
+            "dy": -2.0
           },
           "selection": [
             1

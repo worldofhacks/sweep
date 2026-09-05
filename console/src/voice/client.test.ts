@@ -1,7 +1,44 @@
+// Copied from PR #49 (issue-42-push-to-talk, console/src/voice/client.test.ts).
 import { describe, expect, test, vi } from 'vitest'
 import { HttpTranscriptClient, UnavailableTranscriptClient } from './client'
 
 describe('transcript upload client', () => {
+  test('calls the browser fetch implementation without rebinding its receiver', async () => {
+    let receiver: unknown = 'not called'
+    const fetcher = function (this: unknown) {
+      receiver = this
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            v: 1,
+            type: 'voice_outcome',
+            session: 'session-1',
+            correlation_id: 'voice-browser',
+            status: 'transcribed',
+            source: 'whisper',
+            reason: null,
+            transcript: 'hold position',
+            emissions: [],
+          }),
+          { status: 200 },
+        ),
+      )
+    } as typeof fetch
+    const client = new HttpTranscriptClient(
+      { baseUrl: 'ws://relay.example', token: 'relay-token' },
+      fetcher,
+    )
+
+    await client.transcribe({
+      sessionId: 'session-1',
+      correlationId: 'voice-browser',
+      audio: new Blob(['audio'], { type: 'audio/webm' }),
+      durationMs: 500,
+    })
+
+    expect(receiver).toBeUndefined()
+  })
+
   test('sends bounded recorded audio to the authenticated relay endpoint', async () => {
     const fetcher = vi.fn().mockResolvedValue(
       new Response(
@@ -66,6 +103,7 @@ describe('transcript upload client', () => {
   test.each([
     [400, 'Voice request was rejected by the relay.'],
     [401, 'Voice relay authentication failed.'],
+    [404, 'The relay has no transcription endpoint. Nothing was emitted.'],
     [413, 'Voice recording exceeds the relay upload limit.'],
     [500, 'Voice relay request failed.'],
   ])('reports HTTP %i without retrying', async (status, message) => {

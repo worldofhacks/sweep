@@ -1,3 +1,4 @@
+// Copied from PR #49 (issue-42-push-to-talk, console/src/voice/use-push-to-talk.test.tsx).
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { TranscriptClient } from './client'

@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from relay.intent_v1 import REGISTERED_SOURCES
+
 
 class AuthenticationError(ValueError):
     def __init__(self, code: str, detail: str) -> None:
@@ -44,7 +46,7 @@ class StaticCredentialResolver:
     allow_shared_adapter_token: bool = False
 
     def resolve(self, source: str, drone_id: int | None) -> bytes | None:
-        if source in {"console", "keyboard"} and drone_id is None:
+        if source in REGISTERED_SOURCES and drone_id is None:
             return self.relay_token
         if source == "adapter" and drone_id is not None:
             key = self.adapter_keys.get(drone_id)
@@ -70,7 +72,7 @@ def authenticate(raw: object, resolver: CredentialResolver) -> Principal:
         raise AuthenticationError("invalid_auth", "v must be integer 1")
     if raw["type"] != "auth":
         raise AuthenticationError("invalid_auth", "first frame must have type auth")
-    if source not in {"console", "keyboard", "adapter"}:
+    if source != "adapter" and source not in REGISTERED_SOURCES:
         raise AuthenticationError("unknown_source", "source is not registered")
     token = raw["token"]
     if not isinstance(token, str) or not token:

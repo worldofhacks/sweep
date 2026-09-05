@@ -1,3 +1,8 @@
+/**
+ * Transcript upload client for the relay push-to-talk endpoint.
+ * Copied from PR #49 (issue-42-push-to-talk, console/src/voice/client.ts) so the
+ * Speech module binds to the transcription contract that branch defines.
+ */
 export type VoiceOutcome = {
   v?: 1
   type?: 'voice_outcome'
@@ -39,7 +44,11 @@ export class HttpTranscriptClient implements TranscriptClient {
 
   async transcribe(request: TranscriptRequest): Promise<VoiceOutcome> {
     const contentType = request.audio.type || 'audio/webm'
-    const response = await this.fetcher(transcriptEndpoint(this.config.baseUrl, request.sessionId), {
+    // Native Window.fetch rejects when it is invoked as an instance method and
+    // receives this client as its receiver. Copy it first so both the browser
+    // implementation and injected test fetchers are called as plain functions.
+    const fetcher = this.fetcher
+    const response = await fetcher(transcriptEndpoint(this.config.baseUrl, request.sessionId), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.config.token}`,
@@ -66,6 +75,8 @@ export class HttpTranscriptClient implements TranscriptClient {
 function responseFailure(status: number): string {
   if (status === 400) return 'Voice request was rejected by the relay.'
   if (status === 401) return 'Voice relay authentication failed.'
+  // This console can talk to a relay that has no transcription endpoint yet; say so rather than "failed".
+  if (status === 404 || status === 405) return 'The relay has no transcription endpoint. Nothing was emitted.'
   if (status === 413) return 'Voice recording exceeds the relay upload limit.'
   return 'Voice relay request failed.'
 }

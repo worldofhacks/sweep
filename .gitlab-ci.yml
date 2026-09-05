@@ -37,3 +37,19 @@ console:
     - pnpm install --frozen-lockfile
     - pnpm lint
     - pnpm build
+
+bridge-jvm:
+  extends: .ci-job
+  image: eclipse-temurin:17-jdk
+  timeout: 15m
+  variables:
+    GRADLE_USER_HOME: $CI_PROJECT_DIR/.gradle-home
+  cache:
+    key: bridge-jvm-gradle
+    paths:
+      - .gradle-home/caches
+      - .gradle-home/wrapper
+  script:
+    # Pure-JVM modules only; settings.gradle.kts skips the Android module without an SDK.
+    - cd adapters/dji_mini3/pilot-app
+    - ./gradlew --no-daemon :bridge-core:test :bench:test

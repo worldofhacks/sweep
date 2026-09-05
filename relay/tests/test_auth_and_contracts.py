@@ -43,6 +43,29 @@ def test_console_and_keyboard_authentication_are_bound_to_their_source() -> None
     assert console.drone_id is None
 
 
+def test_webcam_authentication_is_an_operator_source_without_an_aircraft() -> None:
+    resolver = StaticCredentialResolver(relay_token=CONSOLE_KEY)
+
+    webcam = authenticate(
+        {"v": 1, "type": "auth", "source": "webcam", "token": CONSOLE_KEY.decode()},
+        resolver,
+    )
+
+    assert webcam.source == "webcam"
+    assert webcam.drone_id is None
+    with pytest.raises(AuthenticationError, match="invalid"):
+        authenticate(
+            {
+                "v": 1,
+                "type": "auth",
+                "source": "webcam",
+                "drone_id": 1,
+                "token": CONSOLE_KEY.decode(),
+            },
+            resolver,
+        )
+
+
 def test_adapter_authentication_uses_the_bound_aircraft_key() -> None:
     resolver = StaticCredentialResolver(
         relay_token=CONSOLE_KEY,
@@ -135,6 +158,15 @@ def test_telemetry_contract_rejects_non_finite_and_out_of_range_values() -> None
     raw = telemetry_payload(event_id="telemetry-2")
     raw["x"] = float("nan")
     with pytest.raises(ContractError, match="finite"):
+        parse_telemetry(raw)
+
+
+def test_telemetry_v1_remains_valid_without_heading_and_rejects_extensions() -> None:
+    raw = telemetry_payload(event_id="telemetry-v1")
+
+    assert parse_telemetry(raw).to_event() == raw
+    raw["heading_deg"] = 90.0
+    with pytest.raises(ContractError, match="fields"):
         parse_telemetry(raw)
 
 

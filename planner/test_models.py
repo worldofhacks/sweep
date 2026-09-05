@@ -37,6 +37,7 @@ def relay_state() -> dict[str, object]:
                 "membership": "ready",
                 "readiness_reasons": [],
                 "flight_state": "disarmed",
+                "heading_deg": 90.0,
                 "battery": 0.8,
                 "link": 0.9,
                 "pos_quality": 0.85,
@@ -59,6 +60,7 @@ def relay_state() -> dict[str, object]:
                     "vx": 0.0,
                     "vy": 0.0,
                     "vz": 0.0,
+                    "heading_deg": 90.0,
                     "battery": 0.8,
                     "state": "disarmed",
                     "link": 0.9,
@@ -100,6 +102,7 @@ def test_relay_projection_requires_explicit_safety_enrichment() -> None:
     assert aircraft.flight_state is FlightState.DISARMED
     assert aircraft.membership is MembershipState.READY
     assert aircraft.pose == Position(1.0, 2.0, 0.0)
+    assert aircraft.heading_deg == 90.0
     assert aircraft.physical_rc_available is True
 
 

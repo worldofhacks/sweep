@@ -1,3 +1,9 @@
+/**
+ * Bounded push-to-talk recorder: hold to record, release to upload one blob.
+ * Copied from PR #49 (issue-42-push-to-talk, console/src/voice/use-push-to-talk.ts);
+ * this copy adds an injectable clock and exposes the recording start time so the
+ * Speech module can count down to the cap deterministically.
+ */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TranscriptClient, VoiceOutcome } from './client'
 
@@ -33,6 +39,8 @@ export interface UsePushToTalkOptions {
   recorderFactory?: RecorderFactory
   nextId?: () => string
   maxRecordingMs?: number
+  /** Wall clock for the recording start and duration; injected so the countdown is testable. */
+  now?: () => number
 }
 
 export function usePushToTalk({
@@ -42,10 +50,13 @@ export function usePushToTalk({
   recorderFactory = (stream) => new MediaRecorder(stream),
   nextId = () => crypto.randomUUID(),
   maxRecordingMs = MAX_RECORDING_MS,
+  now = () => Date.now(),
 }: UsePushToTalkOptions) {
   const [status, setStatus] = useState<PushToTalkStatus>('idle')
   const [detail, setDetail] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<VoiceOutcome | null>(null)
+  /** Wall-clock start of the active recording, for the countdown to the cap. */
+  const [startedAt, setStartedAt] = useState<number | null>(null)
   const recorderRef = useRef<Recorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const recordingRequestedRef = useRef(false)
@@ -102,7 +113,7 @@ export function usePushToTalk({
     const correlationId = nextId()
     stopRequestedRef.current = false
     streamRef.current = stream
-    startedAtRef.current = Date.now()
+    startedAtRef.current = now()
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunks.push(event.data)
     }
@@ -116,6 +127,7 @@ export function usePushToTalk({
       recorderRef.current = null
       const startedAt = startedAtRef.current
       startedAtRef.current = null
+      setStartedAt(null)
       if (!stopRequested) {
         setStatus('error')
         setDetail('Recording stopped unexpectedly. No audio was sent.')
@@ -128,7 +140,7 @@ export function usePushToTalk({
         return
       }
       setStatus('uploading')
-      const durationMs = startedAt === null ? 0 : Math.max(0, Math.min(maxRecordingMs, Date.now() - startedAt))
+      const durationMs = startedAt === null ? 0 : Math.max(0, Math.min(maxRecordingMs, now() - startedAt))
       void client
         .transcribe({ sessionId, correlationId, audio, durationMs })
         .then((received) => {
@@ -150,6 +162,7 @@ export function usePushToTalk({
       recordingRequestedRef.current = false
       stopRequestedRef.current = false
       startedAtRef.current = null
+      setStartedAt(null)
       stream.getTracks().forEach((track) => track.stop())
       streamRef.current = null
     }
@@ -169,8 +182,9 @@ export function usePushToTalk({
       return
     }
     setStatus('recording')
+    setStartedAt(startedAtRef.current)
     timerRef.current = setTimeout(stop, maxRecordingMs)
-  }, [clearTimer, client, maxRecordingMs, nextId, recorderFactory, requestAudio, sessionId, stop])
+  }, [clearTimer, client, maxRecordingMs, nextId, now, recorderFactory, requestAudio, sessionId, stop])
 
   useEffect(
     () => () => {
@@ -192,5 +206,14 @@ export function usePushToTalk({
     [clearTimer],
   )
 
-  return { status, detail, outcome, start, stop, isRecording: status === 'recording' }
+  return {
+    status,
+    detail,
+    outcome,
+    start,
+    stop,
+    isRecording: status === 'recording',
+    startedAt,
+    maxRecordingMs,
+  }
 }

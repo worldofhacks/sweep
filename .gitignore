@@ -21,5 +21,18 @@ node_modules/
 .idea/
 *.swp
 
+# Agent worktrees and local agent state
+.claude/
+
 # Media
 recordings/
+
+# Android and Gradle (adapters/dji_mini3/pilot-app)
+.gradle/
+.kotlin/
+local.properties
+*.apk
+*.aab
+*.iml
+captures/
+.cxx/
