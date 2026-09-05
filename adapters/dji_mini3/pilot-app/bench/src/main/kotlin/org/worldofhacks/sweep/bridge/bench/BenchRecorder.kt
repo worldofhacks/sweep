@@ -11,8 +11,8 @@ enum class RecordKind(val wire: String) {
     COMMAND_DROPPED("command_dropped"),
     STICK_SENT("stick_sent"),
     TELEMETRY("telemetry"),
-    VIDEO_FRAME("video_frame"),
     VIDEO_PUBLISH("video_publish"),
+    VIDEO_FRAME("video_frame"),
     NOTE("note");
 
     companion object {

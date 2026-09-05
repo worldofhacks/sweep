@@ -126,6 +126,13 @@ data class PublishStats(
     )
 }
 
+/** A JSON number as a double; the publish windows carry integers and floats in the same fields. */
+private fun JsonObject.doubleOf(key: String): Double? = when (val value = this[key]) {
+    is JsonFloat -> value.value
+    is JsonInt -> value.value.toDouble()
+    else -> null
+}
+
 data class BenchReport(
     val commands: CommandStats,
     val sticks: RateStats,
@@ -167,7 +174,6 @@ object BenchAnalysis {
         var keyframes = 0
         var droppedFrames = 0
         var bytes = 0L
-        val decode = ArrayList<Long>()
         var publishWindows = 0
         var publishConnected = 0
         val publishBitrates = ArrayList<Double>()
@@ -177,6 +183,7 @@ object BenchAnalysis {
         val publishProcessing = ArrayList<Double>()
         val publishSources = LinkedHashSet<String>()
         val publishCodecs = LinkedHashSet<String>()
+        val decode = ArrayList<Long>()
         val notes = ArrayList<String>()
         var records = 0
         var skipped = 0
@@ -210,6 +217,17 @@ object BenchAnalysis {
                 RecordKind.COMMAND_DROPPED -> dropped++
                 RecordKind.STICK_SENT -> sticks.add(t)
                 RecordKind.TELEMETRY -> telemetry.add(t)
+                RecordKind.VIDEO_PUBLISH -> {
+                    publishWindows++
+                    if (record.string("ice_state") == "connected") publishConnected++
+                    record.doubleOf("bitrate_kbps")?.let(publishBitrates::add)
+                    record.doubleOf("fps")?.let(publishFps::add)
+                    (record["dropped_frames"] as? JsonInt)?.value?.let { publishDropped = maxOf(publishDropped, it) }
+                    record.doubleOf("rtt_ms")?.let { publishRtts.add(Math.round(it)) }
+                    record.doubleOf("processing_ms")?.let(publishProcessing::add)
+                    record.string("source")?.let(publishSources::add)
+                    record.string("codec")?.let(publishCodecs::add)
+                }
                 RecordKind.VIDEO_FRAME -> {
                     if ((record["dropped"] as? JsonBool)?.value == true) {
                         droppedFrames++
@@ -219,17 +237,6 @@ object BenchAnalysis {
                         bytes += (record["size_bytes"] as? JsonInt)?.value ?: 0
                         (record["decode_ms"] as? JsonInt)?.value?.let(decode::add)
                     }
-                }
-                RecordKind.VIDEO_PUBLISH -> {
-                    publishWindows++
-                    if (record.string("ice_state") == "connected") publishConnected++
-                    record.number("bitrate_kbps")?.let(publishBitrates::add)
-                    record.number("fps")?.let(publishFps::add)
-                    (record["dropped_frames"] as? JsonInt)?.value?.let { publishDropped = maxOf(publishDropped, it) }
-                    record.number("rtt_ms")?.let { publishRtts.add(Math.round(it)) }
-                    record.number("processing_ms")?.let(publishProcessing::add)
-                    record.string("source")?.let(publishSources::add)
-                    record.string("codec")?.let(publishCodecs::add)
                 }
                 RecordKind.NOTE -> record.string("text")?.let(notes::add)
             }
@@ -246,14 +253,6 @@ object BenchAnalysis {
             ),
             sticks = RateStats.of(sticks),
             telemetry = RateStats.of(telemetry),
-            video = VideoStats(
-                frames = frames.size,
-                keyframes = keyframes,
-                dropped = droppedFrames,
-                bytes = bytes,
-                rate = RateStats.of(frames),
-                decode = LatencyStats.of(decode),
-            ),
             publish = PublishStats(
                 windows = publishWindows,
                 connectedWindows = publishConnected,
@@ -265,6 +264,14 @@ object BenchAnalysis {
                 sources = publishSources.toList(),
                 codecs = publishCodecs.toList(),
             ),
+            video = VideoStats(
+                frames = frames.size,
+                keyframes = keyframes,
+                dropped = droppedFrames,
+                bytes = bytes,
+                rate = RateStats.of(frames),
+                decode = LatencyStats.of(decode),
+            ),
             notes = notes,
             records = records,
             skippedLines = skipped,
@@ -274,12 +281,6 @@ object BenchAnalysis {
     }
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonString)?.value
-
-    private fun JsonObject.number(key: String): Double? = when (val value = this[key]) {
-        is JsonFloat -> value.value
-        is JsonInt -> value.value.toDouble()
-        else -> null
-    }
 }
 
 /** Renders a [BenchReport] as canonical JSON or as the plain text that goes into the M1.9 evidence. */
@@ -307,14 +308,6 @@ object ReportWriter {
         appendLine("  frames: ${report.telemetry.count}")
         appendLine("  rate_hz: ${rate(report.telemetry)}")
         appendLine()
-        appendLine("video")
-        appendLine("  frames: ${report.video.frames}")
-        appendLine("  keyframes: ${report.video.keyframes}")
-        appendLine("  dropped: ${report.video.dropped}")
-        appendLine("  bytes: ${report.video.bytes}")
-        appendLine("  rate_hz: ${rate(report.video.rate)}")
-        appendLine("  decode: ${latency(report.video.decode)}")
-        appendLine()
         appendLine("video publish")
         appendLine("  windows: ${report.publish.windows} (ice connected: ${report.publish.connectedWindows})")
         appendLine("  mean_bitrate_kbps: ${report.publish.meanBitrateKbps?.let { format(it) } ?: "-"}")
@@ -324,6 +317,14 @@ object ReportWriter {
         appendLine("  mean_processing_ms: ${report.publish.meanProcessingMs?.let { format(it) } ?: "-"}")
         appendLine("  sources: ${report.publish.sources.ifEmpty { listOf("-") }.joinToString()}")
         appendLine("  codecs: ${report.publish.codecs.ifEmpty { listOf("-") }.joinToString()}")
+        appendLine()
+        appendLine("video")
+        appendLine("  frames: ${report.video.frames}")
+        appendLine("  keyframes: ${report.video.keyframes}")
+        appendLine("  dropped: ${report.video.dropped}")
+        appendLine("  bytes: ${report.video.bytes}")
+        appendLine("  rate_hz: ${rate(report.video.rate)}")
+        appendLine("  decode: ${latency(report.video.decode)}")
         if (report.notes.isNotEmpty()) {
             appendLine()
             appendLine("notes")
