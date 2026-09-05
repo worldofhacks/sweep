@@ -44,10 +44,13 @@ class StaticCredentialResolver:
     relay_token: bytes = field(repr=False)
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     allow_shared_adapter_token: bool = False
+    localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
 
     def resolve(self, source: str, drone_id: int | None) -> bytes | None:
         if source in REGISTERED_SOURCES and drone_id is None:
             return self.relay_token
+        if source == "localization" and drone_id is not None:
+            return self.localization_keys.get(drone_id)
         if source == "adapter" and drone_id is not None:
             key = self.adapter_keys.get(drone_id)
             if key is not None:
@@ -62,7 +65,7 @@ def authenticate(raw: object, resolver: CredentialResolver) -> Principal:
     if not isinstance(raw, Mapping) or not all(isinstance(key, str) for key in raw):
         raise AuthenticationError("invalid_auth", "authentication frame must be an object")
     source = raw.get("source")
-    if source == "adapter":
+    if source in {"adapter", "localization"}:
         expected_fields = {"v", "type", "source", "drone_id", "token"}
     else:
         expected_fields = {"v", "type", "source", "token"}
@@ -72,14 +75,14 @@ def authenticate(raw: object, resolver: CredentialResolver) -> Principal:
         raise AuthenticationError("invalid_auth", "v must be integer 1")
     if raw["type"] != "auth":
         raise AuthenticationError("invalid_auth", "first frame must have type auth")
-    if source != "adapter" and source not in REGISTERED_SOURCES:
+    if source not in {"adapter", "localization"} and source not in REGISTERED_SOURCES:
         raise AuthenticationError("unknown_source", "source is not registered")
     token = raw["token"]
     if not isinstance(token, str) or not token:
         raise AuthenticationError("invalid_auth", "token must be a non-empty string")
 
     drone_id: int | None = None
-    if source == "adapter":
+    if source in {"adapter", "localization"}:
         candidate = raw["drone_id"]
         if not isinstance(candidate, int) or isinstance(candidate, bool) or candidate <= 0:
             raise AuthenticationError("invalid_auth", "drone_id must be a positive integer")

@@ -33,6 +33,7 @@ class RelaySettings:
     relay_token: bytes = field(repr=False)
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     allow_shared_adapter_token: bool = False
+    localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     log_dir: Path = Path(".sweep/session-logs")
     intent_max_age_ms: int = 5_000
     transport_event_max_age_ms: int = 5_000
@@ -53,6 +54,11 @@ class RelaySettings:
         for drone_id, key in self.adapter_keys.items():
             if drone_id <= 0 or len(key) < 32:
                 raise SettingsError("adapter IDs must be positive and keys at least 32 characters")
+        for drone_id, key in self.localization_keys.items():
+            if type(drone_id) is not int or drone_id <= 0 or len(key) < 32:
+                raise SettingsError(
+                    "localization IDs must be positive and keys at least 32 characters"
+                )
         if self.fanout_hz != 10:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
@@ -85,6 +91,7 @@ class RelaySettings:
         return cls(
             relay_token=token.encode(),
             adapter_keys=adapter_keys,
+            localization_keys=_adapter_keys(values.get("SWEEP_LOCALIZATION_KEYS_JSON", "{}")),
             allow_shared_adapter_token=_boolean(
                 values.get("SWEEP_ALLOW_SHARED_ADAPTER_TOKEN", "false"),
                 "SWEEP_ALLOW_SHARED_ADAPTER_TOKEN",
@@ -136,6 +143,7 @@ class RelaySettings:
             relay_token=self.relay_token,
             adapter_keys=self.adapter_keys,
             allow_shared_adapter_token=self.allow_shared_adapter_token,
+            localization_keys=self.localization_keys,
         )
 
     def limits(self) -> RelayLimits:

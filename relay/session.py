@@ -40,6 +40,7 @@ from relay.contracts import (
     parse_telemetry,
     refusal_event,
 )
+from relay.control_frames import ControlLocalizationFrame
 from relay.intent_v1 import (
     REGISTERED_SOURCES,
     AcceptedIntent,
@@ -257,6 +258,7 @@ class RelaySession:
         self._command_waiters: dict[str, queue.SimpleQueue[AdapterAcknowledgement]] = {}
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
+        self._control_localization: dict[int, ControlLocalizationFrame] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
@@ -296,6 +298,8 @@ class RelaySession:
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Route one post-authentication frame according to its bound principal."""
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
+        if principal.source == "localization" and frame_type == "control_localization":
+            return self.process_control_localization(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
             return self.process_intent(raw, principal)
         if principal.source == "adapter":
@@ -914,6 +918,62 @@ class RelaySession:
                     queue.pop(0)
                 self._resuming_intents.difference_update(work.blocked_ids)
             return events
+
+    def process_control_localization(
+        self, raw: object, principal: Principal
+    ) -> list[dict[str, object]]:
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            try:
+                if principal.source != "localization" or principal.drone_id is None:
+                    raise ContractError("source_not_allowed", "localization producer required")
+                frame = ControlLocalizationFrame.parse(raw)
+                self._check_adapter_binding(frame.wire.drone_id, principal)
+                if frame.session != self.session_id:
+                    raise ContractError("session_mismatch", "localization session differs")
+                if not verify_event_signature(
+                    frame.unsigned_event(), frame.wire.signature, principal.signing_key
+                ):
+                    raise ContractError("invalid_signature", "localization signature rejected")
+                self.registry.check_current(frame.wire.drone_id, frame.wire.connection_epoch)
+                self._claim_transport_event(frame.event_id, frame.t, principal, now)
+            except (ContractError, RegistryError) as error:
+                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
+            except (ValueError, TypeError, OverflowError):
+                return [
+                    self._protocol_refusal(
+                        reason="invalid_payload",
+                        detail="invalid localization frame",
+                        now=now,
+                    )
+                ]
+            drone_id = frame.wire.drone_id
+            previous = self._control_localization.get(drone_id)
+
+            def undo() -> None:
+                if previous is None:
+                    self._control_localization.pop(drone_id, None)
+                else:
+                    self._control_localization[drone_id] = previous
+
+            assert self._audit_undo is not None
+            self._audit_undo.append(undo)
+            self._control_localization[drone_id] = frame
+            event = {**frame.unsigned_event(), "signature_verified": True}
+            self._append_audit(event)
+            return [event]
+
+    def control_localization(self, drone_id: int) -> ControlLocalizationFrame | None:
+        with self._lock:
+            frame = self._control_localization.get(drone_id)
+            if frame is None:
+                return None
+            try:
+                self.registry.check_current(drone_id, frame.wire.connection_epoch)
+            except RegistryError:
+                return None
+            return frame
 
     def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Accept a node-authored frame; only capabilities and node_status change state.
