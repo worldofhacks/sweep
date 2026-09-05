@@ -28,6 +28,7 @@ from relay.tests.conftest import (
     EventIds,
     MutableClock,
     capabilities_payload,
+    capture_readiness_payload,
     membership_payload,
     telemetry_payload,
 )
@@ -218,11 +219,34 @@ def test_relay_snapshot_derives_safety_facts_and_excludes_silent_aircraft(
     relay_session.process_membership(
         membership_payload(action="join", event_id="join-2", drone_id=2), second
     )
-    before_capabilities = relay_snapshot(relay_session.current_state(), operator_last_seen_ms=None)
+    before_capabilities = relay_snapshot(
+        relay_session.current_state(),
+        operator_last_seen_ms=None,
+        capture_readiness=relay_session.capture_readiness,
+    )
     relay_session.process_node_frame(
         capabilities_payload(event_id="capabilities-1"), adapter_principal
     )
-    landed = relay_snapshot(relay_session.current_state(), operator_last_seen_ms=clock.value)
+    relay_session.process_node_frame(
+        capture_readiness_payload(event_id="readiness-1", storage_ok=False), adapter_principal
+    )
+    storage_not_ok = relay_snapshot(
+        relay_session.current_state(),
+        operator_last_seen_ms=clock.value,
+        capture_readiness=relay_session.capture_readiness,
+    )
+    relay_session.process_node_frame(
+        capture_readiness_payload(event_id="readiness-2", timestamp=clock.value + 1),
+        adapter_principal,
+    )
+    landed = relay_snapshot(
+        relay_session.current_state(),
+        operator_last_seen_ms=clock.value,
+        capture_readiness=relay_session.capture_readiness,
+    )
+    without_readiness_source = relay_snapshot(
+        relay_session.current_state(), operator_last_seen_ms=clock.value
+    )
     relay_session.process_telemetry(
         telemetry_payload(event_id="telemetry-2", timestamp=clock.value + 1, state="hovering"),
         adapter_principal,
@@ -233,6 +257,8 @@ def test_relay_snapshot_derives_safety_facts_and_excludes_silent_aircraft(
     assert before_capabilities.operator_present is False
     assert before_capabilities.aircraft[1].camera_ready is False
     assert before_capabilities.aircraft[1].storage_remaining_bytes == 0
+    assert storage_not_ok.aircraft[1].camera_ready is False, "storage_ok gates readiness"
+    assert without_readiness_source.aircraft[1].camera_ready is False, "no frame, not ready"
     aircraft = landed.aircraft[1]
     assert aircraft.armed is False
     assert aircraft.physical_rc_available is True
@@ -249,28 +275,53 @@ def test_relay_snapshot_derives_safety_facts_and_excludes_silent_aircraft(
     assert hovering.aircraft[1].airborne is True
 
 
-def test_control_projection_applies_explicit_updates_only_when_earned() -> None:
+def test_control_projection_latches_estop_from_the_intent_and_earns_the_rest() -> None:
     arm = _plan(IntentName.ARM, selection=(), armed_update=True)
     select = _plan(IntentName.SELECT, selection=(), selection_update=(1, 2))
     estop = _plan(IntentName.ESTOP, selection=(), estop_update=True)
     takeoff = _plan(IntentName.TAKEOFF, confirmed=True)
-
-    assert control_projection(_result(arm, LifecycleStatus.COMPLETED)) == {"armed": True}
-    assert control_projection(_result(arm, LifecycleStatus.REFUSED)) == {}
-    assert control_projection(_result(select, LifecycleStatus.COMPLETED)) == {"selection": (1, 2)}
-    assert control_projection(_result(select, LifecycleStatus.FAILED)) == {}
-    assert control_projection(_result(estop, LifecycleStatus.FAILED)) == {"estop": True}
-    assert control_projection(_result(takeoff, LifecycleStatus.COMPLETED)) == {}
-    assert control_projection(_result(takeoff, LifecycleStatus.EXECUTING)) == {
-        "accepted_plan": {
-            "plan_id": "plan:intent-1",
-            "intent_id": "intent-1",
-            "intent_name": "takeoff",
-            "roster_version": 3,
-            "selection": [1],
-        }
+    summary = {
+        "plan_id": "plan:intent-1",
+        "intent_id": "intent-1",
+        "intent_name": "takeoff",
+        "roster_version": 3,
+        "selection": [1],
     }
-    assert control_projection(_result(None, LifecycleStatus.REFUSED)) == {}
+
+    assert control_projection(IntentName.ARM, _result(arm, LifecycleStatus.COMPLETED)) == {
+        "armed": True,
+        "accepted_plan": None,
+    }
+    assert control_projection(IntentName.ARM, _result(arm, LifecycleStatus.REFUSED)) == {
+        "accepted_plan": None
+    }
+    assert control_projection(IntentName.SELECT, _result(select, LifecycleStatus.COMPLETED)) == {
+        "selection": (1, 2),
+        "accepted_plan": None,
+    }
+    assert control_projection(IntentName.SELECT, _result(select, LifecycleStatus.FAILED)) == {
+        "accepted_plan": None
+    }
+    # The network stop latches from the intent, whatever the planner or dispatcher did.
+    assert control_projection(IntentName.ESTOP, _result(estop, LifecycleStatus.FAILED)) == {
+        "estop": True,
+        "accepted_plan": None,
+    }
+    assert control_projection(IntentName.ESTOP, _result(None, LifecycleStatus.REFUSED)) == {
+        "estop": True,
+        "accepted_plan": None,
+    }
+    assert control_projection(IntentName.ESTOP, _result(None, LifecycleStatus.FAILED)) == {
+        "estop": True,
+        "accepted_plan": None,
+    }
+    assert control_projection(IntentName.TAKEOFF, _result(takeoff, LifecycleStatus.COMPLETED)) == {
+        "accepted_plan": None
+    }
+    assert control_projection(IntentName.TAKEOFF, _result(takeoff, LifecycleStatus.EXECUTING)) == {
+        "accepted_plan": summary
+    }
+    assert control_projection(IntentName.TAKEOFF, _result(None, LifecycleStatus.EXECUTING)) == {}
 
 
 def test_sim_backend_runs_the_checkpoint_intents_in_process_without_wire_commands(
@@ -403,3 +454,23 @@ def test_graceful_leave_is_authorized_only_for_a_landed_disarmed_aircraft(
     assert [event["type"] for event in landed] == ["membership", "state"]
     assert landed[0]["action"] == "graceful_leave"
     assert landed[1]["drones"][0]["membership"] == "leaving"
+
+
+def test_relay_snapshot_marks_a_requested_stop_before_the_relay_latches_it(
+    relay_session: RelaySession, adapter_principal: Principal, clock: MutableClock
+) -> None:
+    relay_session.process_membership(
+        membership_payload(action="join", event_id="join-1"), adapter_principal
+    )
+    relay_session.process_telemetry(
+        telemetry_payload(event_id="telemetry-1", state="hovering"), adapter_principal
+    )
+    state = relay_session.current_state()
+
+    plain = relay_snapshot(state, operator_last_seen_ms=clock.value)
+    stopped = relay_snapshot(state, operator_last_seen_ms=clock.value, estop_requested=True)
+
+    assert state["estop"] is False
+    assert plain.estop_active is False
+    assert stopped.estop_active is True
+    assert stopped.aircraft == plain.aircraft

@@ -289,3 +289,33 @@ def _join_events(
     return session.process_membership(
         membership_payload(action="join", event_id=event_id), principal
     )
+
+
+def test_capture_readiness_is_retained_for_the_current_epoch_only(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    assert relay_session.capture_readiness(1) is None
+
+    relay_session.process_frame(
+        capture_readiness_payload(event_id="readiness-1", camera_ok=False), adapter_principal
+    )
+    first = relay_session.capture_readiness(1)
+    relay_session.process_frame(
+        capture_readiness_payload(event_id="readiness-2", timestamp=1_756_700_000_001),
+        adapter_principal,
+    )
+    latest = relay_session.capture_readiness(1)
+    relay_session.handle_adapter_disconnect(drone_id=1, connection_epoch=1)
+    after_loss = relay_session.capture_readiness(1)
+    relay_session.process_membership(
+        membership_payload(action="join", event_id="join-2", timestamp=1_756_700_000_002),
+        adapter_principal,
+    )
+
+    assert first is not None and first.camera_ok is False
+    assert latest is not None and latest.camera_ok is True and latest.storage_ok is True
+    assert after_loss is None, "a lost aircraft has no current readiness"
+    assert relay_session.registry.connection_epoch(1) == 2
+    assert relay_session.capture_readiness(1) is None, "a rejoin starts a new epoch"
+    assert relay_session.capture_readiness(2) is None

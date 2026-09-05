@@ -131,6 +131,7 @@ class RelaySession:
         self._issued_command_ids: set[str] = set()
         self._command_waiters: dict[str, queue.SimpleQueue[AdapterAcknowledgement]] = {}
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
+        self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._metrics = {
             "accepted_intents": 0,
             "refused_intents": 0,
@@ -467,6 +468,8 @@ class RelaySession:
                 elif isinstance(frame, CaptureBundleFrame):
                     for record in frame.media:
                         self._retain_media(record)
+                elif isinstance(frame, CaptureReadinessFrame):
+                    self._capture_readiness[drone_id] = frame
             except (ContractError, RegistryError) as error:
                 return [
                     self._protocol_refusal(
@@ -576,6 +579,18 @@ class RelaySession:
         """Stop waking a caller for a command that could not reach the node."""
         with self._lock:
             self._command_waiters.pop(command_id, None)
+
+    def capture_readiness(self, drone_id: int) -> CaptureReadinessFrame | None:
+        """Return the node's latest capture_readiness frame for its current epoch."""
+        with self._lock:
+            frame = self._capture_readiness.get(drone_id)
+            if frame is None:
+                return None
+            try:
+                self.registry.check_current(drone_id, frame.connection_epoch)
+            except RegistryError:
+                return None
+            return frame
 
     def media_files(self, drone_id: int, capture_id: str) -> tuple[MediaFileRecord, ...]:
         """Return media records the node reported for a capture in its current epoch."""
