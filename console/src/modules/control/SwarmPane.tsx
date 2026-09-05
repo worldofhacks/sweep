@@ -1,4 +1,5 @@
 import { clampTranslateSteps, createTranslateArgs } from '../../control/intent'
+import { capabilityBlockedReason, isIntentEnabled } from '../../control/state'
 import type { RequestRecord } from '../../control/state'
 import { planTitle } from '../../control/plan'
 import { sortedAircraft } from '../../shell/derive'
@@ -34,6 +35,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
   const chips = aircraftChips(state)
   const blockers = chipBlockers(state)
   const ready = readyIds(state)
+  const selectEnabled = isIntentEnabled(state, 'select')
   const dpadReason = dpadBlockedReason(state)
   const run = (spec: ControlSpec) => {
     if (spec.name === 'select') selectAllReady()
@@ -53,8 +55,11 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
           <button
             type="button"
             className="ct-select-all"
-            disabled={ready.length === 0}
-            title={ready.length === 0 ? 'No aircraft is ready.' : undefined}
+            disabled={!selectEnabled || ready.length === 0}
+            title={
+              capabilityBlockedReason(state, 'select') ??
+              (ready.length === 0 ? 'No aircraft is ready.' : undefined)
+            }
             onClick={selectAllReady}
           >
             Select all ready
@@ -151,7 +156,6 @@ export function ControlButton({
   const classes = ['ct-control-btn']
   if (motion) classes.push('is-motion')
   if (!spec.supported) classes.push('is-unsupported')
-  if (spec.soft) classes.push('is-soft')
   return (
     <div className="ct-control-item">
       <button
@@ -270,8 +274,8 @@ function FormationPanel({
       <p className="ct-formation-relay">{formationRelayNote(preview, state.formation)}</p>
       <p className="ct-formation-planner">
         Deterministic slots from the planner: the arbiter refuses the whole plan if any slot breaks spacing,
-        the ceiling or the geofence. formation_set is refused as unsupported at M2.0 — the preview still shows
-        what it would do.
+        the ceiling or the geofence. The requested shape is not authoritative until relay state reports the
+        completed update.
       </p>
       {dots.map((dot) => (
         <p key={dot.droneId} className={dot.ready ? 'ct-slot-row' : 'ct-slot-row is-not-ready'}>

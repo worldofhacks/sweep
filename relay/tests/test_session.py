@@ -7,15 +7,23 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 import relay.audit as audit_module
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import LifecycleStatus
 from relay.intent_v1 import IntentV1
-from relay.session import IntentSinkResult, RelayLimits, RelaySession
+from relay.session import (
+    CapabilityBoundIntentSink,
+    IntentSink,
+    IntentSinkResult,
+    RelayLimits,
+    RelaySession,
+)
 from relay.tests.conftest import (
     ADAPTER_KEY,
     SESSION,
@@ -42,6 +50,10 @@ def _new_session(
     event_ids: EventIds,
     **kwargs: object,
 ) -> RelaySession:
+    sink = kwargs.get("intent_sink")
+    if sink is not None and not hasattr(sink, "capability_profile"):
+        profile = cast(CapabilityProfile, kwargs.get("capability_profile", C1_CAPABILITY_PROFILE))
+        kwargs["intent_sink"] = CapabilityBoundIntentSink(cast(IntentSink, sink), profile)
     return RelaySession(
         session_id=SESSION,
         audit_log=SessionAuditLog(tmp_path, SESSION),
@@ -1041,6 +1053,31 @@ def test_control_projection_omissions_do_not_clear_plan_or_pending(
     assert state["accepted_plan"] == {"plan_id": "plan-1"}
     assert state["pending"] == {"name": "takeoff"}
     assert state["armed"] is True
+
+
+def test_control_projection_applies_completed_formation_and_spacing_updates(
+    relay_session: RelaySession,
+) -> None:
+    state = relay_session.update_control_projection(formation="circle", spacing=1.2)
+
+    assert state["formation"] == "circle"
+    assert state["spacing"] == 1.2
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("formation", "unknown"),
+        ("spacing", 0),
+        ("spacing", float("inf")),
+        ("spacing", True),
+    ],
+)
+def test_control_projection_rejects_invalid_formation_or_spacing(
+    relay_session: RelaySession, field: str, value: object
+) -> None:
+    with pytest.raises(ValueError):
+        relay_session.update_control_projection(**{field: value})
 
 
 def test_downstream_failure_has_terminal_refused_record(

@@ -218,3 +218,97 @@ def test_translate_orders_leading_aircraft_first_for_sequential_spacing() -> Non
 
     assert isinstance(result, Plan)
     assert [command.drone_id for command in result.commands] == [2, 1]
+
+
+def test_formation_and_spacing_plans_carry_authoritative_projection_updates() -> None:
+    snapshot = make_snapshot(4)
+    planner = DeterministicPlanner(planning_config())
+
+    formation = planner.plan(
+        make_intent(
+            IntentName.FORMATION_SET, selection=snapshot.selection, args={"name": "circle"}
+        ),
+        snapshot,
+    )
+    spacing = planner.plan(
+        make_intent(IntentName.SPACING, selection=snapshot.selection, args={"delta": 1}),
+        snapshot,
+    )
+
+    assert isinstance(formation, Plan)
+    assert formation.formation_update == "circle"
+    assert len(formation.commands) == 4
+    assert isinstance(spacing, Plan)
+    assert spacing.spacing_update == 1.0
+    assert spacing.commands == ()
+
+
+def test_altitude_and_confirmed_sweep_expand_for_six_simulated_aircraft() -> None:
+    snapshot = make_snapshot(6)
+    planner = DeterministicPlanner(planning_config())
+
+    altitude = planner.plan(
+        make_intent(IntentName.ALTITUDE, selection=snapshot.selection, args={"delta": 1}),
+        snapshot,
+    )
+    sweep = planner.plan(
+        make_intent(IntentName.SWEEP, selection=snapshot.selection, args={}, confirm=True),
+        snapshot,
+    )
+
+    assert isinstance(altitude, Plan)
+    assert [command.parameters["z"] for command in altitude.commands] == [1.5] * 6
+    assert isinstance(sweep, Plan)
+    assert len(sweep.commands) == 12
+    assert {command.operation for command in sweep.commands} == {CommandOperation.GOTO}
+
+
+def test_requested_sweep_box_is_the_exact_source_of_lane_coordinates() -> None:
+    snapshot = make_snapshot(4)
+    box = {"min_x": -2.0, "max_x": 2.0, "min_y": -3.0, "max_y": 3.0}
+
+    result = DeterministicPlanner(planning_config()).plan(
+        make_intent(
+            IntentName.SWEEP,
+            selection=snapshot.selection,
+            args={"box": box},
+            confirm=True,
+        ),
+        snapshot,
+    )
+
+    assert isinstance(result, Plan)
+    endpoints = [command.parameters for command in result.commands]
+    assert {point["x"] for point in endpoints} == {-1.5, -0.5, 0.5, 1.5}
+    assert {point["y"] for point in endpoints} == {-3.0, 3.0}
+    assert all(point["z"] == 1.0 for point in endpoints)
+
+
+@pytest.mark.parametrize("name", [IntentName.ALTITUDE, IntentName.SPACING])
+def test_m15_delta_overflow_is_a_typed_refusal(name: IntentName) -> None:
+    snapshot = make_snapshot(2)
+
+    result = DeterministicPlanner(planning_config()).plan(
+        make_intent(name, selection=snapshot.selection, args={"delta": 10**400}),
+        snapshot,
+    )
+
+    assert isinstance(result, Refusal)
+    assert result.reason is RefusalReason.INVALID_PLAN
+
+
+def test_console_v_formation_name_matches_the_planner_library() -> None:
+    snapshot = make_snapshot(4)
+
+    result = DeterministicPlanner(planning_config()).plan(
+        make_intent(
+            IntentName.FORMATION_SET,
+            selection=snapshot.selection,
+            args={"name": "V"},
+        ),
+        snapshot,
+    )
+
+    assert isinstance(result, Plan)
+    assert result.formation_update == "V"
+    assert len(result.commands) == 4

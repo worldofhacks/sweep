@@ -6,9 +6,10 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from math import cos, isfinite, radians, sin
+from math import cos, isclose, isfinite, radians, sin
 from types import MappingProxyType
 from typing import Literal
+from unicodedata import category, normalize
 
 from planner.models import TranslationGrounding, TranslationPolicy
 from relay.intent_v1 import AcceptedIntent, IntentName, Mode, validate_intent
@@ -31,6 +32,60 @@ _SELECTION_TARGETED = frozenset(
 )
 _AIRBORNE_STATES = frozenset({"taking_off", "airborne", "hovering", "landing"})
 _STABLE_MOTION_STATES = frozenset({"airborne", "hovering"})
+_DIRECTION = r"(?:forward|backward|left|right)"
+_ID_TOKEN = r"(?:one|two|three|four|\d+)"
+_ID_LIST = rf"{_ID_TOKEN}(?:\s*,?\s+and\s+{_ID_TOKEN})*"
+_DISTANCE = r"(?:half(?:\s+a)?|one|two|three|four|five|six|seven|eight|nine|ten|\d+(?:\.\d+)?)"
+_DISTANCE_UNIT = r"(?:steps?|foot|feet|ft|metres?|meters?|m)"
+_TRANSLATION_TARGET = (
+    rf"(?:(?:the\s+)?selected\s+(?:drones?|aircraft)|them|"
+    rf"(?:drones?|aircraft)\s+(?P<ids>{_ID_LIST}))"
+)
+_EXPLICIT_TRANSLATION_TOKEN = re.compile(r"\b(?:fly|move|go)\b", re.IGNORECASE)
+_EXPLICIT_DIRECTION_TOKEN = re.compile(rf"\b{_DIRECTION}\b", re.IGNORECASE)
+_TRANSLATION_SUBJECT = re.compile(
+    rf"\A(?:drones?|aircraft)\s+(?P<ids>{_ID_LIST})\s+(?P<rest>.+)\Z",
+    re.IGNORECASE,
+)
+_TRANSLATION_SELECT_PREFIX = re.compile(
+    rf"\Aselect\s+(?P<target>both\s+(?:drones?|aircraft)|"
+    rf"(?:drones?|aircraft)\s+(?P<ids>{_ID_LIST}))"
+    r"\s*,?\s+then\s+(?P<rest>.+)\Z",
+    re.IGNORECASE,
+)
+_TRANSLATION_TAKEOFF_PREFIX = re.compile(
+    r"\Atake\s+off\s+and\s+(?P<rest>.+)\Z",
+    re.IGNORECASE,
+)
+_TRANSLATION_DIRECTION_FIRST = re.compile(
+    rf"\A(?:fly|move|go)(?:\s+{_TRANSLATION_TARGET})?\s+"
+    rf"(?P<direction>{_DIRECTION})"
+    rf"(?:\s+(?:by\s+)?(?P<distance>{_DISTANCE})\s*"
+    rf"(?P<unit>{_DISTANCE_UNIT}))?\Z",
+    re.IGNORECASE,
+)
+_TRANSLATION_DISTANCE_FIRST = re.compile(
+    rf"\A(?:fly|move|go)(?:\s+{_TRANSLATION_TARGET})?\s+"
+    rf"(?P<distance>{_DISTANCE})\s*(?P<unit>{_DISTANCE_UNIT})\s+"
+    rf"(?P<direction>{_DIRECTION})\Z",
+    re.IGNORECASE,
+)
+_NUMBER_WORDS = MappingProxyType(
+    {
+        "half": 0.5,
+        "half a": 0.5,
+        "one": 1.0,
+        "two": 2.0,
+        "three": 3.0,
+        "four": 4.0,
+        "five": 5.0,
+        "six": 6.0,
+        "seven": 7.0,
+        "eight": 8.0,
+        "nine": 9.0,
+        "ten": 10.0,
+    }
+)
 type OutcomeSource = Literal["anthropic", "replay", "synthetic", "template"]
 
 
@@ -69,6 +124,15 @@ class ProposedIntent:
             "selection": list(self.selection),
             "mode": self.mode.value,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _TranslationPhrase:
+    direction: str
+    steps: float
+    selection: tuple[int, ...]
+    explicit_selection: bool
+    prefix: Literal["select", "takeoff"] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +556,8 @@ def validate_model_outcome(
             reason=CompilerReason.CAPABILITY_UNAVAILABLE,
             source=source,
         )
+    if not _explicit_translation_matches(intents, transcript, facts):
+        return _invalid(source)
     return CompilerOutcome(kind=kind, intents=tuple(intents), detail=detail, source=source)
 
 
@@ -791,6 +857,183 @@ def _translation_from_record(
             if drone["heading_deg"] is not None
         },
     )
+
+
+def _explicit_translation_matches(
+    intents: list[ProposedIntent], transcript: str, facts: GroundingFacts
+) -> bool:
+    text = _normalized_translation_text(transcript)
+    if (
+        _EXPLICIT_TRANSLATION_TOKEN.search(text) is None
+        or _EXPLICIT_DIRECTION_TOKEN.search(text) is None
+    ):
+        return True
+    phrase = _parse_translation_phrase(text, facts)
+    if phrase is None or not _translation_plan_shape(intents, phrase, facts):
+        return False
+    translate = intents[-1]
+    expected = _translation_steps(phrase.direction, phrase.steps, facts.translation_frame)
+    try:
+        dx = float(translate.args["dx"])
+        dy = float(translate.args["dy"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    return isclose(dx, expected[0], rel_tol=0.0, abs_tol=1e-9) and isclose(
+        dy, expected[1], rel_tol=0.0, abs_tol=1e-9
+    )
+
+
+def _normalized_translation_text(transcript: str) -> str:
+    text = " ".join(normalize("NFKC", transcript).split()).casefold().strip()
+    while text and category(text[-1]).startswith("P"):
+        text = text[:-1].rstrip()
+    return text
+
+
+def _parse_translation_phrase(text: str, facts: GroundingFacts) -> _TranslationPhrase | None:
+    if facts.translation_step_m is None:
+        return None
+    if text.startswith("please "):
+        text = text.removeprefix("please ")
+
+    prefix: Literal["select", "takeoff"] | None = None
+    selection: tuple[int, ...] | None = None
+    explicit_selection = False
+    select_match = _TRANSLATION_SELECT_PREFIX.fullmatch(text)
+    if select_match is not None:
+        prefix = "select"
+        explicit_selection = True
+        if select_match["ids"] is not None:
+            selection = _translation_ids(select_match["ids"])
+        else:
+            selectable = tuple(
+                sorted(int(drone["drone_id"]) for drone in facts.drones if drone["selectable"])
+            )
+            if len(selectable) != 2:
+                return None
+            selection = selectable
+        text = select_match["rest"]
+    else:
+        takeoff_match = _TRANSLATION_TAKEOFF_PREFIX.fullmatch(text)
+        if takeoff_match is not None:
+            prefix = "takeoff"
+            text = takeoff_match["rest"]
+
+    subject_match = _TRANSLATION_SUBJECT.fullmatch(text)
+    if subject_match is not None:
+        subject_selection = _translation_ids(subject_match["ids"])
+        if selection is not None and set(selection) != set(subject_selection):
+            return None
+        selection = subject_selection
+        explicit_selection = True
+        text = subject_match["rest"]
+
+    match = _TRANSLATION_DIRECTION_FIRST.fullmatch(text)
+    if match is None:
+        match = _TRANSLATION_DISTANCE_FIRST.fullmatch(text)
+    if match is None:
+        return None
+    clause_ids = match["ids"]
+    if clause_ids is not None:
+        clause_selection = _translation_ids(clause_ids)
+        if selection is not None and set(selection) != set(clause_selection):
+            return None
+        selection = clause_selection
+        explicit_selection = True
+    if selection is None:
+        selection = facts.selection
+    steps = _translation_distance_steps(match["distance"], match["unit"], facts.translation_step_m)
+    if steps is None:
+        return None
+    return _TranslationPhrase(
+        direction=match["direction"].casefold(),
+        steps=steps,
+        selection=selection,
+        explicit_selection=explicit_selection,
+        prefix=prefix,
+    )
+
+
+def _translation_ids(raw_ids: str) -> tuple[int, ...]:
+    ids = []
+    for raw in re.split(r"\s*,?\s+and\s+", raw_ids.casefold().strip()):
+        drone_id = {"one": 1, "two": 2, "three": 3, "four": 4}.get(raw)
+        if drone_id is None:
+            try:
+                drone_id = int(raw)
+            except ValueError:
+                return ()
+        if drone_id <= 0 or drone_id in ids:
+            return ()
+        ids.append(drone_id)
+    return tuple(ids)
+
+
+def _translation_distance_steps(
+    raw_distance: str | None, unit: str | None, step_m: float
+) -> float | None:
+    if raw_distance is None:
+        return 0.3048 / step_m
+    normalized_distance = " ".join(raw_distance.casefold().split())
+    try:
+        distance = _NUMBER_WORDS.get(normalized_distance)
+        if distance is None:
+            distance = float(normalized_distance)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not isfinite(distance) or distance <= 0 or unit is None:
+        return None
+    normalized_unit = unit.casefold()
+    if normalized_unit.startswith("step"):
+        return distance
+    if normalized_unit in {"foot", "feet", "ft"}:
+        distance *= 0.3048
+    steps = distance / step_m
+    return steps if isfinite(steps) and steps > 0 else None
+
+
+def _translation_plan_shape(
+    intents: list[ProposedIntent], phrase: _TranslationPhrase, facts: GroundingFacts
+) -> bool:
+    if not intents or intents[-1].name is not IntentName.TRANSLATE:
+        return False
+    translate = intents[-1]
+    if set(translate.selection) != set(phrase.selection):
+        return False
+    names = tuple(intent.name for intent in intents)
+    if phrase.prefix == "takeoff":
+        return names == (IntentName.TAKEOFF, IntentName.TRANSLATE)
+    if phrase.prefix == "select":
+        return names == (IntentName.SELECT, IntentName.TRANSLATE) and _selects_phrase_aircraft(
+            intents[0], phrase.selection
+        )
+    if not phrase.explicit_selection:
+        return names == (IntentName.TRANSLATE,) and set(phrase.selection) == set(facts.selection)
+    return names == (IntentName.TRANSLATE,) or (
+        names == (IntentName.SELECT, IntentName.TRANSLATE)
+        and _selects_phrase_aircraft(intents[0], phrase.selection)
+    )
+
+
+def _selects_phrase_aircraft(intent: ProposedIntent, selection: tuple[int, ...]) -> bool:
+    ids = tuple(intent.args["ids"])
+    return set(ids) == set(selection)
+
+
+def _translation_steps(direction: str, steps: float, frame: str | None) -> tuple[float, float]:
+    if frame == "aircraft_relative":
+        return {
+            "forward": (steps, 0.0),
+            "backward": (-steps, 0.0),
+            "left": (0.0, steps),
+            "right": (0.0, -steps),
+        }[direction]
+    return {
+        "forward": (0.0, steps),
+        "backward": (0.0, -steps),
+        "left": (-steps, 0.0),
+        "right": (steps, 0.0),
+    }[direction]
 
 
 def _is_finite_number(value: object) -> bool:

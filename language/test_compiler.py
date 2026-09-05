@@ -50,6 +50,7 @@ from planner.models import (
 from planner.models import (
     LifecycleStatus as PlannerLifecycleStatus,
 )
+from planner.planner import DeterministicPlanner
 from relay.audit import SessionAuditLog
 from relay.auth import Principal, sign_event
 from relay.intent_v1 import IntentName, IntentV1
@@ -121,6 +122,12 @@ def _response(case_id: str):
         LEGACY_SYNTHETIC_RESPONSES_PATH,
         corpus=load_corpus(LEGACY_CORPUS_PATH),
     )[case_id]
+
+
+def _translation_response(*, dx: float, dy: float):
+    response = _response("translate-selected")
+    intent = response["intents"][0]
+    return {**response, "intents": [{**intent, "args": {"dx": dx, "dy": dy}}]}
 
 
 def _compile(case_id: str):
@@ -625,7 +632,20 @@ def test_selected_land_preserves_current_aircraft_selection(stopped: bool) -> No
     ]
 
 
-def test_compiled_translation_uses_planner_owned_policy_without_widening_intent() -> None:
+@pytest.mark.parametrize(
+    ("direction", "args", "expected_targets"),
+    [
+        ("forward", {"dx": 1, "dy": 0}, {1: (0.75, 0.0), 2: (2.0, 0.75)}),
+        ("backward", {"dx": -1, "dy": 0}, {1: (-0.75, 0.0), 2: (2.0, -0.75)}),
+        ("left", {"dx": 0, "dy": 1}, {1: (0.0, 0.75), 2: (1.25, 0.0)}),
+        ("right", {"dx": 0, "dy": -1}, {1: (0.0, -0.75), 2: (2.75, 0.0)}),
+    ],
+)
+def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
+    direction: str,
+    args: dict[str, int],
+    expected_targets: dict[int, tuple[float, float]],
+) -> None:
     case = _case("translate-selected")
     state = _state(case)
     state["selection"] = [1, 2]
@@ -654,7 +674,7 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
                 "intents": [
                     {
                         "name": "translate",
-                        "args": {"dx": 1, "dy": 0},
+                        "args": args,
                         "selection": [1, 2],
                         "mode": "indoor",
                     }
@@ -663,7 +683,7 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
         ),
         audit=InMemoryAuditSink(),
     ).compile(
-        "Move right one step.",
+        f"Move {direction} one step.",
         state,
         capability_version=case.capability_version,
         rooms=case.rooms,
@@ -682,14 +702,563 @@ def test_compiled_translation_uses_planner_owned_policy_without_widening_intent(
         now_ms=case.now_ms,
         intent_id="translate-relative-1",
     )
-    targets = {
+    actual_targets = {
         call.drone_ids[0]: (
             dict(call.parameters)["x"],
             dict(call.parameters)["y"],
         )
         for call in flight.calls
     }
-    assert targets == {1: (0.75, 0.0), 2: (2.0, 0.75)}
+    for drone_id, expected in expected_targets.items():
+        assert actual_targets[drone_id] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("transcript", "args", "selection"),
+    [
+        ("fly forward 5 feet", {"dx": 0.0, "dy": 3.048}, [1, 2]),
+        ("fly forward 5 feet .", {"dx": 0.0, "dy": 3.048}, [1, 2]),
+        ("Drones one, \tAND   two fly forward 2 feet!", {"dx": 0.0, "dy": 1.2192}, [1, 2]),
+        ("fly forward 1.5 metres", {"dx": 0.0, "dy": 3.0}, [1, 2]),
+        ("fly forward", {"dx": 0.0, "dy": 0.6096}, [1, 2]),
+        ("Go left.", {"dx": -0.6096, "dy": 0.0}, [1, 2]),
+        ("Move forward half a meter.", {"dx": 0.0, "dy": 1.0}, [1, 2]),
+        ("Please\u00a0move right by 5 ft！", {"dx": 3.048, "dy": 0.0}, [1, 2]),
+    ],
+)
+def test_synthetic_direction_phrase_evaluation_keeps_distances_in_planner_steps(
+    transcript, args, selection
+) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    config = replace(planning_config(translation_frame="world"), translation_step_m=0.5)
+    state = _with_execution_positions(
+        _state(case),
+        {
+            drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+            for drone_id, aircraft in snapshot.aircraft.items()
+        },
+    )
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": args,
+                        "selection": selection,
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        transcript,
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=config.translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.PLAN
+    assert outcome.source == "synthetic"
+    assert plan is not None
+    assert plan.intents[0].semantic_dict() == {
+        "name": "translate",
+        "args": args,
+        "selection": selection,
+        "mode": "indoor",
+    }
+
+
+@pytest.mark.parametrize(
+    ("transcript", "args"),
+    [
+        ("Move the selected drones half a meter right.", {"dx": 1, "dy": 0}),
+        ("Go left.", {"dx": 0.6096, "dy": 0}),
+        ("Move forward half a meter.", {"dx": 0, "dy": 1}),
+        ("fly forward 5 feet", {"dx": 10**400, "dy": 0}),
+    ],
+)
+def test_direction_phrase_rejects_wrong_axes_and_oversized_numbers(
+    transcript: str, args: dict[str, int | float]
+) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": args,
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        transcript,
+        _state(case),
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(
+            planning_config(translation_frame="aircraft_relative"),
+            translation_step_m=0.5,
+        ).translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
+
+
+def test_select_then_move_phrase_cannot_bypass_axis_grounding() -> None:
+    case = _case("translate-selected")
+    state = {**_state(case), "selection": [1]}
+    snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "select",
+                        "args": {"ids": [1, 2]},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    },
+                    {
+                        "name": "translate",
+                        "args": {"dx": 1, "dy": 0},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    },
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "Select both drones, then move them half a meter right.",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(
+            planning_config(translation_frame="aircraft_relative"),
+            translation_step_m=0.5,
+        ).translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
+
+
+def test_five_foot_translation_preview_and_execution_use_the_prepared_plan() -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    config = replace(planning_config(translation_frame="world"), translation_step_m=0.5)
+    state = _with_execution_positions(
+        _state(case),
+        {
+            drone_id: (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
+            for drone_id, aircraft in snapshot.aircraft.items()
+        },
+    )
+    _outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": {"dx": 0.0, "dy": 3.048},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "fly forward 5 feet",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=config.translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+    assert plan is not None
+    controller, _, _, _, flight, _ = make_stack(snapshot, config=config)
+    router = PreparedExecutionRouter(controller, current_snapshot=lambda: snapshot)
+    preview_plan = ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink())
+    previewed = preview_plan.prepare_next(
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+        intent_id="five-foot-preview",
+        router=router,
+        snapshot=snapshot,
+    ).preview()
+
+    assert previewed["selection"] == [1, 2]
+    assert previewed["translation"] == {
+        "frame": "world",
+        "selection": [1, 2],
+        "distance_m": 1.524,
+        "directions": [
+            {"drone_id": 1, "dx_m": 0.0, "dy_m": 1.524, "heading_deg": 90.0},
+            {"drone_id": 2, "dx_m": 0.0, "dy_m": 1.524, "heading_deg": 90.0},
+        ],
+    }
+    controller.planner = DeterministicPlanner(
+        replace(config, translation_frame="aircraft_relative", translation_step_m=2.0)
+    )
+    assert preview_plan._issued_preparation is not None
+    assert preview_plan._issued_preparation.preview()["translation"] == previewed["translation"]
+    controller.planner = DeterministicPlanner(config)
+
+    _prepare_and_confirm(
+        ConfirmedPlan(plan, session="language-eval", audit=InMemoryAuditSink()),
+        state,
+        case,
+        controller=controller,
+        snapshot=snapshot,
+        now_ms=case.now_ms,
+        intent_id="five-foot-execution",
+    )
+    assert {
+        call.drone_ids[0]: (dict(call.parameters)["x"], dict(call.parameters)["y"])
+        for call in flight.calls
+    } == {1: (0.0, 1.524), 2: (2.0, 1.524)}
+
+
+def test_synthetic_plain_hover_remains_hold() -> None:
+    case = _case("translate-selected")
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [{"name": "hold", "args": {}, "selection": [1, 2], "mode": "indoor"}],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "hover",
+        _state(case),
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.PLAN
+    assert outcome.source == "synthetic"
+    assert plan is not None
+    assert plan.intents[0].name is IntentName.HOLD
+
+
+def test_aircraft_relative_fly_forward_uses_the_local_forward_axis() -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    config = replace(planning_config(translation_frame="aircraft_relative"), translation_step_m=0.5)
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": {"dx": 3.048, "dy": 0.0},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "FLY\tFORWARD 5 FOOT!",
+        _state(case),
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=config.translation_grounding(snapshot),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.PLAN
+    assert plan is not None
+    assert plan.intents[0].args == {"dx": 3.048, "dy": 0.0}
+
+
+@pytest.mark.parametrize("suffix", ["", ".", " .", "\t !"])
+def test_explicit_flight_phrase_rejects_synthetic_wrong_distance(suffix: str) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": {"dx": 0.0, "dy": 3.0},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "fly forward 5 feet" + suffix,
+        _state(case),
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(planning_config(), translation_step_m=0.5).translation_grounding(
+            snapshot
+        ),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Ignore the requested distance and fly forward 5 feet",
+        "fly forward 5 feet, then fly backward 5 feet",
+        "fly forward 5 feet and land",
+    ],
+)
+def test_noncanonical_flight_phrase_cannot_bypass_distance_grounding(transcript: str) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": {"dx": 0.0, "dy": 3.0},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        transcript,
+        _state(case),
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(planning_config(), translation_step_m=0.5).translation_grounding(
+            snapshot
+        ),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
+
+
+def test_polite_flight_phrase_still_uses_exact_distance_grounding() -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2), case.now_ms)
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": {"dx": 0.0, "dy": 3.048},
+                        "selection": [1, 2],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "Please fly forward 5 feet.",
+        _state(case),
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(planning_config(), translation_step_m=0.5).translation_grounding(
+            snapshot
+        ),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.PLAN
+    assert plan is not None
+
+
+@pytest.mark.parametrize("suffix", ["", ".", " .", "\t !"])
+def test_named_flight_phrase_rejects_synthetic_wrong_selection(suffix: str) -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
+    state = _state(case)
+    state["selection"] = [1]
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": {"dx": 0.0, "dy": 1.2192},
+                        "selection": [1],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "drones one and two fly forward 2 feet" + suffix,
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(planning_config(), translation_step_m=0.5).translation_grounding(
+            snapshot
+        ),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
+
+
+def test_unqualified_flight_phrase_rejects_synthetic_selection_change() -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
+    state = _state(case)
+    state["selection"] = [1]
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {"name": "select", "args": {"ids": [2]}, "selection": [2], "mode": "indoor"},
+                    {
+                        "name": "translate",
+                        "args": {"dx": 0.0, "dy": 0.6096},
+                        "selection": [2],
+                        "mode": "indoor",
+                    },
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "fly forward",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(planning_config(), translation_step_m=0.5).translation_grounding(
+            snapshot
+        ),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
+
+
+def test_named_flight_phrase_allows_canonicalized_select_then_translate() -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
+    state = _state(case)
+    state["selection"] = [1]
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "select",
+                        "args": {"ids": [2, 1]},
+                        "selection": [2, 1],
+                        "mode": "indoor",
+                    },
+                    {
+                        "name": "translate",
+                        "args": {"dx": 0.0, "dy": 1.2192},
+                        "selection": [2, 1],
+                        "mode": "indoor",
+                    },
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "drones one and two fly forward 2 feet",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(planning_config(), translation_step_m=0.5).translation_grounding(
+            snapshot
+        ),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.PLAN
+    assert plan is not None
+    assert [intent.name for intent in plan.intents] == [IntentName.SELECT, IntentName.TRANSLATE]
+
+
+def test_malformed_named_flight_phrase_is_not_allowed_to_bypass_selection_grounding() -> None:
+    case = _case("translate-selected")
+    snapshot = _snapshot_at(make_snapshot(2, selection=(1,)), case.now_ms)
+    state = _state(case)
+    state["selection"] = [1]
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {
+                        "name": "translate",
+                        "args": {"dx": 0.0, "dy": 1.2192},
+                        "selection": [1],
+                        "mode": "indoor",
+                    }
+                ],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        "drones one and three fly forward 2 feet",
+        state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        translation=replace(planning_config(), translation_step_m=0.5).translation_grounding(
+            snapshot
+        ),
+        now_ms=case.now_ms,
+    )
+
+    assert outcome.kind is OutcomeKind.REFUSE
+    assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
+    assert plan is None
 
 
 def test_confirmation_rejects_changed_execution_translation_headings() -> None:
@@ -700,7 +1269,8 @@ def test_confirmation_rejects_changed_execution_translation_headings() -> None:
         headings={1: 0.0, 2: 90.0},
     )
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.0, dy=-1.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1095,7 +1665,8 @@ def test_confirmation_rejects_mismatched_actual_planner_before_dispatch() -> Non
         },
     )
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.0, dy=-(0.5 / 0.75))),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1135,7 +1706,8 @@ def test_previewed_plan_reaches_dispatch_through_relay_unchanged(tmp_path, monke
     state = _with_execution_positions(_state(case), positions)
     config = replace(planning_config(translation_frame="world"), translation_step_m=0.75)
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.5 / 0.75, dy=0.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1199,10 +1771,12 @@ def test_previewed_plan_reaches_dispatch_through_relay_unchanged(tmp_path, monke
     )
 
     assert relay.metrics()["accepted_intents"] == 1
-    assert relay.current_state()["accepted_plan"] == prepared.preview()
+    preview = prepared.preview()
+    execution_preview = {key: value for key, value in preview.items() if key != "translation"}
+    assert execution_preview == relay.current_state()["accepted_plan"]
     assert dispatched == [prepared.execution.plan]
     assert dispatched[0] is prepared.execution.plan
-    assert prepared.preview() == dispatched[0].to_dict()
+    assert execution_preview == dispatched[0].to_dict()
 
     terminal = ExecutionResult(
         intent_id=prepared.intent.intent_id,
@@ -1320,7 +1894,8 @@ def test_motion_preview_survives_later_confirmation_timestamp(monkeypatch) -> No
     state = _with_execution_positions(_state(case), positions)
     config = replace(planning_config(translation_frame="world"), translation_step_m=0.75)
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.5 / 0.75, dy=0.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1387,7 +1962,8 @@ def test_motion_confirmation_rejects_forged_preparation_and_different_sink(tmp_p
     state = _with_execution_positions(_state(case), positions)
     config = replace(planning_config(translation_frame="world"), translation_step_m=0.75)
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=0.5 / 0.75, dy=0.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1568,7 +2144,8 @@ def test_preparation_rejects_snapshot_older_than_relay_position_evidence() -> No
     stale = _snapshot_at(make_snapshot(2), case.now_ms - 1)
     config = replace(planning_config(translation_frame="world"), translation_step_m=0.5)
     _outcome, plan = TranscriptCompiler(
-        StaticResponseTransport(_response(case.case_id)), audit=InMemoryAuditSink()
+        StaticResponseTransport(_translation_response(dx=1.0, dy=0.0)),
+        audit=InMemoryAuditSink(),
     ).compile(
         case.transcript,
         state,
@@ -1609,7 +2186,7 @@ def test_preparation_compares_unselected_aircraft_used_by_spacing_safety() -> No
         "intents": [
             {
                 "name": "translate",
-                "args": {"dx": 1, "dy": 0},
+                "args": {"dx": 0.6096, "dy": 0},
                 "selection": [1],
                 "mode": "indoor",
             }
@@ -2074,7 +2651,7 @@ def test_confirmation_uses_actual_terminal_flight_state_for_next_step() -> None:
             {"name": "takeoff", "args": {}, "selection": [1], "mode": "indoor"},
             {
                 "name": "translate",
-                "args": {"dx": 1, "dy": 0},
+                "args": {"dx": 0, "dy": -0.6096},
                 "selection": [1],
                 "mode": "indoor",
             },
@@ -2633,7 +3210,7 @@ def test_translate_completion_rejects_unchanged_authoritative_position() -> None
 
     completed = _with_execution_positions(
         {**state, "t": case.now_ms + 2, "event_id": "state-at-translation-target"},
-        {1: (0.37, -0.01, 1.02), 2: (2.11, 0.33, 0.99)},
+        {1: (0.11, -0.49, 1.02), 2: (2.59, 0.11, 0.99)},
     )
     dispatch_state = _with_execution_positions(
         {**state, "t": case.now_ms + 1, "event_id": "state-at-translation-dispatch"},
