@@ -6,6 +6,11 @@ port, this module produces the vectors from the relay code itself and writes the
 ``pilot-app/bridge-core/src/test/resources/vectors/``.  ``test_vectors.py`` fails whenever
 the committed files drift from what this module renders.
 
+The command, capabilities, capture_readiness, node_status, auth.accepted, membership event,
+state, and refusal shapes follow the node protocol in ``relay/README.md`` (integer-only
+command arguments, flat capabilities with a hardware profile, ``phone_battery_percent``,
+``nominal`` as the quiet watchdog state).
+
 Run ``uv run python -m adapters.dji_mini3.vectors`` from the repository root to refresh.
 """
 
@@ -60,7 +65,7 @@ def canonical_json_cases() -> list[dict[str, object]]:
         _case("unicode_text", "héllo wörld 🚀 日本語 ñ"),
         _case("escapes", 'quote" backslash\\ newline\n tab\t cr\r bs\b ff\f slash/'),
         _case("control_characters", "\x01\x1f\x7f"),
-        _case("line_separators_not_escaped", "\u2028\u2029"),
+        _case("line_separators_not_escaped", "  "),
         _case("literals", [True, False, None]),
         _case(
             "code_point_key_order",
@@ -140,15 +145,16 @@ def hmac_cases() -> list[dict[str, object]]:
 
 
 def command_args() -> dict[str, dict[str, object]]:
+    """Exact per-operation ``args`` from ``relay.contracts.COMMAND_ARGUMENT_FIELDS``."""
     return {
-        "takeoff": {"z": 1.2},
-        "goto": {"x": 1.0, "y": 2.5, "z": 1.2, "speed": 0.5},
-        "rotate_to": {"yaw": 90.0, "speed": 30.0},
+        "takeoff": {"z_mm": 1200},
+        "goto": {"x_mm": 1000, "y_mm": 2500, "z_mm": 1200, "speed_mm_s": 500},
+        "rotate_to": {"yaw_mdeg": 90000, "speed_mdeg_s": 30000},
         "hover": {},
         "land": {},
         "estop": {},
         "camera_capabilities": {},
-        "set_gimbal_pitch": {"pitch": -45.0},
+        "set_gimbal_pitch": {"pitch_mdeg": -45000},
         "camera_ready": {},
         "capture_panorama": {"capture_id": "cap-0042"},
         "capture_photo": {"capture_id": "cap-0042"},
@@ -178,6 +184,16 @@ def command_unsigned() -> dict[str, object]:
 
 def _signed(unsigned: dict[str, object], key: str) -> dict[str, object]:
     return {**unsigned, "signature": sign_event(unsigned, key)}
+
+
+def node_settings() -> dict[str, int]:
+    """The relay's default ``RelaySettings.node_settings()`` values."""
+    return {
+        "command_ttl_ms": 2000,
+        "virtual_stick_hz": 10,
+        "watchdog_hold_ms": 2000,
+        "watchdog_failsafe_ms": 10000,
+    }
 
 
 def frame_vectors() -> dict[str, object]:
@@ -260,22 +276,20 @@ def frame_vectors() -> dict[str, object]:
         "session": SESSION,
         "drone_id": 1,
         "connection_epoch": 1,
-        "native_panorama_modes": ["sphere"],
+        "native_panorama_modes": [],
         "photo_capture": True,
         "gimbal_pitch_min_deg": -90.0,
         "gimbal_pitch_max_deg": 20.0,
         "horizontal_fov_deg": 82.1,
         "storage_remaining_bytes": 12_000_000_000,
         "media_retrieval": True,
-        "hardware_profile": {
-            "aircraft_model": "DJI Mini 3",
-            "aircraft_firmware": None,
-            "rc_firmware": None,
-            "phone_model": "Solana Seeker",
-            "android_version": "16",
-            "msdk_version": "5.18.0",
-            "horizontal_fov_deg": 82.1,
-        },
+        "aircraft_model": "DJI Mini 3",
+        "aircraft_firmware": "unreported",
+        "rc_firmware": "unreported",
+        "phone_model": "Solana Seeker",
+        "android_version": "16",
+        "sdk_version": "5.18.0",
+        "measured_hfov_deg": None,
     }
     capture_readiness = {
         "v": 1,
@@ -292,10 +306,11 @@ def frame_vectors() -> dict[str, object]:
         "pose_ok": True,
         "clearance_ok": True,
         "camera_ok": True,
+        "storage_ok": True,
         "motion_ok": True,
         "image_quality_ok": False,
-        "coverage_missing": [90, 135],
-        "next_heading_deg": 90,
+        "coverage_missing": [90.0, 135.0],
+        "next_heading_deg": 90.0,
         "suggested_delta": {"kind": "yaw", "degrees": 12.0},
     }
     node_status = {
@@ -309,10 +324,104 @@ def frame_vectors() -> dict[str, object]:
         "virtual_stick_enabled": False,
         "control_authority": True,
         "authority_change_reason": None,
-        "watchdog_state": "armed",
-        "video_publish_state": "idle",
-        "phone_battery": 0.72,
+        "watchdog_state": "nominal",
+        "video_publish_state": "stopped",
+        "phone_battery_percent": 72,
         "phone_thermal_state": "none",
+    }
+    auth_accepted = {
+        "v": 1,
+        "t": 900,
+        "type": "auth.accepted",
+        "event_id": "evt-auth-1",
+        "session": SESSION,
+        "source": "adapter",
+        "drone_id": 1,
+        "node": node_settings(),
+    }
+    auth_refused = {
+        "v": 1,
+        "t": 901,
+        "type": "auth.refused",
+        "event_id": "evt-auth-2",
+        "session": SESSION,
+        "status": "refused",
+        "reason": "session_closed",
+        "detail": "persisted sessions are replay-only after a relay process restart; "
+        "use a new session ID",
+    }
+    membership_event = {
+        "v": 1,
+        "t": 1100,
+        "type": "membership",
+        "event_id": "evt-mem-1",
+        "session": SESSION,
+        "action": "join",
+        "drone_id": 1,
+        "connection_epoch": 2,
+        "membership": "registered",
+        "roster_version": 4,
+        "reason": "authenticated_rejoin",
+        "readiness_reasons": ["telemetry_missing", "home_pose_missing"],
+        "adapter_id": "dji_mini3",
+        "capabilities": ["flight"],
+        "provenance": "adapter_signature",
+    }
+    state = {
+        "v": 1,
+        "t": 1300,
+        "type": "state",
+        "event_id": "evt-state-1",
+        "session": SESSION,
+        "roster_version": 3,
+        "armed": False,
+        "estop": False,
+        "selection": [],
+        "formation": "line",
+        "spacing": 1.0,
+        "mode": "indoor",
+        "pending": None,
+        "accepted_plan": None,
+        "drones": [
+            {
+                "drone_id": 1,
+                "connection_epoch": 1,
+                "membership": "ready",
+                "readiness_reasons": [],
+                "flight_state": "landed",
+                "battery": 0.87,
+                "link": 0.95,
+                "pos_quality": 0.6,
+                "control_authority": True,
+                "last_seen_at": 1299,
+                "camera_patterns": [],
+                "selectable": True,
+                "adapter_id": "dji_mini3",
+                "adapter_capabilities": ["flight"],
+                "home_pose": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "rc_safety_operator_present": True,
+                "telemetry": None,
+                "membership_history": [],
+                "camera_capabilities": None,
+                "node_status": None,
+            }
+        ],
+    }
+    refusal = {
+        "v": 1,
+        "t": 1200,
+        "type": "refusal",
+        "event_id": "evt-ref-1",
+        "session": SESSION,
+        "intent_id": None,
+        "command_id": None,
+        "status": "refused",
+        "source": "adapter",
+        "drone_id": 1,
+        "connection_epoch": 1,
+        "roster_version": 3,
+        "reason": "stale_timestamp",
+        "detail": "transport event is outside the freshness window",
     }
     return {
         "auth": {
@@ -324,6 +433,8 @@ def frame_vectors() -> dict[str, object]:
                 "token": "adapter-token-1",
             }
         },
+        "auth_accepted": {"wire": auth_accepted},
+        "auth_refused": {"wire": auth_refused},
         "membership_join": {"key": NODE_KEY, "wire": _signed(join.unsigned_event(), NODE_KEY)},
         "membership_readiness": {
             "key": NODE_KEY,
@@ -333,6 +444,9 @@ def frame_vectors() -> dict[str, object]:
             "key": NODE_KEY,
             "wire": _signed(leave.unsigned_event(), NODE_KEY),
         },
+        "membership_event": {"wire": membership_event},
+        "state": {"wire": state},
+        "refusal": {"wire": refusal},
         "telemetry": {"wire": telemetry.to_event()},
         "acknowledgement": {"wire": acknowledgement},
         "command": {"key": NODE_KEY, "wire": _signed(command_unsigned(), NODE_KEY)},

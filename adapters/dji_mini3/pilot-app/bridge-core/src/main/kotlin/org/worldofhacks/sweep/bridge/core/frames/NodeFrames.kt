@@ -1,56 +1,91 @@
 package org.worldofhacks.sweep.bridge.core.frames
 
 import org.worldofhacks.sweep.bridge.core.json.Json
+import org.worldofhacks.sweep.bridge.core.json.JsonArray
 import org.worldofhacks.sweep.bridge.core.json.JsonNull
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonString
-import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
+import org.worldofhacks.sweep.bridge.core.json.JsonValue
+import org.worldofhacks.sweep.bridge.core.watchdog.NodeWatchdogState
 
 /**
- * Node-authored frames from the Phase A spec: `capabilities` (the `CameraCapabilities`
- * fields of `adapters/protocols.py` plus a hardware profile), `capture_readiness` (the
- * guidance event in the capture-guidance research note), and `node_status`.
+ * Node-authored frames exactly as `relay.contracts` parses them: `capabilities` (the
+ * `CameraCapabilities` fields plus the probed hardware profile, flat), `node_status`, and
+ * `capture_readiness`. All carry `drone_id` and `connection_epoch`, rely on the authenticated
+ * drone binding like telemetry, and are not signed.
+ */
+enum class VideoPublishState(val wire: String) {
+    STOPPED("stopped"),
+    CONNECTING("connecting"),
+    PUBLISHING("publishing"),
+    FAILED("failed");
+
+    companion object {
+        fun fromWire(value: String): VideoPublishState? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+enum class PhoneThermalState(val wire: String) {
+    NONE("none"),
+    LIGHT("light"),
+    MODERATE("moderate"),
+    SEVERE("severe"),
+    CRITICAL("critical"),
+    EMERGENCY("emergency"),
+    SHUTDOWN("shutdown");
+
+    companion object {
+        fun fromWire(value: String): PhoneThermalState? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+enum class GuidanceMode(val wire: String) {
+    VISUAL_ADVISORY("visual_advisory"),
+    REGISTERED_METRIC("registered_metric");
+
+    companion object {
+        fun fromWire(value: String): GuidanceMode? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+enum class DeltaKind(val wire: String) {
+    YAW("yaw"),
+    GIMBAL("gimbal");
+
+    companion object {
+        fun fromWire(value: String): DeltaKind? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+/**
+ * The probed hardware profile carried inside `capabilities`. Every string is required to be
+ * non-empty by the relay; a value the SDK has not reported yet is sent as `unreported`
+ * rather than invented.
  */
 data class HardwareProfile(
     val aircraftModel: String,
-    val aircraftFirmware: String?,
-    val rcFirmware: String?,
+    val aircraftFirmware: String,
+    val rcFirmware: String,
     val phoneModel: String,
     val androidVersion: String,
-    val msdkVersion: String,
-    val horizontalFovDeg: Double?,
+    val sdkVersion: String,
+    val measuredHfovDeg: Double?,
 ) {
-    fun toJson(): JsonObject = Json.json(
-        "aircraft_model" to aircraftModel,
-        "aircraft_firmware" to aircraftFirmware,
-        "rc_firmware" to rcFirmware,
-        "phone_model" to phoneModel,
-        "android_version" to androidVersion,
-        "msdk_version" to msdkVersion,
-        "horizontal_fov_deg" to horizontalFovDeg,
-    )
-
     companion object {
-        private val FIELDS = setOf(
-            "aircraft_model", "aircraft_firmware", "rc_firmware", "phone_model",
-            "android_version", "msdk_version", "horizontal_fov_deg",
-        )
-
-        fun parse(json: JsonObject, code: String): HardwareProfile {
-            Fields.exact(json, FIELDS, code)
-            return HardwareProfile(
-                aircraftModel = Fields.nonEmptyString(json["aircraft_model"], "aircraft_model", code),
-                aircraftFirmware = Fields.nullableString(json["aircraft_firmware"], "aircraft_firmware", code),
-                rcFirmware = Fields.nullableString(json["rc_firmware"], "rc_firmware", code),
-                phoneModel = Fields.nonEmptyString(json["phone_model"], "phone_model", code),
-                androidVersion = Fields.nonEmptyString(json["android_version"], "android_version", code),
-                msdkVersion = Fields.nonEmptyString(json["msdk_version"], "msdk_version", code),
-                horizontalFovDeg = json["horizontal_fov_deg"].takeUnless { it == null || it == JsonNull }
-                    ?.let { Fields.finiteNumber(it, "horizontal_fov_deg", code) },
-            )
-        }
+        const val UNREPORTED = "unreported"
     }
 }
+
+/** Camera capability fields as `adapters/protocols.py` `CameraCapabilities` defines them. */
+data class CameraProbe(
+    val nativePanoramaModes: List<String> = emptyList(),
+    val photoCapture: Boolean = false,
+    val gimbalPitchMinDeg: Double = -90.0,
+    val gimbalPitchMaxDeg: Double = 60.0,
+    val horizontalFovDeg: Double = 82.1,
+    val storageRemainingBytes: Long = 0,
+    val mediaRetrieval: Boolean = false,
+)
 
 data class CapabilitiesFrame(
     val t: Long,
@@ -58,14 +93,8 @@ data class CapabilitiesFrame(
     val session: String,
     val droneId: Int,
     val connectionEpoch: Int,
-    val nativePanoramaModes: List<String>,
-    val photoCapture: Boolean,
-    val gimbalPitchMinDeg: Double,
-    val gimbalPitchMaxDeg: Double,
-    val horizontalFovDeg: Double,
-    val storageRemainingBytes: Long,
-    val mediaRetrieval: Boolean,
-    val hardwareProfile: HardwareProfile,
+    val camera: CameraProbe,
+    val hardware: HardwareProfile,
 ) {
     fun toEvent(): JsonObject = Json.json(
         "v" to Fields.PROTOCOL_VERSION,
@@ -75,14 +104,20 @@ data class CapabilitiesFrame(
         "session" to session,
         "drone_id" to droneId,
         "connection_epoch" to connectionEpoch,
-        "native_panorama_modes" to nativePanoramaModes,
-        "photo_capture" to photoCapture,
-        "gimbal_pitch_min_deg" to gimbalPitchMinDeg,
-        "gimbal_pitch_max_deg" to gimbalPitchMaxDeg,
-        "horizontal_fov_deg" to horizontalFovDeg,
-        "storage_remaining_bytes" to storageRemainingBytes,
-        "media_retrieval" to mediaRetrieval,
-        "hardware_profile" to hardwareProfile.toJson(),
+        "native_panorama_modes" to camera.nativePanoramaModes,
+        "photo_capture" to camera.photoCapture,
+        "gimbal_pitch_min_deg" to camera.gimbalPitchMinDeg,
+        "gimbal_pitch_max_deg" to camera.gimbalPitchMaxDeg,
+        "horizontal_fov_deg" to camera.horizontalFovDeg,
+        "storage_remaining_bytes" to camera.storageRemainingBytes,
+        "media_retrieval" to camera.mediaRetrieval,
+        "aircraft_model" to hardware.aircraftModel,
+        "aircraft_firmware" to hardware.aircraftFirmware,
+        "rc_firmware" to hardware.rcFirmware,
+        "phone_model" to hardware.phoneModel,
+        "android_version" to hardware.androidVersion,
+        "sdk_version" to hardware.sdkVersion,
+        "measured_hfov_deg" to hardware.measuredHfovDeg,
     )
 
     companion object {
@@ -91,52 +126,76 @@ data class CapabilitiesFrame(
         private val FIELDS = setOf(
             "v", "t", "type", "event_id", "session", "drone_id", "connection_epoch",
             "native_panorama_modes", "photo_capture", "gimbal_pitch_min_deg", "gimbal_pitch_max_deg",
-            "horizontal_fov_deg", "storage_remaining_bytes", "media_retrieval", "hardware_profile",
+            "horizontal_fov_deg", "storage_remaining_bytes", "media_retrieval", "aircraft_model",
+            "aircraft_firmware", "rc_firmware", "phone_model", "android_version", "sdk_version",
+            "measured_hfov_deg",
         )
 
         fun parse(json: JsonObject): CapabilitiesFrame {
             Fields.exact(json, FIELDS, CODE)
             Fields.envelope(json, TYPE, CODE)
+            val pitchMin = Fields.finiteNumber(json["gimbal_pitch_min_deg"], "gimbal_pitch_min_deg", CODE)
+            val pitchMax = Fields.finiteNumber(json["gimbal_pitch_max_deg"], "gimbal_pitch_max_deg", CODE)
+            if (pitchMin >= pitchMax) throw ContractError(CODE, "gimbal pitch range must be ordered")
+            val fov = Fields.finiteNumber(json["horizontal_fov_deg"], "horizontal_fov_deg", CODE)
+            if (fov <= 0.0 || fov > 360.0) throw ContractError(CODE, "horizontal_fov_deg must be between 0 and 360")
+            val measuredRaw = json["measured_hfov_deg"]
+            val measured = if (measuredRaw == null || measuredRaw == JsonNull) {
+                null
+            } else {
+                Fields.finiteNumber(measuredRaw, "measured_hfov_deg", CODE).also {
+                    if (it <= 0.0 || it >= 180.0) {
+                        throw ContractError(CODE, "measured_hfov_deg must be null or between 0 and 180")
+                    }
+                }
+            }
             return CapabilitiesFrame(
                 t = Fields.nonNegativeInt(json["t"], "t", CODE),
                 eventId = Fields.nonEmptyString(json["event_id"], "event_id", CODE),
                 session = Fields.nonEmptyString(json["session"], "session", CODE),
                 droneId = Fields.positiveInt32(json["drone_id"], "drone_id", CODE),
                 connectionEpoch = Fields.positiveInt32(json["connection_epoch"], "connection_epoch", CODE),
-                nativePanoramaModes = Fields.stringList(
-                    json["native_panorama_modes"],
-                    "native_panorama_modes",
-                    CODE,
-                    allowEmpty = true,
+                camera = CameraProbe(
+                    nativePanoramaModes = Fields.stringList(
+                        json["native_panorama_modes"],
+                        "native_panorama_modes",
+                        CODE,
+                        allowEmpty = true,
+                    ),
+                    photoCapture = Fields.boolean(json["photo_capture"], "photo_capture", CODE),
+                    gimbalPitchMinDeg = pitchMin,
+                    gimbalPitchMaxDeg = pitchMax,
+                    horizontalFovDeg = fov,
+                    storageRemainingBytes = Fields.nonNegativeInt(
+                        json["storage_remaining_bytes"],
+                        "storage_remaining_bytes",
+                        CODE,
+                    ),
+                    mediaRetrieval = Fields.boolean(json["media_retrieval"], "media_retrieval", CODE),
                 ),
-                photoCapture = Fields.boolean(json["photo_capture"], "photo_capture", CODE),
-                gimbalPitchMinDeg = Fields.finiteNumber(json["gimbal_pitch_min_deg"], "gimbal_pitch_min_deg", CODE),
-                gimbalPitchMaxDeg = Fields.finiteNumber(json["gimbal_pitch_max_deg"], "gimbal_pitch_max_deg", CODE),
-                horizontalFovDeg = Fields.finiteNumber(json["horizontal_fov_deg"], "horizontal_fov_deg", CODE),
-                storageRemainingBytes = Fields.nonNegativeInt(
-                    json["storage_remaining_bytes"],
-                    "storage_remaining_bytes",
-                    CODE,
-                ),
-                mediaRetrieval = Fields.boolean(json["media_retrieval"], "media_retrieval", CODE),
-                hardwareProfile = HardwareProfile.parse(
-                    Fields.obj(json["hardware_profile"], "hardware_profile", CODE),
-                    CODE,
+                hardware = HardwareProfile(
+                    aircraftModel = Fields.nonEmptyString(json["aircraft_model"], "aircraft_model", CODE),
+                    aircraftFirmware = Fields.nonEmptyString(json["aircraft_firmware"], "aircraft_firmware", CODE),
+                    rcFirmware = Fields.nonEmptyString(json["rc_firmware"], "rc_firmware", CODE),
+                    phoneModel = Fields.nonEmptyString(json["phone_model"], "phone_model", CODE),
+                    androidVersion = Fields.nonEmptyString(json["android_version"], "android_version", CODE),
+                    sdkVersion = Fields.nonEmptyString(json["sdk_version"], "sdk_version", CODE),
+                    measuredHfovDeg = measured,
                 ),
             )
         }
     }
 }
 
-data class SuggestedDelta(val kind: String, val degrees: Double) {
-    fun toJson(): JsonObject = Json.json("kind" to kind, "degrees" to degrees)
+data class SuggestedDelta(val kind: DeltaKind, val degrees: Double) {
+    fun toJson(): JsonObject = Json.json("kind" to kind.wire, "degrees" to degrees)
 
     companion object {
         fun parse(json: JsonObject, code: String): SuggestedDelta {
             Fields.exact(json, setOf("kind", "degrees"), code)
-            val kind = Fields.nonEmptyString(json["kind"], "suggested_delta.kind", code)
-            if (!Fields.isMachineCode(kind)) throw ContractError(code, "suggested_delta.kind must be snake_case")
-            return SuggestedDelta(kind, Fields.finiteNumber(json["degrees"], "suggested_delta.degrees", code))
+            val kind = (json["kind"] as? JsonString)?.let { DeltaKind.fromWire(it.value) }
+                ?: throw ContractError(code, "suggested_delta kind must be yaw or gimbal")
+            return SuggestedDelta(kind, Fields.finiteNumber(json["degrees"], "degrees", code))
         }
     }
 }
@@ -147,17 +206,18 @@ data class CaptureReadinessFrame(
     val session: String,
     val droneId: Int,
     val connectionEpoch: Int,
-    val roomId: String,
-    val captureId: String,
-    val guidanceMode: String,
+    val roomId: String?,
+    val captureId: String?,
+    val guidanceMode: GuidanceMode,
     val poseSource: String,
     val poseOk: Boolean,
     val clearanceOk: Boolean,
     val cameraOk: Boolean,
+    val storageOk: Boolean,
     val motionOk: Boolean,
     val imageQualityOk: Boolean,
-    val coverageMissing: List<Int>,
-    val nextHeadingDeg: Int?,
+    val coverageMissing: List<Double>,
+    val nextHeadingDeg: Double?,
     val suggestedDelta: SuggestedDelta?,
 ) {
     fun toEvent(): JsonObject = Json.json(
@@ -170,11 +230,12 @@ data class CaptureReadinessFrame(
         "connection_epoch" to connectionEpoch,
         "room_id" to roomId,
         "capture_id" to captureId,
-        "guidance_mode" to guidanceMode,
+        "guidance_mode" to guidanceMode.wire,
         "pose_source" to poseSource,
         "pose_ok" to poseOk,
         "clearance_ok" to clearanceOk,
         "camera_ok" to cameraOk,
+        "storage_ok" to storageOk,
         "motion_ok" to motionOk,
         "image_quality_ok" to imageQualityOk,
         "coverage_missing" to coverageMissing,
@@ -184,19 +245,20 @@ data class CaptureReadinessFrame(
 
     companion object {
         const val TYPE = "capture_readiness"
-        val GUIDANCE_MODES = setOf("visual_advisory", "registered_metric")
         private const val CODE = "invalid_capture_readiness"
         private val FIELDS = setOf(
             "v", "t", "type", "event_id", "session", "drone_id", "connection_epoch", "room_id", "capture_id",
-            "guidance_mode", "pose_source", "pose_ok", "clearance_ok", "camera_ok", "motion_ok",
+            "guidance_mode", "pose_source", "pose_ok", "clearance_ok", "camera_ok", "storage_ok", "motion_ok",
             "image_quality_ok", "coverage_missing", "next_heading_deg", "suggested_delta",
         )
 
         fun parse(json: JsonObject): CaptureReadinessFrame {
             Fields.exact(json, FIELDS, CODE)
             Fields.envelope(json, TYPE, CODE)
-            val guidanceMode = Fields.nonEmptyString(json["guidance_mode"], "guidance_mode", CODE)
-            if (guidanceMode !in GUIDANCE_MODES) throw ContractError(CODE, "unknown guidance_mode")
+            val guidance = (json["guidance_mode"] as? JsonString)?.let { GuidanceMode.fromWire(it.value) }
+                ?: throw ContractError(CODE, "guidance_mode must be visual_advisory or registered_metric")
+            val coverage = json["coverage_missing"] as? JsonArray
+                ?: throw ContractError(CODE, "coverage_missing must be a list")
             val heading = json["next_heading_deg"]
             val delta = json["suggested_delta"]
             return CaptureReadinessFrame(
@@ -205,20 +267,21 @@ data class CaptureReadinessFrame(
                 session = Fields.nonEmptyString(json["session"], "session", CODE),
                 droneId = Fields.positiveInt32(json["drone_id"], "drone_id", CODE),
                 connectionEpoch = Fields.positiveInt32(json["connection_epoch"], "connection_epoch", CODE),
-                roomId = Fields.nonEmptyString(json["room_id"], "room_id", CODE),
-                captureId = Fields.nonEmptyString(json["capture_id"], "capture_id", CODE),
-                guidanceMode = guidanceMode,
+                roomId = Fields.nullableString(json["room_id"], "room_id", CODE),
+                captureId = Fields.nullableString(json["capture_id"], "capture_id", CODE),
+                guidanceMode = guidance,
                 poseSource = Fields.nonEmptyString(json["pose_source"], "pose_source", CODE),
                 poseOk = Fields.boolean(json["pose_ok"], "pose_ok", CODE),
                 clearanceOk = Fields.boolean(json["clearance_ok"], "clearance_ok", CODE),
                 cameraOk = Fields.boolean(json["camera_ok"], "camera_ok", CODE),
+                storageOk = Fields.boolean(json["storage_ok"], "storage_ok", CODE),
                 motionOk = Fields.boolean(json["motion_ok"], "motion_ok", CODE),
                 imageQualityOk = Fields.boolean(json["image_quality_ok"], "image_quality_ok", CODE),
-                coverageMissing = Fields.intList(json["coverage_missing"], "coverage_missing", CODE),
+                coverageMissing = coverage.items.map { Fields.azimuth(it, "coverage_missing", CODE) },
                 nextHeadingDeg = if (heading == null || heading == JsonNull) {
                     null
                 } else {
-                    Fields.nonNegativeInt32(heading, "next_heading_deg", CODE)
+                    Fields.azimuth(heading, "next_heading_deg", CODE)
                 },
                 suggestedDelta = if (delta == null || delta == JsonNull) {
                     null
@@ -230,19 +293,31 @@ data class CaptureReadinessFrame(
     }
 }
 
+/** The informational body of `node_status`; the link resends the frame whenever this changes. */
+data class NodeStatusBody(
+    val virtualStickEnabled: Boolean,
+    val controlAuthority: Boolean,
+    val authorityChangeReason: String?,
+    val watchdogState: NodeWatchdogState,
+    val videoPublishState: VideoPublishState,
+    val phoneBatteryPercent: Int,
+    val phoneThermalState: PhoneThermalState,
+) {
+    init {
+        require(phoneBatteryPercent in 0..100) { "phone_battery_percent must be between 0 and 100" }
+        require(authorityChangeReason == null || Fields.isMachineCode(authorityChangeReason)) {
+            "authority_change_reason must be snake_case"
+        }
+    }
+}
+
 data class NodeStatusFrame(
     val t: Long,
     val eventId: String,
     val session: String,
     val droneId: Int,
     val connectionEpoch: Int,
-    val virtualStickEnabled: Boolean,
-    val controlAuthority: Boolean,
-    val authorityChangeReason: String?,
-    val watchdogState: WatchdogState,
-    val videoPublishState: String,
-    val phoneBattery: Double,
-    val phoneThermalState: String,
+    val body: NodeStatusBody,
 ) {
     fun toEvent(): JsonObject = Json.json(
         "v" to Fields.PROTOCOL_VERSION,
@@ -252,13 +327,13 @@ data class NodeStatusFrame(
         "session" to session,
         "drone_id" to droneId,
         "connection_epoch" to connectionEpoch,
-        "virtual_stick_enabled" to virtualStickEnabled,
-        "control_authority" to controlAuthority,
-        "authority_change_reason" to authorityChangeReason,
-        "watchdog_state" to watchdogState.wire,
-        "video_publish_state" to videoPublishState,
-        "phone_battery" to phoneBattery,
-        "phone_thermal_state" to phoneThermalState,
+        "virtual_stick_enabled" to body.virtualStickEnabled,
+        "control_authority" to body.controlAuthority,
+        "authority_change_reason" to body.authorityChangeReason,
+        "watchdog_state" to body.watchdogState.wire,
+        "video_publish_state" to body.videoPublishState.wire,
+        "phone_battery_percent" to body.phoneBatteryPercent,
+        "phone_thermal_state" to body.phoneThermalState.wire,
     )
 
     companion object {
@@ -267,33 +342,41 @@ data class NodeStatusFrame(
         private val FIELDS = setOf(
             "v", "t", "type", "event_id", "session", "drone_id", "connection_epoch",
             "virtual_stick_enabled", "control_authority", "authority_change_reason", "watchdog_state",
-            "video_publish_state", "phone_battery", "phone_thermal_state",
+            "video_publish_state", "phone_battery_percent", "phone_thermal_state",
         )
 
         fun parse(json: JsonObject): NodeStatusFrame {
             Fields.exact(json, FIELDS, CODE)
             Fields.envelope(json, TYPE, CODE)
-            val watchdog = (json["watchdog_state"] as? JsonString)?.let { WatchdogState.fromWire(it.value) }
-                ?: throw ContractError(CODE, "unknown watchdog_state")
+            val watchdog = enumField(json["watchdog_state"], "watchdog_state") { NodeWatchdogState.fromWire(it) }
+            val publish = enumField(json["video_publish_state"], "video_publish_state") { VideoPublishState.fromWire(it) }
+            val thermal = enumField(json["phone_thermal_state"], "phone_thermal_state") { PhoneThermalState.fromWire(it) }
+            val battery = Fields.nonNegativeInt32(json["phone_battery_percent"], "phone_battery_percent", CODE)
+            if (battery > 100) throw ContractError(CODE, "phone_battery_percent must be between 0 and 100")
             return NodeStatusFrame(
                 t = Fields.nonNegativeInt(json["t"], "t", CODE),
                 eventId = Fields.nonEmptyString(json["event_id"], "event_id", CODE),
                 session = Fields.nonEmptyString(json["session"], "session", CODE),
                 droneId = Fields.positiveInt32(json["drone_id"], "drone_id", CODE),
                 connectionEpoch = Fields.positiveInt32(json["connection_epoch"], "connection_epoch", CODE),
-                virtualStickEnabled = Fields.boolean(json["virtual_stick_enabled"], "virtual_stick_enabled", CODE),
-                controlAuthority = Fields.boolean(json["control_authority"], "control_authority", CODE),
-                authorityChangeReason = Fields.nullableString(
-                    json["authority_change_reason"],
-                    "authority_change_reason",
-                    CODE,
-                    machineReadable = true,
+                body = NodeStatusBody(
+                    virtualStickEnabled = Fields.boolean(json["virtual_stick_enabled"], "virtual_stick_enabled", CODE),
+                    controlAuthority = Fields.boolean(json["control_authority"], "control_authority", CODE),
+                    authorityChangeReason = Fields.nullableString(
+                        json["authority_change_reason"],
+                        "authority_change_reason",
+                        CODE,
+                        machineReadable = true,
+                    ),
+                    watchdogState = watchdog,
+                    videoPublishState = publish,
+                    phoneBatteryPercent = battery,
+                    phoneThermalState = thermal,
                 ),
-                watchdogState = watchdog,
-                videoPublishState = Fields.nonEmptyString(json["video_publish_state"], "video_publish_state", CODE),
-                phoneBattery = Fields.unitInterval(json["phone_battery"], "phone_battery", CODE),
-                phoneThermalState = Fields.nonEmptyString(json["phone_thermal_state"], "phone_thermal_state", CODE),
             )
         }
+
+        private fun <E> enumField(value: JsonValue?, field: String, fromWire: (String) -> E?): E =
+            (value as? JsonString)?.let { fromWire(it.value) } ?: throw ContractError(CODE, "unknown $field")
     }
 }
