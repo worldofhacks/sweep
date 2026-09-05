@@ -175,6 +175,46 @@ class ControlProvenance:
     capture_time_s: float | None
     conversion_error_ms: int
     reason: str
+    evaluated_at_relay_ms: int | None = None
+    position_uncertainty_m: float | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not all(
+                isinstance(value, str) and value
+                for value in (
+                    self.map_id,
+                    self.geometry_id,
+                    self.camera_calibration_id,
+                    self.body_extrinsics_id,
+                    self.capture_clock_id,
+                    self.relay_clock_id,
+                    self.reason,
+                    *self.source_ids,
+                )
+            )
+            or not isinstance(self.source_ids, tuple)
+            or not self.source_ids
+            or isinstance(self.conversion_error_ms, bool)
+            or not isinstance(self.conversion_error_ms, int)
+            or self.conversion_error_ms < 0
+            or self.capture_time_s is not None
+            and not isfinite(self.capture_time_s)
+            or self.evaluated_at_relay_ms is not None
+            and (
+                isinstance(self.evaluated_at_relay_ms, bool)
+                or not isinstance(self.evaluated_at_relay_ms, int)
+                or self.evaluated_at_relay_ms < 0
+            )
+            or self.position_uncertainty_m is not None
+            and (
+                isinstance(self.position_uncertainty_m, bool)
+                or not isinstance(self.position_uncertainty_m, int | float)
+                or not isfinite(self.position_uncertainty_m)
+                or self.position_uncertainty_m < 0
+            )
+        ):
+            raise ValueError("control provenance is invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -188,6 +228,8 @@ class ControlProvenance:
             "capture_time_s": self.capture_time_s,
             "conversion_error_ms": self.conversion_error_ms,
             "reason": self.reason,
+            "evaluated_at_relay_ms": self.evaluated_at_relay_ms,
+            "position_uncertainty_m": self.position_uncertainty_m,
         }
 
 
@@ -360,6 +402,7 @@ class ControlLocalizationStore:
         *,
         max_clock_error_ms: int,
         max_fix_age_ms: int,
+        max_position_uncertainty_m: float,
     ) -> None:
         if (
             isinstance(max_clock_error_ms, bool)
@@ -368,6 +411,10 @@ class ControlLocalizationStore:
             or isinstance(max_fix_age_ms, bool)
             or not isinstance(max_fix_age_ms, int)
             or max_fix_age_ms < 0
+            or isinstance(max_position_uncertainty_m, bool)
+            or not isinstance(max_position_uncertainty_m, int | float)
+            or not isfinite(max_position_uncertainty_m)
+            or max_position_uncertainty_m <= 0
         ):
             raise ValueError("control localization age limits must be non-negative")
         self._pins = MappingProxyType(dict(pins))
@@ -375,6 +422,7 @@ class ControlLocalizationStore:
             raise ValueError("control localization pin keys must match drone ids")
         self._max_clock_error_ms = max_clock_error_ms
         self._max_fix_age_ms = max_fix_age_ms
+        self._max_position_uncertainty_m = float(max_position_uncertainty_m)
         self._patches: dict[int, _Patch] = {}
         self._last_capture_ms: dict[int, int] = {}
         self._last_evaluated_s: dict[int, float] = {}
@@ -467,8 +515,11 @@ class ControlLocalizationStore:
             or not wire.control_eligible
             or wire.position_map_enu_m is None
             or wire.last_fix_capture_time_s is None
+            or wire.covariance_map_enu_m2 is None
         ):
             return wire.reason
+        if self._position_uncertainty_m(wire) > self._max_position_uncertainty_m:
+            return "position_uncertainty_exceeded"
         capture_ms = self._conservative_capture_ms(wire)
         if capture_ms > now_ms + wire.clock_mapping.max_error_ms:
             return "capture_time_in_future"
@@ -502,6 +553,10 @@ class ControlLocalizationStore:
             - wire.clock_mapping.max_error_ms,
         )
 
+    @staticmethod
+    def _position_uncertainty_m(wire: ControlLocalizationWire) -> float:
+        return float(np.sqrt(np.linalg.eigvalsh(np.asarray(wire.covariance_map_enu_m2)).max()))
+
     def _provenance(self, wire: ControlLocalizationWire) -> ControlProvenance:
         return ControlProvenance(
             wire.map_id,
@@ -514,6 +569,8 @@ class ControlLocalizationStore:
             wire.last_fix_capture_time_s,
             wire.clock_mapping.max_error_ms,
             wire.reason,
+            wire.clock_mapping.to_relay_ms(wire.evaluated_at_s),
+            (None if wire.covariance_map_enu_m2 is None else self._position_uncertainty_m(wire)),
         )
 
     def _record_loss(
