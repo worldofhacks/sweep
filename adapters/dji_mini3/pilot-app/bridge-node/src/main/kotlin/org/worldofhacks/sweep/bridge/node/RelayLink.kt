@@ -87,6 +87,7 @@ class RelayLink(
     private val timing: LinkTiming = LinkTiming(),
     private val log: NodeLog = NodeLog { },
     client: OkHttpClient? = null,
+    private val videoPublish: VideoPublishSource = VideoPublishSource { VideoPublishState.STOPPED },
 ) : AutoCloseable {
     private val ownsClient = client == null
     private val client: OkHttpClient = client ?: RelayClients.build(timing)
@@ -523,7 +524,7 @@ class RelayLink(
             controlAuthority = effectiveAuthority(snapshot),
             authorityChangeReason = authorityReason(snapshot),
             watchdogState = (watchdog?.state ?: WatchdogState.DISARMED).toNodeStatus(),
-            videoPublishState = VideoPublishState.STOPPED, // video publish is Phase F
+            videoPublishState = videoPublish.current(),
             phoneBatteryPercent = phoneStatus.batteryPercent.coerceIn(0, 100),
             phoneThermalState = phoneStatus.thermalState,
         )
@@ -548,7 +549,7 @@ class RelayLink(
             update { it.copy(nodeStatus = body) }
             log.log(
                 "node_status sent: control_authority=${body.controlAuthority} reason=${body.authorityChangeReason} " +
-                    "watchdog=${body.watchdogState.wire} phone=${body.phoneBatteryPercent}% ${body.phoneThermalState.wire}",
+                    "watchdog=${body.watchdogState.wire} video=${body.videoPublishState.wire} phone=${body.phoneBatteryPercent}% ${body.phoneThermalState.wire}",
             )
         }
     }

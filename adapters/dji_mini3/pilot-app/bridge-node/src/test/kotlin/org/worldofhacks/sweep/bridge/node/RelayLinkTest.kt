@@ -12,6 +12,7 @@ import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusFrame
 import org.worldofhacks.sweep.bridge.core.frames.PhoneThermalState
 import org.worldofhacks.sweep.bridge.core.frames.TelemetryFrame
+import org.worldofhacks.sweep.bridge.core.frames.VideoPublishState
 import org.worldofhacks.sweep.bridge.core.json.JsonBool
 import org.worldofhacks.sweep.bridge.core.json.JsonInt
 import org.worldofhacks.sweep.bridge.core.json.JsonNull
@@ -130,6 +131,28 @@ class RelayLinkTest {
                 assertTrue(stamps.zipWithNext().all { (earlier, later) -> earlier <= later }, "timestamps regress: $stamps")
                 val ids = stub.frames.drop(1).map { it.str("event_id") }
                 assertEquals(ids.size, ids.toSet().size, "event ids repeat")
+            }
+        }
+    }
+
+    @Test
+    fun `node_status follows the video publisher's state`() {
+        StubRelay(key).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            var publishState = VideoPublishState.STOPPED
+            val link = RelayLink(config(stub), aircraft, aircraft, phone, timing = timing, log = { logs += it }, videoPublish = { publishState })
+            link.use {
+                it.start()
+                stub.awaitFrame("node_status") { frame -> frame.str("video_publish_state") == "stopped" }
+                publishState = VideoPublishState.CONNECTING
+                stub.awaitFrame("node_status") { frame -> frame.str("video_publish_state") == "connecting" }
+                publishState = VideoPublishState.PUBLISHING
+                stub.awaitFrame("node_status") { frame -> frame.str("video_publish_state") == "publishing" }
+                publishState = VideoPublishState.FAILED
+                val failed = stub.awaitFrame("node_status") { frame -> frame.str("video_publish_state") == "failed" }
+                assertEquals(NodeStatusFrame.parse(failed).body.videoPublishState, VideoPublishState.FAILED)
+                assertEquals(VideoPublishState.FAILED, it.state.value.nodeStatus?.videoPublishState)
+                assertTrue(logs.any { line -> line.contains("video=publishing") })
             }
         }
     }
