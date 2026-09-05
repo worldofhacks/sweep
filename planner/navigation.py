@@ -397,7 +397,12 @@ class NavigationPlanner:
             )
         assigned = tuple(zip(drones, slots[: len(drones)], strict=True))
         reserved = [
-            (drone.pose, request.motion.swept_radius_m, request.motion.aircraft_height_m)
+            (
+                drone.drone_id,
+                drone.pose,
+                request.motion.swept_radius_m,
+                request.motion.aircraft_height_m,
+            )
             for drone in request.all_positions
         ]
         routes: list[DroneRoute] = []
@@ -413,7 +418,9 @@ class NavigationPlanner:
                     "start_unreachable",
                     f"start position is outside known free space for {drone.drone_id}",
                 )
-            path = self._route(drone.pose, slot.pose, artifact, request.motion, reserved)
+            path = self._route(
+                drone.drone_id, drone.pose, slot.pose, artifact, request.motion, reserved
+            )
             if path is None:
                 code = (
                     "wrong_floor"
@@ -422,6 +429,16 @@ class NavigationPlanner:
                 )
                 return NavigationRefusal(
                     code, f"no clearance-checked route for {drone.drone_id} to {slot.slot_id}"
+                )
+            if any(
+                not _body_clear_of_static_geometry(
+                    a, b, artifact.grids, request.motion.aircraft_height_m
+                )
+                for a, b in zip(path, path[1:], strict=False)
+                if a.floor_id == b.floor_id
+            ):
+                return NavigationRefusal(
+                    "route_unreachable", "route body intersects static geometry"
                 )
             route = DroneRoute(
                 drone,
@@ -435,9 +452,14 @@ class NavigationPlanner:
                 ),
             )
             routes.append(route)
-            reserved = [item for item in reserved if item[0] != drone.pose]
+            reserved = [item for item in reserved if item[0] != drone.drone_id]
             reserved.append(
-                (slot.pose, request.motion.swept_radius_m, request.motion.aircraft_height_m)
+                (
+                    drone.drone_id,
+                    slot.pose,
+                    request.motion.swept_radius_m,
+                    request.motion.aircraft_height_m,
+                )
             )
         return NavigationPlan(
             artifact.map_pin,
@@ -499,7 +521,7 @@ class NavigationPlanner:
                 "position_drift", "aircraft is not at the frozen segment start"
             )
         stationary = [
-            (drone.pose, plan.config.swept_radius_m, plan.config.aircraft_height_m)
+            (drone_id, drone.pose, plan.config.swept_radius_m, plan.config.aircraft_height_m)
             for drone_id, drone in current.items()
             if drone_id != route.drone.drone_id
         ]
@@ -571,11 +593,12 @@ class NavigationPlanner:
 
     def _route(
         self,
+        exempt_id: int,
         start: Pose,
         goal: Pose,
         artifact: NavigationArtifact,
         motion: MotionConfig,
-        reserved: list[tuple[Pose, float, float]],
+        reserved: list[tuple[int, Pose, float, float]],
     ) -> list[Pose] | None:
         start_level = self._level_for(start, artifact.grids)
         goal_level = self._level_for(goal, artifact.grids)
@@ -595,7 +618,13 @@ class NavigationPlanner:
                 ):
                     continue
                 first = self._route_on_level(
-                    start, connector.from_pose, start_level, reserved, motion.swept_radius_m
+                    start,
+                    connector.from_pose,
+                    start_level,
+                    reserved,
+                    motion.swept_radius_m,
+                    motion.aircraft_height_m,
+                    exempt_id,
                 )
                 if first is None:
                     continue
@@ -604,12 +633,18 @@ class NavigationPlanner:
                     connector.to_pose,
                     reserved,
                     motion.swept_radius_m,
-                    start,
+                    exempt_id,
                     motion.aircraft_height_m,
                 ):
                     continue
                 second = self._route_on_level(
-                    connector.to_pose, goal, goal_level, reserved, motion.swept_radius_m
+                    connector.to_pose,
+                    goal,
+                    goal_level,
+                    reserved,
+                    motion.swept_radius_m,
+                    motion.aircraft_height_m,
+                    exempt_id,
                 )
                 if second is not None:
                     return [*first, *second]
@@ -626,45 +661,59 @@ class NavigationPlanner:
                 start_level,
                 reserved,
                 motion.swept_radius_m,
+                motion.aircraft_height_m,
+                exempt_id,
             )
             if first is None:
                 return None
             points = [*first, *intermediate, goal]
             if any(
                 self._segment_hits_reservation(
-                    a, b, reserved, motion.swept_radius_m, start, motion.aircraft_height_m
+                    a, b, reserved, motion.swept_radius_m, exempt_id, motion.aircraft_height_m
                 )
                 for a, b in zip(points, points[1:], strict=False)
             ):
                 return None
             return points
-        if self._blocked_by_stationary(start, reserved, motion.swept_radius_m, exempt=start):
+        if self._blocked_by_stationary(
+            start, reserved, motion.swept_radius_m, exempt_id, motion.aircraft_height_m
+        ):
             return None
-        return self._route_on_level(start, goal, start_level, reserved, motion.swept_radius_m)
+        return self._route_on_level(
+            start,
+            goal,
+            start_level,
+            reserved,
+            motion.swept_radius_m,
+            motion.aircraft_height_m,
+            exempt_id,
+        )
 
     def _route_on_level(
         self,
         start: Pose,
         goal: Pose,
         level: GridLevel,
-        reserved: list[tuple[Pose, float, float]],
+        reserved: list[tuple[int, Pose, float, float]],
         radius: float,
+        height: float,
+        exempt_id: int,
     ) -> list[Pose] | None:
-        if self._blocked_by_stationary(start, reserved, radius, exempt=start):
+        if self._blocked_by_stationary(start, reserved, radius, exempt_id, height):
             return None
         start_cell, goal_cell = level.cell_for(start), level.cell_for(goal)
         if not level.free(start_cell) or not level.free(goal_cell):
             return None
-        cells = self._astar(level, start_cell, goal_cell, reserved, radius, start)
+        cells = self._astar(level, start_cell, goal_cell, reserved, radius, height, exempt_id)
         if cells is None:
             return None
         points = [start, *(level.pose_for(cell) for cell in cells[1:-1]), goal]
         if any(
-            self._segment_hits_reservation(a, b, reserved, radius, exempt=start)
+            self._segment_hits_reservation(a, b, reserved, radius, exempt_id, height)
             for a, b in zip(points, points[1:], strict=False)
         ):
             return None
-        return _simplify(points, level, reserved, radius)
+        return _simplify(points, level, reserved, radius, height, exempt_id)
 
     @staticmethod
     def _level_for(pose: Pose, levels: tuple[GridLevel, ...]) -> GridLevel | None:
@@ -706,9 +755,10 @@ class NavigationPlanner:
         level: GridLevel,
         start: tuple[int, int],
         goal: tuple[int, int],
-        reserved: list[tuple[Pose, float, float]],
+        reserved: list[tuple[int, Pose, float, float]],
         radius: float,
-        exempt: Pose,
+        height: float,
+        exempt_id: int,
     ) -> list[tuple[int, int]] | None:
         frontier = [(0.0, 0.0, start)]
         parents: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
@@ -726,10 +776,10 @@ class NavigationPlanner:
                 if not level.free(candidate):
                     continue
                 pose = level.pose_for(candidate)
-                if self._blocked_by_stationary(pose, reserved, radius, exempt):
+                if self._blocked_by_stationary(pose, reserved, radius, exempt_id, height):
                     continue
                 if self._segment_hits_reservation(
-                    level.pose_for(current), pose, reserved, radius, exempt
+                    level.pose_for(current), pose, reserved, radius, exempt_id, height
                 ):
                     continue
                 candidate_cost = cost + 1.0
@@ -744,28 +794,29 @@ class NavigationPlanner:
     @staticmethod
     def _blocked_by_stationary(
         pose: Pose,
-        reserved: list[tuple[Pose, float, float]],
+        reserved: list[tuple[int, Pose, float, float]],
         radius: float,
-        exempt: Pose | None = None,
+        exempt_id: int | None = None,
+        height: float = 0.0,
     ) -> bool:
         return any(
-            other != exempt
+            other_id != exempt_id
             and _horizontal_distance(other, pose) < other_radius + radius - 1e-9
-            and _vertical_overlap(other.z_m, other_height, pose.z_m, 0.0)
-            for other, other_radius, other_height in reserved
+            and _vertical_overlap(other.z_m, other_height, pose.z_m, height)
+            for other_id, other, other_radius, other_height in reserved
         )
 
     @staticmethod
     def _segment_hits_reservation(
         start: Pose,
         end: Pose,
-        reserved: list[tuple[Pose, float, float]],
+        reserved: list[tuple[int, Pose, float, float]],
         radius: float,
-        exempt: Pose,
+        exempt_id: int,
         height: float = 0.0,
     ) -> bool:
-        for other, other_radius, other_height in reserved:
-            if other == exempt:
+        for other_id, other, other_radius, other_height in reserved:
+            if other_id == exempt_id:
                 continue
             if _segment_horizontal_distance(start, end, other) >= radius + other_radius - 1e-9:
                 continue
@@ -777,8 +828,10 @@ class NavigationPlanner:
 def _simplify(
     points: list[Pose],
     level: GridLevel,
-    reserved: list[tuple[Pose, float, float]],
+    reserved: list[tuple[int, Pose, float, float]],
     radius: float,
+    height: float,
+    exempt_id: int,
 ) -> list[Pose]:
     result = [points[0]]
     index = 0
@@ -788,7 +841,7 @@ def _simplify(
             if _line_is_free(
                 points[index], points[next_index], level
             ) and not NavigationPlanner._segment_hits_reservation(
-                points[index], points[next_index], reserved, radius, points[0]
+                points[index], points[next_index], reserved, radius, exempt_id, height
             ):
                 break
             next_index -= 1
@@ -801,35 +854,46 @@ def _line_is_free(start: Pose, end: Pose, level: GridLevel) -> bool:
     return all(level.free(cell) for cell in _supercover(start, end, level))
 
 
+def _body_clear_of_static_geometry(
+    start: Pose, end: Pose, grids: tuple[GridLevel, ...], height_m: float
+) -> bool:
+    return all(
+        all(level.free(cell) for cell in _supercover(start, end, level))
+        for level in grids
+        if level.floor_id == start.floor_id and abs(level.z_m - start.z_m) <= height_m / 2 + 1e-9
+    )
+
+
 def _supercover(start: Pose, end: Pose, level: GridLevel) -> set[tuple[int, int]]:
-    """Every grid cell touched by a segment, including corner-adjacent cells."""
-    x0, y0 = level.cell_for(start)
-    x1, y1 = level.cell_for(end)
-    cells = {(x0, y0)}
+    """Exact closed-segment/cell intersection, so boundary and corner contacts are included."""
+    low_x, high_x = sorted((level.cell_for(start)[0], level.cell_for(end)[0]))
+    low_y, high_y = sorted((level.cell_for(start)[1], level.cell_for(end)[1]))
+    return {
+        (x, y)
+        for x in range(low_x - 1, high_x + 2)
+        for y in range(low_y - 1, high_y + 2)
+        if _segment_intersects_cell(start, end, x, y, level)
+    }
+
+
+def _segment_intersects_cell(start: Pose, end: Pose, x: int, y: int, level: GridLevel) -> bool:
+    left = level.origin_xy_m[0] + x * level.cell_m
+    bottom = level.origin_xy_m[1] + y * level.cell_m
     dx, dy = end.x_m - start.x_m, end.y_m - start.y_m
-    steps = max(abs(x1 - x0), abs(y1 - y0), 1) * 4
-    for index in range(1, steps + 1):
-        t = index / steps
-        point = Pose(
-            start.x_m + dx * t,
-            start.y_m + dy * t,
-            start.z_m + (end.z_m - start.z_m) * t,
-            start.floor_id,
-        )
-        cell = level.cell_for(point)
-        cells.add(cell)
-        previous = level.cell_for(
-            Pose(
-                start.x_m + dx * (index - 1) / steps,
-                start.y_m + dy * (index - 1) / steps,
-                start.z_m,
-                start.floor_id,
-            )
-        )
-        if cell[0] != previous[0] and cell[1] != previous[1]:
-            cells.add((cell[0], previous[1]))
-            cells.add((previous[0], cell[1]))
-    return cells
+    enter, leave = 0.0, 1.0
+    for origin, delta, low, high in (
+        (start.x_m, dx, left, left + level.cell_m),
+        (start.y_m, dy, bottom, bottom + level.cell_m),
+    ):
+        if delta == 0:
+            if origin < low or origin > high:
+                return False
+            continue
+        first, second = sorted(((low - origin) / delta, (high - origin) / delta))
+        enter, leave = max(enter, first), min(leave, second)
+        if enter > leave:
+            return False
+    return leave >= 0 and enter <= 1
 
 
 def _approval_digest(artifact: NavigationArtifact) -> str:

@@ -235,9 +235,9 @@ def test_vertical_connector_hits_stationary_aircraft_volume() -> None:
     assert planner._segment_hits_reservation(
         start,
         end,
-        [(pose(2.5, 1.5, 2.0, "mezzanine"), 0.01, 2.0)],
+        [(2, pose(2.5, 1.5, 2.0, "mezzanine"), 0.01, 2.0)],
         0.01,
-        start,
+        1,
         motion.aircraft_height_m,
     )
 
@@ -318,6 +318,27 @@ def test_tall_aircraft_vertical_body_rejects_blocked_band() -> None:
         ArtifactPin("geometry-v2", "b" * 64),
         0.5,
         (low, blocked, high),
+        (Zone("atrium", "level_1", True, slots),),
+    )
+    tall = MotionConfig(0.01, 2.0, 0, 0, 0, 0)
+    result = NavigationPlanner().plan(
+        NavigationRequest(
+            "atrium", 4, (drone(1, 0.5, 1.5),), (drone(1, 0.5, 1.5),), tall, PERMISSION
+        ),
+        map_artifact,
+    )
+    assert isinstance(result, NavigationRefusal)
+
+
+def test_tall_body_rejects_blocked_static_layer_on_horizontal_route() -> None:
+    center = GridLevel("level_1", 1.0, (0, 0), 1.0, 8, 5, frozenset())
+    upper = GridLevel("level_1", 1.5, (0, 0), 1.0, 8, 5, frozenset({(3, 1)}))
+    slots = (ArrivalSlot("atrium-a", "atrium", pose(6.5, 1.5), 0.5),)
+    map_artifact = NavigationArtifact(
+        ArtifactPin("map-v2", "a" * 64),
+        ArtifactPin("geometry-v2", "b" * 64),
+        0.5,
+        (center, upper),
         (Zone("atrium", "level_1", True, slots),),
     )
     tall = MotionConfig(0.01, 2.0, 0, 0, 0, 0)
