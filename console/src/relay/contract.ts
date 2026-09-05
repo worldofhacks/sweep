@@ -9,7 +9,123 @@
 export type DroneId = number
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard'
-export type ConsoleIntentName = 'capture_room' | 'estop' | 'hold' | 'select'
+export type FormationName = 'line' | 'column' | 'circle' | 'grid' | 'V'
+
+/**
+ * Every intent name this console can build. Mirrors relay/intent_v1.py
+ * IntentName minus survey_area and map_area, which the brief marks as later.
+ */
+export type ConsoleIntentName =
+  | 'arm'
+  | 'disarm'
+  | 'estop'
+  | 'select'
+  | 'takeoff'
+  | 'land'
+  | 'land_all'
+  | 'hold'
+  | 'translate'
+  | 'altitude'
+  | 'formation_next'
+  | 'formation_set'
+  | 'spacing'
+  | 'come_home'
+  | 'sweep'
+  | 'capture_room'
+
+export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
+  'arm',
+  'disarm',
+  'estop',
+  'select',
+  'takeoff',
+  'land',
+  'land_all',
+  'hold',
+  'translate',
+  'altitude',
+  'formation_next',
+  'formation_set',
+  'spacing',
+  'come_home',
+  'sweep',
+  'capture_room',
+]
+
+/**
+ * Mirror of relay/intent_v1.py M20_SUPPORTED_NAMES. The relay refuses every
+ * other name with reason `unsupported`; the console still sends them so the
+ * refusal is recorded rather than hidden.
+ */
+export const M20_SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  'arm',
+  'select',
+  'takeoff',
+  'translate',
+  'hold',
+  'come_home',
+  'land_all',
+  'estop',
+  'capture_room',
+])
+
+export function isSupportedAtM20(name: ConsoleIntentName): boolean {
+  return M20_SUPPORTED_INTENTS.has(name)
+}
+
+/**
+ * Console policy from the design brief: these intents never leave the console
+ * without the operator confirming the exact envelope. The relay itself only
+ * enforces confirmation for capture_room.
+ */
+export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  'takeoff',
+  'land',
+  'land_all',
+  'sweep',
+  'capture_room',
+])
+
+export function requiresConfirmation(name: ConsoleIntentName): boolean {
+  return CONFIRM_REQUIRED_INTENTS.has(name)
+}
+
+/** Selection rule per intent, from the brief's controls table. */
+export type SelectionRule = 'any' | 'at least one' | 'selected' | 'all' | 'exactly one' | 'fleet'
+
+export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>> = {
+  arm: 'any',
+  disarm: 'any',
+  estop: 'fleet',
+  select: 'at least one',
+  takeoff: 'selected',
+  land: 'selected',
+  land_all: 'all',
+  hold: 'selected',
+  translate: 'selected',
+  altitude: 'selected',
+  formation_next: 'selected',
+  formation_set: 'selected',
+  spacing: 'selected',
+  come_home: 'selected',
+  sweep: 'selected',
+  capture_room: 'exactly one',
+}
+
+export function selectionRule(name: ConsoleIntentName): SelectionRule {
+  return SELECTION_RULES[name]
+}
+
+/**
+ * True when the intent's selection is the authoritative selection, so a change
+ * to that selection invalidates a pending preview. `all` and `fleet` intents
+ * address the roster instead and are invalidated by roster changes only.
+ */
+export function followsSelection(name: ConsoleIntentName): boolean {
+  const rule = SELECTION_RULES[name]
+  return rule === 'selected' || rule === 'exactly one' || rule === 'at least one'
+}
+
 export type MembershipState =
   | 'registered'
   | 'ready'
@@ -17,10 +133,50 @@ export type MembershipState =
   | 'disconnected'
   | 'degraded'
 
-export type IntentArgs =
-  | Record<string, never>
-  | { ids: DroneId[] }
-  | { room_id: string; capture_id: string; pattern: CapturePattern }
+export type EmptyArgs = Record<string, never>
+export interface SelectArgs {
+  ids: DroneId[]
+}
+export interface TranslateArgs {
+  /** Steps in the room frame, east positive. */
+  dx: number
+  /** Steps in the room frame, north positive. */
+  dy: number
+}
+export interface DeltaArgs {
+  delta: number
+}
+export interface FormationSetArgs {
+  name: FormationName
+}
+export type SweepArgs = EmptyArgs | { box: Record<string, unknown> }
+export interface CaptureRoomArgs {
+  room_id: string
+  capture_id: string
+  pattern: CapturePattern
+}
+
+/** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
+export interface IntentArgsByName {
+  arm: EmptyArgs
+  disarm: EmptyArgs
+  estop: EmptyArgs
+  select: SelectArgs
+  takeoff: EmptyArgs
+  land: EmptyArgs
+  land_all: EmptyArgs
+  hold: EmptyArgs
+  translate: TranslateArgs
+  altitude: DeltaArgs
+  formation_next: EmptyArgs
+  formation_set: FormationSetArgs
+  spacing: DeltaArgs
+  come_home: EmptyArgs
+  sweep: SweepArgs
+  capture_room: CaptureRoomArgs
+}
+
+export type IntentArgs = IntentArgsByName[ConsoleIntentName]
 
 export interface IntentV1 {
   v: 1
@@ -513,7 +669,7 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
     (value.source !== 'console' && value.source !== 'keyboard') ||
     typeof value.session !== 'string' ||
     value.session.length === 0 ||
-    !['capture_room', 'estop', 'hold', 'select'].includes(String(value.name)) ||
+    !(CONSOLE_INTENT_NAMES as readonly string[]).includes(String(value.name)) ||
     !isRecord(value.args) ||
     !isDroneIds(value.selection) ||
     value.mode !== 'indoor' ||
@@ -521,21 +677,64 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   ) {
     return false
   }
+  const name = value.name as ConsoleIntentName
+  const selection = value.selection as DroneId[]
+  if (!hasValidArgs(name, value.args)) return false
+  if (requiresConfirmation(name) && !value.confirm) return false
+  return hasValidSelection(name, selection)
+}
 
-  if (value.name === 'select') {
-    return Object.keys(value.args).length === 1 && isDroneIds(value.args.ids) && value.args.ids.length > 0
+const FORMATION_NAMES = new Set<FormationName>(['line', 'column', 'circle', 'grid', 'V'])
+
+/** Mirrors relay/intent_v1.py _parse_args for the console-built subset. */
+function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): boolean {
+  const keys = Object.keys(args)
+  switch (name) {
+    case 'select':
+      return keys.length === 1 && isDroneIds(args.ids) && args.ids.length > 0
+    case 'translate':
+      return keys.length === 2 && isFiniteNumber(args.dx) && isFiniteNumber(args.dy)
+    case 'altitude':
+    case 'spacing':
+      return keys.length === 1 && isFiniteNumber(args.delta)
+    case 'formation_set':
+      return keys.length === 1 && FORMATION_NAMES.has(args.name as FormationName)
+    case 'sweep':
+      return keys.length === 0 || (keys.length === 1 && isRecord(args.box))
+    case 'capture_room':
+      return (
+        keys.length === 3 &&
+        typeof args.room_id === 'string' &&
+        args.room_id.length > 0 &&
+        typeof args.capture_id === 'string' &&
+        args.capture_id.length > 0 &&
+        CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
+      )
+    case 'arm':
+    case 'disarm':
+    case 'estop':
+    case 'takeoff':
+    case 'land':
+    case 'land_all':
+    case 'hold':
+    case 'formation_next':
+    case 'come_home':
+      return keys.length === 0
   }
-  if (value.name === 'capture_room') {
-    return (
-      Object.keys(value.args).length === 3 &&
-      typeof value.args.room_id === 'string' &&
-      value.args.room_id.length > 0 &&
-      typeof value.args.capture_id === 'string' &&
-      value.args.capture_id.length > 0 &&
-      CAPTURE_PATTERNS.has(value.args.pattern as CapturePattern) &&
-      value.confirm &&
-      value.selection.length === 1
-    )
+}
+
+/** The brief's selection rules; capture_room's is also the relay's own scope check. */
+function hasValidSelection(name: ConsoleIntentName, selection: DroneId[]): boolean {
+  switch (SELECTION_RULES[name]) {
+    case 'any':
+    case 'all':
+      return true
+    case 'fleet':
+      return selection.length === 0
+    case 'at least one':
+    case 'selected':
+      return selection.length > 0
+    case 'exactly one':
+      return selection.length === 1
   }
-  return Object.keys(value.args).length === 0
 }

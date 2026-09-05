@@ -1,10 +1,13 @@
 import type {
   CapturePattern,
+  CaptureRoomArgs,
   ConsoleIntentName,
   DroneId,
   IntentArgs,
+  IntentArgsByName,
   IntentSource,
   IntentV1,
+  TranslateArgs,
 } from '../relay/contract'
 
 export interface IntentFactoryDependencies {
@@ -12,9 +15,9 @@ export interface IntentFactoryDependencies {
   nextId: () => string
 }
 
-export interface IntentDraftInput {
-  name: ConsoleIntentName
-  args: IntentArgs
+export interface IntentDraftInput<N extends ConsoleIntentName = ConsoleIntentName> {
+  name: N
+  args: IntentArgsByName[N]
   selection: DroneId[]
   source: IntentSource
   session: string
@@ -27,8 +30,12 @@ export const browserIntentDependencies: IntentFactoryDependencies = {
   nextId: () => crypto.randomUUID(),
 }
 
-export function createIntent(
-  input: IntentDraftInput,
+/**
+ * Every request starts here and keeps this intent_id through its whole
+ * lifecycle; confirmation only restamps t and sets confirm true.
+ */
+export function createIntent<N extends ConsoleIntentName>(
+  input: IntentDraftInput<N>,
   dependencies: IntentFactoryDependencies = browserIntentDependencies,
 ): IntentV1 {
   return {
@@ -40,7 +47,7 @@ export function createIntent(
     source: input.source,
     session: input.session,
     name: input.name,
-    args: input.args,
+    args: cloneArgs(input.args),
     selection: [...input.selection],
     mode: 'indoor',
     confirm: input.confirm ?? false,
@@ -51,11 +58,19 @@ export function confirmIntent(intent: IntentV1, confirmedAt: number): IntentV1 {
   return { ...intent, t: confirmedAt, confirm: true }
 }
 
+/** Room identifiers: lower-case letters, digits and hyphens, 3 to 24 characters. */
+export const ROOM_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,23}$/
+
+export function isValidRoomId(roomId: string): boolean {
+  return ROOM_ID_PATTERN.test(roomId)
+}
+
+/** The capture id is minted from the intent id at draft time, so it is unique per request. */
 export function createCaptureArgs(
   roomId: string,
   intentId: string,
   pattern: CapturePattern,
-): IntentArgs {
+): CaptureRoomArgs {
   return {
     room_id: roomId,
     capture_id: `capture-${intentId}`,
@@ -63,6 +78,34 @@ export function createCaptureArgs(
   }
 }
 
+export type TranslateDirection = 'north' | 'south' | 'east' | 'west'
+
+const UNIT_VECTORS: Record<TranslateDirection, TranslateArgs> = {
+  north: { dx: 0, dy: 1 },
+  south: { dx: 0, dy: -1 },
+  east: { dx: 1, dy: 0 },
+  west: { dx: -1, dy: 0 },
+}
+
+export const TRANSLATE_STEPS_MIN = 1
+export const TRANSLATE_STEPS_MAX = 6
+
+export function clampTranslateSteps(value: number): number {
+  if (!Number.isFinite(value)) return TRANSLATE_STEPS_MIN
+  return Math.max(TRANSLATE_STEPS_MIN, Math.min(TRANSLATE_STEPS_MAX, Math.round(value)))
+}
+
+/** Unit vector for the direction times the step count, in the room frame. */
+export function createTranslateArgs(direction: TranslateDirection, steps: number): TranslateArgs {
+  const unit = UNIT_VECTORS[direction]
+  const n = clampTranslateSteps(steps)
+  return { dx: unit.dx * n, dy: unit.dy * n }
+}
+
+/**
+ * A retry mints a new intent id, points retry_of at the original, and drops
+ * confirm so a confirmation-gated intent re-enters the preview.
+ */
 export function retryIntent(
   failed: IntentV1,
   dependencies: IntentFactoryDependencies = browserIntentDependencies,
@@ -78,8 +121,8 @@ export function retryIntent(
   }
 }
 
-function cloneArgs(args: IntentArgs): IntentArgs {
-  if ('ids' in args) return { ids: [...args.ids] }
-  if ('room_id' in args) return { ...args }
-  return {}
+function cloneArgs<A extends IntentArgs>(args: A): A {
+  if ('ids' in args) return { ...args, ids: [...args.ids] }
+  if ('box' in args) return { ...args, box: { ...args.box } }
+  return { ...args }
 }

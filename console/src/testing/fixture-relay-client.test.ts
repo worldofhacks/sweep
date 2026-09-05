@@ -35,6 +35,41 @@ describe('explicit development fixture', () => {
     expect(state.drones[5].video).toEqual({ status: 'unreported', last_frame_at: null })
   })
 
+  test('refuses names outside the M2.0 set exactly as the relay does', async () => {
+    const client = new FixtureRelayClient('fixture-session', clock)
+    const events = record(client)
+    client.start()
+
+    await client.sendIntent({
+      v: 1,
+      t: 1_756_700_000_001,
+      type: 'intent',
+      intent_id: 'disarm-intent',
+      retry_of: null,
+      source: 'console',
+      session: 'fixture-session',
+      name: 'disarm',
+      args: {},
+      selection: [1],
+      mode: 'indoor',
+      confirm: false,
+    })
+
+    const last = events.at(-1)
+    expect(last).toMatchObject({
+      kind: 'server_event',
+      event: {
+        type: 'refusal',
+        intent_id: 'disarm-intent',
+        status: 'refused',
+        source: 'relay',
+        reason: 'unsupported',
+        detail: 'disarm is outside the M2.0 capability set',
+      },
+    })
+    expect(states(events)).toHaveLength(1)
+  })
+
   test('does not change roster version when selection changes', async () => {
     const client = new FixtureRelayClient('fixture-session', clock)
     const events = record(client)
