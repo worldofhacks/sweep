@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react'
+import type { CatalogController } from '../catalog/use-catalog'
 import type { useControlConsole } from '../control/use-control-console'
 
 /** Everything the hook returns: authoritative state plus the intent functions. */
@@ -9,12 +10,14 @@ export type ModuleId =
   | 'live'
   | 'gesture'
   | 'speech'
-  | 'library'
-  | 'builder'
+  | 'captures'
+  | 'worlds'
   | 'reference'
 
 export interface ModuleProps {
   controller: ConsoleController
+  /** Captures, worlds, node details, and configuration; unreported in production. */
+  catalog: CatalogController
   now: () => number
 }
 

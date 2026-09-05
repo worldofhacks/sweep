@@ -25,3 +25,10 @@ export function formatSelection(selection: DroneId[]): string {
 export function formatPercent(value: number | null): string {
   return value === null ? '—' : `${Math.round(value * 100)}%`
 }
+
+/** Age of a reported timestamp; null means the relay never reported one. */
+export function formatAge(ageMs: number | null): string {
+  if (ageMs === null) return 'unreported'
+  const seconds = Math.round(Math.max(0, ageMs) / 1000)
+  return seconds < 1 ? 'just now' : `${seconds} s ago`
+}
