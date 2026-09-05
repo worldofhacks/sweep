@@ -52,5 +52,6 @@ clock provenance, and recorded physical evidence. Signed transport, relay/arbite
 wiring, active-tag coverage drills, and real flight approval remain outside this
 component.
 
-The bounded COCO detector and its event payloads are documented in
-[OBJECT_DETECTION.md](OBJECT_DETECTION.md).
+The bounded COCO detector library and its event payloads are documented in
+[OBJECT_DETECTION.md](OBJECT_DETECTION.md). Relay logging, attention promotion, confirmation,
+pose projection, and real-aircraft camera integration are not wired by that library slice.
