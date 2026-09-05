@@ -296,14 +296,6 @@ describe('console Intent v1 mirror', () => {
     ['console', 'hold', {}, [1], false],
     ['console', 'estop', {}, [], false],
     ['keyboard', 'estop', {}, [], false],
-    ['webcam', 'hold', {}, [1], true],
-    [
-      'webcam',
-      'capture_room',
-      { room_id: 'room-1', capture_id: 'capture-1', pattern: 'pano_360' },
-      [1],
-      true,
-    ],
     ['console', 'select', { ids: [1, 2] }, [1], false],
     [
       'console',

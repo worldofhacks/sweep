@@ -8,7 +8,7 @@
 
 export type DroneId = number
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
-export type IntentSource = 'console' | 'keyboard' | 'webcam'
+export type IntentSource = 'console' | 'keyboard'
 export type ConsoleIntentName = 'capture_room' | 'estop' | 'hold' | 'select'
 export type MembershipState =
   | 'registered'
@@ -227,8 +227,6 @@ const MEMBERSHIP_STATES = new Set<MembershipState>([
   'degraded',
 ])
 const CAPTURE_PATTERNS = new Set<CapturePattern>(['pano_360', 'reconstruct_8'])
-/** Mirror of relay REGISTERED_SOURCES: operator sources bound to their own connection. */
-const INTENT_SOURCES = new Set<IntentSource>(['console', 'keyboard', 'webcam'])
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -395,7 +393,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
 
   if (value.type === 'auth.accepted') {
     if (
-      !(INTENT_SOURCES.has(value.source as IntentSource) || value.source === 'adapter') ||
+      !['console', 'keyboard', 'adapter'].includes(String(value.source)) ||
       !isNullableDroneId(value.drone_id)
     ) {
       return null
@@ -512,7 +510,7 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
         value.retry_of.length > 0 &&
         value.retry_of !== value.intent_id)
     ) ||
-    !INTENT_SOURCES.has(value.source as IntentSource) ||
+    (value.source !== 'console' && value.source !== 'keyboard') ||
     typeof value.session !== 'string' ||
     value.session.length === 0 ||
     !['capture_room', 'estop', 'hold', 'select'].includes(String(value.name)) ||

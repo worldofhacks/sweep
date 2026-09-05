@@ -9,7 +9,6 @@ export interface SweepRelayRuntimeConfig {
 export interface ConsoleRuntime {
   client: RelayClient
   keyboardClient: RelayClient
-  webcamClient: RelayClient
   sessionId: string
 }
 
@@ -29,9 +28,6 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       keyboardClient: new UnavailableRelayClient(
         'Relay bootstrap is not configured. Keyboard network stop is unavailable; use the physical RC safety path.',
       ),
-      webcamClient: new UnavailableRelayClient(
-        'Relay bootstrap is not configured. Webcam gesture source is unavailable; use the console controls and the physical RC safety path.',
-      ),
     }
   }
 
@@ -47,12 +43,6 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       baseUrl: config.baseUrl,
       sessionId: config.sessionId,
       source: 'keyboard',
-      token: config.token,
-    }),
-    webcamClient: new WebSocketRelayClient({
-      baseUrl: config.baseUrl,
-      sessionId: config.sessionId,
-      source: 'webcam',
       token: config.token,
     }),
   }

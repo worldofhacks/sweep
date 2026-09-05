@@ -13,7 +13,6 @@ const runtime = useFixture
       sessionId: fixtureSessionId,
       client: new FixtureRelayClient(fixtureSessionId),
       keyboardClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'keyboard'),
-      webcamClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'webcam'),
     }
   : createConsoleRuntime()
 
@@ -21,11 +20,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App
       sessionId={runtime.sessionId}
-      clients={{
-        console: runtime.client,
-        keyboard: runtime.keyboardClient,
-        webcam: runtime.webcamClient,
-      }}
+      clients={{ console: runtime.client, keyboard: runtime.keyboardClient }}
     />
   </StrictMode>,
 )
