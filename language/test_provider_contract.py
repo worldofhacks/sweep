@@ -127,7 +127,7 @@ def test_provider_instruction_supplies_selection_argument_and_translation_contra
         "first emit select",
         "LAND means land the selected aircraft",
         "divide by step_m",
-        "do not rotate it yourself",
+        "Do not rotate it yourself",
         "capture_room={room_id,pattern}",
         "explanations in detail, never in reason",
     ):

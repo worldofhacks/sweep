@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 from types import MappingProxyType
 from typing import Literal
 
@@ -583,6 +584,8 @@ def _validate_proposed_intent(
         return None
     raw_name = raw.get("name")
     raw_args = raw.get("args")
+    if not _argument_numbers_are_finite(raw_args):
+        return None
     if raw_name == IntentName.CAPTURE_ROOM.value:
         expected_args = (
             {"room_id", "capture_id", "pattern"}
@@ -771,12 +774,22 @@ def _translation_from_record(
 
 
 def _is_finite_number(value: object) -> bool:
-    return (
-        isinstance(value, int | float)
-        and not isinstance(value, bool)
-        and value == value
-        and abs(value) != float("inf")
-    )
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _argument_numbers_are_finite(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return all(_argument_numbers_are_finite(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return all(_argument_numbers_are_finite(item) for item in value)
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return _is_finite_number(value)
+    return True
 
 
 def _coordinates(value: object, field: str) -> tuple[float, float, float] | None:

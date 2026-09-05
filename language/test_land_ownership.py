@@ -465,8 +465,9 @@ def test_hold_of_unissued_landing_target_prevents_later_landing_dispatch(
 @pytest.mark.parametrize("landing_session", [3], indirect=True)
 @pytest.mark.parametrize("failure", ["failed", "invalidated"])
 @pytest.mark.parametrize("async_recovery", [False, True])
+@pytest.mark.parametrize("async_suffix_hold", [False, True])
 def test_retained_inflight_landing_failure_starts_registered_stop(
-    landing_session, monkeypatch, failure, async_recovery
+    landing_session, monkeypatch, failure, async_recovery, async_suffix_hold
 ):
     current, flight, router, relay = landing_session
     land = flight.land
@@ -480,9 +481,16 @@ def test_retained_inflight_landing_failure_starts_registered_stop(
     _ack(relay, current, first, "completed")
     current[0] = replace(current[0], selection=(3,))
     relay.update_control_projection(selection=(3,))
-    _compiled_command(current, router, relay, "hold", "cancel-unissued-third")
+    hover = flight.hover
+    if async_suffix_hold:
+        monkeypatch.setattr(
+            flight,
+            "hover",
+            lambda ids: tuple(replace(ack, status=LifecycleStatus.ACCEPTED) for ack in hover(ids)),
+        )
+    suffix = _compiled_command(current, router, relay, "hold", "cancel-unissued-third")
+    monkeypatch.setattr(flight, "hover", hover)
     if async_recovery:
-        hover = flight.hover
         monkeypatch.setattr(
             flight,
             "hover",
@@ -499,7 +507,12 @@ def test_retained_inflight_landing_failure_starts_registered_stop(
         for command in router._running[safety_id][0].plan.commands:
             _ack(relay, current, command, "completed")
         assert safety_id not in router._running
+    assert not router._running
     assert relay.current_state()["accepted_plan"] is None
+    if async_suffix_hold:
+        _ack(relay, current, suffix.execution.plan.commands[0], "completed")
+        assert not router._running
+        assert relay.current_state()["accepted_plan"] is None
     assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
         ("land", (1,)),
         ("land", (2,)),
