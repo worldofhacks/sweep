@@ -15,6 +15,7 @@ PACKAGES = [
     "adapters.sim",
     "adapters.crazyswarm2",
     "adapters.mavlink",
+    "calibration",
     "perception",
     "language",
     "evals",
