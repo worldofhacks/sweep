@@ -1,6 +1,6 @@
 # DJI Mini 3 bridge
 
-Capability area: Autonomy, with Platform support. Issue #43 (M1.9), Phases B3, B4, and C.
+Capability area: Autonomy, with Platform support. Issue #43 (M1.9), Phases B3, B4, C, and F (issue #51).
 
 One Android phone per DJI Mini 3 and RC-N1 pair runs the pilot app under `pilot-app/`. The
 app registers with the DJI Mobile SDK, proves the aircraft identity, and keeps one
@@ -23,8 +23,9 @@ dependency, and dangling `@xml/accessory_filter` reference were not carried over
 |---|---|---|
 | `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, the relay-signed `command` (integer-only `args`), `capabilities`, `capture_readiness`, `node_status`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; canonical JSON that byte-matches `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`; HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence |
 | `bridge-node` | Kotlin/JVM | `RelayLink`, the node's OkHttp WebSocket client: auth, join, readiness, telemetry at 10 Hz, capabilities, node_status, command admission and acknowledgement, reconnect with bounded backoff, the watchdog under relay silence; `FakeAircraft`, the kinematic fixture with the command semantics of `fake_node.py`; tested against a stub relay on MockWebServer |
-| `bench` | Kotlin/JVM | JSONL recorder for command round-trip time, jitter, drops, stick send rate, telemetry rate, and video frame stats, plus the report writer |
-| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`; the Compose page with Setup, Connectivity, Readiness, node status, the command log, and the Phase B4 registration and identity cards |
+| `bench` | Kotlin/JVM | JSONL recorder for command round-trip time, jitter, drops, stick send rate, telemetry rate, video frame stats, and the one-second `video_publish` windows (bitrate, frame rate, dropped frames, ICE state, RTT, processing time), plus the report writer |
+| `bridge-publish` | Kotlin/JVM | The WHIP publish path's testable half (Phase F): `WhipClient` (POST the SDP offer, 201 with `Location`, DELETE on stop) on OkHttp against MockWebServer; `SdpMunger` (WildBridge's H.264 preference and keyframe-interval munging); `CodecGate` (H.264 baseline, main, or high without B slices passes, H.265 and the rest are `codec_unsupported`); `PublishStateMachine` (`stopped`, `connecting`, `publishing`, `failed` with reason and bounded backoff); `PublishMetricsAggregator`; `WhipEndpoint` (`http://<ground-station>:8889/drone{id}/whip`) |
+| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`; the Compose page with Setup, Connectivity, Readiness, node status, the command log, and the Phase B4 registration and identity cards; the `publish` package (Phase F): `Publisher` driving one vendored `WhipPublisher` on libwebrtc (`io.getstream:stream-webrtc-android`), the encoded-frame passthrough, the DJI frame sources (probe), and the test pattern (fake) |
 
 The JVM tests read fixtures under `bridge-core/src/test/resources/vectors/` that
 `adapters/dji_mini3/vectors.py` generates from the relay code itself; `test_vectors.py`
@@ -41,7 +42,7 @@ network access for the Gradle distribution, AndroidX, and the DJI artifacts on M
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 cd adapters/dji_mini3/pilot-app
 printf 'sdk.dir=%s/Library/Android/sdk\n' "$HOME" > local.properties   # gitignored
-./gradlew :bridge-core:test :bench:test :bridge-node:test   # what CI runs; no Android SDK needed
+./gradlew :bridge-core:test :bench:test :bridge-node:test :bridge-publish:test   # what CI runs; no Android SDK needed
 ./gradlew :app:assembleFakeDebug               # any phone, no DJI dependency
 ./gradlew :app:assembleProbeDebug              # DJI MSDK 5.18.0, arm64-v8a only
 ```
@@ -184,6 +185,121 @@ values, and shows each key's measured update rate on the node status card. The `
 `pos_quality`, and flight-state mappings are provisional until measured with the aircraft;
 the probe flavor acknowledges every command `failed` with `control_loop_unavailable` until
 the Phase E Virtual Stick loop lands.
+
+## Phase F: the aircraft's video into MediaMTX over WHIP
+
+Phase F publishes the live feed from the phone into the ground station's MediaMTX over WHIP,
+where the console plays it over WHEP at `http://<ground-station>:8889/drone{id}/whep`
+(`console/src/media/playback.ts` derives the name `drone{droneId}`). The direction is the
+prior-art directive on issue #51: WHIP first, the publisher vendored from WildBridge rather
+than written fresh, no RTMP or RTSP path.
+
+### What is vendored and what changed
+
+From WildDrone/WildBridge (MIT, `android-sdk-v5-sample/.../webrtc/`), each file keeping its
+MIT header plus a `Vendored from WildDrone/WildBridge (MIT)` line, under
+`org.worldofhacks.sweep.bridge.publish.webrtc` (or `bridge-publish` when pure Kotlin):
+
+| File | Where | Changes |
+|---|---|---|
+| `WhipPublisher.kt` | app main | HTTP POST/DELETE moved to `WhipClient` (OkHttp bound to the Wi-Fi network); retry delay and the decision to retry come from the publish state machine; no STUN server (LAN host candidates; an unreachable STUN on an internet-less AP stalls ICE gathering); the first-frame wait wraps the `CapturerObserver` so any capturer works; the source's encoder factory builds the peer connection factory; ICE `FAILED`, `DISCONNECTED` past a grace period, and a connect timeout end the attempt with a reason; sender bitrate floor, `DegradationPreference.DISABLED`, and `setBitrate` for passthrough; the resolution and frame-rate switching is not carried over |
+| `WebRTCPeerFactory.kt` | app main | one global `initialize` with `WebRTC-H264HighProfile/Enabled/WebRTC-FrameDropper/Disabled/`; one factory per session with the source's encoder factory; the encoder list is logged |
+| `SdpUtils.kt` | `bridge-publish` as `SdpMunger` | Android logging replaced by an injectable sink; `videoCodecs` and `negotiatedVideoCodec` added |
+| `WebRTCStreamMetrics.kt` | `bridge-publish` | package only |
+| `WebRTCMediaOptions.kt` | app main | default 1280x720 at 30 fps and 4 Mbps (the Mini 3 live view); the fleet bitrate ceilings removed |
+| `SimpleSdpObserver.kt` | app main | `onSetSuccess` also reports success so one observer covers create and set |
+| `SharedDJIFrameSource.kt` | app probe | the explicit re-encode source only; telemetry metadata and the Matrice 400 payload-port logic removed; native resolution by default; a log sink added |
+| `SharedVideoCapturerHandle.kt` | app probe | metadata listener removed |
+
+Not vendored: `DJIV5VideoCapturer.kt` (the shared source covers it), `MockMp4VideoCapturer.kt`
+(the fake flavor generates a test pattern instead), `WebRTCStreamer.kt`, `TelemetryProvider.kt`,
+`FrameMetadata.kt`.
+
+### Sources and the codec gate
+
+WildBridge publishes the SDK's *decoded* NV21 frames re-encoded by the phone. Sweep's default
+is the SDK's *encoded* access units (`ICameraStreamManager.addReceiveStreamListener`, MSDK
+5.8.0+) handed to WebRTC's H.264 packetizer unchanged, which is the low-latency path: no
+decode, no encode, no thermal load. libwebrtc's Android API has no injection point for
+pre-encoded frames, so `Passthrough.kt` pushes one placeholder I420 frame per access unit
+whose buffer carries the unit, and a passthrough `VideoEncoder` emits that unit as the
+`EncodedImage`. Keyframes cannot be requested from the aircraft; delta units are skipped
+until the next SDK keyframe after a start or a PLI, and the skips count as dropped frames.
+
+The gate decides once per stream from the first keyframes: the SPS gives profile and level
+(`bridge-core`'s `SpsParser`), one GOP of delta frames is scanned for B slices, and the
+keyframe cadence is measured. H.264 baseline (incl. constrained), main, or high without B
+slices passes; H.265, High 10, 4:2:2, or B slices fail with `codec_unsupported` and the
+profile in the log and on screen. Nothing is transcoded silently: `Re-encode on the phone`
+is a separate source the pilot selects on the Connectivity card, labelled as adding latency.
+
+Before publish can work with the aircraft, Phase D's codec evidence must show: mime type
+`H264`; profile Baseline, Main, or High (`profile_idc` 66, 77, or 100); no B slices; and the
+keyframe interval (the console freezes for one interval after every viewer join or packet
+loss). An H.265 live view means either selecting H.264 in the aircraft's video settings, if
+this firmware offers it, or the explicit re-encode source.
+
+### Ground station
+
+MediaMTX 1.20.1 (`media/mediamtx.yml`, `webrtc: yes` on 8889, no authentication on
+`all_others`) accepts the four paths `drone1` to `drone4` without per-path configuration.
+The one change is `docker-compose.yml` passing `MTX_WEBRTCADDITIONALHOSTS` from
+`SWEEP_MEDIA_HOST`: inside Docker MediaMTX advertises its container address as its ICE
+candidate, which a phone cannot reach, so the ground station's LAN IP has to be advertised
+too. Set it and recreate the container:
+
+```sh
+export SWEEP_MEDIA_HOST=10.10.1.60      # this Mac on the flight-room LAN; or put it in .env
+docker compose up -d mediamtx
+docker compose logs mediamtx | grep WebRTC
+# [WebRTC] started with listeners on :8889 (TCP/HTTP), :8189 (UDP/ICE)
+```
+
+### On the phone
+
+Build and install with the commands under Build. The fake flavor proves the WHIP path
+without an aircraft or a relay; the probe flavor publishes the aircraft.
+
+1. Setup card: the ground-station host (blank means the relay host) and WebRTC port beside
+   the relay URL; the card shows the derived `http://<host>:8889/drone<n>/whip`. Leave
+   `Publish video automatically` on for the aircraft; the relay link must be joined and the
+   aircraft connected for the automatic start, and either loss stops the session.
+2. Fake flavor: on the Connectivity card press `Start publish` (no relay needed). The
+   publish line walks `connecting` then `publishing` with the negotiated codec: `H264
+   (phone encoder)` on a phone libwebrtc drives with hardware H.264 (Qualcomm or Exynos
+   allowlist), otherwise `VP8 (no H.264 encoder on this phone)`, which the console decodes
+   too. Then the one-second metrics line: bitrate, frame rate, 1280x720, dropped frames,
+   RTT, ICE state.
+3. `docker compose logs -f mediamtx` on the ground station shows, in order:
+   `[WebRTC] [session ...] created by <phone ip>:<port>`, `[path drone1] stream is available
+   and online, 1 track (H264)` (or VP8), `[WebRTC] [session ...] is publishing to path
+   'drone1'`. A session that is created and then closed with an ICE error means the phone
+   could not reach the advertised candidates: check `SWEEP_MEDIA_HOST`.
+4. First look: `http://<ground-station>:8889/drone1` in any browser is MediaMTX's built-in
+   WHEP page; the test pattern's clock and sweeping block make a frozen or late feed obvious
+   (the clock against the browser machine's clock is the glass-to-glass estimate). Then the
+   console's Live module, which reads `<webrtcOrigin>/drone1/whep`.
+5. Probe flavor with the aircraft powered: the publish log shows `listening to the
+   LEFT_OR_MAIN encoded stream`, then `codec gate: H264 High 4.0 1280x720 30fps
+   keyframe/<n>ms` (the Phase D evidence, also in the bench log), then `publishing`. A
+   `Publish failed: codec_unsupported (...)` line names the profile; it does not retry until
+   the source or the aircraft changes.
+6. `Stop publish` logs `WHIP resource released (DELETE 200)` and MediaMTX logs the session
+   closed and `[path drone1] destroyed`. A relay drop, ICE loss, or HTTP error shows
+   `failed` with the reason and `Next publish attempt in <n> s` (1 s doubling to 30 s).
+7. Node status: `Last node_status: ... video publishing` mirrors the relay's
+   `video_publish_state`; the relay's audit JSONL carries the same word.
+8. Bench log: the card names `files/bench/publish-drone<n>-<stamp>.jsonl`; copy it with
+   `adb shell run-as org.worldofhacks.sweep.bridge cat files/bench/<name> > publish.jsonl`.
+   One `video_publish` record per second: `bitrate_kbps`, `fps`, `frames_sent`,
+   `dropped_frames`, `ice_state`, `rtt_ms` (the LAN leg, from the selected ICE pair),
+   `processing_ms` (the Android leg: queueing for passthrough, NV21 scale plus encode for
+   re-encode), `codec`, `width`, `height`, `keyframe_interval_ms`. The aircraft-to-controller
+   leg is not observable on the phone; the glass-to-glass measurement (a clock in front of
+   the camera against the console) minus the two logged legs gives it.
+
+The console's Live player mounts only once the relay reports per-drone `video` state, which
+is PR #68's relay-side work; until that lands, MediaMTX's own page is the viewer.
 
 ## Phase B4 exit on the phone
 
