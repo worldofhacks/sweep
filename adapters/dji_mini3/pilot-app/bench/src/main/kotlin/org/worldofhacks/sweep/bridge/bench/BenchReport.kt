@@ -257,6 +257,7 @@ object BenchAnalysis {
                 RecordKind.COMMAND_DROPPED -> dropped++
                 RecordKind.STICK_SENT -> sticks.add(t)
                 RecordKind.TELEMETRY -> telemetry.add(t)
+                RecordKind.TELEMETRY_KEY -> if (record.string("event") == "first_value") notes.add("telemetry key ${record.string("key") ?: "?"} first value")
                 RecordKind.VIDEO_PUBLISH -> {
                     publishWindows++
                     if (record.string("ice_state") == "connected") publishConnected++

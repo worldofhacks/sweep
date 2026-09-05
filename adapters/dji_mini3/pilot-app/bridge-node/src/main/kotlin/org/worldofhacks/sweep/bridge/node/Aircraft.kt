@@ -46,6 +46,12 @@ data class AircraftSnapshot(
     val hardware: HardwareProfile,
     val camera: CameraProbe = CameraProbe(),
     val keyRatesHz: Map<String, Double> = emptyMap(),
+    /**
+     * The `probe` flavor's listener evidence per key: registered or not, what `isKeySupported`
+     * answered at registration and at the last product connect, and the first value's time.
+     * Empty in the `fake` flavor. Like [keyRatesHz] it is shown on the phone, never sent.
+     */
+    val telemetryKeys: Map<String, TelemetryKeyStatus> = emptyMap(),
     // Phase E flight hooks: compass heading (degrees, 0 north, clockwise) for body-frame
     // steps, whether the loop has Virtual Stick enabled (reported in `node_status`), and
     // the snake_case reason the loop lost control authority (an RC takeover latched until the
