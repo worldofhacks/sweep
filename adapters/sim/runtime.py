@@ -54,6 +54,7 @@ class SimBridgeFactory:
         self.watchdog = watchdog
         self.adapter_keys = adapter_keys
         self.auto_start_nodes = auto_start_nodes
+        self.capability_profile = planning.effective_capability_profile()
         self.bridges: dict[str, AutonomyRelayBridge] = {}
         self.flights: dict[str, SimFlightAdapter] = {}
         self.nodes: dict[str, _SimNodeIngress] = {}
@@ -70,7 +71,7 @@ class SimBridgeFactory:
         )
         arbiter = SafetyArbiter(self.safety)
         controller = AutonomyController(
-            planner=DeterministicPlanner(self.planning),
+            planner=DeterministicPlanner(self.planning, self.capability_profile),
             arbiter=arbiter,
             dispatcher=AdapterDispatcher(flight=flight, camera=camera, arbiter=arbiter),
         )
@@ -429,6 +430,7 @@ def create_m14_sim_app(
         clock=clock,
         event_ids=event_ids,
         intent_sink_factory=factory,
+        capability_profile=factory.capability_profile,
         shutdown_callback=factory.close,
     )
     application.state.sim_bridge_factory = factory
@@ -528,10 +530,6 @@ def _planning_config() -> PlanningConfig:
         capture_min_overlap_deg=10.0,
         capture_gimbal_pitch_deg=0.0,
         reconstruct_headings_deg=tuple(float(value) for value in range(0, 360, 45)),
-        altitude_step_m=0.5,
-        altitude_floor_z_m=0.0,
-        altitude_configuration_id="m14-sim-floor-v1",
-        altitude_completion_tolerance_m=0.05,
     )
 
 

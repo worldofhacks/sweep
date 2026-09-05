@@ -26,6 +26,7 @@ from relay.auth import (
     Principal,
     authenticate,
 )
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import REGISTERED_SOURCES
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import RelaySettings, console_origins_from_env
@@ -71,6 +72,7 @@ class RelayRuntime:
         clock: Clock | None = None,
         event_ids: EventIdFactory | None = None,
         intent_sink_factory: IntentSinkFactory | None = None,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
         authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
     ) -> None:
@@ -78,7 +80,11 @@ class RelayRuntime:
         self.credential_resolver = credential_resolver or settings.credential_resolver()
         self.clock = clock or _epoch_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
+        declared_profile = getattr(intent_sink_factory, "capability_profile", None)
+        if declared_profile is not None and declared_profile != capability_profile:
+            raise ValueError("intent sink factory and relay runtime use different profiles")
         self.intent_sink_factory = intent_sink_factory
+        self.capability_profile = capability_profile
         self.leave_authorizer_factory = leave_authorizer_factory
         self.authoritative_rooms_factory = authoritative_rooms_factory
         self.sessions: dict[str, RelaySession] = {}
@@ -119,6 +125,7 @@ class RelayRuntime:
                     clock=self.clock,
                     event_ids=self.event_ids,
                     leave_authorizer=leave_authorizer,
+                    capability_profile=self.capability_profile,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -647,6 +654,7 @@ def create_app(
     clock: Clock | None = None,
     event_ids: EventIdFactory | None = None,
     intent_sink_factory: IntentSinkFactory | None = None,
+    capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
     authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
@@ -661,6 +669,7 @@ def create_app(
             clock=clock,
             event_ids=event_ids,
             intent_sink_factory=intent_sink_factory,
+            capability_profile=capability_profile,
             leave_authorizer_factory=leave_authorizer_factory,
             authoritative_rooms_factory=authoritative_rooms_factory,
         )

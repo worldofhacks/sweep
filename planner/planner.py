@@ -142,6 +142,17 @@ class PlanningConfig:
             self.altitude_completion_tolerance_m,
         )
 
+    def effective_capability_profile(
+        self, requested: CapabilityProfile = C1_CAPABILITY_PROFILE
+    ) -> CapabilityProfile:
+        """Return the immutable deployment profile implied by configured grounding."""
+        if self.altitude_grounding() is not None or not requested.supports(IntentName.ALTITUDE):
+            return requested
+        return CapabilityProfile(
+            requested.name,
+            requested.enabled_intent_names - {IntentName.ALTITUDE},
+        )
+
     def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding:
         return TranslationGrounding(
             policy=TranslationPolicy(
@@ -167,22 +178,10 @@ class DeterministicPlanner:
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     ) -> None:
         self.config = config
-        self.capability_profile = capability_profile
-        if (
-            self.capability_profile.supports(IntentName.ALTITUDE)
-            and self.config.altitude_grounding() is None
-        ):
-            raise ValueError("an altitude-capable profile requires explicit altitude grounding")
+        self.capability_profile = config.effective_capability_profile(capability_profile)
 
     def supports(self, intent: IntentV1) -> bool:
-        if not self.capability_profile.supports(intent.name):
-            return False
-        if intent.name is IntentName.ALTITUDE:
-            grounding = self.config.altitude_grounding()
-            return grounding is not None and (
-                "height_m" not in intent.args or grounding.floor_z_m is not None
-            )
-        return True
+        return self.capability_profile.supports(intent.name)
 
     def plan(self, intent: IntentV1, snapshot: FleetSnapshot) -> PlanResult:
         if not self.supports(intent):
@@ -315,18 +314,11 @@ class DeterministicPlanner:
             grounding = self.config.altitude_grounding()
             if grounding is None:
                 return _refusal(intent, snapshot, RefusalReason.UNSUPPORTED, "altitude is disabled")
-            if "height_m" in intent.args and grounding.floor_z_m is None:
-                return _refusal(
-                    intent,
-                    snapshot,
-                    RefusalReason.UNSUPPORTED,
-                    "absolute altitude requires a surveyed floor",
-                )
-            if set(intent.args) not in ({"delta"}, {"height_m"}):
+            if set(intent.args) != {"delta"}:
                 return _refusal(
                     intent, snapshot, RefusalReason.INVALID_PLAN, "invalid altitude arguments"
                 )
-            raw_value = next(iter(intent.args.values()))
+            raw_value = intent.args["delta"]
             try:
                 value = float(raw_value)
             except (OverflowError, TypeError, ValueError):
@@ -336,10 +328,6 @@ class DeterministicPlanner:
             if isinstance(raw_value, bool) or not isfinite(value):
                 return _refusal(
                     intent, snapshot, RefusalReason.INVALID_PLAN, "altitude must be finite"
-                )
-            if "height_m" in intent.args and value <= 0:
-                return _refusal(
-                    intent, snapshot, RefusalReason.INVALID_STATE, "height must be positive"
                 )
             targets = {}
             for drone_id in selected:
@@ -352,11 +340,7 @@ class DeterministicPlanner:
                         "altitude requires an airborne aircraft",
                         drone_id,
                     )
-                target_z = (
-                    aircraft.pose.z + value * grounding.step_m
-                    if "delta" in intent.args
-                    else grounding.floor_z_m + value
-                )
+                target_z = aircraft.pose.z + value * grounding.step_m
                 if not isfinite(target_z):
                     return _refusal(
                         intent, snapshot, RefusalReason.INVALID_PLAN, "altitude target overflow"

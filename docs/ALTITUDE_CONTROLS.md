@@ -1,38 +1,29 @@
 # Altitude controls
 
-The opt-in altitude planner moves airborne selected drones vertically, preserves
-each planned X/Y, and commands hold after each movement completes. Grounded targets
-are refused. The default deployment configuration keeps altitude unavailable.
+The opt-in altitude planner moves selected airborne drones vertically, preserves
+each planned X/Y coordinate, and commands hold after each movement completes.
+Grounded targets are refused. Altitude is absent from a deployment's effective
+capability profile unless that deployment supplies explicit grounding.
 
-## Arguments and authoritative reference
+## Frozen Intent v1 contract
 
-`altitude` accepts exactly one of these argument objects:
+`altitude` accepts exactly `{"delta": number}`. The delta uses configured steps:
+with a 0.5 m step, `{"delta": 0.6096}` requests a one-foot ascent. Negative values
+descend and zero preserves height. Unknown fields, mixed forms, booleans, strings,
+and nonfinite or overflowing numbers are refused before planning.
 
-| Arguments | Meaning |
-|---|---|
-| `{"delta": 1}` | Add one configured altitude step to each selected aircraft's current Z. Negative values descend; zero preserves height. |
-| `{"height_m": 1.524}` | Set every selected aircraft to 1.524 m above the explicitly configured surveyed floor plane. |
+Intent v1 does not expose an absolute-height argument or reference-frame flag.
+Any future operator interface that accepts human units or an absolute target must
+resolve that request to a PRD-compliant delta from one authoritative, immutable
+snapshot before dispatch. It must not widen the relay or planner schema.
 
-`delta` keeps its existing step semantics. Language converts feet to meters, then
-divides by the deployment's `step_m`: with a 0.5 m step, a one-foot ascent produces
-`delta: 0.6096`. Absolute five-foot height produces `height_m: 1.524`. Units and
-reference cannot be overridden by intent arguments. Mixed forms, unknown fields,
-booleans, nonfinite values and nonpositive absolute heights are refused.
+The optional floor reference is safety and provenance metadata in the same frame
+as `AircraftState.pose.z` and the arbiter geofence. It is supplied through
+`PlanningConfig.altitude_floor_z_m`; it is never inferred from a drone's home or
+takeoff pose. A configured floor replaces the initial zero lower bound, including
+for signed building coordinates, but it is not an externally addressable target.
 
-The authoritative reference is a surveyed horizontal floor plane in the same
-coordinate frame as `AircraftState.pose.z` and the arbiter geofence. It is supplied
-through `PlanningConfig.altitude_floor_z_m`; it is never inferred from per-drone
-home or takeoff poses. Signed building Z is supported: a floor at Z = -2 m and a
-height of 1.524 m yield target Z = -0.476 m if the geofence allows it.
-
-Relative moves preserve differing starting heights. Absolute height converges to
-the shared floor-relative target, subject to spacing. A target at or below the
-configured floor is refused. Without a surveyed floor reference, relative moves
-retain the initial positive-Z flight-domain lower bound of zero and absolute
-height is unavailable. This first path does not infer terrain, stepped-floor
-height or a different floor underneath each aircraft.
-
-## Configuration and preview seam
+## Configuration and capability profile
 
 ```python
 from dataclasses import replace
@@ -47,64 +38,50 @@ configured = replace(
 ```
 
 `PlanningConfig.altitude_grounding()` returns either `None` when disabled or an
-immutable grounding containing the step, floor, configuration identity, and measured
-completion tolerance. A positive step requires an explicit nonempty configuration
-identity and a finite positive completion tolerance. A missing floor
-reference still permits configured relative motion. The C1 capability projection
-must advertise altitude only when grounding exists, and absolute height only
-when `floor_z_m` exists.
+immutable grounding containing the step, optional floor, configuration identity,
+and measured completion tolerance. A positive step requires an explicit nonempty
+configuration identity and a finite positive completion tolerance.
 
-The plan serializes this grounding for preview. Language integration must bind
-all three fields into its preview/confirmation digest. Changing the scale, floor
-reference, configuration identity or enabled state invalidates initial dispatch.
-The controller binds a live grounding provider to the dispatcher, which checks it
-before every subsequent adapter call, including resumption after an asynchronous
-completion. A dispatcher without that provider refuses altitude work. Already
-affected aircraft receive the existing best-effort safety hold when later work
-is refused. A changed configuration requires a new preview.
+`PlanningConfig.effective_capability_profile()` removes altitude when that grounding
+is absent and never adds an intent omitted by the requested profile. A composition
+root must derive this value once and pass that same immutable profile to the relay
+runtime, session, bridge, and planner. This keeps advertised and enforced support
+equal without a second altitude-specific flag or duplicated profile source.
 
-A terminal hover acknowledgement is necessary but not sufficient for success. The
-dispatcher also requires position telemetry newer than the pre-command baseline,
-the hovering flight state, and a measured pose within the configured tolerance of
-the confirmed target. Missing or contradictory evidence fails closed and holds the
-affected aircraft.
+The plan serializes grounding for preview. Language integration must bind its
+fields into the preview/confirmation digest. Changing the step, floor, identity,
+tolerance, or enabled state invalidates dispatch. The dispatcher checks the live
+grounding before every adapter call, including continuation after asynchronous
+completion. A dispatcher without that provider refuses altitude work; already
+affected aircraft receive the existing best-effort safety hold.
 
-The relay accepts the expanded shape, but the planner remains the deployment
-capability gate. This PR does not enable a live deployment or add spoken phrase
-recognition. The coordinated C1 language/profile integration consumes this seam.
-The translation policy remains the existing authoritative world versus
-aircraft-relative policy from `PlanningConfig`/`TranslationGrounding`.
+A terminal hover acknowledgement is necessary but not sufficient for success.
+The dispatcher also requires position telemetry newer than the pre-command
+baseline, hovering flight state, and a measured pose within the configured
+tolerance of the confirmed target. Missing or contradictory evidence fails closed.
 
 ## Safety and sequencing
 
-The planner emits one `GOTO`/`HOVER` pair per selected aircraft. Relative ascent
-moves higher aircraft first; descent moves lower aircraft first. Adapter commands
-advance only after a terminal completed acknowledgement. No simultaneous-arrival
-or group-formation motion is promised.
+The planner emits one `GOTO`/`HOVER` pair per selected aircraft. Ascent moves higher
+aircraft first; descent moves lower aircraft first. Adapter commands advance only
+after terminal completion evidence. No simultaneous-arrival behavior is promised.
 
-The arbiter checks the complete sequence before any I/O and checks each command
-again against current state. It enforces armed/airborne state, selection and
-roster/epoch identity, operator and RC authority, battery, fresh positioning,
-geofence, ceiling and separation. Vertical swept spacing includes intermediate
-stationary aircraft and completed projected positions, including unselected ready
-aircraft. Stale peer positioning refuses a move. Both endpoints of a vertical
-segment must be inside the convex box geofence and below the ceiling.
+The arbiter checks the complete sequence before I/O and each command against live
+state. It enforces armed/airborne state, roster and epoch identity, operator and RC
+authority, battery, fresh positioning, geofence, ceiling, and separation. Vertical
+swept spacing includes stationary, completed, unselected, and newly drifted peers.
+Both endpoints of a vertical segment must remain inside the geofence and ceiling.
 
-Exact X/Y preservation is deliberate: if authoritative horizontal position drifts
-from the planned column before a vertical command, that command is refused. The
-planner does not dispatch a horizontal correction as part of altitude control.
-Altitude also participates in the existing conflicting-motion and stop handling.
-
-The current arbiter uses its configured box and ceiling. Scan-derived obstacles,
-per-zone clearance and measured stopping envelopes still require the indoor-map
-integration gates. Synthetic tests do not establish live flight readiness.
+Exact X/Y preservation is deliberate: live horizontal drift from the planned
+column refuses the vertical command instead of dispatching a hidden correction.
+Altitude also participates in conflicting-motion and stop handling. Synthetic
+tests establish software behavior, not live-flight readiness.
 
 ## Verification
 
-`planner/test_altitude_control.py` exercises validated intent payloads through the
-controller, planner, arbiter and simulated adapter. It covers relative feet-to-step
-examples, absolute heights from different starts, signed floor references,
-grounded refusal, sequential column movement, stale state, swept collisions,
-configuration changes, horizontal drift and asynchronous completion.
-`arbiter/test_altitude_safety.py` independently tests malformed plans and the
-command-time safety boundary. Run the full Python package suite with `uv run pytest`.
+`planner/test_altitude_control.py` covers relay validation through planning,
+arbitration, synchronous and asynchronous completion, configuration changes,
+drift, swept collisions, and final measured boundary violations.
+`arbiter/test_altitude_safety.py` independently exercises malformed plans and
+command-time safety boundaries. The simulator evaluation verifies that one
+effective capability profile is advertised and enforced end to end.

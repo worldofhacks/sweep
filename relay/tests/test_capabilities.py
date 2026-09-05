@@ -57,7 +57,7 @@ def test_profile_rejects_unimplemented_intents() -> None:
         CapabilityProfile("empty", frozenset())
 
 
-def test_altitude_capability_requires_deployment_grounding() -> None:
+def test_deployment_grounding_derives_altitude_capability_without_widening() -> None:
     disabled = replace(
         planning_config(),
         altitude_step_m=None,
@@ -70,11 +70,19 @@ def test_altitude_capability_requires_deployment_grounding() -> None:
         C1_CAPABILITY_PROFILE.enabled_intent_names - {IntentName.ALTITUDE},
     )
 
-    with pytest.raises(ValueError, match="requires explicit altitude grounding"):
-        DeterministicPlanner(disabled, C1_CAPABILITY_PROFILE)
+    disabled_planner = DeterministicPlanner(disabled, C1_CAPABILITY_PROFILE)
+    grounded_planner = DeterministicPlanner(planning_config(), C1_CAPABILITY_PROFILE)
+    narrowed_planner = DeterministicPlanner(planning_config(), without_altitude)
 
-    planner = DeterministicPlanner(disabled, without_altitude)
-    assert not planner.supports(make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1}))
+    altitude = make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1})
+    assert disabled_planner.capability_profile.name == C1_CAPABILITY_PROFILE.name
+    assert disabled_planner.capability_profile.enabled_intent_names == (
+        C1_CAPABILITY_PROFILE.enabled_intent_names - {IntentName.ALTITUDE}
+    )
+    assert not disabled_planner.supports(altitude)
+    assert grounded_planner.capability_profile is C1_CAPABILITY_PROFILE
+    assert narrowed_planner.capability_profile is without_altitude
+    assert not narrowed_planner.supports(altitude)
 
 
 def test_profile_normalizes_caller_owned_sets_and_string_members() -> None:

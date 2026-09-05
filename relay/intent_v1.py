@@ -219,12 +219,11 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({})
 
     if name is IntentName.ALTITUDE:
-        if set(value) not in ({"delta"}, {"height_m"}):
+        if set(value) != {"delta"}:
             raise ValueError
-        key = next(iter(value))
-        if not _is_finite_number(value[key]) or (key == "height_m" and value[key] <= 0):
+        if not _is_finite_number(value["delta"]):
             raise ValueError
-        return MappingProxyType({key: value[key]})
+        return MappingProxyType({"delta": value["delta"]})
 
     if name is IntentName.SPACING:
         if set(value) != {"delta"} or not _is_finite_number(value["delta"]):

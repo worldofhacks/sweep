@@ -18,7 +18,7 @@ import relay.audit as audit_module
 from relay.app import RelayRuntime, create_app
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal
-from relay.capabilities import C1_CAPABILITY_PROFILE
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
 from relay.session import CapabilityBoundIntentSink, IntentSink
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
@@ -119,6 +119,65 @@ def test_first_frame_authentication_precedes_state_and_intent_results(
     assert replay.status_code == 200
     assert all(record["event"]["type"] != "auth.accepted" for record in replay.json()["events"])
     assert CONSOLE_KEY.decode() not in replay.text
+
+
+def test_injected_effective_profile_is_advertised_and_enforced(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    profile = CapabilityProfile(
+        C1_CAPABILITY_PROFILE.name,
+        C1_CAPABILITY_PROFILE.enabled_intent_names - {IntentName.ALTITUDE},
+    )
+    app = create_app(
+        app_settings,
+        clock=clock,
+        event_ids=event_ids,
+        capability_profile=profile,
+    )
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as socket:
+            _, state = _authenticate_console(socket)
+            altitude = intent_payload(intent_id="ungrounded-altitude")
+            altitude.update(name="altitude", args={"delta": 1})
+            socket.send_json(altitude)
+            refusal = _receive_type(socket, "refusal")
+
+        runtime = app.state.relay_runtime
+        session = runtime.session(SESSION)
+        assert runtime.capability_profile is profile
+        assert session.capability_profile is profile
+
+    assert "altitude" not in state["enabled_intent_names"]
+    assert refusal["reason"] == "unsupported"
+
+
+def test_runtime_rejects_a_declared_factory_profile_mismatch_before_use(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    profile = CapabilityProfile("land-only", frozenset({IntentName.LAND}))
+
+    class DeclaredFactory:
+        capability_profile = profile
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, _session: object) -> IntentSink:
+            self.calls += 1
+            return lambda _intent, _state: None
+
+    factory = DeclaredFactory()
+
+    with pytest.raises(ValueError, match="different profiles"):
+        RelayRuntime(
+            app_settings,
+            clock=clock,
+            event_ids=event_ids,
+            intent_sink_factory=factory,
+        )
+
+    assert factory.calls == 0
 
 
 def test_relay_publishes_acceptance_before_downstream_execution_finishes(
