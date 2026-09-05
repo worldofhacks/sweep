@@ -1,11 +1,9 @@
 # Live webcam localization
 
 Run `python -m perception.webcam_localization` on the computer receiving a hand-carried
-1280×720 camera through MediaMTX. This is the webcam software slice of #84, stacked
-on #105. Use the calibration tool from #103 and the `drone1`–`drone6` paths from #68. The reduced demo at
-`f817fd1b` exposes WHIP/WHEP and disables RTSP. The additive Compose override
-below enables MediaMTX's existing RTSP endpoint on loopback for this decoder;
-WHIP/WHEP stay available and authentication remains disabled. Those PRs remain separate dependencies with their own review gates.
+1280×720 camera through MediaMTX. This is an observation-only webcam software slice
+of #84 built on the merged map/localization foundation. Use the calibration tool
+from #103 and the existing `drone1`–`drone6` media paths.
 
 The loop reuses #105's tag36h11 detector, joint PnP, ambiguity/normal checks,
 map validation, and camera-to-body transform. It emits JSONL observations only.
@@ -41,19 +39,21 @@ includes the measured p95-minus-p50 tail: green below 0.5 seconds, amber below t
 seconds, red otherwise. A p95 is not a worst-case latency bound. The receiver cannot
 prove capture freshness when a publisher freezes/replays images or its buffering
 changes. Preserve a visible clock/video recording for the physical timing review.
-Every record says `capture_time_verified: false`, `flight_approved: false`,
+Every record says `capture_time_verified: false`,
+`publisher_identity_verified: false`, `flight_approved: false`,
 `control_eligible: false`, and `spacing_certified: false`.
 
 ## Prepare the webcam and evidence
 
-1. Start the #68 reduced demo with the webcam override on the receiving computer.
-   The override enables RTSP without changing the demo's media files or adding
-   authentication. Use a dedicated source path; keep queued branch work with its owners.
+1. Start the repository's MediaMTX service on the receiving computer. Use a
+   dedicated source path. The current development configuration has no media
+   authentication and publishes RTSP on the host, so run it only on an isolated,
+   trusted network; it is not a production or flight-ready deployment.
 
    ```bash
-   docker compose -f docker-compose.yml -f perception/webcam_media.override.yml up -d mediamtx
+   docker compose up -d mediamtx
    ```
-2. Publish the camera using #68's documented Linux example:
+2. Publish the camera with FFmpeg on Linux:
 
    ```bash
    ffmpeg -f v4l2 -framerate 30 -video_size 1280x720 -i /dev/video0 \
@@ -102,8 +102,9 @@ pipeline object from the calibration artifact:
   "stream_path": "drone1",
   "localizer": {
     "bundle": "room-map",
-    "accepted_versions": ["YOUR_ACCEPTED_VERSION"],
-    "map_sha256": "MANIFEST_CONTENT_SHA256",
+    "accepted_versions": {
+      "YOUR_ACCEPTED_VERSION": "MANIFEST_CONTENT_SHA256"
+    },
     "calibration_path": "intrinsics_webcam.yaml",
     "calibration_sha256": "CALIBRATION_FILE_SHA256",
     "camera_serial": "YOUR_WEBCAM_SERIAL",
@@ -126,11 +127,14 @@ pipeline object from the calibration artifact:
 
 The example FOV bounds belong to the synthetic test camera; replace them with
 independent bounds for your camera. File paths resolve relative to the configuration.
-A changed map, calibration, or latency file refuses startup until its pinned digest
-is updated deliberately. The URL path must match `stream_path`. The local demo requires no credentials. If a later deployment uses credentials,
-keep them in the URL environment variable; observations and errors omit the URL. Verify
-that the publisher on that path is the calibrated camera; a declared serial alone
-cannot identify the physical source.
+The accepted-version mapping must come from operator-controlled configuration and
+bind the selected bundle version to its exact manifest content digest. A changed
+map, calibration, or latency file refuses startup until its pin is updated
+deliberately. The URL path must match `stream_path`. The development media service
+requires no credentials. If a later deployment uses credentials, keep them in the
+URL environment variable; observations and errors omit the URL. Verify that the
+publisher on that path is the calibrated camera; a declared serial alone cannot
+identify the physical source, and this loop records that identity as unverified.
 
 ## Run and report the traverse
 
@@ -142,8 +146,10 @@ python -m perception.webcam_localization --config webcam.json \
 
 Use a fresh output path. Synthetic calibration or latency files are refused unless
 `--allow-synthetic` is explicitly supplied; that mode always marks evidence synthetic.
-The output includes artifact pins, position/velocity, covariance, rejected-fix decisions,
-pose observations, estimated capture times, stream status, and freshness heartbeats.
+The output includes the selected bundle identity and artifact pins, position/velocity,
+covariance, rejected-fix decisions, pose observations, estimated capture times,
+stream status, and freshness heartbeats. It does not repeat the complete accepted-map
+allowlist in every heartbeat.
 
 Walk the lobby-to-kitchen route with a time-synchronized reference recording. Mark
 at least six independently surveyed held-out reference-point positions at their

@@ -15,26 +15,37 @@ import numpy as np
 from perception.tag_localization import TagLocalizer
 from perception.webcam_filter import WebcamFilter
 from perception.webcam_stream import WebcamStream
+from tools.map_common import parse_document
 
 
 def pinned_json(path, expected):
     payload = Path(path).read_bytes()
     if hashlib.sha256(payload).hexdigest() != expected:
         raise ValueError("artifact hash mismatch")
-    return json.loads(payload)
+    return parse_document(payload, str(path))
 
 
 class WebcamLocalization:
     def __init__(self, config, *, allow_synthetic=False):
+        if not isinstance(config, dict) or not isinstance(config.get("localizer"), dict):
+            raise ValueError("webcam configuration must contain a localizer object")
         if config.get("stream_path") not in {f"drone{i}" for i in range(1, 7)}:
             raise ValueError("stream_path must name a MediaMTX drone1 through drone6 path")
-        self.localizer = TagLocalizer(**config["localizer"])
+        localizer_config = config["localizer"]
+        pipeline = localizer_config.get("pipeline")
+        if not isinstance(pipeline, dict):
+            raise ValueError("localizer pipeline must be an object")
+        if (
+            not isinstance(localizer_config.get("camera_serial"), str)
+            or not localizer_config["camera_serial"]
+        ):
+            raise ValueError("camera_serial must be nonempty text")
+        self.localizer = TagLocalizer(**localizer_config)
         self.latency = pinned_json(config["latency_path"], config["latency_sha256"])
-        pipeline = config["localizer"]["pipeline"]
         if (
             self.latency.get("schema_version") != 1
             or self.latency.get("status") != "offline"
-            or self.latency.get("camera_serial") != config["localizer"]["camera_serial"]
+            or self.latency.get("camera_serial") != localizer_config["camera_serial"]
             or self.latency.get("pipeline") != pipeline
             or pipeline.get("decoder_path") != "opencv-ffmpeg-rtsp"
             or pipeline.get("latency_endpoint") != "localization_decode"
@@ -77,15 +88,16 @@ class WebcamLocalization:
         self.last_pose = None
         self.provenance = {
             "stream_path": config["stream_path"],
-            "map_sha256": config["localizer"]["map_sha256"],
-            "accepted_versions": config["localizer"]["accepted_versions"],
-            "calibration_sha256": config["localizer"]["calibration_sha256"],
+            "bundle_version": self.localizer.manifest["bundle_version"],
+            "map_sha256": self.localizer.manifest["content_sha256"],
+            "calibration_sha256": localizer_config["calibration_sha256"],
             "latency_sha256": config["latency_sha256"],
-            "camera_serial": config["localizer"]["camera_serial"],
+            "camera_serial": localizer_config["camera_serial"],
             "timing_provenance": "decode_monotonic_minus_measured_p50",
             "latency_p50_s": self.delay,
             "latency_p95_s": float(p95),
             "capture_time_verified": False,
+            "publisher_identity_verified": False,
             "synthetic": any(kind != "recorded_live" for kind in kinds),
         }
 
@@ -137,10 +149,18 @@ class WebcamLocalization:
 
 def load_config(path):
     path = Path(path).resolve()
-    config = json.loads(path.read_text())
+    config = parse_document(path.read_bytes(), str(path))
+    if not isinstance(config.get("localizer"), dict):
+        raise ValueError("webcam configuration must contain a localizer object")
     for key in ("bundle", "calibration_path"):
-        config["localizer"][key] = str(path.parent / config["localizer"][key])
-    config["latency_path"] = str(path.parent / config["latency_path"])
+        value = config["localizer"].get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"localizer {key} must be a nonempty path")
+        config["localizer"][key] = str(path.parent / value)
+    latency_path = config.get("latency_path")
+    if not isinstance(latency_path, str) or not latency_path:
+        raise ValueError("latency_path must be a nonempty path")
+    config["latency_path"] = str(path.parent / latency_path)
     return config
 
 
@@ -156,10 +176,11 @@ def main():
         if not math.isfinite(args.duration) or args.duration <= 0:
             raise ValueError("duration must be positive seconds")
         url = os.environ.get(args.url_env, "")
-        if not url.startswith("rtsp://"):
+        parsed_url = urlsplit(url)
+        if parsed_url.scheme not in ("rtsp", "rtsps") or not parsed_url.netloc:
             raise ValueError("URL environment variable must contain the MediaMTX RTSP read URL")
         loop = WebcamLocalization(load_config(args.config), allow_synthetic=args.allow_synthetic)
-        if urlsplit(url).path != "/" + loop.provenance["stream_path"]:
+        if parsed_url.path != "/" + loop.provenance["stream_path"]:
             raise ValueError("RTSP path does not match the pinned source configuration")
         started = time.monotonic()
         with args.output.open("x", encoding="utf-8") as output, WebcamStream(url) as source:

@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pytest
 
-from perception.webcam_localization import WebcamLocalization
+from perception.webcam_localization import WebcamLocalization, load_config
 from tests.test_tag_localization import scene
 
 
@@ -41,6 +41,7 @@ def webcam_scene(tmp_path):
 
 def test_real_tag_pixels_enter_capture_corrected_filter_and_age_without_frames(tmp_path):
     config, image, expected = webcam_scene(tmp_path)
+    expected_map = next(iter(config["localizer"]["accepted_versions"].values()))
     loop = WebcamLocalization(config, allow_synthetic=True)
     assert loop.at(9)["confidence"] == "red"
     result = loop.update(image, 10.1, 10.12)
@@ -52,6 +53,10 @@ def test_real_tag_pixels_enter_capture_corrected_filter_and_age_without_frames(t
     assert result["confidence"] == "green"
     assert result["control_eligible"] is False
     assert result["spacing_certified"] is False
+    assert result["publisher_identity_verified"] is False
+    assert result["map_sha256"] == expected_map
+    assert result["bundle_version"] in config["localizer"]["accepted_versions"]
+    assert "accepted_versions" not in result
     assert loop.at(10.5)["confidence"] == "amber"
     assert loop.at(12)["confidence"] == "red"
 
@@ -74,11 +79,18 @@ def test_synthetic_artifacts_cannot_enter_live_mode(tmp_path):
         WebcamLocalization(config)
 
 
-@pytest.mark.parametrize("field", ["map_sha256", "calibration_sha256"])
-def test_wrong_localization_pins_refuse_start(tmp_path, field):
+def test_wrong_calibration_pin_refuses_start(tmp_path):
     config, _, _ = webcam_scene(tmp_path)
-    config["localizer"][field] = "0" * 64
+    config["localizer"]["calibration_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="hash mismatch"):
+        WebcamLocalization(config, allow_synthetic=True)
+
+
+def test_wrong_accepted_map_digest_refuses_start(tmp_path):
+    config, _, _ = webcam_scene(tmp_path)
+    version = next(iter(config["localizer"]["accepted_versions"]))
+    config["localizer"]["accepted_versions"][version] = "0" * 64
+    with pytest.raises(ValueError, match="accepted version content hash mismatch"):
         WebcamLocalization(config, allow_synthetic=True)
 
 
@@ -105,3 +117,20 @@ def test_slow_or_insufficient_latency_evidence_refuses_start(tmp_path, values):
     config["latency_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(ValueError, match="latency"):
         WebcamLocalization(config, allow_synthetic=True)
+
+
+def test_duplicate_latency_keys_are_rejected_even_when_bytes_are_pinned(tmp_path):
+    config, _, _ = webcam_scene(tmp_path)
+    path = tmp_path / "latency.json"
+    payload = path.read_text().rstrip()[:-1] + ', "status": "offline"}'
+    path.write_text(payload)
+    config["latency_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="duplicate key"):
+        WebcamLocalization(config, allow_synthetic=True)
+
+
+def test_config_loader_rejects_ambiguous_json(tmp_path):
+    path = tmp_path / "webcam.json"
+    path.write_text('{"localizer": {}, "localizer": {}, "latency_path": "latency.json"}')
+    with pytest.raises(ValueError, match="duplicate key"):
+        load_config(path)

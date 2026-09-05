@@ -5,7 +5,10 @@ import json
 import math
 from pathlib import Path
 
+from tools.map_common import parse_document
+
 PINS = ("map_sha256", "calibration_sha256", "latency_sha256")
+IDENTITY = ("bundle_version", "camera_serial", "stream_path", "timing_provenance")
 
 
 def _number(value):
@@ -36,6 +39,13 @@ def build_report(rows, checkpoints):
         for value in pins.values()
     ):
         raise ValueError("artifact pins must be SHA-256 digests")
+    identity = {key: rows[0].get(key) for key in IDENTITY}
+    if (
+        any(not isinstance(value, str) or not value for value in identity.values())
+        or identity["stream_path"] not in {f"drone{i}" for i in range(1, 7)}
+        or identity["timing_provenance"] != "decode_monotonic_minus_measured_p50"
+    ):
+        raise ValueError("invalid observation identity")
     previous_elapsed = previous_timestamp = None
     origin = None
     fixes = [0.0]
@@ -43,8 +53,12 @@ def build_report(rows, checkpoints):
     candidates = []
     synthetic = False
     for row in rows:
-        if not isinstance(row, dict) or any(row.get(key) != pins[key] for key in PINS):
-            raise ValueError("inconsistent artifact pins")
+        if (
+            not isinstance(row, dict)
+            or any(row.get(key) != pins[key] for key in PINS)
+            or any(row.get(key) != identity[key] for key in IDENTITY)
+        ):
+            raise ValueError("inconsistent observation provenance")
         elapsed = _number(row.get("run_elapsed_s"))
         timestamp = _number(row.get("timestamp"))
         if elapsed < 0 or timestamp < 0:
@@ -65,6 +79,9 @@ def build_report(rows, checkpoints):
             or row.get("confidence") not in ("green", "amber", "red")
             or row.get("flight_approved") is not False
             or row.get("control_eligible") is not False
+            or row.get("spacing_certified") is not False
+            or row.get("capture_time_verified") is not False
+            or row.get("publisher_identity_verified") is not False
         ):
             raise ValueError("invalid observation status")
         synthetic |= row["synthetic"]
@@ -104,6 +121,9 @@ def build_report(rows, checkpoints):
         )
     results = []
     ids = set()
+    checkpoint_times = set()
+    checkpoint_positions = set()
+    matched_observations = set()
     for checkpoint in checkpoints["checkpoints"]:
         if not isinstance(checkpoint, dict):
             raise ValueError("checkpoint must be an object")
@@ -115,36 +135,54 @@ def build_report(rows, checkpoints):
         if elapsed < 0 or elapsed > end:
             raise ValueError("checkpoint lies outside recorded run")
         position = _position(checkpoint.get("position_map_m"))
-        nearest = min(candidates, key=lambda row: abs(row["run_elapsed_s"] - elapsed), default=None)
+        position_key = tuple(position)
+        if elapsed in checkpoint_times or position_key in checkpoint_positions:
+            raise ValueError("held-out checkpoints must use distinct times and positions")
+        checkpoint_times.add(elapsed)
+        checkpoint_positions.add(position_key)
+        nearest_item = min(
+            enumerate(candidates),
+            key=lambda item: abs(item[1]["run_elapsed_s"] - elapsed),
+            default=None,
+        )
+        nearest_index, nearest = nearest_item if nearest_item is not None else (None, None)
         offset = None if nearest is None else abs(nearest["run_elapsed_s"] - elapsed)
         error = (
             math.dist(position, nearest["position_map_m"])
-            if offset is not None and offset <= 0.1 + 1e-9
+            if offset is not None
+            and offset <= 0.1 + 1e-9
+            and nearest_index not in matched_observations
             else None
         )
         if error is not None:
             _number(error)
+            matched_observations.add(nearest_index)
         results.append({"id": identifier, "time_offset_s": offset, "error_m": error})
     coverage_pass = bool(candidates) and end > 0 and max_gap <= 0.5 + 1e-9
     checkpoint_pass = len(results) >= 6 and all(
         result["error_m"] is not None and result["error_m"] <= 0.10 for result in results
     )
-    return pins | {
-        "status": "software_evidence_checks_only",
-        "capture_timing": "estimated_from_decode_time_and_measured_latency",
-        "recorded_duration_s": end,
-        "max_localization_gap_s": max_gap,
-        "coverage_within_500ms": coverage_pass,
-        "checkpoint_tolerance_m": 0.10,
-        "checkpoint_count": len(results),
-        "checkpoints": results,
-        "heldout_checkpoint_check_passed": checkpoint_pass,
-        "software_checks_passed": coverage_pass and checkpoint_pass,
-        "synthetic": synthetic,
-        "physical_acceptance": "pending_independent_verification",
-        "flight_approved": False,
-        "control_eligible": False,
-    }
+    return (
+        pins
+        | identity
+        | {
+            "status": "software_evidence_checks_only",
+            "capture_timing": "estimated_from_decode_time_and_measured_latency",
+            "recorded_duration_s": end,
+            "max_localization_gap_s": max_gap,
+            "coverage_within_500ms": coverage_pass,
+            "checkpoint_tolerance_m": 0.10,
+            "checkpoint_count": len(results),
+            "checkpoints": results,
+            "heldout_checkpoint_check_passed": checkpoint_pass,
+            "software_checks_passed": coverage_pass and checkpoint_pass,
+            "synthetic": synthetic,
+            "physical_acceptance": "pending_independent_verification",
+            "flight_approved": False,
+            "control_eligible": False,
+            "spacing_certified": False,
+        }
+    )
 
 
 def main():
@@ -154,9 +192,14 @@ def main():
     args = parser.parse_args()
     try:
         rows = [
-            json.loads(line) for line in args.observations.read_text().splitlines() if line.strip()
+            parse_document(line, f"{args.observations}:{line_number}")
+            for line_number, line in enumerate(args.observations.read_text().splitlines(), 1)
+            if line.strip()
         ]
-        report = build_report(rows, json.loads(args.checkpoints.read_text()))
+        report = build_report(
+            rows,
+            parse_document(args.checkpoints.read_bytes(), str(args.checkpoints)),
+        )
         print(json.dumps(report, indent=2, allow_nan=False))
     except (ValueError, OSError, KeyError, TypeError, AttributeError, OverflowError):
         raise SystemExit(

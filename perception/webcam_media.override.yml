@@ -1,7 +1,0 @@
-services:
-  mediamtx:
-    environment:
-      MTX_RTSP: "yes"
-      MTX_RTSPTRANSPORTS: "tcp"
-    ports:
-      - "127.0.0.1:8554:8554"
