@@ -200,3 +200,238 @@ def acknowledgement_payload(
         "reason": reason,
         "detail": detail,
     }
+
+
+_COMMAND_ARGS: dict[str, dict[str, object]] = {
+    "takeoff": {"z_mm": 1_000},
+    "goto": {"x_mm": 1_000, "y_mm": -400, "z_mm": 1_000, "speed_mm_s": 500},
+    "rotate_to": {"yaw_mdeg": 90_000, "speed_mdeg_s": 30_000},
+    "set_gimbal_pitch": {"pitch_mdeg": -15_000},
+    "capture_panorama": {"capture_id": "capture-1"},
+    "capture_photo": {"capture_id": "capture-1"},
+    "retrieve_media": {"file_id": "capture-1-pano-360"},
+}
+
+
+def command_payload(
+    *,
+    event_id: str,
+    timestamp: int = 1_756_700_000_000,
+    command_id: str = "command-1",
+    intent_id: str = "intent-1",
+    roster_version: int = 1,
+    drone_id: int = 1,
+    session: str = SESSION,
+    connection_epoch: int = 1,
+    seq: int = 1,
+    ttl_ms: int = 2_000,
+    operation: str = "goto",
+    args: dict[str, object] | None = None,
+    key: bytes = ADAPTER_KEY,
+    **overrides: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "v": 1,
+        "t": timestamp,
+        "type": "command",
+        "event_id": event_id,
+        "session": session,
+        "command_id": command_id,
+        "intent_id": intent_id,
+        "roster_version": roster_version,
+        "drone_id": drone_id,
+        "connection_epoch": connection_epoch,
+        "seq": seq,
+        "issued_at": timestamp,
+        "ttl_ms": ttl_ms,
+        "operation": operation,
+        "args": dict(_COMMAND_ARGS.get(operation, {})) if args is None else args,
+    }
+    payload.update(overrides)
+    payload["signature"] = sign_event(payload, key)
+    return payload
+
+
+def capabilities_payload(
+    *,
+    event_id: str,
+    timestamp: int = 1_756_700_000_000,
+    drone_id: int = 1,
+    session: str = SESSION,
+    connection_epoch: int = 1,
+    **overrides: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "v": 1,
+        "t": timestamp,
+        "type": "capabilities",
+        "event_id": event_id,
+        "session": session,
+        "drone_id": drone_id,
+        "connection_epoch": connection_epoch,
+        "native_panorama_modes": ["pano_360"],
+        "photo_capture": True,
+        "gimbal_pitch_min_deg": -90.0,
+        "gimbal_pitch_max_deg": 30.0,
+        "horizontal_fov_deg": 66.0,
+        "storage_remaining_bytes": 50_000_000,
+        "media_retrieval": True,
+        "aircraft_model": "DJI Mini 3",
+        "aircraft_firmware": "01.00.05.00",
+        "rc_firmware": "04.16.05.00",
+        "phone_model": "fake-node",
+        "android_version": "14",
+        "sdk_version": "5.18.0",
+        "measured_hfov_deg": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def media_record(
+    *,
+    timestamp: int = 1_756_700_000_000,
+    drone_id: int = 1,
+    connection_epoch: int = 1,
+    capture_id: str = "capture-1",
+    file_id: str = "capture-1-pano-360",
+    **overrides: object,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "capture_id": capture_id,
+        "file_id": file_id,
+        "timestamp_ms": timestamp,
+        "drone_id": drone_id,
+        "connection_epoch": connection_epoch,
+        "pose": {"x": 1.0, "y": 2.0, "z": 1.0},
+        "actual_yaw_deg": 0.0,
+        "gimbal_pitch_deg": 0.0,
+        "intrinsics": {
+            "width_px": 4_096,
+            "height_px": 2_048,
+            "horizontal_fov_deg": 360.0,
+            "projection": "equirectangular",
+        },
+        "checksum_sha256": "0" * 64,
+        "storage_ref": f"node://media/{drone_id}/{file_id}",
+        "retrieval_status": "completed",
+    }
+    record.update(overrides)
+    return record
+
+
+def media_file_payload(
+    *,
+    event_id: str,
+    timestamp: int = 1_756_700_000_000,
+    drone_id: int = 1,
+    session: str = SESSION,
+    connection_epoch: int = 1,
+    **overrides: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "v": 1,
+        "t": timestamp,
+        "type": "media_file",
+        "event_id": event_id,
+        "session": session,
+        **media_record(timestamp=timestamp, drone_id=drone_id, connection_epoch=connection_epoch),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def capture_bundle_payload(
+    *,
+    event_id: str,
+    timestamp: int = 1_756_700_000_000,
+    drone_id: int = 1,
+    session: str = SESSION,
+    connection_epoch: int = 1,
+    **overrides: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "v": 1,
+        "t": timestamp,
+        "type": "capture_bundle",
+        "event_id": event_id,
+        "session": session,
+        "room_id": "room-1",
+        "capture_id": "capture-1",
+        "drone_id": drone_id,
+        "connection_epoch": connection_epoch,
+        "pattern": "pano_360",
+        "coverage": "full_equirectangular",
+        "status": "completed",
+        "media": [
+            media_record(timestamp=timestamp, drone_id=drone_id, connection_epoch=connection_epoch)
+        ],
+        "reason": None,
+        "detail": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def capture_readiness_payload(
+    *,
+    event_id: str,
+    timestamp: int = 1_756_700_000_000,
+    drone_id: int = 1,
+    session: str = SESSION,
+    connection_epoch: int = 1,
+    **overrides: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "v": 1,
+        "t": timestamp,
+        "type": "capture_readiness",
+        "event_id": event_id,
+        "session": session,
+        "drone_id": drone_id,
+        "connection_epoch": connection_epoch,
+        "room_id": "room-1",
+        "capture_id": "capture-1",
+        "guidance_mode": "visual_advisory",
+        "pose_source": "operator_approved",
+        "pose_ok": True,
+        "clearance_ok": True,
+        "camera_ok": True,
+        "storage_ok": True,
+        "motion_ok": True,
+        "image_quality_ok": True,
+        "coverage_missing": [90, 135],
+        "next_heading_deg": 90,
+        "suggested_delta": {"kind": "yaw", "degrees": 12},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def node_status_payload(
+    *,
+    event_id: str,
+    timestamp: int = 1_756_700_000_000,
+    drone_id: int = 1,
+    session: str = SESSION,
+    connection_epoch: int = 1,
+    **overrides: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "v": 1,
+        "t": timestamp,
+        "type": "node_status",
+        "event_id": event_id,
+        "session": session,
+        "drone_id": drone_id,
+        "connection_epoch": connection_epoch,
+        "virtual_stick_enabled": False,
+        "control_authority": True,
+        "authority_change_reason": None,
+        "watchdog_state": "nominal",
+        "video_publish_state": "stopped",
+        "phone_battery_percent": 81,
+        "phone_thermal_state": "none",
+    }
+    payload.update(overrides)
+    return payload
