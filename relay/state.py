@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from threading import RLock
 
 from relay.contracts import (
+    CapabilitiesFrame,
     Membership,
     MembershipAction,
     MembershipRequest,
+    NodeStatusFrame,
     TelemetryV1,
 )
 
@@ -81,6 +85,8 @@ class _AircraftRecord:
     telemetry: TelemetryV1 | None = None
     disconnected_at: int | None = None
     history: list[dict[str, object]] = field(default_factory=list)
+    camera_capabilities: CapabilitiesFrame | None = None
+    node_status: NodeStatusFrame | None = None
 
 
 class FleetRegistry:
@@ -102,6 +108,46 @@ class FleetRegistry:
         self._pending: dict[str, object] | None = None
         self._accepted_plan: dict[str, object] | None = None
         self._lock = RLock()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Hold registry readers until the caller commits; restore state on failure."""
+        with self._lock:
+            # History is append-only and can become large during a long-running
+            # session.  Keep the existing lists and remember their lengths so a
+            # rollback costs O(number of aircraft), not O(total telemetry history).
+            aircraft_before = {
+                drone_id: replace(record, history=record.history)
+                for drone_id, record in self._aircraft.items()
+            }
+            history_lengths = {
+                drone_id: len(record.history) for drone_id, record in self._aircraft.items()
+            }
+            scalars_before = (
+                self._roster_version,
+                self._state_sequence,
+                self._selection,
+                self._armed,
+                self._estop,
+                self._pending,
+                self._accepted_plan,
+            )
+            try:
+                yield
+            except BaseException:
+                for drone_id, record in aircraft_before.items():
+                    del record.history[history_lengths[drone_id] :]
+                self._aircraft = aircraft_before
+                (
+                    self._roster_version,
+                    self._state_sequence,
+                    self._selection,
+                    self._armed,
+                    self._estop,
+                    self._pending,
+                    self._accepted_plan,
+                ) = scalars_before
+                raise
 
     @property
     def roster_version(self) -> int:
@@ -153,6 +199,8 @@ class FleetRegistry:
                 record.rc_safety_operator_present = False
                 record.telemetry = None
                 record.disconnected_at = None
+                record.camera_capabilities = None
+                record.node_status = None
 
             self._roster_version += 1
             self._remember(
@@ -375,6 +423,38 @@ class FleetRegistry:
                 provenance="relay_transport_attestation",
             )
 
+    def check_current(self, drone_id: int, connection_epoch: int) -> None:
+        """Raise unless the aircraft joined in this epoch and is neither leaving nor lost."""
+        with self._lock:
+            record = self._require_current(drone_id, connection_epoch)
+            if record.membership in {Membership.DISCONNECTED, Membership.LEAVING}:
+                raise RegistryError(
+                    "invalid_membership_transition",
+                    f"node frames are not current while {record.membership.value}",
+                )
+
+    def apply_capabilities(self, frame: CapabilitiesFrame) -> None:
+        """Retain the node's latest camera capabilities; readiness gates are unchanged."""
+        with self._lock:
+            self.check_current(frame.drone_id, frame.connection_epoch)
+            self._aircraft[frame.drone_id].camera_capabilities = frame
+
+    def apply_node_status(self, frame: NodeStatusFrame) -> None:
+        """Retain the node's latest bridge health; only signed readiness changes authority."""
+        with self._lock:
+            self.check_current(frame.drone_id, frame.connection_epoch)
+            self._aircraft[frame.drone_id].node_status = frame
+
+    def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None:
+        with self._lock:
+            record = self._aircraft.get(drone_id)
+            return None if record is None else record.camera_capabilities
+
+    def node_status(self, drone_id: int) -> NodeStatusFrame | None:
+        with self._lock:
+            record = self._aircraft.get(drone_id)
+            return None if record is None else record.node_status
+
     def set_selection(self, drone_ids: tuple[int, ...]) -> None:
         if len(set(drone_ids)) != len(drone_ids) or any(item <= 0 for item in drone_ids):
             raise ValueError("selection must contain unique positive drone IDs")
@@ -549,6 +629,14 @@ class FleetRegistry:
             "rc_safety_operator_present": record.rc_safety_operator_present,
             "telemetry": telemetry,
             "membership_history": _json_copy(record.history),
+            "camera_capabilities": (
+                None
+                if record.camera_capabilities is None
+                else record.camera_capabilities.state_payload()
+            ),
+            "node_status": (
+                None if record.node_status is None else record.node_status.state_payload()
+            ),
         }
 
     @staticmethod

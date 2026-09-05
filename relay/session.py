@@ -2,24 +2,39 @@
 
 from __future__ import annotations
 
+import queue
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field, replace
 from threading import Lock, RLock
 
+from planner.models import CommandOperation
 from relay.audit import AuditLogError, SessionAuditLog
-from relay.auth import Principal, verify_event_signature
+from relay.auth import Principal, sign_event, verify_event_signature
 from relay.contracts import (
+    NODE_FRAME_TYPES,
     AdapterAcknowledgement,
+    CapabilitiesFrame,
+    CaptureBundleFrame,
+    CaptureReadinessFrame,
     ContractError,
     LifecycleStatus,
+    MediaFileFrame,
+    MediaFileRecord,
     MembershipAction,
     MembershipRequest,
+    NodeStatusFrame,
     acknowledgement_event,
+    command_event,
     parse_adapter_acknowledgement,
+    parse_capabilities,
+    parse_capture_bundle,
+    parse_capture_readiness,
+    parse_media_file,
     parse_membership_request,
+    parse_node_status,
     parse_telemetry,
     refusal_event,
 )
@@ -64,7 +79,32 @@ class IntentSinkResult:
 
 IntentSink = Callable[[IntentV1, dict[str, object]], object]
 LeaveAuthorizer = Callable[[int, int, dict[str, object]], bool]
+NodeFrame = (
+    CapabilitiesFrame
+    | CaptureBundleFrame
+    | MediaFileFrame
+    | CaptureReadinessFrame
+    | NodeStatusFrame
+)
 _UNSET = object()
+_TERMINAL_STATUSES = frozenset(
+    {
+        LifecycleStatus.REFUSED,
+        LifecycleStatus.COMPLETED,
+        LifecycleStatus.FAILED,
+        LifecycleStatus.INVALIDATED,
+    }
+)
+_NODE_FRAME_PARSERS: dict[str, Callable[[object], NodeFrame]] = {
+    "capabilities": parse_capabilities,
+    "capture_bundle": parse_capture_bundle,
+    "media_file": parse_media_file,
+    "capture_readiness": parse_capture_readiness,
+    "node_status": parse_node_status,
+}
+_COMMAND_LEDGER_MAX = 4_096
+_COMMAND_RETENTION_MIN_MS = 60_000
+_COMMAND_RETENTION_MULTIPLIER = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +113,7 @@ class RelayLimits:
     transport_event_max_age_ms: int
     future_clock_skew_ms: int
     telemetry_freshness_ms: int
+    command_ttl_ms: int = 2_000
 
     def __post_init__(self) -> None:
         if (
@@ -80,6 +121,7 @@ class RelayLimits:
                 self.intent_max_age_ms,
                 self.transport_event_max_age_ms,
                 self.telemetry_freshness_ms,
+                self.command_ttl_ms,
             )
             <= 0
         ):
@@ -93,6 +135,21 @@ class _IntentLedgerEntry:
     status: LifecycleStatus
     selection: tuple[int, ...]
     command_statuses: dict[str, LifecycleStatus]
+    retryable: bool = True
+
+
+@dataclass(slots=True)
+class _IssuedCommand:
+    """The immutable command identity plus bounded late-result bookkeeping."""
+
+    intent_id: str
+    roster_version: int
+    drone_id: int
+    connection_epoch: int
+    operation: CommandOperation
+    issued_at: int
+    status: LifecycleStatus | None = None
+    waiter_active: bool = True
 
 
 @dataclass(slots=True)
@@ -140,6 +197,11 @@ class RelaySession:
         self._seen_transport_event_ids: set[str] = set()
         self._last_transport_t: dict[tuple[str, int | None], int] = {}
         self._intents: dict[str, _IntentLedgerEntry] = {}
+        self._command_seq: dict[tuple[int, int], int] = {}
+        self._issued_commands: dict[str, _IssuedCommand] = {}
+        self._command_waiters: dict[str, queue.SimpleQueue[AdapterAcknowledgement]] = {}
+        self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
+        self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
@@ -151,12 +213,15 @@ class RelaySession:
             "acknowledgements": 0,
             "membership_events": 0,
             "telemetry_events": 0,
+            "node_events": 0,
+            "commands_issued": 0,
         }
         self._mutation_usable = True
         self._projection_usable = True
         self._replay_usable = True
         self._audit_batch: list[dict[str, object]] | None = None
         self._audit_operation_id: int | None = None
+        self._audit_undo: list[Callable[[], None]] | None = None
         self._lock = RLock()
 
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
@@ -171,6 +236,8 @@ class RelaySession:
                 return self.process_telemetry(raw, principal)
             if frame_type == "acknowledgement":
                 return self.process_acknowledgement(raw, principal)
+            if frame_type in NODE_FRAME_TYPES:
+                return self.process_node_frame(raw, principal)
         return [
             self.protocol_refusal(
                 reason="frame_not_allowed",
@@ -263,13 +330,7 @@ class RelaySession:
                     )
                 ]
             if intent.retry_of is not None:
-                previous = self._intents.get(intent.retry_of)
-                retryable = {
-                    LifecycleStatus.REFUSED,
-                    LifecycleStatus.FAILED,
-                    LifecycleStatus.INVALIDATED,
-                }
-                if previous is None or previous.status not in retryable:
+                if not self._can_retry(intent.retry_of):
                     return [
                         self._refuse_intent(
                             raw,
@@ -293,6 +354,7 @@ class RelaySession:
                     )
                 ]
 
+            self._remember_intent(intent.intent_id)
             self._intents[intent.intent_id] = _IntentLedgerEntry(
                 status=LifecycleStatus.ACCEPTED,
                 selection=intent.selection,
@@ -416,6 +478,7 @@ class RelaySession:
                 return pending.events
             if pending.executing or pending.operation_id is not None:
                 return []
+            self._remember_intent(intent_id)
             self._pending_intents.pop(intent_id)
             self._acknowledgements.pop(intent_id, None)
             cancel = getattr(self.intent_sink, "cancel_intent", None)
@@ -433,7 +496,6 @@ class RelaySession:
     def _execute_pending(
         self, pending: _PendingIntent, sink: IntentSink
     ) -> list[dict[str, object]]:
-        intent_id = pending.intent.intent_id
         now = self.clock()
         with self._lock:
             if pending.events is not None:
@@ -453,21 +515,7 @@ class RelaySession:
                 self._ensure_mutation_usable()
                 if not isinstance(error, Exception):
                     raise
-                self._intents[intent_id].status = LifecycleStatus.REFUSED
-                self._log_intent(
-                    pending.intent,
-                    outcome=LifecycleStatus.REFUSED,
-                    reason="downstream_error",
-                    now=now,
-                )
-                return [
-                    self._refusal(
-                        intent_id=intent_id,
-                        reason="downstream_error",
-                        detail="the downstream intent consumer did not accept the request",
-                        now=now,
-                    )
-                ]
+                return [self._record_downstream_error(pending.intent, now)]
         with self._lock:
             return self._complete_pending(pending, sink_result, relay_events=events)
 
@@ -518,6 +566,36 @@ class RelaySession:
                 )
         pending.events = events
         return events
+
+    def _record_downstream_error(self, intent: IntentV1, now: int) -> dict[str, object]:
+        """Record uncertain post-dispatch failure without authorizing duplicate I/O."""
+        self._remember_intent(intent.intent_id)
+        entry = self._intents[intent.intent_id]
+        entry.retryable = False
+        if entry.status is LifecycleStatus.ACCEPTED:
+            entry.status = LifecycleStatus.REFUSED
+        self._log_intent(intent, outcome=entry.status, reason="downstream_error", now=now)
+        detail = "downstream execution is uncertain; this request cannot be retried"
+        if entry.status is LifecycleStatus.REFUSED:
+            return self._refusal(
+                intent_id=intent.intent_id,
+                reason="downstream_error",
+                detail=detail,
+                now=now,
+            )
+        event = acknowledgement_event(
+            t=now,
+            event_id=self.event_ids(),
+            session=self.session_id,
+            intent_id=intent.intent_id,
+            status=entry.status,
+            roster_version=self.registry.roster_version,
+            reason="downstream_error",
+            detail=detail,
+        )
+        self._append_audit(event)
+        self._metrics["acknowledgements"] += 1
+        return event
 
     def process_membership(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -643,6 +721,9 @@ class RelaySession:
             self._record_adapter_ack_fact(acknowledgement)
             self._append_audit(event)
             self._metrics["acknowledgements"] += 1
+            waiter = self._command_waiters.get(acknowledgement.command_id)
+            if waiter is not None:
+                waiter.put(acknowledgement)
             events = [event]
             if acknowledgement.status in {
                 LifecycleStatus.COMPLETED,
@@ -669,7 +750,7 @@ class RelaySession:
 
     def prepare_resume(self, intent_id: str | None = None) -> _ResumeWork | None:
         """Claim queued completion work while the runtime owns its session operation."""
-        with self._lock:
+        with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             for index, work in enumerate(self._resume_continuations):
                 if intent_id is None or work.acknowledgement.intent_id == intent_id:
@@ -717,6 +798,8 @@ class RelaySession:
         """Commit owned results for publication in the same runtime operation."""
         with self._lock, self._audit_operation(operation_id=work.operation_id):
             self._ensure_mutation_usable()
+            self._remember_intent(work.acknowledgement.intent_id)
+            self._remember_resume(work)
             committed = (
                 self.intent_sink.commit_resume(work.token, outcome) if work.phased else outcome
             )
@@ -733,6 +816,306 @@ class RelaySession:
                     queue.pop(0)
                 self._resuming_intents.difference_update(work.blocked_ids)
             return events
+
+    def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
+        """Accept a node-authored frame; only capabilities and node_status change state.
+
+        Media files and capture bundles are audited and retained for the command wire
+        but not fanned out; capture readiness is fanned out unchanged.
+        """
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if principal.source != "adapter" or principal.drone_id is None:
+                return [
+                    self._protocol_refusal(
+                        reason="source_not_allowed",
+                        detail="only an authenticated adapter may send node frames",
+                        now=now,
+                    )
+                ]
+            try:
+                frame = _parse_node_frame(raw)
+                drone_id, connection_epoch = _node_frame_identity(frame)
+                self._check_adapter_binding(drone_id, principal)
+                if frame.session != self.session_id:
+                    raise ContractError(
+                        "session_mismatch", "node frame session does not match the WebSocket path"
+                    )
+                self._claim_transport_event(frame.event_id, frame.t, principal, now)
+                self.registry.check_current(drone_id, connection_epoch)
+                if isinstance(frame, CapabilitiesFrame):
+                    self.registry.apply_capabilities(frame)
+                elif isinstance(frame, NodeStatusFrame):
+                    self.registry.apply_node_status(frame)
+                elif isinstance(frame, MediaFileFrame):
+                    self._remember_media(frame.file)
+                    self._retain_media(frame.file)
+                elif isinstance(frame, CaptureBundleFrame):
+                    for record in frame.media:
+                        self._remember_media(record)
+                        self._retain_media(record)
+                elif isinstance(frame, CaptureReadinessFrame):
+                    self._remember_capture_readiness(drone_id)
+                    self._capture_readiness[drone_id] = frame
+            except (ContractError, RegistryError) as error:
+                return [
+                    self._protocol_refusal(
+                        reason=error.code,
+                        detail=error.detail,
+                        now=now,
+                        drone_id=principal.drone_id,
+                        connection_epoch=self.registry.connection_epoch(principal.drone_id),
+                    )
+                ]
+
+            event = frame.to_event()
+            self._append_audit(event)
+            self._metrics["node_events"] += 1
+            if isinstance(frame, MediaFileFrame | CaptureBundleFrame):
+                return []
+            events: list[dict[str, object]] = [event]
+            if isinstance(frame, CapabilitiesFrame | NodeStatusFrame):
+                state = self._state_event(now)
+                self._append_audit(state)
+                events.append(state)
+            return events
+
+    def issue_command(
+        self,
+        *,
+        command_id: str,
+        intent_id: str,
+        roster_version: int,
+        drone_id: int,
+        connection_epoch: int,
+        operation: CommandOperation,
+        args: Mapping[str, object],
+        signing_key: bytes,
+    ) -> dict[str, object]:
+        """Sign, sequence, and audit one relay-authored command for a joined node.
+
+        Commands originate in-process, so an intent the session has not seen (an
+        autonomy-originated safety plan) is registered as executing so the node's
+        acknowledgements correlate; a terminal intent cannot receive new commands.
+        The audit record omits the signature; the returned frame carries it.
+        """
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self._prune_command_ledger(now)
+            registered = self._issued_commands.get(command_id)
+            identity = (intent_id, roster_version, drone_id, connection_epoch, operation)
+            if registered is not None and (
+                (
+                    registered.intent_id,
+                    registered.roster_version,
+                    registered.drone_id,
+                    registered.connection_epoch,
+                    registered.operation,
+                )
+                != identity
+                or registered.waiter_active
+                or registered.status is not None
+            ):
+                raise ValueError("command_id has already been issued in this session")
+            if registered is None and len(self._issued_commands) >= _COMMAND_LEDGER_MAX:
+                raise ValueError(
+                    "command ledger is full of commands still awaiting a bounded terminal result"
+                )
+            self.registry.check_current(drone_id, connection_epoch)
+            entry = self._intents.get(intent_id)
+            if entry is not None and entry.status in _TERMINAL_STATUSES:
+                raise ValueError("intent is terminal and cannot receive new commands")
+            key = (drone_id, connection_epoch)
+            seq = self._command_seq.get(key, 0) + 1
+            event = command_event(
+                t=now,
+                event_id=self.event_ids(),
+                session=self.session_id,
+                command_id=command_id,
+                intent_id=intent_id,
+                roster_version=roster_version,
+                drone_id=drone_id,
+                connection_epoch=connection_epoch,
+                seq=seq,
+                issued_at=now,
+                ttl_ms=self.limits.command_ttl_ms,
+                operation=operation,
+                args=args,
+            )
+            self._remember_command_sequence(key)
+            self._remember_issued_command(command_id)
+            if entry is None:
+                self._remember_intent(intent_id)
+                self._intents[intent_id] = _IntentLedgerEntry(
+                    status=LifecycleStatus.EXECUTING,
+                    selection=(drone_id,),
+                    command_statuses={},
+                )
+            self._command_seq[key] = seq
+            if registered is None:
+                self._issued_commands[command_id] = _IssuedCommand(
+                    intent_id=intent_id,
+                    roster_version=roster_version,
+                    drone_id=drone_id,
+                    connection_epoch=connection_epoch,
+                    operation=operation,
+                    issued_at=now,
+                )
+            else:
+                registered.issued_at = now
+                registered.waiter_active = True
+            self._command_waiters[command_id] = queue.SimpleQueue()
+            self._append_audit(event)
+            self._metrics["commands_issued"] += 1
+            return {**event, "signature": sign_event(event, signing_key)}
+
+    def register_dispatched_command(self, command: object) -> None:
+        """Register an adapter-domain command at the immediate pre-I/O boundary."""
+        command_id = getattr(command, "command_id", None)
+        intent_id = getattr(command, "intent_id", None)
+        roster_version = getattr(command, "roster_version", None)
+        drone_id = getattr(command, "drone_id", None)
+        connection_epoch = getattr(command, "connection_epoch", None)
+        operation = getattr(command, "operation", None)
+        if (
+            not isinstance(command_id, str)
+            or not command_id
+            or not isinstance(intent_id, str)
+            or not intent_id
+            or not isinstance(roster_version, int)
+            or isinstance(roster_version, bool)
+            or not isinstance(drone_id, int)
+            or isinstance(drone_id, bool)
+            or not isinstance(connection_epoch, int)
+            or isinstance(connection_epoch, bool)
+            or not isinstance(operation, CommandOperation)
+        ):
+            raise ValueError("dispatched command violates the typed command boundary")
+        with self._lock:
+            self._ensure_mutation_usable()
+            self.registry.check_current(drone_id, connection_epoch)
+            entry = self._intents.get(intent_id)
+            if entry is None or entry.status in _TERMINAL_STATUSES:
+                raise ValueError("dispatched command does not belong to an active intent")
+            issued = self._issued_commands.get(command_id)
+            identity = (intent_id, roster_version, drone_id, connection_epoch, operation)
+            if issued is not None:
+                if (
+                    issued.intent_id,
+                    issued.roster_version,
+                    issued.drone_id,
+                    issued.connection_epoch,
+                    issued.operation,
+                ) != identity:
+                    raise ValueError("command_id was already registered with another identity")
+                return
+            now = self.clock()
+            self._prune_command_ledger(now)
+            if len(self._issued_commands) >= _COMMAND_LEDGER_MAX:
+                raise ValueError("command ledger is full")
+            self._issued_commands[command_id] = _IssuedCommand(
+                intent_id=intent_id,
+                roster_version=roster_version,
+                drone_id=drone_id,
+                connection_epoch=connection_epoch,
+                operation=operation,
+                issued_at=now,
+                waiter_active=False,
+            )
+
+    def await_command_acknowledgement(
+        self, command_id: str, *, timeout_ms: int
+    ) -> AdapterAcknowledgement | None:
+        """Block outside the session lock until the node acknowledges or the wait expires.
+
+        Each call returns the next acknowledgement for the command. The waiter is
+        released after a terminal acknowledgement or a timeout; later acknowledgements
+        remain audited facts but no longer wake a caller.
+        """
+        with self._lock:
+            waiter = self._command_waiters.get(command_id)
+        if waiter is None:
+            return None
+        try:
+            acknowledgement = waiter.get(timeout=max(timeout_ms, 0) / 1000)
+        except queue.Empty:
+            with self._lock:
+                self._command_waiters.pop(command_id, None)
+                if issued := self._issued_commands.get(command_id):
+                    issued.waiter_active = False
+            return None
+        if acknowledgement.status in _TERMINAL_STATUSES:
+            with self._lock:
+                self._command_waiters.pop(command_id, None)
+                if issued := self._issued_commands.get(command_id):
+                    issued.waiter_active = False
+        return acknowledgement
+
+    def discard_command_waiter(self, command_id: str) -> None:
+        """Stop waking a caller for a command that could not reach the node."""
+        with self._lock:
+            self._command_waiters.pop(command_id, None)
+            if issued := self._issued_commands.get(command_id):
+                issued.waiter_active = False
+
+    def capture_readiness(self, drone_id: int) -> CaptureReadinessFrame | None:
+        """Return the node's latest capture_readiness frame for its current epoch."""
+        with self._lock:
+            frame = self._capture_readiness.get(drone_id)
+            if frame is None:
+                return None
+            try:
+                self.registry.check_current(drone_id, frame.connection_epoch)
+            except RegistryError:
+                return None
+            return frame
+
+    def media_files(self, drone_id: int, capture_id: str) -> tuple[MediaFileRecord, ...]:
+        """Return media records the node reported for a capture in its current epoch."""
+        with self._lock:
+            epoch = self.registry.connection_epoch(drone_id)
+            if epoch is None:
+                return ()
+            return tuple(self._media_files.get((drone_id, epoch, capture_id), ()))
+
+    def _retain_media(self, record: MediaFileRecord) -> None:
+        key = (record.drone_id, record.connection_epoch, record.capture_id)
+        records = self._media_files.setdefault(key, [])
+        for index, existing in enumerate(records):
+            if existing.file_id == record.file_id:
+                records[index] = record
+                return
+        records.append(record)
+
+    def _remember_media(self, record: MediaFileRecord) -> None:
+        key = (record.drone_id, record.connection_epoch, record.capture_id)
+        existing = self._media_files.get(key)
+        before = None if existing is None else existing.copy()
+
+        def undo_media() -> None:
+            if before is None:
+                self._media_files.pop(key, None)
+            else:
+                self._media_files[key] = before
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_media)
+
+    def _remember_capture_readiness(self, drone_id: int) -> None:
+        present = drone_id in self._capture_readiness
+        before = self._capture_readiness.get(drone_id)
+
+        def undo_readiness() -> None:
+            if present:
+                assert before is not None
+                self._capture_readiness[drone_id] = before
+            else:
+                self._capture_readiness.pop(drone_id, None)
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_readiness)
 
     def record_lifecycle(
         self,
@@ -777,6 +1160,7 @@ class RelaySession:
                 reason=reason,
                 detail=detail,
             )
+            self._remember_intent(intent_id)
             self._transition_intent(entry, status)
             self._append_audit(event)
             self._metrics["acknowledgements"] += 1
@@ -810,6 +1194,7 @@ class RelaySession:
                 connection_epoch=connection_epoch,
             )
             if intent_id is not None and intent_id in self._intents:
+                self._remember_intent(intent_id)
                 self._transition_intent(self._intents[intent_id], LifecycleStatus.REFUSED)
             self._append_audit(event)
             self._metrics["refused_intents"] += 1
@@ -826,6 +1211,7 @@ class RelaySession:
                 raise ValueError("expected a safety stop for this session")
             if intent.intent_id in self._intents:
                 raise ValueError("duplicate safety intent_id")
+            self._remember_intent(intent.intent_id)
             self._intents[intent.intent_id] = _IntentLedgerEntry(
                 status=LifecycleStatus.ACCEPTED,
                 selection=intent.selection,
@@ -864,6 +1250,7 @@ class RelaySession:
         if plan is None:
             raise ValueError("intent sink returned execution without its accepted plan")
         plan_dict = plan.to_dict()
+        self._register_dispatched_commands(result, plan)
         events: list[dict[str, object]] = []
         terminal = {
             LifecycleStatus.COMPLETED,
@@ -923,6 +1310,62 @@ class RelaySession:
             )
         )
         return events
+
+    def _register_dispatched_commands(self, result: object, plan: object) -> None:
+        """Register exact adapter-domain commands that returned a nonterminal result.
+
+        The remote wire normally registers a command in ``issue_command`` before it is
+        sent. In-process adapters have no command WebSocket, so their typed executing
+        result is the durable proof that the same planner command was dispatched. This
+        keeps the authenticated late-ACK path exact without accepting arbitrary IDs.
+        """
+        if getattr(getattr(result, "status", None), "value", None) != "executing":
+            return
+        commands = {command.command_id: command for command in getattr(plan, "commands", ())}
+        for acknowledgement in getattr(result, "acknowledgements", ()):
+            if getattr(acknowledgement.status, "value", None) not in {"accepted", "executing"}:
+                continue
+            command = commands.get(acknowledgement.command_id)
+            if command is None:
+                raise ValueError("executing result references a command outside its plan")
+            identity = (
+                command.intent_id,
+                command.roster_version,
+                command.drone_id,
+                command.connection_epoch,
+            )
+            if identity != (
+                acknowledgement.intent_id,
+                acknowledgement.roster_version,
+                acknowledgement.drone_id,
+                acknowledgement.connection_epoch,
+            ):
+                raise ValueError("executing acknowledgement does not match its plan command")
+            issued = self._issued_commands.get(command.command_id)
+            if issued is None:
+                self._prune_command_ledger(self.clock())
+                if len(self._issued_commands) >= _COMMAND_LEDGER_MAX:
+                    raise ValueError("command ledger is full")
+                self._issued_commands[command.command_id] = _IssuedCommand(
+                    intent_id=command.intent_id,
+                    roster_version=command.roster_version,
+                    drone_id=command.drone_id,
+                    connection_epoch=command.connection_epoch,
+                    operation=command.operation,
+                    issued_at=self.clock(),
+                    status=LifecycleStatus(acknowledgement.status.value),
+                    waiter_active=False,
+                )
+                continue
+            if (
+                issued.intent_id,
+                issued.roster_version,
+                issued.drone_id,
+                issued.connection_epoch,
+                issued.operation,
+            ) != (*identity, command.operation):
+                raise ValueError("wire command identity does not match its planner command")
+            issued.status = LifecycleStatus(acknowledgement.status.value)
 
     def handle_adapter_disconnect(
         self, *, drone_id: int, connection_epoch: int | None
@@ -1095,23 +1538,78 @@ class RelaySession:
             raise RegistryError(
                 "stale_connection_epoch", "acknowledgement carries a prior connection epoch"
             )
+        issued = self._issued_commands.get(acknowledgement.command_id)
+        if issued is None:
+            raise ContractError(
+                "unknown_command_id",
+                "acknowledgement does not reference a command issued by this relay session",
+            )
+        if acknowledgement.intent_id != issued.intent_id:
+            raise ContractError(
+                "command_intent_mismatch",
+                "acknowledgement intent does not match the issued command",
+            )
+        if acknowledgement.roster_version != issued.roster_version:
+            raise ContractError(
+                "command_roster_mismatch",
+                "acknowledgement roster does not match the issued command",
+            )
+        if acknowledgement.drone_id != issued.drone_id:
+            raise ContractError(
+                "command_drone_mismatch",
+                "acknowledgement aircraft does not match the issued command",
+            )
+        if acknowledgement.connection_epoch != issued.connection_epoch:
+            raise ContractError(
+                "command_epoch_mismatch",
+                "acknowledgement epoch does not match the issued command",
+            )
         if acknowledgement.intent_id not in self._intents:
             raise ContractError("unknown_intent_id", "acknowledgement references an unknown intent")
 
     def _record_adapter_ack_fact(self, acknowledgement: AdapterAcknowledgement) -> None:
         """Retain command facts; only the autonomy owner terminalizes an intent."""
+        self._remember_intent(acknowledgement.intent_id)
+        self._remember_issued_command(acknowledgement.command_id)
         entry = self._intents[acknowledgement.intent_id]
         entry.command_statuses[acknowledgement.command_id] = acknowledgement.status
+        issued = self._issued_commands[acknowledgement.command_id]
+        issued.status = acknowledgement.status
+
+    def _prune_command_ledger(self, now: int) -> None:
+        """Bound retained terminal/abandoned commands without evicting active waiters."""
+        retention_ms = max(
+            _COMMAND_RETENTION_MIN_MS,
+            self.limits.command_ttl_ms * _COMMAND_RETENTION_MULTIPLIER,
+        )
+        expired = [
+            command_id
+            for command_id, issued in self._issued_commands.items()
+            if not issued.waiter_active and now - issued.issued_at > retention_ms
+        ]
+        for command_id in expired:
+            if self._audit_undo is not None:
+                self._remember_issued_command(command_id)
+            self._issued_commands.pop(command_id, None)
+            self._command_waiters.pop(command_id, None)
+        if len(self._issued_commands) < _COMMAND_LEDGER_MAX:
+            return
+        removable = [
+            command_id
+            for command_id, issued in self._issued_commands.items()
+            if not issued.waiter_active and issued.status in _TERMINAL_STATUSES
+        ]
+        for command_id in removable:
+            if len(self._issued_commands) < _COMMAND_LEDGER_MAX:
+                break
+            if self._audit_undo is not None:
+                self._remember_issued_command(command_id)
+            self._issued_commands.pop(command_id, None)
+            self._command_waiters.pop(command_id, None)
 
     @staticmethod
     def _transition_intent(entry: _IntentLedgerEntry, status: LifecycleStatus) -> None:
-        terminal = {
-            LifecycleStatus.REFUSED,
-            LifecycleStatus.COMPLETED,
-            LifecycleStatus.FAILED,
-            LifecycleStatus.INVALIDATED,
-        }
-        if entry.status in terminal and entry.status is not status:
+        if entry.status in _TERMINAL_STATUSES and entry.status is not status:
             raise ValueError(
                 f"cannot move terminal intent from {entry.status.value} to {status.value}"
             )
@@ -1131,6 +1629,16 @@ class RelaySession:
         previous_t = self._last_transport_t.get(key)
         if previous_t is not None and timestamp < previous_t:
             raise ContractError("out_of_order_event", "event timestamp precedes the prior event")
+
+        def undo_claim() -> None:
+            self._seen_transport_event_ids.discard(event_id)
+            if previous_t is None:
+                self._last_transport_t.pop(key, None)
+            else:
+                self._last_transport_t[key] = previous_t
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_claim)
         self._seen_transport_event_ids.add(event_id)
         self._last_transport_t[key] = timestamp
 
@@ -1169,12 +1677,25 @@ class RelaySession:
             now=now,
         )
         if intent_id is not None and add_to_ledger and intent_id not in self._intents:
+            retry_of = _safe_string_field(raw, "retry_of")
+            self._remember_intent(intent_id)
             self._intents[intent_id] = _IntentLedgerEntry(
                 status=LifecycleStatus.REFUSED,
                 selection=() if normalized is None else normalized.selection,
                 command_statuses={},
+                retryable=reason != "invalid_retry"
+                and (retry_of is None or self._can_retry(retry_of)),
             )
         return self._refusal(intent_id=intent_id, reason=reason, detail=detail, now=now)
+
+    def _can_retry(self, intent_id: str) -> bool:
+        entry = self._intents.get(intent_id)
+        return (
+            entry is not None
+            and entry.retryable
+            and entry.status
+            in {LifecycleStatus.REFUSED, LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
+        )
 
     def _refusal(
         self, *, intent_id: str | None, reason: str, detail: str, now: int
@@ -1289,28 +1810,131 @@ class RelaySession:
         if outermost:
             self._audit_batch = []
             self._audit_operation_id = operation_id
+        registry_transaction = self.registry.transaction() if outermost else nullcontext()
+        with registry_transaction, self._rollback_session_state(outermost):
+            try:
+                yield
+                batch = self._audit_batch
+                if outermost and (batch or self._audit_operation_id is not None):
+                    assert batch is not None
+                    self._commit_audit_batch(batch)
+            except BaseException as error:
+                if (
+                    self._audit_batch
+                    or self._audit_operation_id is not None
+                    or isinstance(error, AuditLogError)
+                ):
+                    self._mutation_usable = False
+                    self._projection_usable = False
+                    self._replay_usable = False
+                    if self._audit_operation_id is not None:
+                        self.audit_log.abandon_operation(self._audit_operation_id)
+                raise
+            finally:
+                if outermost:
+                    self._audit_batch = None
+                    self._audit_operation_id = None
+
+    @contextmanager
+    def _rollback_session_state(self, outermost: bool) -> Iterator[None]:
+        if not outermost:
+            yield
+            return
+        before_metrics = self._metrics.copy()
+        self._audit_undo = []
         try:
             yield
-            batch = self._audit_batch
-            if outermost and (batch or self._audit_operation_id is not None):
-                assert batch is not None
-                self._commit_audit_batch(batch)
-        except BaseException as error:
-            if (
-                self._audit_batch
-                or self._audit_operation_id is not None
-                or isinstance(error, AuditLogError)
-            ):
-                self._mutation_usable = False
-                self._projection_usable = False
-                self._replay_usable = False
-                if self._audit_operation_id is not None:
-                    self.audit_log.abandon_operation(self._audit_operation_id)
+        except BaseException:
+            for undo in reversed(self._audit_undo):
+                undo()
+            self._metrics = before_metrics
             raise
         finally:
-            if outermost:
-                self._audit_batch = None
-                self._audit_operation_id = None
+            self._audit_undo = None
+
+    def _remember_intent(self, intent_id: str) -> None:
+        entry = self._intents.get(intent_id)
+        before = (
+            None
+            if entry is None
+            else replace(entry, command_statuses=entry.command_statuses.copy())
+        )
+        pending = self._pending_intents.get(intent_id)
+        acknowledgements = None if pending is None else pending.acknowledgements.copy()
+        queue_for_intent = self._acknowledgements.get(intent_id)
+        queued = None if queue_for_intent is None else queue_for_intent.copy()
+
+        def undo_intent() -> None:
+            if before is None:
+                self._intents.pop(intent_id, None)
+            else:
+                self._intents[intent_id] = before
+            if pending is None:
+                self._pending_intents.pop(intent_id, None)
+            else:
+                assert acknowledgements is not None
+                pending.acknowledgements[:] = acknowledgements
+                self._pending_intents[intent_id] = pending
+            if queue_for_intent is None:
+                self._acknowledgements.pop(intent_id, None)
+            else:
+                assert queued is not None
+                queue_for_intent[:] = queued
+                self._acknowledgements[intent_id] = queue_for_intent
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_intent)
+
+    def _remember_resume(self, work: _ResumeWork) -> None:
+        token = work.token
+        blocked_ids = work.blocked_ids.copy()
+        resuming = self._resuming_intents.copy()
+        continuations = self._resume_continuations.copy()
+
+        def undo_resume() -> None:
+            work.token = token
+            work.blocked_ids.clear()
+            work.blocked_ids.update(blocked_ids)
+            self._resuming_intents.clear()
+            self._resuming_intents.update(resuming)
+            self._resume_continuations[:] = continuations
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_resume)
+
+    def _remember_issued_command(self, command_id: str) -> None:
+        issued = self._issued_commands.get(command_id)
+        before = None if issued is None else replace(issued)
+        waiter_present = command_id in self._command_waiters
+        waiter = self._command_waiters.get(command_id)
+
+        def undo_command() -> None:
+            if before is None:
+                self._issued_commands.pop(command_id, None)
+            else:
+                self._issued_commands[command_id] = before
+            if waiter_present:
+                assert waiter is not None
+                self._command_waiters[command_id] = waiter
+            else:
+                self._command_waiters.pop(command_id, None)
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_command)
+
+    def _remember_command_sequence(self, key: tuple[int, int]) -> None:
+        present = key in self._command_seq
+        before = self._command_seq.get(key)
+
+        def undo_sequence() -> None:
+            if present:
+                assert before is not None
+                self._command_seq[key] = before
+            else:
+                self._command_seq.pop(key, None)
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_sequence)
 
     def _append_audit(self, event: Mapping[str, object]) -> dict[str, object]:
         self._ensure_mutation_usable()
@@ -1376,6 +2000,20 @@ def _thaw(value: object) -> object:
     if isinstance(value, tuple):
         return [_thaw(item) for item in value]
     return value
+
+
+def _parse_node_frame(raw: object) -> NodeFrame:
+    frame_type = raw.get("type") if isinstance(raw, Mapping) else None
+    parser = _NODE_FRAME_PARSERS.get(frame_type) if isinstance(frame_type, str) else None
+    if parser is None:
+        raise ContractError("frame_not_allowed", "frame type is not a node-authored frame")
+    return parser(raw)
+
+
+def _node_frame_identity(frame: NodeFrame) -> tuple[int, int]:
+    if isinstance(frame, MediaFileFrame):
+        return frame.file.drone_id, frame.file.connection_epoch
+    return frame.drone_id, frame.connection_epoch
 
 
 def _safe_string_field(raw: object, field: str) -> str | None:

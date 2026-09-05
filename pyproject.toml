@@ -25,7 +25,17 @@ package = false
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
 pythonpath = ["."]
-testpaths = ["tests", "relay", "planner", "arbiter", "adapters", "perception", "language", "evals"]
+testpaths = [
+  "tests",
+  "relay",
+  "planner",
+  "arbiter",
+  "adapters",
+  "adapters/dji_mini3",
+  "perception",
+  "language",
+  "evals",
+]
 
 [tool.ruff]
 line-length = 100
