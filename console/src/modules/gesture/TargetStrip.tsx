@@ -1,14 +1,95 @@
-import { formatDroneId } from '../../control/state'
+import { formatDroneId, type ControlState, type RequestRecord } from '../../control/state'
+import type { ConsoleIntentName } from '../../relay/contract'
 import { isReady, sortedAircraft } from '../../shell/derive'
 import { formatPercent, humanizeCode } from '../../shell/format'
 import type { ModuleProps } from '../types'
 
+type Controller = ModuleProps['controller']
+
+interface QuickCommandSpec {
+  name: 'takeoff' | 'hold' | 'come_home' | 'land_all'
+  label: string
+  /** The dock must confirm before anything is sent. */
+  confirm: boolean
+  /** Design copy appended to the note; lower-case, ends with a full stop. */
+  detail?: string
+  /** Drafts the preview; absent for names the control hook cannot build. */
+  draft?: (controller: Controller) => void
+}
+
+/** The design's quick commands, in its order. */
+const QUICK_COMMANDS: readonly QuickCommandSpec[] = [
+  { name: 'takeoff', label: 'Takeoff', confirm: true },
+  { name: 'hold', label: 'Hold', confirm: true, draft: (controller) => controller.prepareHold('console') },
+  { name: 'come_home', label: 'Come home', confirm: false },
+  { name: 'land_all', label: 'Land all', confirm: true, detail: 'it targets every aircraft in the roster.' },
+]
+
+/** The names the relay accepts from this console; everything else is listed as unsupported. */
+const CONSOLE_INTENT_NAMES: ReadonlySet<string> = new Set<ConsoleIntentName>([
+  'capture_room',
+  'estop',
+  'hold',
+  'select',
+])
+
+interface QuickCommandView {
+  badge: 'confirm' | 'unsupported' | null
+  /** Why the button is disabled; null when a press drafts a preview. */
+  reason: string | null
+  /** The title: the reason, or what a press does. */
+  note: string
+}
+
+/**
+ * Mirrors the design's control gating order: unsupported name, console
+ * connection, network stop, pending preview, empty selection, readiness.
+ */
+function quickCommandView(
+  spec: QuickCommandSpec,
+  state: ControlState,
+  pending: RequestRecord | null,
+): QuickCommandView {
+  if (!CONSOLE_INTENT_NAMES.has(spec.name) || !spec.draft) {
+    const sentences = [
+      `The relay does not accept ${spec.name} from this console at M2.0; it is listed until the relay accepts it.`,
+    ]
+    if (spec.confirm) {
+      sentences.push(`Confirmation would be required before send${spec.detail ? `; ${spec.detail}` : '.'}`)
+    }
+    return { badge: 'unsupported', reason: sentences.join(' '), note: sentences.join(' ') }
+  }
+  const badge = spec.confirm ? 'confirm' : null
+  let reason: string | null = null
+  if (state.connection.status !== 'connected') {
+    reason = `The console connection is ${state.connection.status}. Nothing can be sent.`
+  } else if (state.estop) {
+    reason = 'The network stop is active. Motion intents are refused until the relay reports it clear.'
+  } else if (pending) {
+    reason = 'Confirm or cancel the pending preview first.'
+  } else if (state.selection.length === 0) {
+    reason = 'No aircraft selected.'
+  } else {
+    const notReady = state.selection.filter((id) => !isReady(state.aircraft[id]))
+    if (notReady.length > 0) {
+      reason = `${notReady.map(formatDroneId).join(', ')} ${notReady.length > 1 ? 'are' : 'is'} not ready.`
+    }
+  }
+  const targets = state.selection.map(formatDroneId).join(', ')
+  const note =
+    reason ??
+    `Drafts a ${spec.name} preview for ${targets}; nothing is sent until the dock confirms it.`
+  return { badge, reason, note }
+}
+
 /**
  * The target strip the design shows above the Gesture and Speech panes: who is
- * selected, chips that toggle selection through the relay, and the aircraft
- * that cannot be commanded. "All ready" drafts a select preview for the dock.
+ * selected, chips that toggle selection through the relay, the aircraft that
+ * cannot be commanded, and the quick commands. "All ready" and Hold draft a
+ * preview for the dock; the names the relay does not accept from this console
+ * are listed as unsupported rather than sent.
  */
-export function TargetStrip({ controller }: { controller: ModuleProps['controller'] }) {
+export function TargetStrip({ controller }: { controller: Controller }) {
   const { state, pendingRequest, toggleAircraft, prepareSelect } = controller
   const fleet = sortedAircraft(state.aircraft)
   const ready = fleet.filter(isReady).map((drone) => drone.drone_id)
@@ -86,6 +167,25 @@ export function TargetStrip({ controller }: { controller: ModuleProps['controlle
           — these cannot be selected or commanded.
         </span>
       )}
+      <span className="tg-strip-quick" role="group" aria-label="Quick commands">
+        {QUICK_COMMANDS.map((spec) => {
+          const view = quickCommandView(spec, state, pendingRequest)
+          return (
+            <button
+              key={spec.name}
+              type="button"
+              className={view.reason ? 'tg-quick is-blocked' : 'tg-quick'}
+              aria-label={spec.label}
+              disabled={view.reason !== null}
+              title={view.note}
+              onClick={() => spec.draft?.(controller)}
+            >
+              <span>{spec.label}</span>
+              {view.badge && <span className="tg-quick-badge">{view.badge}</span>}
+            </button>
+          )
+        })}
+      </span>
     </div>
   )
 }

@@ -258,4 +258,31 @@ describe('Gesture module', () => {
     expect(screen.getByText(/Last gesture action: Blocked/)).toBeInTheDocument()
     expect(clients.console.sent).toHaveLength(0)
   })
+
+  test('a dropped console connection blocks drafting while the webcam source stays connected', async () => {
+    const { clients, hold } = mount()
+    const user = userEvent.setup()
+    await screen.findByText(/Development fixture active/i)
+    await act(async () => {})
+    await user.click(enableButton())
+    await act(async () => {})
+
+    act(() => clients.console.emitConnection('disconnected', 'Relay socket closed.'))
+    const links = within(screen.getByRole('list', { name: 'Connections' }))
+    expect(links.getByTitle('Relay (console)')).toHaveTextContent(/disconnected$/)
+    expect(links.getByTitle('Webcam')).toHaveTextContent(/^webcam\s*connected$/)
+    expect(trackingState()).toHaveTextContent('Tracking')
+    expect(trackingState()).toHaveTextContent('webcam source connected')
+    expect(screen.getByRole('group', { name: 'Target' })).toHaveTextContent('1 of 4 selected')
+    expect(
+      screen.getByText('Drafting blocked: The console connection is disconnected; no gesture intent can be drafted.'),
+    ).toBeInTheDocument()
+
+    hold('Open_Palm', 650)
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Last gesture action: Blocked/)).toBeInTheDocument()
+    expect(within(screen.getByRole('list', { name: 'Gesture readout' })).getByText('blocked')).toBeInTheDocument()
+    expect(clients.webcam?.sent).toHaveLength(0)
+    expect(clients.console.sent).toHaveLength(0)
+  })
 })

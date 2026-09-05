@@ -76,9 +76,16 @@ GestureRecognizer runtime and model load from the MediaPipe CDN. Open palm draft
 closed fist drafts `hold`, thumb up confirms and thumb down cancels a gesture-drafted preview; a
 draft carries source `webcam` and is never sent until it is confirmed in the dock. Low confidence,
 an interrupted dwell, a repeated pose, a denied permission, a dropped webcam, a model that fails to
-load, and a refused webcam relay source are each shown as states that emit nothing. `estop`, `arm`,
-`takeoff`, and free-flight motion are never gesture-emittable (`src/gesture/policy.ts`). Download
-session (JSONL) saves the recognizer frames, policy transitions, status changes, and intent events.
+load, and a refused webcam relay source are each shown as states that emit nothing, and a draft is
+blocked while the console connection is not connected, because the roster and selection it would
+be built from arrive on that connection. `estop`, `arm`, `takeoff`, and free-flight motion are never
+gesture-emittable (`src/gesture/policy.ts`). Download session (JSONL) saves the recognizer frames,
+policy transitions, status changes, and intent events.
+
+Both panes share the target strip (`src/modules/gesture/TargetStrip.tsx`): the selection count,
+chips that toggle selection through the relay, All ready, the blockers line, and the design's quick
+commands. Hold drafts a hold preview for the dock; Takeoff, Come home, and Land all are listed as
+unsupported until the relay accepts those names from this console.
 
 Speech (`src/voice/`, `src/speech/`, panel in `src/modules/speech/`) is push-to-talk through the
 relay transcription endpoint: hold the button to record, release to upload; recording stops one

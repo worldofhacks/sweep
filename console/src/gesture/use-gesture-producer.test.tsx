@@ -1,12 +1,13 @@
 import { act, render } from '@testing-library/react'
 import { useEffect } from 'react'
 import { describe, expect, test } from 'vitest'
+import { createInitialControlState, type ConnectionStatus } from '../control/state'
 import { useControlConsole, type ControlClients } from '../control/use-control-console'
 import { isConsoleIntentV1 } from '../relay/contract'
 import { FixtureRelayClient } from '../testing/fixture-relay-client'
 import { createGestureTestRig, type GestureTestRig } from '../testing/gesture-fixtures'
 import type { GestureCategory } from './policy'
-import { useGestureProducer } from './use-gesture-producer'
+import { emissionBlockedReason, useGestureProducer } from './use-gesture-producer'
 
 const session = 'gesture-hook-session'
 
@@ -372,5 +373,29 @@ describe('useGestureProducer', () => {
       expect(intent.source).toBe('webcam')
       expect(isConsoleIntentV1(intent)).toBe(true)
     })
+  })
+})
+
+describe('emissionBlockedReason', () => {
+  const link = (status: ConnectionStatus) => ({ status, transport: 'fixture' as const, changedAt: 0 })
+
+  test('answers for the console connection before the webcam source', () => {
+    const base = createInitialControlState(session, 0)
+    const blocked = (console: ConnectionStatus, webcam: ConnectionStatus) =>
+      emissionBlockedReason(
+        { state: { ...base, connection: link(console), webcamConnection: link(webcam) }, pendingRequest: null },
+        null,
+        'kitchen-01',
+      )
+    expect(blocked('disconnected', 'disconnected')).toBe(
+      'The console connection is disconnected; no gesture intent can be drafted.',
+    )
+    expect(blocked('degraded', 'connected')).toBe(
+      'The console connection is degraded; no gesture intent can be drafted.',
+    )
+    expect(blocked('connected', 'disconnected')).toBe(
+      'The webcam relay source is not connected; no gesture intent can be sent.',
+    )
+    expect(blocked('connected', 'connected')).toBe('Select at least one ready aircraft.')
   })
 })

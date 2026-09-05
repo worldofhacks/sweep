@@ -542,7 +542,10 @@ function deriveStatus(
 
 /**
  * Why an accepted gesture would emit nothing. With `pair` null, answers for any
- * draft; with a pair, answers for that pair's action.
+ * draft; with a pair, answers for that pair's action. The console connection
+ * feeds the roster and selection a draft is built from, so it is checked before
+ * the webcam source that would carry the intent: a stale roster must never be
+ * drafted against while the console channel is down.
  */
 export function emissionBlockedReason(
   bindings: Pick<GestureControlBindings, 'state' | 'pendingRequest'>,
@@ -550,6 +553,9 @@ export function emissionBlockedReason(
   roomId: string,
 ): string | null {
   const { state, pendingRequest } = bindings
+  if (state.connection.status !== 'connected') {
+    return `The console connection is ${state.connection.status}; no gesture intent can be drafted.`
+  }
   if (state.webcamConnection.status !== 'connected') {
     return 'The webcam relay source is not connected; no gesture intent can be sent.'
   }
