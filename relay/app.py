@@ -207,16 +207,21 @@ class RelayRuntime:
     async def deliver_to_node(
         self, session_id: str, drone_id: int, frame: dict[str, object]
     ) -> bool:
-        """Queue a relay-authored frame for the one socket bound to this aircraft."""
+        """Send a relay-authored frame on the one socket bound to this aircraft.
+
+        Returns once the frame has left the socket, or false when no live socket is
+        bound to the aircraft or its sender failed before writing the frame.
+        """
         async with self._connection_lock:
             connection_id = self._adapter_connections.get((session_id, drone_id))
             if connection_id is None:
                 return False
             subscription = self._subscriptions.get(session_id, {}).get(connection_id)
-            if subscription is None:
+            if subscription is None or subscription.sender_failed.is_set():
                 return False
-            subscription.queue.put_nowait(frame)
-            return True
+            delivered = asyncio.get_running_loop().create_future()
+            subscription.queue.put_nowait(_Outbound(frame, delivered))
+        return await delivered
 
     async def subscribe(self, session_id: str, principal: Principal) -> _Subscription:
         """Freeze the initial snapshot at the same linearization point as activation."""

@@ -7,17 +7,30 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
-from planner.models import ExecutionResult, LifecycleStatus, Plan, Position
+import relay.autonomy as autonomy_module
+from planner.models import (
+    Command,
+    CommandAcknowledgement,
+    CommandOperation,
+    ExecutionResult,
+    LifecycleStatus,
+    Plan,
+    Position,
+    Refusal,
+    RefusalReason,
+)
 from relay.app import RelayRuntime
 from relay.auth import Principal
 from relay.autonomy import (
     LIFECYCLE_SOURCE,
     AutonomyComposition,
     AutonomyConfig,
-    control_projection,
     create_autonomy_app,
     relay_snapshot,
+    remaining_commands,
+    sink_result,
 )
+from relay.contracts import LifecycleStatus as WireLifecycleStatus
 from relay.intent_v1 import IntentName
 from relay.session import RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
@@ -32,7 +45,7 @@ from relay.tests.conftest import (
     membership_payload,
     telemetry_payload,
 )
-from tests.autonomy_fixtures import camera_config, planning_config, safety_config
+from tests.autonomy_fixtures import camera_config, make_intent, planning_config, safety_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AUTONOMY_VARIABLES = ("SWEEP_PLANNING_JSON", "SWEEP_SAFETY_JSON", "SWEEP_SIM_CAMERA_JSON")
@@ -275,53 +288,232 @@ def test_relay_snapshot_derives_safety_facts_and_excludes_silent_aircraft(
     assert hovering.aircraft[1].airborne is True
 
 
-def test_control_projection_latches_estop_from_the_intent_and_earns_the_rest() -> None:
+def test_sink_result_latches_estop_from_the_intent_and_earns_the_rest() -> None:
     arm = _plan(IntentName.ARM, selection=(), armed_update=True)
     select = _plan(IntentName.SELECT, selection=(), selection_update=(1, 2))
     estop = _plan(IntentName.ESTOP, selection=(), estop_update=True)
     takeoff = _plan(IntentName.TAKEOFF, confirmed=True)
-    summary = {
-        "plan_id": "plan:intent-1",
-        "intent_id": "intent-1",
-        "intent_name": "takeoff",
-        "roster_version": 3,
-        "selection": [1],
-    }
+    arm_intent = make_intent(IntentName.ARM, selection=(), intent_id="intent-1")
+    select_intent = make_intent(IntentName.SELECT, selection=(), intent_id="intent-1")
+    estop_intent = make_intent(IntentName.ESTOP, selection=(), intent_id="intent-1")
+    takeoff_intent = make_intent(IntentName.TAKEOFF, selection=(1,), intent_id="intent-1")
 
-    assert control_projection(IntentName.ARM, _result(arm, LifecycleStatus.COMPLETED)) == {
-        "armed": True,
-        "accepted_plan": None,
-    }
-    assert control_projection(IntentName.ARM, _result(arm, LifecycleStatus.REFUSED)) == {
-        "accepted_plan": None
-    }
-    assert control_projection(IntentName.SELECT, _result(select, LifecycleStatus.COMPLETED)) == {
-        "selection": (1, 2),
-        "accepted_plan": None,
-    }
-    assert control_projection(IntentName.SELECT, _result(select, LifecycleStatus.FAILED)) == {
-        "accepted_plan": None
-    }
+    armed = sink_result(arm_intent, _result(arm, LifecycleStatus.COMPLETED), roster_version=3)
+    assert (armed.status, armed.armed_update, armed.selection_update, armed.estop_update) == (
+        WireLifecycleStatus.COMPLETED,
+        True,
+        None,
+        None,
+    )
+    assert armed.source == LIFECYCLE_SOURCE
+    assert armed.result["plan_id"] == "plan:intent-1"
+    assert "plan" not in armed.result, "a terminal result publishes no accepted plan"
+    # Arm and selection apply only while the plan's roster is still the session's.
+    stale = sink_result(arm_intent, _result(arm, LifecycleStatus.COMPLETED), roster_version=4)
+    assert (stale.status, stale.reason, stale.armed_update) == (
+        WireLifecycleStatus.INVALIDATED,
+        "stale_roster",
+        None,
+    )
+    refused = sink_result(arm_intent, _result(arm, LifecycleStatus.REFUSED), roster_version=3)
+    assert (refused.status, refused.armed_update) == (WireLifecycleStatus.REFUSED, None)
+    selected = sink_result(
+        select_intent, _result(select, LifecycleStatus.COMPLETED), roster_version=3
+    )
+    assert selected.selection_update == (1, 2)
+    failed_select = sink_result(
+        select_intent, _result(select, LifecycleStatus.FAILED), roster_version=3
+    )
+    assert (failed_select.selection_update, failed_select.reason) == (None, "adapter_failure")
     # The network stop latches from the intent, whatever the planner or dispatcher did.
-    assert control_projection(IntentName.ESTOP, _result(estop, LifecycleStatus.FAILED)) == {
-        "estop": True,
-        "accepted_plan": None,
-    }
-    assert control_projection(IntentName.ESTOP, _result(None, LifecycleStatus.REFUSED)) == {
-        "estop": True,
-        "accepted_plan": None,
-    }
-    assert control_projection(IntentName.ESTOP, _result(None, LifecycleStatus.FAILED)) == {
-        "estop": True,
-        "accepted_plan": None,
-    }
-    assert control_projection(IntentName.TAKEOFF, _result(takeoff, LifecycleStatus.COMPLETED)) == {
-        "accepted_plan": None
-    }
-    assert control_projection(IntentName.TAKEOFF, _result(takeoff, LifecycleStatus.EXECUTING)) == {
-        "accepted_plan": summary
-    }
-    assert control_projection(IntentName.TAKEOFF, _result(None, LifecycleStatus.EXECUTING)) == {}
+    for result in (
+        _result(estop, LifecycleStatus.FAILED),
+        _result(None, LifecycleStatus.REFUSED),
+        _result(None, LifecycleStatus.FAILED),
+    ):
+        assert sink_result(estop_intent, result, roster_version=3).estop_update is True
+    executing = sink_result(
+        takeoff_intent, _result(takeoff, LifecycleStatus.EXECUTING), roster_version=3
+    )
+    assert executing.status is WireLifecycleStatus.EXECUTING
+    assert (executing.selection_update, executing.armed_update, executing.estop_update) == (
+        None,
+        None,
+        None,
+    )
+    refusal = Refusal(
+        intent_id="intent-1",
+        roster_version=3,
+        drone_id=2,
+        connection_epoch=5,
+        reason=RefusalReason.INVALID_STATE,
+        detail="takeoff requires a landed aircraft",
+    )
+    typed = sink_result(
+        takeoff_intent,
+        ExecutionResult(
+            intent_id="intent-1",
+            roster_version=3,
+            status=LifecycleStatus.REFUSED,
+            refusal=refusal,
+        ),
+        roster_version=3,
+        events=({"type": "state"},),
+    )
+    assert (typed.reason, typed.detail, typed.drone_id, typed.connection_epoch) == (
+        "invalid_state",
+        "takeoff requires a landed aircraft",
+        2,
+        5,
+    )
+    assert typed.events == ({"type": "state"},)
+
+
+def _command(command_id: str, drone_id: int) -> Command:
+    return Command(
+        command_id=command_id,
+        intent_id="intent-1",
+        roster_version=3,
+        drone_id=drone_id,
+        connection_epoch=1,
+        operation=CommandOperation.GOTO,
+    )
+
+
+def _ack(command: Command, status: LifecycleStatus) -> CommandAcknowledgement:
+    return CommandAcknowledgement(
+        command_id=command.command_id,
+        intent_id=command.intent_id,
+        roster_version=command.roster_version,
+        drone_id=command.drone_id,
+        connection_epoch=command.connection_epoch,
+        status=status,
+    )
+
+
+def test_remaining_commands_counts_what_follows_the_waiting_command() -> None:
+    first, second, third = _command("c-1", 1), _command("c-2", 2), _command("c-3", 3)
+    plan = _plan(IntentName.TRANSLATE, selection=(1, 2, 3), commands=(first, second, third))
+
+    waiting_on_last = ExecutionResult(
+        intent_id="intent-1",
+        roster_version=3,
+        status=LifecycleStatus.EXECUTING,
+        plan=plan,
+        acknowledgements=(
+            _ack(first, LifecycleStatus.COMPLETED),
+            _ack(second, LifecycleStatus.COMPLETED),
+            _ack(third, LifecycleStatus.EXECUTING),
+        ),
+    )
+    waiting_on_first = ExecutionResult(
+        intent_id="intent-1",
+        roster_version=3,
+        status=LifecycleStatus.EXECUTING,
+        plan=plan,
+        acknowledgements=(_ack(first, LifecycleStatus.ACCEPTED),),
+    )
+    degraded = ExecutionResult(
+        intent_id="intent-1",
+        roster_version=3,
+        status=LifecycleStatus.EXECUTING,
+        plan=plan,
+        acknowledgements=(_ack(first, LifecycleStatus.EXECUTING),),
+        degraded_aircraft=(3,),
+    )
+
+    assert remaining_commands(waiting_on_last) == 0
+    assert remaining_commands(waiting_on_first) == 2
+    assert remaining_commands(degraded) == 1
+    assert remaining_commands(_result(plan, LifecycleStatus.EXECUTING)) == 0
+    assert remaining_commands(_result(None, LifecycleStatus.EXECUTING)) == 0
+
+
+def test_estop_latches_the_session_before_any_dispatch_and_refuses_later_intents(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    composition = AutonomyComposition(_config())
+    runtime = RelayRuntime(
+        _settings(tmp_path),
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=composition.intent_sink_factory,
+        leave_authorizer_factory=composition.leave_authorizer_factory,
+    )
+    composition.bind(runtime)
+    adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+    console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+    original = autonomy_module.build_dispatcher
+    latched_at_dispatch: list[bool] = []
+
+    def observing(runtime_: RelayRuntime, session_id: str, *args: object, **kwargs: object):
+        latched_at_dispatch.append(runtime_.sessions[session_id].current_state()["estop"])
+        return original(runtime_, session_id, *args, **kwargs)
+
+    monkeypatch.setattr(autonomy_module, "build_dispatcher", observing)
+
+    def run(intent: dict[str, object]) -> list[dict[str, object]]:
+        accepted = session.process_intent(intent, console)
+        assert accepted[0]["status"] == "accepted", accepted
+        session.mark_pending_intent_delivered(intent["intent_id"])
+        return session.execute_pending_intent(intent["intent_id"])
+
+    try:
+        session = runtime.session(SESSION)
+        session.process_membership(membership_payload(action="join", event_id="join-1"), adapter)
+        session.process_telemetry(
+            telemetry_payload(event_id="telemetry-1", state="hovering"), adapter
+        )
+        session.process_membership(
+            membership_payload(action="readiness", event_id="ready-1"), adapter
+        )
+        selected = run(
+            _intent(
+                "select",
+                intent_id="select-1",
+                selection=[],
+                args={"ids": [1]},
+                timestamp=clock.value,
+            )
+        )
+        assert selected[-1]["status"] == "completed", selected
+        assert session.current_state()["estop"] is False
+        stop = run(_intent("estop", intent_id="estop-1", selection=[], timestamp=clock.value))
+        stopped = session.current_state()
+        later = run(
+            _intent(
+                "translate",
+                intent_id="translate-1",
+                selection=[1],
+                args={"dx": 1, "dy": 0},
+                timestamp=clock.value,
+            )
+        )
+        hold = run(_intent("hold", intent_id="hold-1", selection=[1], timestamp=clock.value))
+    finally:
+        composition.close()
+
+    # The sink latched the network stop before the estop plan was built, let alone
+    # dispatched; the session then applied the same latch from the result.
+    assert latched_at_dispatch == [False, True, True, True]
+    assert stop[0]["type"] == "state" and stop[0]["estop"] is True
+    outcome = stop[-1]
+    assert (outcome["type"], outcome["status"], outcome["source"], outcome["command_id"]) == (
+        "acknowledgement",
+        "completed",
+        LIFECYCLE_SOURCE,
+        None,
+    )
+    assert stopped["estop"] is True
+    refusal = later[-1]
+    assert (refusal["type"], refusal["reason"], refusal["source"]) == (
+        "refusal",
+        "estop_active",
+        LIFECYCLE_SOURCE,
+    )
+    # A hold stays available under the network stop; the latch itself never clears.
+    assert hold[-1]["status"] == "completed", hold
+    assert session.current_state()["estop"] is True
 
 
 def test_sim_backend_runs_the_checkpoint_intents_in_process_without_wire_commands(

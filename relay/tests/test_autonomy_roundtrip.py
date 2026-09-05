@@ -14,6 +14,7 @@ import uvicorn
 
 import relay.autonomy as autonomy_module
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
+from relay.audit import AuditLogError
 from relay.autonomy import (
     LIFECYCLE_SOURCE,
     PREEMPTED_BY_ESTOP,
@@ -119,6 +120,10 @@ class _Fleet:
     def roster_version(self) -> int:
         return self.server.runtime.sessions[SESSION].registry.roster_version
 
+    def commands_issued(self) -> int:
+        """Wire commands issued so far; readable while an execution is still open."""
+        return self.server.runtime.sessions[SESSION].metrics()["commands_issued"]
+
     def send(
         self,
         name: str,
@@ -160,7 +165,7 @@ class _Fleet:
 
     def commands_for(self, drone_id: int) -> list[tuple[str, str]]:
         """The wire commands the relay issued to one aircraft, in sequence order."""
-        records = [record["event"] for record in self.server.runtime.replay(SESSION)["events"]]
+        records = _records(self.server)
         issued = [
             record
             for record in records
@@ -270,7 +275,7 @@ def test_m20_workflow_reaches_two_fake_nodes_through_the_composition(
             node.stop()
         console.stop()
 
-    records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
+    records = _records(relay_server)
     commands = [record for record in records if record["type"] == "command"]
     expected = [
         ("takeoff", takeoff_id),
@@ -397,9 +402,10 @@ def test_estop_reaches_responsive_nodes_at_once_while_a_node_stays_silent(
     try:
         takeoff_id = fleet.airborne()
         # dx < 0 makes drone 1 lead; its node swallows the goto, so the plan waits on it.
+        issued_before = fleet.commands_issued()
         translate_id = fleet.send("translate", selection=[1, 2], args={"dx": -1, "dy": 0})
         _wait_until(
-            lambda: ("goto", translate_id) in fleet.commands_for(1),
+            lambda: fleet.commands_issued() > issued_before,
             what="the goto issued to the silent node",
         )
         started = time.monotonic()
@@ -487,41 +493,6 @@ def test_hold_preempts_a_running_motion_plan_but_queues_behind_land_all(
         ("land", land_id),
     ]
     assert not any(late_hold_id == intent_id for _, intent_id in fleet.commands_for(2))
-
-
-def test_acknowledgement_timeout_degrades_and_holds_only_the_silent_aircraft(
-    relay_server: RelayServer,
-) -> None:
-    fleet = _Fleet(relay_server, {1: {"silent_operations": ("goto",)}, 2: {}})
-    fleet.start()
-    try:
-        takeoff_id = fleet.airborne()
-        # dx > 0 makes drone 2 lead and complete; drone 1's node then swallows its goto.
-        translate_id, translate = fleet.run("translate", selection=[1, 2], args={"dx": 1, "dy": 0})
-        # Others continue: the fleet still answers a hold once the silent aircraft was held.
-        hold_id, hold = fleet.run("hold", selection=[1, 2])
-    finally:
-        fleet.stop()
-
-    assert (translate["status"], translate["reason"], translate["drone_id"]) == (
-        "failed",
-        "adapter_timeout",
-        1,
-    )
-    assert hold["status"] == "completed", hold
-    assert fleet.commands_for(2) == [
-        ("takeoff", takeoff_id),
-        ("goto", translate_id),
-        ("hover", hold_id),
-    ]
-    assert fleet.commands_for(1) == [
-        ("takeoff", takeoff_id),
-        ("goto", translate_id),
-        ("hover", translate_id),
-        ("hover", hold_id),
-    ]
-    # The unanswered goto produced no acknowledgements; the best-effort hold did.
-    assert fleet.node_acks(translate_id, 1) == ["accepted", "executing", "completed"]
 
 
 def test_node_disconnect_mid_plan_refuses_the_rest_as_stale_roster(
@@ -643,6 +614,24 @@ def _intent(
         "mode": "indoor",
         "confirm": confirm,
     }
+
+
+def _records(server: RelayServer) -> list[dict[str, object]]:
+    """The session's audit records once every execution operation has committed.
+
+    A preempted plan keeps its intent operation open until its cancelled wait
+    returns, and replay is fenced while any operation is incomplete.
+    """
+    deadline = time.monotonic() + WAIT_S
+    while True:
+        try:
+            replay = server.runtime.replay(SESSION)
+        except AuditLogError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+            continue
+        return [record["event"] for record in replay["events"]]
 
 
 def _outcome(console: ConsoleProbe, intent_id: str) -> dict[str, object]:

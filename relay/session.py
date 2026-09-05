@@ -63,6 +63,8 @@ class IntentSinkResult:
     estop_update: bool | None = None
     reason: str | None = None
     detail: str | None = None
+    drone_id: int | None = None
+    connection_epoch: int | None = None
 
     def __post_init__(self) -> None:
         if self.status is LifecycleStatus.ACCEPTED:
@@ -111,6 +113,15 @@ class RelayLimits:
     future_clock_skew_ms: int
     telemetry_freshness_ms: int
     command_ttl_ms: int = 2_000
+    late_acknowledgement_window_ms: int = 60_000
+    require_issued_commands: bool = False
+    """Refuse every acknowledgement for a command this session did not issue.
+
+    On when the relay issues every wire command itself (the ``remote`` backend). Off,
+    an intent with no relay-issued commands may still be acknowledged by an adapter
+    that executes planner commands on its own, as the in-process compositions do;
+    an intent that has relay-issued commands is always bound to them.
+    """
 
     def __post_init__(self) -> None:
         if (
@@ -119,6 +130,7 @@ class RelayLimits:
                 self.transport_event_max_age_ms,
                 self.telemetry_freshness_ms,
                 self.command_ttl_ms,
+                self.late_acknowledgement_window_ms,
             )
             <= 0
         ):
@@ -132,6 +144,32 @@ class _IntentLedgerEntry:
     status: LifecycleStatus
     selection: tuple[int, ...]
     command_statuses: dict[str, LifecycleStatus]
+
+
+@dataclass(slots=True)
+class _IssuedCommand:
+    """One relay-authored wire command and what the node has said about it so far."""
+
+    intent_id: str
+    drone_id: int
+    connection_epoch: int
+    roster_version: int
+    operation: CommandOperation
+    issued_at: int
+    status: LifecycleStatus | None = None
+    reason: str | None = None
+    detail: str | None = None
+    waiter: queue.SimpleQueue[AdapterAcknowledgement] | None = None
+    wait_released_at: int | None = None
+    expired: bool = False
+
+
+@dataclass(slots=True)
+class _LateReconciliation:
+    """An intent the autonomy layer left executing because a node had not answered."""
+
+    completes_plan: bool
+    since: int
 
 
 @dataclass(slots=True)
@@ -180,8 +218,9 @@ class RelaySession:
         self._last_transport_t: dict[tuple[str, int | None], int] = {}
         self._intents: dict[str, _IntentLedgerEntry] = {}
         self._command_seq: dict[tuple[int, int], int] = {}
-        self._issued_command_ids: set[str] = set()
-        self._command_waiters: dict[str, queue.SimpleQueue[AdapterAcknowledgement]] = {}
+        self._issued_commands: dict[str, _IssuedCommand] = {}
+        self._wire_intents: set[str] = set()
+        self._late_reconciliations: dict[str, _LateReconciliation] = {}
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
@@ -560,10 +599,14 @@ class RelaySession:
                         intent_id=pending.intent.intent_id,
                         status=sink_result.status,
                         source=sink_result.source,
+                        drone_id=sink_result.drone_id,
+                        connection_epoch=sink_result.connection_epoch,
                         reason=sink_result.reason,
                         detail=sink_result.detail,
                     )
                 )
+                if sink_result.status is LifecycleStatus.EXECUTING:
+                    events.extend(self._reconcile_late(pending.intent.intent_id, self.clock()))
         pending.events = events
         return events
 
@@ -684,30 +727,34 @@ class RelaySession:
                         now=now,
                         drone_id=principal.drone_id,
                         connection_epoch=self.registry.connection_epoch(principal.drone_id),
+                        command_id=_safe_string_field(raw, "command_id"),
                     )
                 ]
 
             event = acknowledgement.to_event()
-            self._record_adapter_ack_fact(acknowledgement)
+            issued = self._record_adapter_ack_fact(acknowledgement)
             self._append_audit(event)
             self._metrics["acknowledgements"] += 1
-            waiter = self._command_waiters.get(acknowledgement.command_id)
-            if waiter is not None:
-                waiter.put(acknowledgement)
+            if issued is not None and issued.waiter is not None:
+                issued.waiter.put(acknowledgement)
             events = [event]
-            if acknowledgement.status in {
-                LifecycleStatus.COMPLETED,
-                LifecycleStatus.FAILED,
-                LifecycleStatus.INVALIDATED,
-            }:
+            terminal = acknowledgement.status in _TERMINAL_STATUSES
+            if terminal and issued is not None and issued.wait_released_at is not None:
+                # The caller stopped waiting before this answer: audit the lateness and
+                # let the intent the autonomy layer left executing settle on the fact.
+                self._append_audit(
+                    self._late_acknowledgement_record(acknowledgement, issued, now=now)
+                )
+                events.extend(self._reconcile_late(acknowledgement.intent_id, now))
+            if terminal:
                 resume = getattr(self.intent_sink, "resume_after_acknowledgement", None)
                 if callable(resume):
                     pending = self._pending_intents.get(acknowledgement.intent_id)
-                    queue = self._acknowledgements.setdefault(
+                    queued = self._acknowledgements.setdefault(
                         acknowledgement.intent_id,
                         pending.acknowledgements if pending is not None else [],
                     )
-                    queue.append(acknowledgement)
+                    queued.append(acknowledgement)
         if not defer_resume:
             events.extend(self._resume_acknowledgements(acknowledgement.intent_id))
         return events
@@ -868,7 +915,7 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            if command_id in self._issued_command_ids:
+            if command_id in self._issued_commands:
                 raise ValueError("command_id has already been issued in this session")
             self.registry.check_current(drone_id, connection_epoch)
             entry = self._intents.get(intent_id)
@@ -898,8 +945,16 @@ class RelaySession:
                     command_statuses={},
                 )
             self._command_seq[key] = seq
-            self._issued_command_ids.add(command_id)
-            self._command_waiters[command_id] = queue.SimpleQueue()
+            self._wire_intents.add(intent_id)
+            self._issued_commands[command_id] = _IssuedCommand(
+                intent_id=intent_id,
+                drone_id=drone_id,
+                connection_epoch=connection_epoch,
+                roster_version=roster_version,
+                operation=operation,
+                issued_at=now,
+                waiter=queue.SimpleQueue(),
+            )
             self._append_audit(event)
             self._metrics["commands_issued"] += 1
             return {**event, "signature": sign_event(event, signing_key)}
@@ -910,28 +965,175 @@ class RelaySession:
         """Block outside the session lock until the node acknowledges or the wait expires.
 
         Each call returns the next acknowledgement for the command. The waiter is
-        released after a terminal acknowledgement or a timeout; later acknowledgements
-        remain audited facts but no longer wake a caller.
+        released after a terminal acknowledgement or a timeout. A command whose wait
+        timed out stays in the issued ledger for ``late_acknowledgement_window_ms``:
+        its terminal acknowledgement is still accepted, audited as late, and settles
+        the intent that was left executing (``expect_late_acknowledgement``).
         """
         with self._lock:
-            waiter = self._command_waiters.get(command_id)
-        if waiter is None:
+            issued = self._issued_commands.get(command_id)
+            waiter = None if issued is None else issued.waiter
+        if issued is None or waiter is None:
             return None
         try:
             acknowledgement = waiter.get(timeout=max(timeout_ms, 0) / 1000)
         except queue.Empty:
-            with self._lock:
-                self._command_waiters.pop(command_id, None)
+            self.release_command_wait(command_id)
             return None
         if acknowledgement.status in _TERMINAL_STATUSES:
             with self._lock:
-                self._command_waiters.pop(command_id, None)
+                issued.waiter = None
         return acknowledgement
 
-    def discard_command_waiter(self, command_id: str) -> None:
-        """Stop waking a caller for a command that could not reach the node."""
+    def release_command_wait(self, command_id: str) -> None:
+        """Stop waking a caller for a command; a later terminal answer is a late fact."""
         with self._lock:
-            self._command_waiters.pop(command_id, None)
+            issued = self._issued_commands.get(command_id)
+            if issued is None or issued.waiter is None:
+                return
+            issued.waiter = None
+            if issued.status not in _TERMINAL_STATUSES:
+                issued.wait_released_at = self.clock()
+
+    def expect_late_acknowledgement(self, intent_id: str, *, completes_plan: bool) -> None:
+        """Have the relay settle an intent left executing once its released command answers.
+
+        The autonomy layer calls this before it reports the intent as ``executing``:
+        it stopped waiting for a node inside the command deadline and cannot resume
+        the plan. When the terminal acknowledgement arrives within the late window
+        the intent becomes ``completed`` (only when that command completes the plan)
+        or ``failed``; when the window passes without one the intent fails as
+        ``adapter_timeout``. Either way the accepted plan projection is cleared.
+        """
+        with self._lock:
+            self._ensure_mutation_usable()
+            entry = self._intents.get(intent_id)
+            if entry is None:
+                raise ValueError("unknown intent_id")
+            if entry.status in _TERMINAL_STATUSES:
+                raise ValueError("intent is terminal and has nothing left to reconcile")
+            self._late_reconciliations[intent_id] = _LateReconciliation(
+                completes_plan=completes_plan, since=self.clock()
+            )
+
+    def _reconcile_late(self, intent_id: str, now: int) -> list[dict[str, object]]:
+        """Settle an executing intent from its released commands' answers or their absence."""
+        note = self._late_reconciliations.get(intent_id)
+        entry = self._intents.get(intent_id)
+        if note is None or entry is None:
+            return []
+        if entry.status in _TERMINAL_STATUSES:
+            self._late_reconciliations.pop(intent_id, None)
+            return []
+        if entry.status is not LifecycleStatus.EXECUTING:
+            return []
+        window = self.limits.late_acknowledgement_window_ms
+        released = [
+            (command_id, issued)
+            for command_id, issued in self._issued_commands.items()
+            if issued.intent_id == intent_id and issued.wait_released_at is not None
+        ]
+        unanswered = [
+            (command_id, issued)
+            for command_id, issued in released
+            if issued.status not in _TERMINAL_STATUSES
+        ]
+        overdue = [
+            (command_id, issued)
+            for command_id, issued in unanswered
+            if issued.expired
+            or (issued.wait_released_at is not None and now - issued.wait_released_at > window)
+        ]
+        if not released and now - note.since <= window:
+            return []
+        if unanswered and not overdue:
+            return []
+        issued: _IssuedCommand | None
+        if overdue or not released:
+            for _command_id, expired in overdue:
+                expired.expired = True
+            command_id, issued = overdue[0] if overdue else (None, None)
+            status = LifecycleStatus.FAILED
+            reason: str | None = "adapter_timeout"
+            detail = (
+                f"no terminal acknowledgement for {issued.operation.value} command "
+                f"{command_id} from aircraft {issued.drone_id} within {window} ms after "
+                "the relay stopped waiting"
+                if issued is not None
+                else f"no released command answered within {window} ms"
+            )
+        else:
+            failures = [
+                (command_id, issued)
+                for command_id, issued in released
+                if issued.status is not LifecycleStatus.COMPLETED
+            ]
+            command_id, issued = failures[0] if failures else released[-1]
+            assert issued.status is not None and issued.wait_released_at is not None
+            late_by = max(now - issued.wait_released_at, 0)
+            summary = (
+                f"aircraft {issued.drone_id} reported {issued.operation.value} command "
+                f"{command_id} {issued.status.value} {late_by} ms after the relay stopped "
+                "waiting"
+            )
+            if failures:
+                status = (
+                    LifecycleStatus.INVALIDATED
+                    if issued.status is LifecycleStatus.INVALIDATED
+                    else LifecycleStatus.FAILED
+                )
+                reason = issued.reason or "adapter_failure"
+                detail = f"late acknowledgement: {summary}"
+                if issued.detail:
+                    detail = f"{detail}: {issued.detail}"
+            elif note.completes_plan:
+                status = LifecycleStatus.COMPLETED
+                reason = None
+                detail = f"late acknowledgement: {summary}"
+            else:
+                status = LifecycleStatus.FAILED
+                reason = "adapter_timeout"
+                detail = (
+                    f"late acknowledgement: {summary}; the plan's remaining commands were not sent"
+                )
+        self._late_reconciliations.pop(intent_id, None)
+        events: list[dict[str, object]] = []
+        active = self.current_state()["accepted_plan"]
+        if isinstance(active, Mapping) and active.get("intent_id") == intent_id:
+            events.append(self.update_control_projection(accepted_plan=None))
+        events.append(
+            self.record_lifecycle(
+                intent_id=intent_id,
+                status=status,
+                source="relay",
+                drone_id=None if issued is None else issued.drone_id,
+                connection_epoch=None if issued is None else issued.connection_epoch,
+                reason=reason,
+                detail=detail,
+            )
+        )
+        return events
+
+    def _late_acknowledgement_record(
+        self, acknowledgement: AdapterAcknowledgement, issued: _IssuedCommand, *, now: int
+    ) -> dict[str, object]:
+        assert issued.wait_released_at is not None
+        return {
+            "v": 1,
+            "t": now,
+            "type": "late_acknowledgement",
+            "event_id": self.event_ids(),
+            "session": self.session_id,
+            "intent_id": acknowledgement.intent_id,
+            "command_id": acknowledgement.command_id,
+            "drone_id": acknowledgement.drone_id,
+            "connection_epoch": acknowledgement.connection_epoch,
+            "operation": issued.operation.value,
+            "status": acknowledgement.status.value,
+            "reason": acknowledgement.reason,
+            "wait_released_at": issued.wait_released_at,
+            "late_by_ms": max(now - issued.wait_released_at, 0),
+        }
 
     def capture_readiness(self, drone_id: int) -> CaptureReadinessFrame | None:
         """Return the node's latest capture_readiness frame for its current epoch."""
@@ -1182,6 +1384,8 @@ class RelaySession:
                 self._append_audit(event)
                 self._metrics["membership_events"] += 1
                 events.append(event)
+            for intent_id in tuple(self._late_reconciliations):
+                events.extend(self._reconcile_late(intent_id, now))
             state = self._state_event(now)
             if transitions:
                 self._append_audit(state)
@@ -1325,11 +1529,56 @@ class RelaySession:
             )
         if acknowledgement.intent_id not in self._intents:
             raise ContractError("unknown_intent_id", "acknowledgement references an unknown intent")
+        issued = self._issued_commands.get(acknowledgement.command_id)
+        if issued is None:
+            if (
+                self.limits.require_issued_commands
+                or acknowledgement.intent_id in self._wire_intents
+            ):
+                raise ContractError(
+                    "unknown_command_id", "acknowledgement references a command never issued"
+                )
+            return
+        bindings = (
+            ("drone_id", issued.drone_id, acknowledgement.drone_id),
+            ("connection_epoch", issued.connection_epoch, acknowledgement.connection_epoch),
+            ("intent_id", issued.intent_id, acknowledgement.intent_id),
+            ("roster_version", issued.roster_version, acknowledgement.roster_version),
+        )
+        for name, expected, actual in bindings:
+            if expected != actual:
+                raise ContractError(
+                    "command_binding_mismatch",
+                    f"acknowledgement {name} {actual!r} does not match the issued command's "
+                    f"{expected!r}",
+                )
+        if issued.status in _TERMINAL_STATUSES:
+            raise ContractError(
+                "command_already_terminal",
+                f"command already ended as {issued.status.value}",
+            )
+        if issued.expired or (
+            issued.wait_released_at is not None
+            and now - issued.wait_released_at > self.limits.late_acknowledgement_window_ms
+        ):
+            issued.expired = True
+            raise ContractError(
+                "late_acknowledgement_expired",
+                "the relay stopped retaining this command before the node answered",
+            )
 
-    def _record_adapter_ack_fact(self, acknowledgement: AdapterAcknowledgement) -> None:
+    def _record_adapter_ack_fact(
+        self, acknowledgement: AdapterAcknowledgement
+    ) -> _IssuedCommand | None:
         """Retain command facts; only the autonomy owner terminalizes an intent."""
         entry = self._intents[acknowledgement.intent_id]
         entry.command_statuses[acknowledgement.command_id] = acknowledgement.status
+        issued = self._issued_commands.get(acknowledgement.command_id)
+        if issued is not None:
+            issued.status = acknowledgement.status
+            issued.reason = acknowledgement.reason
+            issued.detail = acknowledgement.detail
+        return issued
 
     @staticmethod
     def _transition_intent(entry: _IntentLedgerEntry, status: LifecycleStatus) -> None:
@@ -1422,12 +1671,14 @@ class RelaySession:
         now: int,
         drone_id: int | None = None,
         connection_epoch: int | None = None,
+        command_id: str | None = None,
     ) -> dict[str, object]:
         event = refusal_event(
             t=now,
             event_id=self.event_ids(),
             session=self.session_id,
             intent_id=None,
+            command_id=command_id,
             reason=reason,
             detail=detail,
             roster_version=self.registry.roster_version,

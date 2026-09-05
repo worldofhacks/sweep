@@ -78,7 +78,7 @@ class RelayNodeLink:
             future.cancel()
             delivered = False
         if not delivered:
-            self._session.discard_command_waiter(request.command_id)
+            self._session.release_command_wait(request.command_id)
             raise AdapterError(
                 f"command {request.command_id} could not be delivered to aircraft "
                 f"{request.drone_id}"
@@ -89,6 +89,10 @@ class RelayNodeLink:
     ) -> AdapterAcknowledgement | None:
         self._worker_loop()
         return self._session.await_command_acknowledgement(command_id, timeout_ms=timeout_ms)
+
+    def stop_waiting(self, command_id: str) -> None:
+        """Release the session waiter; the node's later terminal answer is a late fact."""
+        self._session.release_command_wait(command_id)
 
     def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None:
         return self._session.registry.camera_capabilities(drone_id)

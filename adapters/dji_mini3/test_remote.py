@@ -60,6 +60,7 @@ class ScriptedLink:
         self._capabilities = dict(capabilities or {})
         self._media = dict(media or {})
         self.sent: list[CommandRequest] = []
+        self.abandoned: list[str] = []
         self._pending: dict[str, deque[WireAcknowledgement]] = {}
         self._clock = 100_000
 
@@ -98,6 +99,9 @@ class ScriptedLink:
         if not pending:
             return None
         return pending.popleft()
+
+    def stop_waiting(self, command_id: str) -> None:
+        self.abandoned.append(command_id)
 
     def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None:
         return self._capabilities.get(drone_id)
@@ -251,6 +255,8 @@ def test_silence_raises_adapter_timeout_without_a_resend() -> None:
     assert timeout.value.drone_id == 1
     assert timeout.value.operation is CommandOperation.HOVER
     assert len(link.sent) == 1
+    # Giving up releases the wait on the link so a late answer is retained, not lost.
+    assert link.abandoned == [link.sent[0].command_id]
 
 
 def test_stale_connection_epoch_is_rejected_before_send() -> None:
@@ -577,19 +583,84 @@ class _HeartbeatLink(ScriptedLink):
         )
 
 
+class _StepClock:
+    """Monotonic seconds that advance a fixed step per read; no wall-clock waits."""
+
+    def __init__(self, step_s: float) -> None:
+        self.now = 1_000.0
+        self.step_s = step_s
+        self.reads = 0
+
+    def __call__(self) -> float:
+        self.reads += 1
+        self.now += self.step_s
+        return self.now
+
+
 def test_command_deadline_bounds_a_node_that_only_heartbeats() -> None:
     snapshot = make_snapshot(1, selection=(1,))
     link = _HeartbeatLink(epochs={1: 1})
+    clock = _StepClock(step_s=0.025)
     adapter = RemoteBridgeAdapter(
-        link, epochs=link.epochs, acknowledgement_timeout_ms=TIMEOUT_MS, command_deadline_ms=60
+        link,
+        epochs=link.epochs,
+        acknowledgement_timeout_ms=TIMEOUT_MS,
+        command_deadline_ms=60,
+        clock=clock,
     )
 
     with adapter.for_intent("intent-1", snapshot.roster_version):
         (acknowledgement,) = adapter.hover([1])
 
     assert acknowledgement.status is LifecycleStatus.EXECUTING
-    assert link.waits >= 1
+    assert link.waits == 2, "two heartbeats fit inside a 60 ms deadline at 25 ms per read"
+    assert link.abandoned == [link.sent[0].command_id]
     with pytest.raises(ValueError, match="deadline"):
         RemoteBridgeAdapter(
             link, epochs=link.epochs, acknowledgement_timeout_ms=TIMEOUT_MS, command_deadline_ms=10
         )
+
+
+class _SilentGotoLink(ScriptedLink):
+    """Scripted link whose aircraft 1 never answers a goto; everything else completes."""
+
+    def send(self, request: CommandRequest) -> None:
+        super().send(request)
+        if request.drone_id == 1 and request.operation is CommandOperation.GOTO:
+            self._pending[request.command_id].clear()
+
+
+def test_acknowledgement_timeout_degrades_and_holds_only_the_silent_aircraft() -> None:
+    """Deterministic form of the fleet scenario: no relay, no nodes, no wall clock."""
+    snapshot = make_snapshot(2, selection=(1, 2))
+    planner = DeterministicPlanner(planning_config())
+    # dx > 0 makes aircraft 2 lead and complete; aircraft 1's node then swallows its goto.
+    translate = planner.plan(
+        make_intent(IntentName.TRANSLATE, selection=(1, 2), args={"dx": 1, "dy": 0}), snapshot
+    )
+    assert isinstance(translate, Plan)
+    link = _SilentGotoLink(epochs={1: 1, 2: 1})
+    adapter = _adapter(link)
+    dispatcher = _dispatcher(adapter)
+
+    result = dispatcher.dispatch(translate, snapshot)
+    hold = planner.plan(make_intent(IntentName.HOLD, selection=(1, 2)), snapshot)
+    assert isinstance(hold, Plan)
+    held = dispatcher.dispatch(hold, snapshot)
+
+    assert result.status is LifecycleStatus.FAILED
+    assert result.refusal is not None
+    assert (result.refusal.reason, result.refusal.drone_id) == (RefusalReason.ADAPTER_TIMEOUT, 1)
+    assert result.degraded_aircraft == (1,)
+    assert held.status is LifecycleStatus.COMPLETED
+    sent = [(request.operation, request.drone_id, request.intent_id) for request in link.sent]
+    assert sent == [
+        (CommandOperation.GOTO, 2, translate.intent_id),
+        (CommandOperation.GOTO, 1, translate.intent_id),
+        # The unanswered goto degrades aircraft 1 and holds only it; the hold plan
+        # then reaches both aircraft.
+        (CommandOperation.HOVER, 1, translate.intent_id),
+        (CommandOperation.HOVER, 1, hold.intent_id),
+        (CommandOperation.HOVER, 2, hold.intent_id),
+    ]
+    assert link.abandoned == [link.sent[1].command_id], "only the silent goto was given up on"

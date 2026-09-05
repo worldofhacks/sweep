@@ -98,8 +98,12 @@ units. Before sending, the adapter compares the connection epoch it was given (f
 snapshot, or `update_connection_epoch`) with the link's live epoch and refuses without
 sending when they differ; the dispatcher then reports `stale_connection_epoch`. Silence
 for the configured timeout raises `AdapterTimeout`. A nonterminal `accepted` or
-`executing` acknowledgement followed by silence is returned as is so the dispatcher stops
-dependent work and resumes on the later terminal fact. A `failed` acknowledgement keeps
+`executing` acknowledgement followed by silence, or by heartbeats past the command
+deadline, is returned as is so the dispatcher stops dependent work; whenever the adapter
+gives up it calls the link's `stop_waiting`, so the relay retains the command and settles
+the intent on the node's late terminal answer instead of dropping it (`relay/README.md`,
+node protocol). The adapter takes an injectable monotonic clock for its deadline so
+that behaviour is tested without waiting. A `failed` acknowledgement keeps
 the node's reason in `detail` (for example `out_of_order_command`) and is never resent.
 `estop()` sends to every aircraft before waiting on any acknowledgement; a node that
 stays silent is reported as a failed `adapter_timeout` acknowledgement rather than

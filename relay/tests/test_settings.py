@@ -53,6 +53,7 @@ def test_bridge_settings_default_to_sim_and_relay_distributed_thresholds() -> No
     assert settings.node_watchdog_hold_ms == 2_000
     assert settings.node_watchdog_failsafe_ms == 10_000
     assert settings.limits().command_ttl_ms == 2_000
+    assert settings.limits().require_issued_commands is False
     assert settings.node_settings() == {
         "command_ttl_ms": 2_000,
         "virtual_stick_hz": 10,
@@ -75,6 +76,7 @@ def test_remote_backend_and_thresholds_come_from_the_environment() -> None:
 
     assert settings.adapter_backend is AdapterBackend.REMOTE
     assert settings.limits().command_ttl_ms == 1_500
+    assert settings.limits().require_issued_commands is True, "the relay issues every command"
     assert settings.node_settings() == {
         "command_ttl_ms": 1_500,
         "virtual_stick_hz": 20,
@@ -104,7 +106,8 @@ def test_invalid_bridge_configuration_fails(name: str, value: str) -> None:
 def test_command_deadline_defaults_above_the_ttl_and_must_cover_it() -> None:
     settings = RelaySettings.from_env({"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode()})
 
-    assert settings.command_deadline_ms == 10_000
+    assert settings.command_deadline_ms == 90_000, "must exceed node takeoff and landing"
+    assert settings.limits().late_acknowledgement_window_ms == 90_000
     assert "command_deadline_ms" not in settings.node_settings()
     with pytest.raises(SettingsError, match="SWEEP_COMMAND_DEADLINE_MS"):
         RelaySettings.from_env(

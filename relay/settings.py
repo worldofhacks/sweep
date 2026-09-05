@@ -35,7 +35,7 @@ class RelaySettings:
     fanout_hz: int = 10
     adapter_backend: AdapterBackend = AdapterBackend.SIM
     command_ttl_ms: int = 2_000
-    command_deadline_ms: int = 10_000
+    command_deadline_ms: int = 90_000
     virtual_stick_hz: int = 10
     node_watchdog_hold_ms: int = 2_000
     node_watchdog_failsafe_ms: int = 10_000
@@ -102,7 +102,7 @@ class RelaySettings:
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"
             ),
             command_deadline_ms=_positive_integer(
-                values.get("SWEEP_COMMAND_DEADLINE_MS", "10000"), "SWEEP_COMMAND_DEADLINE_MS"
+                values.get("SWEEP_COMMAND_DEADLINE_MS", "90000"), "SWEEP_COMMAND_DEADLINE_MS"
             ),
             virtual_stick_hz=_positive_integer(
                 values.get("SWEEP_VIRTUAL_STICK_HZ", "10"), "SWEEP_VIRTUAL_STICK_HZ"
@@ -125,12 +125,15 @@ class RelaySettings:
         )
 
     def limits(self) -> RelayLimits:
+        """Session limits; a timed-out command stays reconcilable for one more deadline."""
         return RelayLimits(
             intent_max_age_ms=self.intent_max_age_ms,
             transport_event_max_age_ms=self.transport_event_max_age_ms,
             future_clock_skew_ms=self.future_clock_skew_ms,
             telemetry_freshness_ms=self.telemetry_freshness_ms,
             command_ttl_ms=self.command_ttl_ms,
+            late_acknowledgement_window_ms=self.command_deadline_ms,
+            require_issued_commands=self.adapter_backend is AdapterBackend.REMOTE,
         )
 
     def node_settings(self) -> dict[str, int]:

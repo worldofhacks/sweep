@@ -68,6 +68,10 @@ class NodeLink(Protocol):
         self, command_id: str, *, timeout_ms: int
     ) -> WireAcknowledgement | None: ...
 
+    def stop_waiting(self, command_id: str) -> None:
+        """The caller gave up on this command; a later terminal answer is a late fact."""
+        ...
+
     def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None: ...
 
     def media_files(self, drone_id: int, capture_id: str) -> tuple[MediaFileRecord, ...]: ...
@@ -120,6 +124,7 @@ class RemoteBridgeAdapter:
         acknowledgement_timeout_ms: int,
         command_deadline_ms: int | None = None,
         command_ids: Callable[[], str] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         if (
             not isinstance(acknowledgement_timeout_ms, int)
@@ -138,6 +143,7 @@ class RemoteBridgeAdapter:
         self._timeout_ms = acknowledgement_timeout_ms
         self._deadline_ms = command_deadline_ms
         self._command_ids = command_ids or (lambda: str(uuid.uuid4()))
+        self._clock = clock or time.monotonic
         self._context: _IntentContext | None = None
         self._captures: dict[tuple[int, str], str] = {}
         self._reported_files: set[tuple[int, str, str]] = set()
@@ -151,6 +157,7 @@ class RemoteBridgeAdapter:
         acknowledgement_timeout_ms: int,
         command_deadline_ms: int | None = None,
         command_ids: Callable[[], str] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> RemoteBridgeAdapter:
         return cls(
             link,
@@ -160,6 +167,7 @@ class RemoteBridgeAdapter:
             acknowledgement_timeout_ms=acknowledgement_timeout_ms,
             command_deadline_ms=command_deadline_ms,
             command_ids=command_ids,
+            clock=clock,
         )
 
     def update_connection_epoch(self, drone_id: int, connection_epoch: int) -> None:
@@ -421,28 +429,24 @@ class RemoteBridgeAdapter:
         Each wait is bounded by the acknowledgement timeout and the whole command by
         ``command_deadline_ms`` when configured, so a node that keeps sending
         non-terminal acknowledgements cannot hold the caller indefinitely: at the
-        deadline the latest non-terminal acknowledgement is returned as is.
+        deadline the latest non-terminal acknowledgement is returned as is. Giving up
+        tells the link (``stop_waiting``) so the relay retains the command and treats
+        the node's later terminal answer as a late fact instead of dropping it.
         """
-        deadline = (
-            None if self._deadline_ms is None else time.monotonic() + self._deadline_ms / 1000
-        )
+        deadline = None if self._deadline_ms is None else self._clock() + self._deadline_ms / 1000
         latest: WireAcknowledgement | None = None
         while True:
             timeout_ms = self._timeout_ms
             if deadline is not None:
-                remaining_ms = int((deadline - time.monotonic()) * 1000)
+                remaining_ms = int((deadline - self._clock()) * 1000)
                 if remaining_ms <= 0:
-                    if latest is None:
-                        raise AdapterTimeout(request.drone_id, request.operation)
-                    return _reply(request, latest)
+                    return self._give_up(request, latest)
                 timeout_ms = min(timeout_ms, remaining_ms)
             acknowledgement = self._link.await_acknowledgement(
                 request.command_id, timeout_ms=timeout_ms
             )
             if acknowledgement is None:
-                if latest is None:
-                    raise AdapterTimeout(request.drone_id, request.operation)
-                return _reply(request, latest)
+                return self._give_up(request, latest)
             if (
                 acknowledgement.command_id != request.command_id
                 or acknowledgement.drone_id != request.drone_id
@@ -452,6 +456,13 @@ class RemoteBridgeAdapter:
             latest = acknowledgement
             if acknowledgement.status.value in _TERMINAL_STATUSES:
                 return _reply(request, acknowledgement)
+
+    def _give_up(self, request: CommandRequest, latest: WireAcknowledgement | None) -> _Reply:
+        """Stop waiting on the link, then report the latest non-terminal fact or silence."""
+        self._link.stop_waiting(request.command_id)
+        if latest is None:
+            raise AdapterTimeout(request.drone_id, request.operation)
+        return _reply(request, latest)
 
     def _require_aircraft(self, drone_id: int) -> int:
         try:

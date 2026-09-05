@@ -1,27 +1,26 @@
 """Autonomy composition: accepted relay intents through the planner and arbiter to dispatch.
 
-``relay.app`` acknowledges an Intent v1 request as ``accepted`` only after its intent
-sink hands the request to a planner/arbiter consumer, and the standalone
-``relay.app:app`` has none. This module is that consumer for the M2.0 checkpoint and
-``relay.main`` runs it. Each session runs three worker lanes: operator intents in
-arrival order, ``hold`` on its own lane, and ``estop`` on its own lane. A worker
-projects the relay state into the autonomy ``FleetSnapshot`` with explicit
-fail-closed enrichment, runs ``AutonomyController`` (capability gate, arbiter,
-planner, whole-plan arbitration, dispatch) on the adapters that
-``SWEEP_ADAPTER_BACKEND`` selects, then applies the accepted control state and the
-resulting lifecycle back through the session so consoles and the audit log see them.
+``relay.app`` acknowledges an Intent v1 request as ``accepted`` only when an intent
+sink is configured, and the standalone ``relay.app:app`` has none. This module is
+that sink for the M2.0 checkpoint and ``relay.main`` runs it. It implements the
+session's sink contract: the factory receives the ``RelaySession``, the sink is
+called once per accepted intent outside the session lock, and it returns an
+``IntentSinkResult`` that the session applies (lifecycle, control projection, and
+the network-stop latch) inside the intent's own operation.
 
-The relay session calls the sink while holding its own lock inside the intent
-operation, so the sink only queues; for a network stop it also latches the session's
-``estop`` and records the preemption of the plans the stop cancels, all inside that
-same operation. Dispatch runs on the lanes: the remote adapter blocks on node
-acknowledgements that arrive through that same session, which would deadlock inside
-the intent operation.
+Each session runs three worker lanes: operator intents in arrival order, ``hold`` on
+its own lane, and ``estop`` on its own lane. The sink hands the intent to its lane
+and blocks until the lane has a result, so the session records exactly one outcome
+per intent while a ``hold`` or ``estop`` (the session runs both without its
+execution lock) can still preempt the plan another lane is running. A worker projects
+the relay state into the autonomy ``FleetSnapshot`` with explicit fail-closed
+enrichment, runs ``AutonomyController`` (capability gate, arbiter, planner,
+whole-plan arbitration, dispatch) on the adapters that ``SWEEP_ADAPTER_BACKEND``
+selects, and returns the result for the session to apply.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -42,6 +41,7 @@ from planner.models import (
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
+    Plan,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
@@ -55,7 +55,14 @@ from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
 from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
 from relay.intent_v1 import IntentName, IntentV1
-from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
+from relay.session import (
+    Clock,
+    EventIdFactory,
+    IntentSink,
+    IntentSinkResult,
+    LeaveAuthorizer,
+    RelaySession,
+)
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 
 LIFECYCLE_SOURCE = "autonomy"
@@ -68,18 +75,9 @@ HOLD_PREEMPTS = frozenset(
 ReadinessSource = Callable[[int], CaptureReadinessFrame | None]
 _ESTOP_PREEMPTS = frozenset(IntentName) - {IntentName.ESTOP}
 _SAFETY_PLANS = frozenset({IntentName.LAND_ALL, IntentName.ESTOP})
-_TERMINAL = frozenset(
-    {
-        LifecycleStatus.REFUSED,
-        LifecycleStatus.COMPLETED,
-        LifecycleStatus.FAILED,
-        LifecycleStatus.INVALIDATED,
-    }
-)
 _LOGGER = logging.getLogger(__name__)
 _FLIGHT_STATES = frozenset(state.value for state in FlightState)
 _PHYSICALLY_DISARMED_STATES = frozenset({FlightState.DISARMED.value, FlightState.LANDED.value})
-_PUBLISH_TIMEOUT_S = 30.0
 
 
 class PlanPreempted(BaseException):
@@ -141,8 +139,8 @@ def relay_snapshot(
     them explicitly and fails closed where it cannot:
 
     - ``operator_present`` and ``operator_last_seen_ms`` come from the latest accepted
-      console or keyboard intent in this session; the arbiter's operator timeout
-      bounds how long that evidence lasts. No intent yet means no operator.
+      intent in this session; the arbiter's operator timeout bounds how long that
+      evidence lasts. No intent yet means no operator.
     - ``armed`` is derived from the authoritative telemetry flight state exactly as
       the simulator reports it: every state except ``disarmed`` and ``landed`` is
       physically armed. Telemetry v1 has no separate motor-state field, so the
@@ -224,104 +222,109 @@ def relay_snapshot(
     return snapshot
 
 
-def control_projection(intent_name: IntentName, result: ExecutionResult) -> dict[str, object]:
-    """Return the control state the relay applies for one execution result.
+def plan_summary(plan: Plan) -> dict[str, object]:
+    """The accepted-plan projection: enough for a roster change to invalidate it."""
+    return {
+        "plan_id": plan.plan_id,
+        "intent_id": plan.intent_id,
+        "intent_name": plan.intent_name.value,
+        "roster_version": plan.roster_version,
+        "selection": list(plan.selection),
+    }
+
+
+def sink_result(
+    intent: IntentV1,
+    result: ExecutionResult,
+    *,
+    roster_version: int,
+    events: tuple[Mapping[str, object], ...] = (),
+) -> IntentSinkResult:
+    """Translate one execution result into what the session applies for the intent.
 
     The network stop latches from the intent itself, never from the plan, so the
     planner and arbiter path can only add commands and never remove the latch. Arm
-    and selection apply only once their plan completed. A plan still waiting on a
-    node's terminal acknowledgement is published as the session's ``accepted_plan``
-    so a roster change can invalidate it by ``intent_id``; every terminal result
-    clears it.
+    and selection apply only once their plan completed and only while the plan's
+    roster is still the session's roster (``roster_version``); otherwise they are
+    dropped and the result becomes ``invalidated`` with ``stale_roster``. The
+    accepted-plan projection is not part of this result: a plan left waiting on a
+    node's terminal acknowledgement publishes it explicitly, and every stop clears
+    it through ``estop_update``.
     """
-    projection: dict[str, object] = {}
-    if intent_name is IntentName.ESTOP:
-        projection["estop"] = True
     plan = result.plan
-    if result.status is LifecycleStatus.EXECUTING:
-        if plan is not None:
-            projection["accepted_plan"] = {
-                "plan_id": plan.plan_id,
-                "intent_id": plan.intent_id,
-                "intent_name": plan.intent_name.value,
-                "roster_version": plan.roster_version,
-                "selection": list(plan.selection),
-            }
-    elif result.status in _TERMINAL:
-        projection["accepted_plan"] = None
-    if plan is not None and result.status is LifecycleStatus.COMPLETED:
-        if plan.selection_update is not None:
-            projection["selection"] = plan.selection_update
-        if plan.armed_update is not None:
-            projection["armed"] = plan.armed_update
-    return projection
-
-
-def record_result(session: RelaySession, result: ExecutionResult) -> dict[str, object]:
-    """Report one execution result as the intent's lifecycle event through the session."""
+    selection_update = armed_update = None
+    if result.status is LifecycleStatus.COMPLETED and plan is not None:
+        earned = plan.selection_update is not None or plan.armed_update is not None
+        if earned and plan.roster_version != roster_version:
+            result = replace(
+                result,
+                status=LifecycleStatus.INVALIDATED,
+                refusal=Refusal(
+                    intent_id=result.intent_id,
+                    roster_version=roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.STALE_ROSTER,
+                    detail="the roster changed before the accepted control state could be applied",
+                    status=LifecycleStatus.INVALIDATED,
+                ),
+            )
+        else:
+            selection_update = plan.selection_update
+            armed_update = plan.armed_update
     refusal = result.refusal
     reason = None if refusal is None else refusal.reason.value
     if reason is None and result.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}:
         reason = RefusalReason.ADAPTER_FAILURE.value
-    return session.record_lifecycle(
-        intent_id=result.intent_id,
+    summary = result.to_dict()
+    summary.pop("plan", None)
+    summary["plan_id"] = None if plan is None else plan.plan_id
+    summary["intent_name"] = intent.name.value
+    return IntentSinkResult(
         status=WireLifecycleStatus(result.status.value),
         source=LIFECYCLE_SOURCE,
-        drone_id=None if refusal is None else refusal.drone_id,
-        connection_epoch=None if refusal is None else refusal.connection_epoch,
+        result=summary,
+        events=events,
+        selection_update=selection_update,
+        armed_update=armed_update,
+        estop_update=True if intent.name is IntentName.ESTOP else None,
         reason=reason,
         detail=None if refusal is None else refusal.detail,
+        drone_id=None if refusal is None else refusal.drone_id,
+        connection_epoch=None if refusal is None else refusal.connection_epoch,
     )
 
 
-def apply_result(
-    session: RelaySession, intent: IntentV1, result: ExecutionResult
-) -> list[dict[str, object]]:
-    """Apply one result's control projection and lifecycle inside a session operation.
-
-    Selection and arm updates apply only while the plan's roster is still the
-    session's roster; otherwise they are dropped and the result becomes
-    ``invalidated`` with ``stale_roster``. The network stop latch is never dropped.
-    """
-    projection = control_projection(intent.name, result)
+def remaining_commands(result: ExecutionResult) -> int:
+    """Commands an executing result still has to send once its waiting command ends."""
     plan = result.plan
-    roster_version = session.registry.roster_version
-    if (
-        plan is not None
-        and plan.roster_version != roster_version
-        and ("selection" in projection or "armed" in projection)
-    ):
-        projection.pop("selection", None)
-        projection.pop("armed", None)
-        result = replace(
-            result,
-            status=LifecycleStatus.INVALIDATED,
-            refusal=Refusal(
-                intent_id=result.intent_id,
-                roster_version=roster_version,
-                drone_id=None,
-                connection_epoch=None,
-                reason=RefusalReason.STALE_ROSTER,
-                detail="the roster changed before the accepted control state could be applied",
-                status=LifecycleStatus.INVALIDATED,
-            ),
-        )
-    events: list[dict[str, object]] = []
-    if projection:
-        events.append(session.update_control_projection(**projection))  # type: ignore[arg-type]
-    events.append(record_result(session, result))
-    return events
+    if plan is None or not result.acknowledgements:
+        return 0
+    waiting = result.acknowledgements[-1].command_id
+    index = next(
+        (
+            position
+            for position, command in enumerate(plan.commands)
+            if command.command_id == waiting
+        ),
+        None,
+    )
+    if index is None:
+        return 0
+    degraded = set(result.degraded_aircraft)
+    return sum(1 for command in plan.commands[index + 1 :] if command.drone_id not in degraded)
 
 
 @dataclass(eq=False, slots=True)
 class _Job:
-    """One accepted intent on a lane; ``cancelled_by`` is the preemption flag."""
+    """One accepted intent; ``cancelled_by`` is the preemption flag."""
 
     intent: IntentV1
-    session: RelaySession | None
     publications: list[dict[str, object]] = field(default_factory=list)
     cancelled_by: str | None = None
     finished: bool = False
+    done: bool = False
+    result: IntentSinkResult | None = None
 
     def check(self) -> None:
         if self.cancelled_by is not None:
@@ -366,9 +369,12 @@ class _PreemptibleLink:
     ) -> WireAcknowledgement | None:
         acknowledgement = self._inner.await_acknowledgement(command_id, timeout_ms=timeout_ms)
         if self._job.cancelled_by is not None:
-            self._session.discard_command_waiter(command_id)
+            self._session.release_command_wait(command_id)
             raise PlanPreempted(self._job.cancelled_by)
         return acknowledgement
+
+    def stop_waiting(self, command_id: str) -> None:
+        self._inner.stop_waiting(command_id)
 
     def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None:
         return self._inner.camera_capabilities(drone_id)
@@ -380,16 +386,23 @@ class _PreemptibleLink:
 class AutonomySession:
     """One session's planner, arbiter, operator evidence, and intent lanes.
 
-    The ``normal`` lane runs operator intents in arrival order. ``hold`` and ``estop``
-    each run at once on their own lane and cancel the plans they preempt: the stop
-    records the cancelled intent as ``invalidated`` inside its own intent operation,
-    under the session lock, so ``issue_command`` refuses anything that plan tries to
-    send afterwards; the plan's dispatch also checks its flag before every command
-    and send and after every acknowledgement wait, then exits without a best-effort
-    hold. A hold cancels operator motion and camera plans but queues behind a running
-    ``land_all`` or ``estop``; a network stop cancels whatever is running and latches
-    the session's ``estop`` in the same operation that accepted it.
+    The session calls the sink (``submit``) once per accepted intent, outside its own
+    lock; the sink hands the intent to a lane and returns that lane's result. The
+    ``normal`` lane runs operator intents in arrival order. ``hold`` and ``estop``
+    each run at once on their own lane (``concurrent_intents`` keeps the session from
+    serialising a hold behind the plan it must preempt; the session never serialises
+    an estop) and cancel the plans they preempt: the stop records the cancelled intent
+    as ``invalidated`` under the session lock, so ``issue_command`` refuses anything
+    that plan tries to send afterwards; the plan's dispatch also checks its flag before
+    every command and send and after every acknowledgement wait, then exits without a
+    best-effort hold, and its own ``submit`` returns nothing because the stop already
+    reported it. A hold cancels operator motion and camera plans but queues behind a
+    running ``land_all`` or ``estop``; a network stop cancels whatever is running and
+    latches the session's ``estop`` before it is queued, so nothing is dispatched
+    after a stop was accepted without the latch in place.
     """
+
+    concurrent_intents = frozenset({IntentName.HOLD})
 
     def __init__(self, composition: AutonomyComposition, session_id: str) -> None:
         self.session_id = session_id
@@ -397,8 +410,11 @@ class AutonomySession:
         self.planner = DeterministicPlanner(composition.config.planning)
         self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
+        self._done = threading.Condition(self._lock)
+        self._session: RelaySession | None = None
         self._operator_last_seen_ms: int | None = None
         self._stop_requested = False
+        self._admitted: dict[str, _Job] = {}
         self._normal = _Lane("normal", self._lock)
         self._hold = _Lane("hold", self._lock)
         self._estop = _Lane("estop", self._lock)
@@ -415,15 +431,41 @@ class AutonomySession:
         for worker in self._workers:
             worker.start()
 
-    def submit(self, intent: IntentV1, _state: dict[str, object]) -> None:
-        """``IntentSink``: record operator activity and route the intent without blocking."""
+    def attach(self, session: RelaySession) -> AutonomySession:
+        """Bind the relay session this sink reports through; keyed by its session id."""
+        if session.session_id != self.session_id:
+            raise ValueError("relay session id does not match this autonomy session")
+        with self._lock:
+            if self._session is not None and self._session is not session:
+                raise ValueError("autonomy session is already attached to a relay session")
+            self._session = session
+        return self
+
+    def __call__(self, intent: IntentV1, state: dict[str, object]) -> IntentSinkResult | None:
+        return self.submit(intent, state)
+
+    def admit_intent(self, intent: IntentV1) -> None:
+        """Record an accepted intent before it executes, so a stop can cancel it queued."""
+        with self._lock:
+            self._admitted.setdefault(intent.intent_id, _Job(intent))
+
+    def cancel_intent(self, intent_id: str) -> None:
+        """Forget an accepted intent the session refused before execution."""
+        with self._lock:
+            self._admitted.pop(intent_id, None)
+
+    def submit(self, intent: IntentV1, _state: dict[str, object]) -> IntentSinkResult | None:
+        """``IntentSink``: record operator activity, run the intent on its lane, report."""
+        session = self._require_session()
         with self._lock:
             previous = self._operator_last_seen_ms
             self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
-        runtime = self._composition.runtime_if_bound()
-        job = _Job(intent, None if runtime is None else runtime.sessions.get(self.session_id))
+            job = self._admitted.pop(intent.intent_id, None) or _Job(intent)
+            cancelled = job.cancelled_by
+        if cancelled is not None:
+            return None  # cancelled while queued; the stop recorded its invalidation
         try:
-            lane = self._route(job)
+            lane = self._route(job, session)
         except Exception:
             # A stop must reach its lane even if the preemption bookkeeping fails.
             _LOGGER.exception("preemption bookkeeping failed for intent %s", intent.intent_id)
@@ -431,6 +473,10 @@ class AutonomySession:
         with lane.ready:
             lane.pending.append(job)
             lane.ready.notify()
+        with self._done:
+            while not job.done:
+                self._done.wait()
+        return job.result
 
     def authorize_leave(
         self, drone_id: int, connection_epoch: int, state: dict[str, object]
@@ -463,6 +509,13 @@ class AutonomySession:
         for worker in self._workers:
             worker.join(timeout=timeout_s)
 
+    def _require_session(self) -> RelaySession:
+        with self._lock:
+            session = self._session
+        if session is None:
+            raise RuntimeError("autonomy session is not attached to a relay session")
+        return session
+
     def _lane_for(self, name: IntentName) -> _Lane:
         if name is IntentName.ESTOP:
             return self._estop
@@ -470,18 +523,20 @@ class AutonomySession:
             return self._hold
         return self._normal
 
-    def _route(self, job: _Job) -> _Lane:
+    def _route(self, job: _Job, session: RelaySession) -> _Lane:
         """Choose the lane and cancel the plans this intent preempts before it queues."""
         name = job.intent.name
         if name is IntentName.ESTOP:
             with self._lock:
                 self._stop_requested = True
-            if job.session is not None:
-                # Latch inside the accepting operation: no worker, plan, or publish
-                # failure can lose it, and every later snapshot is stopped.
-                job.publications.append(job.session.update_control_projection(estop=True))
+            # Latch before the stop is queued: no worker, plan, or publish failure can
+            # lose it, every later snapshot is stopped, and the session applies the
+            # same latch again from the result's estop_update inside the intent
+            # operation.
+            job.publications.append(session.update_control_projection(estop=True))
             self._cancel(
                 job,
+                session,
                 PREEMPTED_BY_ESTOP,
                 running_on=(self._normal, self._hold),
                 running_names=_ESTOP_PREEMPTS,
@@ -496,7 +551,11 @@ class AutonomySession:
                     and running.intent.name in _SAFETY_PLANS
                 )
             self._cancel(
-                job, PREEMPTED_BY_HOLD, running_on=(self._normal,), running_names=HOLD_PREEMPTS
+                job,
+                session,
+                PREEMPTED_BY_HOLD,
+                running_on=(self._normal,),
+                running_names=HOLD_PREEMPTS,
             )
             return self._normal if behind_safety_plan else self._hold
         return self._normal
@@ -504,6 +563,7 @@ class AutonomySession:
     def _cancel(
         self,
         stop: _Job,
+        session: RelaySession,
         reason: str,
         *,
         running_on: tuple[_Lane, ...],
@@ -511,10 +571,10 @@ class AutonomySession:
     ) -> None:
         """Invalidate the plans a stop preempts: running ones by name, queued motion ones.
 
-        The invalidation is recorded first, under the session lock the sink already
-        holds, so it is atomic against ``issue_command``; the flag is set afterwards so
-        the plan exits promptly. The stop publishes the records when it starts. A plan
-        that reached a terminal state first keeps that result.
+        The invalidation is recorded first, under the session lock, so it is atomic
+        against ``issue_command``; the flag is set afterwards so the plan exits
+        promptly. The records travel with the stop's own result. A plan that reached a
+        terminal state first keeps that result.
         """
         with self._lock:
             victims = [
@@ -527,12 +587,9 @@ class AutonomySession:
             ]
             victims.extend(
                 job
-                for job in self._normal.pending
+                for job in (*self._normal.pending, *self._admitted.values())
                 if job.cancelled_by is None and job.intent.name in HOLD_PREEMPTS
             )
-        session = stop.session
-        if not victims or session is None:
-            return
         for victim in victims:
             try:
                 event = session.record_lifecycle(
@@ -560,35 +617,33 @@ class AutonomySession:
                     return
                 job = lane.pending.popleft()
                 lane.running = job
+            result: IntentSinkResult | None = None
             try:
-                self._execute(job)
-            except Exception:
+                result = self._execute(job)
+            except Exception as error:
                 _LOGGER.exception(
                     "autonomy %s lane failed session=%s intent=%s",
                     lane.name,
                     self.session_id,
                     job.intent.intent_id,
                 )
+                try:
+                    result = self._failure(job, error)
+                except Exception:  # the lane must outlive any failure to report one
+                    _LOGGER.exception("autonomy failure result could not be built")
             finally:
                 with lane.ready:
                     lane.running = None
+                    job.result = result
+                    job.done = True
+                    self._done.notify_all()
 
-    def _execute(self, job: _Job) -> None:
+    def _execute(self, job: _Job) -> IntentSinkResult | None:
+        session = self._require_session()
         runtime = self._composition.runtime
-        session = job.session or runtime.sessions.get(self.session_id)
         intent = job.intent
-        if session is None:
-            _LOGGER.error(
-                "session %s is not active; intent %s cannot be reported or dispatched",
-                self.session_id,
-                intent.intent_id,
-            )
-            return
-        if job.publications:
-            publications = list(job.publications)
-            self._publish(runtime, lambda: publications)
         if job.cancelled_by is not None:
-            return  # cancelled while queued; the stop recorded its invalidation
+            return None  # cancelled while queued; the stop recorded its invalidation
 
         def current() -> FleetSnapshot:
             job.check()
@@ -615,7 +670,7 @@ class AutonomySession:
             result = controller.execute(intent, snapshot, current_snapshot=current)
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
-            return
+            return None
         except Exception as error:  # the console still receives a typed terminal result
             _LOGGER.exception(
                 "autonomy dispatch path failed session=%s intent=%s",
@@ -627,57 +682,33 @@ class AutonomySession:
             job.finished = True
             cancelled = job.cancelled_by
         if cancelled is not None:
-            return  # a stop already recorded this plan's terminal lifecycle
-        self._report(runtime, session, job, result)
-
-    def _report(
-        self, runtime: RelayRuntime, session: RelaySession, job: _Job, result: ExecutionResult
-    ) -> None:
-        def operation() -> list[dict[str, object]]:
-            try:
-                return apply_result(session, job.intent, result)
-            except ValueError:
-                if job.cancelled_by is None:
-                    raise
-                _LOGGER.info("intent %s was cancelled as it completed", job.intent.intent_id)
-                return []
-
-        self._publish(runtime, operation)
-
-    def _publish(
-        self, runtime: RelayRuntime, operation: Callable[[], list[dict[str, object]]]
-    ) -> None:
-        """Run ``operation`` under the session's ordering and fan its events out.
-
-        The operation runs exactly once: if the relay loop is gone or refuses the
-        work before running it, it is applied directly so the audit record and the
-        control projection are never lost; consoles then catch up from the periodic
-        state fan-out or replay.
-        """
-        ran = False
-
-        def guarded() -> list[dict[str, object]]:
-            nonlocal ran
-            ran = True
-            return operation()
-
-        loop = runtime.loop
-        if loop is not None and not loop.is_closed():
-            future = asyncio.run_coroutine_threadsafe(
-                runtime.process_and_publish(self.session_id, guarded), loop
+            return None  # a stop already recorded this plan's terminal lifecycle
+        if result.status is LifecycleStatus.EXECUTING and result.plan is not None:
+            # A node stopped answering inside the command deadline. The relay keeps
+            # the command and settles this intent on the node's late terminal answer
+            # or on the late window passing; until then the plan stays published so
+            # a roster change can invalidate it by intent_id.
+            session.expect_late_acknowledgement(
+                intent.intent_id, completes_plan=remaining_commands(result) == 0
             )
-            try:
-                future.result(timeout=_PUBLISH_TIMEOUT_S)
-                return
-            except Exception:
-                if ran:
-                    raise
-                _LOGGER.exception(
-                    "relay loop did not run the result operation for session %s; "
-                    "applying it directly",
-                    self.session_id,
-                )
-        guarded()
+            job.publications.append(
+                session.update_control_projection(accepted_plan=plan_summary(result.plan))
+            )
+        return sink_result(
+            intent,
+            result,
+            roster_version=session.registry.roster_version,
+            events=tuple(job.publications),
+        )
+
+    def _failure(self, job: _Job, error: Exception) -> IntentSinkResult:
+        session = self._require_session()
+        return sink_result(
+            job.intent,
+            _composition_failure(job.intent, session, error),
+            roster_version=session.registry.roster_version,
+            events=tuple(job.publications),
+        )
 
 
 class AutonomyComposition:
@@ -710,11 +741,9 @@ class AutonomyComposition:
             raise RuntimeError("the autonomy composition is not bound to a started relay")
         return runtime
 
-    def runtime_if_bound(self) -> RelayRuntime | None:
-        return self._runtime_source()
-
-    def intent_sink_factory(self, session_id: str) -> IntentSink:
-        return self.session(session_id).submit
+    def intent_sink_factory(self, session: RelaySession) -> IntentSink:
+        """``IntentSinkFactory``: one autonomy session per relay session id."""
+        return self.session(session.session_id).attach(session)
 
     def leave_authorizer_factory(self, session_id: str) -> LeaveAuthorizer:
         return self.session(session_id).authorize_leave
