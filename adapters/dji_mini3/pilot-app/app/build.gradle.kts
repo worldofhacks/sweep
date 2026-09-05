@@ -30,6 +30,10 @@ android {
         create("fake") {
             dimension = "aircraft"
             buildConfigField("String", "AIRCRAFT", "\"fake\"")
+            ndk {
+                // The WebRTC build ships four ABIs; the pinned phone is arm64 (Phase F).
+                abiFilters += "arm64-v8a"
+            }
         }
         create("probe") {
             dimension = "aircraft"
@@ -78,6 +82,7 @@ android {
 dependencies {
     implementation(project(":bridge-core"))
     implementation(project(":bridge-node"))
+    implementation(project(":bridge-publish"))
     implementation(project(":bench"))
 
     val composeBom = platform(libs.compose.bom)
@@ -91,6 +96,8 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.security.crypto)
+    // WHIP publish path (Phase F): libwebrtc prebuilt used by the vendored WildBridge package.
+    implementation(libs.stream.webrtc)
     debugImplementation(libs.compose.ui.tooling)
 
     "probeImplementation"(libs.dji.aircraft)

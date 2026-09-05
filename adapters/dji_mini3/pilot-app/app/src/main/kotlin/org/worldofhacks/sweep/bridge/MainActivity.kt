@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
                 SessionScreen(
                     node = app.node,
                     session = app.session,
+                    publisher = app.publisher,
                     variant = BuildConfig.AIRCRAFT,
                     simulation = app.session as? SimulationControls,
                 )

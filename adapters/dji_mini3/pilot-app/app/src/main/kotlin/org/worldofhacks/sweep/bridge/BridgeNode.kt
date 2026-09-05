@@ -20,6 +20,7 @@ import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.NodeConfig
 import org.worldofhacks.sweep.bridge.node.ReadinessInput
 import org.worldofhacks.sweep.bridge.node.RelayLink
+import org.worldofhacks.sweep.bridge.node.VideoPublishSource
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 
 /**
@@ -53,6 +54,10 @@ class BridgeNode(private val application: Application, val session: AircraftSess
     /** Set by [BridgeService]; supplies the Wi-Fi-bound OkHttp client and network label. */
     @Volatile
     var wifiNetwork: WifiRelayNetwork? = null
+
+    /** Set by the Phase F publisher; the link reads it for `node_status.video_publish_state`. */
+    @Volatile
+    var videoPublish: VideoPublishSource = VideoPublishSource { org.worldofhacks.sweep.bridge.core.frames.VideoPublishState.STOPPED }
 
     private var relayLink: RelayLink? = null
     private var mirror: Job? = null
@@ -132,6 +137,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     phone = phone,
                     log = { line -> logLine(line) },
                     client = binding?.client,
+                    videoPublish = { videoPublish.current() },
                 )
                 relayLink = link
                 mirror = scope.launch { link.state.collect { state -> _link.value = state.copy(relayNetwork = _relayNetwork.value) } }

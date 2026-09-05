@@ -45,6 +45,9 @@ import org.worldofhacks.sweep.bridge.node.CommandRecord
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.ReadinessInput
 import org.worldofhacks.sweep.bridge.node.RelayConnection
+import org.worldofhacks.sweep.bridge.publish.Publisher
+import org.worldofhacks.sweep.bridge.publish.ui.PublishRow
+import org.worldofhacks.sweep.bridge.publish.ui.PublishSetupFields
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.SessionState
@@ -58,7 +61,7 @@ import org.worldofhacks.sweep.bridge.session.SimulationControls
  * cards. The flight display, capture, capabilities, and bench screens are later phases.
  */
 @Composable
-fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, simulation: SimulationControls?) {
+fun SessionScreen(node: BridgeNode, session: AircraftSession, publisher: Publisher, variant: String, simulation: SimulationControls?) {
     val sdk by session.state.collectAsStateWithLifecycle()
     val setup by node.setup.collectAsStateWithLifecycle()
     val link by node.link.collectAsStateWithLifecycle()
@@ -90,8 +93,8 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
                     Text("Aircraft variant: $variant. Physical RC remains primary.")
                 }
             }
-            item { SetupCard(setup, running, node) }
-            item { ConnectivityCard(link, running, now, node) }
+            item { SetupCard(setup, running, node, publisher) }
+            item { ConnectivityCard(link, running, now, node, publisher) }
             item { ReadinessCard(link, node) }
             item { NodeStatusCard(link, aircraft, now) }
             item { CommandsCard(link.commands, now) }
@@ -126,7 +129,7 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
 }
 
 @Composable
-private fun SetupCard(setup: SetupSummary, running: Boolean, node: BridgeNode) {
+private fun SetupCard(setup: SetupSummary, running: Boolean, node: BridgeNode, publisher: Publisher) {
     var relayUrl by remember(setup.loaded) { mutableStateOf(setup.relayUrl) }
     var session by remember(setup.loaded) { mutableStateOf(setup.session) }
     var droneId by remember(setup.loaded) { mutableStateOf(setup.droneId.toString()) }
@@ -146,6 +149,7 @@ private fun SetupCard(setup: SetupSummary, running: Boolean, node: BridgeNode) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Setup", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(value = relayUrl, onValueChange = { relayUrl = it }, label = { Text("Relay URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            PublishSetupFields(publisher, relayUrl)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(value = session, onValueChange = { session = it }, label = { Text("Session id") }, singleLine = true, modifier = Modifier.weight(2f))
                 OutlinedTextField(
@@ -221,7 +225,7 @@ private fun requestIgnoreBatteryOptimizations(context: Context) {
 }
 
 @Composable
-private fun ConnectivityCard(link: LinkState, running: Boolean, now: Long, node: BridgeNode) {
+private fun ConnectivityCard(link: LinkState, running: Boolean, now: Long, node: BridgeNode, publisher: Publisher) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Connectivity", style = MaterialTheme.typography.titleMedium)
@@ -250,6 +254,7 @@ private fun ConnectivityCard(link: LinkState, running: Boolean, now: Long, node:
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = node::reconnect) { Text("Reconnect relay") }
             }
+            PublishRow(publisher, now)
         }
     }
 }

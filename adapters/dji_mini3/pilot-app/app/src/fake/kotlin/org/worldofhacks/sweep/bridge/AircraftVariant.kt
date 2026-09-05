@@ -2,6 +2,8 @@ package org.worldofhacks.sweep.bridge
 
 import android.app.Application
 import android.content.Intent
+import org.worldofhacks.sweep.bridge.publish.FakePublishSources
+import org.worldofhacks.sweep.bridge.publish.PublishSourceFactory
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 
 /** Fake flavor: no DJI dependency, nothing to install, a simulated session drives the screen. */
@@ -12,6 +14,10 @@ object AircraftVariant {
     fun installSdk(application: Application) = Unit
 
     fun createSession(application: Application): AircraftSession = FakeAircraftSession(application.filesDir)
+
+    /** Phase F: the generated test pattern proves the WHIP path without an aircraft. */
+    @Suppress("UNUSED_PARAMETER")
+    fun publishSources(application: Application): PublishSourceFactory = FakePublishSources()
 
     /**
      * Fake flavor only: the setup values may arrive as launch extras so a bench run can be
