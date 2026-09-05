@@ -31,14 +31,16 @@ _SELECTION_TARGETED = frozenset(
 )
 _AIRBORNE_STATES = frozenset({"taking_off", "airborne", "hovering", "landing"})
 _STABLE_MOTION_STATES = frozenset({"airborne", "hovering"})
-_EXPLICIT_TRANSLATION = re.compile(
-    r"\bfly\s+(?P<direction>forward|backward|left|right)"
-    r"(?:\s+(?P<distance>\d+(?:\.\d+)?)\s*(?P<unit>foot|feet|metres?|meters?))?"
-    r"(?=\s*(?:$|[.!?,;:]))",
+_EXPLICIT_TRANSLATION_TOKEN = re.compile(
+    r"\bfly\s+(?:forward|backward|left|right)\b",
     re.IGNORECASE,
 )
-_NAMED_TRANSLATION = re.compile(
-    r"\bdrones?\s+(?P<ids>[^.!?,;:]+?)\s+fly\b",
+_EXPLICIT_TRANSLATION = re.compile(
+    r"\A\s*(?:please\s+)?"
+    r"(?:drones?\s+(?P<ids>(?:one|two|\d+)(?:\s+and\s+(?:one|two|\d+))*)\s+)?"
+    r"fly\s+(?P<direction>forward|backward|left|right)"
+    r"(?:\s+(?P<distance>\d+(?:\.\d+)?)\s*(?P<unit>foot|feet|metres?|meters?))?"
+    r"\s*[.!?]?\s*\Z",
     re.IGNORECASE,
 )
 type OutcomeSource = Literal["anthropic", "replay", "synthetic", "template"]
@@ -808,15 +810,12 @@ def _translation_from_record(
 def _explicit_translation_matches(
     intents: list[ProposedIntent], transcript: str, facts: GroundingFacts
 ) -> bool:
-    matches = list(_EXPLICIT_TRANSLATION.finditer(transcript))
-    if len(matches) != 1:
+    if _EXPLICIT_TRANSLATION_TOKEN.search(transcript) is None:
         return True
-    match = matches[0]
-    named_selection = _named_translation_selection(transcript)
-    prefix = transcript[: match.start()].strip()
-    suffix = transcript[match.end() :].strip(" \t\r\n.!?,;:")
-    if suffix or (prefix and named_selection is None):
-        return True
+    match = _EXPLICIT_TRANSLATION.fullmatch(transcript)
+    if match is None:
+        return False
+    named_selection = _named_translation_selection(match["ids"])
     if facts.translation_step_m is None:
         return False
     if named_selection is None:
@@ -837,6 +836,8 @@ def _explicit_translation_matches(
     if translate is None:
         return False
     distance = float(match["distance"]) if match["distance"] is not None else 1.0
+    if not isfinite(distance) or distance <= 0:
+        return False
     if match["unit"] is None or match["unit"].casefold().startswith("f"):
         distance *= 0.3048
     steps = distance / facts.translation_step_m
@@ -848,12 +849,11 @@ def _explicit_translation_matches(
     )
 
 
-def _named_translation_selection(transcript: str) -> tuple[int, ...] | None:
-    match = _NAMED_TRANSLATION.search(transcript)
-    if match is None:
+def _named_translation_selection(raw_ids: str | None) -> tuple[int, ...] | None:
+    if raw_ids is None:
         return None
     ids = []
-    for raw in re.split(r"\s+and\s+", match["ids"].casefold().strip()):
+    for raw in re.split(r"\s+and\s+", raw_ids.casefold().strip()):
         drone_id = {"one": 1, "two": 2}.get(raw)
         if drone_id is None:
             try:
