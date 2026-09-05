@@ -325,7 +325,7 @@ describe('M1.1 wire compatibility', () => {
 describe('M1.4 production control intents', () => {
   test.each([
     ['arm', {}, [], false],
-    ['select', { ids: [1, 2] }, [], false],
+    ['select', { ids: [1, 2] }, [1, 2], false],
     ['takeoff', {}, [1, 2], true],
     ['translate', { dx: 1, dy: 0 }, [1, 2], false],
     ['hold', {}, [1, 2], false],

@@ -129,7 +129,7 @@ describe('control gating', () => {
     const state = connected([], { estop: true })
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
     expect(byKey.arm).toMatchObject({ enabled: false, note: STOP_ACTIVE_REASON })
-    expect(byKey.land_all).toMatchObject({ enabled: false, note: STOP_ACTIVE_REASON })
+    expect(byKey.land_all).toMatchObject({ enabled: true, note: 'Confirmation required. Targets every aircraft in the roster.' })
     expect(byKey.disarm).toMatchObject({ enabled: true, soft: true })
     expect(dpadBlockedReason(state)).toBe(STOP_ACTIVE_REASON)
   })

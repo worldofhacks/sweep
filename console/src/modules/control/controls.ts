@@ -109,7 +109,7 @@ export function gateControl(state: ControlState, name: ConsoleIntentName, option
   }
   if (options.extra) return { reason: options.extra, soft: false }
   if (!isSupportedAtM20(name)) return { reason: refusalCopy(name), soft: true }
-  if (state.estop && name !== 'estop') return { reason: STOP_ACTIVE_REASON, soft: false }
+  if (state.estop && name !== 'estop' && name !== 'land_all') return { reason: STOP_ACTIVE_REASON, soft: false }
   return { reason: null, soft: false }
 }
 

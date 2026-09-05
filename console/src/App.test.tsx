@@ -181,7 +181,8 @@ describe('Control / Capture console', () => {
         state_sequence: 22, selection: [1], drones: fixtureAircraft(clock()).map((drone) =>
           drone.drone_id === 1 ? { ...drone, connection_epoch: 4 } : drone) })
     })
-    await user.click(screen.getByRole('button', { name: /Capture room/ }))
+    await openControlPane(user, 'Capture')
+    await user.click(screen.getByRole('button', { name: 'Capture room' }))
     act(() => {
       clients.console.emitServer({
         v: 1, t: clock(), type: 'membership', event_id: 'late-loss', session,
@@ -199,10 +200,12 @@ describe('Control / Capture console', () => {
       clients.console.emitServer(joinState)
       clients.console.emitServer(join)
     })
-    expect(screen.getAllByText('roster v10')).toHaveLength(2)
-    expect(screen.getByRole('button', { name: /D-01 ready epoch 4 Selected/i })).toBeInTheDocument()
-    expect(screen.getAllByText('D-01 rejoined')).toHaveLength(1)
-    expect(screen.getByText('1 records')).toBeInTheDocument()
+    expect(screen.getByText(/Fleet · roster v10/)).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent('roster v10')
+    expect(screen.getByLabelText('Session state')).toHaveTextContent('D-01')
+    expect(screen.getAllByText(/D-01 rejoined/)).toHaveLength(1)
+    await openControlPane(user, 'Fleet')
+    expect(screen.getByLabelText('D-01 departed')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Confirm and send' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
@@ -334,7 +337,7 @@ describe('Control / Capture console', () => {
       drones: fixtureAircraft(clock()),
     })
 
-    expect(await screen.findByText('Aircraft failsafe')).toBeInTheDocument()
+    expect(await screen.findByText(/Aircraft failsafe/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Network stop' })).toHaveClass('is-active')
   })
 
@@ -362,18 +365,18 @@ describe('Control / Capture console', () => {
       consoleClient.emitServer({ ...snapshot, event_id: 'console-state', estop: consoleActive })
       keyboard.emitServer({ ...snapshot, event_id: 'keyboard-state', estop: !consoleActive })
     })
-    expect(await screen.findByText('Network stop active')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Network stop' })).toHaveClass('is-active')
 
     act(() => {
       consoleClient.emitServer({ ...snapshot, event_id: 'console-clear-tied', estop: false })
       keyboard.emitServer({ ...snapshot, event_id: 'keyboard-clear-tied', estop: false })
     })
-    expect(screen.getByText('Network stop active')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Network stop' })).toHaveClass('is-active')
 
     act(() => {
       consoleClient.emitServer({ ...snapshot, t: clock() + 1, event_id: 'console-clear-newer', estop: false })
     })
-    expect(screen.getByText('Network stop clear')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Network stop' })).not.toHaveClass('is-active')
   })
 
   test.each(['console', 'keyboard'] as const)('preserves tied fleet projection when %s delivers newer first', async (newerSource) => {
@@ -396,8 +399,10 @@ describe('Control / Capture console', () => {
       })
     })
     expect(await screen.findByText('Armed')).toBeInTheDocument()
+    const user = userEvent.setup()
+    await openModule(user, 'Live')
     expect(screen.getAllByRole('button', { name: /Focus D-/ })).toHaveLength(2)
-    expect(screen.getByRole('button', { name: /D-02 ready epoch 1 Selected/i })).toBeInTheDocument()
+    expect(screen.getByLabelText('Session state')).toHaveTextContent('D-02')
   })
 
   test('ignores a delayed keyboard state older than the current console state', async () => {
@@ -466,7 +471,7 @@ describe('Control / Capture console', () => {
     await screen.findByText(/Development fixture active/i)
 
     await openControlPane(user, 'Fleet')
-    await user.click(screen.getByRole('button', { name: 'Select D-02' }))
+    await user.click(within(screen.getByRole('region', { name: 'Registry' })).getByRole('button', { name: 'Select D-02' }))
     await openControlPane(user, 'Swarm')
     await user.click(screen.getByRole('button', { name: 'Arm' }))
     await user.click(screen.getByRole('button', { name: /^Takeoff/i }))
@@ -518,12 +523,12 @@ describe('Control / Capture console', () => {
 
     await user.click(screen.getByRole('button', { name: /^Takeoff/i }))
     await openControlPane(user, 'Fleet')
-    await user.click(screen.getByRole('button', { name: 'Select D-02' }))
+    await user.click(within(screen.getByRole('region', { name: 'Registry' })).getByRole('button', { name: 'Select D-02' }))
     await openControlPane(user, 'Swarm')
 
     expect(clients.console.sent.map((intent) => intent.name)).toEqual(['select'])
     expect(screen.queryByRole('button', { name: 'Confirm and send' })).not.toBeInTheDocument()
-    expect(await screen.findAllByText('selection_change_requested')).not.toHaveLength(0)
+    expect(await screen.findAllByText(/selection_change_requested/)).not.toHaveLength(0)
   })
 
   test('invalidates a preview as soon as a new selection is requested', async () => {
@@ -537,12 +542,12 @@ describe('Control / Capture console', () => {
 
     await user.click(screen.getByRole('button', { name: /^Takeoff/i }))
     await openControlPane(user, 'Fleet')
-    await user.click(screen.getByRole('button', { name: 'Select D-02' }))
+    await user.click(within(screen.getByRole('region', { name: 'Registry' })).getByRole('button', { name: 'Select D-02' }))
     await openControlPane(user, 'Swarm')
 
     expect(clients.console.sent.map((intent) => intent.name)).toEqual(['select'])
     expect(screen.queryByRole('button', { name: 'Confirm and send' })).not.toBeInTheDocument()
-    expect(await screen.findAllByText('selection_change_requested')).not.toHaveLength(0)
+    expect(await screen.findAllByText(/selection_change_requested/)).not.toHaveLength(0)
   })
 
   test('shows send failure and does not retry or substitute a command', async () => {

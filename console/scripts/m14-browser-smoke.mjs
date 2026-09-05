@@ -52,38 +52,43 @@ try {
     { baseUrl: `ws://127.0.0.1:${relayPort}`, sessionId, token: relayToken },
   )
   await page.goto(`http://127.0.0.1:${consolePort}/`)
-  await page.getByText('Console connected').waitFor()
-  await page.getByRole('button', { name: /D-01 Ready epoch 1 Select/i }).click()
+  await page.getByRole('button', { name: 'Network stop', exact: true }).waitFor()
+  await openControlPane(page, 'Fleet')
+  await page.getByRole('region', { name: 'Registry', exact: true }).getByRole('article', { name: 'D-01 registry card' }).getByRole('button', { name: 'Select D-01', exact: true }).click()
   await waitForRequest(page, 'Select', 'completed')
-  await page.getByRole('button', { name: /D-02 Ready epoch 1 Select/i }).click()
+  await openControlPane(page, 'Fleet')
+  await page.getByRole('region', { name: 'Registry', exact: true }).getByRole('article', { name: 'D-02 registry card' }).getByRole('button', { name: 'Select D-02', exact: true }).click()
   await waitForRequest(page, 'Select', 'completed')
-  await page.getByRole('button', { name: /^Arm session/ }).click()
+  await pressSwarm(page, 'Arm')
   await waitForRequest(page, 'Arm', 'completed')
-  await page.getByRole('button', { name: /^Take off selected/ }).click()
+  await pressSwarm(page, /^Takeoff/)
   await page.getByRole('button', { name: 'Confirm and send' }).click()
   await waitForRequest(page, 'Takeoff', 'completed')
 
+  await openControlPane(page, 'Fleet')
   for (const droneId of ['D-01', 'D-02']) {
-    await page.locator('.drone-state').filter({ hasText: droneId }).getByText('Hovering').waitFor()
+    await page.getByRole('region', { name: 'Registry', exact: true }).getByRole('article', { name: `${droneId} registry card` }).getByText('hovering', { exact: true }).waitFor()
   }
 
-  await page.getByRole('button', { name: /^Translate forward/ }).click()
+  await pressSwarm(page, 'Translate east')
   const translate = await waitForRequest(page, 'Translate', 'completed')
-  if (!(await translate.getByText('D-01, D-02 · console').isVisible())) {
+  if ((await translate.locator('.ct-request-targets').textContent()) !== 'D-01 D-02' ||
+      (await translate.locator('.ct-request-source').textContent()) !== 'source console') {
     throw new Error('browser translation did not target both production simulator nodes')
   }
 
-  await page.getByRole('button', { name: /^Hold selected/ }).click()
+  await pressSwarm(page, 'Hold')
   await waitForRequest(page, 'Hold', 'completed')
-  await page.getByRole('button', { name: /^Come home/ }).click()
+  await pressSwarm(page, 'Come home')
   await waitForRequest(page, 'Come home', 'completed')
 
   let geofenceRefused = false
   for (let step = 0; step < 24; step += 1) {
-    await page.getByRole('button', { name: /^Translate forward/ }).click()
-    const request = page.locator('.request-item').filter({ hasText: 'Translate' }).first()
-    await request.locator('.status-completed, .status-refused').waitFor()
-    if (await request.locator('.status-refused').isVisible()) {
+    await pressSwarm(page, 'Translate east')
+    await openControlPane(page, 'Requests')
+    const request = requestByName(page, 'translate')
+    await request.locator('.ct-request-state').filter({ hasText: /^(completed|refused)$/ }).waitFor()
+    if ((await request.locator('.ct-request-state').textContent()) === 'refused') {
       if (!(await request.locator('code').filter({ hasText: /^geofence$/ }).isVisible())) {
         throw new Error('browser geofence refusal did not expose its safety reason')
       }
@@ -102,17 +107,17 @@ try {
     (event) => event.type === 'safety_action' && event.drone_id === 1 && event.action === 'hold',
     5_000,
   )
-  await page.getByText('Aircraft hold').waitFor({ timeout: 3_000 })
+  await page.locator('.sh-danger').getByText('Aircraft hold:').waitFor({ timeout: 3_000 })
   await waitForRelayEvent(
     (event) => event.type === 'safety_action' && event.drone_id === 1 && event.action === 'failsafe',
     15_000,
   )
-  await page.getByText('Aircraft failsafe').waitFor({ timeout: 3_000 })
+  await page.locator('.sh-danger').getByText('Aircraft failsafe:').waitFor({ timeout: 3_000 })
 
-  await page.getByRole('button', { name: 'Network E-stop' }).click()
+  await page.getByRole('button', { name: 'Network stop', exact: true }).click()
   await waitForRequest(page, 'Estop', 'completed')
-  await page.getByText('Network stop active').waitFor()
-  await page.getByRole('button', { name: /^Land all/ }).click()
+  await page.getByRole('button', { name: 'Network stop', exact: true }).getByText('Stop active', { exact: true }).waitFor()
+  await pressSwarm(page, /^Land all/)
   await page.getByRole('button', { name: 'Confirm and send' }).click()
   await waitForRequest(page, 'Land all', 'completed')
   const resume = await fetch(
@@ -120,8 +125,9 @@ try {
     { method: 'POST', headers: { Authorization: `Bearer ${relayToken}` } },
   )
   if (!resume.ok) throw new Error(`simulator recovery control failed: ${resume.status}`)
+  await openControlPane(page, 'Fleet')
   for (const droneId of ['D-01', 'D-02']) {
-    await page.locator('.drone-state').filter({ hasText: droneId }).getByText('Landed').waitFor()
+    await page.getByRole('region', { name: 'Registry', exact: true }).getByRole('article', { name: `${droneId} registry card` }).getByText('landed', { exact: true }).waitFor()
   }
 
   const logFiles = (await readdir(logDirectory)).filter((name) => name.endsWith('.jsonl'))
@@ -142,13 +148,13 @@ try {
 
 async function reportFailure() {
   const diagnostics = await Promise.allSettled([
-    page?.locator('.request-item').evaluateAll((requests) => requests.map((request) => ({
-      intentId: request.querySelector('.request-topline code')?.getAttribute('title'),
-      name: request.querySelector('.request-topline strong')?.textContent,
-      status: request.querySelector('.status-label')?.textContent,
-      reason: request.querySelector('.request-reason code')?.textContent,
+    page?.locator('.ct-request').evaluateAll((requests) => requests.map((request) => ({
+      intentId: request.querySelector('.ct-request-id')?.getAttribute('title'),
+      name: request.querySelector('.ct-request-name')?.textContent,
+      status: request.querySelector('.ct-request-state')?.textContent,
+      reason: request.querySelector('.ct-request-reason code')?.textContent,
     }))),
-    page?.locator('.checkpoint-state, .drone-state, .session-strip').allTextContents(),
+    page?.locator('.ct-registry-card, .sh-context, .sh-tags, .sh-links').allTextContents(),
     (async () => {
       const response = await fetch(`http://127.0.0.1:${relayPort}/session/${sessionId}`, {
         headers: { Authorization: `Bearer ${relayToken}` },
@@ -178,9 +184,25 @@ async function reportFailure() {
   }
 }
 
+async function openControlPane(page, name) {
+  await page.getByRole('group', { name: 'Control panes' }).getByRole('button', { name, exact: true }).click()
+}
+
+async function pressSwarm(page, name) {
+  await openControlPane(page, 'Swarm')
+  await page.getByRole('button', { name, exact: typeof name === 'string' }).click()
+}
+
+function requestByName(page, name) {
+  return page.locator('.ct-request').filter({
+    has: page.locator('.ct-request-name').filter({ hasText: new RegExp(`^${name}$`) }),
+  }).first()
+}
+
 async function waitForRequest(page, name, status) {
-  const request = page.locator('.request-item').filter({ hasText: name }).first()
-  await request.locator(`.status-${status}`).waitFor()
+  await openControlPane(page, 'Requests')
+  const request = requestByName(page, name.toLowerCase().replaceAll(' ', '_'))
+  await request.locator('.ct-request-state').filter({ hasText: new RegExp(`^${status}$`) }).waitFor()
   return request
 }
 
