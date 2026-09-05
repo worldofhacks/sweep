@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react'
 import type { CatalogController } from '../catalog/use-catalog'
 import type { useControlConsole } from '../control/use-control-console'
+import type { MediaRuntime } from '../media/runtime'
 
 /** Everything the hook returns: authoritative state plus the intent functions. */
 export type ConsoleController = ReturnType<typeof useControlConsole>
@@ -19,6 +20,8 @@ export interface ModuleProps {
   /** Captures, worlds, node details, and configuration; unreported in production. */
   catalog: CatalogController
   now: () => number
+  /** Playback runtime; absent until the media bootstrap provides a configuration. */
+  media?: MediaRuntime
 }
 
 export interface ModuleDefinition {

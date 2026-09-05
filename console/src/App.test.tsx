@@ -28,6 +28,11 @@ async function openControlPane(user: User, label: string) {
   await user.click(tabs.getByRole('button', { name: label }))
 }
 
+async function openLivePane(user: User, label: string) {
+  const tabs = within(screen.getByRole('group', { name: 'Live panes' }))
+  await user.click(tabs.getByRole('button', { name: label }))
+}
+
 class FailingFixtureRelayClient extends FixtureRelayClient {
   override async sendIntent(intent: IntentV1): Promise<void> {
     this.sent.push(intent)
@@ -46,17 +51,17 @@ describe('Control / Capture console', () => {
     expect(screen.getByRole('button', { name: 'View feed D-02' })).toHaveAttribute('aria-pressed', 'false')
 
     await openModule(user, 'Live')
-    expect(screen.getByRole('heading', { name: 'Camera mosaic' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Wall of 4' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /Focus D-/ })).toHaveLength(4)
-    expect(screen.getByRole('region', { name: 'Focused camera D-01' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Focus D-01' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Focus D-02' })).toHaveAttribute('aria-pressed', 'false')
-    expect(screen.getAllByText('Video offline')).not.toHaveLength(0)
-    expect(screen.getAllByText('Stream unreported')).not.toHaveLength(0)
+    expect(screen.getAllByText(/adapter reports the stream offline/)).not.toHaveLength(0)
+    expect(screen.getAllByText(/No video reported/)).not.toHaveLength(0)
 
     await user.click(screen.getByRole('button', { name: 'Focus D-02' }))
-    expect(screen.getByRole('region', { name: 'Focused camera D-02' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Focus D-02' })).toHaveAttribute('aria-pressed', 'true')
+    await openLivePane(user, 'Focus feed')
+    expect(screen.getByRole('region', { name: 'Focused aircraft D-02' })).toBeInTheDocument()
 
     await openModule(user, 'Control')
     expect(screen.getByRole('button', { name: 'View feed D-02' })).toHaveAttribute('aria-pressed', 'true')
@@ -72,28 +77,30 @@ describe('Control / Capture console', () => {
     render(<App sessionId={session} clients={clients} />)
     await screen.findByText(/Development fixture active/i)
     await openModule(user, 'Live')
+    await openLivePane(user, 'Wall of 6')
 
     expect(await screen.findAllByRole('button', { name: /Focus D-/ })).toHaveLength(6)
     await user.click(screen.getByRole('button', { name: 'Focus D-06' }))
-
-    expect(screen.getByRole('region', { name: 'Focused camera D-06' })).toHaveTextContent(
-      'Stream unreported',
-    )
     expect(screen.getByRole('button', { name: 'Focus D-06' })).toHaveAttribute('aria-pressed', 'true')
+
+    await openLivePane(user, 'Focus feed')
+    expect(screen.getByRole('region', { name: 'Focused aircraft D-06' })).toHaveTextContent(
+      'unreported',
+    )
     expect(clients.console.sent).toHaveLength(0)
   })
 
-  test('renders an authoritative last frame time for an unreported source', async () => {
+  test('renders an authoritative last frame age for an unreported source', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
     const lastFrameAt = clock() - 4_000
-    const formattedLastFrame = new Intl.DateTimeFormat(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }).format(lastFrameAt)
-    render(<App sessionId={session} clients={clients} />)
+    render(
+      <App
+        sessionId={session}
+        clients={clients}
+        intentDependencies={{ now: clock, nextId: () => 'last-frame-intent' }}
+      />,
+    )
     await screen.findByText(/Development fixture active/i)
 
     const drones = fixtureAircraft(clock())
@@ -118,9 +125,8 @@ describe('Control / Capture console', () => {
 
     await openModule(user, 'Live')
     await user.click(screen.getByRole('button', { name: 'Focus D-04' }))
-    expect(screen.getByRole('region', { name: 'Focused camera D-04' })).toHaveTextContent(
-      `Last frame ${formattedLastFrame}`,
-    )
+    await openLivePane(user, 'Focus feed')
+    expect(screen.getByRole('region', { name: 'Focused aircraft D-04' })).toHaveTextContent('4 s ago')
   })
 
   test('is honestly disconnected when no production relay bootstrap exists', async () => {
