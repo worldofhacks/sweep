@@ -81,7 +81,50 @@ The opt-in altitude path and its floor-reference contract are described in
 [Altitude controls](../docs/ALTITUDE_CONTROLS.md). It is disabled by default and
 requires explicit deployment configuration plus the existing live acceptance gates.
 
-Later formation, sweep, `map_area`, and route-allocation behavior remains
+## Known-map navigation previews
+
+`NavigationPlanner` produces deterministic, inspectable route previews. It does not
+add a dispatch capability. Every `NavigationArtifact` and `NavigationPlan` is
+non-dispatchable by construction, and otherwise-successful revalidation returns
+`artifact_not_dispatchable`. Runtime execution remains future work and requires a
+separate accepted-geometry, capability, controller, and adapter contract.
+
+`NavigationArtifact.from_geometry_directory()` starts with an independently accepted
+and content-pinned map bundle. It admits only the exact version-1 geometry-report
+schema emitted by the offline authoring tool: `offline_authoring`,
+`flight_approved=false`, explicit `synthetic` or `surveyed` evidence, meters, `+x/+y`
+axes, and binary `0=candidate` / `1=blocked` grids. Those facts never become flight
+approval. Report and grid files are confined to one directory, read once into bounded
+byte snapshots, hash-checked, and parsed from those same bytes. Zones, geofence, owner
+approval, and autonomous graph constraints come from the accepted map; preview-only
+arrival and connector overlays receive their own deterministic content pin.
+
+The frozen artifact and plan also carry the reason they cannot dispatch. The current
+blocking evidence gaps are independent geometry acceptance, verified camera visibility,
+and a runtime dispatch contract; synthetic input additionally carries a
+`synthetic_geometry_evidence` gap. The author's tag-distance calculation remains
+`candidate_proximity_only` with `visibility_verified=false`: proximity is useful for
+planning later measurements, but it is not line-of-sight, field-of-view, occlusion, or
+localization-coverage proof and cannot clear the gap.
+
+The grid producer has already inflated occupied, unknown, and out-of-domain geometry
+by `hazard_margin_m`. The planner therefore checks that each frozen aircraft envelope
+fits that margin and traces its centerline through the conservative free-cell
+supercover; it does not dilate the grid a second time. The two envelope dimensions are:
+
+- horizontal radius = aircraft radius + map uncertainty + pose uncertainty + tracking
+  allowance + stopping allowance;
+- vertical half-height = half the aircraft height + the same four allowances.
+
+Aircraft-to-aircraft clearance sums the two aircraft envelopes exactly once. It is
+analytic in XYZ rather than sample-based, keyed by aircraft identity, and independent
+of logical floor labels. Route creation refuses initial overlap, blocked intermediate
+altitude bands, incomplete geofence containment, and any assignment without a feasible
+slot for every selected aircraft. Revalidation freezes and compares map, geometry,
+overlay, roster, selection, plan revision, connection epochs, motion allowances, and
+permission before checking drift and the remaining 3-D route.
+
+Later formation, sweep, `map_area`, and route-dispatch behavior remains
 future scope and must earn a capability before planning.
 
 PRD: sections 5.3 and 5.4 (modes: indoor constrained is the capstone mode).
