@@ -16,6 +16,9 @@ const runtime = fixtureScenario
       sessionId: fixtureSessionId,
       client: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'console', fixtureScenario),
       keyboardClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'keyboard', fixtureScenario),
+      webcamClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'webcam', fixtureScenario),
+      // The fixture has no transcription endpoint; the Speech module says so and accepts typed text.
+      transcriptClient: null,
     }
   : createConsoleRuntime()
 
@@ -23,7 +26,12 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App
       sessionId={runtime.sessionId}
-      clients={{ console: runtime.client, keyboard: runtime.keyboardClient }}
+      clients={{
+        console: runtime.client,
+        keyboard: runtime.keyboardClient,
+        webcam: runtime.webcamClient,
+      }}
+      services={{ transcript: runtime.transcriptClient ?? undefined }}
     />
   </StrictMode>,
 )

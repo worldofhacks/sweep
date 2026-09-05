@@ -19,9 +19,8 @@ const PANES: PaneTab[] = [
   { id: 'fleet', label: 'Fleet' },
 ]
 
-export function ControlModule({ controller }: ModuleProps) {
+export function ControlModule({ controller, roomId, onRoomIdChange }: ModuleProps) {
   const [pane, setPane] = useState<ControlPane>('swarm')
-  const [roomId, setRoomId] = useState('room-01')
   const { state } = controller
   const aircraft = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
   const activeAircraft = useMemo(() => {
@@ -52,7 +51,7 @@ export function ControlModule({ controller }: ModuleProps) {
       )}
       {pane === 'capture' && (
         <div data-two="1">
-          <CapturePanel controller={controller} roomId={roomId} onRoomIdChange={setRoomId} />
+          <CapturePanel controller={controller} roomId={roomId} onRoomIdChange={onRoomIdChange} />
         </div>
       )}
       {pane === 'commands' && (

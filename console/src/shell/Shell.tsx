@@ -1,8 +1,7 @@
 import { useEffect, useReducer, useState } from 'react'
 import './shell.css'
-import type { ConnectionStatus } from '../control/state'
 import { MODULES, getModule } from '../modules/registry'
-import type { ConsoleController, ModuleId } from '../modules/types'
+import type { ConsoleController, ModuleId, ModuleServices } from '../modules/types'
 import { ContextColumn } from './ContextColumn'
 import { DangerBanner } from './DangerBanner'
 import { Dock } from './Dock'
@@ -23,16 +22,17 @@ export interface ShellProps {
   controller: ConsoleController
   now?: () => number
   initialModule?: ModuleId
-  /** Present only when a webcam pipeline reports a status; absent today. */
-  webcam?: ConnectionStatus
+  services?: ModuleServices
 }
 
 const TICK_MS = 1_000
+const DEFAULT_ROOM_ID = 'room-01'
 
-export function Shell({ controller, now = Date.now, initialModule = 'control', webcam }: ShellProps) {
+export function Shell({ controller, now = Date.now, initialModule = 'control', services = {} }: ShellProps) {
   const { state, pendingRequest, confirmRequest, cancelRequest, issueNetworkStop } = controller
   const [activeId, setActiveId] = useState<ModuleId>(initialModule)
   const [detailOpen, setDetailOpen] = useState(false)
+  const [roomId, setRoomId] = useState(DEFAULT_ROOM_ID)
   const stopTimes = useStopTimes(state.estop, now)
   const currentNow = now()
   const clearedRecently =
@@ -46,6 +46,11 @@ export function Shell({ controller, now = Date.now, initialModule = 'control', w
   const isFixture =
     state.connection.transport === 'fixture' || state.keyboardConnection.transport === 'fixture'
   const invalidation = deriveInvalidation(state.requests, pendingRequest)
+  // The webcam pill appears only once a webcam-bound relay client reports; without one the
+  // gesture producer says so itself and the header stays as it was.
+  const webcam =
+    state.webcamConnection.transport === 'unavailable' ? undefined : state.webcamConnection.status
+  const moduleProps = { controller, now, roomId, onRoomIdChange: setRoomId, services }
 
   return (
     <Frame
@@ -70,10 +75,10 @@ export function Shell({ controller, now = Date.now, initialModule = 'control', w
         </Header>
       }
       rail={<Rail modules={MODULES} active={activeId} onSelect={setActiveId} />}
-      pane={<ModuleComponent controller={controller} now={now} />}
+      pane={<ModuleComponent {...moduleProps} />}
       context={
         <ContextColumn rosterVersion={state.rosterVersion}>
-          <ModuleContext controller={controller} now={now} />
+          <ModuleContext {...moduleProps} />
         </ContextColumn>
       }
       dock={
