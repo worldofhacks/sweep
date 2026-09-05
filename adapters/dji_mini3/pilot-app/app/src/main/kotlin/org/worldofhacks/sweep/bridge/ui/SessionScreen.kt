@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,13 +50,17 @@ import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.SessionState
 import org.worldofhacks.sweep.bridge.session.SimulationControls
+import org.worldofhacks.sweep.bridge.video.FlightDisplayScreen
+import org.worldofhacks.sweep.bridge.video.FpvSessionHost
+import org.worldofhacks.sweep.bridge.video.StreamEvidenceCard
 
 /**
  * Phase C surfaces on one scrolling page: Setup (relay fields and the token entered once),
  * Connectivity (relay link state, epoch, thresholds, clock offset, refusals, reconnect),
  * Readiness (the three pilot toggles and the relay's answer), node status (watchdog,
  * authority, telemetry rate), the command log, then the Phase B4 registration and identity
- * cards. The flight display, capture, capabilities, and bench screens are later phases.
+ * cards. The Phase D flight display (local FPV and the visual_advisory overlay) is one tap
+ * away; capture, capabilities, and bench screens are later phases.
  */
 @Composable
 fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, simulation: SimulationControls?) {
@@ -73,6 +78,13 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
             now = System.currentTimeMillis()
         }
     }
+    // Phase D hook: the flight display (local FPV and the visual_advisory overlay) is one tap away.
+    var flightDisplay by rememberSaveable { mutableStateOf(false) }
+    val fpv = (session as? FpvSessionHost)?.fpv
+    if (flightDisplay && fpv != null) {
+        FlightDisplayScreen(node = node, session = session, fpv = fpv, variant = variant, onBack = { flightDisplay = false })
+        return
+    }
     Scaffold(modifier = Modifier.fillMaxSize()) { contentPadding ->
         LazyColumn(
             modifier = Modifier
@@ -88,10 +100,14 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
                         Text("Fake SDK: no aircraft is connected; the aircraft below is a kinematic fixture.", color = MaterialTheme.colorScheme.error)
                     }
                     Text("Aircraft variant: $variant. Physical RC remains primary.")
+                    if (fpv != null) Button(onClick = { flightDisplay = true }) { Text("Flight display") }
                 }
             }
             item { SetupCard(setup, running, node) }
             item { ConnectivityCard(link, running, now, node) }
+            if (fpv != null) {
+                item { StreamEvidenceCard(fpv, now) { flightDisplay = true } }
+            }
             item { ReadinessCard(link, node) }
             item { NodeStatusCard(link, aircraft, now) }
             item { CommandsCard(link.commands, now) }

@@ -8,12 +8,15 @@ import org.worldofhacks.sweep.bridge.core.frames.HardwareProfile
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.node.FakeAircraft
+import org.worldofhacks.sweep.bridge.node.PhoneStatusSource
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.ProbeReport
 import org.worldofhacks.sweep.bridge.session.SessionModel
 import org.worldofhacks.sweep.bridge.session.SessionState
 import org.worldofhacks.sweep.bridge.session.SimulationControls
+import org.worldofhacks.sweep.bridge.video.FakeFpv
+import org.worldofhacks.sweep.bridge.video.FpvSessionHost
 
 /**
  * Simulates the SDK callbacks so the registration and identity screen can be exercised on
@@ -23,7 +26,7 @@ import org.worldofhacks.sweep.bridge.session.SimulationControls
  * hardware. The late-callback button replays an identity read stamped with the previous
  * generation, which the model must drop.
  */
-class FakeAircraftSession(private val filesDir: File) : AircraftSession, SimulationControls {
+class FakeAircraftSession(private val filesDir: File, phone: PhoneStatusSource? = null) : AircraftSession, SimulationControls, FpvSessionHost {
     private val model = SessionModel()
     private val fakeProductId = 1
     private val fake = FakeAircraft(
@@ -37,6 +40,9 @@ class FakeAircraftSession(private val filesDir: File) : AircraftSession, Simulat
             measuredHfovDeg = null,
         ),
     )
+
+    // Phase D hook: synthetic FPV picture, yaw sweep, and codec evidence for the flight display.
+    override val fpv: FakeFpv = FakeFpv(filesDir, phone) { fake.yawDeg }
 
     override val state: StateFlow<SessionState> = model.state
 
@@ -63,11 +69,13 @@ class FakeAircraftSession(private val filesDir: File) : AircraftSession, Simulat
         val generation = model.productConnected(fakeProductId)
         deliverIdentity(generation)
         fake.setConnected(aircraft = true, rc = true)
+        fpv.setConnected(true)
     }
 
     override fun simulateDisconnect() {
         model.productDisconnected(fakeProductId)
         fake.setConnected(aircraft = false, rc = false)
+        fpv.setConnected(false)
     }
 
     override fun simulateLateCallback() {

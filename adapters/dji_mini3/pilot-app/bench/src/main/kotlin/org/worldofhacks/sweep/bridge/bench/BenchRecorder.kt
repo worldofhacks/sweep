@@ -3,6 +3,7 @@ package org.worldofhacks.sweep.bridge.bench
 import org.worldofhacks.sweep.bridge.core.admission.Clock
 import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
+import org.worldofhacks.sweep.bridge.core.video.StreamEvidence
 
 /** One JSONL record kind per measured quantity; the wire names are stable for analysis tools. */
 enum class RecordKind(val wire: String) {
@@ -12,6 +13,7 @@ enum class RecordKind(val wire: String) {
     STICK_SENT("stick_sent"),
     TELEMETRY("telemetry"),
     VIDEO_FRAME("video_frame"),
+    STREAM_INFO("stream_info"),
     NOTE("note");
 
     companion object {
@@ -68,6 +70,41 @@ class BenchRecorder(private val sink: Appendable, private val clock: Clock) {
 
     fun note(text: String) {
         write(RecordKind.NOTE, clock.nowMs(), "text" to text)
+    }
+
+    /**
+     * Phase D codec evidence: what the camera stream listener reports and what its SPS says,
+     * with the phone's battery and thermal state at the same instant so a local FPV run reads
+     * frame rate against temperature. Flat fields, one record per sample.
+     */
+    fun streamInfo(evidence: StreamEvidence, phoneBatteryPercent: Int? = null, phoneThermalState: String? = null) {
+        val cadence = evidence.cadence
+        val sps = evidence.sps
+        write(
+            RecordKind.STREAM_INFO,
+            clock.nowMs(),
+            "mime_type" to evidence.mimeType,
+            "codec" to evidence.codec?.name,
+            "width" to evidence.width,
+            "height" to evidence.height,
+            "nominal_frame_rate_hz" to evidence.nominalFrameRateHz,
+            "measured_frame_rate_hz" to cadence.measuredFrameRateHz,
+            "frames" to cadence.frames,
+            "keyframes" to cadence.keyframes,
+            "keyframe_interval_ms" to cadence.keyframeIntervalMs,
+            "keyframe_interval_min_ms" to cadence.keyframeIntervalMinMs,
+            "keyframe_interval_max_ms" to cadence.keyframeIntervalMaxMs,
+            "keyframe_interval_frames" to cadence.keyframeIntervalFrames,
+            "profile" to sps?.profileName,
+            "profile_idc" to sps?.profileIdc,
+            "level" to sps?.level,
+            "level_idc" to sps?.levelIdc,
+            "tier" to sps?.tier,
+            "sps_error" to evidence.spsError,
+            "bytes" to evidence.bytes,
+            "phone_battery_percent" to phoneBatteryPercent,
+            "phone_thermal_state" to phoneThermalState,
+        )
     }
 
     val pendingCommands: Set<String>

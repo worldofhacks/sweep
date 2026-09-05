@@ -185,6 +185,113 @@ values, and shows each key's measured update rate on the node status card. The `
 the probe flavor acknowledges every command `failed` with `control_loop_unavailable` until
 the Phase E Virtual Stick loop lands.
 
+## Phase D bring-up: local FPV and codec evidence
+
+Phase D puts the aircraft's live feed on the phone under the `visual_advisory` overlay and
+records what the stream really is: mime type, picture size, nominal and measured frame
+rate, and keyframe cadence from `ICameraStreamManager.addReceiveStreamListener`, plus the
+profile and level parsed from the SPS with `bridge-core`'s `SpsParser`. The evidence goes to
+the screen and the bench log only; `node_status` is unchanged and carries no codec fields.
+#51 reads the codec and profile from here before choosing its publish path.
+
+Where the code lives: `bridge-core` `core/video/` (`StreamMonitor`, `KeyframeCadence`,
+`FlightOverlay`; pure Kotlin, run by the CI job), `bench` (`stream_info` records and their
+report lines), and the app package `org.worldofhacks.sweep.bridge.video` (`FpvSession` and
+`FpvSessionHost` hooks, `FpvSurface`, `FpvOverlay`, `FlightDisplayScreen`,
+`StreamEvidenceCard`, `StreamEvidenceTracker`; `FakeFpv` in the fake flavor, `DjiFpv` in
+the probe flavor). `SdkSession` and `FakeAircraftSession` expose it through
+`FpvSessionHost`; `SessionScreen` routes to the display.
+
+### On the phone
+
+Open the Flight display from the button at the top of the session page or on the Camera
+stream card. The relay link keeps running in the foreground service whether or not the
+display is open; leaving the display (Session button or back) releases the Surface.
+
+- Flight display with the aircraft powered (probe) or after Connect (fake):
+  - the live picture fills the screen (fake: a synthetic scene whose wall markers scroll
+    with a slow yaw sweep, a frame counter, and an amber square on every keyframe);
+  - the center reticle; around it the coverage compass drawn heading-up: eight 45° sectors
+    while `measured_hfov_deg` is null (the label says "field of view unmeasured"; the
+    published 82.1° lens value is never used as a horizontal field of view), all hollow
+    (unseen) until Phase G marks them dashed (weak) or solid (accepted);
+  - the amber next-heading marker on the ring and the `yaw +n°` / `yaw −n°` label under
+    the reticle; the first heading is the sector the aircraft already looks at, so the
+    delta starts small and follows the yaw;
+  - bottom scrim: the capture pill `Ready`, `visual_advisory`, `operator_approved`,
+    `clearance: pilot approved`, `next n°`, the sector rule, and the stream line
+    (`1280×720 29.9 Hz Main 3.1`) once the SPS has been read;
+  - top scrim: `Authority Sweep` or `Authority RC (reason)`, `Video live`, and
+    `Physical RC remains primary`; the fake flavor adds its banner.
+- Disconnect (fake) or power the aircraft off / unplug the RC (probe): the pill reads
+  `Disconnected`, the top scrim lists `Aircraft disconnected`, `RC disconnected`, and after
+  a second `No video for n s`; the SDK events (probe) show `Camera stream · surface
+  released: aircraft disconnected`. Reconnect: the picture and `Ready` return, the evidence
+  counters restart from zero, and the yaw follows `KeyAircraftAttitude` again.
+- Stop the relay: `Relay disconnected` joins the top scrim and, past the relay thresholds,
+  `Watchdog hold: neutral sticks and hover` then `Watchdog failsafe: land indoors, never
+  return home`; the pill stays `Ready` because the aircraft is still there.
+- Session page, Camera stream card: the same evidence as text with the SPS profile, level,
+  and tier, the keyframe cadence in milliseconds and frames, the yaw, and the bench log
+  path. This is the codec evidence to quote on #51.
+
+`Capturing`, `Downloading`, and `Needs retake` are driven by `CaptureProgressSource`, which
+Phase G fills; Phase D ships the idle source, so the fake flavor shows `Ready` and
+`Disconnected`. Arrows on the overlay mean yaw or gimbal only; nothing suggests a
+translation in `visual_advisory`.
+
+### What the bench log records
+
+Attaching the Surface opens `filesDir/bench/stream-<t_ms>.jsonl` (the path is on the
+Camera stream card; copy it with `adb shell run-as org.worldofhacks.sweep.bridge cat
+files/bench/<name> > <name>`). Detaching closes it. Records:
+
+- `video_frame`, one per received encoded frame: `size_bytes` and `keyframe`; `decode_ms`
+  stays `null` and `dropped` `false` because the Surface path decodes inside the SDK and
+  exposes neither.
+- `stream_info`, once per second and on every descriptor or SPS change: `mime_type`,
+  `codec`, `width`, `height`, `nominal_frame_rate_hz`, `measured_frame_rate_hz` (over the
+  last 5 s of arrivals), `frames`, `keyframes`, `keyframe_interval_ms` with its `_min_` and
+  `_max_` over the last eight groups, `keyframe_interval_frames` (the GOP length),
+  `profile`, `profile_idc`, `level`, `level_idc`, `tier`, `sps_error`, `bytes`,
+  `phone_battery_percent`, `phone_thermal_state`.
+- `note` at open and close and on aircraft connect or disconnect.
+
+`BenchAnalysis` folds a log into the report's `video` block (frames, keyframes, and the
+rate from `video_frame` timestamps) and `video.stream` (the last `stream_info` with the
+sample count); `ReportWriter.text` prints them as `stream_*` lines. The last line of
+evidence is also just `grep stream_info <log> | tail -1`.
+
+### Reading the codec evidence
+
+- `mime_type` `video/avc` is H.264, `video/hevc` is H.265. `profile` and `level` come from
+  the SPS, not from the SDK: Constrained Baseline, Main, and High are what browser WebRTC
+  decodes; High 10 or H.265 means #51 needs the SDK's other stream mode or a ground-side
+  transcode before WHIP.
+- `nominal_frame_rate_hz` is what the SDK claims; `measured_frame_rate_hz` is what arrived.
+  Report both; a persistent gap is a downlink or phone problem, not a codec property.
+- `keyframe_interval_ms` and `keyframe_interval_frames` bound how long a WHEP viewer waits
+  to start after joining; 1000 ms / 30 frames is the usual shape at 720p30.
+- `sps_error` set while `profile` is null means no parameter set was found in the first
+  16 KiB of a keyframe; quote the message in the PR, the search bound is then the fix.
+- `phone_thermal_state` next to `measured_frame_rate_hz` over a five-minute run is the
+  thermal evidence Phase D's exit asks for, and the headroom #51 has for publishing.
+
+### Phase D exit checklist (aircraft powered)
+
+1. Probe flavor registered, aircraft and RC connected, Flight display open: the picture is
+   live, the top scrim says `Video live`, `Authority` matches the Readiness toggle, and the
+   yaw on the Camera stream card follows the aircraft when it is turned by hand.
+2. Five minutes on the bench with the display open; Connectivity keeps `telemetry` near
+   10.0 Hz and the relay `connected` throughout.
+3. Power the aircraft off and on: `Disconnected` then `Ready`; `surface released` and
+   `surface attached` appear in the SDK events, and `dropped late callbacks` stays at 0.
+4. Leave the display (Session) and reopen it: a new bench log opens and the old one ends
+   with its closing `note`.
+5. Pull the log and record in the PR the last `stream_info`: mime type, size, nominal and
+   measured frame rate, keyframe interval, profile and level, and the thermal state at the
+   end of the run.
+
 ## Phase B4 exit on the phone
 
 Install `app-probe-debug.apk` on the pinned phone, then:
