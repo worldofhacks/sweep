@@ -1,6 +1,6 @@
 # DJI Mini 3 bridge
 
-Capability area: Autonomy, with Platform support. Issue #43 (M1.9), Phases B3, B4, C, and F (issue #51).
+Capability area: Autonomy, with Platform support. Issue #43 (M1.9), Phases B3, B4, and C.
 
 One Android phone per DJI Mini 3 and RC-N1 pair runs the pilot app under `pilot-app/`. The
 app registers with the DJI Mobile SDK, proves the aircraft identity, and keeps one
@@ -23,9 +23,8 @@ dependency, and dangling `@xml/accessory_filter` reference were not carried over
 |---|---|---|
 | `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, the relay-signed `command` (integer-only `args`), `capabilities`, `capture_readiness`, `node_status`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; canonical JSON that byte-matches `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`; HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence |
 | `bridge-node` | Kotlin/JVM | `RelayLink`, the node's OkHttp WebSocket client: auth, join, readiness, telemetry at 10 Hz, capabilities, node_status, command admission and acknowledgement, reconnect with bounded backoff, the watchdog under relay silence; `FakeAircraft`, the kinematic fixture with the command semantics of `fake_node.py`; tested against a stub relay on MockWebServer |
-| `bench` | Kotlin/JVM | JSONL recorder for command round-trip time, jitter, drops, stick send rate, telemetry rate, video frame stats, and the one-second `video_publish` windows (bitrate, frame rate, dropped frames, ICE state, RTT, processing time), plus the report writer |
-| `bridge-publish` | Kotlin/JVM | The WHIP publish path's testable half (Phase F): `WhipClient` (POST the SDP offer, 201 with `Location`, DELETE on stop) on OkHttp against MockWebServer; `SdpMunger` (WildBridge's H.264 preference and keyframe-interval munging); `CodecGate` (H.264 baseline, main, or high without B slices passes, H.265 and the rest are `codec_unsupported`); `PublishStateMachine` (`stopped`, `connecting`, `publishing`, `failed` with reason and bounded backoff); `PublishMetricsAggregator`; `WhipEndpoint` (`http://<ground-station>:8889/drone{id}/whip`) |
-| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`; the Compose page with Setup, Connectivity, Readiness, node status, the command log, and the Phase B4 registration and identity cards; the `publish` package (Phase F): `Publisher` driving one vendored `WhipPublisher` on libwebrtc (`io.getstream:stream-webrtc-android`), the encoded-frame passthrough, the DJI frame sources (probe), and the test pattern (fake) |
+| `bench` | Kotlin/JVM | JSONL recorder for command round-trip time, jitter, drops, stick send rate, telemetry rate, and video frame stats, plus the report writer |
+| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`; the Compose page with Setup, Connectivity, Readiness, node status, the command log, and the Phase B4 registration and identity cards |
 
 The JVM tests read fixtures under `bridge-core/src/test/resources/vectors/` that
 `adapters/dji_mini3/vectors.py` generates from the relay code itself; `test_vectors.py`
@@ -186,6 +185,23 @@ values, and shows each key's measured update rate on the node status card. The `
 the probe flavor acknowledges every command `failed` with `control_loop_unavailable` until
 the Phase E Virtual Stick loop lands.
 
+## Phase B4 exit on the phone
+
+Install `app-probe-debug.apk` on the pinned phone, then:
+
+1. With network, the screen shows `Registration: REGISTERED`; a failure shows `FAILED` with
+   the DJI error text.
+2. Kill and relaunch the app with network off: registration still reaches `REGISTERED` from
+   the SDK's cached result.
+3. Plug the RC-N1 into the phone: the app launches by itself (USB attach), `Product:
+   CONNECTED` appears with the product id, and the connection generation increments.
+4. Power the aircraft: the identity card shows `DJI_MINI_3` confirmed, the aircraft firmware
+   string, the RC firmware profile (`DJI_MINI_3`) and its version strings.
+5. Unplug and replug: the generation increments each time, the identity clears and returns,
+   and `dropped late callbacks` stays at 0 unless a callback really did arrive late.
+6. Tap `Export probe report`; the file lands under the app's `filesDir/probe-reports/`. Copy
+   it with `adb` and record the firmware strings into `hardware-profile.json`.
+
 ## Phase F: the aircraft's video into MediaMTX over WHIP
 
 Phase F publishes the live feed from the phone into the ground station's MediaMTX over WHIP,
@@ -193,6 +209,12 @@ where the console plays it over WHEP at `http://<ground-station>:8889/drone{id}/
 (`console/src/media/playback.ts` derives the name `drone{droneId}`). The direction is the
 prior-art directive on issue #51: WHIP first, the publisher vendored from WildBridge rather
 than written fresh, no RTMP or RTSP path.
+
+The pure-JVM half is the `bridge-publish` module: `WhipClient` (POST the SDP offer, 201 with
+`Location`, DELETE on stop), `SdpMunger`, `CodecGate`, `PublishStateMachine`,
+`PublishMetricsAggregator`, and `WhipEndpoint`, tested against MockWebServer and run by CI
+with the other JVM modules. The libwebrtc side, the frame sources, and the screen are the
+app's `publish` package.
 
 ### What is vendored and what changed
 
@@ -269,7 +291,10 @@ without an aircraft or a relay; the probe flavor publishes the aircraft.
    (phone encoder)` on a phone libwebrtc drives with hardware H.264 (Qualcomm or Exynos
    allowlist), otherwise `VP8 (no H.264 encoder on this phone)`, which the console decodes
    too. Then the one-second metrics line: bitrate, frame rate, 1280x720, dropped frames,
-   RTT, ICE state.
+   RTT, ICE state. Scripted, with the screen off: `adb shell am start -n
+   org.worldofhacks.sweep.bridge/.MainActivity --es publish_host 10.10.1.60 --ei publish_port
+   8889 --es publish start` (`--es publish stop` ends the session, `auto` returns to the
+   automatic policy); `adb logcat -s SweepPublish WhipPublisher` shows the same lines as the card.
 3. `docker compose logs -f mediamtx` on the ground station shows, in order:
    `[WebRTC] [session ...] created by <phone ip>:<port>`, `[path drone1] stream is available
    and online, 1 track (H264)` (or VP8), `[WebRTC] [session ...] is publishing to path
@@ -300,20 +325,3 @@ without an aircraft or a relay; the probe flavor publishes the aircraft.
 
 The console's Live player mounts only once the relay reports per-drone `video` state, which
 is PR #68's relay-side work; until that lands, MediaMTX's own page is the viewer.
-
-## Phase B4 exit on the phone
-
-Install `app-probe-debug.apk` on the pinned phone, then:
-
-1. With network, the screen shows `Registration: REGISTERED`; a failure shows `FAILED` with
-   the DJI error text.
-2. Kill and relaunch the app with network off: registration still reaches `REGISTERED` from
-   the SDK's cached result.
-3. Plug the RC-N1 into the phone: the app launches by itself (USB attach), `Product:
-   CONNECTED` appears with the product id, and the connection generation increments.
-4. Power the aircraft: the identity card shows `DJI_MINI_3` confirmed, the aircraft firmware
-   string, the RC firmware profile (`DJI_MINI_3`) and its version strings.
-5. Unplug and replug: the generation increments each time, the identity clears and returns,
-   and `dropped late callbacks` stays at 0 unless a callback really did arrive late.
-6. Tap `Export probe report`; the file lands under the app's `filesDir/probe-reports/`. Copy
-   it with `adb` and record the firmware strings into `hardware-profile.json`.
