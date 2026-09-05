@@ -43,6 +43,8 @@ import org.worldofhacks.sweep.bridge.BridgeNode
 import org.worldofhacks.sweep.bridge.SetupSummary
 import org.worldofhacks.sweep.bridge.flight.FlightCards
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
+import org.worldofhacks.sweep.bridge.node.FlightStates
+import org.worldofhacks.sweep.bridge.core.flight.LocalizationConfigJson
 import org.worldofhacks.sweep.bridge.node.CommandRecord
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.ReadinessInput
@@ -106,7 +108,7 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
                     if (fpv != null) Button(onClick = { flightDisplay = true }) { Text("Flight display") }
                 }
             }
-            item { SetupCard(setup, running, node) }
+            item { SetupCard(setup, running, aircraft, node) }
             item { ConnectivityCard(link, running, now, node) }
             if (fpv != null) {
                 item { StreamEvidenceCard(fpv, now) { flightDisplay = true } }
@@ -146,7 +148,12 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
 }
 
 @Composable
-private fun SetupCard(setup: SetupSummary, running: Boolean, node: BridgeNode) {
+private fun SetupCard(
+    setup: SetupSummary,
+    running: Boolean,
+    aircraft: AircraftSnapshot,
+    node: BridgeNode,
+) {
     var relayUrl by remember(setup.loaded) { mutableStateOf(setup.relayUrl) }
     var session by remember(setup.loaded) { mutableStateOf(setup.session) }
     var droneId by remember(setup.loaded) { mutableStateOf(setup.droneId.toString()) }
@@ -208,11 +215,78 @@ private fun SetupCard(setup: SetupSummary, running: Boolean, node: BridgeNode) {
                 if (running) OutlinedButton(onClick = node::disconnect) { Text("Disconnect") }
             }
             disabledReason?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            LocalizationCard(setup, running, aircraft, node)
             BatteryOptimizationRow()
         }
     }
 }
 
+
+@Composable
+private fun LocalizationCard(
+    setup: SetupSummary,
+    running: Boolean,
+    aircraft: AircraftSnapshot,
+    node: BridgeNode,
+) {
+    var importedJson by rememberSaveable { mutableStateOf("") }
+    var message by rememberSaveable { mutableStateOf<String?>(null) }
+    val writable = setup.loaded && !running && aircraft.state == FlightStates.LANDED
+    val blockedReason = when {
+        running -> "Disconnect the relay before changing localization."
+        aircraft.state != FlightStates.LANDED -> "Land the aircraft before changing localization."
+        !setup.loaded -> "Loading encrypted setup."
+        else -> null
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Localized navigation", style = MaterialTheme.typography.titleMedium)
+        val active = setup.localization
+        if (active == null) {
+            Text("Disabled. Import a complete, versioned map and calibration configuration to enable it.")
+        } else {
+            Text("Configured; reconnect to apply these pins.")
+            Text("Map ${active.mapId} · geometry ${active.geometryId}", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "Camera ${active.cameraCalibrationId} · body ${active.bodyExtrinsicsId}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Fix ${active.fixFreshnessMs} ms · pose ${active.poseFreshnessMs} ms · tube ${active.trackingTubeMm} mm · tolerance ${active.targetToleranceMm} mm · hold ${active.settledHoldMs} ms · land ${active.tagLossLandAfterMs} ms",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        OutlinedTextField(
+            value = importedJson,
+            onValueChange = { importedJson = it.take(4_096) },
+            label = { Text("Paste localization config JSON (v1)") },
+            minLines = 4,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = writable && importedJson.isNotBlank(),
+                onClick = {
+                    runCatching { LocalizationConfigJson.parse(importedJson) }
+                        .onSuccess {
+                            node.saveLocalization(it)
+                            message = "Configuration import submitted. Reconnect after it appears above."
+                            importedJson = ""
+                        }
+                        .onFailure { message = "Import rejected: ${it.message ?: "invalid JSON"}" }
+                },
+            ) { Text("Import config") }
+            OutlinedButton(
+                enabled = writable && active != null,
+                onClick = {
+                    node.saveLocalization(null)
+                    message = "Configuration clear submitted."
+                },
+            ) { Text("Clear config") }
+        }
+        blockedReason?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
 @Composable
 private fun BatteryOptimizationRow() {
     val context = LocalContext.current
