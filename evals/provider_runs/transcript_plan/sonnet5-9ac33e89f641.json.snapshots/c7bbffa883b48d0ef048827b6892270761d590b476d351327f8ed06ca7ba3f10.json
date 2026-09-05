@@ -1,0 +1,597 @@
+{
+  "entries": {
+    "055f5cc29e9d8ccefb331f36535bebccb886ac4a00a23aaaa656ff9184596e55": {
+      "input_units": 1669,
+      "latency_ms": 2763,
+      "output_units": 141,
+      "payload": {
+        "detail": "Operator said 'Stop.' interpreted as hold command for currently selected drones (1,2).\"",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "hold",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "0de41580f09b269b181261b81f751d73cf8cacd26216ea29c65ec93439210497": {
+      "input_units": 1664,
+      "latency_ms": 2763,
+      "output_units": 136,
+      "payload": {
+        "detail": "Operator requested immediate landing; applying to all drones currently selected/hovering.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "land_all",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "0fe0e406a5830fade1635ecca8c56bced39d09a08af1dacd82b8ef46eaedd03e": {
+      "input_units": 1666,
+      "latency_ms": 2576,
+      "output_units": 125,
+      "payload": {
+        "detail": "Hold position for currently selected drones (1,2).",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "hold",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "103205565d55b99f7ccaad52e253833777d42de7e0fc1e18c0297c4249d323eb": {
+      "input_units": 1670,
+      "latency_ms": 2774,
+      "output_units": 82,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Need room/area to define 'here' for capture_room, and current selection has no location context."
+      }
+    },
+    "139aba3360c8d456a2b7e0b35ec2e58e89af484e99e39f646a47f86abadb92d5": {
+      "input_units": 1672,
+      "latency_ms": 1853,
+      "output_units": 80,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Drone 7 does not exist; only drones 1 and 2 are available."
+      }
+    },
+    "15cf512806eb92c441e25e05c3f996a133cb668670351931ccb73b543942fbba": {
+      "input_units": 1667,
+      "latency_ms": 2560,
+      "output_units": 85,
+      "payload": {
+        "kind": "clarify",
+        "reason": "No drones selected to perform capture_room; need a selection to ground 'this room' capture action."
+      }
+    },
+    "1640997180a84eed40c183d60d35e592fd8a137d366928603c427289a5bffd9d": {
+      "input_units": 1667,
+      "latency_ms": 2694,
+      "output_units": 130,
+      "payload": {
+        "detail": "Returning selected drones 1 and 2 to base as requested.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "come_home",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "21e80ac5b4603a17b7f032207bf7ab76ac41cee29cdc452e65e2aca7734641c6": {
+      "input_units": 1673,
+      "latency_ms": 1997,
+      "output_units": 129,
+      "payload": {
+        "detail": "Hold command applied to currently selected drones 1 and 2.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "hold",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "338de6b0c641002c664fc95427ffe0b295045feef74d91843061e98f751ba130": {
+      "input_units": 1662,
+      "latency_ms": 2686,
+      "output_units": 140,
+      "payload": {
+        "detail": "Takeoff commanded for currently selected drones 1 and 2, both ready and landed.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "45e5e49770df3596060a1a9c4297774ccb869a0ee48209e1ada5d074a0f0c83d": {
+      "input_units": 1661,
+      "latency_ms": 2742,
+      "output_units": 134,
+      "payload": {
+        "detail": "Arming all ready drones (1,2) as requested by 'Arm up.'",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "515a1534b7fa57b2a9167c136816ca0355a798d553d37a774c7e356fe586f9bf": {
+      "input_units": 1664,
+      "latency_ms": 2197,
+      "output_units": 125,
+      "payload": {
+        "detail": "Operator commanded both selected drones to return home.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "come_home",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "52937d9fd455b6bae9848658fa96016b70be5c70e1c2d564e7d448974ecebf63": {
+      "input_units": 1694,
+      "latency_ms": 2509,
+      "output_units": 108,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "delta": 0.5,
+              "dy": 0.5
+            },
+            "mode": "indoor",
+            "name": "translate",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "52c0401f473ffc21da522d4115cc3e3cb1744e10e521cf89a1b218063bf168a5": {
+      "input_units": 1665,
+      "latency_ms": 2753,
+      "output_units": 127,
+      "payload": {
+        "detail": "Selecting all available drones (1 and 2) as requested.\"",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "5b2dee0c918b7c565d226e403b258e0c9b7fb11cf76c89d14b37f4977e5a188c": {
+      "input_units": 1673,
+      "latency_ms": 3029,
+      "output_units": 145,
+      "payload": {
+        "detail": "Operator requested landing all drones ('Bring everyone down.'); both ready/selectable drones will land.\"}",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "land_all",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "5fa1eff930e53f5113f24bbaa05c243325b48328f1685c365dfb3c2dba604163": {
+      "input_units": 1669,
+      "latency_ms": 2534,
+      "output_units": 95,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Ambiguous 'Abort' - unclear if operator means cancel a pending action, emergency stop, or land/hold"
+      }
+    },
+    "5fce48357cb4bf91106ef3bd5d3e9a66757ca302dbcbb821b983454a1613d2f1": {
+      "input_units": 1665,
+      "latency_ms": 2361,
+      "output_units": 67,
+      "payload": {
+        "kind": "clarify",
+        "reason": "No drone selection specified for translate command"
+      }
+    },
+    "6c6c6d5c73e7fe41f5a08af6aa70f4d8dde0c3e0527366fee798cacbf06922da": {
+      "input_units": 1676,
+      "latency_ms": 3323,
+      "output_units": 139,
+      "payload": {
+        "detail": "Operator issued emergency stop command; applying estop to current selection of drones 1 and 2.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "estop",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "7e833b9e428f230a881fddfaabdb39d51e4a067c943e9c010048e1fcb701020e": {
+      "input_units": 1666,
+      "latency_ms": 2503,
+      "output_units": 85,
+      "payload": {
+        "kind": "clarify",
+        "reason": "No selection specified; need to confirm which drones to arm (e.g., all: 1,2)."
+      }
+    },
+    "800f2f322587a190176d6fa369a94d0a22b32754bc91045a7a687fa5f4bfc0c0": {
+      "input_units": 1673,
+      "latency_ms": 2520,
+      "output_units": 86,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Drone nine does not exist in current selection/roster (only drones 1 and 2 are available)"
+      }
+    },
+    "8264d141120cb823e0dbff64e3156eb2fed4b47b9ee60e4b93fbf0ffff70b2be": {
+      "input_units": 1661,
+      "latency_ms": 2493,
+      "output_units": 93,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Ambiguous command 'Launch' - need to confirm if this means takeoff and to what altitude/for which drones"
+      }
+    },
+    "85eef579fea8dd83d1ae017e76f446206db3dfa6f590d953ea026c3a8dfb5ada": {
+      "input_units": 1666,
+      "latency_ms": 2670,
+      "output_units": 125,
+      "payload": {
+        "detail": "Operator instructed selected drones to hold current position.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "hold",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "8a0d3fe4e7b68b99ab88cdd9f0485c889cd0ccb3d6ab09a4a37c2d5bdd77492a": {
+      "input_units": 1673,
+      "latency_ms": 2564,
+      "output_units": 89,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Cannot determine which drone is 'on the left' - no positional/spatial data available to ground this reference."
+      }
+    },
+    "8a7eaff128e817a2eb9d38c0f7c6d037d498b4c08a639a9ee915eb7190d000cb": {
+      "input_units": 1667,
+      "latency_ms": 2454,
+      "output_units": 90,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "8fc6b4b69409cf2322ba283b4a3ce87b00c960c1e4584fbae3eef65c5b12bd92": {
+      "input_units": 1669,
+      "latency_ms": 2641,
+      "output_units": 120,
+      "payload": {
+        "detail": "Landing all drones as requested.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "land_all",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "a37a0637c3b4cd58ebe4cdb6cfe81c7b270c085d07c0060adc934b4b44b8ed08": {
+      "input_units": 1667,
+      "latency_ms": 19489,
+      "output_units": 153,
+      "payload": {
+        "detail": "Compiled 'Capture this room' to capture_room for the living-room, using currently selected drone 1.\"}",
+        "intents": [
+          {
+            "args": {
+              "room_id": "living-room"
+            },
+            "mode": "indoor",
+            "name": "capture_room",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "aa6b5070047b944215f75d4fd88740ee81c952956097bc6fc56ea12c177d5865": {
+      "input_units": 1671,
+      "latency_ms": 2608,
+      "output_units": 141,
+      "payload": {
+        "detail": "Operator requested to freeze in place, mapped to hold for currently selected drones 1 and 2.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "hold",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "af8a46ec122dfcd81de8cf9c12dc84f7bc5e8300fee5a2560e861c73af817825": {
+      "input_units": 1608,
+      "latency_ms": 2082,
+      "output_units": 89,
+      "payload": {
+        "kind": "unsupported",
+        "reason": "Drone 1 only supports reconstruct_8 pattern; pano_360 capability unavailable"
+      }
+    },
+    "c1920c1db644a9f8e369d9e7041f526f6d328123f1c67bc9cf559258f58b566e": {
+      "input_units": 1616,
+      "latency_ms": 2385,
+      "output_units": 95,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Cannot determine which room \"three doors down\" refers to; only 'living-room' and 'bedroom' are known rooms."
+      }
+    },
+    "c77694e72c9cfe0748e184c556e7ef2889f36fd78da2de13cffea6a64a2e6a87": {
+      "input_units": 1670,
+      "latency_ms": 2817,
+      "output_units": 142,
+      "payload": {
+        "detail": "Interpreted 'Go back to home' as a come_home command for the currently selected drones (1,2).",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "come_home",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "c8406ef5fb8c470fdd3109dfdc05b14d5f127b03e1917049e2edce879afd14aa": {
+      "input_units": 1675,
+      "latency_ms": 3523,
+      "output_units": 88,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Ambiguous selection: need to specify which drone(s) to arm before flight prep can proceed."
+      }
+    },
+    "de0381827dbf3f8f7afd736c9c8cc8af86cb90ae2c326c5a507f973c3289eb79": {
+      "input_units": 1669,
+      "latency_ms": 2751,
+      "output_units": 126,
+      "payload": {
+        "detail": "Selected both available drones (1 and 2) as requested.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "e3621ada2492ba00ec528a9c6a90fa3744fb5a477d1677f0121d7a0338efca2c": {
+      "input_units": 1614,
+      "latency_ms": 2596,
+      "output_units": 95,
+      "payload": {
+        "kind": "unsupported",
+        "reason": "Drone 1 only supports reconstruct_8 pattern; pano_360 capture not available for this drone/capability set"
+      }
+    },
+    "e76dfdb38e28925c26ee38f8a869120de00118f0ccfb86e4ecfb77be809ee961": {
+      "input_units": 1700,
+      "latency_ms": 2213,
+      "output_units": 159,
+      "payload": {
+        "detail": "Translate selected drones forward (aircraft-relative) by 0.5 m per step_m/frame settings.",
+        "intents": [
+          {
+            "args": {
+              "dx": 0.5,
+              "dy": 0.0
+            },
+            "mode": "indoor",
+            "name": "translate",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "f1cac5d7fb8871124a0fd37070593fba5d1f1f6ea5807b3cec3adb54b4a330f6": {
+      "input_units": 1703,
+      "latency_ms": 2487,
+      "output_units": 188,
+      "payload": {
+        "detail": "Translate selected drones 0.5m right in aircraft-relative frame (right = -dy in NED-like convention: dy negative denotes rightward). Both drones (1,2) currently selected and ready.",
+        "intents": [
+          {
+            "args": {
+              "dx": 0,
+              "dy": -0.5
+            },
+            "mode": "indoor",
+            "name": "translate",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "f2830fdff4e29cea38ac891f03acfb013f4667cb465987f464ae675db420de5f": {
+      "input_units": 1667,
+      "latency_ms": 2797,
+      "output_units": 137,
+      "payload": {
+        "detail": "Capturing the living room using the currently selected drone (1).",
+        "intents": [
+          {
+            "args": {
+              "room_id": "living-room"
+            },
+            "mode": "indoor",
+            "name": "capture_room",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "f6fd39b27a78c3ce11cbe3991468461e3a1f23def67360a0c13530f4e97a3bff": {
+      "input_units": 1667,
+      "latency_ms": 2119,
+      "output_units": 126,
+      "payload": {
+        "detail": "Selecting drone 1 as requested.",
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-3",
+  "recorded_origin": "anthropic",
+  "version": 3
+}

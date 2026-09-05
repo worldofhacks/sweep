@@ -1,0 +1,97 @@
+{
+  "entries": {
+    "103205565d55b99f7ccaad52e253833777d42de7e0fc1e18c0297c4249d323eb": {
+      "input_units": 1670,
+      "latency_ms": 2774,
+      "output_units": 82,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Need room/area to define 'here' for capture_room, and current selection has no location context."
+      }
+    },
+    "45e5e49770df3596060a1a9c4297774ccb869a0ee48209e1ada5d074a0f0c83d": {
+      "input_units": 1661,
+      "latency_ms": 2742,
+      "output_units": 134,
+      "payload": {
+        "detail": "Arming all ready drones (1,2) as requested by 'Arm up.'",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "7e833b9e428f230a881fddfaabdb39d51e4a067c943e9c010048e1fcb701020e": {
+      "input_units": 1666,
+      "latency_ms": 2503,
+      "output_units": 85,
+      "payload": {
+        "kind": "clarify",
+        "reason": "No selection specified; need to confirm which drones to arm (e.g., all: 1,2)."
+      }
+    },
+    "a37a0637c3b4cd58ebe4cdb6cfe81c7b270c085d07c0060adc934b4b44b8ed08": {
+      "input_units": 1667,
+      "latency_ms": 19489,
+      "output_units": 153,
+      "payload": {
+        "detail": "Compiled 'Capture this room' to capture_room for the living-room, using currently selected drone 1.\"}",
+        "intents": [
+          {
+            "args": {
+              "room_id": "living-room"
+            },
+            "mode": "indoor",
+            "name": "capture_room",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "c8406ef5fb8c470fdd3109dfdc05b14d5f127b03e1917049e2edce879afd14aa": {
+      "input_units": 1675,
+      "latency_ms": 3523,
+      "output_units": 88,
+      "payload": {
+        "kind": "clarify",
+        "reason": "Ambiguous selection: need to specify which drone(s) to arm before flight prep can proceed."
+      }
+    },
+    "f2830fdff4e29cea38ac891f03acfb013f4667cb465987f464ae675db420de5f": {
+      "input_units": 1667,
+      "latency_ms": 2797,
+      "output_units": 137,
+      "payload": {
+        "detail": "Capturing the living room using the currently selected drone (1).",
+        "intents": [
+          {
+            "args": {
+              "room_id": "living-room"
+            },
+            "mode": "indoor",
+            "name": "capture_room",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-3",
+  "recorded_origin": "anthropic",
+  "version": 3
+}

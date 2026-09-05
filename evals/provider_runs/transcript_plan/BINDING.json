@@ -1,0 +1,71 @@
+{
+  "cassette": "sonnet5-9ac33e89f641.json",
+  "cassette_sha256": "dd4ec79dfdd086a4e307a31bdd75e36f2b3a6d1b7c03dd734714858ec206e5cb",
+  "corpus_digest": "94da020a71522dbae39bd2257a1dcc60942c280661df8e3c77b6cc44b70adae3",
+  "failed": [
+    "capture-this-room",
+    "capture-the-room",
+    "take-a-capture-here",
+    "arm-the-drones",
+    "arm-up",
+    "prepare-the-aircraft",
+    "select-drone-one",
+    "select-all-drones",
+    "select-both-aircraft",
+    "take-off",
+    "launch",
+    "move-right-half-meter",
+    "move-left-half-meter",
+    "move-forward-half-meter",
+    "hold-position",
+    "stay-there",
+    "freeze-in-place",
+    "come-home",
+    "return-to-base",
+    "go-back-to-home",
+    "land-all-drones",
+    "land-now",
+    "bring-everyone-down",
+    "voice-stop-pending",
+    "voice-emergency-stop-pending",
+    "voice-abort-pending",
+    "unknown-id-seven",
+    "unknown-id-nine",
+    "no-selection-capture",
+    "no-selection-move",
+    "relative-leftmost",
+    "relative-current-selection",
+    "unavailable-panorama",
+    "unavailable-room-capture",
+    "unresolved-three-doors-down",
+    "unresolved-kitchen",
+    "ambiguous-that-room",
+    "ambiguous-by-the-door",
+    "select-drones-one-and-two",
+    "select-one-then-takeoff",
+    "select-all-then-translate",
+    "capture-explicit-living-room",
+    "move-right-one-meter",
+    "voice-emergency-stop-qualified",
+    "abort-pending-takeoff",
+    "capture-explicit-reconstruct-eight"
+  ],
+  "models": [
+    "claude-sonnet-5"
+  ],
+  "origins": [
+    "anthropic",
+    "template"
+  ],
+  "passed": 4,
+  "prompt_schema_versions": [
+    "intent-v1-compiler-3"
+  ],
+  "recorded_at": "2026-09-05T00:17:22Z",
+  "run_id": "live-sonnet5-9ac33e89f641",
+  "source_sha": "9ac33e89f641016fa5765911754240a28ddccf72",
+  "sources": [
+    "anthropic",
+    "template"
+  ]
+}

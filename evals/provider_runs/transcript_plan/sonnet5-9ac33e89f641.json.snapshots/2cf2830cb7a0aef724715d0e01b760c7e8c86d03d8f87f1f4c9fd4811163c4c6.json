@@ -1,0 +1,50 @@
+{
+  "entries": {
+    "a37a0637c3b4cd58ebe4cdb6cfe81c7b270c085d07c0060adc934b4b44b8ed08": {
+      "input_units": 1667,
+      "latency_ms": 19489,
+      "output_units": 153,
+      "payload": {
+        "detail": "Compiled 'Capture this room' to capture_room for the living-room, using currently selected drone 1.\"}",
+        "intents": [
+          {
+            "args": {
+              "room_id": "living-room"
+            },
+            "mode": "indoor",
+            "name": "capture_room",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "f2830fdff4e29cea38ac891f03acfb013f4667cb465987f464ae675db420de5f": {
+      "input_units": 1667,
+      "latency_ms": 2797,
+      "output_units": 137,
+      "payload": {
+        "detail": "Capturing the living room using the currently selected drone (1).",
+        "intents": [
+          {
+            "args": {
+              "room_id": "living-room"
+            },
+            "mode": "indoor",
+            "name": "capture_room",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-3",
+  "recorded_origin": "anthropic",
+  "version": 3
+}
