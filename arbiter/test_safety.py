@@ -367,6 +367,25 @@ def test_geofence_and_ceiling_are_checked_on_planned_command() -> None:
     assert flight.calls == []
 
 
+def test_requested_sweep_box_outside_mode_geofence_is_refused_before_planning() -> None:
+    snapshot = make_snapshot(2, selection=(1, 2))
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+
+    result = controller.execute(
+        make_intent(
+            IntentName.SWEEP,
+            selection=(1, 2),
+            args={"box": {"min_x": -2.0, "max_x": 11.0, "min_y": -3.0, "max_y": 3.0}},
+            confirm=True,
+        ),
+        snapshot,
+    )
+
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.GEOFENCE
+    assert flight.calls == []
+
+
 def test_spacing_includes_unselected_ready_aircraft() -> None:
     snapshot = make_snapshot(2, selection=(1,))
     snapshot = replace_aircraft(snapshot, 2, pose=Position(0.5, 0.0, 1.0))

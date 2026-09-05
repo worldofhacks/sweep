@@ -141,7 +141,7 @@ policy transitions, status changes, and intent events.
 Both panes share the target strip (`src/modules/gesture/TargetStrip.tsx`): the selection count,
 chips that toggle selection through the relay, All ready, the blockers line, and the design's quick
 commands, each wired through the control hook: Hold, Takeoff and Land all draft a preview for the
-dock and Come home sends at once; a name outside the relay's M2.0 set is listed as unsupported.
+dock and Come home sends at once; a name outside the relay's advertised capability set is listed as unsupported and remains disabled.
 
 Speech (`src/voice/`, `src/speech/`, panel in `src/modules/speech/`) is push-to-talk through the
 relay transcription endpoint: hold the button to record, release to upload; recording stops one

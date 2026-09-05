@@ -76,6 +76,11 @@ C1_IMPLEMENTED_INTENT_NAMES = frozenset(
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
+        IntentName.ALTITUDE,
+        IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
+        IntentName.SPACING,
+        IntentName.SWEEP,
     }
 )
 

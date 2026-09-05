@@ -1055,6 +1055,31 @@ def test_control_projection_omissions_do_not_clear_plan_or_pending(
     assert state["armed"] is True
 
 
+def test_control_projection_applies_completed_formation_and_spacing_updates(
+    relay_session: RelaySession,
+) -> None:
+    state = relay_session.update_control_projection(formation="circle", spacing=1.2)
+
+    assert state["formation"] == "circle"
+    assert state["spacing"] == 1.2
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("formation", "unknown"),
+        ("spacing", 0),
+        ("spacing", float("inf")),
+        ("spacing", True),
+    ],
+)
+def test_control_projection_rejects_invalid_formation_or_spacing(
+    relay_session: RelaySession, field: str, value: object
+) -> None:
+    with pytest.raises(ValueError):
+        relay_session.update_control_projection(**{field: value})
+
+
 def test_downstream_failure_has_terminal_refused_record(
     tmp_path: Path,
     clock: MutableClock,

@@ -620,6 +620,8 @@ class AutonomyRelayBridge:
             selection_update=(plan.selection_update if completed and plan is not None else None),
             armed_update=(plan.armed_update if completed and plan is not None else None),
             estop_update=(plan.estop_update if plan is not None else None),
+            formation_update=(plan.formation_update if completed and plan is not None else None),
+            spacing_update=(plan.spacing_update if completed and plan is not None else None),
             reason=refusal.reason.value if refusal is not None else None,
             detail=refusal.detail if refusal is not None else None,
         )

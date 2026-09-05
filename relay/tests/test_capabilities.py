@@ -28,23 +28,28 @@ def test_c1_profile_enables_only_earned_intents() -> None:
     assert C1_CAPABILITY_PROFILE.enabled_intent_names == C1_IMPLEMENTED_INTENT_NAMES
     assert {name.value for name in C1_CAPABILITY_PROFILE.enabled_intent_names} == {
         "arm",
+        "altitude",
         "capture_room",
         "come_home",
         "estop",
+        "formation_next",
+        "formation_set",
         "hold",
         "land",
         "land_all",
         "select",
+        "spacing",
+        "sweep",
         "takeoff",
         "translate",
     }
-    assert not C1_CAPABILITY_PROFILE.supports(IntentName.ALTITUDE)
+    assert C1_CAPABILITY_PROFILE.supports(IntentName.ALTITUDE)
     assert not C1_CAPABILITY_PROFILE.supports(IntentName.DISARM)
 
 
 def test_profile_rejects_unimplemented_intents() -> None:
-    with pytest.raises(ValueError, match="unimplemented intents: sweep"):
-        CapabilityProfile("unsafe", frozenset({IntentName.SWEEP}))
+    with pytest.raises(ValueError, match="unimplemented intents: disarm"):
+        CapabilityProfile("unsafe", frozenset({IntentName.DISARM}))
 
     with pytest.raises(ValueError, match="must not be empty"):
         CapabilityProfile("empty", frozenset())
@@ -53,7 +58,7 @@ def test_profile_rejects_unimplemented_intents() -> None:
 def test_profile_normalizes_caller_owned_sets_and_string_members() -> None:
     caller_owned = {IntentName.LAND}
     profile = CapabilityProfile("land-only", caller_owned)  # type: ignore[arg-type]
-    caller_owned.add(IntentName.SWEEP)
+    caller_owned.add(IntentName.DISARM)
 
     assert profile.enabled_intent_names == frozenset({IntentName.LAND})
     assert isinstance(profile.enabled_intent_names, frozenset)
@@ -64,7 +69,7 @@ def test_profile_normalizes_caller_owned_sets_and_string_members() -> None:
     assert from_string.state_value()["enabled_intent_names"] == ["land"]
 
 
-@pytest.mark.parametrize("name", ["sweep", "not_registered"])
+@pytest.mark.parametrize("name", ["disarm", "not_registered"])
 def test_profile_rejects_unsupported_string_members_as_value_errors(name: str) -> None:
     with pytest.raises(ValueError):
         CapabilityProfile("unsafe", frozenset({name}))  # type: ignore[arg-type]
@@ -166,6 +171,30 @@ def test_every_advertised_intent_has_a_safe_planner_and_arbiter_path() -> None:
                 },
             ),
             make_snapshot(1, selection=(1,)),
+        ),
+        (
+            make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1}),
+            make_snapshot(1, selection=(1,)),
+        ),
+        (
+            make_intent(IntentName.FORMATION_NEXT, selection=(1, 2)),
+            make_snapshot(2, selection=(1, 2), spacing=1.0),
+        ),
+        (
+            make_intent(
+                IntentName.FORMATION_SET,
+                selection=(1, 2),
+                args={"name": "line"},
+            ),
+            make_snapshot(2, selection=(1, 2), spacing=1.0),
+        ),
+        (
+            make_intent(IntentName.SPACING, selection=(1, 2), args={"delta": 1}),
+            make_snapshot(2, selection=(1, 2), spacing=1.0),
+        ),
+        (
+            make_intent(IntentName.SWEEP, selection=(1, 2), args={}, confirm=True),
+            make_snapshot(2, selection=(1, 2)),
         ),
     )
 

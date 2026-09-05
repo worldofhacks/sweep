@@ -106,7 +106,7 @@ describe('M1.1 wire compatibility', () => {
     ['custom', []],
     ['custom', ['hold', 'hold']],
     ['custom', ['unknown']],
-    ['custom', ['sweep']],
+    ['custom', ['disarm']],
     ['c1_basic_control', ['hold']],
   ])('rejects contradictory capability advertisement %s / %j', (profile, enabled) => {
     expect(
@@ -462,7 +462,13 @@ describe('console Intent v1 mirror', () => {
     ['console', 'spacing', { delta: -1 }, [1], false],
     ['console', 'come_home', {}, [1], false],
     ['console', 'sweep', {}, [1], true],
-    ['console', 'sweep', { box: { x: 0, y: 0, w: 2, h: 2 } }, [1], true],
+    [
+      'console',
+      'sweep',
+      { box: { min_x: -1, max_x: 1, min_y: -1, max_y: 1 } },
+      [1],
+      true,
+    ],
     [
       'console',
       'capture_room',
@@ -487,5 +493,28 @@ describe('console Intent v1 mirror', () => {
         confirm,
       }),
     ).toBe(true)
+  })
+
+  test('rejects ambiguous or unordered sweep boxes', () => {
+    const base = {
+      v: 1,
+      t: 1_756_700_000_000,
+      type: 'intent',
+      intent_id: 'intent-sweep-box',
+      retry_of: null,
+      source: 'console',
+      session,
+      name: 'sweep',
+      selection: [1],
+      mode: 'indoor',
+      confirm: true,
+    }
+    expect(isConsoleIntentV1({ ...base, args: { box: { x: 0, y: 0, w: 2, h: 2 } } })).toBe(false)
+    expect(
+      isConsoleIntentV1({
+        ...base,
+        args: { box: { min_x: 1, max_x: -1, min_y: -1, max_y: 1 } },
+      }),
+    ).toBe(false)
   })
 })

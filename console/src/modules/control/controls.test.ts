@@ -92,10 +92,9 @@ describe('control gating', () => {
 
     expect(byKey.arm).toMatchObject({
       enabled: false,
-      soft: false,
       note: 'arm is disabled by relay capability profile land-only.',
     })
-    expect(byKey.hold).toMatchObject({ enabled: false, soft: false })
+    expect(byKey.hold).toMatchObject({ enabled: false })
     expect(dpadBlockedReason(state)).toBe(
       'translate is disabled by relay capability profile land-only.',
     )
@@ -105,29 +104,28 @@ describe('control gating', () => {
     })
   })
 
-  test('disconnected: every control is disabled with the connection reason, nothing is soft', () => {
+  test('disconnected: every control is disabled with the connection reason', () => {
     const state = createInitialControlState(session, t)
     for (const spec of [...fleetControls(state), ...motionControls(state)]) {
       expect(spec.enabled).toBe(false)
-      expect(spec.soft).toBe(false)
       expect(spec.note).toBe('The console connection is disconnected. Nothing can be sent.')
     }
     expect(dpadBlockedReason(state)).toBe('The console connection is disconnected. Nothing can be sent.')
   })
 
-  test('connected with one ready aircraft selected: advertised controls send or confirm and others are disabled', () => {
+  test('connected with one ready aircraft selected: advertised controls send or confirm', () => {
     const state = connected([1])
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
-    expect(byKey.arm).toMatchObject({ enabled: true, soft: false, badge: '', note: 'Sends immediately on the console connection.' })
-    expect(byKey.disarm).toMatchObject({ enabled: false, soft: false, badge: 'unsupported', note: 'disarm is disabled by relay capability profile c1_basic_control.', noteTone: 'warn' })
+    expect(byKey.arm).toMatchObject({ enabled: true, badge: '', note: 'Sends immediately on the console connection.' })
+    expect(byKey.disarm).toMatchObject({ enabled: false, badge: 'unsupported', note: 'disarm is disabled by relay capability profile c1_basic_control.', noteTone: 'warn' })
     expect(byKey['select-all']).toMatchObject({ enabled: true, note: 'Selects every ready aircraft.', press: { name: 'select', args: { ids: [1, 2, 4] }, targets: [1, 2, 4] } })
     expect(byKey.takeoff).toMatchObject({ enabled: true, confirm: true, badge: 'confirm', note: 'Confirmation required before send.' })
     expect(byKey.hold).toMatchObject({ enabled: true, badge: '', rule: 'selected' })
     expect(byKey.land_all).toMatchObject({ enabled: true, confirm: true, press: { targets: [1, 2, 3, 4] }, note: 'Confirmation required. Targets every aircraft in the roster.' })
-    expect(byKey.sweep).toMatchObject({ enabled: false, soft: false, confirm: true, badge: 'unsupported' })
-    expect(byKey['spacing-']).toMatchObject({ enabled: false, soft: false, press: { name: 'spacing', args: { delta: -1 } } })
-    expect(byKey['spacing+']).toMatchObject({ enabled: false, soft: false, press: { name: 'spacing', args: { delta: 1 } } })
-    expect(byKey.formation_next).toMatchObject({ enabled: false, soft: false, press: { name: 'formation_next', args: {} } })
+    expect(byKey.sweep).toMatchObject({ enabled: true, confirm: true, badge: 'confirm' })
+    expect(byKey['spacing-']).toMatchObject({ enabled: true, press: { name: 'spacing', args: { delta: -1 } } })
+    expect(byKey['spacing+']).toMatchObject({ enabled: true, press: { name: 'spacing', args: { delta: 1 } } })
+    expect(byKey.formation_next).toMatchObject({ enabled: true, press: { name: 'formation_next', args: {} } })
     expect(dpadBlockedReason(state)).toBeNull()
   })
 
@@ -135,9 +133,9 @@ describe('control gating', () => {
     const state = connected([])
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
     expect(byKey.takeoff).toMatchObject({ enabled: false, note: NO_SELECTION_REASON })
-    expect(byKey.sweep).toMatchObject({ enabled: false, soft: false, note: 'sweep is disabled by relay capability profile c1_basic_control.' })
+    expect(byKey.sweep).toMatchObject({ enabled: false, note: NO_SELECTION_REASON })
     expect(byKey.arm.enabled).toBe(true)
-    expect(byKey.disarm).toMatchObject({ enabled: false, soft: false })
+    expect(byKey.disarm).toMatchObject({ enabled: false })
     expect(byKey.land_all.enabled).toBe(true)
     expect(dpadBlockedReason(state)).toBe(NO_SELECTION_REASON)
   })
@@ -147,7 +145,7 @@ describe('control gating', () => {
     const byKey = Object.fromEntries(motionControls(state).map((s) => [s.key, s]))
     expect(byKey.takeoff.note).toBe('D-03 is not ready.')
     expect(byKey.hold.enabled).toBe(false)
-    expect(byKey.sweep).toMatchObject({ enabled: false, soft: false })
+    expect(byKey.sweep).toMatchObject({ enabled: true })
   })
 
   test('stop active: motion is blocked with the stop reason, the pad follows stop before selection', () => {
@@ -155,7 +153,7 @@ describe('control gating', () => {
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
     expect(byKey.arm).toMatchObject({ enabled: false, note: STOP_ACTIVE_REASON })
     expect(byKey.land_all).toMatchObject({ enabled: true, note: 'Confirmation required. Targets every aircraft in the roster.' })
-    expect(byKey.disarm).toMatchObject({ enabled: false, soft: false })
+    expect(byKey.disarm).toMatchObject({ enabled: false })
     expect(dpadBlockedReason(state)).toBe(STOP_ACTIVE_REASON)
   })
 
@@ -165,30 +163,30 @@ describe('control gating', () => {
     expect(fleetControls(state)[2]).toMatchObject({ enabled: false, note: 'No aircraft is ready.' })
   })
 
-  test('formation and altitude controls stay disabled when the profile omits them', () => {
+  test('formation and altitude controls are supported and need a selection', () => {
     const withSelection = connected([1])
     expect(formationControls(withSelection).map((s) => s.label)).toEqual(['line', 'column', 'circle', 'grid', 'V'])
-    expect(formationControls(withSelection)[2]).toMatchObject({ enabled: false, soft: false, press: { name: 'formation_set', args: { name: 'circle' } } })
-    expect(altitudeControls(withSelection)[0]).toMatchObject({ enabled: false, soft: false, press: { name: 'altitude', args: { delta: 1 } } })
-    expect(altitudeControls(connected([]))[1]).toMatchObject({ enabled: false, note: 'altitude is disabled by relay capability profile c1_basic_control.' })
+    expect(formationControls(withSelection)[2]).toMatchObject({ enabled: true, press: { name: 'formation_set', args: { name: 'circle' } } })
+    expect(altitudeControls(withSelection)[0]).toMatchObject({ enabled: true, press: { name: 'altitude', args: { delta: 1 } } })
+    expect(altitudeControls(connected([]))[1]).toMatchObject({ enabled: false, note: NO_SELECTION_REASON })
   })
 })
 
 describe('command catalogue', () => {
-  test('lists Fleet and Motion rows in the design order with confirmation, rule and M2.0 status', () => {
+  test('lists Fleet and Motion rows in the design order with confirmation, rule and status', () => {
     const groups = commandCatalog(connected([1]))
     expect(groups.map((group) => group.title)).toEqual(['Fleet', 'Motion'])
     expect(groups[0].rows.map((row) => row.label)).toEqual(['Arm', 'Disarm', 'Select all'])
     expect(groups[1].rows.map((row) => [row.label, row.confirm, row.rule, row.status])).toEqual([
-      ['Takeoff', 'confirm', 'selected', 'accepted at M2.0'],
-      ['Hold', '—', 'selected', 'accepted at M2.0'],
-      ['Come home', '—', 'selected', 'accepted at M2.0'],
-      ['Land', 'confirm', 'selected', 'accepted at M2.0'],
-      ['Land all', 'confirm', 'all', 'accepted at M2.0'],
-      ['Formation next', '—', 'selected', 'unsupported'],
-      ['Spacing tighter', '—', 'selected', 'unsupported'],
-      ['Spacing wider', '—', 'selected', 'unsupported'],
-      ['Sweep', 'confirm', 'selected', 'unsupported'],
+      ['Takeoff', 'confirm', 'selected', 'available'],
+      ['Hold', '—', 'selected', 'available'],
+      ['Come home', '—', 'selected', 'available'],
+      ['Land', 'confirm', 'selected', 'available'],
+      ['Land all', 'confirm', 'all', 'available'],
+      ['Formation next', '—', 'selected', 'available'],
+      ['Spacing tighter', '—', 'selected', 'available'],
+      ['Spacing wider', '—', 'selected', 'available'],
+      ['Sweep', 'confirm', 'selected', 'available'],
       ['Survey area', 'confirm', 'any', 'later'],
       ['Map area', 'confirm', 'non-empty', 'later'],
     ])
@@ -253,7 +251,7 @@ describe('translate pad and formation geometry', () => {
     expect(formationRelayNote(null, 'line')).toBe('The relay reports line.')
     expect(formationRelayNote('line', 'line')).toBe('The relay reports line.')
     expect(formationRelayNote('circle', 'line')).toBe(
-      'Previewing circle. The relay still reports line — formation_set is refused as unsupported at M2.0.',
+      'Requested circle. The relay still reports line until execution completes.',
     )
     expect(formationRelayNote(null, null)).toBe('The relay has not reported a formation.')
   })
@@ -380,19 +378,19 @@ describe('requests', () => {
 })
 
 describe('mission steps', () => {
-  test('ten Appendix E steps with the M2.0 status of each intent', () => {
+  test('ten Appendix E steps show the integrated capability status', () => {
     expect(MISSION_STEPS).toHaveLength(10)
     expect(MISSION_STEPS.map((step) => [step.intent, step.status])).toEqual([
-      ['arm', 'accepted at M2.0'],
-      ['select', 'accepted at M2.0'],
-      ['takeoff', 'accepted at M2.0'],
-      ['confirm', 'accepted at M2.0'],
-      ['formation_set', 'unsupported'],
-      ['translate', 'accepted at M2.0'],
-      ['altitude', 'unsupported'],
-      ['sweep', 'unsupported'],
-      ['come_home', 'accepted at M2.0'],
-      ['land_all', 'accepted at M2.0'],
+      ['arm', 'available'],
+      ['select', 'available'],
+      ['takeoff', 'available'],
+      ['confirm', 'available'],
+      ['formation_set', 'available'],
+      ['translate', 'available'],
+      ['altitude', 'available'],
+      ['sweep', 'available'],
+      ['come_home', 'available'],
+      ['land_all', 'available'],
     ])
   })
 })
