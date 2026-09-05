@@ -11,6 +11,10 @@ MOTION_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
+        IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
+        IntentName.SWEEP,
         IntentName.COME_HOME,
         IntentName.LAND,
         IntentName.LAND_ALL,

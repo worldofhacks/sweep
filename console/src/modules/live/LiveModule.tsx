@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import './live.css'
+import { capabilityBlockedReason, isIntentEnabled } from '../../control/state'
 import { Pane, type PaneTab } from '../../shell/Pane'
 import { sortedAircraft } from '../../shell/derive'
 import { EmptyModule } from '../shared'
@@ -53,6 +54,8 @@ export function LiveModule({ controller, now, media }: ModuleProps) {
           now={currentNow}
           focusedId={focused?.drone_id ?? null}
           selection={state.selection}
+          selectionEnabled={isIntentEnabled(state, 'select')}
+          selectionDisabledReason={capabilityBlockedReason(state, 'select')}
           onFocus={selectFeed}
           onToggleSelection={toggleAircraft}
         />

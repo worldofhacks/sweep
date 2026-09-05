@@ -1,7 +1,7 @@
 import pytest
 
+from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES
 from relay.intent_v1 import (
-    M20_SUPPORTED_NAMES,
     REGISTERED_SOURCES,
     SOURCE_ALLOWED_NAMES,
     AcceptedIntent,
@@ -96,7 +96,7 @@ def test_registered_sources_share_the_validator(
         ("estop", {}, False),
     ],
 )
-def test_m20_console_intents_match_the_planner_contract(
+def test_basic_c1_console_intents_match_the_planner_contract(
     console_select_payload: dict[str, object],
     name: str,
     args: dict[str, object],
@@ -110,6 +110,67 @@ def test_m20_console_intents_match_the_planner_contract(
     assert result.intent.name.value == name
     assert result.intent.args == args
     assert result.intent.selection == (1, 2)
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "confirm"),
+    [
+        ("altitude", {"delta": 1}, False),
+        ("formation_next", {}, False),
+        ("formation_set", {"name": "circle"}, False),
+        ("spacing", {"delta": 1}, False),
+        ("sweep", {}, True),
+        (
+            "sweep",
+            {"box": {"min_x": -2, "max_x": 2, "min_y": -3, "max_y": 3}},
+            True,
+        ),
+    ],
+)
+def test_m15_sim_intents_are_accepted_on_the_indoor_contract(
+    console_select_payload: dict[str, object],
+    name: str,
+    args: dict[str, object],
+    confirm: bool,
+) -> None:
+    console_select_payload.update(name=name, args=args, selection=[1, 2], confirm=confirm)
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, AcceptedIntent)
+    assert result.intent.name.value == name
+
+
+def test_sweep_requires_confirmation_before_planning(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(name="sweep", args={}, selection=[1, 2], confirm=False)
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+@pytest.mark.parametrize(
+    "box",
+    [
+        {"x": 0, "y": 0, "width": 4, "height": 3},
+        {"min_x": 0, "max_x": 0, "min_y": -1, "max_y": 1},
+        {"min_x": 1, "max_x": 0, "min_y": -1, "max_y": 1},
+        {"min_x": 0, "max_x": 1, "min_y": -1, "max_y": float("inf")},
+        {"min_x": False, "max_x": 1, "min_y": -1, "max_y": 1},
+    ],
+)
+def test_sweep_rejects_ambiguous_or_invalid_boxes(
+    console_select_payload: dict[str, object], box: dict[str, object]
+) -> None:
+    console_select_payload.update(name="sweep", args={"box": box}, selection=[1], confirm=True)
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
 def test_translate_rejects_source_owned_frame_and_step(
@@ -281,16 +342,11 @@ def test_unknown_intent_name_is_rejected(
     ("name", "args"),
     [
         ("disarm", {}),
-        ("altitude", {"delta": 1}),
-        ("formation_next", {}),
-        ("formation_set", {"name": "line"}),
-        ("spacing", {"delta": -1}),
-        ("sweep", {"box": {"x": 0, "y": 0, "width": 4, "height": 3}}),
         ("survey_area", {"area_id": "floor-1"}),
         ("map_area", {"area_id": "floor-1"}),
     ],
 )
-def test_valid_intents_outside_m20_are_unsupported(
+def test_valid_intents_outside_c1_are_unsupported(
     console_select_payload: dict[str, object],
     name: str,
     args: dict[str, object],
@@ -445,22 +501,33 @@ def test_retry_cannot_reference_its_own_intent_id(
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
-_M20_ARGS: dict[IntentName, dict[str, object]] = {
+_C1_ARGS: dict[IntentName, dict[str, object]] = {
     IntentName.SELECT: {"ids": [1]},
     IntentName.TRANSLATE: {"dx": 1, "dy": 0},
+    IntentName.ALTITUDE: {"delta": 1},
+    IntentName.FORMATION_SET: {"name": "line"},
+    IntentName.SPACING: {"delta": 1},
     IntentName.CAPTURE_ROOM: {
         "room_id": "room-1",
         "capture_id": "capture-1",
         "pattern": "pano_360",
     },
+    IntentName.SURVEY_AREA: {"area_id": "floor-1"},
 }
 _CONFIRMED_NAMES = frozenset(
-    {IntentName.TAKEOFF, IntentName.LAND, IntentName.LAND_ALL, IntentName.CAPTURE_ROOM}
+    {
+        IntentName.TAKEOFF,
+        IntentName.LAND,
+        IntentName.LAND_ALL,
+        IntentName.CAPTURE_ROOM,
+        IntentName.SWEEP,
+        IntentName.SURVEY_AREA,
+    }
 )
 
 
-def _m20_payload(source: str, name: IntentName) -> dict[str, object]:
-    """A well-formed indoor M2.0 request for `name`, as the console would send it."""
+def _c1_payload(source: str, name: IntentName) -> dict[str, object]:
+    """Return a well-formed indoor request for one registered intent name."""
     return {
         "v": 1,
         "t": 1_756_700_000_000,
@@ -470,7 +537,7 @@ def _m20_payload(source: str, name: IntentName) -> dict[str, object]:
         "source": source,
         "session": "session-test",
         "name": name.value,
-        "args": _M20_ARGS.get(name, {}),
+        "args": _C1_ARGS.get(name, {}),
         "selection": [1],
         "mode": "indoor",
         "confirm": name in _CONFIRMED_NAMES,
@@ -479,15 +546,15 @@ def _m20_payload(source: str, name: IntentName) -> dict[str, object]:
 
 def test_source_allowlist_covers_every_registered_source() -> None:
     assert set(SOURCE_ALLOWED_NAMES) == REGISTERED_SOURCES
-    assert all(names <= M20_SUPPORTED_NAMES for names in SOURCE_ALLOWED_NAMES.values())
-    assert SOURCE_ALLOWED_NAMES["console"] == M20_SUPPORTED_NAMES
+    assert all(names <= C1_IMPLEMENTED_INTENT_NAMES for names in SOURCE_ALLOWED_NAMES.values())
+    assert SOURCE_ALLOWED_NAMES["console"] is C1_IMPLEMENTED_INTENT_NAMES
     assert SOURCE_ALLOWED_NAMES["keyboard"] == {IntentName.ESTOP}
     assert SOURCE_ALLOWED_NAMES["webcam"] == {IntentName.CAPTURE_ROOM, IntentName.HOLD}
 
 
-@pytest.mark.parametrize("name", sorted(M20_SUPPORTED_NAMES))
-def test_console_may_emit_every_m20_name(name: IntentName) -> None:
-    result = validate_intent(_m20_payload("console", name))
+@pytest.mark.parametrize("name", sorted(C1_IMPLEMENTED_INTENT_NAMES))
+def test_console_may_emit_every_c1_name(name: IntentName) -> None:
+    result = validate_intent(_c1_payload("console", name))
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.source == "console"
@@ -495,16 +562,16 @@ def test_console_may_emit_every_m20_name(name: IntentName) -> None:
 
 
 def test_keyboard_network_stop_passes_validation() -> None:
-    result = validate_intent(_m20_payload("keyboard", IntentName.ESTOP))
+    result = validate_intent(_c1_payload("keyboard", IntentName.ESTOP))
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.source == "keyboard"
     assert result.intent.name is IntentName.ESTOP
 
 
-@pytest.mark.parametrize("name", sorted(M20_SUPPORTED_NAMES - {IntentName.ESTOP}))
+@pytest.mark.parametrize("name", sorted(C1_IMPLEMENTED_INTENT_NAMES - {IntentName.ESTOP}))
 def test_keyboard_may_only_emit_the_network_stop(name: IntentName) -> None:
-    result = validate_intent(_m20_payload("keyboard", name))
+    result = validate_intent(_c1_payload("keyboard", name))
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.SOURCE_NOT_ALLOWED
@@ -513,7 +580,7 @@ def test_keyboard_may_only_emit_the_network_stop(name: IntentName) -> None:
 
 @pytest.mark.parametrize("name", [IntentName.HOLD, IntentName.CAPTURE_ROOM])
 def test_webcam_gesture_names_pass_validation(name: IntentName) -> None:
-    result = validate_intent(_m20_payload("webcam", name))
+    result = validate_intent(_c1_payload("webcam", name))
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.source == "webcam"
@@ -521,10 +588,11 @@ def test_webcam_gesture_names_pass_validation(name: IntentName) -> None:
 
 
 @pytest.mark.parametrize(
-    "name", sorted(M20_SUPPORTED_NAMES - {IntentName.HOLD, IntentName.CAPTURE_ROOM})
+    "name",
+    sorted(C1_IMPLEMENTED_INTENT_NAMES - {IntentName.HOLD, IntentName.CAPTURE_ROOM}),
 )
 def test_webcam_never_gesture_emittable_names_are_refused(name: IntentName) -> None:
-    result = validate_intent(_m20_payload("webcam", name))
+    result = validate_intent(_c1_payload("webcam", name))
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.SOURCE_NOT_ALLOWED
@@ -532,15 +600,14 @@ def test_webcam_never_gesture_emittable_names_are_refused(name: IntentName) -> N
 
 
 def test_source_allowlist_is_checked_after_shape_and_capability() -> None:
-    outside_m20 = _m20_payload("webcam", IntentName.TAKEOFF)
-    outside_m20.update(name="sweep", args={})
-    outdoor = _m20_payload("webcam", IntentName.TAKEOFF)
+    outside_profile = _c1_payload("webcam", IntentName.SURVEY_AREA)
+    outdoor = _c1_payload("webcam", IntentName.TAKEOFF)
     outdoor["mode"] = "outdoorC"
-    malformed = _m20_payload("webcam", IntentName.TAKEOFF)
+    malformed = _c1_payload("webcam", IntentName.TAKEOFF)
     malformed["args"] = {"z": 1}
 
     for payload, reason in (
-        (outside_m20, RejectionReason.UNSUPPORTED),
+        (outside_profile, RejectionReason.UNSUPPORTED),
         (outdoor, RejectionReason.UNSUPPORTED),
         (malformed, RejectionReason.INVALID_PAYLOAD),
     ):

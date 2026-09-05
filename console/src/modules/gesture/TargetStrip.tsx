@@ -1,5 +1,11 @@
-import { formatDroneId, type ControlState, type RequestRecord } from '../../control/state'
-import { isSupportedAtM20, selectionRule } from '../../relay/contract'
+import {
+  capabilityBlockedReason,
+  formatDroneId,
+  isIntentEnabled,
+  type ControlState,
+  type RequestRecord,
+} from '../../control/state'
+import { isSupportedIntent, selectionRule } from '../../relay/contract'
 import { isReady, sortedAircraft } from '../../shell/derive'
 import { formatPercent, humanizeCode } from '../../shell/format'
 import { rosterIds } from '../control/controls'
@@ -65,9 +71,11 @@ function quickCommandView(
   state: ControlState,
   pending: RequestRecord | null,
 ): QuickCommandView {
-  if (!isSupportedAtM20(spec.name)) {
+  const capability = capabilityBlockedReason(state, spec.name)
+  if (capability) return { badge: null, reason: capability, note: capability }
+  if (!isSupportedIntent(spec.name)) {
     const sentences = [
-      `The relay refuses ${spec.name} as unsupported at M2.0; it is listed until the relay accepts it.`,
+      `The relay refuses ${spec.name} as unsupported; it is listed until the relay accepts it.`,
     ]
     if (spec.confirm) sentences.push('Confirmation would be required before send.')
     if (spec.detail) sentences.push(spec.detail)
@@ -104,7 +112,7 @@ function quickCommandView(
  * selected, chips that toggle selection through the relay, the aircraft that
  * cannot be commanded, and the quick commands. "All ready", Hold, Takeoff and
  * Land all draft a preview for the dock and Come home sends at once, all
- * through the control hook; a name outside the relay's M2.0 set is listed as
+ * through the control hook; a name outside the relay's capability set is listed as
  * unsupported rather than sent.
  */
 export function TargetStrip({ controller }: { controller: Controller }) {
@@ -112,8 +120,9 @@ export function TargetStrip({ controller }: { controller: Controller }) {
   const fleet = sortedAircraft(state.aircraft)
   const ready = fleet.filter(isReady).map((drone) => drone.drone_id)
   const blockers = fleet.filter((drone) => !isReady(drone))
+  const canSelect = isIntentEnabled(state, 'select')
   const allReadySelected = ready.length > 0 && ready.every((id) => state.selection.includes(id))
-  const allReadyDisabled = ready.length === 0 || allReadySelected || pendingRequest !== null
+  const allReadyDisabled = !canSelect || ready.length === 0 || allReadySelected || pendingRequest !== null
   return (
     <div className="tg-strip" role="group" aria-label="Target">
       <span className="tg-strip-count">
@@ -124,10 +133,12 @@ export function TargetStrip({ controller }: { controller: Controller }) {
       </span>
       <span className="tg-strip-chips">
         {fleet.map((drone) => {
-          const can = isReady(drone)
+          const can = canSelect && isReady(drone)
           const on = state.selection.includes(drone.drone_id)
           const lastSelected = on && state.selection.length === 1
-          const reason = can
+          const reason = !canSelect
+            ? capabilityBlockedReason(state, 'select') ?? undefined
+            : can
             ? lastSelected
               ? 'Intent v1 requires at least one aircraft in a select request.'
               : undefined
@@ -158,7 +169,9 @@ export function TargetStrip({ controller }: { controller: Controller }) {
           className="tg-strip-all"
           disabled={allReadyDisabled}
           title={
-            pendingRequest
+            !canSelect
+              ? capabilityBlockedReason(state, 'select') ?? undefined
+              : pendingRequest
               ? 'Confirm or cancel the pending preview first.'
               : allReadySelected
                 ? 'Every ready aircraft is already selected.'

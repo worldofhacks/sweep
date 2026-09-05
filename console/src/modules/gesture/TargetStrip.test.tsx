@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
 import App from '../../App'
 import type { ControlClients } from '../../control/use-control-console'
+import { C1_BASIC_CONTROL_INTENTS } from '../../relay/contract'
 import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
 import { createGestureTestRig } from '../../testing/gesture-fixtures'
 
@@ -48,6 +49,8 @@ function mount() {
       formation: 'none',
       spacing: 0.8,
       mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
       pending: null,
       accepted_plan: null,
       drones: fixtureAircraft(wall(), 4),

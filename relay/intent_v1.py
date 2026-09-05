@@ -4,26 +4,12 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal
 
-
-class IntentName(StrEnum):
-    ARM = "arm"
-    DISARM = "disarm"
-    ESTOP = "estop"
-    SELECT = "select"
-    TAKEOFF = "takeoff"
-    LAND = "land"
-    LAND_ALL = "land_all"
-    HOLD = "hold"
-    TRANSLATE = "translate"
-    ALTITUDE = "altitude"
-    FORMATION_NEXT = "formation_next"
-    FORMATION_SET = "formation_set"
-    SPACING = "spacing"
-    COME_HOME = "come_home"
-    SWEEP = "sweep"
-    CAPTURE_ROOM = "capture_room"
-    SURVEY_AREA = "survey_area"
-    MAP_AREA = "map_area"
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    C1_IMPLEMENTED_INTENT_NAMES,
+    CapabilityProfile,
+    IntentName,
+)
 
 
 class Mode(StrEnum):
@@ -74,36 +60,21 @@ type ValidationResult = AcceptedIntent | RejectedIntent
 # producer are each bound to their own connection; an intent never moves
 # between them. Adding a source changes this constant and its conformance tests.
 REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
-M20_SUPPORTED_NAMES = frozenset(
-    {
-        IntentName.ARM,
-        IntentName.SELECT,
-        IntentName.TAKEOFF,
-        IntentName.TRANSLATE,
-        IntentName.HOLD,
-        IntentName.COME_HOME,
-        IntentName.LAND,
-        IntentName.LAND_ALL,
-        IntentName.ESTOP,
-        IntentName.CAPTURE_ROOM,
-    }
-)
-# Intent v1 names each registered source may emit. The console owns every M2.0
+# Intent v1 names each registered source may emit. The console owns every C1
 # name; the keyboard socket carries only the Shift+Escape network stop; the
 # webcam gesture producer drafts only the two names its gesture policy may emit
 # (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES), so the console's
 # never-gesture-emittable list is enforced by the relay as well. A name outside
-# its source's set is refused with `source_not_allowed` even when M2.0 supports
-# it. Every set is a subset of M20_SUPPORTED_NAMES and every registered source
-# has an entry; the conformance tests hold both invariants.
+# its source's set is refused with `source_not_allowed` only after the effective
+# capability profile accepts it. The console aliases the single implemented-name
+# registry rather than maintaining another capability list.
 SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
     {
-        "console": M20_SUPPORTED_NAMES,
+        "console": C1_IMPLEMENTED_INTENT_NAMES,
         "keyboard": frozenset({IntentName.ESTOP}),
         "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
     }
 )
-
 _REQUIRED_FIELDS = frozenset(
     {
         "v",
@@ -122,7 +93,9 @@ _REQUIRED_FIELDS = frozenset(
 _FIELDS = _REQUIRED_FIELDS | {"retry_of"}
 
 
-def validate_intent(raw: object) -> ValidationResult:
+def validate_intent(
+    raw: object, *, capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
+) -> ValidationResult:
     """Validate untrusted input without raising; failures are returned as typed rejections."""
     if not isinstance(raw, Mapping) or not _REQUIRED_FIELDS <= set(raw) or not set(raw) <= _FIELDS:
         return RejectedIntent(
@@ -154,12 +127,14 @@ def validate_intent(raw: object) -> ValidationResult:
     mode = Mode(raw["mode"])
     if mode is not Mode.INDOOR:
         return RejectedIntent(
-            RejectionReason.UNSUPPORTED, f"{mode} is outside the M2.0 capability set"
+            RejectionReason.UNSUPPORTED,
+            f"{mode} is outside capability profile {capability_profile.name}",
         )
 
-    if name not in M20_SUPPORTED_NAMES:
+    if not capability_profile.supports(name):
         return RejectedIntent(
-            RejectionReason.UNSUPPORTED, f"{name} is outside the M2.0 capability set"
+            RejectionReason.UNSUPPORTED,
+            f"{name} is outside capability profile {capability_profile.name}",
         )
 
     if name not in SOURCE_ALLOWED_NAMES[source]:
@@ -232,6 +207,8 @@ def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
         return raw["confirm"] is True
     if name is IntentName.MAP_AREA:
         return raw["confirm"] is True and bool(raw["selection"])
+    if name is IntentName.SWEEP:
+        return raw["confirm"] is True and bool(raw["selection"])
     return True
 
 
@@ -277,11 +254,30 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({"name": value["name"]})
 
     if name is IntentName.SWEEP:
-        if not set(value) <= {"box"}:
+        if not value:
+            return MappingProxyType({})
+        if set(value) != {"box"} or not isinstance(value["box"], Mapping):
             raise ValueError
-        if "box" in value and not isinstance(value["box"], Mapping):
+        box = value["box"]
+        expected = {"min_x", "max_x", "min_y", "max_y"}
+        if set(box) != expected or not all(
+            isinstance(key, str) and _is_finite_number(box[key]) for key in expected
+        ):
             raise ValueError
-        return MappingProxyType({"box": _freeze_json(value["box"])} if "box" in value else {})
+        if float(box["min_x"]) >= float(box["max_x"]) or float(box["min_y"]) >= float(box["max_y"]):
+            raise ValueError
+        return MappingProxyType(
+            {
+                "box": MappingProxyType(
+                    {
+                        "min_x": float(box["min_x"]),
+                        "max_x": float(box["max_x"]),
+                        "min_y": float(box["min_y"]),
+                        "max_y": float(box["max_y"]),
+                    }
+                )
+            }
+        )
 
     if name in {IntentName.SURVEY_AREA, IntentName.MAP_AREA}:
         if (
