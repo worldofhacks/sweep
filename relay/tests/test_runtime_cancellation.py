@@ -67,8 +67,8 @@ def test_cancelled_worker_finishes_mutation_and_publish_before_next_operation(
             await first
         await second
         return [
-            bool(subscription.queue.get_nowait()["estop"]),
-            bool(subscription.queue.get_nowait()["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
     assert asyncio.run(exercise()) == [True, False]
@@ -107,8 +107,8 @@ def test_cancelled_publish_waiting_for_connection_lock_keeps_session_order(
             await first
         await second
         return [
-            bool(subscription.queue.get_nowait()["estop"]),
-            bool(subscription.queue.get_nowait()["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
+            bool(subscription.queue.get_nowait().event["estop"]),
         ]
 
     assert asyncio.run(exercise()) == [True, False]
@@ -255,7 +255,7 @@ def test_stop_waits_for_cancelled_background_operation_to_publish(
         assert not stopping.done()
         release_worker.set()
         await stopping
-        assert subscription.queue.get_nowait()["estop"] is True
+        assert subscription.queue.get_nowait().event["estop"] is True
 
     asyncio.run(exercise())
 
@@ -290,7 +290,7 @@ def test_blocked_session_fanout_does_not_block_another_session(
         try:
             assert await asyncio.to_thread(blocked_started.wait, 2)
             event = await asyncio.wait_for(subscription.queue.get(), timeout=0.5)
-            assert event["type"] == "state"
+            assert event.event["type"] == "state"
         finally:
             release_blocked.set()
             await runtime.stop()

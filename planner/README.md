@@ -8,10 +8,11 @@ Any engineer may claim a ready task and owns it through review, integration, and
 
 `DeterministicPlanner` consumes validated `relay.intent_v1.IntentV1` values and a
 transport-neutral `FleetSnapshot`. It supports the checkpoint operations `arm`,
-`select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, `estop`, and
+`select`, `takeoff`, `translate`, `hold`, `come_home`, `land`, `land_all`, `estop`, and
 `capture_room`. Call `supports()` before state-dependent checks: other valid Intent v1
 names return the stable `unsupported` reason and never become a plan. `come_home` is a
-normal `goto` expansion; the flight adapter has no special return-home method.
+normal `goto` expansion; the flight adapter has no special return-home method. Confirmed `land`
+expands only the current selection; `land_all` expands every reachable airborne aircraft.
 
 `Plan`, `Command`, `CommandAcknowledgement`, `Refusal`, and `ExecutionResult` in
 `planner.models` are the semantic contract. Their `to_dict()` projections are
@@ -68,6 +69,13 @@ projections. Unexpected loss remains visible and returns the configured hold/fai
 decision as audit metadata. A disconnected aircraft does not wait for that relay
 result: its node-local activity clock independently enters hold and then its configured
 adapter failsafe; #17/M1.4 owns production runtime wiring.
+
+`AutonomyRelayBridge` is that runtime boundary. Supply it through
+`create_app(intent_sink_factory=...)` with an explicit controller and safety-enrichment
+provider. The relay records the accepted request, complete autonomy result, authoritative
+control projection, and terminal lifecycle in one session log. Simulator and hardware
+composition roots supply their own measured planner, arbiter, adapter, watchdog, and enrichment
+configuration.
 
 Later formation, altitude, sweep, `map_area`, and route-allocation behavior remains
 future scope and must earn a capability before planning.

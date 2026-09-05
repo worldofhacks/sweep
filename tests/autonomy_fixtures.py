@@ -24,7 +24,7 @@ from relay.intent_v1 import IntentName, IntentV1, Mode
 NOW_MS = 100_000
 
 
-def planning_config() -> PlanningConfig:
+def planning_config(*, translation_frame: str = "world") -> PlanningConfig:
     return PlanningConfig(
         takeoff_altitude_m=1.0,
         translation_step_m=0.5,
@@ -35,6 +35,7 @@ def planning_config() -> PlanningConfig:
         capture_min_overlap_deg=10.0,
         capture_gimbal_pitch_deg=0.0,
         reconstruct_headings_deg=tuple(float(value) for value in range(0, 360, 45)),
+        translation_frame=translation_frame,
     )
 
 
@@ -105,6 +106,7 @@ def make_aircraft(
         physical_rc_available=True,
         storage_remaining_bytes=50_000_000,
         camera_ready=True,
+        heading_deg=0.0,
     )
     return replace(state, **changes)
 
@@ -173,6 +175,8 @@ def make_intent(
 
 def make_stack(
     snapshot: FleetSnapshot,
+    *,
+    config: PlanningConfig | None = None,
 ) -> tuple[
     AutonomyController,
     DeterministicPlanner,
@@ -181,7 +185,7 @@ def make_stack(
     SimFlightAdapter,
     SimCamera,
 ]:
-    planner = DeterministicPlanner(planning_config())
+    planner = DeterministicPlanner(config or planning_config())
     arbiter = SafetyArbiter(safety_config())
     flight = SimFlightAdapter.from_snapshot(snapshot)
     camera = SimCamera(

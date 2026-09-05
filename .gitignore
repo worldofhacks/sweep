@@ -21,6 +21,9 @@ node_modules/
 .idea/
 *.swp
 
+# Agent worktrees and local agent state
+.claude/
+
 # Media
 recordings/
 

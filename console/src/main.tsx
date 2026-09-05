@@ -2,25 +2,64 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
-import { createConsoleRuntime } from './relay/runtime.ts'
-import { FixtureRelayClient } from './testing/fixture-relay-client.ts'
+import { UnreportedCatalogClient } from './catalog/client.ts'
+import { createMediaRuntime } from './media/runtime.ts'
+import { bootstrapMediaConfiguration } from './media/runtime-config.ts'
+import { bootstrapConsoleRuntime } from './relay/bootstrap.ts'
+import {
+  FixtureCatalogClient,
+  FixtureRelayClient,
+  isFixtureScenarioName,
+} from './testing/fixture-relay-client.ts'
 
-const useFixture =
-  import.meta.env.DEV && new URLSearchParams(window.location.search).get('fixture') === 'control'
+const requestedFixture = new URLSearchParams(window.location.search).get('fixture')
+const fixtureScenario =
+  import.meta.env.DEV && requestedFixture !== null && isFixtureScenarioName(requestedFixture)
+    ? requestedFixture
+    : null
 const fixtureSessionId = 'fixture-control-session'
-const runtime = useFixture
-  ? {
-      sessionId: fixtureSessionId,
-      client: new FixtureRelayClient(fixtureSessionId),
-      keyboardClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'keyboard'),
-    }
-  : createConsoleRuntime()
+const root = createRoot(document.getElementById('root')!)
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App
-      sessionId={runtime.sessionId}
-      clients={{ console: runtime.client, keyboard: runtime.keyboardClient }}
-    />
-  </StrictMode>,
-)
+// The relay bootstrap is resolved once before the runtime exists: the host
+// global, else one same-origin read of the bootstrap endpoint. The fixture
+// path never reads it. Without either source the console mounts as before,
+// visibly disconnected with network controls unavailable.
+async function resolveRuntime() {
+  if (fixtureScenario) {
+    return {
+      sessionId: fixtureSessionId,
+      client: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'console', fixtureScenario),
+      keyboardClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'keyboard', fixtureScenario),
+      webcamClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'webcam', fixtureScenario),
+      // The fixture has no transcription endpoint; the Speech module says so and accepts typed text.
+      transcriptClient: null,
+      catalogClient: new FixtureCatalogClient(fixtureScenario, () => Date.now()),
+    }
+  }
+  return { ...(await bootstrapConsoleRuntime()), catalogClient: new UnreportedCatalogClient() }
+}
+
+void resolveRuntime().then((runtime) => {
+  const clients = {
+    console: runtime.client,
+    keyboard: runtime.keyboardClient,
+    webcam: runtime.webcamClient,
+  }
+  const services = { transcript: runtime.transcriptClient ?? undefined }
+
+  // The console renders at once without media; a valid runtime configuration
+  // re-renders the same tree with playback enabled. Relay state is unaffected.
+  bootstrapMediaConfiguration((configuration) => {
+    root.render(
+      <StrictMode>
+        <App
+          sessionId={runtime.sessionId}
+          clients={clients}
+          catalog={runtime.catalogClient}
+          services={services}
+          media={configuration ? createMediaRuntime(configuration) : undefined}
+        />
+      </StrictMode>,
+    )
+  })
+})

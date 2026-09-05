@@ -68,7 +68,11 @@ class RejectedIntent:
 
 type ValidationResult = AcceptedIntent | RejectedIntent
 
-REGISTERED_SOURCES = frozenset({"console", "keyboard"})
+# Operator sources that may authenticate without an aircraft binding and emit
+# Intent v1. Console buttons, the keyboard network stop, and the webcam gesture
+# producer are each bound to their own connection; an intent never moves
+# between them. Adding a source changes this constant and its conformance tests.
+REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
 M20_SUPPORTED_NAMES = frozenset(
     {
         IntentName.ARM,
@@ -77,6 +81,7 @@ M20_SUPPORTED_NAMES = frozenset(
         IntentName.TRANSLATE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
@@ -219,7 +224,9 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({"ids": tuple(value["ids"])})
 
     if name is IntentName.TRANSLATE:
-        if set(value) != {"dx", "dy"} or not all(_is_finite_number(value[key]) for key in value):
+        if set(value) != {"dx", "dy"}:
+            raise ValueError
+        if not _is_finite_number(value["dx"]) or not _is_finite_number(value["dy"]):
             raise ValueError
         return MappingProxyType({"dx": value["dx"], "dy": value["dy"]})
 

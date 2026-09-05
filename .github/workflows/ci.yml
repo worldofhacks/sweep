@@ -68,3 +68,29 @@ jobs:
       # Pure-JVM modules only; the Android module is skipped by settings.gradle.kts when no SDK
       # location resolves, so no Android SDK is installed here.
       - run: ./gradlew --no-daemon :bridge-core:test :bench:test
+
+  m14-browser:
+    name: m14 browser path
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: console/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+      - run: uv sync --locked
+      - run: pnpm install --frozen-lockfile
+        working-directory: console
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: console
+      - run: pnpm test:m14-browser
+        working-directory: console

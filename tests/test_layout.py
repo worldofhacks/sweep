@@ -16,6 +16,7 @@ PACKAGES = [
     "adapters.crazyswarm2",
     "adapters.dji_mini3",
     "adapters.mavlink",
+    "calibration",
     "perception",
     "language",
     "evals",
