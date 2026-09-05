@@ -101,6 +101,7 @@ class _PendingIntent:
     executing: bool = False
     operation_id: int | None = None
     events: list[dict[str, object]] | None = None
+    acknowledgements: list[AdapterAcknowledgement] = field(default_factory=list)
 
 
 class RelaySession:
@@ -498,6 +499,12 @@ class RelaySession:
                         detail=sink_result.detail,
                     )
                 )
+            resume = getattr(self.intent_sink, "resume_after_acknowledgement", None)
+            while pending.acknowledgements and callable(resume):
+                acknowledgement = pending.acknowledgements.pop(0)
+                resumed = resume(self, acknowledgement)
+                if resumed is not None:
+                    events.extend(resumed.relay_events)
         pending.events = events
         return events
 
@@ -631,9 +638,14 @@ class RelaySession:
             }:
                 resume = getattr(self.intent_sink, "resume_after_acknowledgement", None)
                 if callable(resume):
-                    resumed = resume(self, acknowledgement)
-                    if resumed is not None:
-                        events.extend(resumed.relay_events)
+                    pending = self._pending_intents.get(acknowledgement.intent_id)
+                    if pending is not None and pending.executing and pending.events is None:
+                        # Adapter completion can precede installation of the router's owner.
+                        pending.acknowledgements.append(acknowledgement)
+                    else:
+                        resumed = resume(self, acknowledgement)
+                        if resumed is not None:
+                            events.extend(resumed.relay_events)
             return events
 
     def record_lifecycle(

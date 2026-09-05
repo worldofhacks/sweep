@@ -24,6 +24,7 @@ from relay.auth import (
     Principal,
     authenticate,
 )
+from relay.intent_v1 import REGISTERED_SOURCES
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import RelaySettings
 
@@ -620,7 +621,7 @@ def create_app(
                         wait_for_connection_id=subscription.connection_id,
                     )
                     if (
-                        principal.source in {"console", "keyboard"}
+                        principal.source in REGISTERED_SOURCES
                         and isinstance(frame, Mapping)
                         and frame.get("type") == "intent"
                         and isinstance(frame.get("intent_id"), str)

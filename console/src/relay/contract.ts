@@ -64,6 +64,7 @@ export const M20_SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Con
   'translate',
   'hold',
   'come_home',
+  'land',
   'land_all',
   'estop',
   'capture_room',

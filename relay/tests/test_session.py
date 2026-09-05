@@ -1014,7 +1014,11 @@ def test_estop_latches_when_dispatch_is_still_executing_or_failed(
         estop = intent_payload()
         estop.update(name="estop", selection=[])
 
-        relay.process_intent(estop, console_principal)
+        admission = relay.process_intent(estop, console_principal)
+        assert admission[0]["status"] == "accepted"
+        assert relay.current_state()["estop"] is False
+        relay.mark_pending_intent_delivered(estop["intent_id"])
+        relay.execute_pending_intent(estop["intent_id"])
 
         assert relay.current_state()["estop"] is True
 

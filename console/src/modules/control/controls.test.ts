@@ -158,7 +158,7 @@ describe('command catalogue', () => {
       ['Takeoff', 'confirm', 'selected', 'accepted at M2.0'],
       ['Hold', '—', 'selected', 'accepted at M2.0'],
       ['Come home', '—', 'selected', 'accepted at M2.0'],
-      ['Land', 'confirm', 'selected', 'unsupported'],
+      ['Land', 'confirm', 'selected', 'accepted at M2.0'],
       ['Land all', 'confirm', 'all', 'accepted at M2.0'],
       ['Formation next', '—', 'selected', 'unsupported'],
       ['Spacing tighter', '—', 'selected', 'unsupported'],

@@ -708,6 +708,6 @@ class _CompletedOrdering:
     def supersedes(self, intent: IntentV1, conflict_window_ms: int) -> bool:
         if self.safety_t is None:
             return False
-        recovery = intent.name in {IntentName.COME_HOME, IntentName.LAND_ALL}
+        recovery = intent.name in {IntentName.COME_HOME, IntentName.LAND, IntentName.LAND_ALL}
         cutoff = self.safety_t + (0 if recovery else conflict_window_ms)
         return intent.t <= cutoff

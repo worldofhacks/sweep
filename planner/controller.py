@@ -119,7 +119,16 @@ class PreparedExecutionRouter:
             with self._lock:
                 self._submitting_sessions[intent.intent_id] = session
             try:
-                return session.process_intent(_intent_payload(intent), principal)
+                events = session.process_intent(_intent_payload(intent), principal)
+                if any(
+                    event.get("type") == "acknowledgement"
+                    and event.get("intent_id") == intent.intent_id
+                    and event.get("status") == "accepted"
+                    for event in events
+                ):
+                    session.mark_pending_intent_delivered(intent.intent_id)
+                    events.extend(session.execute_pending_intent(intent.intent_id))
+                return events
             finally:
                 with self._lock:
                     self._submitting_sessions.pop(intent.intent_id, None)

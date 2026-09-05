@@ -147,7 +147,7 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(screen.queryByLabelText('Latest outcome')).not.toBeInTheDocument()
   })
 
-  test('completed E-stop permits confirmed fleet landing while other motion remains blocked', async () => {
+  test.each(['land', 'land_all'] as const)('completed E-stop permits confirmed %s while other motion remains blocked', async (name) => {
     const clients = fixtureClients()
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
@@ -171,14 +171,17 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(screen.getByRole('button', { name: 'Translate north' })).toBeDisabled()
     expect(motionGroup().getByRole('button', { name: /^Takeoff/ })).toBeDisabled()
     expect(motionGroup().getByRole('button', { name: 'Come home' })).toBeDisabled()
-    const land = motionGroup().getByRole('button', { name: /^Land all/ })
+    if (name === 'land') await openPane(user, 'Commands')
+    const land = name === 'land'
+      ? screen.getByRole('button', { name: /^Land Confirmation required/ })
+      : motionGroup().getByRole('button', { name: /^Land all/ })
     expect(land).toBeEnabled()
     await user.click(land)
-    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent('whole roster')
+    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent(name === 'land' ? 'D-01' : 'whole roster')
     expect(clients.console.sent).toHaveLength(1)
     await confirmDock(user)
     await waitFor(() => expect(clients.console.sent).toHaveLength(2))
-    expect(clients.console.sent[1]).toMatchObject({ name: 'land_all', selection: [], confirm: true })
+    expect(clients.console.sent[1]).toMatchObject({ name, selection: name === 'land' ? [1] : [], confirm: true })
   })
 
   test('unsupported controls are greyed with the refusal copy, stay pressable, and the refusal is recorded', async () => {
@@ -496,7 +499,7 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     expect(motion.getByRole('button', { name: /^Map area/ })).toBeDisabled()
     const rows = motion.getAllByRole('button')
     expect(rows[3]).toHaveTextContent('Land')
-    expect(rows[3]).toHaveTextContent('unsupported')
+    expect(rows[3]).toHaveTextContent('accepted at M2.0')
     expect(rows[3]).toBeEnabled()
     expect(rows[0]).toHaveTextContent('Takeoff')
     expect(rows[0]).toHaveTextContent('accepted at M2.0')
