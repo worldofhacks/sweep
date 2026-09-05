@@ -230,7 +230,10 @@ class PreparedExecutionRouter:
                 raise
             # Complete the stop with the last validated state; never retry motion this way.
             result = self.controller.dispatcher.dispatch(prepared.plan, current)
-        if result.status is LifecycleStatus.COMPLETED and intent.name in {
+        if result.status in {
+            LifecycleStatus.EXECUTING,
+            LifecycleStatus.COMPLETED,
+        } and intent.name in {
             IntentName.LAND,
             IntentName.LAND_ALL,
         }:
@@ -290,7 +293,7 @@ class PreparedExecutionRouter:
                 for prepared, pending in active
                 if intent.name in MOTION_INTENTS
                 and prepared.intent.name in MOTION_INTENTS
-                and prepared.intent.intent_id not in self._pending_landings
+                and pending.status is LifecycleStatus.EXECUTING
                 and abs(intent.t - prepared.intent.t)
                 <= self.controller.arbiter.config.motion_conflict_window_ms
             ]
@@ -432,9 +435,17 @@ class PreparedExecutionRouter:
         )
 
     def _record_retirement(
-        self, prepared: PreparedExecution, invalidated: ExecutionResult, session: object
+        self,
+        prepared: PreparedExecution,
+        invalidated: ExecutionResult,
+        session: object,
+        *,
+        retain_landing: bool = False,
     ) -> tuple[dict[str, object], ...]:
-        if prepared.intent.intent_id in self._pending_landings:
+        if not retain_landing:
+            self._pending_landings.pop(prepared.intent.intent_id, None)
+        running = self._running.get(prepared.intent.intent_id)
+        if running is not None and running[1].status is not LifecycleStatus.EXECUTING:
             active = session.current_state()["accepted_plan"]
             if active is not None and active["intent_id"] == prepared.intent.intent_id:
                 return (session.update_control_projection(accepted_plan=None),)
@@ -457,6 +468,7 @@ class PreparedExecutionRouter:
         if not held_aircraft and intent.name is not IntentName.ESTOP:
             return ()
         retired = []
+        retained = set()
         with self._lock:
             for intent_id, (prepared, pending, owner) in tuple(self._running.items()):
                 if (
@@ -467,9 +479,30 @@ class PreparedExecutionRouter:
                 ):
                     completed_at, targets = self._pending_landings[intent_id]
                     remaining = targets - held_aircraft
+                    completed_targets = {
+                        ack.drone_id
+                        for ack in pending.acknowledgements
+                        if ack.status is LifecycleStatus.COMPLETED
+                    }
+                    cancels_suffix = pending.status is LifecycleStatus.EXECUTING and bool(
+                        (targets - completed_targets) & held_aircraft
+                    )
+                    if cancels_suffix:
+                        remaining &= frozenset(
+                            ack.drone_id
+                            for ack in pending.acknowledgements
+                            if ack.status
+                            in {
+                                LifecycleStatus.COMPLETED,
+                                LifecycleStatus.ACCEPTED,
+                                LifecycleStatus.EXECUTING,
+                            }
+                        )
                     if remaining:
                         self._pending_landings[intent_id] = (completed_at, remaining)
-                        continue
+                        if not cancels_suffix:
+                            continue
+                        retained.add(intent_id)
                 if (
                     owner is session
                     and intent_id not in {intent.intent_id, result.intent_id}
@@ -507,11 +540,20 @@ class PreparedExecutionRouter:
                     status=LifecycleStatus.INVALIDATED,
                 ),
             )
-            events.extend(self._record_retirement(prepared, invalidated, session))
+            intent_id = prepared.intent.intent_id
+            if intent_id not in retained:
+                self._pending_landings.pop(intent_id, None)
+            events.extend(
+                self._record_retirement(
+                    prepared, invalidated, session, retain_landing=intent_id in retained
+                )
+            )
             with self._lock:
-                self._running.pop(prepared.intent.intent_id, None)
-                self._pending_landings.pop(prepared.intent.intent_id, None)
-                self._landing_ack_times.pop(prepared.intent.intent_id, None)
+                if intent_id in retained:
+                    self._running[intent_id] = (prepared, invalidated, session)
+                else:
+                    self._running.pop(intent_id, None)
+                self._landing_ack_times.pop(intent_id, None)
         return tuple(events)
 
     def resume(
@@ -526,6 +568,8 @@ class PreparedExecutionRouter:
         if running is None:
             raise RuntimeError("intent has no executing prepared plan")
         prepared, pending, session = running
+        if pending.status is not LifecycleStatus.EXECUTING:
+            raise RuntimeError("intent has no executing prepared plan")
         if (
             prepared.intent.name in {IntentName.LAND, IntentName.LAND_ALL}
             and terminal_ack.status is LifecycleStatus.COMPLETED
@@ -538,6 +582,9 @@ class PreparedExecutionRouter:
             self._landing_ack_times[intent_id] = max(
                 self._landing_ack_times.get(intent_id, acknowledged_at), acknowledged_at
             )
+            if intent_id in self._pending_landings:
+                fence, targets = self._pending_landings[intent_id]
+                self._pending_landings[intent_id] = (max(fence, acknowledged_at), targets)
 
         class ResumeSnapshotUnavailable(Exception):
             pass
@@ -564,7 +611,8 @@ class PreparedExecutionRouter:
                         and (
                             member["membership"] == "ready"
                             or (
-                                prepared.plan.intent_name in {IntentName.LAND, IntentName.LAND_ALL}
+                                prepared.plan.intent_name
+                                in {IntentName.HOLD, IntentName.LAND, IntentName.LAND_ALL}
                                 and member["membership"] == "degraded"
                                 and prepared.snapshot.aircraft[command.drone_id].membership
                                 is MembershipState.DEGRADED
@@ -641,8 +689,10 @@ class PreparedExecutionRouter:
         ):
             self._pending_landings[intent_id] = (
                 max(session.clock(), self._landing_ack_times.get(intent_id, session.clock())),
-                frozenset(command.drone_id for command in prepared.plan.commands),
+                self._pending_landings[intent_id][1],
             )
+        elif result.status is not LifecycleStatus.EXECUTING:
+            self._pending_landings.pop(intent_id, None)
         relay_events = safety_events
         if session is not None:
             relay_events += tuple(session.record_execution_result(prepared.intent, result))
@@ -671,8 +721,8 @@ class PreparedExecutionRouter:
             if running is None:
                 self._pending_landings.pop(intent_id, None)
                 continue
-            prepared, _, owner = running
-            if owner is not session:
+            prepared, pending, owner = running
+            if owner is not session or pending.status is LifecycleStatus.EXECUTING:
                 continue
             if not all(
                 (drone := drones.get(command.drone_id)) is not None
@@ -839,6 +889,18 @@ class PreparedExecutionRouter:
                 or terminal_ack.drone_id != command.drone_id
                 or terminal_ack.connection_epoch != command.connection_epoch
             ):
+                return None
+            if pending.status is not LifecycleStatus.EXECUTING:
+                landing = self._pending_landings.get(intent_id)
+                if (
+                    landing is not None
+                    and terminal_ack.drone_id in landing[1]
+                    and terminal_ack.status is LifecycleStatus.COMPLETED
+                ):
+                    self._pending_landings[intent_id] = (
+                        max(landing[0], acknowledgement.t),
+                        landing[1],
+                    )
                 return None
         return self.resume(intent_id, terminal_ack, completed_at_ms=acknowledgement.t)
 
