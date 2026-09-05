@@ -13,7 +13,7 @@ junit = "6.1.3"
 dji = "5.18.0"
 okhttp = "4.12.0"
 securityCrypto = "1.1.0"
-# WildBridge's WebRTC build (Apache-2.0 prebuilt of libwebrtc); the vendored publish path targets its API.
+# The libwebrtc prebuilt WildBridge builds on; the vendored publish path targets its API.
 streamWebrtc = "1.1.1"
 
 [libraries]
