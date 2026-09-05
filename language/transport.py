@@ -19,7 +19,7 @@ import httpx
 from language.contracts import CompilerReason
 
 PINNED_COMPILER_MODEL = "claude-sonnet-5"
-PROMPT_SCHEMA_VERSION = "intent-v1-compiler-5"
+PROMPT_SCHEMA_VERSION = "intent-v1-compiler-6"
 _CASSETTE_LOCK = Lock()
 _COMPILER_INTENT_NAMES = (
     "arm",
@@ -354,13 +354,16 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "and launch means takeoff. ARM is fleet-scoped and needs no selection.\n"
             "Choose typed outcomes in this order. Explicit unknown aircraft IDs produce "
             "refuse/unknown_reference; unresolved descriptions of known aircraft produce "
-            "clarify/ambiguous_selection. Selection-dependent work with no target produces "
+            "clarify/ambiguous_selection, including relative aircraft positions without "
+            "spatial grounding. This aircraft-selection rule takes precedence over the "
+            "unsupported room-navigation resolver rule below. Selection-dependent work "
+            "with no target produces "
             "refuse/no_selection even if its location or capability is unresolved. "
             "ARM and other fleet-scoped operations do not require a selection. "
             "For room work, resolve location before camera capability. Deictic rooms "
             "(this room, the room, here, that room) and named rooms absent from the catalog "
             "produce clarify/ambiguous_location. Catalog membership alone does not locate "
-            "the aircraft within a room. Relative navigation or room discovery requiring "
+            "the aircraft within a room. Relative room navigation or room discovery requiring "
             "an unavailable spatial resolver produces unsupported/capability_unavailable. "
             "Once room and target are resolved, an unavailable requested camera pattern "
             "with an available alternative produces clarify/capability_unavailable. "
