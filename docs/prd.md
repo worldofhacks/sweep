@@ -112,8 +112,8 @@ INPUT SOURCES                     INTENT BUS                 AUTONOMY AND SAFETY
 ├────────────────┤               │ relay    │               │ allocation, geofence) │          │ bridge nodes │
 │ future sources │──intents────► │ + state  │               │ safety arbiter        │          └────┬─────┘
 ├────────────────┤               │ fan-out  │◄──telemetry── │ (validates everything)│◄──telemetry───┘
-│ later language │──intents────► │          │               │ optional plan compiler│
-│ and gesture    │◄──state─────  └──────────┘               └──────────────────────┘
+│ language and   │──intents────► │          │               │ optional plan compiler│
+│ gesture inputs │◄──state─────  └──────────┘               └──────────────────────┘
 └────────────────┘                     │
                                        ▼
                      ┌───────────────────────────────────┐
