@@ -61,7 +61,7 @@ class FakeAircraftSession(private val filesDir: File, phone: PhoneStatusSource? 
     // path, deadman, and takeover run end to end on a phone without an aircraft. Non-flight
     // commands still reach the Phase C fixture; the simulation buttons stand in for the RC.
     private val flightAircraft = FakeFlightAircraft(fake)
-    private val flightExecutor = FlightExecutor(flightAircraft, flightAircraft, fallback = fake, log = { line -> model.event("Flight", line) })
+    private val flightExecutor = FlightExecutor(flightAircraft, flightAircraft, fallback = fake, config = org.worldofhacks.sweep.bridge.core.flight.FlightConfig(localization = null), log = { line -> model.event("Flight", line) })
     override val flight: FlightNode = FlightNode(
         flightExecutor,
         flightAircraft,

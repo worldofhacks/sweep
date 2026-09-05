@@ -559,9 +559,9 @@ class RelayLink(
             session = config.session,
             droneId = config.droneId,
             adapterId = config.adapterId,
-            capabilities = config.capabilities,
+            capabilities = config.advertisedCapabilities,
         )
-        if (send(join.signed(config.key))) log.log("join sent: adapter ${config.adapterId}, capabilities ${config.capabilities}")
+        if (send(join.signed(config.key))) log.log("join sent: adapter ${config.adapterId}, capabilities ${config.advertisedCapabilities}")
     }
 
     private fun sendReadiness() {
