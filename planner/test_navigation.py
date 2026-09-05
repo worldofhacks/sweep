@@ -408,3 +408,36 @@ def test_astar_edge_cannot_pass_close_to_stationary_aircraft_between_clear_cells
         for segment in result.routes[0].swept_segments
         for point in segment_samples(segment.start, segment.end)
     )
+
+
+@pytest.mark.parametrize("start_z,goal_z", [(1.0, 3.0), (3.0, 1.0)])
+def test_height_clearance_bands_do_not_become_out_of_range_waypoints(start_z, goal_z):
+    levels = tuple(
+        GridLevel("level_1", z, (0, 0), 1.0, 8, 5, frozenset()) for z in (0.5, 1.0, 2.0, 3.0, 3.5)
+    )
+    active = DronePose(1, 7, pose(0.5, 1.5, start_z))
+    destination = ArrivalSlot("atrium-a", "atrium", pose(6.5, 1.5, goal_z), 0.5)
+    mapped = replace(artifact(slots=(destination,)), grids=levels)
+    motion = replace(MOTION, aircraft_height_m=2.0)
+    result = NavigationPlanner().plan(replace(request(active), motion=motion), mapped)
+    assert not isinstance(result, NavigationRefusal), result
+    heights = [point.z_m for point in result.routes[0].waypoints]
+    assert all(min(start_z, goal_z) <= z <= max(start_z, goal_z) for z in heights)
+    assert heights == sorted(heights, reverse=start_z > goal_z)
+
+
+@pytest.mark.parametrize("uncertainty,separation", [(0.1, 0.25), (0.2, 0.3)])
+def test_vertical_reservations_include_uncertainty(uncertainty, separation):
+    active = drone(1, 0.5, 1.5)
+    stationary = DronePose(2, 7, pose(3.5, 1.5, 1.0 + separation))
+    motion = MotionConfig(0.15, 0.2, 0, uncertainty, 0, 0)
+    result = NavigationPlanner().plan(
+        NavigationRequest("atrium", 4, (active,), (active, stationary), motion, PERMISSION),
+        artifact(),
+    )
+    assert not isinstance(result, NavigationRefusal), result
+    assert len(result.routes[0].swept_segments) > 1
+    assert all(
+        segment.height_m == pytest.approx(0.2 + 2 * uncertainty)
+        for segment in result.routes[0].swept_segments
+    )

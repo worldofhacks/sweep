@@ -89,6 +89,15 @@ class MotionConfig:
             + self.stopping_allowance_m
         )
 
+    @property
+    def swept_height_m(self) -> float:
+        return self.aircraft_height_m + 2 * (
+            self.map_uncertainty_m
+            + self.pose_uncertainty_m
+            + self.tracking_allowance_m
+            + self.stopping_allowance_m
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class DronePose:
@@ -401,7 +410,7 @@ class NavigationPlanner:
                 drone.drone_id,
                 drone.pose,
                 request.motion.swept_radius_m,
-                request.motion.aircraft_height_m,
+                request.motion.swept_height_m,
             )
             for drone in request.all_positions
         ]
@@ -432,7 +441,7 @@ class NavigationPlanner:
                 )
             if any(
                 not _body_clear_of_static_geometry(
-                    a, b, artifact.grids, request.motion.aircraft_height_m
+                    a, b, artifact.grids, request.motion.swept_height_m
                 )
                 for a, b in zip(path, path[1:], strict=False)
                 if a.floor_id == b.floor_id
@@ -446,7 +455,7 @@ class NavigationPlanner:
                 tuple(path),
                 tuple(
                     SweptSegment(
-                        start, end, request.motion.swept_radius_m, request.motion.aircraft_height_m
+                        start, end, request.motion.swept_radius_m, request.motion.swept_height_m
                     )
                     for start, end in zip(path, path[1:], strict=False)
                 ),
@@ -458,7 +467,7 @@ class NavigationPlanner:
                     drone.drone_id,
                     slot.pose,
                     request.motion.swept_radius_m,
-                    request.motion.aircraft_height_m,
+                    request.motion.swept_height_m,
                 )
             )
         return NavigationPlan(
@@ -521,7 +530,7 @@ class NavigationPlanner:
                 "position_drift", "aircraft is not at the frozen segment start"
             )
         stationary = [
-            (drone_id, drone.pose, plan.config.swept_radius_m, plan.config.aircraft_height_m)
+            (drone_id, drone.pose, plan.config.swept_radius_m, plan.config.swept_height_m)
             for drone_id, drone in current.items()
             if drone_id != route.drone.drone_id
         ]
@@ -623,7 +632,7 @@ class NavigationPlanner:
                     start_level,
                     reserved,
                     motion.swept_radius_m,
-                    motion.aircraft_height_m,
+                    motion.swept_height_m,
                     exempt_id,
                 )
                 if first is None:
@@ -634,7 +643,7 @@ class NavigationPlanner:
                     reserved,
                     motion.swept_radius_m,
                     exempt_id,
-                    motion.aircraft_height_m,
+                    motion.swept_height_m,
                 ):
                     continue
                 second = self._route_on_level(
@@ -643,16 +652,14 @@ class NavigationPlanner:
                     goal_level,
                     reserved,
                     motion.swept_radius_m,
-                    motion.aircraft_height_m,
+                    motion.swept_height_m,
                     exempt_id,
                 )
                 if second is not None:
                     return [*first, *second]
             return None
         if start_level.z_m != goal_level.z_m:
-            intermediate = self._vertical_levels(
-                start, goal, artifact.grids, motion.aircraft_height_m
-            )
+            intermediate = self._vertical_levels(start, goal, artifact.grids, motion.swept_height_m)
             if intermediate is None:
                 return None
             first = self._route_on_level(
@@ -661,7 +668,7 @@ class NavigationPlanner:
                 start_level,
                 reserved,
                 motion.swept_radius_m,
-                motion.aircraft_height_m,
+                motion.swept_height_m,
                 exempt_id,
             )
             if first is None:
@@ -669,14 +676,14 @@ class NavigationPlanner:
             points = [*first, *intermediate, goal]
             if any(
                 self._segment_hits_reservation(
-                    a, b, reserved, motion.swept_radius_m, exempt_id, motion.aircraft_height_m
+                    a, b, reserved, motion.swept_radius_m, exempt_id, motion.swept_height_m
                 )
                 for a, b in zip(points, points[1:], strict=False)
             ):
                 return None
             return points
         if self._blocked_by_stationary(
-            start, reserved, motion.swept_radius_m, exempt_id, motion.aircraft_height_m
+            start, reserved, motion.swept_radius_m, exempt_id, motion.swept_height_m
         ):
             return None
         return self._route_on_level(
@@ -685,7 +692,7 @@ class NavigationPlanner:
             start_level,
             reserved,
             motion.swept_radius_m,
-            motion.aircraft_height_m,
+            motion.swept_height_m,
             exempt_id,
         )
 
@@ -746,8 +753,8 @@ class NavigationPlanner:
             return None
         return [
             Pose(goal.x_m, goal.y_m, level.z_m, goal.floor_id)
-            for level in relevant
-            if level.z_m != start.z_m and level.z_m != goal.z_m
+            for level in sorted(relevant, key=lambda item: item.z_m, reverse=start.z_m > goal.z_m)
+            if low < level.z_m < high
         ]
 
     def _astar(
