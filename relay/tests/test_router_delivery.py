@@ -32,6 +32,7 @@ def _prepared_translation(tmp_path):
         limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
         clock=lambda: snapshot.now_ms,
         intent_sink=router,
+        capability_profile=router.capability_profile,
     )
     _hydrate_relay_from_snapshot(relay, snapshot)
     payload = intent_payload(timestamp=intent.t, intent_id=intent.intent_id, session=intent.session)

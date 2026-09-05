@@ -164,6 +164,16 @@ def test_two_drone_button_mission_has_ordered_jsonl_evidence(tmp_path: Path) -> 
         }
         _ready_aircraft(harness, adapters)
 
+        profile = harness.factory.capability_profile
+        runtime = harness.app.state.relay_runtime
+        session = runtime.session(SESSION)
+        bridge = harness.factory.bridges[SESSION]
+        assert runtime.capability_profile is profile
+        assert session.capability_profile is profile
+        assert bridge.capability_profile is profile
+        assert bridge.controller.planner.capability_profile is profile
+        assert "altitude" not in session.current_state()["enabled_intent_names"]
+
         mission = [
             harness.intent("arm", selection=[]),
             harness.intent("select", selection=[], args={"ids": [1, 2]}),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -153,7 +154,13 @@ def _autonomy_outcome(socket: WebSocketTestSession, intent_id: str) -> dict[str,
 def test_env_example_autonomy_values_are_the_ci_fixtures() -> None:
     config = AutonomyConfig.from_env(_env_example())
 
-    assert config.planning == planning_config()
+    assert config.planning == replace(
+        planning_config(),
+        altitude_step_m=None,
+        altitude_floor_z_m=None,
+        altitude_configuration_id=None,
+        altitude_completion_tolerance_m=None,
+    )
     assert config.safety == safety_config()
     assert config.sim_camera == camera_config()
 
@@ -171,6 +178,42 @@ def test_missing_sim_camera_is_allowed_only_off_the_sim_backend(tmp_path: Path) 
     assert remote_app.title == "Sweep relay"
     with pytest.raises(SettingsError, match="SWEEP_SIM_CAMERA_JSON"):
         create_autonomy_app(_settings(tmp_path), config)
+
+
+def test_autonomy_composition_threads_one_ungrounded_profile(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    config = replace(
+        _config(),
+        planning=replace(
+            planning_config(),
+            altitude_step_m=None,
+            altitude_floor_z_m=None,
+            altitude_configuration_id=None,
+            altitude_completion_tolerance_m=None,
+        ),
+    )
+    app, composition = create_autonomy_app(
+        _settings(tmp_path),
+        config,
+        clock=clock,
+        event_ids=event_ids,
+    )
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            relay_session = runtime.session(SESSION)
+            autonomy_session = composition.session(SESSION)
+            profile = composition.capability_profile
+
+            assert profile.name == "c1_basic_control.no_altitude"
+            assert "altitude" not in relay_session.current_state()["enabled_intent_names"]
+            assert runtime.capability_profile is profile
+            assert relay_session.capability_profile is profile
+            assert autonomy_session.capability_profile is profile
+            assert autonomy_session.planner.capability_profile is profile
+    finally:
+        composition.close()
 
 
 @pytest.mark.parametrize(
@@ -420,6 +463,7 @@ def test_graceful_leave_is_authorized_only_for_a_landed_disarmed_aircraft(
         clock=clock,
         event_ids=event_ids,
         intent_sink_factory=composition.intent_sink_factory,
+        capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
     )
     composition.bind(runtime)

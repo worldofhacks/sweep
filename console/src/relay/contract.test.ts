@@ -156,6 +156,34 @@ describe('M1.1 wire compatibility', () => {
     ).toMatchObject({ capability_profile: 'land-only', enabled_intent_names: ['land'] })
   })
 
+  test('accepts the deployment-derived C1 profile when altitude is ungrounded', () => {
+    const enabled = C1_BASIC_CONTROL_INTENTS.filter((name) => name !== 'altitude')
+    expect(
+      parseRelayServerEvent({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'state',
+        event_id: 'c1-no-altitude-capability',
+        session,
+        roster_version: 4,
+        armed: true,
+        estop: false,
+        selection: [1],
+        formation: 'line',
+        spacing: 0.8,
+        mode: 'indoor',
+        capability_profile: 'c1_basic_control.no_altitude',
+        enabled_intent_names: enabled,
+        pending: null,
+        accepted_plan: null,
+        drones: [aircraft()],
+      }),
+    ).toMatchObject({
+      capability_profile: 'c1_basic_control.no_altitude',
+      enabled_intent_names: enabled,
+    })
+  })
+
   test('accepts the one-shot graceful-leave invalidation state fields', () => {
     const event = parseRelayServerEvent({
       v: 1,
