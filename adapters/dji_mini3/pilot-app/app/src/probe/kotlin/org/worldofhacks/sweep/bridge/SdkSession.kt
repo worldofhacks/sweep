@@ -15,6 +15,9 @@ import dji.v5.manager.KeyManager
 import dji.v5.manager.SDKManager
 import dji.v5.manager.interfaces.SDKManagerCallback
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.node.AircraftSource
+import org.worldofhacks.sweep.bridge.node.CommandExecutor
+import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.ProbeReport
@@ -22,7 +25,8 @@ import org.worldofhacks.sweep.bridge.session.SessionModel
 import org.worldofhacks.sweep.bridge.session.SessionState
 
 /**
- * MSDK v5 init, registration, and product identity (Phase B4).
+ * MSDK v5 init, registration, and product identity (Phase B4), plus the telemetry listeners
+ * of [ProbeAircraft] (Phase C2).
  *
  * The SDKManager init and registration flow, the registerApp-on-INITIALIZE_COMPLETE rule, and
  * the KeyProductType / KeyRcFirmwareInfo identity check are ported from techmexdev/drone-maps
@@ -34,12 +38,25 @@ import org.worldofhacks.sweep.bridge.session.SessionState
  */
 class SdkSession(private val application: Application) : AircraftSession {
     private val model = SessionModel()
+    private val probe = ProbeAircraft(
+        phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+        androidVersion = Build.VERSION.RELEASE ?: "",
+        sdkVersion = { runCatching { SDKManager.getInstance().sdkVersion }.getOrNull().orEmpty() },
+        log = { name, detail -> model.event(name, detail) },
+    )
 
     override val state: StateFlow<SessionState> = model.state
+
+    override val aircraft: AircraftSource
+        get() = probe
+
+    override val executor: CommandExecutor
+        get() = probe
 
     private val callback = object : SDKManagerCallback {
         override fun onRegisterSuccess() {
             model.registerSucceeded()
+            probe.attach()
         }
 
         override fun onRegisterFailure(error: IDJIError) {
@@ -48,15 +65,20 @@ class SdkSession(private val application: Application) : AircraftSession {
 
         override fun onProductDisconnect(productId: Int) {
             model.productDisconnected(productId)
+            probe.productConnected(false)
+            probe.updateIdentity(model.current.identity)
         }
 
         override fun onProductConnect(productId: Int) {
             val generation = model.productConnected(productId)
+            probe.attach()
+            probe.productConnected(true)
             queryIdentity(generation)
         }
 
         override fun onProductChanged(productId: Int) {
             val generation = model.productChanged(productId)
+            probe.productConnected(true)
             queryIdentity(generation)
         }
 
@@ -114,7 +136,7 @@ class SdkSession(private val application: Application) : AircraftSession {
         generation: Long,
         name: String,
         key: DJIKey<T>,
-        onValue: (T) -> Pair<String, (org.worldofhacks.sweep.bridge.session.AircraftIdentity) -> org.worldofhacks.sweep.bridge.session.AircraftIdentity>,
+        onValue: (T) -> Pair<String, (AircraftIdentity) -> AircraftIdentity>,
     ) {
         val keyManager = KeyManager.getInstance()
         if (!keyManager.isKeySupported(key)) {
@@ -126,7 +148,7 @@ class SdkSession(private val application: Application) : AircraftSession {
             object : CommonCallbacks.CompletionCallbackWithParam<T> {
                 override fun onSuccess(value: T) {
                     val (detail, transform) = onValue(value)
-                    model.identity(generation, name, detail, transform)
+                    if (model.identity(generation, name, detail, transform)) probe.updateIdentity(model.current.identity)
                 }
 
                 override fun onFailure(error: IDJIError) {

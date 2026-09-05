@@ -2,7 +2,12 @@ package org.worldofhacks.sweep.bridge
 
 import android.os.Build
 import java.io.File
+import kotlin.concurrent.fixedRateTimer
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.core.frames.HardwareProfile
+import org.worldofhacks.sweep.bridge.node.AircraftSource
+import org.worldofhacks.sweep.bridge.node.CommandExecutor
+import org.worldofhacks.sweep.bridge.node.FakeAircraft
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.ProbeReport
@@ -12,17 +17,40 @@ import org.worldofhacks.sweep.bridge.session.SimulationControls
 
 /**
  * Simulates the SDK callbacks so the registration and identity screen can be exercised on
- * any phone. The late-callback button replays an identity read stamped with the previous
+ * any phone, and drives a [FakeAircraft] fixture as the relay link's aircraft: Connect and
+ * Disconnect stand in for the aircraft and RC link, so the Phase C disconnect semantics
+ * (readiness with `control_authority=false` while the socket stays up) can be shown without
+ * hardware. The late-callback button replays an identity read stamped with the previous
  * generation, which the model must drop.
  */
 class FakeAircraftSession(private val filesDir: File) : AircraftSession, SimulationControls {
     private val model = SessionModel()
     private val fakeProductId = 1
+    private val fake = FakeAircraft(
+        hardware = HardwareProfile(
+            aircraftModel = "fake-mini3",
+            aircraftFirmware = "fake",
+            rcFirmware = "fake",
+            phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifBlank { HardwareProfile.UNREPORTED },
+            androidVersion = Build.VERSION.RELEASE?.ifBlank { null } ?: HardwareProfile.UNREPORTED,
+            sdkVersion = "fake",
+            measuredHfovDeg = null,
+        ),
+    )
 
     override val state: StateFlow<SessionState> = model.state
 
+    override val aircraft: AircraftSource
+        get() = fake
+
+    override val executor: CommandExecutor
+        get() = fake
+
     init {
         model.initProgress("fake SDK ready")
+        fixedRateTimer(name = "fake-aircraft", daemon = true, period = DRIFT_PERIOD_MS) {
+            fake.advance(System.currentTimeMillis())
+        }
     }
 
     override fun simulateRegister(success: Boolean) {
@@ -34,10 +62,12 @@ class FakeAircraftSession(private val filesDir: File) : AircraftSession, Simulat
     override fun simulateConnect() {
         val generation = model.productConnected(fakeProductId)
         deliverIdentity(generation)
+        fake.setConnected(aircraft = true, rc = true)
     }
 
     override fun simulateDisconnect() {
         model.productDisconnected(fakeProductId)
+        fake.setConnected(aircraft = false, rc = false)
     }
 
     override fun simulateLateCallback() {
@@ -73,4 +103,8 @@ class FakeAircraftSession(private val filesDir: File) : AircraftSession, Simulat
         ),
         exportedAtMs = System.currentTimeMillis(),
     )
+
+    private companion object {
+        const val DRIFT_PERIOD_MS = 100L
+    }
 }

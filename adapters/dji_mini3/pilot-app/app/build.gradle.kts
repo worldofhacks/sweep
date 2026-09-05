@@ -77,6 +77,7 @@ android {
 
 dependencies {
     implementation(project(":bridge-core"))
+    implementation(project(":bridge-node"))
     implementation(project(":bench"))
 
     val composeBom = platform(libs.compose.bom)
@@ -89,6 +90,7 @@ dependencies {
     implementation(libs.core.ktx)
     implementation(libs.coroutines.android)
     implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.security.crypto)
     debugImplementation(libs.compose.ui.tooling)
 
     "probeImplementation"(libs.dji.aircraft)

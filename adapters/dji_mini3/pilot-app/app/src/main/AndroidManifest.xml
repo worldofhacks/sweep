@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- A connectedDevice foreground service needs one qualifying permission; this normal-level
+         one covers the fake flavor, which has no USB accessory to hold. CHANGE_NETWORK_STATE
+         also lets the service request the Wi-Fi transport for the relay socket. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- Keep the relay link alive with the screen off; the user grants the exemption from Setup. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -29,8 +35,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Phase C's relay client lives here; declared now so the type is fixed (connectedDevice
-             covers the USB-attached RC). -->
+        <!-- The relay link's foreground service (connectedDevice covers the USB-attached RC). -->
         <service
             android:name=".BridgeService"
             android:exported="false"
