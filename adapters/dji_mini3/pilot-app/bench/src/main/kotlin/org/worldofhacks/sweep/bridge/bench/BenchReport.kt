@@ -139,11 +139,44 @@ data class VideoStats(
     )
 }
 
+/** Publish windows (Phase F): the LAN leg is the RTT percentile, the phone leg the processing time. */
+data class PublishStats(
+    val windows: Int,
+    val connectedWindows: Int,
+    val meanBitrateKbps: Double?,
+    val meanFps: Double?,
+    val droppedFrames: Long,
+    val rtt: LatencyStats?,
+    val meanProcessingMs: Double?,
+    val sources: List<String>,
+    val codecs: List<String>,
+) {
+    fun toJson(): JsonObject = Json.json(
+        "windows" to windows,
+        "connected_windows" to connectedWindows,
+        "mean_bitrate_kbps" to meanBitrateKbps,
+        "mean_fps" to meanFps,
+        "dropped_frames" to droppedFrames,
+        "rtt" to rtt?.toJson(),
+        "mean_processing_ms" to meanProcessingMs,
+        "sources" to sources,
+        "codecs" to codecs,
+    )
+}
+
+/** A JSON number as a double; the publish windows carry integers and floats in the same fields. */
+private fun JsonObject.doubleOf(key: String): Double? = when (val value = this[key]) {
+    is JsonFloat -> value.value
+    is JsonInt -> value.value.toDouble()
+    else -> null
+}
+
 data class BenchReport(
     val commands: CommandStats,
     val sticks: RateStats,
     val telemetry: RateStats,
     val video: VideoStats,
+    val publish: PublishStats,
     val notes: List<String>,
     val records: Int,
     val skippedLines: Int,
@@ -155,6 +188,7 @@ data class BenchReport(
         "sticks" to sticks.toJson(),
         "telemetry" to telemetry.toJson(),
         "video" to video.toJson(),
+        "video_publish" to publish.toJson(),
         "notes" to notes,
         "records" to records,
         "skipped_lines" to skippedLines,
@@ -178,6 +212,15 @@ object BenchAnalysis {
         var keyframes = 0
         var droppedFrames = 0
         var bytes = 0L
+        var publishWindows = 0
+        var publishConnected = 0
+        val publishBitrates = ArrayList<Double>()
+        val publishFps = ArrayList<Double>()
+        var publishDropped = 0L
+        val publishRtts = ArrayList<Long>()
+        val publishProcessing = ArrayList<Double>()
+        val publishSources = LinkedHashSet<String>()
+        val publishCodecs = LinkedHashSet<String>()
         val decode = ArrayList<Long>()
         var streamInfo: JsonObject? = null
         var streamSamples = 0
@@ -214,6 +257,17 @@ object BenchAnalysis {
                 RecordKind.COMMAND_DROPPED -> dropped++
                 RecordKind.STICK_SENT -> sticks.add(t)
                 RecordKind.TELEMETRY -> telemetry.add(t)
+                RecordKind.VIDEO_PUBLISH -> {
+                    publishWindows++
+                    if (record.string("ice_state") == "connected") publishConnected++
+                    record.doubleOf("bitrate_kbps")?.let(publishBitrates::add)
+                    record.doubleOf("fps")?.let(publishFps::add)
+                    (record["dropped_frames"] as? JsonInt)?.value?.let { publishDropped = maxOf(publishDropped, it) }
+                    record.doubleOf("rtt_ms")?.let { publishRtts.add(Math.round(it)) }
+                    record.doubleOf("processing_ms")?.let(publishProcessing::add)
+                    record.string("source")?.let(publishSources::add)
+                    record.string("codec")?.let(publishCodecs::add)
+                }
                 RecordKind.VIDEO_FRAME -> {
                     if ((record["dropped"] as? JsonBool)?.value == true) {
                         droppedFrames++
@@ -244,6 +298,17 @@ object BenchAnalysis {
             ),
             sticks = RateStats.of(sticks),
             telemetry = RateStats.of(telemetry),
+            publish = PublishStats(
+                windows = publishWindows,
+                connectedWindows = publishConnected,
+                meanBitrateKbps = publishBitrates.takeIf { it.isNotEmpty() }?.average(),
+                meanFps = publishFps.takeIf { it.isNotEmpty() }?.average(),
+                droppedFrames = publishDropped,
+                rtt = LatencyStats.of(publishRtts),
+                meanProcessingMs = publishProcessing.takeIf { it.isNotEmpty() }?.average(),
+                sources = publishSources.toList(),
+                codecs = publishCodecs.toList(),
+            ),
             video = VideoStats(
                 frames = frames.size,
                 keyframes = keyframes,
@@ -313,6 +378,16 @@ object ReportWriter {
         appendLine("telemetry")
         appendLine("  frames: ${report.telemetry.count}")
         appendLine("  rate_hz: ${rate(report.telemetry)}")
+        appendLine()
+        appendLine("video publish")
+        appendLine("  windows: ${report.publish.windows} (ice connected: ${report.publish.connectedWindows})")
+        appendLine("  mean_bitrate_kbps: ${report.publish.meanBitrateKbps?.let { format(it) } ?: "-"}")
+        appendLine("  mean_fps: ${report.publish.meanFps?.let { format(it) } ?: "-"}")
+        appendLine("  dropped_frames: ${report.publish.droppedFrames}")
+        appendLine("  rtt_ms: ${latency(report.publish.rtt)}")
+        appendLine("  mean_processing_ms: ${report.publish.meanProcessingMs?.let { format(it) } ?: "-"}")
+        appendLine("  sources: ${report.publish.sources.ifEmpty { listOf("-") }.joinToString()}")
+        appendLine("  codecs: ${report.publish.codecs.ifEmpty { listOf("-") }.joinToString()}")
         appendLine()
         appendLine("video")
         appendLine("  frames: ${report.video.frames}")

@@ -5,6 +5,7 @@ import org.worldofhacks.sweep.bridge.core.frames.CameraProbe
 import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
 import org.worldofhacks.sweep.bridge.core.frames.HardwareProfile
 import org.worldofhacks.sweep.bridge.core.frames.PhoneThermalState
+import org.worldofhacks.sweep.bridge.core.frames.VideoPublishState
 
 /** Planner `FlightState` names the node reports in telemetry `state`. */
 object FlightStates {
@@ -86,4 +87,9 @@ data class PhoneStatus(val batteryPercent: Int, val thermalState: PhoneThermalSt
 
 fun interface PhoneStatusSource {
     fun current(): PhoneStatus
+}
+
+/** The video publisher's live `node_status.video_publish_state`; the Phase F publisher implements it. */
+fun interface VideoPublishSource {
+    fun current(): VideoPublishState
 }

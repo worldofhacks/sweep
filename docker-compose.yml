@@ -15,6 +15,12 @@ services:
       - "8889:8889"                 # WebRTC (WHIP publish, WHEP play) for the console
       - "8189:8189/udp"             # WebRTC ICE
       - "8888:8888"                 # HLS
+    environment:
+      # MediaMTX advertises its own (container) address as its ICE candidate; a WHIP publisher
+      # or WHEP player on another machine needs the ground station's LAN address instead.
+      # Export SWEEP_MEDIA_HOST (or put it in .env) before `docker compose up`, then recreate
+      # the container to apply it; the loopback default keeps browsers on this host working.
+      - MTX_WEBRTCADDITIONALHOSTS=${SWEEP_MEDIA_HOST:-127.0.0.1}
     volumes:
       # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
       - ./media/mediamtx.yml:/mediamtx.yml:ro

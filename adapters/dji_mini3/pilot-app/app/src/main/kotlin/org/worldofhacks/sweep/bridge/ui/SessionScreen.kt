@@ -47,6 +47,8 @@ import org.worldofhacks.sweep.bridge.node.CommandRecord
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.ReadinessInput
 import org.worldofhacks.sweep.bridge.node.RelayConnection
+import org.worldofhacks.sweep.bridge.publish.ui.PublishRow
+import org.worldofhacks.sweep.bridge.publish.ui.PublishSetupFields
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.SessionState
@@ -164,6 +166,7 @@ private fun SetupCard(setup: SetupSummary, running: Boolean, node: BridgeNode) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Setup", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(value = relayUrl, onValueChange = { relayUrl = it }, label = { Text("Relay URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            PublishSetupFields(relayUrl) // Phase F hook: ground-station host and port beside the relay URL
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(value = session, onValueChange = { session = it }, label = { Text("Session id") }, singleLine = true, modifier = Modifier.weight(2f))
                 OutlinedTextField(
@@ -268,6 +271,7 @@ private fun ConnectivityCard(link: LinkState, running: Boolean, now: Long, node:
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = node::reconnect) { Text("Reconnect relay") }
             }
+            PublishRow(now) // Phase F hook: publish state, reason, metrics, start and stop
         }
     }
 }
