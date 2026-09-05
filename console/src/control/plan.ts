@@ -42,6 +42,17 @@ export function planSteps(intent: IntentV1): string[] {
       'Leave the fleet armed.',
     ]
   }
+  if (intent.name === 'sweep') {
+    const area =
+      'box' in intent.args
+        ? `the exact box x ${intent.args.box.min_x}…${intent.args.box.max_x}, y ${intent.args.box.min_y}…${intent.args.box.max_y}`
+        : 'a box derived from the authoritative aircraft positions and spacing'
+    return [
+      `Assign one deterministic lawnmower lane per aircraft inside ${area}.`,
+      'Refuse before dispatch if the requested box or any lane leaves the configured geofence.',
+      `Send the frozen lanes to ${ids}.`,
+    ]
+  }
   return [`Send ${intent.name} to ${ids || 'the roster'}.`]
 }
 

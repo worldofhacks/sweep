@@ -15,7 +15,7 @@ import type {
   RelayServerEvent,
   IntentSource,
 } from '../relay/contract'
-import { isSupportedAtM20 } from '../relay/contract'
+import { isSupportedIntent } from '../relay/contract'
 
 export type FixtureFleetSize = 4 | 6
 
@@ -152,7 +152,7 @@ export class FixtureRelayClient implements RelayClient {
       throw new Error('Fixture relay is disconnected; the intent was not sent.')
     }
     const t = this.now()
-    if (!isSupportedAtM20(intent.name)) {
+    if (!isSupportedIntent(intent.name)) {
       // The same refusal relay/intent_v1.py returns for a name outside M20_SUPPORTED_NAMES.
       this.emitServer({
         v: 1,
