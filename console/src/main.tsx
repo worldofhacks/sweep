@@ -23,10 +23,18 @@ const runtime = fixtureScenario
       sessionId: fixtureSessionId,
       client: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'console', fixtureScenario),
       keyboardClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'keyboard', fixtureScenario),
+      webcamClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'webcam', fixtureScenario),
+      // The fixture has no transcription endpoint; the Speech module says so and accepts typed text.
+      transcriptClient: null,
       catalogClient: new FixtureCatalogClient(fixtureScenario, () => Date.now()),
     }
   : { ...createConsoleRuntime(), catalogClient: new UnreportedCatalogClient() }
-const clients = { console: runtime.client, keyboard: runtime.keyboardClient }
+const clients = {
+  console: runtime.client,
+  keyboard: runtime.keyboardClient,
+  webcam: runtime.webcamClient,
+}
+const services = { transcript: runtime.transcriptClient ?? undefined }
 const root = createRoot(document.getElementById('root')!)
 
 // The console renders at once without media; a valid runtime configuration
@@ -38,6 +46,7 @@ bootstrapMediaConfiguration((configuration) => {
         sessionId={runtime.sessionId}
         clients={clients}
         catalog={runtime.catalogClient}
+        services={services}
         media={configuration ? createMediaRuntime(configuration) : undefined}
       />
     </StrictMode>,

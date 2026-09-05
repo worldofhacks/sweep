@@ -6,7 +6,7 @@ import type { IntentFactoryDependencies } from './control/intent'
 import type { ControlClients } from './control/use-control-console'
 import { useControlConsole } from './control/use-control-console'
 import type { MediaRuntime } from './media/runtime'
-import type { ModuleId } from './modules/types'
+import type { ModuleId, ModuleServices } from './modules/types'
 import { Shell } from './shell/Shell'
 
 interface AppProps {
@@ -16,6 +16,8 @@ interface AppProps {
   catalog?: CatalogClient
   intentDependencies?: IntentFactoryDependencies
   initialModule?: ModuleId
+  /** Input services for the Gesture and Speech modules; absent members render as unavailable. */
+  services?: ModuleServices
   /** Playback runtime from the media bootstrap; absent means playback is not configured. */
   media?: MediaRuntime
 }
@@ -27,6 +29,7 @@ export default function App({
   catalog,
   intentDependencies,
   initialModule,
+  services,
   media,
 }: AppProps) {
   const controller = useControlConsole({ sessionId, clients, intentDependencies })
@@ -38,6 +41,7 @@ export default function App({
       catalog={catalogController}
       now={intentDependencies?.now}
       initialModule={initialModule}
+      services={services}
       media={media}
     />
   )
