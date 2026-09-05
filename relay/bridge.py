@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from concurrent.futures import TimeoutError as DeliveryTimeout
 from dataclasses import dataclass
 
 from adapters.dispatch import AdapterDispatcher
-from adapters.dji_mini3.remote import CommandRequest, RemoteBridgeAdapter
+from adapters.dji_mini3.remote import CommandRequest, NodeLink, RemoteBridgeAdapter
 from adapters.protocols import AdapterError, CameraCapture, SwarmAdapter
 from adapters.sim.camera import SimCamera, SimCameraConfig
 from adapters.sim.flight import SimFlightAdapter
@@ -104,6 +105,9 @@ class RelayNodeLink:
         return loop
 
 
+LinkWrapper = Callable[["RelayNodeLink"], NodeLink]
+
+
 @dataclass(frozen=True, slots=True)
 class AdapterPair:
     """The flight and camera adapters one session dispatches through."""
@@ -118,6 +122,7 @@ def build_adapters(
     snapshot: FleetSnapshot,
     *,
     sim_camera_config: SimCameraConfig | None = None,
+    link_wrapper: LinkWrapper | None = None,
 ) -> AdapterPair:
     """Construct the adapters ``SWEEP_ADAPTER_BACKEND`` selects for one session.
 
@@ -125,7 +130,9 @@ def build_adapters(
     explicit ``SimCameraConfig`` because the relay carries no camera fixture values.
     ``remote`` builds one ``RemoteBridgeAdapter`` serving as both flight and camera over
     a ``RelayNodeLink``; delivery and acknowledgement waits are bounded by the command
-    TTL the relay stamps on every wire command.
+    TTL the relay stamps on every wire command and one command's total wait by
+    ``SWEEP_COMMAND_DEADLINE_MS``. ``link_wrapper`` may decorate that
+    link, for example to gate sends behind a preemption flag; ``sim`` ignores it.
     """
     settings = runtime.settings
     backend = settings.adapter_backend
@@ -143,9 +150,13 @@ def build_adapters(
         )
         return AdapterPair(flight=flight, camera=camera)
     if backend is AdapterBackend.REMOTE:
-        link = RelayNodeLink(runtime, session_id, delivery_timeout_ms=settings.command_ttl_ms)
+        node_link = RelayNodeLink(runtime, session_id, delivery_timeout_ms=settings.command_ttl_ms)
+        link: NodeLink = node_link if link_wrapper is None else link_wrapper(node_link)
         remote = RemoteBridgeAdapter.from_snapshot(
-            link, snapshot, acknowledgement_timeout_ms=settings.command_ttl_ms
+            link,
+            snapshot,
+            acknowledgement_timeout_ms=settings.command_ttl_ms,
+            command_deadline_ms=settings.command_deadline_ms,
         )
         return AdapterPair(flight=remote, camera=remote)
     raise ValueError(f"unknown adapter backend {backend!r}")
@@ -158,9 +169,16 @@ def build_dispatcher(
     *,
     arbiter: SafetyArbiter,
     sim_camera_config: SimCameraConfig | None = None,
+    link_wrapper: LinkWrapper | None = None,
 ) -> AdapterDispatcher:
     """Construct a session's ``AdapterDispatcher`` on the configured backend."""
-    adapters = build_adapters(runtime, session_id, snapshot, sim_camera_config=sim_camera_config)
+    adapters = build_adapters(
+        runtime,
+        session_id,
+        snapshot,
+        sim_camera_config=sim_camera_config,
+        link_wrapper=link_wrapper,
+    )
     return AdapterDispatcher(flight=adapters.flight, camera=adapters.camera, arbiter=arbiter)
 
 

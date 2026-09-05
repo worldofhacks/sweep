@@ -109,3 +109,37 @@ def test_build_dispatcher_wires_the_backend_adapters_and_arbiter(
     assert dispatcher.arbiter is arbiter
     assert isinstance(dispatcher.flight, RemoteBridgeAdapter)
     assert dispatcher.camera is dispatcher.flight
+
+
+def test_build_adapters_applies_the_link_wrapper_on_the_remote_backend_only(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    wrapped: list[object] = []
+
+    def wrapper(link: RelayNodeLink) -> RelayNodeLink:
+        wrapped.append(link)
+        return link
+
+    sim_runtime = RelayRuntime(_settings(tmp_path / "sim"), clock=clock, event_ids=event_ids)
+    sim_runtime.session(SESSION)
+    remote_runtime = RelayRuntime(
+        _settings(tmp_path / "remote", AdapterBackend.REMOTE), clock=clock, event_ids=event_ids
+    )
+    remote_runtime.session(SESSION)
+
+    build_adapters(
+        sim_runtime, SESSION, snapshot, sim_camera_config=camera_config(), link_wrapper=wrapper
+    )
+    assert wrapped == []
+    dispatcher = build_dispatcher(
+        remote_runtime,
+        SESSION,
+        snapshot,
+        arbiter=SafetyArbiter(safety_config()),
+        link_wrapper=wrapper,
+    )
+
+    assert len(wrapped) == 1
+    assert isinstance(wrapped[0], RelayNodeLink)
+    assert isinstance(dispatcher.flight, RemoteBridgeAdapter)

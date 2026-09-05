@@ -99,3 +99,18 @@ def test_invalid_bridge_configuration_fails(name: str, value: str) -> None:
 
     with pytest.raises(SettingsError):
         RelaySettings.from_env(environment)
+
+
+def test_command_deadline_defaults_above_the_ttl_and_must_cover_it() -> None:
+    settings = RelaySettings.from_env({"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode()})
+
+    assert settings.command_deadline_ms == 10_000
+    assert "command_deadline_ms" not in settings.node_settings()
+    with pytest.raises(SettingsError, match="SWEEP_COMMAND_DEADLINE_MS"):
+        RelaySettings.from_env(
+            {
+                "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+                "SWEEP_COMMAND_TTL_MS": "3000",
+                "SWEEP_COMMAND_DEADLINE_MS": "2999",
+            }
+        )

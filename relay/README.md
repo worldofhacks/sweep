@@ -35,9 +35,11 @@ Install the locked environment, copy `.env.example` to the git-ignored `.env`, a
 
 ```dotenv
 SWEEP_RELAY_TOKEN=<at-least-32-characters>
-SWEEP_ADAPTER_KEYS_JSON={"1":"<adapter-1-key-at-least-32-characters>"}
+SWEEP_ADAPTER_KEYS_JSON='{"1":"<adapter-1-key-at-least-32-characters>"}'
 SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 ```
+
+Single-quote JSON values in `.env`: `just relay` and `just fake-node` read the file with `uv run --env-file`, which strips double quotes from unquoted values.
 
 `SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true` is a demo-only fallback. It proves that a frame came from a holder of the shared secret, but cannot prove which aircraft sent it; keep it false for hardware. The freshness settings in `.env.example` are explicit demo values and must be measured and configured for a hardware session.
 
@@ -46,6 +48,13 @@ Run loopback by default. An intentional LAN deployment should add its transport 
 ```bash
 uv sync --locked
 uv run uvicorn relay.app:app --host 127.0.0.1 --port 8000
+```
+
+`relay.app:app` is the standalone relay: with no planner/arbiter consumer configured it refuses every intent with `downstream_unavailable`. `relay.main` composes the relay with the planner, arbiter, and the adapters `SWEEP_ADAPTER_BACKEND` selects (see "Autonomy composition" below). It additionally reads `SWEEP_PLANNING_JSON` and `SWEEP_SAFETY_JSON`, plus `SWEEP_SIM_CAMERA_JSON` on the `sim` backend, each a JSON object with exactly that config's fields; `.env.example` carries the CI fixture values as demo values. `just relay` reads `.env` and runs it:
+
+```bash
+just relay        # uv run --env-file .env python -m relay.main --host 127.0.0.1 --port 8000
+just fake-node    # another terminal; with SWEEP_ADAPTER_BACKEND=remote the console drives it
 ```
 
 ## Authentication and connection binding
@@ -138,12 +147,13 @@ A bridge node (the phone app, or `adapters.dji_mini3.fake_node` before hardware 
 ```dotenv
 SWEEP_ADAPTER_BACKEND=sim
 SWEEP_COMMAND_TTL_MS=2000
+SWEEP_COMMAND_DEADLINE_MS=10000
 SWEEP_VIRTUAL_STICK_HZ=10
 SWEEP_NODE_WATCHDOG_HOLD_MS=2000
 SWEEP_NODE_WATCHDOG_FAILSAFE_MS=10000
 ```
 
-`SWEEP_ADAPTER_BACKEND` selects which adapters `relay.bridge.build_adapters` and `build_dispatcher` construct for a session: `sim` (the deterministic simulator, with an explicit `SimCameraConfig`) or `remote` (one `RemoteBridgeAdapter` over the bridge wire, bounded by `SWEEP_COMMAND_TTL_MS`). The relay itself never dispatches; the autonomy composition that owns the planner and arbiter calls that factory. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
+`SWEEP_ADAPTER_BACKEND` selects which adapters `relay.bridge.build_adapters` and `build_dispatcher` construct for a session: `sim` (the deterministic simulator, with an explicit `SimCameraConfig`) or `remote` (one `RemoteBridgeAdapter` over the bridge wire, bounded by `SWEEP_COMMAND_TTL_MS`). The relay itself never dispatches; `relay.autonomy`, the composition `relay.main` runs, calls that factory for each accepted intent. `SWEEP_COMMAND_DEADLINE_MS` bounds one command's total wait regardless of non-terminal heartbeats and must be at least the TTL; at the deadline the adapter returns the last non-terminal acknowledgement and the plan reports `executing`. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
 
 ### Command frame (relay to node)
 
@@ -165,11 +175,21 @@ All node-authored frames carry `drone_id` and `connection_epoch`, rely on the au
 
 - `capabilities`: the `CameraCapabilities` fields (`native_panorama_modes`, `photo_capture`, `gimbal_pitch_min_deg`, `gimbal_pitch_max_deg`, `horizontal_fov_deg`, `storage_remaining_bytes`, `media_retrieval`) plus the probed hardware profile (`aircraft_model`, `aircraft_firmware`, `rc_firmware`, `phone_model`, `android_version`, `sdk_version`, nullable `measured_hfov_deg`). Fanned out to consoles and projected into the drone's `camera_capabilities`.
 - `node_status`: `virtual_stick_enabled`, `control_authority`, nullable snake_case `authority_change_reason`, `watchdog_state` (`nominal`, `hold`, `failsafe`), `video_publish_state` (`stopped`, `connecting`, `publishing`, `failed`), `phone_battery_percent`, and `phone_thermal_state` (`none`, `light`, `moderate`, `severe`, `critical`, `emergency`, `shutdown`). Fanned out and projected into the drone's `node_status`; informational only.
-- `capture_readiness`: nullable `room_id` and `capture_id`, `guidance_mode` (`visual_advisory` or `registered_metric`), `pose_source`, the `pose_ok`, `clearance_ok`, `camera_ok`, `storage_ok`, `motion_ok`, and `image_quality_ok` gates, `coverage_missing` azimuths in degrees, nullable `next_heading_deg`, and nullable `suggested_delta` `{kind: yaw|gimbal, degrees}`. Fanned out unchanged and not projected into state.
+- `capture_readiness`: nullable `room_id` and `capture_id`, `guidance_mode` (`visual_advisory` or `registered_metric`), `pose_source`, the `pose_ok`, `clearance_ok`, `camera_ok`, `storage_ok`, `motion_ok`, and `image_quality_ok` gates, `coverage_missing` azimuths in degrees, nullable `next_heading_deg`, and nullable `suggested_delta` `{kind: yaw|gimbal, degrees}`. Fanned out unchanged and not projected into state; the session retains the latest frame per aircraft (`RelaySession.capture_readiness`) as the autonomy boundary's camera-readiness evidence.
 - `media_file`: the `MediaFile` fields (`capture_id`, `file_id`, `timestamp_ms`, `drone_id`, `connection_epoch`, `pose`, `actual_yaw_deg`, `gimbal_pitch_deg`, `intrinsics`, 64-character lowercase hex `checksum_sha256`, `storage_ref`, `retrieval_status`). Audited and retained for the command wire, not fanned out. A node sends the `media_file` before the terminal acknowledgement of the capture or retrieval command that produced it.
 - `capture_bundle`: `room_id`, `capture_id`, `pattern`, `coverage`, `status`, nested `media` records, and nullable `reason` and `detail`; a `failed` or `unsupported` bundle requires a machine-readable reason. Audited and retained, not fanned out.
 
 The fake node runs against a live relay with `just fake-node` or `uv run python -m adapters.dji_mini3.fake_node --drone-id 1`; it reads its credential from `--token`, `SWEEP_ADAPTER_KEYS_JSON`, or `SWEEP_RELAY_TOKEN`. `relay/tests/test_bridge_roundtrip.py` starts the relay in-process on the `remote` backend, connects the fake node, and dispatches a safety hold through `build_dispatcher` and the remote adapter end to end.
+
+## Autonomy composition
+
+`relay.autonomy` is the planner/arbiter consumer behind `create_app`'s `intent_sink_factory` and `leave_authorizer_factory`; `relay.main` builds it with `create_autonomy_app`. Each session runs three worker lanes (below). The sink only queues, because the session calls it inside the intent operation and a remote dispatch must wait for node acknowledgements that arrive through that same session. A worker builds the `FleetSnapshot` from `current_state()`, calls `relay.bridge.build_dispatcher` for that snapshot, and runs `planner.controller.AutonomyController` (capability gate, `check_intent`, plan, `check_plan`, per-command `check_command`, dispatch). It then applies the plan's explicit `armed_update` and `selection_update` through `update_control_projection`, only while the plan's roster is still the session's roster (otherwise the result becomes `invalidated` with `stale_roster`), publishes a plan still waiting on a node's terminal acknowledgement as `accepted_plan` and clears it on every terminal result, and reports the result with `record_lifecycle` under `source: "autonomy"` and a null `command_id`; node acknowledgements keep `source: "adapter"` and their `command_id`. Graceful leave is authorized through `planner.roster.authorize_graceful_removal` on the same snapshot.
+
+Appendix B carries no physical armed, physical-RC, storage, camera-readiness, active-task, position-loss, or Sweep-operator facts, so `relay_snapshot` asserts them explicitly and fails closed: operator presence and activity come from the latest accepted console or keyboard intent in the session (the arbiter's operator timeout bounds it; no intent yet means no operator); physical armed evidence is derived from the authoritative telemetry flight state exactly as the simulator reports it (every state except `disarmed` and `landed`), so the arbiter's physical-armed gate cannot refuse anything its flight-state gates do not already refuse, an accepted limitation until a node reports a motor-armed fact; physical-RC availability is the same signed `rc_safety_operator_present` readiness claim, because the wire carries no separate RC-link fact, so the arbiter's two RC gates are intentionally collapsed into one at this stage and must not be read as defence in depth; storage comes from the node's current-epoch `capabilities` frame (none means zero) and camera readiness requires the node's latest current-epoch `capture_readiness` frame to report both `camera_ok` and `storage_ok` (no frame means not ready); `active_task_id` is null because intents run one at a time; `position_loss_since_ms` is null so the controller's dwell falls back to the position timestamp. Aircraft without current-epoch telemetry are excluded from the snapshot and cannot be selected or commanded until their node reports.
+
+On `remote`, every planned command becomes a signed `command` frame to the node bound to that aircraft and the node's acknowledgements complete it. On `sim`, the dispatcher runs the in-process simulator built from the snapshot; a live relay has no telemetry source for it, so the registry stays as the nodes report it and `sim` remains the CI backend. Not wired yet: resuming a plan whose node acknowledgement arrives after the adapter timeout (`resume_after_completion`), the positioning-loss monitor (`handle_positioning_loss`), and motion-conflict pairing (`execute_pair`); the physical RC remains the independent stop path.
+
+The three lanes give stops priority. `estop` runs at once on its own lane and cancels whatever the other two lanes are executing; `hold` runs at once on a second lane and cancels a running operator motion or camera plan (`takeoff`, `translate`, `come_home`, `capture_room`), but queues behind a running `land_all` or `estop` rather than interrupting a safety plan; everything else runs in arrival order on the third lane. Both stops also cancel queued motion and camera intents. The network stop latches from the intent, never from its plan: the sink sets the session's `estop` inside the operation that accepted the intent, before any dispatch, and marks every later snapshot `estop_active`, so no worker, plan, publish, or session-lookup failure can lose the latch and an operator intent that starts in between is refused rather than sent. Cancellation is atomic with the wire: inside the stop's own intent operation, under the session lock, the sink records the cancelled intent as `invalidated` with reason `preempted_by_estop` or `preempted_by_hold`, so `issue_command` refuses anything that plan tries to send afterwards; the plan's dispatch also checks its flag before every command, before every send, and after every acknowledgement wait, and exits without a best-effort hold because the stop is the safety action. A cancelled plan therefore exits at its next acknowledgement or after at most one command TTL of silence, and every command is bounded in total by `SWEEP_COMMAND_DEADLINE_MS`. `RemoteBridgeAdapter.estop` sends to every aircraft before waiting on any acknowledgement, so a node that stays silent fails only its own result (`adapter_timeout`) while the stop still latches. `relay/tests/test_autonomy_roundtrip.py` runs the M2.0 workflow from console intents through the composition to two fake nodes.
 
 ## Audit and replay
 

@@ -8,7 +8,8 @@ The node authenticates as an adapter, sends a signed join and readiness, streams
 telemetry, publishes capabilities, node_status, and capture_readiness, verifies every
 relay-signed command against its own key, and acknowledges accepted, executing, then
 completed or failed. Its aircraft is a kinematic fixture, not a flight model, and every
-hardware profile field says so.
+hardware profile field says so. ``FakeNodeConfig.silent_operations`` and
+``slow_operations`` make it swallow or delay acknowledgements for tests.
 """
 
 from __future__ import annotations
@@ -61,6 +62,9 @@ class FakeNodeConfig:
     photo_height_px: int = 1_080
     panorama_width_px: int = 4_096
     storage_remaining_bytes: int = 50_000_000
+    silent_operations: tuple[str, ...] = ()
+    slow_operations: tuple[str, ...] = ()
+    slow_ack_delay_s: float = 0.0
 
     def __post_init__(self) -> None:
         if self.drone_id <= 0:
@@ -69,6 +73,10 @@ class FakeNodeConfig:
             raise ValueError("token must be a non-empty string")
         if not 0 < self.telemetry_hz <= 50:
             raise ValueError("telemetry_hz must be between 0 and 50")
+        for name in (*self.silent_operations, *self.slow_operations):
+            CommandOperation(name)
+        if not 0 <= self.slow_ack_delay_s <= 60:
+            raise ValueError("slow_ack_delay_s must be between 0 and 60 seconds")
 
 
 @dataclass(slots=True)
@@ -208,7 +216,13 @@ class FakeNode:
                 self._handle_membership(frame)
             elif frame_type == "state":
                 self._roster_version = int(frame.get("roster_version", self._roster_version))
-            elif frame_type == "refusal" and frame.get("drone_id") == self.config.drone_id:
+            elif (
+                frame_type == "refusal"
+                and frame.get("source") == "relay"
+                and frame.get("drone_id") == self.config.drone_id
+            ):
+                # Autonomy refusals also name an aircraft; only relay protocol refusals
+                # mean this node's own frame was rejected.
                 _LOGGER.warning(
                     "relay refused a node frame: %s (%s)", frame.get("reason"), frame.get("detail")
                 )
@@ -254,6 +268,8 @@ class FakeNode:
         if not verify_event_signature(frame.unsigned_event(), frame.signature, self._key):
             _LOGGER.warning("dropping command %s with an invalid signature", frame.command_id)
             return
+        if frame.operation.value in self.config.silent_operations:
+            return  # a silent node: no admission, no acknowledgement, no state change
         refusal = self._admission_refusal(frame)
         if refusal is not None:
             reason, detail = refusal
@@ -264,6 +280,13 @@ class FakeNode:
         self._last_seq = frame.seq
         self._enqueue(self._acknowledgement(frame, "accepted"))
         self._enqueue(self._acknowledgement(frame, "executing"))
+        if frame.operation.value in self.config.slow_operations and self.config.slow_ack_delay_s:
+            assert self._loop is not None
+            self._loop.call_later(self.config.slow_ack_delay_s, self._finish_command, frame)
+            return
+        self._finish_command(frame)
+
+    def _finish_command(self, frame: CommandFrame) -> None:
         status, reason, detail = self._execute(frame)
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
 

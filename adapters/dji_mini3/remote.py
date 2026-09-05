@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -117,6 +118,7 @@ class RemoteBridgeAdapter:
         *,
         epochs: Mapping[int, int],
         acknowledgement_timeout_ms: int,
+        command_deadline_ms: int | None = None,
         command_ids: Callable[[], str] | None = None,
     ) -> None:
         if (
@@ -125,9 +127,16 @@ class RemoteBridgeAdapter:
             or acknowledgement_timeout_ms <= 0
         ):
             raise ValueError("acknowledgement_timeout_ms must be a positive integer")
+        if command_deadline_ms is not None and (
+            not isinstance(command_deadline_ms, int)
+            or isinstance(command_deadline_ms, bool)
+            or command_deadline_ms < acknowledgement_timeout_ms
+        ):
+            raise ValueError("command_deadline_ms must be an integer of at least the timeout")
         self._link = link
         self._epochs = dict(sorted(epochs.items()))
         self._timeout_ms = acknowledgement_timeout_ms
+        self._deadline_ms = command_deadline_ms
         self._command_ids = command_ids or (lambda: str(uuid.uuid4()))
         self._context: _IntentContext | None = None
         self._captures: dict[tuple[int, str], str] = {}
@@ -140,6 +149,7 @@ class RemoteBridgeAdapter:
         snapshot: FleetSnapshot,
         *,
         acknowledgement_timeout_ms: int,
+        command_deadline_ms: int | None = None,
         command_ids: Callable[[], str] | None = None,
     ) -> RemoteBridgeAdapter:
         return cls(
@@ -148,6 +158,7 @@ class RemoteBridgeAdapter:
                 drone_id: state.connection_epoch for drone_id, state in snapshot.aircraft.items()
             },
             acknowledgement_timeout_ms=acknowledgement_timeout_ms,
+            command_deadline_ms=command_deadline_ms,
             command_ids=command_ids,
         )
 
@@ -203,9 +214,32 @@ class RemoteBridgeAdapter:
         return tuple(self._flight(drone_id, CommandOperation.LAND, {}) for drone_id in ids)
 
     def estop(self) -> tuple[AdapterAcknowledgement, ...]:
-        return tuple(
-            self._flight(drone_id, CommandOperation.ESTOP, {}) for drone_id in sorted(self._epochs)
-        )
+        """Send the stop to every aircraft before waiting on any acknowledgement.
+
+        A node that never answers delays only its own result and is reported as a
+        failed ``adapter_timeout`` acknowledgement instead of aborting the fleet stop.
+        """
+        issued = [
+            self._issue(drone_id, CommandOperation.ESTOP, {}) for drone_id in sorted(self._epochs)
+        ]
+        replies: list[_Reply] = []
+        for item in issued:
+            if isinstance(item, _Reply):
+                replies.append(item)
+                continue
+            try:
+                replies.append(self._collect(item))
+            except AdapterTimeout as error:
+                replies.append(
+                    _Reply(
+                        item,
+                        LifecycleStatus.FAILED,
+                        item.connection_epoch,
+                        RefusalReason.ADAPTER_TIMEOUT.value,
+                        f"adapter_timeout: {error.detail}",
+                    )
+                )
+        return tuple(reply.acknowledgement() for reply in replies)
 
     def telemetry(self) -> Iterator[Telemetry]:
         """Yield nothing: node telemetry reaches the relay registry over the node socket."""
@@ -348,6 +382,13 @@ class RemoteBridgeAdapter:
     def _command(
         self, drone_id: int, operation: CommandOperation, args: Mapping[str, int | str]
     ) -> _Reply:
+        issued = self._issue(drone_id, operation, args)
+        return issued if isinstance(issued, _Reply) else self._collect(issued)
+
+    def _issue(
+        self, drone_id: int, operation: CommandOperation, args: Mapping[str, int | str]
+    ) -> CommandRequest | _Reply:
+        """Build and send one command, or return the reply that stops it before send."""
         context = self._context
         if context is None:
             raise AdapterError("no intent context is bound; open for_intent first")
@@ -372,18 +413,39 @@ class RemoteBridgeAdapter:
                 f"{live_epoch} differs from command epoch {expected_epoch}",
             )
         self._link.send(request)
+        return request
+
+    def _collect(self, request: CommandRequest) -> _Reply:
+        """Wait for the command's acknowledgements until a terminal one, silence, or the deadline.
+
+        Each wait is bounded by the acknowledgement timeout and the whole command by
+        ``command_deadline_ms`` when configured, so a node that keeps sending
+        non-terminal acknowledgements cannot hold the caller indefinitely: at the
+        deadline the latest non-terminal acknowledgement is returned as is.
+        """
+        deadline = (
+            None if self._deadline_ms is None else time.monotonic() + self._deadline_ms / 1000
+        )
         latest: WireAcknowledgement | None = None
         while True:
+            timeout_ms = self._timeout_ms
+            if deadline is not None:
+                remaining_ms = int((deadline - time.monotonic()) * 1000)
+                if remaining_ms <= 0:
+                    if latest is None:
+                        raise AdapterTimeout(request.drone_id, request.operation)
+                    return _reply(request, latest)
+                timeout_ms = min(timeout_ms, remaining_ms)
             acknowledgement = self._link.await_acknowledgement(
-                request.command_id, timeout_ms=self._timeout_ms
+                request.command_id, timeout_ms=timeout_ms
             )
             if acknowledgement is None:
                 if latest is None:
-                    raise AdapterTimeout(drone_id, operation)
+                    raise AdapterTimeout(request.drone_id, request.operation)
                 return _reply(request, latest)
             if (
                 acknowledgement.command_id != request.command_id
-                or acknowledgement.drone_id != drone_id
+                or acknowledgement.drone_id != request.drone_id
                 or acknowledgement.intent_id != request.intent_id
             ):
                 raise AdapterError("acknowledgement does not correlate with the sent command")
