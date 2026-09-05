@@ -1,0 +1,195 @@
+{
+  "entries": {
+    "01e89820fd0fd426610ac5bcab8adecd9acb48bce84ba29cc7b5821f24352e58": {
+      "input_units": 3223,
+      "latency_ms": 2142,
+      "output_units": 134,
+      "payload": {
+        "detail": "Prepare the aircraft for flight interpreted as fleet-scoped arm command.",
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "16069380bfe42acc207ca079349522d92a54797bd86dfe9dbd650b913d29dd4f": {
+      "input_units": 3217,
+      "latency_ms": 2352,
+      "output_units": 96,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1,
+                2
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "1ef062367590e01f67b5aef95e7fa19320d7f3ce970b3b32d670480f40afe2d2": {
+      "input_units": 3209,
+      "latency_ms": 2443,
+      "output_units": 90,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "44a5bc8756f48b1ded3285c5a543e6b05344b08d3a1a9191570dd04754aca56f": {
+      "input_units": 3215,
+      "latency_ms": 2212,
+      "output_units": 115,
+      "payload": {
+        "detail": "\"This room\" is a deictic reference; please specify which known room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "4b6dc7289ee74a368fb32305ede30cb13a1e4da701ec71cf1eb7713d405d81db": {
+      "input_units": 3218,
+      "latency_ms": 2580,
+      "output_units": 118,
+      "payload": {
+        "detail": "\"here\" is a deictic room reference and cannot be resolved to a known room. Please specify which room to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    },
+    "804bfc08e4299d02ce7615db1bc4497c6f237fbfe6a940a43986df3f25746070": {
+      "input_units": 3209,
+      "latency_ms": 2216,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "c7944bd8b0b4b33c2d6ef91103d19fb8e32a59edbc09e77d58a5181759bb7838": {
+      "input_units": 3213,
+      "latency_ms": 4936,
+      "output_units": 96,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1,
+                2
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "cd138597cfaa5a4796a337e58348bb909d284160cc17fd979b9f85c7a115e5e2": {
+      "input_units": 3215,
+      "latency_ms": 1704,
+      "output_units": 92,
+      "payload": {
+        "intents": [
+          {
+            "args": {
+              "ids": [
+                1
+              ]
+            },
+            "mode": "indoor",
+            "name": "select",
+            "selection": [
+              1
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "e0e3034d60b097201b3583fae48c5716b6145bb644f6acf3f85e2c1d78f0613f": {
+      "input_units": 3210,
+      "latency_ms": 2539,
+      "output_units": 90,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "takeoff",
+            "selection": [
+              1,
+              2
+            ]
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "f86e15e714e242bb4dfece15ddf3562494b5e044fc43eeeb8e0011243af29eaf": {
+      "input_units": 3214,
+      "latency_ms": 2323,
+      "output_units": 85,
+      "payload": {
+        "intents": [
+          {
+            "args": {},
+            "mode": "indoor",
+            "name": "arm",
+            "selection": []
+          }
+        ],
+        "kind": "plan"
+      }
+    },
+    "fb229bbfe2453db5f36ff22e01ab0c9494286e07b385a8d93ab1d9bf60f27149": {
+      "input_units": 3215,
+      "latency_ms": 2541,
+      "output_units": 115,
+      "payload": {
+        "detail": "\"The room\" is a deictic reference; please specify which known room (e.g., living-room) to capture.",
+        "kind": "clarify",
+        "reason": "ambiguous_location"
+      }
+    }
+  },
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-5",
+  "recorded_origin": "anthropic",
+  "version": 3
+}
