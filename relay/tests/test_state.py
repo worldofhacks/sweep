@@ -399,7 +399,11 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
         "rc_safety_operator_present",
         "telemetry",
         "membership_history",
+        "camera_capabilities",
+        "node_status",
     }
+    assert drone["camera_capabilities"] is None
+    assert drone["node_status"] is None
     assert drone["flight_state"] == drone["telemetry"]["state"]
     assert drone["battery"] == drone["telemetry"]["battery"]
     assert drone["camera_patterns"] == ["pano_360"]

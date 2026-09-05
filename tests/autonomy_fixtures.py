@@ -37,10 +37,6 @@ def planning_config(*, translation_frame: str = "world") -> PlanningConfig:
         capture_gimbal_pitch_deg=0.0,
         reconstruct_headings_deg=tuple(float(value) for value in range(0, 360, 45)),
         translation_frame=translation_frame,
-        altitude_step_m=0.5,
-        altitude_floor_z_m=0.0,
-        altitude_configuration_id="test-floor-v1",
-        altitude_completion_tolerance_m=0.05,
     )
 
 

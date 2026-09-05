@@ -148,8 +148,9 @@ class PlanningConfig:
         """Return the immutable deployment profile implied by configured grounding."""
         if self.altitude_grounding() is not None or not requested.supports(IntentName.ALTITUDE):
             return requested
+        suffix = ".no_altitude"
         return CapabilityProfile(
-            requested.name,
+            f"{requested.name[: 64 - len(suffix)]}{suffix}",
             requested.enabled_intent_names - {IntentName.ALTITUDE},
         )
 

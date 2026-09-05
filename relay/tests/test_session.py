@@ -12,6 +12,7 @@ from typing import cast
 import pytest
 
 import relay.audit as audit_module
+from planner.models import CommandOperation
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
@@ -881,6 +882,16 @@ def test_acknowledgement_keeps_nullable_fields_and_command_id(
 ) -> None:
     _join(relay_session, adapter_principal)
     relay_session.process_intent(intent_payload(), console_principal)
+    relay_session.issue_command(
+        command_id="command-1",
+        intent_id="intent-1",
+        roster_version=relay_session.registry.roster_version,
+        drone_id=1,
+        connection_epoch=1,
+        operation=CommandOperation.HOVER,
+        args={},
+        signing_key=ADAPTER_KEY,
+    )
 
     result = relay_session.process_acknowledgement(
         acknowledgement_payload(event_id="ack-1", command_id="command-1"),
@@ -962,6 +973,16 @@ def test_authenticated_terminal_acknowledgement_resumes_the_bound_execution(
     relay.process_intent(intent, console_principal)
     relay.mark_pending_intent_delivered(intent["intent_id"])
     relay.execute_pending_intent(intent["intent_id"])
+    relay.issue_command(
+        command_id="command-1",
+        intent_id="intent-1",
+        roster_version=relay.registry.roster_version,
+        drone_id=1,
+        connection_epoch=1,
+        operation=CommandOperation.HOVER,
+        args={},
+        signing_key=ADAPTER_KEY,
+    )
 
     executing = relay.process_acknowledgement(
         acknowledgement_payload(event_id="ack-executing"), adapter_principal

@@ -971,6 +971,11 @@ class SafetyArbiter:
             and isinstance(plan.commands, tuple)
             and all(isinstance(command, Command) for command in plan.commands)
             and (plan.hold_scope is None or isinstance(plan.hold_scope, HoldScope))
+            and (
+                isinstance(plan.altitude_grounding, AltitudeGrounding)
+                if plan.intent_name is IntentName.ALTITUDE
+                else plan.altitude_grounding is None
+            )
             and optional_updates_are_typed
             and plan.status is LifecycleStatus.ACCEPTED
         )

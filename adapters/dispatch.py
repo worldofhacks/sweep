@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from math import isfinite
 from string import hexdigits
 
@@ -61,6 +63,51 @@ class AdapterDispatcher:
         self.camera = camera
         self.arbiter = arbiter
         self.current_altitude_grounding: Callable[[], AltitudeGrounding | None] | None = None
+        self._command_observer: ContextVar[Callable[[Command], None] | None] = ContextVar(
+            f"command_observer_{id(self)}", default=None
+        )
+
+    @contextmanager
+    def observe_commands(self, observer: Callable[[Command], None]) -> Iterator[None]:
+        """Report each exact command immediately before its adapter I/O begins."""
+        token = self._command_observer.set(observer)
+        try:
+            yield
+        finally:
+            self._command_observer.reset(token)
+
+    @contextmanager
+    def _intent_scope(
+        self,
+        intent_id: str,
+        roster_version: int,
+        commands: tuple[Command, ...] = (),
+    ) -> Iterator[None]:
+        """Bind the exact planner commands on adapters that emit a command wire.
+
+        ``for_commands`` lets the remote bridge preserve the planner command ID all the
+        way onto the signed wire. Older adapters may expose only ``for_intent``. One
+        object serving as both flight and camera is bound once, and the simulator needs
+        no scope at all.
+        """
+        with ExitStack() as stack:
+            if observer := self._command_observer.get():
+                for command in commands:
+                    observer(command)
+            bound: list[object] = []
+            for adapter in (self.flight, self.camera):
+                bind_commands = getattr(adapter, "for_commands", None)
+                bind = getattr(adapter, "for_intent", None)
+                if (bind_commands is None and bind is None) or any(
+                    adapter is seen for seen in bound
+                ):
+                    continue
+                bound.append(adapter)
+                if bind_commands is not None:
+                    stack.enter_context(bind_commands(intent_id, roster_version, commands))
+                else:
+                    stack.enter_context(bind(intent_id, roster_version))
+            yield
 
     def dispatch(
         self,
@@ -250,7 +297,8 @@ class AdapterDispatcher:
                     acknowledgements=tuple(acknowledgements),
                 )
             try:
-                outcome = self._execute(command, captures, provider)
+                with self._intent_scope(command.intent_id, command.roster_version, (command,)):
+                    outcome = self._execute(command, captures, provider)
             except AdapterTimeout as error:
                 failure = self._failure_for(
                     command,
@@ -1304,7 +1352,8 @@ class AdapterDispatcher:
                 "execution ownership was retired before adapter launch",
             )
         try:
-            raw_by_id = {ack.drone_id: ack for ack in self.flight.estop()}
+            with self._intent_scope(plan.intent_id, plan.roster_version, plan.commands):
+                raw_by_id = {ack.drone_id: ack for ack in self.flight.estop()}
         except Exception as error:
             refusal = Refusal(
                 intent_id=plan.intent_id,
@@ -1454,7 +1503,8 @@ class AdapterDispatcher:
         if owner_still_valid is not None and not owner_still_valid():
             return []
         try:
-            raw = self.flight.hover([failed_command.drone_id])[0]
+            with self._intent_scope(hold.intent_id, hold.roster_version, (hold,)):
+                raw = self.flight.hover([failed_command.drone_id])[0]
         except Exception:
             return [
                 CommandAcknowledgement(

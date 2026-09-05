@@ -71,11 +71,18 @@ def test_deployment_grounding_derives_altitude_capability_without_widening() -> 
     )
 
     disabled_planner = DeterministicPlanner(disabled, C1_CAPABILITY_PROFILE)
-    grounded_planner = DeterministicPlanner(planning_config(), C1_CAPABILITY_PROFILE)
-    narrowed_planner = DeterministicPlanner(planning_config(), without_altitude)
+    grounded = replace(
+        planning_config(),
+        altitude_step_m=0.5,
+        altitude_floor_z_m=0.0,
+        altitude_configuration_id="capability-test-floor-v1",
+        altitude_completion_tolerance_m=0.05,
+    )
+    grounded_planner = DeterministicPlanner(grounded, C1_CAPABILITY_PROFILE)
+    narrowed_planner = DeterministicPlanner(grounded, without_altitude)
 
     altitude = make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1})
-    assert disabled_planner.capability_profile.name == C1_CAPABILITY_PROFILE.name
+    assert disabled_planner.capability_profile.name == "c1_basic_control.no_altitude"
     assert disabled_planner.capability_profile.enabled_intent_names == (
         C1_CAPABILITY_PROFILE.enabled_intent_names - {IntentName.ALTITUDE}
     )

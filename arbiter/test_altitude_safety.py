@@ -14,11 +14,13 @@ from planner.models import (
     Position,
     RefusalReason,
 )
+from planner.planner import DeterministicPlanner
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
     NOW_MS,
     make_intent,
     make_snapshot,
+    planning_config,
     replace_aircraft,
     safety_config,
 )
@@ -178,6 +180,29 @@ def test_altitude_requires_grounding() -> None:
     snapshot = make_snapshot(1)
     plan = replace(altitude_plan(snapshot, ((1, 2),)), altitude_grounding=None)
     refusal = SafetyArbiter(safety_config()).check_plan(plan, snapshot)
+    assert refusal is not None
+    assert refusal.reason is RefusalReason.INVALID_PLAN
+
+
+def test_non_altitude_plan_rejects_altitude_grounding_metadata() -> None:
+    snapshot = make_snapshot(1)
+    planner = DeterministicPlanner(planning_config())
+    plan = planner.plan(
+        make_intent(IntentName.TRANSLATE, selection=(1,), args={"dx": 1, "dy": 0}),
+        snapshot,
+    )
+    assert isinstance(plan, Plan)
+    arbiter = SafetyArbiter(safety_config())
+    assert arbiter.check_plan(plan, snapshot) is None
+
+    refusal = arbiter.check_plan(
+        replace(
+            plan,
+            altitude_grounding=AltitudeGrounding(0.5, 0.0, "misbound-floor", 0.05),
+        ),
+        snapshot,
+    )
+
     assert refusal is not None
     assert refusal.reason is RefusalReason.INVALID_PLAN
 

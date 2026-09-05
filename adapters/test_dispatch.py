@@ -1,10 +1,12 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from types import MappingProxyType
 
 import pytest
 
 from adapters.dispatch import AdapterDispatcher
-from adapters.protocols import AdapterAcknowledgement
+from adapters.protocols import AdapterAcknowledgement, AdapterError
 from adapters.sim.flight import InjectedFlightFailure, SimFlightAdapter
 from planner.models import (
     Command,
@@ -1309,3 +1311,81 @@ def test_non_hold_plan_cannot_smuggle_hold_scope() -> None:
     assert result.refusal.reason is RefusalReason.INVALID_PLAN
     assert flight.calls == []
     assert camera.calls == []
+
+
+class ScopedFlight(SimFlightAdapter):
+    """Simulator that, like the remote adapter, only acts inside a bound intent scope."""
+
+    def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self.scopes: list[tuple[str, int]] = []
+        self._bound: tuple[str, int] | None = None
+
+    @contextmanager
+    def for_intent(self, intent_id: str, roster_version: int) -> Iterator[None]:
+        if self._bound is not None:
+            raise AdapterError("an intent context is already bound")
+        self._bound = (intent_id, roster_version)
+        self.scopes.append(self._bound)
+        try:
+            yield
+        finally:
+            self._bound = None
+
+    def goto(
+        self, drone_id: int, x: float, y: float, z: float, speed: float
+    ) -> AdapterAcknowledgement:
+        self._require_scope()
+        return super().goto(drone_id, x, y, z, speed)
+
+    def hover(self, ids: list[int]) -> tuple[AdapterAcknowledgement, ...]:
+        self._require_scope()
+        return super().hover(ids)
+
+    def estop(self) -> tuple[AdapterAcknowledgement, ...]:
+        self._require_scope()
+        return super().estop()
+
+    def _require_scope(self) -> None:
+        if self._bound is None:
+            raise AdapterError("no intent context is bound")
+
+
+def test_dispatch_binds_an_intent_scope_around_every_command_and_safety_hold() -> None:
+    snapshot = make_snapshot(2)
+    plan = translate_plan(snapshot)
+    _, _, arbiter, _, _, camera = make_stack(snapshot)
+    flight = ScopedFlight.from_snapshot(snapshot)
+    dispatcher = AdapterDispatcher(flight=flight, camera=camera, arbiter=arbiter)
+    failed_id = plan.commands[0].drone_id
+    flight.inject_failure(failed_id, CommandOperation.GOTO, InjectedFlightFailure.TIMEOUT)
+
+    result = dispatcher.dispatch(plan, snapshot)
+
+    assert result.status is LifecycleStatus.FAILED
+    assert result.degraded_aircraft == (failed_id,)
+    assert [call.operation for call in flight.calls] == [
+        CommandOperation.GOTO,
+        CommandOperation.HOVER,
+        CommandOperation.GOTO,
+    ]
+    assert flight.scopes == [
+        (plan.intent_id, plan.roster_version),
+        (plan.intent_id, snapshot.roster_version),
+        (plan.intent_id, plan.roster_version),
+    ]
+
+
+def test_dispatch_binds_the_estop_plan_scope_once_for_the_fleet_stop() -> None:
+    snapshot = make_snapshot(2)
+    plan = DeterministicPlanner(planning_config()).plan(make_intent(IntentName.ESTOP), snapshot)
+    assert isinstance(plan, Plan)
+    _, _, arbiter, _, _, camera = make_stack(snapshot)
+    flight = ScopedFlight.from_snapshot(snapshot)
+    dispatcher = AdapterDispatcher(flight=flight, camera=camera, arbiter=arbiter)
+
+    result = dispatcher.dispatch(plan, snapshot)
+
+    assert result.status is LifecycleStatus.COMPLETED
+    assert [call.operation for call in flight.calls] == [CommandOperation.ESTOP]
+    assert flight.scopes == [(plan.intent_id, plan.roster_version)]
