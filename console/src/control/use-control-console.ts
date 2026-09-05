@@ -66,7 +66,7 @@ export function useControlConsole({
       if (event.kind === 'connection') {
         dispatch({ type: 'connection_changed', connection: event.connection })
       } else {
-        dispatch({ type: 'relay_event', event: event.event })
+        dispatch({ type: 'relay_event', event: event.event, source: 'console' })
       }
     })
     const subscribeLifecycleOnly = (
@@ -82,9 +82,12 @@ export function useControlConsole({
           event.event.type === 'acknowledgement' ||
           event.event.type === 'refusal' ||
           event.event.type === 'auth.accepted' ||
-          event.event.type === 'auth.refused'
+          event.event.type === 'auth.refused' ||
+          (connectionType === 'keyboard_connection_changed' &&
+            (event.event.type === 'safety_action' || event.event.type === 'state'))
         ) {
-          dispatch({ type: 'relay_event', event: event.event })
+          dispatch({ type: 'relay_event', event: event.event,
+            source: connectionType === 'keyboard_connection_changed' ? 'keyboard' : 'webcam' })
         }
       })
     const unsubscribeKeyboard = subscribeLifecycleOnly(clients.keyboard, 'keyboard_connection_changed')
@@ -165,6 +168,13 @@ export function useControlConsole({
    */
   const stageIntent = useCallback(
     (intent: IntentV1) => {
+      if (intent.name === 'select') {
+        state.requests.filter((request) => request.status === 'pending_confirmation').forEach((request) => {
+          dispatch({ type: 'request_invalidated', intentId: request.intent.intent_id,
+            t: intentDependencies.now(), reasonCode: 'selection_change_requested',
+            detail: 'A new selection was requested. Preview the command again after relay state updates.' })
+        })
+      }
       if (requiresConfirmation(intent.name)) {
         stageForConfirmation(intent)
         return
@@ -173,7 +183,7 @@ export function useControlConsole({
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       sendNow(intent, t)
     },
-    [intentDependencies, sendNow, stageForConfirmation],
+    [intentDependencies, sendNow, stageForConfirmation, state.requests],
   )
 
   const sendExistingIntent = useCallback(
@@ -190,7 +200,7 @@ export function useControlConsole({
         {
           name: request.name,
           args: request.args,
-          selection: request.targets ?? state.selection,
+          selection: ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection,
           source: 'console',
           session: state.sessionId,
         },
@@ -371,6 +381,13 @@ export function useControlConsole({
         })
         return null
       }
+      const selectionMatches = request.intent.selection.length === state.selection.length &&
+        request.intent.selection.every((id) => state.selection.includes(id))
+      if (!selectionMatches && selectionRule(request.intent.name) !== 'all' && request.intent.name !== 'select') {
+        dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
+          reasonCode: 'stale_selection', detail: 'The authoritative selection changed after preview. No command was sent.' })
+        return null
+      }
       const selectionStillValid =
         selectionRule(request.intent.name) === 'all'
           ? request.intent.selection.every((id) => state.aircraft[id] !== undefined)
@@ -392,7 +409,7 @@ export function useControlConsole({
       sendExistingIntent(confirmed, confirmedAt)
       return confirmed
     },
-    [intentDependencies, sendExistingIntent, state.aircraft, state.requests, state.rosterVersion],
+    [intentDependencies, sendExistingIntent, state.aircraft, state.requests, state.rosterVersion, state.selection],
   )
 
   const cancelRequest = useCallback(
@@ -479,21 +496,19 @@ export function useControlConsole({
     [intentDependencies, state.requests],
   )
 
-  /**
-   * Retry a failed or refused request as a new intent: new id, retry_of set,
-   * same args, selection, source and confirmation. It sends at once and never
-   * opens a second preview, even for a confirmation-gated name: the operator
-   * already confirmed this exact envelope, and that confirmation carries over.
-   */
   const retryRequest = useCallback(
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
       const intent = retryIntent(request.intent, intentDependencies)
+      if (['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
+        stageForConfirmation({ ...intent, confirm: false })
+        return
+      }
       const t = intentDependencies.now()
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       sendNow(intent, t)
     },
-    [intentDependencies, sendNow],
+    [intentDependencies, sendNow, stageForConfirmation],
   )
 
   const pendingRequest = useMemo(

@@ -42,6 +42,10 @@ def test_independent_authenticated_stop_reaches_adapter_without_compiler(tmp_pat
         Principal(source=source, drone_id=None, signing_key=b"x" * 32),
     )
 
+    assert events[0]["status"] == "accepted"
+    assert flight.calls == []
+    relay.mark_pending_intent_delivered("independent-stop")
+    events.extend(relay.execute_pending_intent("independent-stop"))
     assert events[-1]["status"] == "completed"
     assert flight.calls
     assert {call.operation for call in flight.calls} <= {
@@ -187,6 +191,9 @@ def test_accepted_stop_latches_before_safety_enrichment_failure(tmp_path):
         Principal(source="keyboard", drone_id=None, signing_key=b"x" * 32),
     )
     assert events[0]["status"] == "accepted"
+    assert flight.calls == []
+    relay.mark_pending_intent_delivered("stop-without-enrichment")
+    events.extend(relay.execute_pending_intent("stop-without-enrichment"))
     assert events[-1]["status"] == "refused"
     assert relay.current_state()["estop"] is True
     assert flight.calls == []

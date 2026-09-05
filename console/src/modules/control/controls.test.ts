@@ -129,7 +129,7 @@ describe('control gating', () => {
     const state = connected([], { estop: true })
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
     expect(byKey.arm).toMatchObject({ enabled: false, note: STOP_ACTIVE_REASON })
-    expect(byKey.land_all).toMatchObject({ enabled: false, note: STOP_ACTIVE_REASON })
+    expect(byKey.land_all).toMatchObject({ enabled: true, note: 'Confirmation required. Targets every aircraft in the roster.' })
     expect(byKey.disarm).toMatchObject({ enabled: true, soft: true })
     expect(dpadBlockedReason(state)).toBe(STOP_ACTIVE_REASON)
   })
@@ -158,7 +158,7 @@ describe('command catalogue', () => {
       ['Takeoff', 'confirm', 'selected', 'accepted at M2.0'],
       ['Hold', '—', 'selected', 'accepted at M2.0'],
       ['Come home', '—', 'selected', 'accepted at M2.0'],
-      ['Land', 'confirm', 'selected', 'unsupported'],
+      ['Land', 'confirm', 'selected', 'accepted at M2.0'],
       ['Land all', 'confirm', 'all', 'accepted at M2.0'],
       ['Formation next', '—', 'selected', 'unsupported'],
       ['Spacing tighter', '—', 'selected', 'unsupported'],
@@ -170,7 +170,7 @@ describe('command catalogue', () => {
     const later = groups[1].rows.filter((row) => row.status === 'later')
     expect(later.every((row) => !row.enabled && row.spec === null)).toBe(true)
     const land = groups[1].rows.find((row) => row.label === 'Land')
-    expect(land).toMatchObject({ enabled: true, note: refusalCopy('land') })
+    expect(land).toMatchObject({ enabled: true, note: 'Confirmation required before send.' })
   })
 })
 

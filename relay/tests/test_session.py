@@ -5,7 +5,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +14,8 @@ import relay.audit as audit_module
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal
 from relay.contracts import LifecycleStatus
-from relay.session import RelayLimits, RelaySession
+from relay.intent_v1 import IntentV1
+from relay.session import IntentSinkResult, RelayLimits, RelaySession
 from relay.tests.conftest import (
     ADAPTER_KEY,
     SESSION,
@@ -49,6 +50,72 @@ def _new_session(
         event_ids=event_ids,
         **kwargs,
     )
+
+
+@pytest.mark.parametrize("cancelled_result_first", [False, True])
+def test_safety_completion_survives_undelivered_group_member_cancellation(
+    relay_session: RelaySession,
+    console_principal: Principal,
+    cancelled_result_first: bool,
+) -> None:
+    motion = intent_payload(intent_id="motion")
+    motion.update(name="translate", args={"dx": 1.0, "dy": 0.0})
+    stop = intent_payload(intent_id="stop")
+    stop.update(name="estop", selection=[])
+    assert relay_session.process_intent(motion, console_principal)[0]["status"] == "accepted"
+    assert relay_session.process_intent(stop, console_principal)[0]["status"] == "accepted"
+    relay_session.mark_pending_intent_delivered("stop")
+    calls: list[str] = []
+
+    def dispatch() -> dict[str, IntentSinkResult]:
+        calls.append("estop")
+        cancellation = relay_session.fail_pending_intent(
+            "motion", reason="acceptance_delivery_failed", detail="socket failed"
+        )
+        assert cancellation[0]["reason"] == "acceptance_delivery_failed"
+        outcomes = [
+            (
+                "stop",
+                IntentSinkResult(
+                    status=LifecycleStatus.COMPLETED,
+                    source="autonomy",
+                    result={},
+                    estop_update=True,
+                ),
+            ),
+            (
+                "motion",
+                IntentSinkResult(
+                    status=LifecycleStatus.INVALIDATED,
+                    source="autonomy",
+                    result={},
+                    reason="superseded",
+                ),
+            ),
+        ]
+        return dict(reversed(outcomes) if cancelled_result_first else outcomes)
+
+    relay_session.execute_coordinated_group(("stop",), dispatch)
+    outcome = relay_session.execute_pending_intent("stop")
+    assert any(event.get("status") == "completed" for event in outcome)
+    assert relay_session.execute_pending_intent("motion") == []
+    assert relay_session.execute_pending_intent("stop") == []
+    assert calls == ["estop"]
+    assert relay_session.current_state()["estop"] is True
+    events = [record["event"] for record in relay_session.replay()["events"]]
+    assert any(
+        event.get("intent_id") == "stop" and event.get("status") == "completed" for event in events
+    )
+    assert any(
+        event.get("intent_id") == "motion" and event.get("reason") == "acceptance_delivery_failed"
+        for event in events
+    )
+    assert not any(
+        event.get("intent_id") == "motion" and event.get("status") == "invalidated"
+        for event in events
+    )
+    reopened = SessionAuditLog(relay_session.audit_log.root, SESSION)
+    assert reopened.replay() == relay_session.audit_log.replay()
 
 
 def test_missing_downstream_refuses_instead_of_false_acknowledgement(
@@ -223,7 +290,7 @@ def test_reopen_rebuilds_membership_batch_after_partial_mirror_write(
     assert not reopened.pending_path.exists()
 
 
-def test_nested_sink_projection_commits_with_outer_intent_operation(
+def test_sink_projection_close_failure_leaves_dispatch_durably_incomplete(
     tmp_path: Path,
     clock: MutableClock,
     event_ids: EventIds,
@@ -237,6 +304,7 @@ def test_nested_sink_projection_commits_with_outer_intent_operation(
 
     session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
     holder["session"] = session
+    session.process_intent(intent_payload(), console_principal)
     real_close = os.close
     real_open = os.open
     mirror_descriptors: set[int] = set()
@@ -254,16 +322,14 @@ def test_nested_sink_projection_commits_with_outer_intent_operation(
 
     monkeypatch.setattr(os, "open", track_mirror_open)
     monkeypatch.setattr(os, "close", close_then_fail)
-    with pytest.raises(AuditLogError, match="cannot close session log"):
-        session.process_intent(intent_payload(), console_principal)
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.execute_pending_intent("intent-1")
 
     monkeypatch.setattr(os, "close", real_close)
-    records = SessionAuditLog(tmp_path, SESSION).replay()
-    assert [record["event"]["type"] for record in records] == [
-        "intent_record",
-        "acknowledgement",
-        "state",
-    ]
+    with pytest.raises(AuditLogError, match="incomplete operation"):
+        SessionAuditLog(tmp_path, SESSION).replay()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.current_state()
 
 
 def test_intent_operation_is_durably_pending_before_sink_dispatch(
@@ -288,8 +354,9 @@ def test_intent_operation_is_durably_pending_before_sink_dispatch(
 
     session = _new_session(tmp_path, clock, event_ids, intent_sink=stop_after_dispatch)
 
+    session.process_intent(intent_payload(), console_principal)
     with pytest.raises(AbruptStop):
-        session.process_intent(intent_payload(), console_principal)
+        session.execute_pending_intent("intent-1")
 
     assert observed == {"journal_mode": "wal", "pending": 1}
     assert not session.audit_log.pending_path.exists()
@@ -383,10 +450,12 @@ def test_sink_cannot_catch_projection_failure_and_publish_partial_state(
 
     session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
     session.update_control_projection(selection=(1,))
+    accepted = session.process_intent(intent_payload(), console_principal)
+    assert accepted[0]["status"] == "accepted"
     committed = session.audit_log.path.read_bytes()
 
     with pytest.raises(AuditLogError, match="session is unusable"):
-        session.process_intent(intent_payload(), console_principal)
+        session.execute_pending_intent("intent-1")
 
     assert session.audit_log.path.read_bytes() == committed
     with pytest.raises(AuditLogError, match="session is unusable"):
@@ -877,7 +946,10 @@ def test_authenticated_terminal_acknowledgement_resumes_the_bound_execution(
     sink = ResumeSink()
     relay = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
     _join(relay, adapter_principal)
-    relay.process_intent(intent_payload(), console_principal)
+    intent = intent_payload()
+    relay.process_intent(intent, console_principal)
+    relay.mark_pending_intent_delivered(intent["intent_id"])
+    relay.execute_pending_intent(intent["intent_id"])
 
     executing = relay.process_acknowledgement(
         acknowledgement_payload(event_id="ack-executing"), adapter_principal
@@ -945,7 +1017,11 @@ def test_estop_latches_when_dispatch_is_still_executing_or_failed(
         estop = intent_payload()
         estop.update(name="estop", selection=[])
 
-        relay.process_intent(estop, console_principal)
+        admission = relay.process_intent(estop, console_principal)
+        assert admission[0]["status"] == "accepted"
+        assert relay.current_state()["estop"] is False
+        relay.mark_pending_intent_delivered(estop["intent_id"])
+        relay.execute_pending_intent(estop["intent_id"])
 
         assert relay.current_state()["estop"] is True
 
@@ -978,7 +1054,8 @@ def test_downstream_failure_has_terminal_refused_record(
 
     session = _new_session(tmp_path, clock, event_ids, intent_sink=fail)
 
-    result = session.process_intent(intent_payload(), console_principal)
+    accepted = session.process_intent(intent_payload(), console_principal)
+    result = session.execute_pending_intent("intent-1")
     records = session.replay()["events"]
     intent_outcomes = [
         record["event"]["outcome"]
@@ -986,10 +1063,56 @@ def test_downstream_failure_has_terminal_refused_record(
         if record["event"]["type"] == "intent_record"
     ]
 
-    assert [event["status"] for event in result] == ["accepted", "refused"]
-    assert result[1]["reason"] == "downstream_error"
+    assert accepted[0]["status"] == "accepted"
+    assert result[0]["reason"] == "downstream_error"
     assert intent_outcomes == ["accepted", "refused"]
     assert "do not expose this" not in str(records)
+
+
+def test_network_estop_preempts_blocked_normal_execution(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    console_principal: Principal,
+) -> None:
+    first_started = Event()
+    release_first = Event()
+    second_started = Event()
+    observed_selections: list[list[int]] = []
+
+    def sink(intent: IntentV1, state: dict[str, object]) -> IntentSinkResult | None:
+        observed_selections.append(state["selection"])
+        if intent.intent_id == "intent-1":
+            first_started.set()
+            assert release_first.wait(timeout=2)
+            return IntentSinkResult(
+                status=LifecycleStatus.COMPLETED,
+                source="test",
+                selection_update=(2,),
+            )
+        else:
+            second_started.set()
+        return None
+
+    session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
+    session.process_intent(intent_payload(intent_id="intent-1"), console_principal)
+    estop = intent_payload(intent_id="intent-2")
+    estop.update(name="estop", selection=[])
+    session.process_intent(estop, console_principal)
+
+    first = Thread(target=session.execute_pending_intent, args=("intent-1",))
+    second = Thread(target=session.execute_pending_intent, args=("intent-2",))
+    first.start()
+    assert first_started.wait(timeout=1)
+    second.start()
+    assert second_started.wait(timeout=0.2)
+    release_first.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert observed_selections == [[], []]
 
 
 def _contains_key(value: object, target: str) -> bool:
@@ -998,3 +1121,66 @@ def _contains_key(value: object, target: str) -> bool:
     if isinstance(value, list):
         return any(_contains_key(item, target) for item in value)
     return False
+
+
+@pytest.mark.parametrize("delivery_failed", [False, True], ids=["execution", "delivery"])
+def test_pending_intent_audit_close_failure_preserves_complete_outcome_and_blocks_dispatch(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    console_principal: Principal,
+    monkeypatch: pytest.MonkeyPatch,
+    delivery_failed: bool,
+) -> None:
+    dispatched: list[str] = []
+
+    def sink(intent: IntentV1, _state: dict[str, object]) -> IntentSinkResult:
+        dispatched.append(intent.intent_id)
+        return IntentSinkResult(
+            status=LifecycleStatus.COMPLETED,
+            source="test",
+            selection_update=(2,),
+        )
+
+    session = _new_session(tmp_path, clock, event_ids, intent_sink=sink)
+    session.process_intent(intent_payload(), console_principal)
+    session.process_intent(intent_payload(intent_id="intent-2"), console_principal)
+    accepted_sequence = session.replay()["last_sequence"]
+    real_close = os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("injected close failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "close", close_then_fail)
+        with pytest.raises(AuditLogError, match="cannot close session log"):
+            if delivery_failed:
+                session.fail_pending_intent(
+                    "intent-1",
+                    reason="acceptance_delivery_failed",
+                    detail="accepting connection did not receive acknowledgement",
+                )
+            else:
+                session.execute_pending_intent("intent-1")
+
+    reopened = SessionAuditLog(tmp_path, SESSION)
+    outcome = [record["event"] for record in reopened.replay(after_sequence=accepted_sequence)]
+    if delivery_failed:
+        assert [event["type"] for event in outcome] == ["intent_record", "refusal"]
+        assert outcome[-1]["reason"] == "acceptance_delivery_failed"
+    else:
+        assert [event["type"] for event in outcome] == [
+            "autonomy_result",
+            "state",
+            "acknowledgement",
+        ]
+        assert outcome[-1]["status"] == "completed"
+        assert outcome[1]["selection"] == [2]
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.current_state()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.replay()
+    with pytest.raises(AuditLogError, match="session is unusable"):
+        session.execute_pending_intent("intent-2")
+    assert dispatched == ([] if delivery_failed else ["intent-1"])

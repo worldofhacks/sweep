@@ -84,17 +84,20 @@ export class FixtureRelayClient implements RelayClient {
   private readonly sessionId: string
   private readonly now: () => number
   private readonly source: IntentSource
+  private armed: boolean
 
   constructor(
     sessionId: string,
     now: () => number = () => Date.now(),
     source: IntentSource = 'console',
-    scenario: FixtureFleetSize | FixtureScenarioName = 4,
+    scenario: FixtureFleetSize | FixtureScenarioName | boolean = 4,
+    armed = true,
   ) {
     this.sessionId = sessionId
     this.now = now
     this.source = source
-    this.scenario = typeof scenario === 'number' ? controlScenario(scenario) : fixtureScenario(scenario)
+    this.armed = typeof scenario === 'boolean' ? scenario : armed
+    this.scenario = typeof scenario === 'boolean' ? controlScenario(4) : typeof scenario === 'number' ? controlScenario(scenario) : fixtureScenario(scenario)
   }
 
   private get link(): FixtureLink {
@@ -171,6 +174,10 @@ export class FixtureRelayClient implements RelayClient {
     }
     if (intent.name === 'select' && 'ids' in intent.args) {
       this.selection = [...intent.args.ids]
+    } else if (intent.name === 'arm') {
+      this.armed = true
+    }
+    if (intent.name === 'select' || intent.name === 'arm') {
       this.emitState(t)
     }
     this.emitServer({
@@ -215,7 +222,7 @@ export class FixtureRelayClient implements RelayClient {
       type: 'state',
       session: this.sessionId,
       roster_version: this.scenario.rosterVersion,
-      armed: true,
+      armed: this.armed,
       estop: false,
       selection: this.selection,
       formation: this.scenario.formation,
@@ -372,11 +379,11 @@ export class FixtureCatalogClient implements CatalogClient {
   private sequence = 0
 
   constructor(
-    scenario: FixtureFleetSize | FixtureScenarioName = 4,
+    scenario: FixtureFleetSize | FixtureScenarioName | boolean = 4,
     now: () => number = () => Date.now(),
     schedule: Scheduler = timeoutScheduler,
   ) {
-    this.scenario = typeof scenario === 'number' ? controlScenario(scenario) : fixtureScenario(scenario)
+    this.scenario = typeof scenario === 'boolean' ? controlScenario(4) : typeof scenario === 'number' ? controlScenario(scenario) : fixtureScenario(scenario)
     this.now = now
     this.schedule = schedule
     this.snapshot = this.scenario.catalog(now())

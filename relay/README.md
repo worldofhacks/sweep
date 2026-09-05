@@ -95,7 +95,15 @@ Adapter command acknowledgements are audit facts; they never complete the overal
 
 An Intent v1 request is acknowledged as `accepted` only after the configured `intent_sink_factory` hands it to a planner/arbiter consumer. The standalone relay intentionally returns `downstream_unavailable`; it never claims that Hold, E-stop, or another action entered an execution path when no consumer is configured. A sink exception produces a terminal `downstream_error` refusal and matching replay records.
 
+Coordinated dispatch creates a durable operation marker for every delivered group member before adapter I/O. The relay commits each member's outcome and includes sibling lifecycle evidence in the coordinator's response, so a sibling worker can retrieve its result without repeating adapter work. An interruption before those outcomes commit leaves replay fail-closed.
+
+Undelivered stop reservations preserve executable recovery actions and the conflict HOLD. Completed coordination retains timestamp history for the intent freshness window, allowed future-clock skew, and conflict window, and longer while a related admitted request awaits delivery. Takeoff, translation and capture within the stop’s conflict window remain superseded. The stop-history rule allows newer come-home and fleet landing requests immediately. Requests dated at or before that stop remain superseded, and late members of a motion conflict remain refused. Newly issued motion outside the conflict window remains executable.
+
 ## Membership and state fan-out
+
+Each state snapshot carries a session-local, increasing `state_sequence`. Consumers use it to order the full projection across sockets, including snapshots generated in the same millisecond. Lifecycle acknowledgements remain deliverable when a newer roster makes an accompanying projection stale.
+
+The console ignores membership projections older than its current roster or already covered by an authoritative state snapshot. A delayed membership frame cannot undo aircraft readiness, selection, or a preview built against the newer roster.
 
 Every accepted membership transition is immediately followed, in the same ordered publication, by a `state` event. Membership values are exactly `registered`, `ready`, `leaving`, `disconnected`, and `degraded`. A session retains records and membership history for disconnected aircraft, caps physical stable IDs at four, increments `connection_epoch` on rejoin, and increments `roster_version` on membership changes. Join and rejoin do not modify the current selection or accepted plan.
 
@@ -121,7 +129,7 @@ rc_safety_operator_present, telemetry, membership_history
 
 Top-level `armed` is the authoritative session arm authorization, initially false and updated only through `RelaySession.update_control_projection(armed=...)` after the planner/arbiter accepts that control-state change. It is not inferred from aircraft flight-state strings. Join and rejoin leave it unchanged; a new session after process restart begins disarmed. Per-aircraft physical armed/disarmed evidence remains an explicit autonomy enrichment used by graceful-removal safety.
 
-Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, `state`, `telemetry`, `acknowledgement`, and `refusal`; every one carries `event_id`. A refusal always includes all of `intent_id`, `command_id`, `drone_id`, `connection_epoch`, `roster_version`, `reason`, and `detail`; context fields are deliberately present as null when they do not apply. Acknowledgements use the same always-present context fields; `command_id` is non-null for adapter facts and nullable for relay/orchestrator intent-level lifecycle events.
+Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, `state`, `telemetry`, `safety_action`, `acknowledgement`, and `refusal`; every one carries `event_id`. Node-local `safety_action` events expose the aircraft, connection epoch, and HOLD or FAILSAFE action so operators can see link-loss intervention. A refusal always includes all of `intent_id`, `command_id`, `drone_id`, `connection_epoch`, `roster_version`, `reason`, and `detail`; context fields are deliberately present as null when they do not apply. Acknowledgements use the same always-present context fields; `command_id` is non-null for adapter facts and nullable for relay/orchestrator intent-level lifecycle events.
 
 ## Audit and replay
 
