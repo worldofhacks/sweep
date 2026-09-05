@@ -7,6 +7,8 @@ Any engineer may claim a ready recording or corpus task and owns it through revi
 - `gesture/` will hold recorded webcam sessions from the console recorder with hand-labeled intent timestamps (gesture gold set).
 - `utterances/` will hold the 200-utterance language gold set with gold intent sequences.
 
+`utterances/transcript_plan_cases.json` currently contains synthetic development cases. Issue #36 replaces that file with the reviewed corpus while preserving its versioned case schema. Provider recordings live separately from expected outcomes so CI replay cannot derive an answer from the gold plan.
+
 Recordings are large. Before committing video, track it with Git LFS:
 
 ```bash
