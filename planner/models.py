@@ -368,6 +368,8 @@ class FleetSnapshot:
     operator_present: bool
     operator_last_seen_ms: int
     now_ms: int
+    formation: str = "none"
+    spacing: float = 0.8
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.roster_version):
@@ -389,6 +391,10 @@ class FleetSnapshot:
             self.now_ms
         ):
             raise ValueError("snapshot timestamps must be non-negative integers")
+        if not isinstance(self.formation, str) or not self.formation:
+            raise ValueError("formation must be a non-empty string")
+        if not _is_finite_number(self.spacing) or self.spacing <= 0:
+            raise ValueError("spacing must be a finite positive number")
         normalized = dict(sorted(self.aircraft.items()))
         if any(not isinstance(state, AircraftState) for state in normalized.values()):
             raise ValueError("aircraft values must be AircraftState instances")
@@ -439,6 +445,8 @@ class FleetSnapshot:
             operator_present=_boolean(raw, "operator_present"),
             operator_last_seen_ms=_nonnegative_int(raw, "operator_last_seen_ms"),
             now_ms=_nonnegative_int(raw, "now_ms"),
+            formation=_string(raw, "formation", fallback="none"),
+            spacing=_number_or_default(raw, "spacing", 0.8),
         )
 
     @classmethod
@@ -566,6 +574,8 @@ class FleetSnapshot:
             operator_present=enrichment.operator_present,
             operator_last_seen_ms=enrichment.operator_last_seen_ms,
             now_ms=_nonnegative_int(raw, "t"),
+            formation=_string(raw, "formation", fallback="none"),
+            spacing=_number_or_default(raw, "spacing", 0.8),
         )
 
     def to_dict(self) -> dict[str, JsonValue]:
@@ -578,6 +588,8 @@ class FleetSnapshot:
             "operator_present": self.operator_present,
             "operator_last_seen_ms": self.operator_last_seen_ms,
             "now_ms": self.now_ms,
+            "formation": self.formation,
+            "spacing": self.spacing,
         }
 
 
@@ -625,6 +637,8 @@ class Plan:
     selection_update: tuple[int, ...] | None = None
     armed_update: bool | None = None
     estop_update: bool | None = None
+    formation_update: str | None = None
+    spacing_update: float | None = None
     hold_scope: HoldScope | None = None
     status: LifecycleStatus = LifecycleStatus.ACCEPTED
 
@@ -642,6 +656,8 @@ class Plan:
             ),
             "armed_update": self.armed_update,
             "estop_update": self.estop_update,
+            "formation_update": self.formation_update,
+            "spacing_update": self.spacing_update,
             "hold_scope": self.hold_scope.value if self.hold_scope is not None else None,
             "status": self.status.value,
         }
@@ -864,6 +880,13 @@ def _number(raw: Mapping[str, object], key: str, fallback: str | None = None) ->
     if result != result or abs(result) == float("inf"):
         raise ValueError(f"{key} must be finite")
     return result
+
+
+def _number_or_default(raw: Mapping[str, object], key: str, default: float) -> float:
+    value = raw.get(key, default)
+    if not _is_finite_number(value):
+        raise ValueError(f"{key} must be finite")
+    return float(value)
 
 
 def _is_finite_number(value: object) -> bool:

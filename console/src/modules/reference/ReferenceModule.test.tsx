@@ -81,7 +81,7 @@ describe('Reference module', () => {
     renderCatalogConsole({ scenario: 'pending4' })
     await openReferenceTab(user, 'Mission')
     expect(screen.getByLabelText('Elapsed')).toHaveTextContent('0:00')
-    expect(screen.getAllByRole('button', { name: /accepted at M2\.0|unsupported/ })).toHaveLength(10)
+    expect(screen.getAllByRole('button', { name: /available|unsupported/ })).toHaveLength(10)
     expect(screen.queryByText(/does not report a mission tracker/)).not.toBeInTheDocument()
     await openReferenceTab(user, 'Ledger')
     expect(screen.getByText(/does not report a session ledger or replay/)).toBeInTheDocument()

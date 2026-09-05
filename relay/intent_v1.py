@@ -85,6 +85,11 @@ M20_SUPPORTED_NAMES = frozenset(
         IntentName.LAND_ALL,
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
+        IntentName.ALTITUDE,
+        IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
+        IntentName.SPACING,
+        IntentName.SWEEP,
     }
 )
 
@@ -211,6 +216,8 @@ def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
         return raw["confirm"] is True
     if name is IntentName.MAP_AREA:
         return raw["confirm"] is True and bool(raw["selection"])
+    if name is IntentName.SWEEP:
+        return raw["confirm"] is True and bool(raw["selection"])
     return True
 
 
@@ -256,11 +263,30 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({"name": value["name"]})
 
     if name is IntentName.SWEEP:
-        if not set(value) <= {"box"}:
+        if not value:
+            return MappingProxyType({})
+        if set(value) != {"box"} or not isinstance(value["box"], Mapping):
             raise ValueError
-        if "box" in value and not isinstance(value["box"], Mapping):
+        box = value["box"]
+        expected = {"min_x", "max_x", "min_y", "max_y"}
+        if set(box) != expected or not all(
+            isinstance(key, str) and _is_finite_number(box[key]) for key in expected
+        ):
             raise ValueError
-        return MappingProxyType({"box": _freeze_json(value["box"])} if "box" in value else {})
+        if float(box["min_x"]) >= float(box["max_x"]) or float(box["min_y"]) >= float(box["max_y"]):
+            raise ValueError
+        return MappingProxyType(
+            {
+                "box": MappingProxyType(
+                    {
+                        "min_x": float(box["min_x"]),
+                        "max_x": float(box["max_x"]),
+                        "min_y": float(box["min_y"]),
+                        "max_y": float(box["max_y"]),
+                    }
+                )
+            }
+        )
 
     if name in {IntentName.SURVEY_AREA, IntentName.MAP_AREA}:
         if (

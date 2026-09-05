@@ -53,11 +53,11 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
 ]
 
 /**
- * Mirror of relay/intent_v1.py M20_SUPPORTED_NAMES. The relay refuses every
- * other name with reason `unsupported`; the console still sends them so the
- * refusal is recorded rather than hidden.
+ * Mirror of relay/intent_v1.py M20_SUPPORTED_NAMES, including the earned M1.5
+ * simulator behaviors. The relay refuses every other name with reason
+ * `unsupported`; the console still sends it so the refusal is recorded.
  */
-export const M20_SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'arm',
   'select',
   'takeoff',
@@ -68,10 +68,15 @@ export const M20_SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Con
   'land_all',
   'estop',
   'capture_room',
+  'altitude',
+  'formation_next',
+  'formation_set',
+  'spacing',
+  'sweep',
 ])
 
-export function isSupportedAtM20(name: ConsoleIntentName): boolean {
-  return M20_SUPPORTED_INTENTS.has(name)
+export function isSupportedIntent(name: ConsoleIntentName): boolean {
+  return SUPPORTED_INTENTS.has(name)
 }
 
 /**
@@ -150,7 +155,13 @@ export interface DeltaArgs {
 export interface FormationSetArgs {
   name: FormationName
 }
-export type SweepArgs = EmptyArgs | { box: Record<string, unknown> }
+export interface SweepBox {
+  min_x: number
+  max_x: number
+  min_y: number
+  max_y: number
+}
+export type SweepArgs = EmptyArgs | { box: SweepBox }
 export interface CaptureRoomArgs {
   room_id: string
   capture_id: string
@@ -733,7 +744,7 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
     case 'formation_set':
       return keys.length === 1 && FORMATION_NAMES.has(args.name as FormationName)
     case 'sweep':
-      return keys.length === 0 || (keys.length === 1 && isRecord(args.box))
+      return keys.length === 0 || (keys.length === 1 && isSweepBox(args.box))
     case 'capture_room':
       return (
         keys.length === 3 &&
@@ -754,6 +765,22 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
     case 'come_home':
       return keys.length === 0
   }
+}
+
+function isSweepBox(value: unknown): value is SweepBox {
+  if (!isRecord(value)) return false
+  const keys = Object.keys(value)
+  if (
+    keys.length !== 4 ||
+    !['min_x', 'max_x', 'min_y', 'max_y'].every((key) => keys.includes(key)) ||
+    !isFiniteNumber(value.min_x) ||
+    !isFiniteNumber(value.max_x) ||
+    !isFiniteNumber(value.min_y) ||
+    !isFiniteNumber(value.max_y)
+  ) {
+    return false
+  }
+  return value.min_x < value.max_x && value.min_y < value.max_y
 }
 
 /** The brief's selection rules; capture_room's is also the relay's own scope check. */
