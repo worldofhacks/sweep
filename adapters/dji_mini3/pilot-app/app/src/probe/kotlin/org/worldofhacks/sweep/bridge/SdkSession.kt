@@ -20,7 +20,6 @@ import org.worldofhacks.sweep.bridge.flight.FlightExecutor
 import org.worldofhacks.sweep.bridge.flight.FlightNode
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
-import org.worldofhacks.sweep.bridge.node.NodeLog
 import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
@@ -39,10 +38,6 @@ import org.worldofhacks.sweep.bridge.session.SessionState
  * generation it was issued for, so a late key callback from a previous product is dropped
  * instead of overwriting the current one. The capture matrix and camera probing of the
  * original are not carried over.
- *
- * Phase E: [DjiFlightPort] and [FlightExecutor] run the Virtual Stick loop; the port's
- * takeover signals are attached once the SDK is registered and the flight controller's
- * failsafe setting is read (never changed) on every product connection.
  */
 class SdkSession(private val application: Application) : AircraftSession {
     private val model = SessionModel()
@@ -53,9 +48,6 @@ class SdkSession(private val application: Application) : AircraftSession {
         log = { name, detail -> model.event(name, detail) },
     )
 
-    private val port = DjiFlightPort { name, detail -> model.event(name, detail) }
-    private val flightExecutor = FlightExecutor(port, probe, fallback = probe, log = NodeLog { line -> model.event("Flight", line) })
-
     override val state: StateFlow<SessionState> = model.state
 
     override val aircraft: AircraftSource
@@ -64,6 +56,11 @@ class SdkSession(private val application: Application) : AircraftSession {
     override val executor: CommandExecutor
         get() = flightExecutor
 
+    // Phase E hook: DjiFlightPort and FlightExecutor run the Virtual Stick loop. The port's
+    // takeover signals attach when ProbeAircraft attaches (SDK registered), and the flight
+    // controller's failsafe setting is read, never changed, on every product connection.
+    private val port = DjiFlightPort { name, detail -> model.event(name, detail) }
+    private val flightExecutor = FlightExecutor(port, probe, fallback = probe, log = { line -> model.event("Flight", line) })
     override val flight: FlightNode = FlightNode(
         flightExecutor,
         probe,
@@ -72,11 +69,15 @@ class SdkSession(private val application: Application) : AircraftSession {
         log = { line -> model.event("Probe", line) },
     )
 
+    init {
+        probe.onAttached = { port.attach(flightExecutor) }
+        probe.onProductConnected = { port.onProductConnected() }
+    }
+
     private val callback = object : SDKManagerCallback {
         override fun onRegisterSuccess() {
             model.registerSucceeded()
             probe.attach()
-            port.attach(flightExecutor)
         }
 
         override fun onRegisterFailure(error: IDJIError) {
@@ -94,14 +95,12 @@ class SdkSession(private val application: Application) : AircraftSession {
             probe.attach()
             probe.productConnected(true)
             queryIdentity(generation)
-            port.onProductConnected()
         }
 
         override fun onProductChanged(productId: Int) {
             val generation = model.productChanged(productId)
             probe.productConnected(true)
             queryIdentity(generation)
-            port.onProductConnected()
         }
 
         override fun onInitProcess(event: DJISDKInitEvent, totalProcess: Int) {

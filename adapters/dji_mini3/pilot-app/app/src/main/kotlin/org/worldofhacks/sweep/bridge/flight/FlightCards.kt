@@ -32,7 +32,7 @@ import org.worldofhacks.sweep.bridge.session.AircraftSession
 @Composable
 fun FlightCards(session: AircraftSession) {
     val flight = session.flight ?: return
-    FlightCard(flight, session as? FlightSimulation)
+    FlightCard(flight, flight.simulation)
     ProbesCard(flight)
 }
 

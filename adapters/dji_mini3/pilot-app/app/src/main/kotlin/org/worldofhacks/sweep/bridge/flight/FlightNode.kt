@@ -21,6 +21,8 @@ class FlightNode(
     filesDir: File,
     onStatus: (FlightStatus) -> Unit,
     log: (String) -> Unit,
+    /** Only the fake flavor provides one; the flight card shows its buttons when present. */
+    val simulation: FlightSimulation? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -34,7 +36,7 @@ class FlightNode(
     fun setTransposed(transposed: Boolean) = executor.setMapping(AxisMapping(transposed = transposed))
 }
 
-/** Only the fake flavor's session implements this; the flight card shows its buttons when present. */
+/** The fake flavor's stand-ins for the RC (stick, pause, the flight controller dropping Virtual Stick). */
 interface FlightSimulation {
     fun simulateRcStick()
 

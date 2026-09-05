@@ -12,7 +12,6 @@ import org.worldofhacks.sweep.bridge.flight.FlightSimulation
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.node.FakeAircraft
-import org.worldofhacks.sweep.bridge.node.NodeLog
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.ProbeReport
@@ -27,12 +26,8 @@ import org.worldofhacks.sweep.bridge.session.SimulationControls
  * (readiness with `control_authority=false` while the socket stays up) can be shown without
  * hardware. The late-callback button replays an identity read stamped with the previous
  * generation, which the model must drop.
- *
- * Phase E: the fixture flies through [FakeFlightAircraft], the same Virtual Stick loop the
- * probe flavor runs, driven by [FlightExecutor] with simple kinematics, so the command path,
- * deadman, and takeover run end to end on a phone without an aircraft.
  */
-class FakeAircraftSession(private val filesDir: File) : AircraftSession, SimulationControls, FlightSimulation {
+class FakeAircraftSession(private val filesDir: File) : AircraftSession, SimulationControls {
     private val model = SessionModel()
     private val fakeProductId = 1
     private val fake = FakeAircraft(
@@ -47,9 +42,6 @@ class FakeAircraftSession(private val filesDir: File) : AircraftSession, Simulat
         ),
     )
 
-    private val flightAircraft = FakeFlightAircraft(fake)
-    private val flightExecutor = FlightExecutor(flightAircraft, flightAircraft, fallback = fake, log = NodeLog { line -> model.event("Flight", line) })
-
     override val state: StateFlow<SessionState> = model.state
 
     override val aircraft: AircraftSource
@@ -58,12 +50,25 @@ class FakeAircraftSession(private val filesDir: File) : AircraftSession, Simulat
     override val executor: CommandExecutor
         get() = flightExecutor
 
+    // Phase E hook: the fixture flies through the same Virtual Stick loop the probe flavor
+    // runs (FakeFlightAircraft, simple kinematics, driven by FlightExecutor), so the command
+    // path, deadman, and takeover run end to end on a phone without an aircraft. Non-flight
+    // commands still reach the Phase C fixture; the simulation buttons stand in for the RC.
+    private val flightAircraft = FakeFlightAircraft(fake)
+    private val flightExecutor = FlightExecutor(flightAircraft, flightAircraft, fallback = fake, log = { line -> model.event("Flight", line) })
     override val flight: FlightNode = FlightNode(
         flightExecutor,
         flightAircraft,
         filesDir,
         onStatus = flightAircraft::applyStatus,
         log = { line -> model.event("Probe", line) },
+        simulation = object : FlightSimulation {
+            override fun simulateRcStick() = flightExecutor.onTakeover("rc_takeover", "simulated left stick 45%")
+
+            override fun simulateRcPause() = flightExecutor.onTakeover("rc_pause", "simulated pause button")
+
+            override fun simulateVirtualStickDropped() = flightExecutor.onVirtualStickState(enabled = false, ownedBySdk = false, owner = "RC")
+        },
     )
 
     init {
@@ -82,19 +87,13 @@ class FakeAircraftSession(private val filesDir: File) : AircraftSession, Simulat
     override fun simulateConnect() {
         val generation = model.productConnected(fakeProductId)
         deliverIdentity(generation)
-        flightAircraft.setConnected(aircraft = true, rc = true)
+        fake.setConnected(aircraft = true, rc = true)
     }
 
     override fun simulateDisconnect() {
         model.productDisconnected(fakeProductId)
-        flightAircraft.setConnected(aircraft = false, rc = false)
+        fake.setConnected(aircraft = false, rc = false)
     }
-
-    override fun simulateRcStick() = flightExecutor.onTakeover("rc_takeover", "simulated left stick 45%")
-
-    override fun simulateRcPause() = flightExecutor.onTakeover("rc_pause", "simulated pause button")
-
-    override fun simulateVirtualStickDropped() = flightExecutor.onVirtualStickState(enabled = false, ownedBySdk = false, owner = "RC")
 
     override fun simulateLateCallback() {
         deliverIdentity(model.current.generation - 1)

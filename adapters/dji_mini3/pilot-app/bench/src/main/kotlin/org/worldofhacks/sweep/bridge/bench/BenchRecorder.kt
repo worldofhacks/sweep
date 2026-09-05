@@ -10,11 +10,11 @@ enum class RecordKind(val wire: String) {
     COMMAND_ACKED("command_acked"),
     COMMAND_DROPPED("command_dropped"),
     STICK_SENT("stick_sent"),
+    /** Issue #85 first-flight probe entries (axis probe results, drill transitions, operator sign-off). */
+    PROBE("probe"),
     TELEMETRY("telemetry"),
     VIDEO_FRAME("video_frame"),
-    NOTE("note"),
-    /** Issue #85 first-flight probe entries (axis probe results, drill transitions, operator sign-off). */
-    PROBE("probe");
+    NOTE("note");
 
     companion object {
         fun fromWire(value: String): RecordKind? = entries.firstOrNull { it.wire == value }
@@ -53,6 +53,11 @@ class BenchRecorder(private val sink: Appendable, private val clock: Clock) {
         write(RecordKind.STICK_SENT, clock.nowMs(), "seq" to seq)
     }
 
+    /** One #85 probe entry: a `name`, a display `summary`, and structured fields for analysis. */
+    fun probe(name: String, summary: String, vararg fields: Pair<String, Any?>) {
+        write(RecordKind.PROBE, clock.nowMs(), "name" to name, "summary" to summary, *fields)
+    }
+
     fun telemetry(droneId: Int, eventId: String) {
         write(RecordKind.TELEMETRY, clock.nowMs(), "drone_id" to droneId, "event_id" to eventId)
     }
@@ -70,11 +75,6 @@ class BenchRecorder(private val sink: Appendable, private val clock: Clock) {
 
     fun note(text: String) {
         write(RecordKind.NOTE, clock.nowMs(), "text" to text)
-    }
-
-    /** One #85 probe entry: a `name`, a display `summary`, and structured fields for analysis. */
-    fun probe(name: String, summary: String, vararg fields: Pair<String, Any?>) {
-        write(RecordKind.PROBE, clock.nowMs(), "name" to name, "summary" to summary, *fields)
     }
 
     val pendingCommands: Set<String>

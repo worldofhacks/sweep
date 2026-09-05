@@ -92,6 +92,13 @@ class ProbeAircraft(
     override val snapshot: StateFlow<AircraftSnapshot> = _snapshot.asStateFlow()
 
     /** Registers every telemetry listener once; safe to call again. */
+    /** Phase E hooks: [onAttached] fires once, when [attach] registers the listeners; [onProductConnected] on every product connection. */
+    @Volatile
+    var onAttached: (() -> Unit)? = null
+
+    @Volatile
+    var onProductConnected: (() -> Unit)? = null
+
     fun attach() {
         synchronized(lock) {
             if (attached) return
@@ -117,6 +124,7 @@ class ProbeAircraft(
         listen("KeyChargeRemainingInPercent", KeyTools.createKey(BatteryKey.KeyChargeRemainingInPercent)) { batteryPercent = it }
         listen("KeySignalQuality", KeyTools.createKey(AirLinkKey.KeySignalQuality)) { signalQuality = it }
         publish()
+        onAttached?.invoke()
     }
 
     fun detach() {
@@ -137,6 +145,7 @@ class ProbeAircraft(
             }
         }
         publish()
+        if (connected) onProductConnected?.invoke()
     }
 
     fun updateIdentity(identity: AircraftIdentity) {
