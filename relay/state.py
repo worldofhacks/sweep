@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import RLock
 
@@ -115,6 +117,52 @@ class FleetRegistry:
         self._pending: dict[str, object] | None = None
         self._accepted_plan: dict[str, object] | None = None
         self._lock = RLock()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Hold registry readers until the caller commits; restore state on failure."""
+        with self._lock:
+            # History is append-only and can become large during a long-running
+            # session.  Keep the existing lists and remember their lengths so a
+            # rollback costs O(number of aircraft), not O(total telemetry history).
+            aircraft_before = {
+                drone_id: replace(record, history=record.history)
+                for drone_id, record in self._aircraft.items()
+            }
+            history_lengths = {
+                drone_id: len(record.history) for drone_id, record in self._aircraft.items()
+            }
+            scalars_before = (
+                self._roster_version,
+                self._state_sequence,
+                self._selection,
+                self._armed,
+                self._estop,
+                self._formation,
+                self._spacing,
+                self._mode,
+                self._pending,
+                self._accepted_plan,
+            )
+            try:
+                yield
+            except BaseException:
+                for drone_id, record in aircraft_before.items():
+                    del record.history[history_lengths[drone_id] :]
+                self._aircraft = aircraft_before
+                (
+                    self._roster_version,
+                    self._state_sequence,
+                    self._selection,
+                    self._armed,
+                    self._estop,
+                    self._formation,
+                    self._spacing,
+                    self._mode,
+                    self._pending,
+                    self._accepted_plan,
+                ) = scalars_before
+                raise
 
     @property
     def roster_version(self) -> int:
