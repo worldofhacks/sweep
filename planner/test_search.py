@@ -6,7 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from perception.object_detection import DetectionCandidate, LiveDetectionWorker
+from perception.object_detection import DecodedFrame, DetectionCandidate, LiveDetectionWorker
 from perception.search_events import CameraPolicy, FramePoseEvidence, SearchMissionIdentity
 from planner.navigation import (
     ArtifactPin,
@@ -127,9 +127,15 @@ def test_search_refuses_disconnected_occupancy_and_changed_map() -> None:
 
 
 class _Frames:
-    def __init__(self, timestamps: list[float]) -> None:
+    def __init__(self, timestamps: list[float], *, capture_time_verified: bool = True) -> None:
         self._frames = deque(
-            (np.zeros((2, 2, 3), dtype=np.uint8), timestamp) for timestamp in timestamps
+            DecodedFrame(
+                np.zeros((2, 2, 3), dtype=np.uint8),
+                captured_at_s=timestamp,
+                received_at_s=timestamp,
+                capture_time_verified=capture_time_verified,
+            )
+            for timestamp in timestamps
         )
 
     def read(self, timeout: float = 0.1):
@@ -149,10 +155,16 @@ class _Detector:
         return self._candidates
 
 
-def _worker(source_id: str, timestamps: list[float], *, empty: bool = False) -> LiveDetectionWorker:
+def _worker(
+    source_id: str,
+    timestamps: list[float],
+    *,
+    empty: bool = False,
+    capture_time_verified: bool = True,
+) -> LiveDetectionWorker:
     clock = [0.0]
     worker = LiveDetectionWorker(
-        _Frames(timestamps),
+        _Frames(timestamps, capture_time_verified=capture_time_verified),
         _Detector(() if empty else (DetectionCandidate("backpack", 24, 0.9, (0, 0, 1, 1)),)),
         source_id=source_id,
         mission_id=MISSION.frame_mission_id,
@@ -306,6 +318,25 @@ def test_fresh_empty_processed_frame_advances_coverage() -> None:
         ).reason
         == "duplicate_frame"
     )
+
+
+def test_unverified_capture_time_cannot_advance_coverage() -> None:
+    preview = SearchPlanner().plan(request(1), artifact())
+    assert not isinstance(preview, SearchRefusal)
+    ledger = preview.ledger()
+    task = preview.assignments[0].task
+    ledger.activate(task.task_id)
+    worker = _worker(task.source_id, [1], capture_time_verified=False)
+    processed, _ = _poll(worker, 1.01)
+
+    observation = ledger.observe_processed(
+        processed, _evidence(processed, task.cells[0], task.connection_epoch, 1), 1.02
+    )
+
+    assert processed.capture_time_verified is False
+    assert observation.accepted is False
+    assert observation.reason == "capture_time_unverified"
+    assert ledger.progress(task.task_id)[0] == 0
 
 
 def test_camera_policy_uses_yaw_independent_inscribed_footprint() -> None:
