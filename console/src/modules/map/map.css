@@ -1,0 +1,65 @@
+/*
+ * Fleet map: the canvas fills the pane width with a fixed aspect, the status
+ * line and controls sit above it, and the legend under it names the colour of
+ * every device that is scanning.
+ */
+.mp { min-width: 0; }
+.mp-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.mp-status {
+  margin: 0;
+  max-width: 62ch;
+  font-size: var(--text-12-5);
+  color: var(--color-ink-2);
+}
+.mp-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.mp-button {
+  min-height: var(--min-h-34);
+  padding: 0 12px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-12-5);
+  font-weight: var(--weight-500);
+  cursor: pointer;
+  transition: var(--transition-button);
+}
+.mp-button:hover:not(:disabled) { background: var(--color-pill-bg); }
+.mp-button:disabled { background: var(--color-disabled-bg); color: var(--color-ink-2); cursor: not-allowed; }
+.mp-button.is-reset { border-color: var(--color-border-chip); }
+.mp-canvas-wrap {
+  position: relative;
+  aspect-ratio: 3 / 2;
+  max-height: 60vh;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-map-grid);
+  overflow: hidden;
+}
+.mp-canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.mp-canvas:active { cursor: grabbing; }
+.mp-hint { margin: 8px 0 0; font-size: var(--text-12); color: var(--color-ink-3); }
+.mp-legend { margin: 8px 0 0; padding: 0; list-style: none; font-size: var(--text-12); color: var(--color-ink-2); }
+.mp-legend li { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-family: var(--font-mono); }
+.mp-swatch { width: var(--size-dot-7); height: var(--size-dot-7); border-radius: var(--radius-dot); }
+.mp-unplaced { margin: 8px 0 0; font-size: var(--text-12); color: var(--color-ink-3); }
+.mp-notice { margin: 8px 0 0; font-size: var(--text-12-5); color: var(--color-ink-2); }
+
+/* Polar plot, on registry and device cards */
+.mp-polar { margin: 8px 0 0; }
+.mp-polar-canvas {
+  display: block;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-chip);
+  background: var(--color-map-grid);
+}
+.mp-polar-caption { margin-top: 4px; font-family: var(--font-mono); font-size: var(--text-11); color: var(--color-ink-3); }
+.mp-polar-empty { margin: 8px 0 0; font-size: var(--text-12); color: var(--color-ink-3); }

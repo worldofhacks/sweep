@@ -7,11 +7,14 @@ import {
   pluralNoun,
   rosterNoun,
 } from '../control/state'
-import type { RelayAircraftState } from '../relay/contract'
+import type { RelayAircraftState, RelaySensorEvent } from '../relay/contract'
+import { useSensorStore } from '../sensor/store'
 import { authorityWords, isReady, membershipTone, metricTone, sortedAircraft } from '../shell/derive'
 import { formatPercent, formatTime, humanizeCode } from '../shell/format'
 import { membershipReasonSentence, readinessSentence } from '../shell/sentences'
 import { motionStateWord } from './control/controls'
+import { deviceScan } from './map/derive-map'
+import { LidarPolar } from './map/LidarPolar'
 import type { ModuleProps } from './types'
 
 /**
@@ -29,7 +32,8 @@ export function FleetRegistry({
   controller: ModuleProps['controller']
   layout: 'column' | 'two'
 }) {
-  const { state, toggleAircraft } = controller
+  const { state, toggleAircraft, sensors } = controller
+  const snapshot = useSensorStore(sensors)
   const fleet = sortedAircraft(state.aircraft)
   const registry = (
     <div>
@@ -49,6 +53,7 @@ export function FleetRegistry({
             lastInSelection={state.selection.length === 1 && state.selection[0] === drone.drone_id}
             selectionEnabled={isIntentEnabled(state, 'select')}
             selectionDisabledReason={capabilityBlockedReason(state, 'select')}
+            scan={deviceScan(drone, snapshot)}
             onToggle={() => toggleAircraft(drone.drone_id)}
           />
         ))
@@ -100,6 +105,7 @@ function FleetCard({
   lastInSelection,
   selectionEnabled,
   selectionDisabledReason,
+  scan,
   onToggle,
 }: {
   drone: RelayAircraftState
@@ -107,6 +113,7 @@ function FleetCard({
   lastInSelection: boolean
   selectionEnabled: boolean
   selectionDisabledReason: string | null
+  scan: RelaySensorEvent | null
   onToggle: () => void
 }) {
   const id = formatDeviceId(drone)
@@ -145,6 +152,9 @@ function FleetCard({
           {drone.last_seen_at === null ? 'last seen unreported' : `seen ${formatTime(drone.last_seen_at)}`}
         </span>
       </p>
+      {drone.device_class === 'ground_vehicle' && drone.adapter_capabilities.includes('lidar') && (
+        <LidarPolar device={drone} scan={scan} size={92} />
+      )}
       {drone.readiness_reasons.length > 0 && (
         <div className="fleet-reasons">
           {drone.readiness_reasons.map((code) => (
