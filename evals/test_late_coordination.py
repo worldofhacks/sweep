@@ -406,8 +406,6 @@ def test_future_dated_motion_history_survives_pruning_before_late_related_admiss
 ) -> None:
     harness, session = airborne_session
     real_monotonic = bridge_module.monotonic
-    elapsed = [0.0]
-    monkeypatch.setattr(bridge_module, "monotonic", lambda: real_monotonic() + elapsed[0])
     original = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
     original["t"] = harness.clock.value + session.limits.future_clock_skew_ms
     related = harness.intent("translate", selection=[1], args={"dx": 1, "dy": 0})
@@ -416,10 +414,17 @@ def test_future_dated_motion_history_survives_pruning_before_late_related_admiss
     assert _execute(session, original)["status"] == "completed"
     original_x = harness.flight.aircraft[1].pose.x
 
-    # Keep a deliberate margin below the six-second retention horizon. The
-    # coordinator itself waits half a second, and runner scheduling must not decide
-    # whether this record is retained.
-    elapsed[0] = 4.5
+    # Anchor retention time to the completed record. Setup and runner scheduling
+    # before completion must not consume the record's six-second retention window.
+    bridge = harness.factory.bridges[SESSION]
+    completed = bridge._completed_ordering[-1]
+    assert original["t"] in completed.motion_times
+    anchored_at = real_monotonic()
+    monkeypatch.setattr(
+        bridge_module,
+        "monotonic",
+        lambda: completed.completed_at + (real_monotonic() - anchored_at),
+    )
     for increment in [500] * 11 + [100]:
         harness.clock.advance(increment)
         harness.factory.nodes[SESSION].periodic_events()
