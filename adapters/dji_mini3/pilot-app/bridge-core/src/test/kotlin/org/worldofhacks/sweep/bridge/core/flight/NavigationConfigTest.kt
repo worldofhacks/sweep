@@ -37,6 +37,7 @@ class NavigationConfigTest {
         assertFalse(config.isWithinArrival(0.0, 0.1, 0.11))
         assertFalse(config.isWithinArrival(-0.01, 0.0, 0.0))
         assertFalse(config.isWithinArrival(0.0, 0.0, -0.01))
+        assertFalse(config(maxPositionUncertaintyM = 0.05).isWithinArrival(0.0, 0.0, 0.1))
     }
 
     private fun config(
