@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from planner.models import Refusal
 from planner.navigation import ArrivalSlot, NavigationDispatchAcceptance, NavigationPermission
 from planner.navigation_runtime import NavigationExecutionConfig, NavigationRuntime
@@ -146,5 +148,34 @@ def test_session_preview_returns_the_frozen_route_and_current_aliases(tmp_path) 
         assert plan.navigation.route.destination_zone_id == "atrium"
         assert catalog is not None
         assert catalog["zones"][0]["aliases"] == ["atrium", "main hall"]
+
+        # Stop workers so this assertion observes the job the relay would queue.
+        owner.close(timeout_s=1)
+        confirmation = replace(intent, confirm=True, t=clock.value + 1)
+        owner.submit(confirmation, session.current_state())
+        prepared = owner._normal.pending[-1].prepared
+        assert prepared is not None
+        assert prepared.plan is plan
+        assert prepared.intent == confirmation
+
+        changed = replace(
+            intent,
+            intent_id="preview-navigation-changed",
+            args={"zone_id": "atrium"},
+        )
+        assert not isinstance(owner.preview_navigation(changed, session.current_state()), Refusal)
+        with pytest.raises(ValueError, match="current matching server preview"):
+            owner.submit(
+                replace(changed, confirm=True, args={"zone_id": "other"}),
+                session.current_state(),
+            )
+
+        stopped = replace(intent, intent_id="preview-navigation-stopped")
+        assert not isinstance(owner.preview_navigation(stopped, session.current_state()), Refusal)
+        owner.submit(
+            make_intent(IntentName.HOLD, selection=(1,), t=clock.value), session.current_state()
+        )
+        with pytest.raises(ValueError, match="current matching server preview"):
+            owner.submit(replace(stopped, confirm=True), session.current_state())
     finally:
         composition.close()

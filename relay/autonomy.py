@@ -46,6 +46,7 @@ from planner.models import (
     FlightState,
     LifecycleStatus,
     Plan,
+    PreparedExecution,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
@@ -343,6 +344,7 @@ class _Job:
     publications: list[dict[str, object]] = field(default_factory=list)
     cancelled_by: str | None = None
     finished: bool = False
+    prepared: PreparedExecution | None = None
 
     def check(self) -> None:
         if self.cancelled_by is not None:
@@ -446,6 +448,7 @@ class AutonomySession:
         self._estop = _Lane("estop", self._lock)
         self._lanes = (self._normal, self._hold, self._estop)
         self._awaiting: dict[str, _AwaitingExecution] = {}
+        self._navigation_previews: dict[str, tuple[int, PreparedExecution]] = {}
         self._workers = [
             threading.Thread(
                 target=self._run,
@@ -465,6 +468,22 @@ class AutonomySession:
             self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
         runtime = self._composition.runtime_if_bound()
         job = _Job(intent, None if runtime is None else runtime.sessions.get(self.session_id))
+        if intent.name is IntentName.NAVIGATE:
+            now_ms = _state.get("t")
+            with self._lock:
+                preview = self._navigation_previews.pop(intent.intent_id, None)
+            if (
+                not isinstance(now_ms, int)
+                or isinstance(now_ms, bool)
+                or preview is None
+                or preview[0] < now_ms
+                or not self._same_navigation_preview(preview[1].intent, intent)
+            ):
+                raise ValueError("navigation requires a current matching server preview")
+            job.prepared = replace(preview[1], intent=intent)
+        elif intent.name in {IntentName.HOLD, IntentName.ESTOP, IntentName.SELECT}:
+            with self._lock:
+                self._navigation_previews.clear()
         try:
             lane = self._route(job)
         except Exception:
@@ -491,8 +510,21 @@ class AutonomySession:
         with self._lock:
             previous = self._operator_last_seen_ms
             self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
+            if intent.intent_id in self._navigation_previews:
+                return Refusal(
+                    intent.intent_id,
+                    0,
+                    None,
+                    None,
+                    RefusalReason.INVALID_PLAN,
+                    "preview ID is already in use; create a new request",
+                )
         snapshot = self.snapshot(state)
-        planned = self.planner.plan(replace(intent, confirm=True), snapshot)
+        preview_intent = replace(intent, confirm=True)
+        refusal = self.arbiter.check_intent(preview_intent, snapshot)
+        if refusal is not None:
+            return refusal
+        planned = self.planner.plan(preview_intent, snapshot)
         if isinstance(planned, Refusal):
             return planned
         if planned.navigation is None:
@@ -504,8 +536,31 @@ class AutonomySession:
                 RefusalReason.UNSUPPORTED,
                 "navigation runtime did not produce a route",
             )
-        refusal = self.arbiter.check_intent(replace(intent, confirm=True), snapshot)
-        return planned if refusal is None else refusal
+        refusal = self.arbiter.check_plan(planned, snapshot)
+        if refusal is not None:
+            return refusal
+        prepared = PreparedExecution(intent, planned, snapshot)
+        expires_at_ms = snapshot.now_ms + 15_000
+        with self._lock:
+            self._navigation_previews = {
+                key: value
+                for key, value in self._navigation_previews.items()
+                if value[0] >= snapshot.now_ms
+            }
+            if len(self._navigation_previews) >= 32:
+                self._navigation_previews.pop(next(iter(self._navigation_previews)))
+            self._navigation_previews[intent.intent_id] = (expires_at_ms, prepared)
+        return planned
+
+    @staticmethod
+    def _same_navigation_preview(preview: IntentV1, confirmation: IntentV1) -> bool:
+        return replace(preview, t=confirmation.t, confirm=confirmation.confirm) == confirmation
+
+    def reconcile_membership(self, session: RelaySession) -> tuple[dict[str, object], ...]:
+        if session.session_id == self.session_id:
+            with self._lock:
+                self._navigation_previews.clear()
+        return ()
 
     def navigation_catalog(self) -> dict[str, object] | None:
         runtime = self._composition.navigation_runtime
@@ -705,7 +760,11 @@ class AutonomySession:
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
             )
-            result = controller.execute(intent, snapshot, current_snapshot=current)
+            result = (
+                controller.execute(intent, snapshot, current_snapshot=current)
+                if job.prepared is None
+                else controller.dispatch_prepared(job.prepared, current_snapshot=current)
+            )
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
