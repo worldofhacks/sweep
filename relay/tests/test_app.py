@@ -1639,7 +1639,6 @@ def test_live_replay_waits_for_audit_commit_and_returns_contiguous_snapshot(
     assert [record["seq"] for record in body["events"]] == list(range(1, body["last_sequence"] + 1))
 
 
-
 def test_replay_reports_unrecoverable_audit_history_as_unavailable(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:
@@ -1652,4 +1651,3 @@ def test_replay_reports_unrecoverable_audit_history_as_unavailable(
 
     assert response.status_code == 503
     assert "incomplete operation" in response.json()["detail"]
-

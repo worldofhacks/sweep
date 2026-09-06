@@ -115,3 +115,10 @@ jobs:
         working-directory: console
       - run: pnpm test:fleet-browser
         working-directory: console
+      - run: node scripts/navigation-browser-smoke.mjs
+        working-directory: console
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-rehearsal-evidence
+          path: output/playwright/
