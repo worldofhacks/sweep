@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from math import dist
+from threading import RLock
 from types import MappingProxyType
 from typing import Literal
 
@@ -53,6 +54,9 @@ from planner.search import (
     SearchRequest,
 )
 from relay.intent_v1 import IntentV1
+
+_MAX_RETAINED_MISSIONS = 128
+_MAX_CANDIDATES_PER_MISSION = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +125,7 @@ class SearchRuntime:
         self.navigation = navigation
         self._planner = SearchPlanner(navigation.planner)
         self._missions: dict[str, _Mission] = {}
+        self._lock = RLock()
 
     def prepare(self, intent: IntentV1, snapshot: FleetSnapshot) -> SearchMissionPreview | Refusal:
         try:
@@ -170,48 +175,59 @@ class SearchRuntime:
             plan = self.navigation.prepare_route(intent, snapshot, route)
         except (KeyError, ValueError) as error:
             return self._refusal(intent.intent_id, snapshot, str(error))
-        if intent.intent_id in self._missions:
-            return self._refusal(intent.intent_id, snapshot, "search intent already has a mission")
         preview = SearchMissionPreview(search, plan)
-        self._missions[intent.intent_id] = _Mission(
-            preview,
-            search.ledger(),
-            candidates={},
-            candidate_frames={},
-            acknowledged_findings=set(),
-            intent_fingerprint=self._intent_fingerprint(intent),
-            expires_at_ms=snapshot.now_ms + self.config.preview_ttl_ms,
-        )
+        with self._lock:
+            if intent.intent_id in self._missions:
+                return self._refusal(
+                    intent.intent_id, snapshot, "search intent already has a mission"
+                )
+            self._discard_terminal_missions()
+            if len(self._missions) >= _MAX_RETAINED_MISSIONS:
+                return self._refusal(intent.intent_id, snapshot, "search mission capacity is full")
+            self._missions[intent.intent_id] = _Mission(
+                preview,
+                search.ledger(),
+                candidates={},
+                candidate_frames={},
+                acknowledged_findings=set(),
+                intent_fingerprint=self._intent_fingerprint(intent),
+                expires_at_ms=snapshot.now_ms + self.config.preview_ttl_ms,
+            )
         return preview
 
     def start(self, intent_id: str) -> SearchMissionStatus:
-        mission = self._mission(intent_id)
-        mission.started = True
-        return self.status(intent_id)
+        with self._lock:
+            mission = self._mission(intent_id)
+            mission.started = True
+            return self._status(intent_id, mission)
 
     def has_mission(self, intent_id: str) -> bool:
-        return intent_id in self._missions
+        with self._lock:
+            return intent_id in self._missions
 
     def accepts_intent(self, intent: IntentV1, now_ms: int) -> bool:
-        mission = self._missions.get(intent.intent_id)
-        return (
-            mission is not None
-            and mission.intent_fingerprint == self._intent_fingerprint(intent)
-            and not mission.started
-            and now_ms <= mission.expires_at_ms
-        )
+        with self._lock:
+            mission = self._missions.get(intent.intent_id)
+            return (
+                mission is not None
+                and mission.intent_fingerprint == self._intent_fingerprint(intent)
+                and not mission.started
+                and now_ms <= mission.expires_at_ms
+            )
 
     def preview_expires_at_ms(self, intent_id: str) -> int:
-        return self._mission(intent_id).expires_at_ms
+        with self._lock:
+            return self._mission(intent_id).expires_at_ms
 
     def revoke_unstarted_previews(self, session_id: str) -> None:
-        for intent_id, mission in tuple(self._missions.items()):
-            if (
-                not mission.started
-                and mission.intent_fingerprint
-                and mission.intent_fingerprint[0] == session_id
-            ):
-                del self._missions[intent_id]
+        with self._lock:
+            for intent_id, mission in tuple(self._missions.items()):
+                if (
+                    not mission.started
+                    and mission.intent_fingerprint
+                    and mission.intent_fingerprint[0] == session_id
+                ):
+                    del self._missions[intent_id]
 
     def execute(
         self,
@@ -222,8 +238,10 @@ class SearchRuntime:
         current_snapshot: Callable[[], FleetSnapshot] | None = None,
     ) -> ExecutionResult:
         """Dispatch only the exact route frozen into the confirmed preview."""
-        mission = self._mission(intent_id)
-        self.start(intent_id)
+        with self._lock:
+            mission = self._mission(intent_id)
+            mission.started = True
+            plan = mission.preview.plan
         previous_observer = dispatcher.on_navigation_command_completed
 
         def arrived(plan: Plan, command: Command, current: FleetSnapshot) -> None:
@@ -235,61 +253,73 @@ class SearchRuntime:
         dispatcher.on_navigation_command_completed = arrived
         self._activate_arrived_tasks(mission, snapshot)
         try:
-            result = dispatcher.dispatch(
-                mission.preview.plan, snapshot, current_snapshot=current_snapshot
-            )
+            result = dispatcher.dispatch(plan, snapshot, current_snapshot=current_snapshot)
         finally:
             dispatcher.on_navigation_command_completed = previous_observer
         if result.status is not LifecycleStatus.COMPLETED:
             reason = result.refusal.detail if result.refusal else "route_execution_failed"
             self.hold(intent_id, reason)
             return result
-        for assignment in mission.preview.search.assignments:
-            task_id = assignment.task.task_id
-            if mission.ledger.task_state(task_id) in {"pending", "active"}:
-                mission.ledger.mark_incomplete(task_id, "route_finished_with_unobserved_cells")
+        with self._lock:
+            for assignment in mission.preview.search.assignments:
+                task_id = assignment.task.task_id
+                if mission.ledger.task_state(task_id) in {"pending", "active"}:
+                    mission.ledger.mark_incomplete(task_id, "route_finished_with_unobserved_cells")
         return result
 
     def observe_processed_frame(
         self, intent_id: str, event: ProcessedFrameEvent, pose: FramePoseEvidence, *, now_s: float
     ) -> CoverageObservation:
-        mission = self._mission(intent_id)
-        if not mission.started:
-            return CoverageObservation(False, "mission_not_started", ())
-        return mission.ledger.observe_processed(event, pose, now_s)
+        with self._lock:
+            mission = self._mission(intent_id)
+            if not mission.started:
+                return CoverageObservation(False, "mission_not_started", ())
+            return mission.ledger.observe_processed(event, pose, now_s)
 
     def observe_sighting(self, intent_id: str, event: SightingEvent) -> SearchCandidateEvent | None:
-        mission = self._mission(intent_id)
-        candidate = mission.ledger.observe_sighting(event)
-        if candidate is not None:
+        with self._lock:
+            mission = self._mission(intent_id)
             assert mission.candidates is not None
-            previous = mission.candidates.get(candidate.sighting_id)
-            mission.candidates[candidate.sighting_id] = (
-                candidate,
-                None if previous is None else previous[1],
-            )
-            assert mission.candidate_frames is not None
-            mission.candidate_frames[candidate.sighting_id] = event
-        return candidate
+            if (
+                event.sighting_id not in mission.candidates
+                and len(mission.candidates) >= _MAX_CANDIDATES_PER_MISSION
+            ):
+                return None
+            candidate = mission.ledger.observe_sighting(event)
+            if candidate is not None:
+                previous = mission.candidates.get(candidate.sighting_id)
+                mission.candidates[candidate.sighting_id] = (
+                    candidate,
+                    None if previous is None else previous[1],
+                )
+                assert mission.candidate_frames is not None
+                mission.candidate_frames[candidate.sighting_id] = event
+            return candidate
 
     def localize_sighting(
         self, intent_id: str, sighting_id: str, localization: SearchLocalization | None
     ) -> None:
-        mission = self._mission(intent_id)
-        assert mission.candidates is not None
-        candidate = mission.candidates.get(sighting_id)
-        if candidate is not None:
-            mission.candidates[sighting_id] = (candidate[0], localization)
+        with self._lock:
+            mission = self._mission(intent_id)
+            assert mission.candidates is not None
+            candidate = mission.candidates.get(sighting_id)
+            if candidate is not None:
+                mission.candidates[sighting_id] = (candidate[0], localization)
 
     def acknowledge_finding(self, intent_id: str, sighting_id: str) -> bool:
-        mission = self._mission(intent_id)
-        assert mission.candidates is not None and mission.acknowledged_findings is not None
-        if sighting_id not in mission.candidates:
-            return False
-        mission.acknowledged_findings.add(sighting_id)
-        return True
+        with self._lock:
+            mission = self._mission(intent_id)
+            assert mission.candidates is not None and mission.acknowledged_findings is not None
+            if sighting_id not in mission.candidates:
+                return False
+            mission.acknowledged_findings.add(sighting_id)
+            return True
 
     def status_payload(self, intent_id: str) -> dict[str, object]:
+        with self._lock:
+            return self._status_payload_locked(intent_id)
+
+    def _status_payload_locked(self, intent_id: str) -> dict[str, object]:
         mission = self._mission(intent_id)
         assert mission.candidates is not None and mission.acknowledged_findings is not None
         tasks = []
@@ -367,19 +397,21 @@ class SearchRuntime:
         camera_for_frame: Callable[[ProcessedFrameEvent], tuple[int, SearchCameraModel] | None]
         | None = None,
     ) -> LiveDetectionWorker:
-        mission = self._mission(intent_id)
-        assignment = next(
-            item
-            for item in mission.preview.search.assignments
-            if item.drone.drone.drone_id == drone_id
-        )
+        with self._lock:
+            mission = self._mission(intent_id)
+            assignment = next(
+                item
+                for item in mission.preview.search.assignments
+                if item.drone.drone.drone_id == drone_id
+            )
+            search = mission.preview.search
 
         zone = next(
             zone
             for zone in self.navigation.artifact().zones
-            if zone.zone_id == mission.preview.search.zone.zone_id
+            if zone.zone_id == search.zone.zone_id
         )
-        zones = (replace(zone, z_min_m=mission.preview.search.zone.floor_z_m),)
+        zones = (replace(zone, z_min_m=search.zone.floor_z_m),)
         localizers: dict[str, FiveFrameLocalizer] = {}
         last_pose: FramePoseEvidence | None = None
         last_camera: tuple[int, SearchCameraModel] | None = None
@@ -419,37 +451,42 @@ class SearchRuntime:
             stream,
             detector,
             source_id=assignment.drone.source_id,
-            mission_id=mission.preview.search.mission.frame_mission_id,
+            mission_id=search.mission.frame_mission_id,
             worker_run_id=worker_run_id,
             on_event=consume,
             monotonic_clock=now_s,
         )
 
     def detection_drone_ids(self, intent_id: str) -> tuple[int, ...]:
-        mission = self._mission(intent_id)
-        return tuple(
-            assignment.drone.drone.drone_id for assignment in mission.preview.search.assignments
-        )
+        with self._lock:
+            mission = self._mission(intent_id)
+            return tuple(
+                assignment.drone.drone.drone_id for assignment in mission.preview.search.assignments
+            )
 
     def detection_task(self, intent_id: str, drone_id: int):
-        mission = self._mission(intent_id)
-        return next(
-            assignment.task
-            for assignment in mission.preview.search.assignments
-            if assignment.drone.drone.drone_id == drone_id
-        )
+        with self._lock:
+            mission = self._mission(intent_id)
+            return next(
+                assignment.task
+                for assignment in mission.preview.search.assignments
+                if assignment.drone.drone.drone_id == drone_id
+            )
 
     def hold(self, intent_id: str, reason: str) -> SearchMissionStatus:
-        mission = self._mission(intent_id)
-        return self._status(intent_id, mission, mission.ledger.hold(reason))
+        with self._lock:
+            mission = self._mission(intent_id)
+            return self._status(intent_id, mission, mission.ledger.hold(reason))
 
     def cancel(self, intent_id: str, reason: str) -> SearchMissionStatus:
-        mission = self._mission(intent_id)
-        return self._status(intent_id, mission, mission.ledger.cancel(reason))
+        with self._lock:
+            mission = self._mission(intent_id)
+            return self._status(intent_id, mission, mission.ledger.cancel(reason))
 
     def status(self, intent_id: str) -> SearchMissionStatus:
-        mission = self._mission(intent_id)
-        return self._status(intent_id, mission)
+        with self._lock:
+            mission = self._mission(intent_id)
+            return self._status(intent_id, mission)
 
     def _transit_plan(
         self, search: SearchPreview, artifact: NavigationArtifact, positions: tuple[DronePose, ...]
@@ -581,29 +618,30 @@ class SearchRuntime:
     def _activate_arrived_tasks(
         self, mission: _Mission, snapshot: FleetSnapshot, *, drone_id: int | None = None
     ) -> tuple[SearchTaskEvent, ...]:
-        events = []
-        for assignment in mission.preview.search.assignments:
-            task = assignment.task
-            if drone_id is not None and assignment.drone.drone.drone_id != drone_id:
-                continue
-            arrival = assignment.transit.arrival_slot.pose
-            aircraft = snapshot.aircraft.get(assignment.drone.drone.drone_id)
-            if (
-                aircraft is not None
-                and dist(
-                    (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z),
-                    (arrival.x_m, arrival.y_m, arrival.z_m),
-                )
-                <= self.navigation.config.position_tolerance_m
-                and aircraft.connection_epoch == task.connection_epoch
-                and aircraft.flight_state.value == "hovering"
-                and 0
-                <= snapshot.now_ms - aircraft.position_last_seen_ms
-                <= self.navigation.config.position_max_age_ms
-                and mission.ledger.task_state(task.task_id) == "pending"
-            ):
-                events.append(mission.ledger.activate(task.task_id))
-        return tuple(events)
+        with self._lock:
+            events = []
+            for assignment in mission.preview.search.assignments:
+                task = assignment.task
+                if drone_id is not None and assignment.drone.drone.drone_id != drone_id:
+                    continue
+                arrival = assignment.transit.arrival_slot.pose
+                aircraft = snapshot.aircraft.get(assignment.drone.drone.drone_id)
+                if (
+                    aircraft is not None
+                    and dist(
+                        (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z),
+                        (arrival.x_m, arrival.y_m, arrival.z_m),
+                    )
+                    <= self.navigation.config.position_tolerance_m
+                    and aircraft.connection_epoch == task.connection_epoch
+                    and aircraft.flight_state.value == "hovering"
+                    and 0
+                    <= snapshot.now_ms - aircraft.position_last_seen_ms
+                    <= self.navigation.config.position_max_age_ms
+                    and mission.ledger.task_state(task.task_id) == "pending"
+                ):
+                    events.append(mission.ledger.activate(task.task_id))
+            return tuple(events)
 
     @staticmethod
     def _status(
@@ -626,10 +664,18 @@ class SearchRuntime:
         return SearchMissionStatus(intent_id, state, events)
 
     def _mission(self, intent_id: str) -> _Mission:
-        try:
-            return self._missions[intent_id]
-        except KeyError as error:
-            raise ValueError("search mission is unknown") from error
+        with self._lock:
+            try:
+                return self._missions[intent_id]
+            except KeyError as error:
+                raise ValueError("search mission is unknown") from error
+
+    def _discard_terminal_missions(self) -> None:
+        for intent_id, mission in tuple(self._missions.items()):
+            if len(self._missions) < _MAX_RETAINED_MISSIONS:
+                return
+            if self._status(intent_id, mission).state in {"covered", "incomplete", "cancelled"}:
+                del self._missions[intent_id]
 
     @staticmethod
     def _refusal(intent_id: str, snapshot: FleetSnapshot, detail: str) -> Refusal:
