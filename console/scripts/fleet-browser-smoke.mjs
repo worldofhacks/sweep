@@ -157,6 +157,12 @@ try {
     ]) await voiceCommand(text, name, targets)
   } else {
     await typedCommand('select all ready aircraft', 'select')
+    const refusedHold = await typedCommand('hold', 'hold', 'refused')
+    await assertCommands(refusedHold, [], 'hover')
+    evidence.checks.push('HOLD including a landed rejoined node refuses without partial dispatch')
+    const before = (await events()).length
+    await page.getByRole('group', { name: 'Target', exact: true }).getByRole('button', { name: 'Deselect D-03', exact: true }).click()
+    await completed('select', before)
     await typedCommand('hold', 'hold')
     await controlCommand(/^Land all/, 'land_all', true)
   }
@@ -211,7 +217,7 @@ async function api(path, body) {
   return response.json()
 }
 function intentRecords(all, id) { return all.filter((event) => event.type === 'intent_record' && event.intent.intent_id === id) }
-async function completed(name, after, source) {
+async function completed(name, after, source, expectedStatus = 'completed') {
   let id
   await waitUntil(async () => {
     const all = await events()
@@ -220,15 +226,15 @@ async function completed(name, after, source) {
     id = intent.intent.intent_id
     const terminal = all.find((event) => event.intent_id === id && (event.type === 'refusal' || (event.source === 'autonomy' && ['completed', 'refused', 'failed', 'invalidated'].includes(event.status))))
     if (!terminal) return false
-    assert.equal(terminal.status, 'completed', JSON.stringify(terminal))
+    assert.equal(terminal.status, expectedStatus, JSON.stringify(terminal))
     return true
   }, `completed ${name}`)
   return id
 }
-async function confirmAndWait(name) {
+async function confirmAndWait(name, expectedStatus = 'completed') {
   const before = (await events()).length
   await dock().getByRole('button', { name: 'Confirm and send', exact: true }).click()
-  return completed(name, before)
+  return completed(name, before, undefined, expectedStatus)
 }
 async function controlCommand(label, name, confirm = false) {
   await module('Control'); await controlPane('Swarm')
@@ -239,13 +245,14 @@ async function controlCommand(label, name, confirm = false) {
   evidence.checks.push(`button ${name} completed`)
   return id
 }
-async function typedCommand(text, name) {
+async function typedCommand(text, name, expectedStatus = 'completed') {
   await module('Speech')
   await page.getByRole('textbox', { name: /Utterance/ }).fill(text)
   await page.getByRole('button', { name: 'Compile to intents', exact: true }).click()
   await page.getByRole('button', { name: 'Draft for confirmation', exact: true }).click()
-  await confirmAndWait(name)
-  evidence.checks.push(`typed local ${name} completed`)
+  const id = await confirmAndWait(name, expectedStatus)
+  evidence.checks.push(`typed local ${name} ${expectedStatus}`)
+  return id
 }
 async function voiceCommand(text, name, targets) {
   await module('Speech')
