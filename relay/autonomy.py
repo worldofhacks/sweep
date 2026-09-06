@@ -22,6 +22,7 @@ the intent operation.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -1030,9 +1031,6 @@ class AutonomySession:
                     if not factory.start_mission(
                         intent.intent_id,
                         session,
-                        on_failure=lambda reason: self._fail_search_detection(
-                            intent.intent_id, session, reason
-                        ),
                     ):
                         search.hold(intent.intent_id, "detection_worker_start_failed")
                         result = ExecutionResult(
@@ -1092,6 +1090,12 @@ class AutonomySession:
                 self._awaiting.pop(intent.intent_id, None)
                 job.finished = True
             cancelled = job.cancelled_by
+        if result.status is LifecycleStatus.EXECUTING and intent.name is IntentName.SEARCH:
+            if factory := self._composition.detection_factory:
+                factory.monitor_mission(
+                    intent.intent_id,
+                    lambda reason: self._fail_search_detection(intent.intent_id, session, reason),
+                )
         if cancelled is not None:
             return  # a stop already recorded this plan's terminal lifecycle
         self._report(runtime, session, job, result)
@@ -1290,6 +1294,29 @@ class AutonomySession:
                 self.navigation_control.invalidate(intent_id)
             if factory := self._composition.detection_factory:
                 factory.finish_mission(intent_id)
+            safety_intent = IntentV1(
+                v=1,
+                t=session.clock(),
+                type="intent",
+                intent_id=(
+                    f"safety:search-detection:{hashlib.sha256(intent_id.encode()).hexdigest()[:24]}"
+                ),
+                retry_of=None,
+                source="safety",
+                session=self.session_id,
+                name=IntentName.HOLD,
+                args={},
+                selection=(),
+                mode=Mode.INDOOR,
+                confirm=True,
+            )
+            events.append(session.admit_safety_stop(safety_intent))
+            hold_job = _Job(safety_intent, session, watchdog_action="hold")
+            hold_lane = self._route(hold_job)
+            with hold_lane.ready:
+                hold_lane.pending.append(hold_job)
+                hold_lane.ready.notify()
+            events.extend(hold_job.publications)
             return events
 
         self._publish(runtime, operation)

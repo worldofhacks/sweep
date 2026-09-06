@@ -237,6 +237,10 @@ class SearchDetectionFactory:
             self._start_monitor(intent_id, on_failure)
         return True
 
+    def monitor_mission(self, intent_id: str, on_failure: MissionFailureHandler) -> None:
+        """Observe a successfully started mission once its route can be interrupted."""
+        self._start_monitor(intent_id, on_failure)
+
     def status(self, intent_id: str) -> list[dict[str, object]]:
         with self._lock:
             workers = dict(self._workers)

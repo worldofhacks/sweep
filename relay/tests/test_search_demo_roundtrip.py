@@ -14,7 +14,7 @@ import uvicorn
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
 from adapters.sim.search_demo import SearchDemo, search_demo
 from planner.models import CommandOperation
-from relay.autonomy import create_autonomy_app
+from relay.autonomy import AutonomyComposition, create_autonomy_app
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION
 from relay.tests.test_bridge_roundtrip import ConsoleProbe, RelayServer
@@ -70,7 +70,7 @@ def _intent(
 
 
 @pytest.fixture
-def search_demo_server(tmp_path) -> Iterator[tuple[RelayServer, SearchDemo]]:
+def search_demo_server(tmp_path) -> Iterator[tuple[RelayServer, SearchDemo, AutonomyComposition]]:
     demo = search_demo()
     settings = RelaySettings(
         relay_token=CONSOLE_KEY,
@@ -98,7 +98,7 @@ def search_demo_server(tmp_path) -> Iterator[tuple[RelayServer, SearchDemo]]:
     thread.start()
     _wait_until(lambda: server.started, what="search demo relay startup")
     try:
-        yield RelayServer(runtime=app.state.relay_runtime, port=port), demo
+        yield RelayServer(runtime=app.state.relay_runtime, port=port), demo, composition
     finally:
         server.should_exit = True
         thread.join(timeout=WAIT_S)
@@ -109,9 +109,9 @@ def search_demo_server(tmp_path) -> Iterator[tuple[RelayServer, SearchDemo]]:
 
 
 def test_synthetic_search_demo_runs_from_http_preview_through_fake_node(
-    search_demo_server: tuple[RelayServer, SearchDemo],
+    search_demo_server: tuple[RelayServer, SearchDemo, AutonomyComposition],
 ) -> None:
-    server, demo = search_demo_server
+    server, demo, _composition = search_demo_server
     console = ConsoleProbe(server.url)
     node = FakeNode(
         FakeNodeConfig(
@@ -238,3 +238,130 @@ def test_synthetic_search_demo_runs_from_http_preview_through_fake_node(
     assert acknowledged.json()["session"] == SESSION
     assert acknowledged.json()["candidates"][0]["acknowledged"]
     assert commands_after == commands_before
+
+
+def test_late_detection_failure_holds_pending_route_before_a_delayed_goto_acknowledges(
+    search_demo_server: tuple[RelayServer, SearchDemo, AutonomyComposition],
+) -> None:
+    server, _demo, composition = search_demo_server
+    console = ConsoleProbe(server.url)
+    node = FakeNode(
+        FakeNodeConfig(
+            relay_url=server.url,
+            session=SESSION,
+            drone_id=1,
+            token=ADAPTER_KEY.decode(),
+            adapter_id="late-failure-node",
+            home=(0.5, 1.5, 0.0),
+            telemetry_hz=10,
+            slow_operations=frozenset({CommandOperation.GOTO}),
+            slow_ack_delay_s=2.5,
+        )
+    )
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+    http_url = server.url.replace("ws://", "http://", 1)
+    console.start()
+    node.start()
+    try:
+
+        def drone() -> dict[str, object] | None:
+            session = server.runtime.sessions.get(SESSION)
+            if session is None:
+                return None
+            return next(
+                (item for item in session.current_state()["drones"] if item["drone_id"] == 1), None
+            )
+
+        def hovering() -> bool:
+            return bool(
+                (item := drone()) is not None
+                and item["telemetry"] is not None
+                and item["telemetry"]["state"] == "hovering"
+            )
+
+        _wait_until(
+            lambda: (item := drone()) is not None and item["membership"] == "ready",
+            what="late failure node readiness",
+        )
+        for name, selection, args, confirm in (
+            ("arm", [], {}, False),
+            ("select", [], {"ids": [1]}, False),
+            ("takeoff", [1], {}, True),
+        ):
+            intent = _intent(name, selection=selection, args=args, confirm=confirm)
+            console.send(intent)
+            assert _outcome(console, intent["intent_id"])["status"] == "completed"
+        _wait_until(hovering, what="late failure node hover telemetry")
+
+        search = _intent(
+            "search",
+            selection=[1],
+            args={"zone_id": "atrium", "target_class": "person"},
+            confirm=True,
+        )
+        assert (
+            httpx.post(
+                f"{http_url}/session/{SESSION}/search/preview",
+                headers=headers,
+                json={"intent": search},
+                timeout=WAIT_S,
+            ).status_code
+            == 200
+        )
+        console.send(search)
+        factory = composition.detection_factory
+        assert factory is not None
+        _wait_until(
+            lambda: (search["intent_id"], 1) in factory._workers,
+            what="late failure worker startup",
+        )
+        _wait_until(
+            lambda: any(
+                record["event"].get("intent_id") == search["intent_id"]
+                and record["event"].get("operation") == "goto"
+                for record in server.runtime.replay(SESSION)["events"]
+            ),
+            what="pending search goto",
+        )
+        _wait_until(
+            lambda: search["intent_id"] in factory._monitors,
+            what="search detection failure monitor",
+        )
+        worker = factory._workers[(search["intent_id"], 1)][1]
+        worker._set_failure("poll_failed")
+        outcome = _outcome(console, search["intent_id"])
+        assert outcome["status"] == "failed", json.dumps(outcome, indent=2)
+        _wait_until(
+            lambda: any(
+                record["event"].get("operation") == "hover"
+                for record in server.runtime.replay(SESSION)["events"]
+            ),
+            what="safety hold command",
+        )
+        records = server.runtime.replay(SESSION)["events"]
+        failure_index = next(
+            index
+            for index, record in enumerate(records)
+            if record["event"].get("intent_id") == search["intent_id"]
+            and record["event"].get("status") == "failed"
+        )
+        hold_index = next(
+            index
+            for index, record in enumerate(records)
+            if record["event"].get("operation") == "hover"
+        )
+        assert failure_index < hold_index
+        gotos = sum(record["event"].get("operation") == "goto" for record in records)
+        time.sleep(0.7)
+        assert (
+            sum(
+                record["event"].get("operation") == "goto"
+                for record in server.runtime.replay(SESSION)["events"]
+            )
+            == gotos
+        )
+        assert composition.search_runtime.status(search["intent_id"]).state == "hold"
+        assert factory._workers == {}
+    finally:
+        node.stop()
+        console.stop()
