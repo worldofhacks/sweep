@@ -2,6 +2,8 @@ package org.worldofhacks.sweep.bridge.node
 
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusBody
 import org.worldofhacks.sweep.bridge.core.frames.RefusalEvent
@@ -51,6 +53,20 @@ data class NodeConfig(
                 if (unreserved) append(char) else append('%').append("%02X".format(byte.toInt() and 0xFF))
             }
         }
+    }
+}
+
+data class NavigationAdmissionConfig(
+    val navigationConfigId: String,
+    val poseFreshnessMs: Long,
+    val maxAuthorizationLifetimeMs: Long,
+    val enabled: Boolean = false,
+) {
+    init {
+        require(navigationConfigId.isNotBlank() && navigationConfigId.length <= 128 && navigationConfigId.none { it.isISOControl() }) {
+            "navigation configuration id is invalid"
+        }
+        require(poseFreshnessMs > 0 && maxAuthorizationLifetimeMs > 0) { "navigation timing bounds are invalid" }
     }
 }
 
@@ -136,6 +152,9 @@ data class LinkState(
     val controlPose: ControlPose? = null,
     /** Local-clock deadline at which [controlPose] is cleared. */
     val controlPoseExpiresAtMs: Long? = null,
+    val navigationAuthorization: NavigationRouteAuthorization? = null,
+    val navigationPose: NavigationPose? = null,
+    val navigationPoseFreshUntilMs: Long? = null,
     val estop: Boolean = false,
     val lastRefusal: RefusalEvent? = null,
     val lastAuthRefusal: AuthRefused? = null,
