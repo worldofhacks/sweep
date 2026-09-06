@@ -1,5 +1,7 @@
 # MediaMTX configuration for Sweep (PRD section 5.7).
-# Streams are named by drone id, f"drone{id}": publish to rtsp://<ground-station>:8554/drone1 ... drone6.
+# Streams are named by device class and unit: aircraft publish to
+# rtsp://<ground-station>:8554/drone1 ... drone4 and ground vehicles to ground1 ... ground3
+# (relay/media.py stream_name).
 # The console plays them over WebRTC (WHEP) at http://<ground-station>:8889/<name>/whep
 # and over HLS at http://<ground-station>:8888/<name>/index.m3u8 (the bare /<name>/ URL is the built-in player).
 # Every parameter not listed here keeps the MediaMTX default.
@@ -29,10 +31,11 @@ api: yes
 apiAddress: :9997
 
 # Locked by default. docker-compose.yml replaces only these password hashes when the
-# operator supplies the six media credentials in .env. Each aircraft may publish only
-# its own path; the console reader may read/play back only drone1..drone4; the relay's
-# API reader may only call the control API. There is no anonymous user, so a missing
-# environment value fails closed instead of opening the LAN.
+# operator supplies the media credentials in .env, by position in this list. Each device
+# may publish only its own path; the console reader may read/play back only
+# drone1..drone4 and ground1..ground3; the relay's API reader may only call the control
+# API. There is no anonymous user, so a missing environment value fails closed instead
+# of opening the LAN.
 authMethod: internal
 authInternalUsers:
   - user: drone1
@@ -59,13 +62,28 @@ authInternalUsers:
     pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
     permissions:
       - action: read
-        path: ~^drone[1-4]$
+        path: ~^(drone[1-4]|ground[1-3])$
       - action: playback
-        path: ~^drone[1-4]$
+        path: ~^(drone[1-4]|ground[1-3])$
   - user: sweep-api
     pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
     permissions:
       - action: api
+  - user: ground1
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: ground1
+  - user: ground2
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: ground2
+  - user: ground3
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: ground3
 
 paths:
   all_others:
