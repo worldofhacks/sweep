@@ -12,6 +12,8 @@ from arbiter.safety import SafetyArbiter, SafetyConfig
 from planner.controller import AutonomyController
 from planner.models import (
     AircraftState,
+    DeviceClass,
+    DriveState,
     FleetSnapshot,
     FlightState,
     Geofence,
@@ -23,6 +25,8 @@ from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import IntentName, IntentV1, Mode
 
 NOW_MS = 100_000
+GROUND_ID_BASE = 11
+"""The demo keeps ground vehicles at IDs 11 and up, clear of the aircraft IDs 1 to 4."""
 
 
 def planning_config(*, translation_frame: str = "world") -> PlanningConfig:
@@ -114,6 +118,91 @@ def make_aircraft(
         heading_deg=0.0,
     )
     return replace(state, **changes)
+
+
+def make_ground_vehicle(
+    drone_id: int,
+    *,
+    x: float | None = None,
+    y: float = 0.0,
+    drive_state: DriveState = DriveState.IDLE,
+    membership: MembershipState = MembershipState.READY,
+    connection_epoch: int = 1,
+    unit: int | None = None,
+    **changes: object,
+) -> AircraftState:
+    """One ground vehicle on the floor plane: null flight state, drive state, no camera.
+
+    ``armed`` mirrors ``relay.autonomy.relay_snapshot``: a ground vehicle's wheels are
+    enabled in every drive state except ``docked`` and ``fault``.
+    """
+    position_x = float(drone_id - GROUND_ID_BASE) if x is None else x
+    state = AircraftState(
+        drone_id=drone_id,
+        connection_epoch=connection_epoch,
+        membership=membership,
+        pose=Position(position_x, y, 0.0),
+        home=Position(position_x, y, 0.0),
+        flight_state=None,
+        drive_state=drive_state,
+        device_class=DeviceClass.GROUND_VEHICLE,
+        unit=(drone_id - GROUND_ID_BASE + 1) if unit is None else unit,
+        armed=drive_state not in {DriveState.DOCKED, DriveState.FAULT},
+        battery=0.9,
+        link_quality=0.9,
+        link_last_seen_ms=NOW_MS,
+        position_quality=0.6,
+        position_last_seen_ms=NOW_MS,
+        control_authority=True,
+        rc_safety_operator_present=True,
+        physical_rc_available=True,
+        storage_remaining_bytes=0,
+        camera_ready=False,
+        heading_deg=0.0,
+    )
+    return replace(state, **changes)
+
+
+def make_mixed_snapshot(
+    *,
+    aircraft_ids: tuple[int, ...] = (1, 2),
+    ground_ids: tuple[int, ...] = (11, 12),
+    selection: tuple[int, ...] | None = None,
+    flight_state: FlightState = FlightState.HOVERING,
+    drive_state: DriveState = DriveState.IDLE,
+    roster_version: int = 7,
+    armed: bool = True,
+    now_ms: int = NOW_MS,
+    **changes: object,
+) -> FleetSnapshot:
+    """A session of aircraft and ground vehicles that are well clear of each other."""
+    devices: dict[int, AircraftState] = {
+        drone_id: make_aircraft(
+            drone_id,
+            flight_state=flight_state,
+            armed=flight_state not in {FlightState.DISARMED, FlightState.LANDED},
+        )
+        for drone_id in aircraft_ids
+    }
+    devices.update(
+        {
+            drone_id: make_ground_vehicle(drone_id, y=6.0, drive_state=drive_state)
+            for drone_id in ground_ids
+        }
+    )
+    snapshot = FleetSnapshot(
+        roster_version=roster_version,
+        aircraft=devices,
+        selection=selection if selection is not None else tuple(sorted(devices)),
+        armed=armed,
+        estop_active=False,
+        operator_present=True,
+        operator_last_seen_ms=now_ms,
+        now_ms=now_ms,
+        formation="none",
+        spacing=0.8,
+    )
+    return replace(snapshot, **changes)
 
 
 def make_snapshot(
