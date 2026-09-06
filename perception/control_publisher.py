@@ -24,8 +24,9 @@ from perception.control_localization import (
     TagFix,
     VelocityObservation,
 )
-from relay.auth import sign_event
-from relay.control_localization import ClockMapping, to_wire_payload
+from relay.control_frames import sign_localization_frame
+from relay.control_localization import ClockMapping, ControlLocalizationWire, to_wire_payload
+from relay.control_localization_contracts import position_uncertainty_p95_m
 
 LIVE_PUBLISH_INTERVAL_S = 0.1
 
@@ -199,7 +200,10 @@ class ControlPublisherConfig:
             fuser_raw = entry.get("fuser")
             if not isinstance(fuser_raw, Mapping):
                 raise ValueError("publisher drone requires fuser configuration")
-            fuser = ControlLocalizationConfig(**dict(fuser_raw))
+            try:
+                fuser = ControlLocalizationConfig(**dict(fuser_raw))
+            except TypeError as error:
+                raise ValueError("publisher fuser configuration is invalid") from error
             config = PublisherDroneConfig(
                 fuser=fuser,
                 clock_mapping=ClockMapping.from_mapping(entry.get("clock_mapping")),
@@ -322,9 +326,7 @@ class ControlPublisher:
                 reason=self.invalid_reasons[drone_id],
             )
         if snapshot.covariance_map_enu_m2 is not None:
-            uncertainty = (
-                max(row[index] for index, row in enumerate(snapshot.covariance_map_enu_m2)) ** 0.5
-            )
+            uncertainty = position_uncertainty_p95_m(snapshot.covariance_map_enu_m2)
             if uncertainty > config.max_position_uncertainty_m:
                 snapshot = replace(
                     snapshot,
@@ -334,15 +336,14 @@ class ControlPublisher:
                 )
         self.sequence += 1
         event_id = f"localization-{drone_id}-{self.sequence}"
-        unsigned_wire = to_wire_payload(snapshot, config.clock_mapping, "pending", event_id)
-        unsigned = {
-            **unsigned_wire,
-            "t": config.clock_mapping.to_relay_ms(now_s),
-            "session": self.config.session,
-        }
-        del unsigned["signature"]
-        signature = sign_event(unsigned, self.keys.get(drone_id, "replay"))
-        frame = {**unsigned, "signature": signature}
+        wire = ControlLocalizationWire.from_mapping(to_wire_payload(snapshot, config.clock_mapping))
+        frame = sign_localization_frame(
+            wire,
+            timestamp_ms=config.clock_mapping.to_relay_ms(now_s),
+            event_id=event_id,
+            session=self.config.session,
+            signing_key=self.keys.get(drone_id, "replay").encode(),
+        )
         if self.config.mode == "live":
             assert self.transport is not None
             self.transport.send(frame)
