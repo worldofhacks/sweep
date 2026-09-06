@@ -142,7 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         settings = RelaySettings.from_env()
         config = AutonomyConfig.from_env()
-        app, composition = create_autonomy_app(
+        app, _composition = create_autonomy_app(
             settings, config, transcript_service_factory=transcript_service_factory(config)
         )
     except SettingsError as error:
@@ -154,10 +154,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.port,
         settings.adapter_backend.value,
     )
-    try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
-    finally:
-        composition.close()
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
 

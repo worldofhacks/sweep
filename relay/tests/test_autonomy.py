@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -789,7 +790,11 @@ def test_operator_presence_watchdog_uses_receipt_time_and_confirms_one_hold(
 ) -> None:
     config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=3_000))
     app, composition = create_autonomy_app(
-        _settings(tmp_path), config, clock=clock, event_ids=event_ids
+        _settings(tmp_path),
+        config,
+        clock=clock,
+        monotonic_clock=clock,
+        event_ids=event_ids,
     )
     try:
         with TestClient(app) as client:
@@ -941,7 +946,9 @@ def test_authenticated_presence_refreshes_deadline_without_emitting_a_command(
     tmp_path: Path, clock: MutableClock
 ) -> None:
     config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=3_000))
-    app, composition = create_autonomy_app(_settings(tmp_path), config, clock=clock)
+    app, composition = create_autonomy_app(
+        _settings(tmp_path), config, clock=clock, monotonic_clock=clock
+    )
     try:
         with TestClient(app):
             runtime = app.state.relay_runtime
@@ -977,12 +984,218 @@ def test_authenticated_presence_refreshes_deadline_without_emitting_a_command(
         composition.close()
 
 
+def test_presence_cadence_and_expiry_ignore_wall_clock_jumps(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    monotonic_clock = MutableClock(10_000)
+    config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=3_000))
+    app, composition = create_autonomy_app(
+        _settings(tmp_path),
+        config,
+        clock=clock,
+        monotonic_clock=monotonic_clock,
+        event_ids=event_ids,
+    )
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+            frame = {"v": 1, "type": "operator_presence", "activity": "interaction"}
+            session.process_frame(frame, console)
+
+            clock.advance(-100_000)
+            monotonic_clock.advance(999)
+            session.process_frame(frame, console)
+            clock.advance(200_000)
+            monotonic_clock.advance(1)
+            session.process_frame(frame, console)
+            recorded = [
+                record["event"]
+                for record in session.audit_log.replay()
+                if record["event"]["type"] == "operator_presence"
+            ]
+            assert len(recorded) == 2
+            assert recorded[1]["t"] > recorded[0]["t"]
+
+            clock.advance(-50_000)
+            monotonic_clock.advance(2_999)
+            assert not any(
+                event["type"] == "safety_action" for event in runtime.periodic_events(session)
+            )
+            clock.advance(500_000)
+            monotonic_clock.advance(1)
+            expired = next(
+                event
+                for event in runtime.periodic_events(session)
+                if event["type"] == "safety_action"
+            )
+            assert expired["status"] == "not_required"
+    finally:
+        composition.close()
+
+
+@pytest.mark.parametrize(
+    ("mark_ready", "terminal_status"),
+    [(False, "failed"), (True, "confirmed")],
+)
+def test_never_seen_presence_attempts_registered_or_ready_airborne_safety(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    mark_ready: bool,
+    terminal_status: str,
+) -> None:
+    config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=3_000))
+    app, composition = create_autonomy_app(
+        _settings(tmp_path),
+        config,
+        clock=clock,
+        monotonic_clock=clock,
+        event_ids=event_ids,
+    )
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+            session.process_membership(
+                membership_payload(action="join", event_id="join-1"), adapter
+            )
+            session.process_telemetry(
+                telemetry_payload(event_id="telemetry-1", state="hovering"), adapter
+            )
+            if mark_ready:
+                session.process_membership(
+                    membership_payload(action="readiness", event_id="ready-1"), adapter
+                )
+
+            autonomy = composition.session(SESSION)
+            assert autonomy.control_heartbeats_allowed() is False
+            requested = next(
+                event
+                for event in runtime.periodic_events(session)
+                if event["type"] == "safety_action"
+            )
+            assert requested["operator_last_seen_ms"] is None
+            assert requested["status"] == "requested"
+            assert requested["targets"] == [{"drone_id": 1, "connection_epoch": 1}]
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                actions = [
+                    record["event"]
+                    for record in session.audit_log.replay()
+                    if record["event"]["type"] == "safety_action"
+                ]
+                if any(event["status"] == terminal_status for event in actions):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("presence watchdog did not record its terminal attempt")
+    finally:
+        composition.close()
+
+
+def test_unknown_registered_aircraft_keeps_presence_gate_closed(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=3_000))
+    app, composition = create_autonomy_app(
+        _settings(tmp_path),
+        config,
+        clock=clock,
+        monotonic_clock=clock,
+        event_ids=event_ids,
+    )
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+            session.process_membership(
+                membership_payload(action="join", event_id="join-1"), adapter
+            )
+            autonomy = composition.session(SESSION)
+
+            first = runtime.periodic_events(session)
+            assert next(event for event in first if event["type"] == "safety_action")[
+                "targets"
+            ] == [{"drone_id": 1, "connection_epoch": 1}]
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                actions = [
+                    record["event"]
+                    for record in session.audit_log.replay()
+                    if record["event"]["type"] == "safety_action"
+                ]
+                if any(event["status"] == "failed" for event in actions):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("unknown aircraft was incorrectly treated as safely held")
+
+            assert autonomy.control_heartbeats_allowed() is False
+            assert not any(
+                event.get("status") == "retrying" for event in runtime.periodic_events(session)
+            )
+    finally:
+        composition.close()
+
+
+def test_safety_runtime_failure_latches_the_transport_heartbeat_gate(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch,
+) -> None:
+    async def exercise() -> None:
+        composition = AutonomyComposition(_config(), monotonic_clock=clock)
+        runtime = RelayRuntime(
+            _settings(tmp_path),
+            clock=clock,
+            monotonic_clock=clock,
+            event_ids=event_ids,
+            intent_sink_factory=composition.intent_sink_factory,
+            capability_profile=composition.capability_profile,
+        )
+        composition.bind(runtime)
+        session = runtime.session(SESSION)
+        autonomy = composition.session(SESSION)
+        adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        subscription = await runtime.subscribe(SESSION, adapter)
+        session.process_membership(membership_payload(action="join", event_id="join-1"), adapter)
+        session.process_frame(
+            {"v": 1, "type": "operator_presence", "activity": "interaction"}, console
+        )
+        assert autonomy.control_heartbeats_allowed() is True
+
+        def fail_periodic(_event: object) -> list[dict[str, object]]:
+            raise RuntimeError("watchdog failed")
+
+        monkeypatch.setattr(autonomy, "periodic_events", fail_periodic)
+        events = runtime.periodic_events(session)
+        assert any(event.get("reason") == "safety_runtime_error" for event in events)
+
+        await runtime._publish_control_heartbeats(SESSION, session)
+        assert subscription.queue.empty()
+        assert autonomy.control_heartbeats_allowed() is False
+        composition.close()
+
+    asyncio.run(exercise())
+
+
 def test_failed_presence_hold_suppresses_heartbeats_and_retries(
     tmp_path: Path, clock: MutableClock, event_ids: EventIds
 ) -> None:
     config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=3_000))
     app, composition = create_autonomy_app(
-        _settings(tmp_path, AdapterBackend.REMOTE), config, clock=clock, event_ids=event_ids
+        _settings(tmp_path, AdapterBackend.REMOTE),
+        config,
+        clock=clock,
+        monotonic_clock=clock,
+        event_ids=event_ids,
     )
     try:
         with TestClient(app):
@@ -1058,7 +1271,11 @@ def test_idle_presence_expiry_does_not_latch_estop(
         presence_watchdog=PresenceWatchdogConfig(action="estop"),
     )
     app, composition = create_autonomy_app(
-        _settings(tmp_path), config, clock=clock, event_ids=event_ids
+        _settings(tmp_path),
+        config,
+        clock=clock,
+        monotonic_clock=clock,
+        event_ids=event_ids,
     )
     try:
         with TestClient(app):
@@ -1146,3 +1363,82 @@ def test_shutdown_deadline_marks_report_incomplete_while_worker_is_live(
     composition.close(timeout_s=1)
     with pytest.raises(RuntimeError, match="closed"):
         autonomy.submit(replace(blocked_intent, intent_id="after-close"), {"t": clock()})
+
+
+def test_runtime_shutdown_bounds_background_work_and_marks_report_incomplete(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    async def exercise() -> tuple[bool, float]:
+        composition = AutonomyComposition(_config(), monotonic_clock=clock)
+        runtime = RelayRuntime(
+            _settings(tmp_path),
+            clock=clock,
+            monotonic_clock=clock,
+            event_ids=event_ids,
+            intent_sink_factory=composition.intent_sink_factory,
+            capability_profile=composition.capability_profile,
+        )
+        composition.bind(runtime)
+        runtime.session(SESSION)
+        never = asyncio.Event()
+        background = asyncio.create_task(never.wait())
+        runtime._background_operations.add(background)
+
+        started = time.monotonic()
+        complete = await runtime.stop(deadline=time.monotonic() + 0.05)
+        elapsed = time.monotonic() - started
+        composition.close(deadline=time.monotonic() + 2, runtime_complete=complete)
+        return complete, elapsed
+
+    complete, elapsed = asyncio.run(exercise())
+    report = json.loads(report_path(tmp_path, SESSION).read_text())
+
+    assert complete is False
+    assert elapsed < 0.5
+    assert report["completion"]["status"] == "incomplete"
+    assert report["completion"]["reason"] == "runtime_deadline_exceeded"
+
+
+def test_activation_crossing_shutdown_cannot_create_a_late_session(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds, monkeypatch
+) -> None:
+    async def exercise() -> tuple[RelayRuntime, AutonomyComposition]:
+        composition = AutonomyComposition(_config(), monotonic_clock=clock)
+        runtime = RelayRuntime(
+            _settings(tmp_path),
+            clock=clock,
+            monotonic_clock=clock,
+            event_ids=event_ids,
+            intent_sink_factory=composition.intent_sink_factory,
+            capability_profile=composition.capability_profile,
+        )
+        composition.bind(runtime)
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        original_session = runtime.session
+
+        def delayed_session(session_id: str) -> RelaySession:
+            started.set()
+            release.wait(timeout=2)
+            try:
+                return original_session(session_id)
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(runtime, "session", delayed_session)
+        activation = asyncio.create_task(runtime.activate_session("late-session"))
+        assert await asyncio.to_thread(started.wait, 1)
+        composition.begin_shutdown()
+        assert await runtime.stop(deadline=time.monotonic() + 0.05) is False
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 1)
+        await asyncio.sleep(0)
+        assert activation.cancelled()
+        return runtime, composition
+
+    runtime, composition = asyncio.run(exercise())
+
+    assert runtime.sessions == {}
+    assert composition._sessions == {}
+    assert not report_path(tmp_path, "late-session").exists()

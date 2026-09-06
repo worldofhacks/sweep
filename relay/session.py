@@ -70,6 +70,7 @@ from relay.state import (
 )
 
 Clock = Callable[[], int]
+MonotonicClock = Callable[[], int]
 EventIdFactory = Callable[[], str]
 ControlPoseSigningKey = Callable[[int], bytes | None]
 MAX_AUDIT_STATE_INTERVAL_MS = 10_000
@@ -286,6 +287,7 @@ class RelaySession:
         audit_log: SessionAuditLog,
         limits: RelayLimits,
         clock: Clock | None = None,
+        monotonic_clock: MonotonicClock | None = None,
         event_ids: EventIdFactory | None = None,
         intent_sink: IntentSink | None = None,
         leave_authorizer: LeaveAuthorizer | None = None,
@@ -301,6 +303,7 @@ class RelaySession:
         self.audit_log = audit_log
         self.limits = limits
         self.clock = clock or _epoch_ms
+        self.monotonic_clock = monotonic_clock or _monotonic_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
         self.leave_authorizer = leave_authorizer
         if (
@@ -336,7 +339,7 @@ class RelaySession:
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._control_pose: dict[int, ControlPose] = {}
-        self._last_operator_presence_ms: int | None = None
+        self._last_operator_presence_monotonic_ms: int | None = None
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
@@ -435,10 +438,11 @@ class RelaySession:
         if not callable(receive):
             return []
         now = self.clock()
+        received_at = self.monotonic_clock()
         with self._lock:
             self._ensure_mutation_usable()
-            last = self._last_operator_presence_ms
-            if last is not None and now - last < OPERATOR_PRESENCE_MIN_INTERVAL_MS:
+            last = self._last_operator_presence_monotonic_ms
+            if last is not None and received_at - last < OPERATOR_PRESENCE_MIN_INTERVAL_MS:
                 return []
             with self._audit_operation():
                 self._append_audit(
@@ -453,7 +457,7 @@ class RelaySession:
                     }
                 )
             receive(now)
-            self._last_operator_presence_ms = now
+            self._last_operator_presence_monotonic_ms = received_at
         return []
 
     def protocol_refusal(self, *, reason: str, detail: str) -> dict[str, object]:
@@ -1635,7 +1639,7 @@ class RelaySession:
         *,
         reason: str,
         action: str,
-        operator_last_seen_ms: int,
+        operator_last_seen_ms: int | None,
         status: str,
         attempt: int,
         intent_id: str | None,
@@ -1653,12 +1657,12 @@ class RelaySession:
             "not_required",
         }:
             raise ValueError("invalid relay safety action status")
-        if (
+        if operator_last_seen_ms is not None and (
             not isinstance(operator_last_seen_ms, int)
             or isinstance(operator_last_seen_ms, bool)
             or operator_last_seen_ms < 0
         ):
-            raise ValueError("operator_last_seen_ms must be non-negative")
+            raise ValueError("operator_last_seen_ms must be null or non-negative")
         if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 0:
             raise ValueError("safety action attempt must be non-negative")
         if status == "not_required":
@@ -2886,3 +2890,7 @@ def _safe_string_field(raw: object, field: str) -> str | None:
 
 def _epoch_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+def _monotonic_ms() -> int:
+    return time.monotonic_ns() // 1_000_000

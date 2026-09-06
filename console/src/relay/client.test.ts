@@ -186,13 +186,15 @@ describe('WebSocket relay client', () => {
 
 test('only deliberate authenticated interaction refreshes presence at the bounded cadence', () => {
   const socket = new TestSocket()
-  let now = 1_000
+  let epochNow = 1_000
+  let monotonicNow = 5_000
   let activity = () => {}
   let activitySubscribed = false
   const client = new WebSocketRelayClient(
     { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source: 'console', token: 'token' },
     {
-      now: () => now,
+      now: () => epochNow,
+      monotonicNow: () => monotonicNow,
       createSocket: () => socket as unknown as WebSocket,
       subscribeOperatorActivity: (listener) => {
         activity = listener
@@ -218,10 +220,12 @@ test('only deliberate authenticated interaction refreshes presence at the bounde
     })
     const afterFirstInteraction = socket.sent.length
     activity()
-    now += 999
+    epochNow -= 100_000
+    monotonicNow += 999
     activity()
     expect(socket.sent).toHaveLength(afterFirstInteraction)
-    now += 1
+    epochNow += 200_000
+    monotonicNow += 1
     activity()
     expect(socket.sent).toHaveLength(afterFirstInteraction + 1)
     client.stop()

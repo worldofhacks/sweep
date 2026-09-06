@@ -25,6 +25,7 @@ export interface WebSocketRelayConfig {
 
 interface WebSocketDependencies {
   now: () => number
+  monotonicNow?: () => number
   createSocket: (url: string) => WebSocket
   subscribeOperatorActivity?: (listener: () => void) => () => void
 }
@@ -33,6 +34,7 @@ export const OPERATOR_PRESENCE_MIN_INTERVAL_MS = 1_000
 
 const browserDependencies: WebSocketDependencies = {
   now: () => Date.now(),
+  monotonicNow: () => performance.now(),
   createSocket: (url) => new WebSocket(url),
   subscribeOperatorActivity: (listener) => {
     const onActivity = (event: Event) => {
@@ -179,7 +181,7 @@ export class WebSocketRelayClient implements RelayClient {
     }
     this.stopOperatorActivity = this.dependencies.subscribeOperatorActivity(() => {
       if (this.socket !== socket || !this.authenticated || socket.readyState !== 1) return
-      const now = this.dependencies.now()
+      const now = this.dependencies.monotonicNow?.() ?? this.dependencies.now()
       if (
         this.lastPresenceSentAt !== null &&
         now - this.lastPresenceSentAt < OPERATOR_PRESENCE_MIN_INTERVAL_MS

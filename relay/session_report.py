@@ -23,6 +23,13 @@ _MAX_STRING_CHARS = 8_192
 _MAX_IDENTIFIER_CHARS = 512
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
 _DEFAULT_REPORT_DEADLINE_SECONDS = 5.0
+_INCOMPLETE_REASONS = frozenset(
+    {
+        "worker_deadline_exceeded",
+        "runtime_deadline_exceeded",
+        "runtime_and_worker_deadline_exceeded",
+    }
+)
 _COMMAND_FIELDS = frozenset(
     {
         "v",
@@ -109,9 +116,13 @@ def write_session_report(
     """Write one bounded report from the audit log's canonical committed snapshot."""
     if not _timestamp(generated_at_ms):
         raise ValueError("generated_at_ms must be a non-negative safe integer")
-    expected_reason = "orderly_shutdown" if complete else "worker_deadline_exceeded"
-    if completion_reason != expected_reason:
-        raise ValueError(f"completion_reason must be {expected_reason}")
+    valid_reason = (
+        completion_reason == "orderly_shutdown"
+        if complete
+        else completion_reason in _INCOMPLETE_REASONS
+    )
+    if not valid_reason:
+        raise ValueError("completion_reason does not match the completion status")
     deadline = monotonic() + _DEFAULT_REPORT_DEADLINE_SECONDS if deadline is None else deadline
     _check_deadline(deadline)
     records, last_sequence = audit_log.replay_snapshot(
@@ -126,6 +137,7 @@ def write_session_report(
         generated_at_ms=generated_at_ms,
         complete=complete,
         completion_reason=completion_reason,
+        deadline=deadline,
     )
     try:
         encoded = (json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n").encode()
@@ -162,6 +174,7 @@ def _build_session_report(
     generated_at_ms: int,
     complete: bool,
     completion_reason: str,
+    deadline: float,
 ) -> dict[str, object]:
     if not session_id or len(session_id) > _MAX_IDENTIFIER_CHARS:
         raise ValueError("session report requires a bounded session identity")
@@ -180,9 +193,10 @@ def _build_session_report(
     source_bytes = 0
 
     for expected_sequence, record in enumerate(records, start=1):
+        _check_deadline(deadline)
         if set(record) != {"seq", "event"} or record.get("seq") != expected_sequence:
             raise ValueError("audit snapshot contains a non-contiguous record")
-        _bounded_json(record)
+        _bounded_json(record, deadline=deadline)
         event = record.get("event")
         if not isinstance(event, dict):
             raise ValueError("audit snapshot record is missing its event")
@@ -221,6 +235,15 @@ def _build_session_report(
             _validate_safety_action(event)
             safety_actions.append(dict(event))
 
+    _check_deadline(deadline)
+    telemetry_summary = _telemetry_summary(telemetry, deadline=deadline)
+    command_timings = _command_timings(
+        commands,
+        command_sequences,
+        acknowledgements,
+        deadline=deadline,
+    )
+    _check_deadline(deadline)
     return {
         "v": 1,
         "type": "session_report",
@@ -241,14 +264,12 @@ def _build_session_report(
         "refusals": refusals,
         "telemetry": telemetry,
         "safety_actions": safety_actions,
-        "telemetry_summary": _telemetry_summary(telemetry),
+        "telemetry_summary": telemetry_summary,
         "timing": {
             "started_at": min(timestamps) if timestamps else None,
             "ended_at": max(timestamps) if timestamps else None,
             "duration_ms": max(timestamps) - min(timestamps) if timestamps else None,
-            "command_acknowledgements": _command_timings(
-                commands, command_sequences, acknowledgements
-            ),
+            "command_acknowledgements": command_timings,
         },
     }
 
@@ -347,7 +368,7 @@ def _validate_safety_action(event: Mapping[str, object]) -> None:
         event.get("action") not in {"hold", "estop"}
         or status
         not in {"requested", "retrying", "awaiting", "confirmed", "failed", "not_required"}
-        or not _nonnegative_int(event.get("operator_last_seen_ms"))
+        or not _nullable_nonnegative_int(event.get("operator_last_seen_ms"))
         or not _nonnegative_int(attempt)
         or not isinstance(targets, list)
         or len(targets) > 4
@@ -375,9 +396,12 @@ def _command_timings(
     commands: list[dict[str, object]],
     command_sequences: Mapping[str, int],
     acknowledgements: list[tuple[int, dict[str, object]]],
+    *,
+    deadline: float,
 ) -> list[dict[str, object]]:
     by_command: dict[str, list[tuple[int, dict[str, object]]]] = {}
     for sequence, acknowledgement in acknowledgements:
+        _check_deadline(deadline)
         command_id = acknowledgement["command_id"]
         if command_id is not None:
             by_command.setdefault(str(command_id), []).append((sequence, acknowledgement))
@@ -386,6 +410,7 @@ def _command_timings(
 
     timings: list[dict[str, object]] = []
     for command in commands:
+        _check_deadline(deadline)
         command_id = str(command["command_id"])
         issued_at = int(command["issued_at"])
         related = by_command.get(command_id, [])
@@ -393,6 +418,7 @@ def _command_timings(
         last_rank = -1
         seen_statuses: set[str] = set()
         for sequence, acknowledgement in related:
+            _check_deadline(deadline)
             if sequence <= command_sequences[command_id]:
                 raise ValueError("command acknowledgement precedes its command")
             if any(
@@ -429,9 +455,12 @@ def _command_timings(
     return timings
 
 
-def _telemetry_summary(telemetry: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+def _telemetry_summary(
+    telemetry: list[dict[str, object]], *, deadline: float
+) -> dict[str, dict[str, object]]:
     summary: dict[str, dict[str, object]] = {}
     for sample in telemetry:
+        _check_deadline(deadline)
         drone_id = int(sample["drone"])
         timestamp = int(sample["t"])
         battery = float(sample["battery"])
@@ -453,7 +482,9 @@ def _telemetry_summary(telemetry: list[dict[str, object]]) -> dict[str, dict[str
     return summary
 
 
-def _bounded_json(value: object, depth: int = 0) -> None:
+def _bounded_json(value: object, depth: int = 0, *, deadline: float | None = None) -> None:
+    if deadline is not None:
+        _check_deadline(deadline)
     if depth > _MAX_JSON_DEPTH:
         raise ValueError("audit snapshot exceeds the JSON depth limit")
     if value is None or isinstance(value, bool):
@@ -476,13 +507,13 @@ def _bounded_json(value: object, depth: int = 0) -> None:
         for key, item in value.items():
             if not isinstance(key, str) or len(key) > _MAX_IDENTIFIER_CHARS:
                 raise ValueError("audit snapshot contains an invalid object key")
-            _bounded_json(item, depth + 1)
+            _bounded_json(item, depth + 1, deadline=deadline)
         return
     if isinstance(value, list):
         if len(value) > _MAX_CONTAINER_ITEMS:
             raise ValueError("audit snapshot array exceeds the item limit")
         for item in value:
-            _bounded_json(item, depth + 1)
+            _bounded_json(item, depth + 1, deadline=deadline)
         return
     raise ValueError("audit snapshot contains a non-JSON value")
 
@@ -503,6 +534,10 @@ def _positive_int(value: object) -> bool:
 
 def _nullable_positive_int(value: object) -> bool:
     return value is None or _positive_int(value)
+
+
+def _nullable_nonnegative_int(value: object) -> bool:
+    return value is None or _nonnegative_int(value)
 
 
 def _bounded_string(value: object) -> bool:

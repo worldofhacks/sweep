@@ -292,3 +292,29 @@ def test_report_bounds_the_jsonl_mirror_before_reading_it(tmp_path: Path, monkey
             complete=True,
             completion_reason="orderly_shutdown",
         )
+
+
+def test_report_deadline_is_checked_inside_record_transformation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audit = SessionAuditLog(tmp_path, SESSION)
+    audit.append_batch([_event(f"presence-{index}", 1_000 + index) for index in range(20)])
+    deadline = monotonic() + 60
+    calls = 0
+
+    def expiring_clock() -> float:
+        nonlocal calls
+        calls += 1
+        return deadline - 1 if calls < 8 else deadline + 1
+
+    monkeypatch.setattr("relay.session_report.monotonic", expiring_clock)
+
+    with pytest.raises(AuditLogError, match="deadline"):
+        write_session_report(
+            audit,
+            generated_at_ms=2_000,
+            complete=True,
+            completion_reason="orderly_shutdown",
+            deadline=deadline,
+        )
+    assert calls == 8

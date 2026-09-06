@@ -645,6 +645,16 @@ class SafetyArbiter:
             aircraft,
             safe_action=command.safety_action
             or (plan.intent_name is IntentName.LAND and command.operation is CommandOperation.LAND),
+            allow_registered=(
+                command.safety_action
+                and (
+                    plan.intent_name is IntentName.ESTOP
+                    or (
+                        plan.intent_name is IntentName.HOLD
+                        and plan.hold_scope in {HoldScope.FLEET_SAFETY, HoldScope.TARGETED_SAFETY}
+                    )
+                )
+            ),
         )
         if membership_refusal is not None:
             return membership_refusal
@@ -1602,7 +1612,12 @@ class SafetyArbiter:
             return tuple(
                 drone_id
                 for drone_id, aircraft in sorted(snapshot.aircraft.items())
-                if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+                if aircraft.membership
+                in {
+                    MembershipState.REGISTERED,
+                    MembershipState.READY,
+                    MembershipState.DEGRADED,
+                }
             )
         return None
 
@@ -1639,7 +1654,16 @@ class SafetyArbiter:
             return tuple(
                 drone_id
                 for drone_id, aircraft in sorted(snapshot.aircraft.items())
-                if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+                if aircraft.membership
+                in (
+                    {
+                        MembershipState.REGISTERED,
+                        MembershipState.READY,
+                        MembershipState.DEGRADED,
+                    }
+                    if intent.name is IntentName.ESTOP
+                    else {MembershipState.READY, MembershipState.DEGRADED}
+                )
                 and (intent.name is IntentName.ESTOP or aircraft.airborne)
             )
         return snapshot.selection
@@ -1689,10 +1713,13 @@ class SafetyArbiter:
         aircraft: AircraftState,
         *,
         safe_action: bool,
+        allow_registered: bool = False,
     ) -> Refusal | None:
         allowed = {MembershipState.READY}
         if safe_action:
             allowed.add(MembershipState.DEGRADED)
+        if allow_registered:
+            allowed.add(MembershipState.REGISTERED)
         if aircraft.membership not in allowed:
             return self._refusal_for(
                 intent_id,

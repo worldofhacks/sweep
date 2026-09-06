@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from threading import Lock, RLock
+from threading import Event, Lock, RLock
 
 from anyio import CancelScope
 from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -37,6 +37,7 @@ from relay.session import (
     EventIdFactory,
     IntentSink,
     LeaveAuthorizer,
+    MonotonicClock,
     RelaySession,
 )
 from relay.settings import RelaySettings, console_origins_from_env
@@ -45,11 +46,15 @@ from relay.voice import MAX_AUDIO_BYTES, MAX_AUDIO_DURATION_MS, TranscriptServic
 IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
 _LOGGER = logging.getLogger(__name__)
+ShutdownPrepareCallback = Callable[[], None]
 ShutdownCallback = Callable[[], None]
+ShutdownFinalCallback = Callable[[float, bool], None]
 _OUTBOUND_LIMIT = 128
 _SEND_TIMEOUT_SECONDS = 5.0
 _CLOSE_TIMEOUT_SECONDS = 1.0
 _CONTROL_HEARTBEAT_MAX_INTERVAL_SECONDS = 1.0
+_SHUTDOWN_TIMEOUT_SECONDS = 6.0
+_SHUTDOWN_REPORT_RESERVE_SECONDS = 1.0
 TranscriptServiceFactory = Callable[["RelayRuntime"], TranscriptService]
 AuthoritativeRoomsFactory = Callable[[RelaySession], tuple[str, ...]]
 ControlLocalizationFactory = Callable[[str], ControlLocalizationProjector | None]
@@ -151,6 +156,31 @@ class _SessionGate:
     users: int = 0
 
 
+async def _settle_shutdown_tasks(
+    tasks: tuple[asyncio.Task[object], ...],
+    *,
+    deadline: float,
+    cancel_first: bool = False,
+) -> bool:
+    """Wait only through one aggregate deadline and cancel anything left behind."""
+    if not tasks:
+        return True
+    if cancel_first:
+        for task in tasks:
+            task.cancel()
+    remaining = max(0.0, deadline - time.monotonic())
+    done, pending = await asyncio.wait(tasks, timeout=remaining)
+    complete = not pending
+    for task in done:
+        if not task.cancelled() and task.exception() is not None:
+            complete = False
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.sleep(0)
+    return complete
+
+
 class RelayRuntime:
     def __init__(
         self,
@@ -158,6 +188,7 @@ class RelayRuntime:
         *,
         credential_resolver: CredentialResolver | None = None,
         clock: Clock | None = None,
+        monotonic_clock: MonotonicClock | None = None,
         event_ids: EventIdFactory | None = None,
         intent_sink_factory: IntentSinkFactory | None = None,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
@@ -171,6 +202,7 @@ class RelayRuntime:
         self.media_monitor = media_monitor
         self.credential_resolver = credential_resolver or settings.credential_resolver()
         self.clock = clock or _epoch_ms
+        self.monotonic_clock = monotonic_clock or _monotonic_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
         declared_profile = getattr(intent_sink_factory, "capability_profile", None)
         if declared_profile is None:
@@ -204,12 +236,15 @@ class RelayRuntime:
         self._fanout_session_tasks: dict[str, asyncio.Task[None]] = {}
         self._control_heartbeat_last: dict[str, float] = {}
         self._control_heartbeat_sequence: dict[str, int] = {}
+        self._stopping = Event()
         self.loop: asyncio.AbstractEventLoop | None = None
 
     def session(self, session_id: str) -> RelaySession:
         _validate_session_id(session_id)
         with self._session_gate(session_id):
             session = self.sessions.get(session_id)
+            if session is not None:
+                self._ensure_accepting_sessions()
             if session is None:
                 audit_log = SessionAuditLog(self.settings.log_dir, session_id)
                 if audit_log.had_persisted_log:
@@ -218,6 +253,7 @@ class RelayRuntime:
                         "persisted sessions are replay-only after a relay process restart; "
                         "use a new session ID",
                     )
+                self._ensure_accepting_sessions()
                 leave_authorizer = (
                     None
                     if self.leave_authorizer_factory is None
@@ -233,6 +269,7 @@ class RelayRuntime:
                     audit_log=audit_log,
                     limits=self.settings.limits(),
                     clock=self.clock,
+                    monotonic_clock=self.monotonic_clock,
                     event_ids=self.event_ids,
                     leave_authorizer=leave_authorizer,
                     capability_profile=self.capability_profile,
@@ -240,10 +277,19 @@ class RelayRuntime:
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
                 )
+                self._ensure_accepting_sessions()
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
+                self._ensure_accepting_sessions()
                 self.sessions[session_id] = session
             return session
+
+    def _ensure_accepting_sessions(self) -> None:
+        if self._stopping.is_set():
+            raise AuthenticationError(
+                "relay_stopping",
+                "the relay is shutting down and cannot activate another session",
+            )
 
     def media_evidence(self, drone_id: int, now_ms: int) -> MediaEvidence | None:
         """The monitor's last completed MediaMTX read for one aircraft; never blocks."""
@@ -275,7 +321,9 @@ class RelayRuntime:
         return session.replay(after_sequence=after_sequence, deadline=deadline)
 
     async def activate_session(self, session_id: str) -> RelaySession:
+        self._ensure_accepting_sessions()
         with self._activation_tasks_lock:
+            self._ensure_accepting_sessions()
             task = self._activation_tasks.get(session_id)
             if task is None:
                 task = asyncio.create_task(asyncio.to_thread(self.session, session_id))
@@ -328,30 +376,36 @@ class RelayRuntime:
         if self.media_monitor is not None:
             await self.media_monitor.start()
 
-    async def stop(self) -> None:
+    async def stop(self, *, deadline: float | None = None) -> bool:
+        """Quiesce runtime work without exceeding the caller's aggregate deadline."""
+        self._stopping.set()
+        deadline = time.monotonic() + _SHUTDOWN_TIMEOUT_SECONDS if deadline is None else deadline
+        complete = True
         if self.media_monitor is not None:
-            await self.media_monitor.stop()
+            monitor = asyncio.create_task(self.media_monitor.stop())
+            if not await _settle_shutdown_tasks((monitor,), deadline=deadline):
+                complete = False
         if self._fanout_task is not None:
-            self._fanout_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._fanout_task
-        tasks = tuple(self._fanout_session_tasks.values())
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        while self._background_operations:
-            pending = tuple(task for task in self._background_operations if not task.done())
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-            # gather completes synchronously for finished tasks, so yield once so their
-            # queued done callbacks can run, then drop whatever has already finished.
-            await asyncio.sleep(0)
-            self._background_operations.difference_update(
-                task for task in tuple(self._background_operations) if task.done()
-            )
+            if not await _settle_shutdown_tasks(
+                (self._fanout_task,), deadline=deadline, cancel_first=True
+            ):
+                complete = False
+        fanout = tuple(self._fanout_session_tasks.values())
+        if not await _settle_shutdown_tasks(fanout, deadline=deadline, cancel_first=True):
+            complete = False
+        with self._activation_tasks_lock:
+            activations = tuple(self._activation_tasks.values())
+        if not await _settle_shutdown_tasks(activations, deadline=deadline):
+            complete = False
+        background = tuple(self._background_operations)
+        if not await _settle_shutdown_tasks(background, deadline=deadline):
+            complete = False
+        self._background_operations.difference_update(
+            task for task in tuple(self._background_operations) if task.done()
+        )
         self._fanout_task = None
         self.loop = None
+        return complete
 
     def node_connected(self, session_id: str, drone_id: int) -> bool:
         return (session_id, drone_id) in self._adapter_connections
@@ -818,6 +872,7 @@ class RelayRuntime:
         except AuditLogError:
             raise
         except Exception:
+            self._latch_control_heartbeat_gate(sink)
             return [
                 session.protocol_refusal(
                     reason="safety_runtime_error",
@@ -834,6 +889,7 @@ class RelayRuntime:
             except AuditLogError:
                 raise
             except Exception:
+                self._latch_control_heartbeat_gate(sink)
                 events = [
                     session.protocol_refusal(
                         reason="safety_runtime_error",
@@ -850,6 +906,7 @@ class RelayRuntime:
             except AuditLogError:
                 raise
             except Exception:
+                self._latch_control_heartbeat_gate(sink)
                 events.append(
                     session.protocol_refusal(
                         reason="safety_runtime_error",
@@ -858,13 +915,26 @@ class RelayRuntime:
                 )
         return events
 
+    @staticmethod
+    def _latch_control_heartbeat_gate(sink: object) -> None:
+        fail = getattr(sink, "fail_operator_presence_gate", None)
+        if callable(fail):
+            with contextlib.suppress(Exception):
+                fail()
+
     def process_frame(
         self,
         session: RelaySession,
         frame: object,
         principal: Principal,
     ) -> list[dict[str, object]]:
-        events = session.process_frame(frame, principal)
+        try:
+            events = session.process_frame(frame, principal)
+        except AuditLogError:
+            raise
+        except Exception:
+            self._latch_control_heartbeat_gate(session.intent_sink)
+            raise
         if (
             principal.source == "adapter"
             and principal.drone_id is not None
@@ -888,6 +958,7 @@ class RelayRuntime:
         except AuditLogError:
             raise
         except Exception:
+            self._latch_control_heartbeat_gate(sink)
             return [
                 session.protocol_refusal(
                     reason="safety_runtime_error",
@@ -901,6 +972,7 @@ def create_app(
     *,
     credential_resolver: CredentialResolver | None = None,
     clock: Clock | None = None,
+    monotonic_clock: MonotonicClock | None = None,
     event_ids: EventIdFactory | None = None,
     intent_sink_factory: IntentSinkFactory | None = None,
     capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
@@ -909,13 +981,16 @@ def create_app(
     control_localization_factory: ControlLocalizationFactory | None = None,
     control_pose_signing_key: ControlPoseSigningKey | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
+    shutdown_prepare_callback: ShutdownPrepareCallback | None = None,
     shutdown_callback: ShutdownCallback | None = None,
+    shutdown_final_callback: ShutdownFinalCallback | None = None,
     media_monitor_factory: MediaMonitorFactory | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         active_settings = settings or RelaySettings.from_env()
         active_clock = clock or _epoch_ms
+        active_monotonic_clock = monotonic_clock or _monotonic_ms
         build_monitor = (
             default_media_monitor if media_monitor_factory is None else media_monitor_factory
         )
@@ -923,6 +998,7 @@ def create_app(
             active_settings,
             credential_resolver=credential_resolver,
             clock=active_clock,
+            monotonic_clock=active_monotonic_clock,
             event_ids=event_ids,
             intent_sink_factory=intent_sink_factory,
             capability_profile=capability_profile,
@@ -942,7 +1018,14 @@ def create_app(
         try:
             yield
         finally:
-            await runtime.stop()
+            deadline = time.monotonic() + _SHUTDOWN_TIMEOUT_SECONDS
+            if shutdown_prepare_callback is not None:
+                shutdown_prepare_callback()
+            runtime_complete = await runtime.stop(
+                deadline=deadline - _SHUTDOWN_REPORT_RESERVE_SECONDS
+            )
+            if shutdown_final_callback is not None:
+                shutdown_final_callback(deadline, runtime_complete)
             if shutdown_callback is not None:
                 shutdown_callback()
 
@@ -1378,6 +1461,10 @@ def _validate_session_id(session_id: str) -> None:
 
 def _epoch_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+def _monotonic_ms() -> int:
+    return time.monotonic_ns() // 1_000_000
 
 
 app = create_app()

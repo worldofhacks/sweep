@@ -538,7 +538,11 @@ class DeterministicPlanner:
         elif intent.name is IntentName.ESTOP:
             estop_update = True
             for drone_id, aircraft in sorted(snapshot.aircraft.items()):
-                if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}:
+                if aircraft.membership in {
+                    MembershipState.REGISTERED,
+                    MembershipState.READY,
+                    MembershipState.DEGRADED,
+                }:
                     builder.add(drone_id, CommandOperation.ESTOP, safety_action=True)
 
         elif intent.name is IntentName.CAPTURE_ROOM:
@@ -589,7 +593,12 @@ class DeterministicPlanner:
             else tuple(
                 drone_id
                 for drone_id, aircraft in sorted(snapshot.aircraft.items())
-                if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+                if aircraft.membership
+                in {
+                    MembershipState.REGISTERED,
+                    MembershipState.READY,
+                    MembershipState.DEGRADED,
+                }
                 and aircraft.airborne
             )
         )

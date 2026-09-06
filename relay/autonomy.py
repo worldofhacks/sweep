@@ -72,6 +72,7 @@ from relay.session import (
     EventIdFactory,
     IntentSink,
     LeaveAuthorizer,
+    MonotonicClock,
     RelaySession,
 )
 from relay.session_report import write_session_report
@@ -396,6 +397,7 @@ class _Job:
     watchdog_action: str | None = None
     watchdog_attempt: int = 0
     watchdog_targets: tuple[tuple[int, int], ...] = ()
+    watchdog_dispatched_targets: tuple[tuple[int, int], ...] = ()
 
     def check(self) -> None:
         if self.cancelled_by is not None:
@@ -415,12 +417,13 @@ class _AwaitingExecution:
 class _PresenceIncident:
     """Bounded retry state for one expiry epoch and its exact aircraft identities."""
 
-    expired_last_seen_ms: int
+    expired_last_seen_ms: int | None
+    presence_generation: int
     safe_targets: set[tuple[int, int]] = field(default_factory=set)
     pending: bool = False
     in_flight: _Job | None = None
     awaiting_job: _Job | None = None
-    next_attempt_ms: int = 0
+    next_attempt_monotonic_ms: int = 0
     attempts: int = 0
     idle_reported: bool = False
     last_intent_id: str | None = None
@@ -482,26 +485,36 @@ class _PreemptibleLink:
         return self._inner.media_files(drone_id, capture_id)
 
 
-def _presence_watchdog_targets(snapshot: FleetSnapshot, action: str) -> tuple[tuple[int, int], ...]:
-    """Freeze the exact identities a presence-loss action must make safe."""
-    active = tuple(
-        aircraft
-        for aircraft in snapshot.aircraft.values()
-        if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
-        and aircraft.airborne
-    )
-    if not active:
-        return ()
-    candidates = (
-        active
-        if action == "hold"
-        else tuple(
-            aircraft
-            for aircraft in snapshot.aircraft.values()
-            if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
-        )
-    )
-    return tuple(sorted((aircraft.drone_id, aircraft.connection_epoch) for aircraft in candidates))
+def _presence_watchdog_targets(state: Mapping[str, object]) -> tuple[tuple[int, int], ...]:
+    """Return current connected identities not positively proven landed and disarmed."""
+    drones = state.get("drones")
+    if not isinstance(drones, list):
+        raise ValueError("relay state requires a drones list")
+    targets: list[tuple[int, int]] = []
+    current_memberships = {
+        MembershipState.REGISTERED.value,
+        MembershipState.READY.value,
+        MembershipState.DEGRADED.value,
+    }
+    for drone in drones:
+        if not isinstance(drone, Mapping) or drone.get("membership") not in current_memberships:
+            continue
+        drone_id = drone.get("drone_id")
+        connection_epoch = drone.get("connection_epoch")
+        if (
+            not isinstance(drone_id, int)
+            or isinstance(drone_id, bool)
+            or drone_id <= 0
+            or not isinstance(connection_epoch, int)
+            or isinstance(connection_epoch, bool)
+            or connection_epoch <= 0
+        ):
+            raise ValueError("current relay aircraft has an invalid control identity")
+        # Missing/invalid telemetry is unsafe-unknown. Only an explicit current
+        # landed/disarmed state is enough to keep the transport lease available.
+        if drone.get("flight_state") not in _PHYSICALLY_DISARMED_STATES:
+            targets.append((drone_id, connection_epoch))
+    return tuple(sorted(targets))
 
 
 class AutonomySession:
@@ -528,7 +541,10 @@ class AutonomySession:
         )
         self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
-        self._operator_last_seen_ms: int | None = None
+        self._operator_last_seen_epoch_ms: int | None = None
+        self._operator_last_seen_monotonic_ms: int | None = None
+        self._presence_generation = 0
+        self._presence_runtime_failed = False
         self._presence_incident: _PresenceIncident | None = None
         self._presence_action_serial = 0
         self._stop_requested = False
@@ -553,11 +569,7 @@ class AutonomySession:
         """``IntentSink``: record operator activity and route the intent without blocking."""
         received_at = state.get("t")
         if isinstance(received_at, int) and not isinstance(received_at, bool):
-            with self._lock:
-                previous = self._operator_last_seen_ms
-                self._operator_last_seen_ms = (
-                    received_at if previous is None else max(previous, received_at)
-                )
+            self._record_operator_presence(received_at)
         runtime = self._composition.runtime_if_bound()
         job = _Job(intent, None if runtime is None else runtime.sessions.get(self.session_id))
         try:
@@ -591,7 +603,9 @@ class AutonomySession:
         with self._lock:
             incident = self._presence_incident
             operator_last_seen_ms = (
-                None if incident is not None and incident.pending else self._operator_last_seen_ms
+                None
+                if incident is not None and incident.pending
+                else self._operator_last_seen_epoch_ms
             )
             estop_requested = self._stop_requested
         return relay_snapshot(
@@ -602,15 +616,33 @@ class AutonomySession:
         )
 
     def record_operator_presence(self, now_ms: int) -> None:
+        self._record_operator_presence(now_ms)
+
+    def _record_operator_presence(self, epoch_ms: int) -> None:
         with self._lock:
-            previous = self._operator_last_seen_ms
-            self._operator_last_seen_ms = now_ms if previous is None else max(previous, now_ms)
+            self._operator_last_seen_epoch_ms = epoch_ms
+            self._operator_last_seen_monotonic_ms = self._composition.monotonic_clock()
+            self._presence_generation += 1
 
     def control_heartbeats_allowed(self) -> bool:
-        """Fail closed while a presence-loss action lacks a safe terminal result."""
+        """Allow node leases only with fresh presence or a positively safe fleet."""
         with self._lock:
             incident = self._presence_incident
-            return incident is None or not incident.pending
+            last_seen = self._operator_last_seen_monotonic_ms
+            failed = self._presence_runtime_failed
+        if failed or (incident is not None and incident.pending):
+            return False
+        now = self._composition.monotonic_clock()
+        if last_seen is not None and 0 <= now - last_seen < self.arbiter.config.operator_timeout_ms:
+            return True
+        runtime = self._composition.runtime_if_bound()
+        session = None if runtime is None else runtime.sessions.get(self.session_id)
+        return session is not None and not _presence_watchdog_targets(session.current_state())
+
+    def fail_operator_presence_gate(self) -> None:
+        """Latch the control lease closed after watchdog runtime failure."""
+        with self._lock:
+            self._presence_runtime_failed = True
 
     def periodic_events(self, _relay_event: Mapping[str, object]) -> list[dict[str, object]]:
         """Retry a frozen operator-loss action until every current target is safe."""
@@ -624,25 +656,37 @@ class AutonomySession:
         now = state.get("t")
         if not isinstance(now, int) or isinstance(now, bool):
             return []
+        now_monotonic = self._composition.monotonic_clock()
         action = self._composition.config.presence_watchdog.action
-        snapshot = self.snapshot(state, capture_readiness=session.capture_readiness)
-        targets = _presence_watchdog_targets(snapshot, action)
+        targets = _presence_watchdog_targets(state)
         with self._lock:
-            last_seen = self._operator_last_seen_ms
-            if last_seen is None:
-                return []
-            expired = now - last_seen >= self.arbiter.config.operator_timeout_ms
+            last_seen_epoch = self._operator_last_seen_epoch_ms
+            last_seen_monotonic = self._operator_last_seen_monotonic_ms
+            generation = self._presence_generation
+            expired = (
+                last_seen_monotonic is None
+                or now_monotonic - last_seen_monotonic < 0
+                or now_monotonic - last_seen_monotonic >= self.arbiter.config.operator_timeout_ms
+            )
             incident = self._presence_incident
+            if incident is None and last_seen_monotonic is None and not targets:
+                return []
             if incident is None:
                 if not expired:
                     return []
-                incident = _PresenceIncident(expired_last_seen_ms=last_seen)
+                incident = _PresenceIncident(
+                    expired_last_seen_ms=last_seen_epoch,
+                    presence_generation=generation,
+                )
                 self._presence_incident = incident
-            elif last_seen > incident.expired_last_seen_ms and not incident.pending:
+            elif generation > incident.presence_generation and not incident.pending:
                 if not expired:
                     self._presence_incident = None
                     return []
-                incident = _PresenceIncident(expired_last_seen_ms=last_seen)
+                incident = _PresenceIncident(
+                    expired_last_seen_ms=last_seen_epoch,
+                    presence_generation=generation,
+                )
                 self._presence_incident = incident
 
             unsafe_targets = tuple(
@@ -657,16 +701,23 @@ class AutonomySession:
             else:
                 idle_event = False
                 incident.pending = True
-                if incident.in_flight is not None or now < incident.next_attempt_ms:
+                if (
+                    incident.in_flight is not None
+                    or now_monotonic < incident.next_attempt_monotonic_ms
+                ):
                     return []
                 retiring_job = incident.awaiting_job
                 incident.awaiting_job = None
                 self._presence_action_serial += 1
                 incident.attempts += 1
                 attempt = incident.attempts
+                presence_epoch = (
+                    "never"
+                    if incident.expired_last_seen_ms is None
+                    else str(incident.expired_last_seen_ms)
+                )
                 intent_id = (
-                    f"safety:operator-presence:{incident.expired_last_seen_ms}:"
-                    f"{self._presence_action_serial}"
+                    f"safety:operator-presence:{presence_epoch}:{self._presence_action_serial}"
                 )
                 intent = IntentV1(
                     v=1,
@@ -738,7 +789,7 @@ class AutonomySession:
                 lane.pending.append(job)
                 lane.ready.notify()
         except BaseException:
-            self._defer_watchdog_retry(job, now)
+            self._defer_watchdog_retry(job, now_monotonic)
             raise
         return [
             *([] if retired_event is None else [retired_event]),
@@ -747,7 +798,7 @@ class AutonomySession:
             *job.publications,
         ]
 
-    def _defer_watchdog_retry(self, job: _Job, now_ms: int) -> None:
+    def _defer_watchdog_retry(self, job: _Job, now_monotonic_ms: int) -> None:
         retry_ms = max(
             OPERATOR_PRESENCE_MIN_INTERVAL_MS,
             min(_MAX_WATCHDOG_RETRY_INTERVAL_MS, self.arbiter.config.operator_timeout_ms // 2),
@@ -758,7 +809,7 @@ class AutonomySession:
                 return
             incident.in_flight = None
             incident.pending = True
-            incident.next_attempt_ms = now_ms + retry_ms
+            incident.next_attempt_monotonic_ms = now_monotonic_ms + retry_ms
 
     def _record_watchdog_result(
         self,
@@ -779,11 +830,8 @@ class AutonomySession:
     ) -> dict[str, object] | None:
         if job.watchdog_action is None:
             return None
-        now = session.clock()
-        current_targets = _presence_watchdog_targets(
-            self.snapshot(session.current_state(), capture_readiness=session.capture_readiness),
-            job.watchdog_action,
-        )
+        now_monotonic = self._composition.monotonic_clock()
+        current_targets = _presence_watchdog_targets(session.current_state())
         with self._lock:
             incident = self._presence_incident
             if incident is None or (
@@ -793,12 +841,26 @@ class AutonomySession:
             incident.in_flight = None
             incident.awaiting_job = None
             if status is LifecycleStatus.COMPLETED:
-                incident.safe_targets = set(job.watchdog_targets)
+                incident.safe_targets.update(job.watchdog_dispatched_targets)
                 incident.pending = any(
                     target not in incident.safe_targets for target in current_targets
                 )
-                incident.next_attempt_ms = now if incident.pending else 0
-                event_status = "confirmed"
+                if incident.pending:
+                    event_status = "failed"
+                    retry_ms = max(
+                        OPERATOR_PRESENCE_MIN_INTERVAL_MS,
+                        min(
+                            _MAX_WATCHDOG_RETRY_INTERVAL_MS,
+                            max(
+                                session.limits.command_ttl_ms,
+                                self.arbiter.config.operator_timeout_ms // 2,
+                            ),
+                        ),
+                    )
+                    incident.next_attempt_monotonic_ms = now_monotonic + retry_ms
+                else:
+                    event_status = "confirmed"
+                    incident.next_attempt_monotonic_ms = 0
             else:
                 incident.pending = True
                 if status is LifecycleStatus.EXECUTING:
@@ -816,7 +878,7 @@ class AutonomySession:
                         ),
                     ),
                 )
-                incident.next_attempt_ms = now + retry_ms
+                incident.next_attempt_monotonic_ms = now_monotonic + retry_ms
             expired_last_seen_ms = incident.expired_last_seen_ms
         return session.record_safety_action(
             reason="operator_presence_expired",
@@ -998,11 +1060,11 @@ class AutonomySession:
             return _PreemptibleLink(link, job, session)
 
         try:
-            snapshot = current()
+            relay_state = session.current_state()
+            snapshot = self.snapshot(relay_state, capture_readiness=session.capture_readiness)
             if (
                 job.watchdog_action is not None
-                and _presence_watchdog_targets(snapshot, job.watchdog_action)
-                != job.watchdog_targets
+                and _presence_watchdog_targets(relay_state) != job.watchdog_targets
             ):
                 raise RuntimeError("presence watchdog target identity changed before dispatch")
             dispatcher = build_dispatcher(
@@ -1024,6 +1086,15 @@ class AutonomySession:
                 result = dispatcher.dispatch(plan, snapshot, current_snapshot=current)
             else:
                 result = controller.execute(intent, snapshot, current_snapshot=current)
+            if job.watchdog_action is not None and result.plan is not None:
+                job.watchdog_dispatched_targets = tuple(
+                    sorted(
+                        {
+                            (command.drone_id, command.connection_epoch)
+                            for command in result.plan.commands
+                        }
+                    )
+                )
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             self._record_watchdog_result(runtime, session, job, LifecycleStatus.INVALIDATED)
@@ -1239,12 +1310,18 @@ class AutonomyComposition:
     """Per-session autonomy workers behind ``create_app``'s sink and leave factories."""
 
     def __init__(
-        self, config: AutonomyConfig, capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
+        self,
+        config: AutonomyConfig,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        *,
+        monotonic_clock: MonotonicClock | None = None,
     ) -> None:
         self.config = config
+        self.monotonic_clock = monotonic_clock or _monotonic_ms
         self.capability_profile = config.planning.effective_capability_profile(capability_profile)
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
+        self._closing = False
         self._lock = threading.Lock()
 
     def bind(self, target: FastAPI | RelayRuntime) -> None:
@@ -1279,13 +1356,26 @@ class AutonomyComposition:
 
     def session(self, session_id: str) -> AutonomySession:
         with self._lock:
+            if self._closing:
+                raise RuntimeError("autonomy composition is closed")
             session = self._sessions.get(session_id)
             if session is None:
                 session = AutonomySession(self, session_id)
                 self._sessions[session_id] = session
             return session
 
-    def close(self, *, timeout_s: float = 5.0) -> None:
+    def begin_shutdown(self) -> None:
+        """Fence session construction before the relay starts waiting for work."""
+        with self._lock:
+            self._closing = True
+
+    def close(
+        self,
+        *,
+        timeout_s: float = 5.0,
+        deadline: float | None = None,
+        runtime_complete: bool = True,
+    ) -> None:
         if (
             isinstance(timeout_s, bool)
             or not isinstance(timeout_s, int | float)
@@ -1293,8 +1383,17 @@ class AutonomyComposition:
             or timeout_s <= 0
         ):
             raise ValueError("timeout_s must be a finite positive number")
-        deadline = monotonic() + timeout_s
-        worker_deadline = deadline - min(_REPORT_DEADLINE_RESERVE_S, timeout_s / 2)
+        if deadline is None:
+            deadline = monotonic() + timeout_s
+        elif (
+            isinstance(deadline, bool)
+            or not isinstance(deadline, int | float)
+            or not math.isfinite(deadline)
+        ):
+            raise ValueError("deadline must be finite")
+        self.begin_shutdown()
+        remaining = max(0.0, deadline - monotonic())
+        worker_deadline = deadline - min(_REPORT_DEADLINE_RESERVE_S, remaining / 2)
         with self._lock:
             sessions = tuple(self._sessions.values())
         complete: dict[str, bool] = {}
@@ -1304,16 +1403,22 @@ class AutonomyComposition:
         if runtime is None:
             return
         for relay_session in tuple(runtime.sessions.values()):
+            worker_complete = complete.get(relay_session.session_id, False)
+            report_complete = runtime_complete and worker_complete
+            if report_complete:
+                reason = "orderly_shutdown"
+            elif runtime_complete:
+                reason = "worker_deadline_exceeded"
+            elif worker_complete:
+                reason = "runtime_deadline_exceeded"
+            else:
+                reason = "runtime_and_worker_deadline_exceeded"
             try:
                 write_session_report(
                     relay_session.audit_log,
                     generated_at_ms=runtime.clock(),
-                    complete=complete.get(relay_session.session_id, True),
-                    completion_reason=(
-                        "orderly_shutdown"
-                        if complete.get(relay_session.session_id, True)
-                        else "worker_deadline_exceeded"
-                    ),
+                    complete=report_complete,
+                    completion_reason=reason,
                     deadline=deadline,
                 )
             except Exception:
@@ -1327,6 +1432,7 @@ def create_autonomy_app(
     config: AutonomyConfig,
     *,
     clock: Clock | None = None,
+    monotonic_clock: MonotonicClock | None = None,
     event_ids: EventIdFactory | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
 ) -> tuple[FastAPI, AutonomyComposition]:
@@ -1338,7 +1444,12 @@ def create_autonomy_app(
     """
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
-    composition = AutonomyComposition(config, settings.capability_profile)
+    active_monotonic_clock = monotonic_clock or _monotonic_ms
+    composition = AutonomyComposition(
+        config,
+        settings.capability_profile,
+        monotonic_clock=active_monotonic_clock,
+    )
     control_localization_factory = (
         None
         if config.control_localization_projector is None
@@ -1347,13 +1458,18 @@ def create_autonomy_app(
     app = create_app(
         settings,
         clock=clock,
+        monotonic_clock=active_monotonic_clock,
         event_ids=event_ids,
         intent_sink_factory=composition.intent_sink_factory,
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_factory=control_localization_factory,
         transcript_service_factory=transcript_service_factory,
-        shutdown_callback=composition.close,
+        shutdown_prepare_callback=composition.begin_shutdown,
+        shutdown_final_callback=lambda deadline, runtime_complete: composition.close(
+            deadline=deadline,
+            runtime_complete=runtime_complete,
+        ),
     )
     composition.bind(app)
     return app, composition
@@ -1415,6 +1531,10 @@ def _domain_refusal_reason(value: str | None) -> RefusalReason | None:
 
 def _no_runtime() -> RelayRuntime | None:
     return None
+
+
+def _monotonic_ms() -> int:
+    return int(monotonic() * 1_000)
 
 
 def _config_from_json[T](cls: type[T], raw: str, name: str) -> T:

@@ -417,6 +417,7 @@ describe('M1.1 wire compatibility', () => {
     }
 
     expect(parseRelayServerEvent(raw)).toEqual(raw)
+    expect(parseRelayServerEvent({ ...raw, operator_last_seen_ms: null })).not.toBeNull()
     expect(parseRelayServerEvent({ ...raw, unexpected: true })).toBeNull()
     expect(parseRelayServerEvent({ ...raw, attempt: 0 })).toBeNull()
     expect(parseRelayServerEvent({ ...raw, targets: [] })).toBeNull()

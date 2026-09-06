@@ -429,7 +429,7 @@ export interface RelayOperatorPresenceSafetyActionEvent {
   session: string
   reason: 'operator_presence_expired'
   action: 'hold' | 'estop'
-  operator_last_seen_ms: number
+  operator_last_seen_ms: number | null
   status: 'requested' | 'retrying' | 'awaiting' | 'confirmed' | 'failed' | 'not_required'
   attempt: number
   intent_id: string | null
@@ -1022,8 +1022,9 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       if (
         !hasExactFields(value, fields) ||
         !Number.isSafeInteger(value.t) ||
-        !Number.isSafeInteger(value.operator_last_seen_ms) ||
-        Number(value.operator_last_seen_ms) < 0 ||
+        (value.operator_last_seen_ms !== null &&
+          (!Number.isSafeInteger(value.operator_last_seen_ms) ||
+            Number(value.operator_last_seen_ms) < 0)) ||
         !['hold', 'estop'].includes(String(value.action)) ||
         !['requested', 'retrying', 'awaiting', 'confirmed', 'failed', 'not_required'].includes(
           String(status),
