@@ -442,6 +442,7 @@ def parse_voice_outcome(
         raise ValueError("voice outcome correlation does not match")
     if raw["status"] not in {"transcribed", "refused"} or raw["source"] not in {
         "whisper",
+        "deepgram",
         "template",
     }:
         raise ValueError("voice outcome status or source is invalid")
