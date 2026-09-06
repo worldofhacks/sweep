@@ -13,6 +13,7 @@ from planner.models import (
     Position,
     RefusalReason,
 )
+from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
     NOW_MS,
@@ -369,7 +370,7 @@ def test_geofence_and_ceiling_are_checked_on_planned_command() -> None:
 
 def test_requested_sweep_box_outside_mode_geofence_is_refused_before_planning() -> None:
     snapshot = make_snapshot(2, selection=(1, 2))
-    controller, _, _, _, flight, _ = make_stack(snapshot)
+    controller, _, _, _, flight, _ = make_stack(snapshot, capability_profile=C2_CAPABILITY_PROFILE)
 
     result = controller.execute(
         make_intent(

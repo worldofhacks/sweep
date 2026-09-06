@@ -224,6 +224,9 @@ class DeterministicPlanner:
         elif intent.name is IntentName.ARM:
             armed_update = True
 
+        elif intent.name is IntentName.DISARM:
+            armed_update = False
+
         elif intent.name is IntentName.TAKEOFF:
             for drone_id in selected:
                 builder.add(

@@ -4,6 +4,7 @@ import pytest
 
 from adapters.sim.flight import SimFlightAdapter
 from planner.models import FleetSnapshot, FlightState, LifecycleStatus, Plan
+from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import make_intent, make_snapshot, make_stack, planning_config
 
@@ -25,6 +26,7 @@ def test_simulated_m15_path_reaches_confirmed_land_all(count: int) -> None:
             altitude_configuration_id="m15-sim-floor-v1",
             altitude_completion_tolerance_m=0.05,
         ),
+        capability_profile=C2_CAPABILITY_PROFILE,
     )
 
     intents = (

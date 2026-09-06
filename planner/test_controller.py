@@ -14,6 +14,7 @@ from planner.models import (
 from planner.planner import DeterministicPlanner
 from relay.audit import SessionAuditLog
 from relay.auth import Principal
+from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from relay.session import RelayLimits, RelaySession
 from tests.autonomy_fixtures import (
@@ -59,6 +60,19 @@ def test_arm_select_takeoff_documented_workflow() -> None:
         FlightState.HOVERING,
         FlightState.HOVERING,
     ]
+
+
+def test_disarm_clears_only_the_session_authorization() -> None:
+    snapshot = make_snapshot(1, selection=(), armed=True)
+    controller, _, _, _, flight, _ = make_stack(snapshot, capability_profile=C2_CAPABILITY_PROFILE)
+
+    result = controller.execute(make_intent(IntentName.DISARM, selection=()), snapshot)
+
+    assert result.status is LifecycleStatus.COMPLETED
+    assert result.plan is not None
+    assert result.plan.commands == ()
+    assert result.plan.armed_update is False
+    assert flight.calls == []
 
 
 def test_prepared_plan_dispatches_without_replanning() -> None:
