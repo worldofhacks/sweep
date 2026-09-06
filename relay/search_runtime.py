@@ -19,7 +19,7 @@ from perception.search_events import (
     SearchMissionIdentity,
     SearchTaskEvent,
 )
-from perception.search_localization import SearchLocalization
+from perception.search_localization import FiveFrameLocalizer, SearchCameraModel, SearchLocalization
 from planner.models import (
     Command,
     ExecutionResult,
@@ -107,6 +107,7 @@ class _Mission:
     started: bool = False
     candidates: dict[str, tuple[SearchCandidateEvent, SearchLocalization | None]] | None = None
     acknowledged_findings: set[str] | None = None
+    candidate_frames: dict[str, SightingEvent] | None = None
 
 
 class SearchRuntime:
@@ -168,7 +169,7 @@ class SearchRuntime:
             return self._refusal(intent.intent_id, snapshot, "search intent already has a mission")
         preview = SearchMissionPreview(search, plan)
         self._missions[intent.intent_id] = _Mission(
-            preview, search.ledger(), candidates={}, acknowledged_findings=set()
+            preview, search.ledger(), candidates={}, candidate_frames={}, acknowledged_findings=set()
         )
         return preview
 
@@ -227,7 +228,13 @@ class SearchRuntime:
         candidate = mission.ledger.observe_sighting(event)
         if candidate is not None:
             assert mission.candidates is not None
-            mission.candidates[candidate.sighting_id] = (candidate, None)
+            previous = mission.candidates.get(candidate.sighting_id)
+            mission.candidates[candidate.sighting_id] = (
+                candidate,
+                None if previous is None else previous[1],
+            )
+            assert mission.candidate_frames is not None
+            mission.candidate_frames[candidate.sighting_id] = event
         return candidate
 
     def localize_sighting(
@@ -275,6 +282,7 @@ class SearchRuntime:
             )
         candidates = []
         for sighting_id, (candidate, localization) in mission.candidates.items():
+            frame = (mission.candidate_frames or {}).get(sighting_id)
             position = None
             if localization is not None:
                 position = {
@@ -294,6 +302,13 @@ class SearchRuntime:
                     "confidence": candidate.candidate.confidence,
                     "bbox_xyxy": candidate.candidate.bbox_xyxy,
                     "observation_count": candidate.observation_count,
+                    "frame": None
+                    if frame is None
+                    else {
+                        **frame.identity.payload(),
+                        "decoded_at_monotonic_s": frame.last_frame_decoded_at_monotonic_s,
+                        "evaluated_at_monotonic_s": frame.evaluation_completed_at_monotonic_s,
+                    },
                 }
             )
         return {
@@ -310,10 +325,12 @@ class SearchRuntime:
         drone_id: int,
         stream: object,
         detector: object,
-        pose_for_frame: Callable[[ProcessedFrameEvent], FramePoseEvidence],
+        pose_for_frame: Callable[[ProcessedFrameEvent], FramePoseEvidence | None],
         *,
         now_s: Callable[[], float],
         worker_run_id: str | None = None,
+        camera_for_frame: Callable[[ProcessedFrameEvent], tuple[int, SearchCameraModel] | None]
+        | None = None,
     ) -> LiveDetectionWorker:
         mission = self._mission(intent_id)
         assignment = next(
@@ -322,11 +339,46 @@ class SearchRuntime:
             if item.drone.drone.drone_id == drone_id
         )
 
+        zone = next(
+            zone
+            for zone in self.navigation.artifact().zones
+            if zone.zone_id == mission.preview.search.zone.zone_id
+        )
+        zones = (replace(zone, z_min_m=mission.preview.search.zone.floor_z_m),)
+        localizers: dict[str, FiveFrameLocalizer] = {}
+        last_pose: FramePoseEvidence | None = None
+        last_camera: tuple[int, SearchCameraModel] | None = None
+
         def consume(event: ProcessedFrameEvent | SightingEvent) -> None:
+            nonlocal last_pose, last_camera
             if isinstance(event, ProcessedFrameEvent):
-                self.observe_processed_frame(intent_id, event, pose_for_frame(event), now_s=now_s())
+                last_pose = None
+                last_camera = None
+                if pose := pose_for_frame(event):
+                    observation = self.observe_processed_frame(
+                        intent_id, event, pose, now_s=now_s()
+                    )
+                    if observation.accepted:
+                        last_pose = pose
+                        if camera_for_frame is not None:
+                            last_camera = camera_for_frame(event)
             else:
-                self.observe_sighting(intent_id, event)
+                candidate = self.observe_sighting(intent_id, event)
+                if candidate is not None and last_pose is not None and last_camera is not None:
+                    if event.sighting_id not in localizers:
+                        if len(localizers) >= 256:
+                            localizers.pop(next(iter(localizers)))
+                        localizers[event.sighting_id] = FiveFrameLocalizer(zones)
+                    localization = localizers[event.sighting_id].observe_sighting(
+                        event,
+                        last_pose,
+                        last_camera[1],
+                        last_camera[0],
+                        now_s(),
+                        accepted_frame=True,
+                    )
+                    if localization is not None:
+                        self.localize_sighting(intent_id, event.sighting_id, localization)
 
         return LiveDetectionWorker(
             stream,

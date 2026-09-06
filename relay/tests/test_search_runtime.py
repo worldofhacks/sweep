@@ -154,7 +154,7 @@ def test_search_counts_real_worker_frames_during_frozen_route_execution() -> Non
 
     from perception.object_detection import DEFAULT_TARGET_LABELS, DetectionCandidate
     from perception.search_events import FramePoseEvidence
-    from perception.search_localization import SearchLocalization
+    from perception.search_localization import SearchCameraModel
     from planner.models import LifecycleStatus
     from planner.navigation import Pose
     from tests.autonomy_fixtures import make_stack
@@ -170,7 +170,7 @@ def test_search_counts_real_worker_frames_during_frozen_route_execution() -> Non
         detector_config_sha256 = "a" * 64
 
         def detect(self, _frame):
-            return (DetectionCandidate("backpack", 24, 0.9, (1, 1, 3, 3)),)
+            return (DetectionCandidate("backpack", 24, 0.9, (3, 3, 5, 4)),)
 
     runtime = _search_runtime()
     snapshot = _snapshot()
@@ -207,6 +207,13 @@ def test_search_counts_real_worker_frames_during_frozen_route_execution() -> Non
             clock[0] / 1000,
         )
 
+    def camera_for(_event):
+        pose = observed_pose[0]
+        return 8, SearchCameraModel(
+            ((4, 0, 4), (0, 4, 4), (0, 0, 1)),
+            ((1, 0, 0, pose.x), (0, -1, 0, pose.y), (0, 0, -1, pose.z), (0, 0, 0, 1)),
+        )
+
     worker = runtime.detection_worker(
         "search-runtime",
         1,
@@ -215,12 +222,15 @@ def test_search_counts_real_worker_frames_during_frozen_route_execution() -> Non
         pose_for,
         now_s=lambda: clock[0] / 1000,
         worker_run_id="moving-search",
+        camera_for_frame=camera_for,
     )
 
     def process_arrival(_plan, _command, arrived):
         observed_pose[0] = arrived.aircraft[1].pose
-        frames.frames.append((np.zeros((8, 8, 3), dtype=np.uint8), clock[0] / 1000))
-        worker.poll()
+        for _ in range(5):
+            clock[0] += 1
+            frames.frames.append((np.zeros((8, 8, 3), dtype=np.uint8), clock[0] / 1000))
+            worker.poll()
         covered_during_flight.append(
             runtime.status_payload("search-runtime")["tasks"][0]["covered_cells"]
         )
@@ -234,27 +244,19 @@ def test_search_counts_real_worker_frames_during_frozen_route_execution() -> Non
     assert dispatcher.on_navigation_command_completed is process_arrival
 
     payload = runtime.status_payload("search-runtime")
-    candidate = payload["candidates"][0]
-    task_payload = payload["tasks"][0]
+    candidates = payload["candidates"]
+    assert candidates
+    candidate = candidates[0]
     assert candidate["label"] == "backpack"
     assert candidate["confidence"] == 0.9
-    assert candidate["bbox_xyxy"] == (1, 1, 3, 3)
-    assert candidate["position"] is None
-    assert task_payload["cells"]
-    assert task_payload["covered_cell_ids"]
-
-    runtime.localize_sighting(
-        "search-runtime",
-        candidate["sighting_id"],
-        SearchLocalization(task.cells[0].pose, 5),
-    )
+    assert candidate["bbox_xyxy"] == (3, 3, 5, 4)
+    assert candidate["position"]["zone_id"] == "atrium"
+    assert candidate["position"]["floor_id"] == "level_1"
+    assert candidate["frame"]["worker_run_id"] == "moving-search"
+    assert candidate["observation_count"] >= 5
+    assert payload["tasks"][0]["cells"]
+    assert payload["tasks"][0]["covered_cell_ids"]
+    count = len(flight.calls)
     assert runtime.acknowledge_finding("search-runtime", candidate["sighting_id"])
-    updated = runtime.status_payload("search-runtime")["candidates"][0]
-    assert updated["acknowledged"]
-    assert updated["position"] == {
-        "x_m": task.cells[0].pose.x_m,
-        "y_m": task.cells[0].pose.y_m,
-        "z_m": task.cells[0].pose.z_m,
-        "zone_id": preview.search.zone.zone_id,
-        "floor_id": task.cells[0].pose.floor_id,
-    }
+    assert runtime.status_payload("search-runtime")["candidates"][0]["acknowledged"]
+    assert len(flight.calls) == count
