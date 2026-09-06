@@ -719,6 +719,7 @@ def test_record_stops_at_the_monotonic_duration_deadline(
     assert manifest["stop_reason"] == "safety_limit"
     assert manifest["elapsed_seconds"] == 11
     assert manifest["limits"]["max_duration_seconds"] == 10
+    assert manifest["limits"]["max_finalization_seconds"] == (recording.MAX_FINALIZATION_SECONDS)
     assert ownership_checkpoints == [False, True]
 
 
@@ -751,9 +752,16 @@ def test_catchable_signal_during_finalization_does_not_interrupt_export(
     monkeypatch.setattr(recording, "_budget_status", lambda *args, **kwargs: ((), True))
 
     def segments_during_signal(
-        _run_dir: Path, _prepared: recording.PreparedRun
+        _run_dir: Path,
+        _prepared: recording.PreparedRun,
+        finalization: recording.FinalizationBudget,
     ) -> list[dict[str, object]]:
         assert signal.getsignal(signal.SIGTERM) is not original_handler
+        assert (
+            0
+            < finalization.timeout(recording.MAX_FINALIZATION_SECONDS)
+            <= (recording.MAX_FINALIZATION_SECONDS)
+        )
         os.kill(os.getpid(), signal.SIGTERM)
         return _fixture_segments(spec)
 
@@ -763,6 +771,186 @@ def test_catchable_signal_during_finalization_does_not_interrupt_export(
     assert archive.is_dir()
     assert received == [True]
     assert signal.getsignal(signal.SIGTERM) is original_handler
+
+
+def test_repeated_signal_during_finalization_aborts_without_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(tmp_path)
+    original_handler = signal.getsignal(signal.SIGTERM)
+    container_ids = iter((None, "container-id"))
+
+    class SignalStop:
+        def set(self) -> None:
+            pass
+
+        def wait(self, _timeout: float) -> bool:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return True
+
+    monkeypatch.setattr(recording.threading, "Event", SignalStop)
+    monkeypatch.setattr(
+        recording,
+        "_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=[], returncode=0, stdout=""),
+    )
+    monkeypatch.setattr(
+        recording, "_compose_container_id", lambda *args, **kwargs: next(container_ids)
+    )
+    monkeypatch.setattr(
+        recording,
+        "_owned_service",
+        lambda container_id, token, **_kwargs: recording.OwnedService(container_id, token),
+    )
+    monkeypatch.setattr(recording, "_service_running", lambda *_: True)
+    monkeypatch.setattr(recording, "_stop_service", lambda *_: None)
+    monkeypatch.setattr(recording, "_budget_status", lambda *args, **kwargs: ((), True))
+
+    def interrupt_validation(
+        _run_dir: Path,
+        _prepared: recording.PreparedRun,
+        _finalization: recording.FinalizationBudget,
+    ) -> list[dict[str, object]]:
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise AssertionError("the repeated signal must leave the validation call")
+
+    monkeypatch.setattr(recording, "_segments", interrupt_validation)
+
+    with pytest.raises(recording.RecordingError, match="repeated stop signal"):
+        recording.record(spec)
+    assert spec.run_dir.is_dir()
+    assert not spec.export_dir.exists()
+    assert signal.getsignal(signal.SIGTERM) is original_handler
+
+
+def test_signal_wake_rechecks_service_before_assigning_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(tmp_path)
+    container_ids = iter((None, "container-id"))
+    service_checks: list[str] = []
+
+    class CrashedThenSignalled:
+        def set(self) -> None:
+            pass
+
+        def wait(self, _timeout: float) -> bool:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return True
+
+    monkeypatch.setattr(recording.threading, "Event", CrashedThenSignalled)
+    monkeypatch.setattr(
+        recording,
+        "_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=[], returncode=0, stdout=""),
+    )
+    monkeypatch.setattr(
+        recording, "_compose_container_id", lambda *args, **kwargs: next(container_ids)
+    )
+    monkeypatch.setattr(
+        recording,
+        "_owned_service",
+        lambda container_id, token, **_kwargs: recording.OwnedService(container_id, token),
+    )
+
+    def stopped(service: recording.OwnedService) -> bool:
+        service_checks.append(service.container_id)
+        return False
+
+    monkeypatch.setattr(recording, "_service_running", stopped)
+    monkeypatch.setattr(recording, "_stop_service", lambda *_: None)
+    monkeypatch.setattr(recording, "_budget_status", lambda *args, **kwargs: ((), True))
+    monkeypatch.setattr(recording, "_segments", lambda *_: _fixture_segments(spec))
+
+    with pytest.raises(recording.RecordingError, match="MediaMTX stopped unexpectedly"):
+        recording.record(spec)
+
+    manifest = json.loads((spec.export_dir / "recording-manifest.json").read_bytes())
+    assert manifest["stop_reason"] == "service_failure"
+    assert service_checks == ["container-id"]
+
+
+@pytest.mark.parametrize(("offset", "exports"), ((-0.001, True), (0.0, False), (0.001, False)))
+def test_record_finalization_deadline_is_fail_closed_at_exact_boundary_and_plus_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offset: float,
+    exports: bool,
+) -> None:
+    spec = _spec(tmp_path)
+    container_ids = iter((None, "container-id"))
+    clock = [100.0]
+    monkeypatch.setattr(recording, "MAX_FINALIZATION_SECONDS", 1.0)
+    monkeypatch.setattr(recording.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        recording.threading,
+        "Event",
+        lambda: SimpleNamespace(set=lambda: None, wait=lambda _timeout: True),
+    )
+    monkeypatch.setattr(
+        recording,
+        "_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=[], returncode=0, stdout=""),
+    )
+    monkeypatch.setattr(
+        recording, "_compose_container_id", lambda *args, **kwargs: next(container_ids)
+    )
+    monkeypatch.setattr(
+        recording,
+        "_owned_service",
+        lambda container_id, token, **_kwargs: recording.OwnedService(container_id, token),
+    )
+    monkeypatch.setattr(recording, "_stop_service", lambda *_: None)
+    monkeypatch.setattr(recording, "_budget_status", lambda *args, **kwargs: ((), True))
+
+    def at_boundary(
+        _run_dir: Path,
+        _prepared: recording.PreparedRun,
+        finalization: recording.FinalizationBudget,
+    ) -> list[dict[str, object]]:
+        clock[0] = finalization.deadline + offset
+        finalization.checkpoint()
+        return _fixture_segments(spec)
+
+    monkeypatch.setattr(recording, "_segments", at_boundary)
+
+    if exports:
+        assert recording.record(spec) == spec.export_dir
+        assert spec.export_dir.is_dir()
+    else:
+        with pytest.raises(recording.RecordingError, match="aggregate budget"):
+            recording.record(spec)
+        assert spec.run_dir.is_dir()
+        assert not spec.export_dir.exists()
+
+
+def test_command_caps_timeout_to_remaining_finalization_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [10.0]
+    calls: list[float] = []
+    budget = recording.FinalizationBudget(
+        deadline=15.0,
+        limit_seconds=5.0,
+        run_dir=tmp_path,
+        cancelled=lambda: False,
+    )
+
+    def run(*_args: object, timeout: float, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(timeout)
+        clock[0] = budget.deadline - 0.001
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="")
+
+    monkeypatch.setattr(recording.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(recording.subprocess, "run", run)
+    recording._command(["bounded"], timeout=30, finalization=budget)
+    assert calls == [5.0]
+
+    for exhausted in (budget.deadline, budget.deadline + 0.001):
+        clock[0] = exhausted
+        with pytest.raises(recording.RecordingError, match="aggregate budget"):
+            recording._command(["must-not-start"], timeout=30, finalization=budget)
+    assert calls == [5.0]
 
 
 def test_record_refuses_configuration_mutation_during_startup(

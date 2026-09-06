@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -38,6 +38,7 @@ MAX_SEGMENT_DURATION_SECONDS = 120.0
 MAX_VIDEO_DIMENSION = 8_192
 MAX_VIDEO_PIXELS = 7_680 * 4_320
 MAX_DECODE_SECONDS = 300.0
+MAX_FINALIZATION_SECONDS = 60 * 60
 MAX_MANIFEST_BYTES = 8 * 1024**2
 ARCHIVE_METADATA_BLOCKS = 16
 OWNER_LABEL = "org.worldofhacks.sweep.recording-owner"
@@ -47,6 +48,36 @@ MAX_TREE_ENTRIES = MAX_SEGMENTS + len(ALLOWED_STREAMS) + 1
 
 class RecordingError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class FinalizationBudget:
+    """One aggregate monotonic deadline shared by every segment-validation step."""
+
+    deadline: float
+    limit_seconds: float
+    run_dir: Path
+    cancelled: Callable[[], bool] = field(repr=False)
+
+    def _remaining(self) -> float:
+        if self.cancelled():
+            raise RecordingError(
+                "recording finalization was cancelled; finalized evidence remains "
+                f"unexported at {self.run_dir}"
+            )
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise RecordingError(
+                f"recording finalization exceeded the {self.limit_seconds:g}-second "
+                f"aggregate budget; finalized evidence remains unexported at {self.run_dir}"
+            )
+        return remaining
+
+    def timeout(self, maximum: float) -> float:
+        return min(maximum, self._remaining())
+
+    def checkpoint(self) -> None:
+        self._remaining()
 
 
 def _utc_now() -> str:
@@ -422,9 +453,12 @@ def _command(
     environment: dict[str, str] | None = None,
     check: bool = True,
     pass_fds: tuple[int, ...] = (),
+    finalization: FinalizationBudget | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if finalization is not None:
+        timeout = finalization.timeout(timeout)
     try:
-        return subprocess.run(
+        result = subprocess.run(
             command,
             cwd=ROOT,
             env=environment,
@@ -435,11 +469,19 @@ def _command(
             pass_fds=pass_fds,
         )
     except (OSError, subprocess.SubprocessError) as exc:
+        if finalization is not None:
+            try:
+                finalization.checkpoint()
+            except RecordingError as budget_error:
+                raise budget_error from exc
         detail = getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or ""
         detail = detail.strip()[-1000:]
         raise RecordingError(
             f"command failed ({' '.join(command)})" + (f": {detail}" if detail else "")
         ) from exc
+    if finalization is not None:
+        finalization.checkpoint()
+    return result
 
 
 def _compose_container_id(
@@ -714,7 +756,11 @@ def _budget_status(
         return tuple(reasons), export_safe
 
 
-def _probe_descriptor(descriptor: int, path: Path) -> tuple[str, str, dict[str, object]]:
+def _probe_descriptor(
+    descriptor: int,
+    path: Path,
+    finalization: FinalizationBudget | None = None,
+) -> tuple[str, str, dict[str, object]]:
     media_path = f"/dev/fd/{descriptor}"
     arguments = (
         "ffprobe -v error -show_entries "
@@ -725,6 +771,7 @@ def _probe_descriptor(descriptor: int, path: Path) -> tuple[str, str, dict[str, 
         [*arguments, media_path],
         timeout=30,
         pass_fds=(descriptor,),
+        finalization=finalization,
     )
     try:
         probe = json.loads(result.stdout)
@@ -781,6 +828,7 @@ def _probe_descriptor(descriptor: int, path: Path) -> tuple[str, str, dict[str, 
         ],
         timeout=30,
         pass_fds=(descriptor,),
+        finalization=finalization,
     )
     if not any(
         line.strip() and not line.lstrip().startswith("#") for line in decoded.stdout.splitlines()
@@ -796,24 +844,37 @@ def _probe_descriptor(descriptor: int, path: Path) -> tuple[str, str, dict[str, 
         ],
         timeout=decode_timeout,
         pass_fds=(descriptor,),
+        finalization=finalization,
     )
     video_facts = {"index": index, "codec_name": codec, "width": width, "height": height}
     return format_name, duration, video_facts
 
 
-def _probe(path: Path) -> tuple[str, str, dict[str, object]]:
+def _probe(
+    path: Path, finalization: FinalizationBudget | None = None
+) -> tuple[str, str, dict[str, object]]:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise RecordingError(f"recording path is not a regular file: {path}")
-        return _probe_descriptor(descriptor, path)
+        if finalization is None:
+            return _probe_descriptor(descriptor, path)
+        return _probe_descriptor(descriptor, path, finalization)
     finally:
         os.close(descriptor)
 
 
-def _segments_at(root_descriptor: int, run_dir: Path) -> list[dict[str, object]]:
+def _segments_at(
+    root_descriptor: int,
+    run_dir: Path,
+    finalization: FinalizationBudget | None = None,
+) -> list[dict[str, object]]:
+    if finalization is not None:
+        finalization.checkpoint()
     files: list[TreeEntry] = []
     for entry in _scan_tree_at(root_descriptor, "recording tree"):
+        if finalization is not None:
+            finalization.checkpoint()
         if not stat.S_ISREG(entry.mode):
             continue
         relative = entry.relative
@@ -829,6 +890,8 @@ def _segments_at(root_descriptor: int, run_dir: Path) -> list[dict[str, object]]
 
     result: list[dict[str, object]] = []
     for entry in files:
+        if finalization is not None:
+            finalization.checkpoint()
         path = run_dir / entry.relative
         if entry.size <= 0:
             raise RecordingError(f"recording segment is empty: {path}")
@@ -836,8 +899,14 @@ def _segments_at(root_descriptor: int, run_dir: Path) -> list[dict[str, object]]
         try:
             if not entry.matches(os.fstat(descriptor)):
                 raise RecordingError(f"recording file changed during inspection: {entry.relative}")
-            format_name, duration, video_stream = _probe_descriptor(descriptor, path)
-            digest = _descriptor_sha256(descriptor)
+            if finalization is None:
+                format_name, duration, video_stream = _probe_descriptor(descriptor, path)
+                digest = _descriptor_sha256(descriptor)
+            else:
+                format_name, duration, video_stream = _probe_descriptor(
+                    descriptor, path, finalization
+                )
+                digest = _descriptor_sha256(descriptor, finalization)
             if not entry.matches(os.fstat(descriptor)):
                 raise RecordingError(f"recording file changed during inspection: {entry.relative}")
             result.append(
@@ -855,16 +924,20 @@ def _segments_at(root_descriptor: int, run_dir: Path) -> list[dict[str, object]]
     return result
 
 
-def _segments(run_dir: Path, prepared: PreparedRun | None = None) -> list[dict[str, object]]:
+def _segments(
+    run_dir: Path,
+    prepared: PreparedRun | None = None,
+    finalization: FinalizationBudget | None = None,
+) -> list[dict[str, object]]:
     if prepared is not None:
         prepared.assert_current()
-        result = _segments_at(prepared.run_dir.descriptor, run_dir)
+        result = _segments_at(prepared.run_dir.descriptor, run_dir, finalization)
         prepared.assert_current()
         return result
     pinned = PinnedDirectory.open(run_dir, "recording run directory")
     try:
         pinned.assert_current()
-        return _segments_at(pinned.descriptor, run_dir)
+        return _segments_at(pinned.descriptor, run_dir, finalization)
     finally:
         pinned.close()
 
@@ -886,11 +959,13 @@ def _descriptor_bytes(descriptor: int, maximum: int) -> bytes:
     return b"".join(chunks)
 
 
-def _descriptor_sha256(descriptor: int) -> str:
+def _descriptor_sha256(descriptor: int, finalization: FinalizationBudget | None = None) -> str:
     digest = hashlib.sha256()
     size = os.fstat(descriptor).st_size
     offset = 0
     while offset < size:
+        if finalization is not None:
+            finalization.checkpoint()
         chunk = os.pread(descriptor, min(1024 * 1024, size - offset), offset)
         if not chunk:
             raise RecordingError("recording file changed during inspection")
@@ -898,6 +973,8 @@ def _descriptor_sha256(descriptor: int) -> str:
         offset += len(chunk)
     if os.fstat(descriptor).st_size != size:
         raise RecordingError("recording file changed during inspection")
+    if finalization is not None:
+        finalization.checkpoint()
     return digest.hexdigest()
 
 
@@ -1178,6 +1255,7 @@ def _archive_plan(
                 "max_bytes": spec.max_bytes,
                 "min_free_bytes": spec.min_free_bytes,
                 "max_duration_seconds": spec.max_duration_seconds,
+                "max_finalization_seconds": MAX_FINALIZATION_SECONDS,
             },
             "segments": segments,
         }
@@ -1367,12 +1445,21 @@ def record(spec: RunSpec) -> Path:
     prepared = _prepare(spec)
     stop_requested = threading.Event()
     requested_signal: int | None = None
+    validating_segments = False
+    cancel_finalization = False
 
     def request_stop(signum: int, _frame: object) -> None:
-        nonlocal requested_signal
+        nonlocal cancel_finalization, requested_signal
+        repeated = requested_signal is not None
         if requested_signal is None:
             requested_signal = signum
         stop_requested.set()
+        if validating_segments and repeated:
+            cancel_finalization = True
+            raise RecordingError(
+                "recording finalization cancelled by a repeated stop signal; finalized "
+                f"evidence remains unexported at {spec.run_dir}"
+            )
 
     failures: list[str] = []
     stop_reason = "operator"
@@ -1420,6 +1507,11 @@ def record(spec: RunSpec) -> Path:
                     stop_reason = "safety_limit"
                     break
                 if stop_requested.wait(min(spec.poll_interval, remaining)):
+                    # A signal and a service crash can race. Observe the immutable owned
+                    # container before assigning an operator/signal success reason.
+                    if requested_signal is not None and not _service_running(owned):
+                        failures.append("MediaMTX stopped unexpectedly")
+                        stop_reason = "service_failure"
                     break
                 if time.monotonic() >= deadline:
                     failures.append(
@@ -1456,7 +1548,18 @@ def record(spec: RunSpec) -> Path:
         prepared.assert_current()
         post_stop_reasons, post_stop_export_safe = _budget_status(spec, prepared)
         failures.extend(reason for reason in post_stop_reasons if reason not in failures)
-        segments = _segments(spec.run_dir, prepared)
+        finalization = FinalizationBudget(
+            deadline=time.monotonic() + MAX_FINALIZATION_SECONDS,
+            limit_seconds=MAX_FINALIZATION_SECONDS,
+            run_dir=spec.run_dir,
+            cancelled=lambda: cancel_finalization,
+        )
+        validating_segments = True
+        try:
+            segments = _segments(spec.run_dir, prepared, finalization)
+            finalization.checkpoint()
+        finally:
+            validating_segments = False
         prepared.assert_current()
         final_reasons, final_export_safe = _budget_status(spec, prepared)
         failures.extend(reason for reason in final_reasons if reason not in failures)
