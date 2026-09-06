@@ -1,6 +1,10 @@
 import { HttpNavigationClient, type NavigationClient } from '../navigation/client'
 import { HttpSearchClient, type SearchClient } from '../search/client'
 import { UnavailableRelayClient, WebSocketRelayClient, type RelayClient } from './client'
+import {
+  relayMediaConfigurationSource,
+  type MediaConfigurationSource,
+} from '../media/runtime-config'
 import { HttpTranscriptClient, type TranscriptClient } from '../voice/client'
 
 export interface SweepRelayRuntimeConfig {
@@ -16,6 +20,11 @@ export interface ConsoleRuntime {
   keyboardClient: RelayClient
   webcamClient: RelayClient
   transcriptClient: TranscriptClient | null
+  /**
+   * The relay's copy of the media bootstrap, read after the same-origin endpoint so a built
+   * console can play; null when no relay bootstrap exists.
+   */
+  mediaConfigurationSource: MediaConfigurationSource | null
   sessionId: string
 }
 
@@ -41,6 +50,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       transcriptClient: null,
       navigationClient: null,
       searchClient: null,
+      mediaConfigurationSource: null,
     }
   }
 
@@ -67,5 +77,6 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
     navigationClient: new HttpNavigationClient(config),
     searchClient: new HttpSearchClient(config),
     transcriptClient: new HttpTranscriptClient({ baseUrl: config.baseUrl, token: config.token }),
+    mediaConfigurationSource: relayMediaConfigurationSource(config.baseUrl, config.token),
   }
 }

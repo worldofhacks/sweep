@@ -55,6 +55,7 @@ from relay.intent_v1 import (
     RejectedIntent,
     validate_intent,
 )
+from relay.media import MediaEvidenceProvider
 from relay.state import FleetRegistry, MembershipTransition, RegistryError
 
 Clock = Callable[[], int]
@@ -246,6 +247,7 @@ class RelaySession:
         control_localization_projector: ControlLocalizationProjector | None = None,
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         relay_clock_id: str = "unix_epoch_ms",
+        media_evidence: MediaEvidenceProvider | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -269,6 +271,7 @@ class RelaySession:
         self.registry = FleetRegistry(
             telemetry_freshness_ms=limits.telemetry_freshness_ms,
             capability_profile=capability_profile,
+            media_evidence=media_evidence,
         )
         # Values are the last instant when the exact signed event could still pass
         # the transport freshness check. This keeps replay protection bounded for
@@ -805,7 +808,6 @@ class RelaySession:
                 self._metrics["membership_events"] += 1
                 events.append(transition_event)
             state = self._state_event(now)
-            self._append_audit(state)
             events.append(state)
             if transition is not None:
                 events.extend(self._reconcile_membership())

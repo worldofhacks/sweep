@@ -20,7 +20,8 @@ from relay.app import RelayRuntime, create_app
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
-from relay.session import CapabilityBoundIntentSink, IntentSink
+from relay.media import MediaMonitor, MediaPathObservation
+from relay.session import CapabilityBoundIntentSink, Clock, IntentSink
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
     ADAPTER_KEY,
@@ -30,6 +31,7 @@ from relay.tests.conftest import (
     MutableClock,
     intent_payload,
     membership_payload,
+    node_status_payload,
     telemetry_payload,
 )
 
@@ -1064,28 +1066,33 @@ def test_same_session_recovery_does_not_block_websocket_event_loop(
     async def exercise() -> tuple[float, int]:
         ticks = 0
         unrelated_finished = asyncio.Event()
+        ticker_progress = asyncio.Event()
         asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=20))
 
         async def ticker() -> None:
             nonlocal ticks
             while not unrelated_finished.is_set():
                 ticks += 1
+                if ticks == 5:
+                    ticker_progress.set()
                 await asyncio.sleep(0.01)
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             replay_future = executor.submit(runtime.replay, SESSION)
             assert await asyncio.to_thread(constructor_started.wait, 2)
-            timer = Timer(0.3, resume_constructor.set)
+            timer = Timer(1.5, resume_constructor.set)
             timer.start()
             ticker_task = asyncio.create_task(ticker())
             waiters = [
                 asyncio.create_task(route.endpoint(AuthenticatingWebSocket(), SESSION))
                 for _ in range(20)
             ]
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(ticker_progress.wait(), timeout=1)
             started = time.monotonic()
             await route.endpoint(AuthenticatingWebSocket(), "session-b")
             elapsed = time.monotonic() - started
+            assert not resume_constructor.is_set()
+            assert not replay_future.done()
             unrelated_finished.set()
             await ticker_task
             resume_constructor.set()
@@ -1381,3 +1388,125 @@ def test_new_membership_does_not_discard_committed_arm_completion(
         assert [event["roster_version"] for event in queued if event["type"] == "state"] == [1]
 
     asyncio.run(exercise_race())
+
+
+def test_runtime_config_serves_the_media_bootstrap_only_to_the_bearer(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    unconfigured = create_app(app_settings, clock=clock, event_ids=event_ids)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+    with TestClient(unconfigured) as client:
+        assert client.get("/runtime-config.json").status_code == 401
+        missing = client.get("/runtime-config.json", headers=headers)
+    assert missing.status_code == 503
+    assert missing.json() == {"media": None}
+    assert missing.headers["cache-control"] == "no-store"
+
+    configured = create_app(
+        replace(
+            app_settings,
+            media_webrtc_origin="http://10.10.1.60:8889",
+            media_read_username="sweep-reader",
+            media_read_password="reader-secret",
+        ),
+        clock=clock,
+        event_ids=event_ids,
+    )
+    with TestClient(configured) as client:
+        assert client.get("/runtime-config.json").status_code == 401
+        served = client.get("/runtime-config.json", headers=headers)
+        preflight = client.options(
+            "/runtime-config.json",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+    assert served.status_code == 200
+    assert served.headers["cache-control"] == "no-store"
+    assert served.json() == {
+        "media": {
+            "webrtcOrigin": "http://10.10.1.60:8889",
+            "readerUsername": "sweep-reader",
+            "readerPassword": "reader-secret",
+        }
+    }
+    assert preflight.status_code == 200
+    assert "GET" in preflight.headers["access-control-allow-methods"]
+
+
+class _ScriptedMediaClient:
+    """A MediaMTX stand-in for the app test: online paths report growing inbound bytes."""
+
+    def __init__(self) -> None:
+        self.online: set[str] = set()
+        self.bytes = 0
+        self.closed = False
+
+    async def read_path(self, name: str) -> MediaPathObservation | None:
+        if name not in self.online:
+            return None
+        self.bytes += 1
+        return MediaPathObservation(online=True, inbound_bytes=self.bytes)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_state_video_follows_mediamtx_while_it_answers_and_the_node_claim_after(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    media_client = _ScriptedMediaClient()
+    media_client.online.add("drone1")
+    monitors: list[MediaMonitor] = []
+
+    def monitor_factory(settings: RelaySettings, runtime_clock: Clock) -> MediaMonitor:
+        monitor = MediaMonitor(
+            media_client, clock=runtime_clock, poll_interval_ms=10, stale_after_ms=100
+        )
+        monitors.append(monitor)
+        return monitor
+
+    app = create_app(
+        app_settings, clock=clock, event_ids=event_ids, media_monitor_factory=monitor_factory
+    )
+
+    def state_with_video(socket: WebSocketTestSession, status: str) -> dict[str, object]:
+        for _ in range(60):
+            state = _receive_type(socket, "state")
+            drones = state["drones"]
+            if drones and drones[0]["video"]["status"] == status:
+                return drones[0]["video"]
+        raise AssertionError(f"no state reported video {status!r}")
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as console:
+            _authenticate_console(console)
+            with client.websocket_connect(f"/ws/{SESSION}") as adapter:
+                _authenticate_adapter(adapter)
+                adapter.send_json(membership_payload(action="join", event_id="join-1"))
+                adapter.send_json(
+                    node_status_payload(event_id="status-1", video_publish_state="stopped")
+                )
+                # MediaMTX says the path is online although the node still claims stopped.
+                live = state_with_video(console, "live")
+                assert live["last_frame_at"] == clock()
+
+                # MediaMTX loses the path: offline at once, the frame age retained.
+                media_client.online.discard("drone1")
+                dropped = state_with_video(console, "offline")
+                assert dropped["last_frame_at"] == clock()
+
+                # The node now claims publishing while MediaMTX still answers offline.
+                adapter.send_json(
+                    node_status_payload(
+                        event_id="status-2",
+                        timestamp=clock() + 1,
+                        video_publish_state="publishing",
+                    )
+                )
+                still_offline = state_with_video(console, "offline")
+                assert still_offline["last_frame_at"] == clock() + 1
+
+    assert monitors and media_client.closed is True

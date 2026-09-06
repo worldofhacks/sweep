@@ -5,10 +5,93 @@
 import { describe, expect, test, vi } from 'vitest'
 import {
   MEDIA_CONFIG_ENDPOINT,
+  SAME_ORIGIN_MEDIA_SOURCE,
   bootstrapMediaConfiguration,
   loadMediaRuntimeConfiguration,
   normalizeMediaConfiguration,
+  relayMediaConfigurationSource,
 } from './runtime-config'
+
+const media = {
+  webrtcOrigin: 'http://ground-station:8889',
+  readerUsername: 'sweep-reader',
+  readerPassword: 'runtime-secret',
+}
+const relaySource = {
+  url: 'http://ground-station:8000/runtime-config.json',
+  authorization: 'Bearer relay-token',
+}
+
+describe('relay media configuration source', () => {
+  test('maps the relay WebSocket origin to its HTTP endpoint behind the bearer', () => {
+    expect(relayMediaConfigurationSource('ws://ground-station:8000/ws/demo', 'relay-token')).toEqual(
+      relaySource,
+    )
+    expect(relayMediaConfigurationSource('wss://relay.example', 'relay-token')).toEqual({
+      url: 'https://relay.example/runtime-config.json',
+      authorization: 'Bearer relay-token',
+    })
+  })
+
+  test.each([
+    ['an unparseable URL', 'not a url', 'relay-token'],
+    ['an unsupported protocol', 'ftp://ground-station', 'relay-token'],
+    ['an empty token', 'ws://ground-station:8000', ''],
+  ])('yields no source for %s', (_name, baseUrl, token) => {
+    expect(relayMediaConfigurationSource(baseUrl, token)).toBeNull()
+  })
+})
+
+describe('media configuration fallback to the relay', () => {
+  test('reads the relay endpoint with the bearer only after the same-origin endpoint fails', async () => {
+    const report = vi.fn()
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('<!doctype html><title>Sweep</title>', { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ media }), { status: 200 }))
+
+    await expect(
+      loadMediaRuntimeConfiguration(fetcher, report, [SAME_ORIGIN_MEDIA_SOURCE, relaySource]),
+    ).resolves.toEqual(media)
+
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(fetcher).toHaveBeenNthCalledWith(1, MEDIA_CONFIG_ENDPOINT, {
+      cache: 'no-store',
+      credentials: 'same-origin',
+    })
+    expect(fetcher).toHaveBeenNthCalledWith(2, relaySource.url, {
+      cache: 'no-store',
+      credentials: 'omit',
+      headers: { Authorization: 'Bearer relay-token' },
+    })
+    expect(report).not.toHaveBeenCalled()
+  })
+
+  test('never contacts the relay when the same-origin endpoint answers', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ media }), { status: 200 }))
+
+    await expect(
+      loadMediaRuntimeConfiguration(fetcher, vi.fn(), [SAME_ORIGIN_MEDIA_SOURCE, relaySource]),
+    ).resolves.toEqual(media)
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  test('reports once and leaves playback disabled when every source fails', async () => {
+    const report = vi.fn()
+    const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('offline'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ media: null }), { status: 503 }))
+
+    await expect(
+      loadMediaRuntimeConfiguration(fetcher, report, [SAME_ORIGIN_MEDIA_SOURCE, relaySource]),
+    ).resolves.toBeUndefined()
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(report).toHaveBeenCalledOnce()
+  })
+})
 
 describe('runtime media configuration', () => {
   test('mounts flight controls before runtime media configuration settles', () => {

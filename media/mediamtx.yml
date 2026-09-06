@@ -21,10 +21,18 @@ moq: no
 
 # Recording is switched on in M3: pathDefaults.record plus a mounted recordings volume.
 
+# Control API for the relay's per-aircraft video projection (relay/README.md, state
+# fan-out `video`). The relay reads /v3/paths/get/drone{n}. docker-compose.yml publishes
+# this listener on the ground station's loopback only, never on the LAN, and the
+# sweep-api account below is the only principal allowed to call it.
+api: yes
+apiAddress: :9997
+
 # Locked by default. docker-compose.yml replaces only these password hashes when the
-# operator supplies the five media credentials in .env. Each aircraft may publish only
-# its own path; the console reader may read/play back only drone1..drone4. There is no
-# anonymous user, so a missing environment value fails closed instead of opening the LAN.
+# operator supplies the six media credentials in .env. Each aircraft may publish only
+# its own path; the console reader may read/play back only drone1..drone4; the relay's
+# API reader may only call the control API. There is no anonymous user, so a missing
+# environment value fails closed instead of opening the LAN.
 authMethod: internal
 authInternalUsers:
   - user: drone1
@@ -54,6 +62,10 @@ authInternalUsers:
         path: ~^drone[1-4]$
       - action: playback
         path: ~^drone[1-4]$
+  - user: sweep-api
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: api
 
 paths:
   all_others:

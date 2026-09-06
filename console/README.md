@@ -60,14 +60,28 @@ Recording and latency measurement remain held for M3.1.
 
 ## Live playback
 
-The focus feed plays the focused aircraft's stream over WHEP only while the relay reports it
-`live` and the page was served a media configuration; every other state is said in words. The
-configuration is read once from `/runtime-config.json` as
-`{ "media": { "webrtcOrigin", "readerUsername", "readerPassword" } }`, so credentials never enter
-the bundle. `pnpm dev` serves that endpoint from `SWEEP_MEDIA_WEBRTC_ORIGIN`,
-`SWEEP_MEDIA_READ_USERNAME`, and `SWEEP_MEDIA_READ_PASSWORD`; with any of them unset it answers
-503 and the console runs with playback disabled. The player files under `src/media/` come from
-PR #68 and will be reconciled when it merges.
+Every wall tile whose stream the relay reports `live` plays it over WHEP in its own session, so
+the Wall of 4 holds four concurrent sessions, and the focus feed plays the focused aircraft's
+stream the same way; playback needs the page to have been served a media configuration, and every
+other state is said in words. A player is torn down with its tile: when the pane changes, when the
+console unmounts, and the moment the relay stops reporting the stream `live`, after which the tile
+says `offline` with the age of the last frame the relay knew about. The relay's `video` field
+(`relay/README.md`, "Membership and state fan-out") is the only source of that status; the console
+never probes MediaMTX itself.
+
+The configuration is `{ "media": { "webrtcOrigin", "readerUsername", "readerPassword" } }`, read
+once at startup from two places in order, so credentials never enter the bundle. First the
+same-origin `/runtime-config.json`: `pnpm dev` serves it from `SWEEP_MEDIA_WEBRTC_ORIGIN`,
+`SWEEP_MEDIA_READ_USERNAME`, and `SWEEP_MEDIA_READ_PASSWORD`, answering 503 with any of them
+unset, and a production host may serve the same JSON at that path. When that read yields no
+complete configuration, the console reads the relay's copy at `GET <relay origin>/runtime-config.json`
+with the relay bearer from its bootstrap (`src/media/runtime-config.ts`,
+`relayMediaConfigurationSource`), where the relay origin is the bootstrap `baseUrl` with `ws`
+mapped to `http` and `wss` to `https`; the relay serves the same three values from its own
+environment, so a built `dist/` plays wherever it is hosted as long as its origin is listed in
+the relay's `SWEEP_CONSOLE_ORIGINS`. With neither source the console runs with playback disabled
+and says so on every live tile. The player files under `src/media/` come from PR #68 and will be
+reconciled when it merges.
 
 For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
 development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build

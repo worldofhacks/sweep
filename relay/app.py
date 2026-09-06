@@ -30,6 +30,7 @@ from relay.auth import (
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.control_localization import ControlLocalizationProjector
 from relay.intent_v1 import REGISTERED_SOURCES
+from relay.media import MediaEvidence, MediaMonitor, MediaMtxClient
 from relay.session import (
     Clock,
     ControlPoseSigningKey,
@@ -52,6 +53,25 @@ _CONTROL_HEARTBEAT_MAX_INTERVAL_SECONDS = 1.0
 TranscriptServiceFactory = Callable[["RelayRuntime"], TranscriptService]
 AuthoritativeRoomsFactory = Callable[[RelaySession], tuple[str, ...]]
 ControlLocalizationFactory = Callable[[str], ControlLocalizationProjector | None]
+MediaMonitorFactory = Callable[[RelaySettings, Clock], MediaMonitor | None]
+
+
+def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor | None:
+    """The MediaMTX poller behind the video projection, or ``None`` without an API URL."""
+    if settings.media_api_url is None or settings.media_api_password is None:
+        return None
+    client = MediaMtxClient(
+        settings.media_api_url,
+        username=settings.media_api_username,
+        password=settings.media_api_password,
+        timeout_s=settings.media_api_timeout_ms / 1_000,
+    )
+    return MediaMonitor(
+        client,
+        clock=clock,
+        poll_interval_ms=settings.media_poll_interval_ms,
+        stale_after_ms=settings.media_stale_after_ms,
+    )
 
 
 @dataclass(eq=False, slots=True)
@@ -145,8 +165,10 @@ class RelayRuntime:
         authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
         control_localization_factory: ControlLocalizationFactory | None = None,
         control_pose_signing_key: ControlPoseSigningKey | None = None,
+        media_monitor: MediaMonitor | None = None,
     ) -> None:
         self.settings = settings
+        self.media_monitor = media_monitor
         self.credential_resolver = credential_resolver or settings.credential_resolver()
         self.clock = clock or _epoch_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
@@ -216,11 +238,18 @@ class RelayRuntime:
                     capability_profile=self.capability_profile,
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
+                    media_evidence=self.media_evidence,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
                 self.sessions[session_id] = session
             return session
+
+    def media_evidence(self, drone_id: int, now_ms: int) -> MediaEvidence | None:
+        """The monitor's last completed MediaMTX read for one aircraft; never blocks."""
+        if self.media_monitor is None:
+            return None
+        return self.media_monitor.evidence(drone_id, now_ms)
 
     def replay(self, session_id: str, *, after_sequence: int = 0) -> dict[str, object]:
         """Read active or persisted history without reopening mutable live state."""
@@ -284,8 +313,12 @@ class RelayRuntime:
     async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
         self._fanout_task = asyncio.create_task(self._fanout_loop())
+        if self.media_monitor is not None:
+            await self.media_monitor.start()
 
     async def stop(self) -> None:
+        if self.media_monitor is not None:
+            await self.media_monitor.stop()
         if self._fanout_task is not None:
             self._fanout_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -857,14 +890,19 @@ def create_app(
     control_pose_signing_key: ControlPoseSigningKey | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
     shutdown_callback: ShutdownCallback | None = None,
+    media_monitor_factory: MediaMonitorFactory | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         active_settings = settings or RelaySettings.from_env()
+        active_clock = clock or _epoch_ms
+        build_monitor = (
+            default_media_monitor if media_monitor_factory is None else media_monitor_factory
+        )
         runtime = RelayRuntime(
             active_settings,
             credential_resolver=credential_resolver,
-            clock=clock,
+            clock=active_clock,
             event_ids=event_ids,
             intent_sink_factory=intent_sink_factory,
             capability_profile=capability_profile,
@@ -872,6 +910,7 @@ def create_app(
             authoritative_rooms_factory=authoritative_rooms_factory,
             control_localization_factory=control_localization_factory,
             control_pose_signing_key=control_pose_signing_key,
+            media_monitor=build_monitor(active_settings, active_clock),
         )
         application.state.relay_runtime = runtime
         application.state.transcript_service = (
@@ -893,7 +932,7 @@ def create_app(
         allow_origins=list(
             settings.console_origins if settings is not None else console_origins_from_env()
         ),
-        allow_methods=["POST"],
+        allow_methods=["GET", "POST"],
         allow_headers=[
             "Authorization",
             "Content-Type",
@@ -1043,6 +1082,16 @@ def create_app(
                 for session_id, session in sorted(runtime.sessions.items())
             },
         }
+
+    @application.get("/runtime-config.json")
+    def runtime_config(authorization: str | None = Header(default=None)) -> JSONResponse:
+        """The console's media bootstrap, the same shape the dev server serves at this path."""
+        runtime = authorized_runtime(authorization)
+        media = runtime.settings.media_runtime_config()
+        headers = {"Cache-Control": "no-store"}
+        if media is None:
+            return JSONResponse({"media": None}, status_code=503, headers=headers)
+        return JSONResponse({"media": media}, headers=headers)
 
     @application.get("/session/{session_id}")
     def replay(
