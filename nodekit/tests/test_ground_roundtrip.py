@@ -123,9 +123,17 @@ class GroundFleet:
     def start(self) -> None:
         self.console.start()
         self.node.start()
-        _wait_until(
-            lambda: self.drone() is not None and self.drone()["membership"] == "ready",
-            what="the ground vehicle to reach ready",
+        # Readiness is the third frame of the join burst, not the last: wait for the whole
+        # burst so a snapshot cannot catch the projection between readiness and node_status.
+        _wait_until(self.joined, what="the ground vehicle to reach ready and report itself")
+
+    def joined(self) -> bool:
+        drone = self.drone()
+        return (
+            drone is not None
+            and drone["membership"] == "ready"
+            and drone["camera_capabilities"] is not None
+            and drone["node_status"] is not None
         )
 
     def stop(self) -> None:
