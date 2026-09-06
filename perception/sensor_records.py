@@ -272,9 +272,9 @@ class SensorRecordAdapter:
             raise ValueError("raw sensor sample recorder configuration is not configured")
         if raw["drone_id"] != self.phone_drone_id:
             raise ValueError("raw sensor sample drone is not configured")
-        if (
-            raw["connection_epoch"]
-            != self.publisher.drones[self.phone_drone_id].fuser.connection_epoch
+        configured_epoch = self.publisher.drones[self.phone_drone_id].fuser.connection_epoch
+        if raw["connection_epoch"] != configured_epoch and not (
+            self.publisher.mode == "live" and configured_epoch == 0 and raw["connection_epoch"] > 0
         ):
             raise ValueError("raw sensor sample connection epoch is not configured")
         return received_ms
@@ -316,7 +316,7 @@ class SensorRecordAdapter:
             "kind": "velocity" if isinstance(source, VelocitySource) else "height",
             "event_id": raw["event_id"],
             "drone_id": self.phone_drone_id,
-            "connection_epoch": config.fuser.connection_epoch,
+            "connection_epoch": raw["connection_epoch"],
             "map_id": config.fuser.map_id,
             "geometry_id": config.fuser.geometry_id,
             "clock_id": ANDROID_ELAPSED_REALTIME_CLOCK,

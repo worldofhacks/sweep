@@ -61,3 +61,7 @@ fuser. It uses the canonical relay wire encoder and signer; it has no planner,
 arbiter, telemetry, control-pose, or flight-dispatch surface. See
 [`docs/CONTROL_LOCALIZATION_PUBLISHER.md`](../docs/CONTROL_LOCALIZATION_PUBLISHER.md)
 for its exact input, audit, epoch, and replay boundaries.
+
+[`VERIFIED_LOCALIZATION_INGESTION.md`](VERIFIED_LOCALIZATION_INGESTION.md) defines the
+separate evidence-gated adapter for Android v3 records and decoded 720p tag frames. It is the
+only raw-input path that can issue verified publisher records.
