@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react'
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 import './speech.css'
 import { formatDroneId, isTerminalRequest, type ControlState, type RequestRecord } from '../../control/state'
 import type { IntentRequest } from '../../control/use-control-console'
@@ -56,6 +56,7 @@ interface RelayPlanState {
   receivedAt: number
   /** Intent IDs of the steps staged so far, in step order. */
   staged: string[]
+  stagingStepIndex: number | null
   stageNote: string | null
 }
 
@@ -95,7 +96,7 @@ const INITIAL: SpeechState = {
  */
 export function SpeechModule({ controller, now, roomId, services }: ModuleProps) {
   const [pane, setPane] = useState<SpeechPane>('talk')
-  const { state, pendingRequest, issueIntent, prepareCapture, prepareHold, prepareIntent, prepareSelect } =
+  const { state, pendingRequest, issueIntent, prepareCapture, prepareHold, prepareIntent, prepareNavigation, prepareSelect } =
     controller
   const languageEnabled = services.transcript !== undefined
   const voice = usePushToTalk({
@@ -106,6 +107,12 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
   const [speech, setSpeech] = useState<SpeechState>(INITIAL)
   const context = compileContext(state, roomId)
   const relay = speech.relayPlan
+  const activeRelayPlan = useRef<VoicePlan | null>(null)
+  const stagingSequence = useRef(0)
+  useLayoutEffect(() => {
+    activeRelayPlan.current = relay?.plan ?? null
+    stagingSequence.current += 1
+  }, [relay?.plan])
   const relayView = relay === null ? null : deriveRelayPlan(relay, state.requests)
   useTicker(voice.isRecording || (relayView !== null && relayView.deadline !== null && !relayView.finished))
 
@@ -172,39 +179,46 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
     }))
   }
 
-  /**
-   * Stages the next relay-compiled step through the same control flow as the
-   * buttons: takeoff, land, land_all, capture_room and sweep are parked for
-   * confirmation; hold, select and every other name are parked as a preview the
-   * operator sends from the dock. The step's targets must still be the
-   * authoritative selection; nothing is sent here. The step inherits the plan's
-   * deadline, so the dock counts it down and refuses a late confirmation.
-   */
+  /** Stages the next compiled step through the confirmation flow without sending it. */
   const stageStep = () => {
     if (relay === null || nextStep === null || stageBlocked !== null) return
-    const intent = stageThroughController(
+    const sequence = ++stagingSequence.current
+    const isCurrent = () => stagingSequence.current === sequence && activeRelayPlan.current === relay.plan
+    const staged = stageThroughController(
       nextStep,
       {
         issueIntent,
         prepareCapture,
         prepareHold,
         prepareIntent,
+        prepareNavigation,
         prepareSelect,
       },
       relayView?.deadline ?? undefined,
+      isCurrent,
     )
-    setSpeech((previous) => {
-      if (previous.relayPlan === null) return previous
-      return {
-        ...previous,
-        relayPlan: intent
-          ? { ...previous.relayPlan, staged: [...previous.relayPlan.staged, intent.intent_id], stageNote: null }
-          : {
-              ...previous.relayPlan,
-              stageNote: 'The control flow refused to stage this step; nothing was emitted.',
-            },
-      }
-    })
+    const record = (intent: IntentV1 | null, note: string | null = null) => {
+      if (!isCurrent()) return
+      setSpeech((previous) => {
+        if (previous.relayPlan?.plan !== relay.plan) return previous
+        return {
+          ...previous,
+          relayPlan: intent
+            ? { ...previous.relayPlan, staged: [...previous.relayPlan.staged, intent.intent_id], stagingStepIndex: null, stageNote: null }
+            : { ...previous.relayPlan, stagingStepIndex: null, stageNote: note ?? 'The control flow refused to stage this step; nothing was emitted.' },
+        }
+      })
+    }
+    if (staged instanceof Promise) {
+      setSpeech((previous) => previous.relayPlan?.plan !== relay.plan
+        ? previous
+        : { ...previous, relayPlan: { ...previous.relayPlan, stagingStepIndex: nextStep.index, stageNote: null } })
+      void staged.then((intent) => record(intent)).catch((error: unknown) => {
+        record(null, error instanceof Error ? error.message : 'The route preview failed. Nothing was emitted.')
+      })
+      return
+    }
+    record(staged)
   }
 
   const startRecording = () => {
@@ -473,6 +487,9 @@ function stageBlockedReason(
   roomId: string,
   now: number,
 ): string | null {
+  if (relay.stagingStepIndex !== null) {
+    return 'Preparing the route preview. Nothing is sent until you confirm it in the dock.'
+  }
   if (pending) return 'A plan preview is already pending; confirm or cancel it before staging the next step.'
   if (state.connection.status !== 'connected') {
     return `The console connection is ${state.connection.status}. Nothing can be staged.`
@@ -520,23 +537,19 @@ function stageBlockedReason(
 
 type StagingController = Pick<
   ModuleProps['controller'],
-  'issueIntent' | 'prepareCapture' | 'prepareHold' | 'prepareIntent' | 'prepareSelect'
+  'issueIntent' | 'prepareCapture' | 'prepareHold' | 'prepareIntent' | 'prepareNavigation' | 'prepareSelect'
 >
 
-/**
- * Hands one compiled step to the control flow. Confirmation-gated names go
- * through issueIntent, which parks them pending confirmation exactly like the
- * Control buttons; hold, select and capture_room use their prepare functions;
- * everything else is parked as a preview through prepareIntent. `expiresAt`
- * is the plan's console-clock deadline, carried into the dock preview so a
- * step cannot be confirmed after its plan expired. Never sends.
- */
+/** Navigation is the only compiled step that needs an asynchronous frozen preview. */
 function stageThroughController(
   step: VoicePlanStep,
   controller: StagingController,
   expiresAt?: number,
-): IntentV1 | null {
+  isCurrent?: () => boolean,
+): IntentV1 | null | Promise<IntentV1> {
   switch (step.name) {
+    case 'navigate':
+      return controller.prepareNavigation(String(step.args.zone_id), expiresAt, isCurrent)
     case 'select':
       return controller.prepareSelect(
         Array.isArray(step.args.ids) ? (step.args.ids as DroneId[]) : [],
@@ -757,7 +770,7 @@ function absorbVoice(
         origin: outcome.source,
         compiled: null,
         relayCompilerReason: null,
-        relayPlan: { plan: outcome.plan, receivedAt: now, staged: [], stageNote: null },
+        relayPlan: { plan: outcome.plan, receivedAt: now, staged: [], stagingStepIndex: null, stageNote: null },
         sttError: null,
         draftNote: null,
       }

@@ -57,6 +57,26 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
  * behaviors. Other names remain visible but are disabled by the authoritative
  * advertised capability profile.
  */
+export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  'arm',
+  'select',
+  'takeoff',
+  'translate',
+  'hold',
+  'come_home',
+  'land',
+  'land_all',
+  'estop',
+  'capture_room',
+  'navigate',
+  'search',
+  'altitude',
+  'formation_next',
+  'formation_set',
+  'spacing',
+  'sweep',
+])
+
 export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'arm',
   'altitude',

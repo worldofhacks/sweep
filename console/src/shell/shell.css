@@ -531,6 +531,12 @@
 .sh-cancel:hover { background: var(--color-ground); }
 .sh-dock-steps { margin: 10px 0 0; padding-left: 19px; font-size: var(--text-13-5); line-height: var(--leading-1-55); }
 .sh-dock-steps li { padding: 2px 0; }
+.sh-dock .ct-route-preview { max-width: 100%; margin-top: 10px; }
+.sh-dock .ct-route-preview svg { height: 130px; max-height: 130px; }
+.sh-dock .ct-route-preview > p { margin: 4px 0; font-size: var(--text-11-5); }
+.sh-dock .ct-route-preview table { font-size: var(--text-11); }
+.sh-dock .ct-route-preview caption { margin: 5px 0; }
+.sh-dock .ct-route-preview th, .sh-dock .ct-route-preview td { padding: 3px 5px; }
 .sh-json-toggle {
   display: block;
   margin-top: 10px;
