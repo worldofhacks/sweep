@@ -61,6 +61,8 @@ class NodeAcknowledgementReason(StrEnum):
     AUTHORITY_LOST = "authority_lost"
     WATCHDOG_HOLD = "watchdog_hold"
     WATCHDOG_FAILSAFE = "watchdog_failsafe"
+    # A device class that has no such operation: a ground vehicle asked to take off.
+    UNSUPPORTED_OPERATION = "unsupported_operation"
 
 
 class GuidanceMode(StrEnum):
