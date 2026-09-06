@@ -1159,6 +1159,10 @@ def create_app(
             relay_state=session.current_state(),
             rooms=runtime.authoritative_rooms(session),
             now_ms=runtime.clock(),
+            # Transcription takes seconds; the compiler grounds on a state event read
+            # after it so its maximum state age is measured against the plan, not the
+            # upload.
+            refresh_state=lambda: (session.current_state(), runtime.clock()),
         )
         status_code = 413 if outcome.reason == "audio_too_long" else 200
         return JSONResponse(
