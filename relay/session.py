@@ -1046,6 +1046,17 @@ class RelaySession:
                 return None
             return pose
 
+    def record_navigation_packet(self, packet: Mapping[str, object]) -> dict[str, object]:
+        drone_id = packet.get("drone_id")
+        epoch = packet.get("connection_epoch")
+        if type(drone_id) is not int or type(epoch) is not int:
+            raise ValueError("navigation packet has no bounded aircraft identity")
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self.registry.check_current(drone_id, epoch)
+            self._append_audit({key: value for key, value in packet.items() if key != "signature"})
+            return dict(packet)
+
     def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Accept a node-authored frame; only capabilities and node_status change state.
 
