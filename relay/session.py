@@ -302,6 +302,7 @@ class RelaySession:
             "telemetry_events": 0,
             "node_events": 0,
             "commands_issued": 0,
+            "safety_actions": 0,
         }
         self._mutation_usable = True
         self._projection_usable = True
@@ -1500,6 +1501,39 @@ class RelaySession:
             self._append_audit(event)
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
+            return event
+
+    def record_safety_action(
+        self,
+        *,
+        reason: str,
+        action: str,
+        operator_last_seen_ms: int,
+    ) -> dict[str, object]:
+        """Record a relay safety action before its corresponding stop is dispatched."""
+        if reason != "operator_presence_expired" or action not in {"hold", "estop"}:
+            raise ValueError("invalid relay safety action")
+        if (
+            not isinstance(operator_last_seen_ms, int)
+            or isinstance(operator_last_seen_ms, bool)
+            or operator_last_seen_ms < 0
+        ):
+            raise ValueError("operator_last_seen_ms must be non-negative")
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            event = {
+                "v": 1,
+                "t": now,
+                "type": "safety_action",
+                "event_id": self.event_ids(),
+                "session": self.session_id,
+                "reason": reason,
+                "action": action,
+                "operator_last_seen_ms": operator_last_seen_ms,
+            }
+            self._append_audit(event)
+            self._metrics["safety_actions"] += 1
             return event
 
     def record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:
