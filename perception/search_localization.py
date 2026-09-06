@@ -108,9 +108,12 @@ class FiveFrameLocalizer:
         model: SearchCameraModel,
         image_width_px: int,
         now_s: float,
+        *,
+        accepted_frame: bool,
     ) -> SearchLocalization | None:
         if (
-            evidence.identity != event.identity
+            not accepted_frame
+            or evidence.identity != event.identity
             or event.identity.frame_id in self._frames
             or not 0 <= now_s - event.evaluation_completed_at_monotonic_s <= 0.5
             or not 0 <= now_s - evidence.observed_at_s <= 0.5

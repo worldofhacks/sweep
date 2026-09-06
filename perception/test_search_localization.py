@@ -54,6 +54,6 @@ def test_sighting_localization_requires_five_fresh_unique_matching_frames():
             "candidate-1", identity, 10, 10, 10, 10.01, candidate, sequence, "a" * 64
         )
         evidence = FramePoseEvidence(identity, 1, pose, 10, 10.01)
-        result = localizer.observe_sighting(event, evidence, model, 2, 10.02)
+        result = localizer.observe_sighting(event, evidence, model, 2, 10.02, accepted_frame=True)
     assert result is not None
-    assert localizer.observe_sighting(event, evidence, model, 2, 10.02) is None
+    assert localizer.observe_sighting(event, evidence, model, 2, 10.02, accepted_frame=True) is None
