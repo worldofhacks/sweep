@@ -274,28 +274,39 @@ def _hydrate_relay_from_snapshot(relay: RelaySession, snapshot) -> None:
             ),
             principal,
         )
-        relay.process_telemetry(
-            {
-                "v": 1,
-                "t": now_ms,
-                "type": "telemetry",
-                "event_id": f"hydrate-{drone_id}-telemetry",
-                "session": relay.session_id,
-                "drone": drone_id,
-                "connection_epoch": aircraft.connection_epoch,
-                "x": aircraft.pose.x,
-                "y": aircraft.pose.y,
-                "z": aircraft.pose.z,
-                "vx": 0.0,
-                "vy": 0.0,
-                "vz": 0.0,
-                "battery": aircraft.battery,
-                "state": aircraft.flight_state.value,
-                "link": aircraft.link_quality,
-                "pos_quality": aircraft.position_quality,
-            },
-            principal,
-        )
+        telemetry = {
+            "v": 1,
+            "t": now_ms,
+            "type": "telemetry",
+            "event_id": f"hydrate-{drone_id}-telemetry",
+            "session": relay.session_id,
+            "drone": drone_id,
+            "connection_epoch": aircraft.connection_epoch,
+            "x": aircraft.pose.x,
+            "y": aircraft.pose.y,
+            "z": aircraft.pose.z,
+            "vx": 0.0,
+            "vy": 0.0,
+            "vz": 0.0,
+            "battery": aircraft.battery,
+            "state": aircraft.telemetry_state,
+            "link": aircraft.link_quality,
+            "pos_quality": aircraft.position_quality,
+        }
+        if aircraft.home is not None:
+            # Establish the snapshot's existing home through the real grounded
+            # capture boundary before restoring its current (possibly airborne) pose.
+            relay.process_telemetry(
+                {
+                    **telemetry,
+                    "event_id": f"hydrate-{drone_id}-home-telemetry",
+                    "x": aircraft.home.x,
+                    "y": aircraft.home.y,
+                    "z": aircraft.home.z,
+                    "state": "stopped" if aircraft.flight_state is None else "landed",
+                },
+                principal,
+            )
         relay.process_membership(
             membership(
                 "readiness",
@@ -307,6 +318,7 @@ def _hydrate_relay_from_snapshot(relay: RelaySession, snapshot) -> None:
             ),
             principal,
         )
+        relay.process_telemetry(telemetry, principal)
 
     for _ in range(snapshot.roster_version - relay.registry.roster_version):
         drone_id = next(iter(snapshot.aircraft))

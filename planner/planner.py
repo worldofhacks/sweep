@@ -49,6 +49,7 @@ SELECTION_TARGETED_INTENTS = frozenset(
 AIRCRAFT_ONLY_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
+        IntentName.BODY_PULSE,
         IntentName.LAND,
         IntentName.ALTITUDE,
         IntentName.SWEEP,

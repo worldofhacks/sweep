@@ -178,7 +178,7 @@ def test_the_geofence_bounds_a_ground_vehicle_in_x_and_y_only() -> None:
     assert inside is None
 
 
-def test_spacing_is_checked_within_a_class_and_not_across_one() -> None:
+def test_spacing_checks_both_same_class_and_conservative_cross_class_clearance() -> None:
     snapshot = make_mixed_snapshot(aircraft_ids=(1,), ground_ids=(11, 12))
     snapshot = replace_aircraft(snapshot, 1, pose=Position(0.0, 0.0, 0.5))
     snapshot = replace_aircraft(snapshot, 11, pose=Position(3.0, 0.0, 0.0))
@@ -189,7 +189,8 @@ def test_spacing_is_checked_within_a_class_and_not_across_one() -> None:
     beside_the_robot = _goto(snapshot, 12, x=3.3, y=0.0, z=0.0)
 
     assert Position(0.0, 0.3, 0.0).distance_to(snapshot.aircraft[1].pose) < minimum
-    assert under_the_aircraft is None, "an aircraft overhead does not bound a ground vehicle"
+    assert under_the_aircraft is not None
+    assert under_the_aircraft.reason is RefusalReason.SPACING
     assert beside_the_robot is not None
     assert beside_the_robot.reason is RefusalReason.SPACING
     assert "11" in beside_the_robot.detail

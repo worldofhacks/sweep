@@ -48,9 +48,13 @@ path.
 
 Device classes change which gates apply, never whether one is checked. The geofence
 bounds every device in x and y; only an aircraft is bounded in z, and the ceiling does
-not apply to a ground vehicle on the floor plane. Spacing is checked within a class:
-aircraft against aircraft, ground vehicle against ground vehicle, because clearance
-between the two is a vertical question this issue does not answer. The gates that ask
+not apply to a ground vehicle on the floor plane. Within a class, spacing keeps its
+existing target-position check. Across classes, motion reserves the configured
+horizontal clearance along the full commanded paths, including stationary bodies and
+the body pulse displacement envelope. Missing or unusable pose evidence blocks motion;
+unbounded movement by another class must stop first. No height waiver is assumed.
+These checks require measured shared coordinates and a physically suitable spacing
+configuration; they do not establish either. The gates that ask
 whether a device is airborne read `mobile` for a ground vehicle, so `hold`, `goto`,
 `rotate_to`, and `hover` require one that is `idle`, `moving`, or `stopped`, and `arm`
 requires one that is `docked`, `idle`, or `stopped`. `ground_max_speed_m_s` caps the

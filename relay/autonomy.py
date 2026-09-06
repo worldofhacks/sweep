@@ -201,7 +201,9 @@ def relay_snapshot(
     Devices without current-epoch telemetry, whose telemetry state is outside the
     vocabulary their device class reports, or whose class the projection does not
     name, are excluded: they cannot be selected or commanded until the node reports
-    a state this build understands. Ground vehicles are projected with their
+    a state this build understands. Their ID and class remain in
+    ``unobserved_devices`` so missing evidence cannot waive cross-class clearance.
+    Ground vehicles are projected with their
     ``DriveState`` and a null ``flight_state``, so one snapshot carries a mixed
     session and every fleet-wide stop, hold, and spacing check computed from it
     includes them.
@@ -215,6 +217,7 @@ def relay_snapshot(
     if not isinstance(drones_raw, list):
         raise ValueError("relay state requires a drones list")
     drones: list[Mapping[str, object]] = []
+    unobserved_devices: dict[int, DeviceClass | None] = {}
     enrichment: dict[int, RelayAircraftSafetyEnrichment] = {}
     for drone in drones_raw:
         if not isinstance(drone, Mapping):
@@ -226,13 +229,19 @@ def relay_snapshot(
         if raw_class is not None and (
             not isinstance(raw_class, str) or raw_class not in _TELEMETRY_STATES_BY_CLASS
         ):
+            unobserved_devices[drone_id] = None
             continue
         device_class = DeviceClass.AIRCRAFT if raw_class is None else DeviceClass(raw_class)
         telemetry = drone.get("telemetry")
         if (
             not isinstance(telemetry, Mapping)
             or telemetry.get("state") not in _TELEMETRY_STATES_BY_CLASS[device_class]
+            or (
+                "connection_epoch" in telemetry
+                and telemetry.get("connection_epoch") != drone.get("connection_epoch")
+            )
         ):
+            unobserved_devices[drone_id] = device_class
             continue
         capabilities = drone.get("camera_capabilities")
         storage = (
@@ -268,6 +277,8 @@ def relay_snapshot(
             aircraft=enrichment,
         ),
     )
+    if unobserved_devices:
+        snapshot = replace(snapshot, unobserved_devices=unobserved_devices)
     if estop_requested and not snapshot.estop_active:
         snapshot = replace(snapshot, estop_active=True)
     return snapshot

@@ -36,6 +36,7 @@ from relay.body_pulse import (
     valid_body_pulse_args,
 )
 from relay.intent_v1 import IntentName, IntentV1
+from tools.geometry_math import distance_to_segment, segments_intersect
 
 _CONFIRMED_INTENTS: Final = frozenset(
     {
@@ -756,6 +757,22 @@ class SafetyArbiter:
                 return pulse_refusal
 
         target = self.command_position(command, aircraft)
+        if not command.safety_action and command.operation in {
+            CommandOperation.TAKEOFF,
+            CommandOperation.GOTO,
+            CommandOperation.BODY_PULSE,
+            CommandOperation.ROTATE_TO,
+        }:
+            clearance_refusal = self._check_cross_class_clearance(
+                plan,
+                command,
+                snapshot,
+                aircraft,
+                target or aircraft.pose,
+                projected_positions or {},
+            )
+            if clearance_refusal is not None:
+                return clearance_refusal
         if target is not None and not command.safety_action:
             if plan.intent_name is IntentName.ALTITUDE:
                 if not isinstance(plan.altitude_grounding, AltitudeGrounding):
@@ -2179,6 +2196,102 @@ class SafetyArbiter:
                 )
         return None
 
+    def _check_cross_class_clearance(
+        self,
+        plan: Plan,
+        command: Command,
+        snapshot: FleetSnapshot,
+        aircraft: AircraftState,
+        target: Position,
+        projected_positions: dict[int, Position],
+    ) -> Refusal | None:
+        """Reserve horizontal paths across classes until measured height bounds exist.
+
+        This adds no shared-frame or physical-footprint qualification. The configured
+        spacing remains the required horizontal clearance between reported poses.
+        Stop and landing operations retain their separate safety rules.
+        """
+        for other_id, device_class in snapshot.unobserved_devices.items():
+            if device_class is None or device_class is not aircraft.device_class:
+                return self._command_refusal(
+                    command,
+                    snapshot,
+                    RefusalReason.POSITION_QUALITY,
+                    f"cross-class clearance needs current-epoch pose for device {other_id}",
+                )
+        others = [
+            other
+            for other in snapshot.aircraft.values()
+            if other.device_class is not aircraft.device_class
+        ]
+        if others and aircraft.position_quality <= 0:
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.POSITION_QUALITY,
+                "cross-class clearance requires positive position evidence",
+            )
+        radius = (
+            body_pulse_displacement_bound_m(command.parameters)
+            if command.operation is CommandOperation.BODY_PULSE
+            else 0.0
+        )
+        starts = {aircraft.pose, projected_positions.get(command.drone_id, aircraft.pose)}
+        for other in others:
+            if other.position_quality <= 0:
+                return self._command_refusal(
+                    command,
+                    snapshot,
+                    RefusalReason.POSITION_QUALITY,
+                    f"cross-class clearance needs positive position quality for {other.drone_id}",
+                )
+            evidence = self._check_telemetry(
+                command.intent_id, snapshot, other, require_position=True
+            )
+            if evidence is not None:
+                return evidence
+            stationary = (
+                other.drive_state in {DriveState.DOCKED, DriveState.IDLE, DriveState.STOPPED}
+                if other.device_class is DeviceClass.GROUND_VEHICLE
+                else other.flight_state
+                in {
+                    FlightState.DISARMED,
+                    FlightState.ARMED,
+                    FlightState.LANDED,
+                    FlightState.HOVERING,
+                }
+            )
+            if not stationary or other.active_task_id not in {None, plan.intent_id}:
+                return self._command_refusal(
+                    command,
+                    snapshot,
+                    RefusalReason.INVALID_STATE,
+                    f"cross-class clearance requires device {other.drone_id} to hold before motion",
+                )
+            # Reserve the other class's whole plan as well as its measured pose;
+            # ordered acknowledgements are not proof that two paths cannot overlap.
+            points = [other.pose]
+            for other_command in plan.commands:
+                if other_command.drone_id == other.drone_id and (
+                    other_command.operation is CommandOperation.GOTO
+                ):
+                    other_target = self.command_position(other_command, other)
+                    if other_target is not None:
+                        points.append(other_target)
+            if len(points) == 1:
+                points.append(other.pose)
+            for other_start, other_end in zip(points, points[1:], strict=False):
+                for start in starts:
+                    clearance = _horizontal_segment_distance(start, target, other_start, other_end)
+                    if not isfinite(clearance) or clearance < self.config.min_spacing_m + radius:
+                        return self._command_refusal(
+                            command,
+                            snapshot,
+                            RefusalReason.SPACING,
+                            f"horizontal path violates cross-class clearance from {other.drone_id}",
+                        )
+        return None
+
     def _check_spacing(
         self,
         command: Command,
@@ -2188,12 +2301,7 @@ class SafetyArbiter:
         *,
         device_class: DeviceClass,
     ) -> Refusal | None:
-        """Keep every device clear of the others in its own class.
-
-        Cross-class spacing is not checked: an aircraft's clearance from a ground vehicle
-        is a vertical question this issue does not answer, and the arbiter refuses only
-        what it can decide from the frame it has.
-        """
+        """Preserve the existing target-position spacing check within each class."""
         for other_id, other in sorted(snapshot.aircraft.items()):
             if other_id == command.drone_id or other.device_class is not device_class:
                 continue
@@ -2366,6 +2474,21 @@ class SafetyArbiter:
             reason=reason,
             detail=detail,
         )
+
+
+def _horizontal_segment_distance(
+    start: Position, end: Position, other_start: Position, other_end: Position
+) -> float:
+    first = ((start.x, start.y), (end.x, end.y))
+    second = ((other_start.x, other_start.y), (other_end.x, other_end.y))
+    if segments_intersect(first[0], first[1], second[0], second[1]):
+        return 0.0
+    return min(
+        distance_to_segment(first[0], second[0], second[1]),
+        distance_to_segment(first[1], second[0], second[1]),
+        distance_to_segment(second[0], first[0], first[1]),
+        distance_to_segment(second[1], first[0], first[1]),
+    )
 
 
 def _finite_fraction(value: object) -> bool:

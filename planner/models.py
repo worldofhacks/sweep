@@ -472,6 +472,9 @@ class FleetSnapshot:
     now_ms: int
     formation: str = "none"
     spacing: float = 0.8
+    # Registered devices lacking current-epoch state/pose evidence remain hazards.
+    # None means an unknown class; it must not silently disappear from clearance.
+    unobserved_devices: Mapping[int, DeviceClass | None] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.roster_version):
@@ -505,6 +508,19 @@ class FleetSnapshot:
         if len(set(self.selection)) != len(self.selection):
             raise ValueError("selection contains duplicate aircraft ids")
         object.__setattr__(self, "aircraft", MappingProxyType(normalized))
+        if not isinstance(self.unobserved_devices, Mapping) or any(
+            type(drone_id) is not int
+            or drone_id <= 0
+            or (device_class is not None and not isinstance(device_class, DeviceClass))
+            or drone_id in normalized
+            for drone_id, device_class in self.unobserved_devices.items()
+        ):
+            raise ValueError("unobserved devices require distinct positive IDs and known classes")
+        object.__setattr__(
+            self,
+            "unobserved_devices",
+            MappingProxyType(dict(sorted(self.unobserved_devices.items()))),
+        )
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object]) -> FleetSnapshot:
@@ -549,6 +565,7 @@ class FleetSnapshot:
             now_ms=_nonnegative_int(raw, "now_ms"),
             formation=_string(raw, "formation", fallback="none"),
             spacing=_number_or_default(raw, "spacing", 0.8),
+            unobserved_devices=_parse_unobserved_devices(raw.get("unobserved_devices", {})),
         )
 
     @classmethod
@@ -689,6 +706,16 @@ class FleetSnapshot:
     def to_dict(self) -> dict[str, JsonValue]:
         return {
             "roster_version": self.roster_version,
+            **(
+                {
+                    "unobserved_devices": {
+                        str(drone_id): None if device_class is None else device_class.value
+                        for drone_id, device_class in self.unobserved_devices.items()
+                    }
+                }
+                if self.unobserved_devices
+                else {}
+            ),
             "aircraft": [self.aircraft[drone_id].to_dict() for drone_id in sorted(self.aircraft)],
             "selection": list(self.selection),
             "armed": self.armed,
@@ -1077,6 +1104,15 @@ def _optional_nonnegative_int(value: object) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError("optional timestamp must be null or non-negative")
     return value
+
+
+def _parse_unobserved_devices(value: object) -> dict[int, DeviceClass | None]:
+    if not isinstance(value, Mapping):
+        raise ValueError("unobserved_devices must be a mapping")
+    return {
+        _parse_mapping_key(drone_id): None if device_class is None else DeviceClass(device_class)
+        for drone_id, device_class in value.items()
+    }
 
 
 def _device_class(value: object) -> DeviceClass:

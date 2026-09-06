@@ -2,11 +2,21 @@
 
 import pytest
 
-from planner.models import Command, CommandOperation, DeviceClass
+from arbiter.safety import SafetyArbiter
+from planner.models import (
+    Command,
+    CommandOperation,
+    DeviceClass,
+    DriveState,
+    Refusal,
+    RefusalReason,
+)
+from planner.planner import DeterministicPlanner
 from relay.app import RelayRuntime
 from relay.auth import Principal
 from relay.autonomy import relay_snapshot
 from relay.contracts import ContractError
+from relay.intent_v1 import IntentName
 from relay.media import stream_name
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
@@ -18,6 +28,13 @@ from relay.tests.conftest import (
     membership_payload,
     profiled_sink,
     telemetry_payload,
+)
+from tests.autonomy_fixtures import (
+    make_intent,
+    make_mixed_snapshot,
+    planning_config,
+    replace_aircraft,
+    safety_config,
 )
 
 DEVICE_IDS = (1, 2, 11, 12, 13)
@@ -87,7 +104,7 @@ def test_two_aircraft_and_three_ground_devices_keep_distinct_ids_units_and_camer
 
 
 @pytest.mark.parametrize("ground_state", ["idle", "hovering", "landed"])
-def test_ground_class_stays_outside_flight_snapshot_even_with_flight_claims(
+def test_ground_class_uses_drive_states_and_rejects_flight_shaped_telemetry(
     mixed_session, ground_state
 ):
     for drone_id in DEVICE_IDS:
@@ -103,7 +120,26 @@ def test_ground_class_stays_outside_flight_snapshot_even_with_flight_claims(
         )
     state = mixed_session.current_state()
     assert len(state["drones"]) == 5
-    assert set(relay_snapshot(state, operator_last_seen_ms=None).aircraft) == {1, 2}
+    snapshot = relay_snapshot(state, operator_last_seen_ms=None)
+    assert set(snapshot.aircraft) == (set(DEVICE_IDS) if ground_state == "idle" else {1, 2})
+    if ground_state == "idle":
+        for drone_id in (11, 12, 13):
+            assert snapshot.aircraft[drone_id].flight_state is None
+            assert snapshot.aircraft[drone_id].drive_state is DriveState.IDLE
+        assert not snapshot.unobserved_devices
+    else:
+        assert dict(snapshot.unobserved_devices) == {
+            drone_id: DeviceClass.GROUND_VEHICLE for drone_id in (11, 12, 13)
+        }
+
+
+def test_joined_devices_without_telemetry_remain_unobserved_hazards(mixed_session):
+    snapshot = relay_snapshot(mixed_session.current_state(), operator_last_seen_ms=None)
+    assert not snapshot.aircraft
+    assert dict(snapshot.unobserved_devices) == {
+        drone_id: DeviceClass.AIRCRAFT if drone_id < 11 else DeviceClass.GROUND_VEHICLE
+        for drone_id in DEVICE_IDS
+    }
 
 
 def test_ground_home_confirmation_waits_for_fresh_usable_stationary_evidence(mixed_session, clock):
@@ -191,3 +227,16 @@ def test_ground_pulse_cannot_be_registered_or_signed_even_with_a_flight_capabili
         signing_key=KEYS[1],
     )
     assert aircraft_frame["drone_id"] == 1 and aircraft_frame["seq"] == 1
+
+
+@pytest.mark.parametrize("selection", [(11,), (1, 11)])
+def test_planner_and_arbiter_refuse_ground_pulse_even_with_pulse_capability(selection):
+    snapshot = make_mixed_snapshot(selection=selection)
+    for drone_id in snapshot.aircraft:
+        snapshot = replace_aircraft(snapshot, drone_id, capabilities=frozenset({"body_pulse_v1"}))
+    intent = make_intent(IntentName.BODY_PULSE, selection=selection, args=PULSE_ARGS, confirm=True)
+    planned = DeterministicPlanner(planning_config()).plan(intent, snapshot)
+    refused = SafetyArbiter(safety_config()).check_intent(intent, snapshot)
+    assert isinstance(planned, Refusal)
+    assert planned.reason is RefusalReason.UNSUPPORTED_FOR_DEVICE_CLASS
+    assert refused is not None and refused.reason is RefusalReason.UNSUPPORTED_FOR_DEVICE_CLASS
