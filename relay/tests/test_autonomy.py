@@ -22,11 +22,12 @@ from relay.autonomy import (
     create_autonomy_app,
     relay_snapshot,
 )
+from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.control_frames import sign_localization_frame
 from relay.control_localization import ControlLocalizationWire, to_wire_payload
 from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.session import RelaySession
-from relay.settings import AdapterBackend, RelaySettings, SettingsError
+from relay.settings import AdapterBackend, CapabilityRelease, RelaySettings, SettingsError
 from relay.tests.conftest import (
     ADAPTER_KEY,
     CONSOLE_KEY,
@@ -453,6 +454,32 @@ def test_control_projection_latches_estop_from_the_intent_and_earns_the_rest() -
         "accepted_plan": summary
     }
     assert control_projection(IntentName.TAKEOFF, _result(None, LifecycleStatus.EXECUTING)) == {}
+
+
+def test_autonomy_threads_the_explicit_sim_c2_profile(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY},
+        log_dir=tmp_path,
+        adapter_backend=AdapterBackend.SIM,
+        capability_release=CapabilityRelease.C2,
+    )
+    app, composition = create_autonomy_app(settings, _config(), clock=clock, event_ids=event_ids)
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            relay_session = runtime.session(SESSION)
+            autonomy_session = composition.session(SESSION)
+
+            assert settings.capability_profile is C2_CAPABILITY_PROFILE
+            assert runtime.capability_profile is C2_CAPABILITY_PROFILE
+            assert relay_session.capability_profile is C2_CAPABILITY_PROFILE
+            assert autonomy_session.capability_profile is C2_CAPABILITY_PROFILE
+            assert autonomy_session.planner.capability_profile is C2_CAPABILITY_PROFILE
+    finally:
+        composition.close()
 
 
 def test_hold_lane_records_motion_preemption_before_cancellation_and_queues_behind_land() -> None:

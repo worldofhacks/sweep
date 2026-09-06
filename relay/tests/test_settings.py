@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from relay.settings import AdapterBackend, RelaySettings, SettingsError
+from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE
+from relay.settings import AdapterBackend, CapabilityRelease, RelaySettings, SettingsError
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY
 
 
@@ -116,6 +117,8 @@ def test_bridge_settings_default_to_sim_and_relay_distributed_thresholds() -> No
     settings = RelaySettings.from_env({"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode()})
 
     assert settings.adapter_backend is AdapterBackend.SIM
+    assert settings.capability_release is CapabilityRelease.C1
+    assert settings.capability_profile is C1_CAPABILITY_PROFILE
     assert settings.command_ttl_ms == 2_000
     assert settings.virtual_stick_hz == 10
     assert settings.node_watchdog_hold_ms == 2_000
@@ -127,6 +130,16 @@ def test_bridge_settings_default_to_sim_and_relay_distributed_thresholds() -> No
         "watchdog_hold_ms": 2_000,
         "watchdog_failsafe_ms": 10_000,
     }
+
+
+def test_sim_c2_release_is_an_explicit_opt_in() -> None:
+    settings = RelaySettings.from_env(
+        {"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(), "SWEEP_CAPABILITY_RELEASE": "c2"}
+    )
+
+    assert settings.adapter_backend is AdapterBackend.SIM
+    assert settings.capability_release is CapabilityRelease.C2
+    assert settings.capability_profile is C2_CAPABILITY_PROFILE
 
 
 def test_remote_backend_and_thresholds_come_from_the_environment() -> None:
@@ -149,6 +162,17 @@ def test_remote_backend_and_thresholds_come_from_the_environment() -> None:
         "watchdog_hold_ms": 500,
         "watchdog_failsafe_ms": 4_000,
     }
+
+
+def test_remote_release_binding_rejects_c2() -> None:
+    with pytest.raises(SettingsError, match="allowed only with the sim backend"):
+        RelaySettings.from_env(
+            {
+                "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+                "SWEEP_ADAPTER_BACKEND": "remote",
+                "SWEEP_CAPABILITY_RELEASE": "c2",
+            }
+        )
 
 
 @pytest.mark.parametrize(

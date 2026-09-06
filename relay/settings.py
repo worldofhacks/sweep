@@ -12,6 +12,7 @@ from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from relay.auth import StaticCredentialResolver
+from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
 from relay.session import RelayLimits
 
 DEFAULT_CONSOLE_ORIGINS = (
@@ -31,6 +32,11 @@ class AdapterBackend(StrEnum):
     REMOTE = "remote"
 
 
+class CapabilityRelease(StrEnum):
+    C1 = "c1"
+    C2 = "c2"
+
+
 @dataclass(frozen=True, slots=True)
 class RelaySettings:
     relay_token: bytes = field(repr=False)
@@ -45,6 +51,7 @@ class RelaySettings:
     transcript_upload_timeout_ms: int = DEFAULT_TRANSCRIPT_UPLOAD_TIMEOUT_MS
     fanout_hz: int = 10
     adapter_backend: AdapterBackend = AdapterBackend.SIM
+    capability_release: CapabilityRelease = CapabilityRelease.C1
     command_ttl_ms: int = 2_000
     command_deadline_ms: int = 10_000
     virtual_stick_hz: int = 10
@@ -113,6 +120,13 @@ class RelaySettings:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
             raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
+        if not isinstance(self.capability_release, CapabilityRelease):
+            raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1 or c2")
+        if (
+            self.capability_release is CapabilityRelease.C2
+            and self.adapter_backend is not AdapterBackend.SIM
+        ):
+            raise SettingsError("SWEEP_CAPABILITY_RELEASE=c2 is allowed only with the sim backend")
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
         if self.command_deadline_ms < self.command_ttl_ms:
@@ -191,6 +205,7 @@ class RelaySettings:
                 "SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS",
             ),
             adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
+            capability_release=_capability_release(values.get("SWEEP_CAPABILITY_RELEASE", "c1")),
             command_ttl_ms=_positive_integer(
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"
             ),
@@ -278,6 +293,12 @@ class RelaySettings:
             "watchdog_failsafe_ms": self.node_watchdog_failsafe_ms,
         }
 
+    @property
+    def capability_profile(self) -> CapabilityProfile:
+        if self.capability_release is CapabilityRelease.C2:
+            return C2_CAPABILITY_PROFILE
+        return C1_CAPABILITY_PROFILE
+
 
 def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
     try:
@@ -305,6 +326,13 @@ def _backend(raw: str) -> AdapterBackend:
         return AdapterBackend(raw)
     except ValueError:
         raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote") from None
+
+
+def _capability_release(raw: str) -> CapabilityRelease:
+    try:
+        return CapabilityRelease(raw)
+    except ValueError:
+        raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1 or c2") from None
 
 
 def _optional(raw: str | None) -> str | None:
