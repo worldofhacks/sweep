@@ -49,7 +49,7 @@ def test_simulated_m15_path_reaches_confirmed_land_all(count: int) -> None:
         make_intent(
             IntentName.FORMATION_SET,
             selection=tuple(range(1, count + 1)),
-            args={"name": "diamond"},
+            args={"name": "line"},
         ),
         make_intent(
             IntentName.TRANSLATE,
@@ -69,7 +69,14 @@ def test_simulated_m15_path_reaches_confirmed_land_all(count: int) -> None:
         make_intent(
             IntentName.SWEEP,
             selection=tuple(range(1, count + 1)),
-            args={"box": {"min_x": -4, "max_x": 4, "min_y": -3, "max_y": 3}},
+            args={
+                "box": {
+                    "min_x": -1.0,
+                    "max_x": 10.0,
+                    "min_y": -3.0,
+                    "max_y": 3.0,
+                }
+            },
             confirm=True,
         ),
         make_intent(IntentName.COME_HOME, selection=tuple(range(1, count + 1))),

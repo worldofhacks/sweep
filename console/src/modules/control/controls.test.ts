@@ -307,15 +307,14 @@ describe('translate pad and formation geometry', () => {
   })
 
   test('the plot places the selected aircraft and labels unreported spacing honestly', () => {
-    const aircraft = fixtureAircraft(t).filter((drone) => [1, 2].includes(drone.drone_id))
-    const dots = formationPlot(aircraft, 'line', 1.5)
-    expect(dots.map((dot) => dot.id)).toEqual(['D-01', 'D-02'])
+    const dots = formationPlot(2, 'line', 1.5)
+    expect(dots.map((dot) => dot.id)).toEqual(['Slot 1', 'Slot 2'])
     expect(Number.parseFloat(dots[0].left)).toBeCloseTo(
       50 + (-0.7575 / (1.2 * 2.4)) * 100,
     )
     expect(dots[0].slot).toBe('slot 1 · -0.8 m, 0.0 m')
-    expect(formationPlot(aircraft, 'line', null)[1].slot).toBe('slot 2 · spacing unreported')
-    expect(formationPlot(aircraft, null, 1.5)).toEqual([])
+    expect(formationPlot(2, 'line', null)[1].slot).toBe('slot 2 · spacing unreported')
+    expect(formationPlot(2, null, 1.5)).toEqual([])
   })
 
   test('the relay note distinguishes preview from report', () => {

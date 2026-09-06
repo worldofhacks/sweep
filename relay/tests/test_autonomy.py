@@ -4,12 +4,13 @@ import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
-from planner.models import ExecutionResult, LifecycleStatus, Plan, Position
+from planner.models import ExecutionResult, LifecycleStatus, Plan, Position, RefusalReason
 from relay.app import RelayRuntime
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.autonomy import (
@@ -17,12 +18,16 @@ from relay.autonomy import (
     PREEMPTED_BY_HOLD,
     AutonomyComposition,
     AutonomyConfig,
+    PlanPreempted,
     _Job,
+    _PreemptibleLink,
+    apply_result,
     control_projection,
     create_autonomy_app,
     relay_snapshot,
 )
 from relay.capabilities import C2_CAPABILITY_PROFILE
+from relay.contracts import LifecycleStatus as WireLifecycleStatus
 from relay.control_frames import sign_localization_frame
 from relay.control_localization import ControlLocalizationWire, to_wire_payload
 from relay.intent_v1 import IntentName, IntentV1, Mode
@@ -457,6 +462,71 @@ def test_control_projection_latches_estop_from_the_intent_and_earns_the_rest() -
     assert control_projection(IntentName.TAKEOFF, _result(None, LifecycleStatus.EXECUTING)) == {}
 
 
+@pytest.mark.parametrize(
+    ("name", "updates", "projection"),
+    [
+        (IntentName.FORMATION_SET, {"formation_update": "diamond"}, {"formation": "diamond"}),
+        (IntentName.SPACING, {"spacing_update": 1.2}, {"spacing": 1.2}),
+    ],
+)
+def test_late_c2_completion_projects_only_for_the_frozen_roster(
+    name: IntentName,
+    updates: dict[str, object],
+    projection: dict[str, object],
+) -> None:
+    class Session:
+        def __init__(self, roster_version: int) -> None:
+            self.registry = SimpleNamespace(roster_version=roster_version)
+            self.projections: list[dict[str, object]] = []
+            self.lifecycles: list[dict[str, object]] = []
+
+        def update_control_projection(self, **fields: object) -> dict[str, object]:
+            self.projections.append(fields)
+            return fields
+
+        def record_lifecycle(self, **fields: object) -> dict[str, object]:
+            self.lifecycles.append(fields)
+            return fields
+
+    plan = _plan(name, **updates)
+    intent = IntentV1(
+        v=1,
+        t=1_756_700_000_000,
+        type="intent",
+        intent_id=plan.intent_id,
+        retry_of=None,
+        source="console",
+        session=SESSION,
+        name=name,
+        args={},
+        selection=(1,),
+        mode=Mode.INDOOR,
+        confirm=False,
+    )
+    executing = _result(plan, LifecycleStatus.EXECUTING)
+    completed = _result(plan, LifecycleStatus.COMPLETED)
+
+    assert control_projection(name, executing) == {
+        "accepted_plan": {
+            "plan_id": plan.plan_id,
+            "intent_id": plan.intent_id,
+            "intent_name": name.value,
+            "roster_version": plan.roster_version,
+            "selection": [1],
+        }
+    }
+    current = Session(plan.roster_version)
+    apply_result(current, intent, completed)  # type: ignore[arg-type]
+    assert current.projections == [{**projection, "accepted_plan": None}]
+    assert current.lifecycles[-1]["status"] is WireLifecycleStatus.COMPLETED
+
+    stale = Session(plan.roster_version + 1)
+    apply_result(stale, intent, completed)  # type: ignore[arg-type]
+    assert stale.projections == [{"accepted_plan": None}]
+    assert stale.lifecycles[-1]["status"] is WireLifecycleStatus.INVALIDATED
+    assert stale.lifecycles[-1]["reason"] == RefusalReason.STALE_ROSTER.value
+
+
 def test_autonomy_threads_the_explicit_sim_c2_profile(
     tmp_path: Path, clock: MutableClock, event_ids: EventIds
 ) -> None:
@@ -542,6 +612,81 @@ def test_hold_lane_records_motion_preemption_before_cancellation_and_queues_behi
     finally:
         with autonomy._normal.ready:
             autonomy._normal.running = None
+        composition.close()
+
+
+def test_hold_preempts_every_c2_motion_state_and_blocks_later_adapter_io() -> None:
+    class Recorder:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = []
+
+        def record_lifecycle(self, **fields: object) -> dict[str, object]:
+            event = dict(fields)
+            self.events.append(event)
+            return event
+
+    def job(name: IntentName, intent_id: str, session: object | None = None) -> _Job:
+        return _Job(
+            IntentV1(
+                v=1,
+                t=1_756_700_000_000,
+                type="intent",
+                intent_id=intent_id,
+                retry_of=None,
+                source="console",
+                session=SESSION,
+                name=name,
+                args={},
+                selection=(1,),
+                mode=Mode.INDOOR,
+                confirm=False,
+            ),
+            session,  # type: ignore[arg-type]
+        )
+
+    composition = AutonomyComposition(_config(), C2_CAPABILITY_PROFILE)
+    autonomy = composition.session(SESSION)
+    recorder = Recorder()
+    running = job(IntentName.FORMATION_NEXT, "formation-next")
+    queued = [
+        job(IntentName.FORMATION_SET, "formation-set"),
+        job(IntentName.SPACING, "spacing"),
+    ]
+    awaiting = job(IntentName.SWEEP, "sweep")
+    hold = job(IntentName.HOLD, "hold", recorder)
+    try:
+        with autonomy._normal.ready:
+            autonomy._normal.running = running
+            autonomy._normal.pending.extend(queued)
+            autonomy._awaiting[awaiting.intent.intent_id] = SimpleNamespace(job=awaiting)  # type: ignore[assignment]
+
+        assert autonomy._route(hold) is autonomy._hold
+        victims = (running, *queued, awaiting)
+        assert all(victim.cancelled_by == PREEMPTED_BY_HOLD for victim in victims)
+        assert {event["intent_id"] for event in recorder.events} == {
+            "formation-next",
+            "formation-set",
+            "spacing",
+            "sweep",
+        }
+
+        class Link:
+            def __init__(self) -> None:
+                self.sent = False
+
+            def send(self, _request: object) -> None:
+                self.sent = True
+
+        link = Link()
+        gated = _PreemptibleLink(link, running, recorder)  # type: ignore[arg-type]
+        with pytest.raises(PlanPreempted, match=PREEMPTED_BY_HOLD):
+            gated.send(object())  # type: ignore[arg-type]
+        assert link.sent is False
+    finally:
+        with autonomy._normal.ready:
+            autonomy._normal.running = None
+            autonomy._normal.pending.clear()
+            autonomy._awaiting.clear()
         composition.close()
 
 

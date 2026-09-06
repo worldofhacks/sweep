@@ -230,7 +230,7 @@ def _safe_profile_cases() -> tuple[tuple[object, object], ...]:
         ),
         (
             make_intent(IntentName.SPACING, selection=(1, 2), args={"delta": 1}),
-            make_snapshot(2, selection=(1, 2), spacing=1.0),
+            make_snapshot(2, selection=(1, 2), spacing=1.0, formation="line"),
         ),
         (
             make_intent(IntentName.SWEEP, selection=(1, 2), args={}, confirm=True),

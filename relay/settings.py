@@ -52,6 +52,7 @@ class RelaySettings:
     fanout_hz: int = 10
     adapter_backend: AdapterBackend = AdapterBackend.SIM
     capability_release: CapabilityRelease = CapabilityRelease.C1
+    sim_aircraft_count: int | None = None
     command_ttl_ms: int = 2_000
     command_deadline_ms: int = 10_000
     virtual_stick_hz: int = 10
@@ -127,6 +128,14 @@ class RelaySettings:
             and self.adapter_backend is not AdapterBackend.SIM
         ):
             raise SettingsError("SWEEP_CAPABILITY_RELEASE=c2 is allowed only with the sim backend")
+        if self.sim_aircraft_count is not None and (
+            type(self.sim_aircraft_count) is not int or not 1 <= self.sim_aircraft_count <= 6
+        ):
+            raise SettingsError("SWEEP_SIM_AIRCRAFT_COUNT must be an integer from 1 through 6")
+        if self.capability_release is CapabilityRelease.C2 and not (
+            4 <= self.effective_sim_aircraft_count <= 6
+        ):
+            raise SettingsError("the C2 simulator requires 4 through 6 aircraft")
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
         if self.command_deadline_ms < self.command_ttl_ms:
@@ -206,6 +215,9 @@ class RelaySettings:
             ),
             adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
             capability_release=_capability_release(values.get("SWEEP_CAPABILITY_RELEASE", "c1")),
+            sim_aircraft_count=_optional_positive_integer(
+                values.get("SWEEP_SIM_AIRCRAFT_COUNT"), "SWEEP_SIM_AIRCRAFT_COUNT"
+            ),
             command_ttl_ms=_positive_integer(
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"
             ),
@@ -299,6 +311,12 @@ class RelaySettings:
             return C2_CAPABILITY_PROFILE
         return C1_CAPABILITY_PROFILE
 
+    @property
+    def effective_sim_aircraft_count(self) -> int:
+        if self.sim_aircraft_count is not None:
+            return self.sim_aircraft_count
+        return 4 if self.capability_release is CapabilityRelease.C2 else 2
+
 
 def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
     try:
@@ -355,6 +373,10 @@ def _positive_integer(raw: str, name: str) -> int:
     if value == 0:
         raise SettingsError(f"{name} must be positive")
     return value
+
+
+def _optional_positive_integer(raw: str | None, name: str) -> int | None:
+    return None if raw is None or raw == "" else _positive_integer(raw, name)
 
 
 def _nonnegative_integer(raw: str, name: str) -> int:

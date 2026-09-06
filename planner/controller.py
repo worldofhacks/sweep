@@ -192,6 +192,7 @@ class PreparedExecutionRouter:
         enrichment = RelaySnapshotEnrichment(
             operator_present=enriched.operator_present,
             operator_last_seen_ms=enriched.operator_last_seen_ms,
+            fleet_observation_complete=enriched.fleet_observation_complete,
             aircraft={
                 drone_id: RelayAircraftSafetyEnrichment(
                     drone_id=drone_id,

@@ -145,6 +145,7 @@ def make_snapshot(
         now_ms=now_ms,
         formation="none",
         spacing=0.8,
+        fleet_observation_complete=True,
     )
     return replace(snapshot, **changes)
 

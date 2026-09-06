@@ -333,8 +333,12 @@ def test_speech_pair_qualification_configuration_is_closed_and_immutable() -> No
         {"SWEEP_QUALIFIED_VOICE_INTENTS": "takeoff, hold"}, profile
     ) == ("hold", "takeoff")
     for raw in ("takeoff,takeoff", "takeoff,", "unknown", "disarm", "map_area"):
-        with pytest.raises(SettingsError, match="unique enabled Intent v1 names"):
+        with pytest.raises(SettingsError, match="unique enabled language-source names"):
             _qualified_voice_intents({"SWEEP_QUALIFIED_VOICE_INTENTS": raw}, profile)
+
+    for raw in ("disarm", "formation_next", "formation_set", "spacing", "sweep"):
+        with pytest.raises(SettingsError, match="unique enabled language-source names"):
+            _qualified_voice_intents({"SWEEP_QUALIFIED_VOICE_INTENTS": raw}, C2_CAPABILITY_PROFILE)
 
 
 def test_endpoint_without_anthropic_key_returns_typed_compiler_unavailable(

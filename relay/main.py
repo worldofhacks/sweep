@@ -24,6 +24,7 @@ from planner.models import TranslationPolicy
 from relay.app import RelayRuntime
 from relay.autonomy import AutonomyConfig, create_autonomy_app
 from relay.capabilities import CapabilityProfile, IntentName
+from relay.intent_v1 import SOURCE_ALLOWED_NAMES
 from relay.settings import RelaySettings, SettingsError
 from relay.voice import TranscriptionTransport, TranscriptService
 
@@ -101,9 +102,10 @@ def _qualified_voice_intents(
         or len(set(values)) != len(values)
         or any(value not in known for value in values)
         or any(not capability_profile.supports(IntentName(value)) for value in values)
+        or any(IntentName(value) not in SOURCE_ALLOWED_NAMES["language"] for value in values)
     ):
         raise SettingsError(
-            "SWEEP_QUALIFIED_VOICE_INTENTS must contain unique enabled Intent v1 names"
+            "SWEEP_QUALIFIED_VOICE_INTENTS must contain unique enabled language-source names"
         )
     return tuple(sorted(values))
 

@@ -212,6 +212,23 @@ describe('Control › Swarm: capability-profile behavior on the fixture client',
     expect(clients.console.sent).toHaveLength(0)
   })
 
+  test('formation preview renders anonymous slots until relay projects an assignment', async () => {
+    const clients = fixtureClients(() => t0, 'c2_fleet_operations')
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
+    await screen.findByText('1 of 4 selected')
+    await user.click(fleetGroup().getByRole('button', { name: 'Select all ready' }))
+    await screen.findByText('3 of 4 selected')
+    await user.click(screen.getByRole('button', { name: 'line' }))
+
+    const panel = screen.getByLabelText('Formation')
+    expect(within(panel).getAllByText('Slot 1').length).toBeGreaterThan(0)
+    expect(within(panel).queryByText(/^D-01$/)).not.toBeInTheDocument()
+    expect(panel).toHaveTextContent(
+      'aircraft-to-slot assignments are not projected by the relay and are therefore not guessed',
+    )
+  })
+
   test('retrying selected landing waits for a fresh confirmation before sending', async () => {
     let now = t0
     const clients = fixtureClients(() => now)

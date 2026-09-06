@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from itertools import combinations, permutations
-from math import cos, dist, fsum, isfinite, radians, sin
+from dataclasses import dataclass, replace
+from heapq import heappop, heappush
+from itertools import combinations
+from math import cos, dist, factorial, fsum, isclose, isfinite, radians, sin, sqrt
 
 from planner.models import (
     AltitudeGrounding,
@@ -428,6 +429,31 @@ class DeterministicPlanner:
                     RefusalReason.INVALID_PLAN,
                     "spacing must remain finite and positive",
                 )
+            targets = _formation_targets(
+                snapshot.formation,
+                selected,
+                snapshot,
+                spacing_update,
+                minimum_clearance=min(snapshot.spacing, spacing_update),
+            )
+            if targets is None:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.PLANNER_FAILURE,
+                    "spacing requires a supported completed formation that can be repositioned",
+                )
+            for drone_id, target in targets:
+                builder.add(
+                    drone_id,
+                    CommandOperation.GOTO,
+                    {
+                        "x": target.x,
+                        "y": target.y,
+                        "z": target.z,
+                        "speed": self.config.flight_speed_m_s,
+                    },
+                )
 
         elif intent.name is IntentName.SWEEP:
             lanes = _sweep_lanes(selected, snapshot, intent.args.get("box"))
@@ -438,7 +464,16 @@ class DeterministicPlanner:
                     RefusalReason.INVALID_PLAN,
                     "sweep box cannot be expanded into finite lanes",
                 )
-            for drone_id, start, end in lanes:
+            routes = _safe_sweep_routes(lanes, selected, snapshot)
+            if routes is None:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.PLANNER_FAILURE,
+                    "sweep lanes have no sequential route that preserves spacing",
+                )
+            starts, ends = routes
+            for drone_id, start in starts:
                 builder.add(
                     drone_id,
                     CommandOperation.GOTO,
@@ -449,6 +484,7 @@ class DeterministicPlanner:
                         "speed": self.config.flight_speed_m_s,
                     },
                 )
+            for drone_id, end in ends:
                 builder.add(
                     drone_id,
                     CommandOperation.GOTO,
@@ -757,7 +793,12 @@ def _next_formation(current: str, count: int) -> str:
 
 
 def _formation_targets(
-    name: str, selected: tuple[int, ...], snapshot: FleetSnapshot, spacing: float
+    name: str,
+    selected: tuple[int, ...],
+    snapshot: FleetSnapshot,
+    spacing: float,
+    *,
+    minimum_clearance: float | None = None,
 ) -> tuple[tuple[int, Position], ...] | None:
     count = len(selected)
     if (
@@ -782,7 +823,7 @@ def _formation_targets(
         selected,
         targets,
         snapshot,
-        minimum_clearance=spacing,
+        minimum_clearance=spacing if minimum_clearance is None else minimum_clearance,
     )
 
 
@@ -844,31 +885,192 @@ def _minimum_cost_formation_assignment(
     *,
     minimum_clearance: float,
 ) -> tuple[tuple[int, Position], ...] | None:
-    """Solve the bounded assignment exactly, then find a safe sequential order."""
+    """Find the least-cost non-crossing assignment and a safe sequential order.
+
+    A deterministic Hungarian solve supplies each constrained minimum.  Murty's
+    bounded partitioning then visits assignments in global cost order until one
+    has both non-crossing transitions and a sequentially clear execution order.
+    With Intent v1's six-aircraft ceiling this considers at most 720 assignments,
+    without nesting a second factorial search for command order.
+    """
     drone_ids = tuple(sorted(selected))
-    ranked: list[tuple[float, tuple[int, ...], tuple[tuple[int, Position], ...]]] = []
-    for target_indices in permutations(range(len(targets))):
+    if len(drone_ids) != len(targets) or not 1 <= len(drone_ids) <= MAX_INTENT_DRONE_IDS:
+        return None
+    costs = tuple(
+        tuple(snapshot.aircraft[drone_id].pose.distance_to(target) for target in targets)
+        for drone_id in drone_ids
+    )
+    root = _hungarian_assignment(costs, (), ())
+    if root is None:
+        return None
+    pending: list[tuple[float, tuple[int, ...], tuple[int, ...], tuple[tuple[int, int], ...]]] = []
+    heappush(pending, (root[0], root[1], (), ()))
+    visited_constraints: set[tuple[tuple[int, ...], tuple[tuple[int, int], ...]]] = set()
+    yielded: set[tuple[int, ...]] = set()
+    examined = 0
+    while pending and examined < factorial(len(drone_ids)):
+        _, target_indices, prefix, forbidden = heappop(pending)
+        key = (prefix, forbidden)
+        if key in visited_constraints:
+            continue
+        visited_constraints.add(key)
+        if target_indices not in yielded:
+            yielded.add(target_indices)
+            examined += 1
+        else:
+            continue
         candidate = tuple(
             (drone_id, targets[target_index])
             for drone_id, target_index in zip(drone_ids, target_indices, strict=True)
         )
-        if _formation_transitions_cross(candidate, snapshot):
-            continue
-        cost = fsum(
-            snapshot.aircraft[drone_id].pose.distance_to(target) for drone_id, target in candidate
-        )
-        if not isfinite(cost):
-            continue
-        ranked.append((cost, target_indices, candidate))
-    for _, _, candidate in sorted(ranked, key=lambda item: (item[0], item[1])):
-        ordered = _sequential_formation_order(
-            candidate,
-            snapshot,
-            minimum_clearance=minimum_clearance,
-        )
-        if ordered is not None:
-            return ordered
+        if not _formation_transitions_cross(candidate, snapshot):
+            ordered = _sequential_formation_order(
+                candidate,
+                snapshot,
+                minimum_clearance=minimum_clearance,
+            )
+            if ordered is not None:
+                return ordered
+
+        for row in range(len(prefix), len(drone_ids)):
+            child_prefix = target_indices[:row]
+            child_forbidden = tuple(sorted((*forbidden, (row, target_indices[row]))))
+            child_key = (child_prefix, child_forbidden)
+            if child_key in visited_constraints:
+                continue
+            solution = _hungarian_assignment(costs, child_prefix, child_forbidden)
+            if solution is not None:
+                heappush(pending, (*solution, child_prefix, child_forbidden))
     return None
+
+
+def _hungarian_assignment(
+    costs: tuple[tuple[float, ...], ...],
+    prefix: tuple[int, ...],
+    forbidden: tuple[tuple[int, int], ...],
+) -> tuple[float, tuple[int, ...]] | None:
+    """Return the lexicographically first constrained minimum-cost assignment."""
+    optimum = _hungarian_raw(costs, prefix, forbidden)
+    if optimum is None:
+        return None
+    optimum_cost, _ = optimum
+    chosen = prefix
+    used = set(prefix)
+    for row in range(len(prefix), len(costs)):
+        for column in range(len(costs)):
+            if column in used or (row, column) in forbidden:
+                continue
+            trial = _hungarian_raw(costs, (*chosen, column), forbidden)
+            if trial is not None and isclose(
+                trial[0],
+                optimum_cost,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                chosen = (*chosen, column)
+                used.add(column)
+                break
+        else:
+            return None
+    return (optimum_cost, chosen)
+
+
+def _hungarian_raw(
+    costs: tuple[tuple[float, ...], ...],
+    prefix: tuple[int, ...],
+    forbidden: tuple[tuple[int, int], ...],
+) -> tuple[float, tuple[int, ...]] | None:
+    """Square Hungarian solve with fixed-prefix and forbidden-edge constraints."""
+    count = len(costs)
+    if (
+        count == 0
+        or len(prefix) > count
+        or len(set(prefix)) != len(prefix)
+        or any(len(row) != count for row in costs)
+        or any(column < 0 or column >= count for column in prefix)
+        or any(not isfinite(value) or value < 0 for row in costs for value in row)
+    ):
+        return None
+    blocked = set(forbidden)
+    if any((row, column) in blocked for row, column in enumerate(prefix)):
+        return None
+    remaining_rows = tuple(range(len(prefix), count))
+    remaining_columns = tuple(column for column in range(count) if column not in prefix)
+    size = len(remaining_rows)
+    assignment = list(prefix)
+    if size:
+        maximum = max(value for row in costs for value in row)
+        penalty = max(1.0, maximum) * (count + 1) * 4
+        matrix = tuple(
+            tuple(
+                penalty if (row, column) in blocked else costs[row][column]
+                for column in remaining_columns
+            )
+            for row in remaining_rows
+        )
+        local = _hungarian_square(matrix)
+        if local is None:
+            return None
+        assignment.extend(remaining_columns[column] for column in local)
+    result = tuple(assignment)
+    if any((row, column) in blocked for row, column in enumerate(result)):
+        return None
+    total = fsum(costs[row][column] for row, column in enumerate(result))
+    return (total, result) if isfinite(total) else None
+
+
+def _hungarian_square(costs: tuple[tuple[float, ...], ...]) -> tuple[int, ...] | None:
+    """Classic O(n^3) Hungarian minimization for a finite square matrix."""
+    count = len(costs)
+    if count == 0:
+        return ()
+    potentials_rows = [0.0] * (count + 1)
+    potentials_columns = [0.0] * (count + 1)
+    matching = [0] * (count + 1)
+    predecessor = [0] * (count + 1)
+    for row in range(1, count + 1):
+        matching[0] = row
+        column0 = 0
+        minimum = [float("inf")] * (count + 1)
+        used = [False] * (count + 1)
+        while True:
+            used[column0] = True
+            row0 = matching[column0]
+            delta = float("inf")
+            column1 = 0
+            for column in range(1, count + 1):
+                if used[column]:
+                    continue
+                reduced = (
+                    costs[row0 - 1][column - 1] - potentials_rows[row0] - potentials_columns[column]
+                )
+                if reduced < minimum[column]:
+                    minimum[column] = reduced
+                    predecessor[column] = column0
+                if minimum[column] < delta:
+                    delta = minimum[column]
+                    column1 = column
+            if not isfinite(delta):
+                return None
+            for column in range(count + 1):
+                if used[column]:
+                    potentials_rows[matching[column]] += delta
+                    potentials_columns[column] -= delta
+                else:
+                    minimum[column] -= delta
+            column0 = column1
+            if matching[column0] == 0:
+                break
+        while True:
+            column1 = predecessor[column0]
+            matching[column0] = matching[column1]
+            column0 = column1
+            if column0 == 0:
+                break
+    result = [-1] * count
+    for column in range(1, count + 1):
+        result[matching[column] - 1] = column - 1
+    return tuple(result) if all(column >= 0 for column in result) else None
 
 
 def _sequential_formation_order(
@@ -877,26 +1079,75 @@ def _sequential_formation_order(
     *,
     minimum_clearance: float,
 ) -> tuple[tuple[int, Position], ...] | None:
-    """Pick the lexicographically first order whose arrivals clear occupancy."""
+    """Pick the lexicographically first segment-clear order with subset DP."""
     occupied = {
         drone_id: aircraft.pose
         for drone_id, aircraft in snapshot.aircraft.items()
         if aircraft.membership is MembershipState.READY and aircraft.airborne
     }
     by_drone = dict(assignments)
-    for drone_order in permutations(sorted(by_drone)):
+    drone_ids = tuple(sorted(by_drone))
+    if not 1 <= len(drone_ids) <= MAX_INTENT_DRONE_IDS:
+        return None
+    dead_ends: set[frozenset[int]] = set()
+
+    def visit(moved: frozenset[int]) -> tuple[int, ...] | None:
+        if len(moved) == len(drone_ids):
+            return ()
+        if moved in dead_ends:
+            return None
         projected = dict(occupied)
-        safe = True
-        for drone_id in drone_order:
-            projected.pop(drone_id, None)
+        for prior in moved:
+            projected[prior] = by_drone[prior]
+        for drone_id in drone_ids:
+            if drone_id in moved:
+                continue
+            start = projected.pop(drone_id, snapshot.aircraft[drone_id].pose)
             target = by_drone[drone_id]
-            if any(target.distance_to(other) < minimum_clearance for other in projected.values()):
-                safe = False
-                break
-            projected[drone_id] = target
-        if safe:
-            return tuple((drone_id, by_drone[drone_id]) for drone_id in drone_order)
-    return None
+            safe = all(
+                _point_to_segment_distance(position, start, target) >= minimum_clearance
+                for position in projected.values()
+            )
+            projected[drone_id] = start
+            if not safe:
+                continue
+            suffix = visit(moved | {drone_id})
+            if suffix is not None:
+                return (drone_id, *suffix)
+        dead_ends.add(moved)
+        return None
+
+    order = visit(frozenset())
+    return None if order is None else tuple((drone_id, by_drone[drone_id]) for drone_id in order)
+
+
+def _point_to_segment_distance(point: Position, start: Position, end: Position) -> float:
+    delta = (end.x - start.x, end.y - start.y, end.z - start.z)
+    length_squared = fsum(value * value for value in delta)
+    if not isfinite(length_squared) or length_squared <= 0:
+        return point.distance_to(start)
+    offset = (point.x - start.x, point.y - start.y, point.z - start.z)
+    fraction = max(
+        0.0,
+        min(
+            1.0,
+            fsum(a * b for a, b in zip(offset, delta, strict=True)) / length_squared,
+        ),
+    )
+    nearest = Position(
+        start.x + fraction * delta[0],
+        start.y + fraction * delta[1],
+        start.z + fraction * delta[2],
+    )
+    squared = fsum(
+        (a - b) ** 2
+        for a, b in zip(
+            (point.x, point.y, point.z),
+            (nearest.x, nearest.y, nearest.z),
+            strict=True,
+        )
+    )
+    return sqrt(max(0.0, squared))
 
 
 def _formation_transitions_cross(
@@ -957,7 +1208,9 @@ def _sweep_lanes(
     if raw_box is None:
         center_x = sum(snapshot.aircraft[drone_id].pose.x / count for drone_id in selected)
         center_y = sum(snapshot.aircraft[drone_id].pose.y / count for drone_id in selected)
-        width = max(snapshot.spacing, 1.0) * count
+        # Leave a quarter-spacing routing margin between default lane centers;
+        # explicit operator boxes remain exact and are refused if too narrow.
+        width = max(snapshot.spacing, 1.0) * count * 1.25
         half_length = max(snapshot.spacing, 1.0) * 2
         min_x = center_x - width / 2
         max_x = center_x + width / 2
@@ -1014,6 +1267,40 @@ def _sweep_lanes(
             ),
         )
     )
+
+
+def _safe_sweep_routes(
+    lanes: tuple[tuple[int, Position, Position], ...],
+    selected: tuple[int, ...],
+    snapshot: FleetSnapshot,
+) -> tuple[tuple[tuple[int, Position], ...], tuple[tuple[int, Position], ...]] | None:
+    """Assign lanes, stage all starts, then traverse without a close pass."""
+    starts = tuple(start for _, start, _ in lanes)
+    ordered_starts = _minimum_cost_formation_assignment(
+        selected,
+        starts,
+        snapshot,
+        minimum_clearance=snapshot.spacing,
+    )
+    if ordered_starts is None:
+        return None
+    end_by_start = {start: end for _, start, end in lanes}
+    start_by_drone = dict(ordered_starts)
+    staged_aircraft = dict(snapshot.aircraft)
+    for drone_id, start in ordered_starts:
+        staged_aircraft[drone_id] = replace(staged_aircraft[drone_id], pose=start)
+    staged = replace(snapshot, aircraft=staged_aircraft)
+    assigned_ends = tuple(
+        (drone_id, end_by_start[start_by_drone[drone_id]]) for drone_id in sorted(selected)
+    )
+    ordered_ends = _sequential_formation_order(
+        assigned_ends,
+        staged,
+        minimum_clearance=snapshot.spacing,
+    )
+    if ordered_ends is None:
+        return None
+    return ordered_starts, ordered_ends
 
 
 def _refusal(

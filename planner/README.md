@@ -89,13 +89,17 @@ contract contains exactly line, column, wedge, and diamond. Line and column acce
 2–6 selected aircraft; wedge and diamond accept 4–6. Slots retain the selected
 fleet's centroid and a small clearance margin above the reported spacing.
 
-For at most six aircraft, the planner enumerates every slot assignment, sums the
-3-D Euclidean travel distance, discards assignments whose straight XY transitions
-cross, and uses slot-index order as the deterministic tie-break. It then chooses a
-sequential one-aircraft-at-a-time `goto` order whose arrivals do not violate the
-current occupancy. If no such non-crossing assignment and order exists, planning
-refuses before adapter I/O. This is bounded simulator behavior, not physical-flight
-acceptance and not a substitute for mapped route or clearance evidence.
+For at most six aircraft, a deterministic Hungarian solver minimizes total 3-D
+Euclidean travel. Bounded Murty partitioning visits alternative assignments in cost
+and slot-index order until one has non-crossing transitions and a sequential
+one-aircraft-at-a-time `goto` order whose complete segments clear every stationary or
+already projected ready aircraft. Spacing changes reposition the completed formation;
+they refuse instead of reporting metadata-only success when no supported formation or
+clear route exists. Sweep similarly stages every assigned lane start before traversing
+the lanes. If no safe assignment and order exists, planning refuses before adapter I/O.
+The arbiter independently rechecks every segment. This is bounded simulator behavior,
+not physical-flight acceptance and not a substitute for mapped route or clearance
+evidence.
 
 ## Known-map navigation previews
 

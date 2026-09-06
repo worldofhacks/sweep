@@ -1,4 +1,4 @@
-"""Deployable two-aircraft simulator composition for the M1.4 gate."""
+"""Deployable bounded simulator composition for the M1.4 and M1.5 gates."""
 
 from __future__ import annotations
 
@@ -32,8 +32,9 @@ from planner.relay_bridge import AutonomyRelayBridge
 from relay.app import create_app
 from relay.auth import Principal, sign_event
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.intent_v1 import IntentName
 from relay.session import Clock, EventIdFactory, RelaySession
-from relay.settings import RelaySettings
+from relay.settings import CapabilityRelease, RelaySettings
 
 
 class SimBridgeFactory:
@@ -83,6 +84,7 @@ class SimBridgeFactory:
             return RelaySnapshotEnrichment(
                 operator_present=True,
                 operator_last_seen_ms=now,
+                fleet_observation_complete=True,
                 aircraft={
                     drone_id: RelayAircraftSafetyEnrichment(
                         drone_id=drone_id,
@@ -172,6 +174,7 @@ class _SimNodeIngress:
         self._sequence = 0
         self._last_frame_t = -1
         self._ingress_lock = RLock()
+        self._periodic_lock = Lock()
         self._watchdogs: dict[int, _LocalWatchdog] = {}
         self._safety_actions: list[NodeSafetyAction] = []
         self._watchdog_lock = Lock()
@@ -250,18 +253,31 @@ class _SimNodeIngress:
                 self._activate(drone_id)
 
     def periodic_events(self) -> list[dict[str, object]]:
-        with self._ingress_lock:
-            frames = tuple(
-                (
-                    drone_id,
-                    self._telemetry(drone_id),
-                    self._activity_generation[drone_id],
+        # Serialize complete periodic batches so a later timestamp cannot reach a
+        # drone before an earlier batch. The membership lock is released before
+        # relay intake so silence/disconnect can invalidate an in-flight generation.
+        with self._periodic_lock:
+            with self._ingress_lock:
+                frames = tuple(
+                    (
+                        drone_id,
+                        self._telemetry(drone_id),
+                        self._activity_generation[drone_id],
+                    )
+                    for drone_id in sorted(self._active - self._silent)
                 )
-                for drone_id in sorted(self._active - self._silent)
-            )
-        events: list[dict[str, object]] = []
-        for drone_id, frame, generation in frames:
-            events.extend(self._process(frame, drone_id, activity_generation=generation))
+            events: list[dict[str, object]] = []
+            accepted: list[tuple[int, int]] = []
+            for drone_id, frame, generation in frames:
+                produced = self._process(frame, drone_id, notify_activity=False)
+                events.extend(produced)
+                if not any(event.get("type") == "refusal" for event in produced):
+                    accepted.append((drone_id, generation))
+        # Activity notification may synchronize adapter epochs under the bridge's
+        # execution lock. Do it after releasing the ordering lock so an execution
+        # thread refreshing telemetry cannot deadlock with this periodic batch.
+        for drone_id, generation in accepted:
+            events.extend(self._notify_activity(drone_id, generation))
         return events
 
     def silence(self, drone_id: int) -> None:
@@ -318,27 +334,35 @@ class _SimNodeIngress:
         drone_id: int,
         *,
         activity_generation: int | None = None,
+        notify_activity: bool = True,
     ) -> list[dict[str, object]]:
         key = self.adapter_keys[drone_id]
         events = self.session.process_frame(
             frame,
             Principal(source="adapter", drone_id=drone_id, signing_key=key),
         )
-        if not any(event.get("type") == "refusal" for event in events):
-            with self._ingress_lock:
-                activity_is_current = activity_generation is None or (
-                    self._activity_generation.get(drone_id) == activity_generation
-                    and drone_id in self._active
-                    and drone_id not in self._silent
-                )
-                if activity_is_current:
-                    events.extend(
-                        self._bridge().adapter_activity(
-                            drone_id=drone_id,
-                            relay_state=self.session.current_state(),
-                        )
-                    )
+        if notify_activity and not any(event.get("type") == "refusal" for event in events):
+            events.extend(self._notify_activity(drone_id, activity_generation))
         return events
+
+    def _notify_activity(
+        self, drone_id: int, activity_generation: int | None
+    ) -> list[dict[str, object]]:
+        bridge = self._bridge()
+        # Match the runtime's execution-lock -> ingress-lock order. Reversing it
+        # would let a background batch and an execution-time refresh deadlock.
+        with bridge.execution_barrier(), self._ingress_lock:
+            activity_is_current = activity_generation is None or (
+                self._activity_generation.get(drone_id) == activity_generation
+                and drone_id in self._active
+                and drone_id not in self._silent
+            )
+            if not activity_is_current:
+                return []
+            return bridge.adapter_activity(
+                drone_id=drone_id,
+                relay_state=self.session.current_state(),
+            )
 
     def _membership(self, drone_id: int, action: str) -> dict[str, object]:
         event: dict[str, object] = {
@@ -414,14 +438,24 @@ def create_m14_sim_app(
 ) -> FastAPI:
     active_settings = settings or RelaySettings.from_env()
     now = (clock or _epoch_ms)()
+    starting = initial_snapshot or _initial_snapshot(
+        now, active_settings.effective_sim_aircraft_count
+    )
+    if (
+        active_settings.capability_profile.supports(IntentName.FORMATION_SET)
+        and not 4 <= len(starting.aircraft) <= 6
+    ):
+        raise ValueError("the C2 simulator requires an initial fleet of 4 through 6 aircraft")
     safety = replace(
         _safety_config(),
         max_link_age_ms=active_settings.telemetry_freshness_ms,
         max_position_age_ms=active_settings.telemetry_freshness_ms,
     )
     factory = SimBridgeFactory(
-        initial_snapshot=initial_snapshot or _initial_snapshot(now),
-        planning=_planning_config(),
+        initial_snapshot=starting,
+        planning=_planning_config(
+            enable_altitude=active_settings.capability_release is CapabilityRelease.C2
+        ),
         safety=safety,
         camera=_camera_config(now),
         watchdog=WatchdogConfig(
@@ -492,7 +526,9 @@ class _LocalWatchdog:
     action: LossBehavior | None = None
 
 
-def _initial_snapshot(now_ms: int) -> FleetSnapshot:
+def _initial_snapshot(now_ms: int, count: int = 2) -> FleetSnapshot:
+    if type(count) is not int or not 1 <= count <= 6:
+        raise ValueError("simulator aircraft count must be an integer from 1 through 6")
     aircraft = {
         drone_id: AircraftState(
             drone_id=drone_id,
@@ -513,7 +549,7 @@ def _initial_snapshot(now_ms: int) -> FleetSnapshot:
             storage_remaining_bytes=50_000_000,
             camera_ready=True,
         )
-        for drone_id in (1, 2)
+        for drone_id in range(1, count + 1)
     }
     return FleetSnapshot(
         roster_version=0,
@@ -524,10 +560,11 @@ def _initial_snapshot(now_ms: int) -> FleetSnapshot:
         operator_present=True,
         operator_last_seen_ms=now_ms,
         now_ms=now_ms,
+        fleet_observation_complete=True,
     )
 
 
-def _planning_config() -> PlanningConfig:
+def _planning_config(*, enable_altitude: bool = False) -> PlanningConfig:
     return PlanningConfig(
         takeoff_altitude_m=1.0,
         translation_step_m=0.5,
@@ -538,6 +575,10 @@ def _planning_config() -> PlanningConfig:
         capture_min_overlap_deg=10.0,
         capture_gimbal_pitch_deg=0.0,
         reconstruct_headings_deg=tuple(float(value) for value in range(0, 360, 45)),
+        altitude_step_m=0.5 if enable_altitude else None,
+        altitude_floor_z_m=0.0 if enable_altitude else None,
+        altitude_configuration_id="sim-ground-plane-v1" if enable_altitude else None,
+        altitude_completion_tolerance_m=0.05 if enable_altitude else None,
     )
 
 

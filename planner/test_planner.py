@@ -19,8 +19,11 @@ from planner.planner import (
     _formation_offsets,
     _formation_targets,
     _formation_transitions_cross,
+    _hungarian_assignment,
     _minimum_cost_formation_assignment,
+    _point_to_segment_distance,
     _segments_cross_xy,
+    _sequential_formation_order,
 )
 from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE
 from relay.intent_v1 import FORMATION_NAMES, IntentName
@@ -262,9 +265,10 @@ def test_formation_and_spacing_plans_carry_authoritative_projection_updates() ->
         ),
         snapshot,
     )
+    spacing_snapshot = replace(snapshot, formation="diamond")
     spacing = planner.plan(
         make_intent(IntentName.SPACING, selection=snapshot.selection, args={"delta": 1}),
-        snapshot,
+        spacing_snapshot,
     )
 
     assert isinstance(formation, Plan)
@@ -272,7 +276,9 @@ def test_formation_and_spacing_plans_carry_authoritative_projection_updates() ->
     assert len(formation.commands) == 4
     assert isinstance(spacing, Plan)
     assert spacing.spacing_update == 1.0
-    assert spacing.commands == ()
+    assert len(spacing.commands) == 4
+    assert {command.operation for command in spacing.commands} == {CommandOperation.GOTO}
+    assert SafetyArbiter(safety_config()).check_plan(spacing, spacing_snapshot) is None
 
 
 def test_arbiter_rejects_a_tampered_formation_projection() -> None:
@@ -293,6 +299,39 @@ def test_arbiter_rejects_a_tampered_formation_projection() -> None:
 
     assert refusal is not None
     assert refusal.reason is RefusalReason.INVALID_PLAN
+
+
+def test_arbiter_rejects_tampered_formation_geometry_and_spacing_binding() -> None:
+    snapshot = replace(make_snapshot(4), formation="diamond")
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
+    formation = planner.plan(
+        make_intent(
+            IntentName.FORMATION_SET,
+            selection=snapshot.selection,
+            args={"name": "line"},
+        ),
+        snapshot,
+    )
+    spacing = planner.plan(
+        make_intent(IntentName.SPACING, selection=snapshot.selection, args={"delta": 1}),
+        snapshot,
+    )
+    assert isinstance(formation, Plan)
+    assert isinstance(spacing, Plan)
+
+    moved = replace(
+        formation.commands[0],
+        parameters=formation.commands[0].parameters | {"x": 9.0},
+    )
+    altered_formation = replace(formation, commands=(moved, *formation.commands[1:]))
+    altered_spacing = replace(spacing, spacing_update=1.2)
+
+    formation_refusal = SafetyArbiter(safety_config()).check_plan(altered_formation, snapshot)
+    spacing_refusal = SafetyArbiter(safety_config()).check_plan(altered_spacing, snapshot)
+    assert formation_refusal is not None
+    assert formation_refusal.reason is RefusalReason.INVALID_PLAN
+    assert spacing_refusal is not None
+    assert spacing_refusal.reason is RefusalReason.INVALID_PLAN
 
 
 def test_altitude_and_confirmed_sweep_expand_for_six_simulated_aircraft() -> None:
@@ -537,6 +576,24 @@ def test_assignment_ties_are_stable_by_drone_and_slot_index() -> None:
     assert tuple(by_drone[drone_id] for drone_id in range(1, 5)) == targets
 
 
+@pytest.mark.parametrize("count", [2, 3, 4, 5, 6])
+def test_hungarian_solver_matches_bounded_exhaustive_minimum(count: int) -> None:
+    for case in range(5):
+        costs = tuple(
+            tuple(float(((row + 3) * (column + 5) + case * 7) % 19) for column in range(count))
+            for row in range(count)
+        )
+        expected = min(
+            (
+                fsum(costs[row][column] for row, column in enumerate(candidate)),
+                candidate,
+            )
+            for candidate in permutations(range(count))
+        )
+
+        assert _hungarian_assignment(costs, (), ()) == expected
+
+
 def test_transition_crossing_uses_xy_geometry_and_allows_sequential_collinear_following() -> None:
     assert _segments_cross_xy(
         Position(-1.0, -1.0, 1.0),
@@ -552,6 +609,38 @@ def test_transition_crossing_uses_xy_geometry_and_allows_sequential_collinear_fo
     )
 
 
+def test_sequential_order_checks_the_whole_3d_segment_against_stationary_aircraft() -> None:
+    snapshot = make_snapshot(3, selection=(1, 2))
+    snapshot = replace_aircraft(snapshot, 1, pose=Position(0.0, 0.0, 1.0))
+    snapshot = replace_aircraft(snapshot, 2, pose=Position(4.0, 2.0, 1.0))
+    snapshot = replace_aircraft(snapshot, 3, pose=Position(2.0, 0.79, 1.0))
+    assignments = (
+        (1, Position(4.0, 0.0, 1.0)),
+        (2, Position(0.0, 2.0, 1.0)),
+    )
+
+    assert assignments[0][1].distance_to(snapshot.aircraft[3].pose) > 0.8
+    assert (
+        _point_to_segment_distance(
+            snapshot.aircraft[3].pose, snapshot.aircraft[1].pose, assignments[0][1]
+        )
+        < 0.8
+    )
+    assert _sequential_formation_order(assignments, snapshot, minimum_clearance=0.8) is None
+
+
+def test_sequential_segment_clearance_accepts_exact_minimum_and_rejects_epsilon_below() -> None:
+    snapshot = make_snapshot(2, selection=(1,))
+    snapshot = replace_aircraft(snapshot, 1, pose=Position(0.0, 0.0, 1.0))
+    assignment = ((1, Position(4.0, 0.0, 1.0)),)
+
+    exact = replace_aircraft(snapshot, 2, pose=Position(2.0, 0.8, 1.0))
+    below = replace_aircraft(snapshot, 2, pose=Position(2.0, 0.8 - 1e-12, 1.0))
+
+    assert _sequential_formation_order(assignment, exact, minimum_clearance=0.8) == assignment
+    assert _sequential_formation_order(assignment, below, minimum_clearance=0.8) is None
+
+
 def _has_sequential_clearance(
     assignment: tuple[tuple[int, Position], ...],
     snapshot: FleetSnapshot,
@@ -565,9 +654,12 @@ def _has_sequential_clearance(
             if aircraft.airborne
         }
         for drone_id in order:
-            occupied.pop(drone_id)
+            start = occupied.pop(drone_id)
             target = by_drone[drone_id]
-            if any(target.distance_to(other) < minimum_clearance for other in occupied.values()):
+            if any(
+                _point_to_segment_distance(other, start, target) < minimum_clearance
+                for other in occupied.values()
+            ):
                 break
             occupied[drone_id] = target
         else:

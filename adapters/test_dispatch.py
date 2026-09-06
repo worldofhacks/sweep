@@ -19,6 +19,7 @@ from planner.models import (
     RefusalReason,
 )
 from planner.planner import DeterministicPlanner
+from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
     make_intent,
@@ -230,6 +231,54 @@ def test_terminal_ack_resumes_without_resending_accepted_command() -> None:
     assert [ack.command_id for ack in result.acknowledgements] == [
         plan.commands[0].command_id,
         plan.commands[1].command_id,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "snapshot_changes"),
+    [
+        (IntentName.FORMATION_SET, {"name": "diamond"}, {}),
+        (IntentName.SPACING, {"delta": 1}, {"formation": "line"}),
+    ],
+)
+def test_c2_motion_resumes_against_its_frozen_geometry_without_resending(
+    name: IntentName,
+    args: dict[str, object],
+    snapshot_changes: dict[str, object],
+) -> None:
+    snapshot = make_snapshot(4, **snapshot_changes)
+    plan = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(
+        make_intent(name, selection=snapshot.selection, args=args), snapshot
+    )
+    assert isinstance(plan, Plan)
+    _, _, arbiter, _, _, camera = make_stack(snapshot)
+    flight = ExecutingOnceFlight.from_snapshot(snapshot)
+    dispatcher = AdapterDispatcher(flight=flight, camera=camera, arbiter=arbiter)
+
+    def current_snapshot():  # type: ignore[no-untyped-def]
+        return replace(
+            snapshot,
+            aircraft={
+                drone_id: replace(state, pose=flight.aircraft[drone_id].pose)
+                for drone_id, state in snapshot.aircraft.items()
+            },
+        )
+
+    pending = dispatcher.dispatch(plan, snapshot, current_snapshot=current_snapshot)
+    assert pending.status is LifecycleStatus.EXECUTING
+    terminal = replace(pending.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
+
+    result = dispatcher.resume_after_completion(
+        plan,
+        pending,
+        terminal,
+        snapshot,
+        current_snapshot=current_snapshot,
+    )
+
+    assert result.status is LifecycleStatus.COMPLETED
+    assert [call.drone_ids for call in flight.calls] == [
+        (command.drone_id,) for command in plan.commands
     ]
 
 
@@ -499,7 +548,7 @@ def test_timeout_removes_failed_target_projection_before_remaining_spacing_check
         drone_id=1,
         connection_epoch=1,
         operation=CommandOperation.GOTO,
-        parameters={"x": 4.0, "y": 0.0, "z": 1.0, "speed": 0.5},
+        parameters={"x": 0.0, "y": 2.0, "z": 1.0, "speed": 0.5},
     )
     second = Command(
         command_id="plan:test:command:0002",

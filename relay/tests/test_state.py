@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.contracts import Membership, parse_membership_request, parse_telemetry
 from relay.state import FleetRegistry, RegistryError
 from relay.tests.conftest import SESSION, membership_payload, telemetry_payload
@@ -30,6 +31,20 @@ def test_registry_accepts_four_stable_ids_and_rejects_a_fifth() -> None:
     assert registry.roster_version == 4
     with pytest.raises(RegistryError) as error:
         _join(registry, 5, "join-5")
+    assert error.value.code == "fleet_capacity"
+
+
+def test_c2_simulator_registry_accepts_six_stable_ids_and_rejects_a_seventh() -> None:
+    registry = FleetRegistry(
+        telemetry_freshness_ms=1_000,
+        capability_profile=C2_CAPABILITY_PROFILE,
+    )
+    for drone_id in range(1, 7):
+        _join(registry, drone_id, f"join-{drone_id}")
+
+    assert registry.roster_version == 6
+    with pytest.raises(RegistryError) as error:
+        _join(registry, 7, "join-7")
     assert error.value.code == "fleet_capacity"
 
 

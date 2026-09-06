@@ -74,6 +74,10 @@ HOLD_PREEMPTS = frozenset(
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
         IntentName.ALTITUDE,
+        IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
+        IntentName.SPACING,
+        IntentName.SWEEP,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
     }
@@ -276,6 +280,10 @@ def control_projection(intent_name: IntentName, result: ExecutionResult) -> dict
             projection["selection"] = plan.selection_update
         if plan.armed_update is not None:
             projection["armed"] = plan.armed_update
+        if plan.formation_update is not None:
+            projection["formation"] = plan.formation_update
+        if plan.spacing_update is not None:
+            projection["spacing"] = plan.spacing_update
     return projection
 
 
@@ -301,9 +309,10 @@ def apply_result(
 ) -> list[dict[str, object]]:
     """Apply one result's control projection and lifecycle inside a session operation.
 
-    Selection and arm updates apply only while the plan's roster is still the
-    session's roster; otherwise they are dropped and the result becomes
-    ``invalidated`` with ``stale_roster``. The network stop latch is never dropped.
+    Selection, arm, formation, and spacing updates apply only while the plan's
+    roster is still the session's roster; otherwise they are dropped and the result
+    becomes ``invalidated`` with ``stale_roster``. The network stop latch is never
+    dropped.
     """
     projection = control_projection(intent.name, result)
     plan = result.plan
@@ -311,10 +320,10 @@ def apply_result(
     if (
         plan is not None
         and plan.roster_version != roster_version
-        and ("selection" in projection or "armed" in projection)
+        and any(field in projection for field in ("selection", "armed", "formation", "spacing"))
     ):
-        projection.pop("selection", None)
-        projection.pop("armed", None)
+        for field in ("selection", "armed", "formation", "spacing"):
+            projection.pop(field, None)
         result = replace(
             result,
             status=LifecycleStatus.INVALIDATED,

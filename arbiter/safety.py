@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from math import isfinite
+from math import fsum, isfinite, sqrt
 from typing import Final
 
 from planner.models import (
@@ -23,7 +23,7 @@ from planner.models import (
     Refusal,
     RefusalReason,
 )
-from planner.planner import SELECTION_TARGETED_INTENTS
+from planner.planner import SELECTION_TARGETED_INTENTS, _formation_targets, _next_formation
 from relay.intent_v1 import FORMATION_NAMES, IntentName, IntentV1
 
 _CONFIRMED_INTENTS: Final = frozenset(
@@ -54,6 +54,7 @@ _ARMED_INTENTS: Final = frozenset(
         IntentName.ALTITUDE,
         IntentName.FORMATION_NEXT,
         IntentName.FORMATION_SET,
+        IntentName.SPACING,
         IntentName.COME_HOME,
         IntentName.SWEEP,
         IntentName.CAPTURE_ROOM,
@@ -274,7 +275,7 @@ class SafetyArbiter:
                     return telemetry_refusal
                 battery_refusal = (
                     None
-                    if intent.name is IntentName.LAND
+                    if intent.name in {IntentName.LAND, IntentName.DISARM}
                     else self._check_battery(
                         intent.intent_id,
                         snapshot,
@@ -422,6 +423,7 @@ class SafetyArbiter:
         *,
         completed_command_ids: frozenset[str] = frozenset(),
         required_hold_targets: tuple[int, ...] | None = None,
+        geometry_snapshot: FleetSnapshot | None = None,
     ) -> Refusal | None:
         """Validate plan-wide authorization without replaying completed command state."""
         boundary = self._check_plan_boundary(plan, snapshot)
@@ -452,6 +454,7 @@ class SafetyArbiter:
             snapshot,
             completed_command_ids=completed_command_ids,
             required_hold_targets=required_hold_targets,
+            geometry_snapshot=geometry_snapshot,
         )
         if structural is not None:
             return structural
@@ -555,9 +558,12 @@ class SafetyArbiter:
             )
             if telemetry_refusal is not None:
                 return telemetry_refusal
-            battery_refusal = self._check_battery(plan.intent_id, snapshot, aircraft, aircraft.pose)
-            if battery_refusal is not None:
-                return battery_refusal
+            if plan.intent_name is not IntentName.DISARM:
+                battery_refusal = self._check_battery(
+                    plan.intent_id, snapshot, aircraft, aircraft.pose
+                )
+                if battery_refusal is not None:
+                    return battery_refusal
         return None
 
     def check_command(
@@ -832,6 +838,7 @@ class SafetyArbiter:
         *,
         completed_command_ids: frozenset[str] = frozenset(),
         required_hold_targets: tuple[int, ...] | None = None,
+        geometry_snapshot: FleetSnapshot | None = None,
     ) -> Refusal | None:
         """Validate immutable plan identity, operation, safety, and target structure.
 
@@ -882,7 +889,7 @@ class SafetyArbiter:
             IntentName.ALTITUDE: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
             IntentName.FORMATION_NEXT: frozenset({CommandOperation.GOTO}),
             IntentName.FORMATION_SET: frozenset({CommandOperation.GOTO}),
-            IntentName.SPACING: frozenset(),
+            IntentName.SPACING: frozenset({CommandOperation.GOTO}),
             IntentName.SWEEP: frozenset({CommandOperation.GOTO}),
             IntentName.HOLD: frozenset({CommandOperation.HOVER}),
             IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
@@ -901,7 +908,9 @@ class SafetyArbiter:
                 reason=RefusalReason.INVALID_PLAN,
                 detail="plan intent has no supported command shape",
             )
-        deterministic_shape = self._check_deterministic_plan_shape(plan, snapshot)
+        deterministic_shape = self._check_deterministic_plan_shape(
+            plan, geometry_snapshot or snapshot
+        )
         if deterministic_shape is not None:
             return deterministic_shape
         if (
@@ -1091,6 +1100,7 @@ class SafetyArbiter:
             IntentName.TRANSLATE,
             IntentName.FORMATION_NEXT,
             IntentName.FORMATION_SET,
+            IntentName.SPACING,
             IntentName.COME_HOME,
             IntentName.LAND,
         }:
@@ -1127,12 +1137,14 @@ class SafetyArbiter:
                     snapshot,
                     "sweep command parameters are malformed",
                 )
-        if plan.intent_name is IntentName.SPACING and plan.commands:
-            return self._invalid_plan_refusal(
-                plan,
-                snapshot,
-                "spacing changes projection state without adapter commands",
-            )
+        if plan.intent_name in {
+            IntentName.FORMATION_NEXT,
+            IntentName.FORMATION_SET,
+            IntentName.SPACING,
+        }:
+            geometry_refusal = self._check_formation_geometry(plan, snapshot)
+            if geometry_refusal is not None:
+                return geometry_refusal
         if plan.intent_name is IntentName.CAPTURE_ROOM:
             return self._check_capture_plan_shape(plan, snapshot)
         return None
@@ -1164,6 +1176,7 @@ class SafetyArbiter:
             IntentName.ALTITUDE,
             IntentName.FORMATION_NEXT,
             IntentName.FORMATION_SET,
+            IntentName.SPACING,
             IntentName.COME_HOME,
             IntentName.SWEEP,
         }:
@@ -1302,6 +1315,67 @@ class SafetyArbiter:
                 snapshot,
                 "reconstruct_8 requires unique headings and consistent tolerances",
             )
+        return None
+
+    def _check_formation_geometry(
+        self,
+        plan: Plan,
+        snapshot: FleetSnapshot,
+    ) -> Refusal | None:
+        """Bind C2 motion to the canonical deterministic formation geometry."""
+        if plan.intent_name is IntentName.SPACING:
+            name = snapshot.formation
+            spacing = plan.spacing_update
+        else:
+            name = plan.formation_update
+            spacing = snapshot.spacing
+        if (
+            not isinstance(name, str)
+            or not isinstance(spacing, int | float)
+            or isinstance(spacing, bool)
+        ):
+            return self._invalid_plan_refusal(
+                plan, snapshot, "formation motion is missing its deterministic state binding"
+            )
+        if plan.intent_name is IntentName.FORMATION_NEXT and name != _next_formation(
+            snapshot.formation, len(plan.selection)
+        ):
+            return self._invalid_plan_refusal(
+                plan, snapshot, "formation_next does not match the deterministic sequence"
+            )
+        expected = _formation_targets(
+            name,
+            plan.selection,
+            snapshot,
+            float(spacing),
+            minimum_clearance=(
+                min(snapshot.spacing, float(spacing))
+                if plan.intent_name is IntentName.SPACING
+                else None
+            ),
+        )
+        if expected is None or len(expected) != len(plan.commands):
+            return self._invalid_plan_refusal(
+                plan, snapshot, "formation motion has no valid deterministic geometry"
+            )
+        for command, (drone_id, target) in zip(plan.commands, expected, strict=True):
+            if (
+                command.drone_id != drone_id
+                or command.operation is not CommandOperation.GOTO
+                or any(
+                    float(command.parameters[axis]) != expected_value
+                    for axis, expected_value in (
+                        ("x", target.x),
+                        ("y", target.y),
+                        ("z", target.z),
+                    )
+                )
+            ):
+                return self._invalid_plan_refusal(
+                    plan,
+                    snapshot,
+                    "formation commands do not match the deterministic assigned geometry",
+                )
         return None
 
     def _valid_capture_step(
@@ -1743,6 +1817,7 @@ class SafetyArbiter:
                 IntentName.ALTITUDE,
                 IntentName.FORMATION_NEXT,
                 IntentName.FORMATION_SET,
+                IntentName.SPACING,
                 IntentName.COME_HOME,
                 IntentName.SWEEP,
             }
@@ -2043,13 +2118,25 @@ class SafetyArbiter:
                 not other.airborne and other_id not in projected_positions
             ):
                 continue
+            telemetry_refusal = self._check_telemetry(
+                command.intent_id,
+                snapshot,
+                other,
+                require_position=True,
+                command=command,
+            )
+            if telemetry_refusal is not None:
+                return telemetry_refusal
             other_target = projected_positions.get(other_id, other.pose)
-            if target.distance_to(other_target) < self.config.min_spacing_m:
+            moving = projected_positions.get(
+                command.drone_id, snapshot.aircraft[command.drone_id].pose
+            )
+            if _distance_to_segment(other_target, moving, target) < self.config.min_spacing_m:
                 return self._command_refusal(
                     command,
                     snapshot,
                     RefusalReason.SPACING,
-                    f"planned target violates spacing from aircraft {other_id}",
+                    f"planned segment violates spacing from aircraft {other_id}",
                 )
         return None
 
@@ -2187,3 +2274,38 @@ def _finite_positive_range(value: object, upper: float) -> bool:
 
 def _nonempty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value)
+
+
+def _distance_to_segment(point: Position, start: Position, end: Position) -> float:
+    """Independent 3-D point-to-segment clearance calculation for arbitration."""
+    delta = (end.x - start.x, end.y - start.y, end.z - start.z)
+    length_squared = fsum(component * component for component in delta)
+    if not isfinite(length_squared) or length_squared <= 0:
+        return point.distance_to(start)
+    offset = (point.x - start.x, point.y - start.y, point.z - start.z)
+    fraction = max(
+        0.0,
+        min(
+            1.0,
+            fsum(component * direction for component, direction in zip(offset, delta, strict=True))
+            / length_squared,
+        ),
+    )
+    nearest = Position(
+        start.x + fraction * delta[0],
+        start.y + fraction * delta[1],
+        start.z + fraction * delta[2],
+    )
+    return sqrt(
+        max(
+            0.0,
+            fsum(
+                (actual - projected) ** 2
+                for actual, projected in zip(
+                    (point.x, point.y, point.z),
+                    (nearest.x, nearest.y, nearest.z),
+                    strict=True,
+                )
+            ),
+        )
+    )

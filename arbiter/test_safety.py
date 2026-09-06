@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import pytest
 
+from arbiter.safety import SafetyArbiter
 from planner.models import (
     Command,
     CommandOperation,
@@ -13,6 +14,7 @@ from planner.models import (
     Position,
     RefusalReason,
 )
+from planner.planner import DeterministicPlanner
 from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
@@ -20,7 +22,9 @@ from tests.autonomy_fixtures import (
     make_intent,
     make_snapshot,
     make_stack,
+    planning_config,
     replace_aircraft,
+    safety_config,
 )
 
 
@@ -404,6 +408,67 @@ def test_spacing_includes_unselected_ready_aircraft() -> None:
     assert result.refusal is not None
     assert result.refusal.reason is RefusalReason.SPACING
     assert flight.calls == []
+
+
+@pytest.mark.parametrize(("offset", "allowed"), [(0.8, True), (0.8 - 1e-9, False)])
+def test_spacing_checks_full_segment_at_exact_minimum_and_epsilon(
+    offset: float, allowed: bool
+) -> None:
+    snapshot = make_snapshot(2, selection=(1,))
+    snapshot = replace_aircraft(snapshot, 1, pose=Position(0.0, 0.0, 1.0))
+    snapshot = replace_aircraft(snapshot, 2, pose=Position(1.0, offset, 1.0))
+    plan = DeterministicPlanner(planning_config()).plan(
+        make_intent(
+            IntentName.TRANSLATE,
+            selection=(1,),
+            args={"dx": 4, "dy": 0},
+        ),
+        snapshot,
+    )
+    assert isinstance(plan, Plan)
+
+    refusal = SafetyArbiter(safety_config()).check_plan(plan, snapshot)
+
+    assert (refusal is None) is allowed
+    if refusal is not None:
+        assert refusal.reason is RefusalReason.SPACING
+        assert "segment" in refusal.detail
+
+
+def test_spacing_checks_freshness_of_every_stationary_participant() -> None:
+    snapshot = make_snapshot(2, selection=(1,))
+    snapshot = replace_aircraft(
+        snapshot,
+        2,
+        pose=Position(1.0, 2.0, 1.0),
+        link_last_seen_ms=snapshot.now_ms - 1_001,
+    )
+    plan = DeterministicPlanner(planning_config()).plan(
+        make_intent(
+            IntentName.TRANSLATE,
+            selection=(1,),
+            args={"dx": 1, "dy": 0},
+        ),
+        snapshot,
+    )
+    assert isinstance(plan, Plan)
+
+    refusal = SafetyArbiter(safety_config()).check_plan(plan, snapshot)
+
+    assert refusal is not None
+    assert refusal.reason is RefusalReason.LINK_STALE
+
+
+def test_landed_disarm_is_not_blocked_by_low_battery() -> None:
+    snapshot = make_snapshot(4, flight_state=FlightState.LANDED, armed=True)
+    for drone_id in snapshot.aircraft:
+        snapshot = replace_aircraft(snapshot, drone_id, battery=0.0)
+    plan = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(
+        make_intent(IntentName.DISARM, selection=()), snapshot
+    )
+    assert isinstance(plan, Plan)
+
+    assert SafetyArbiter(safety_config()).check_plan(plan, snapshot) is None
 
 
 def test_motion_battery_budget_includes_outbound_and_return_distance() -> None:

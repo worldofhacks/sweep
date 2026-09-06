@@ -12,7 +12,6 @@ import type {
   FormationName,
   IntentArgs,
   IntentArgsByName,
-  RelayAircraftState,
   SelectionRule,
 } from '../../relay/contract'
 import {
@@ -413,38 +412,34 @@ function normalizeFormationOffsets(raw: Array<[number, number]>): Array<[number,
 
 export interface FormationDot {
   id: string
-  droneId: DroneId
   left: string
   top: string
   slot: string
-  ready: boolean
 }
 
 /**
- * Dots for the selected aircraft at their slots. The plot is scale free, so an
- * unreported spacing still places the dots; only the metre labels need it.
+ * Anonymous shape slots. The relay does not project planner assignments, so this
+ * preview deliberately carries no aircraft identity. The plot is scale free; only
+ * the metre labels need reported spacing.
  */
 export function formationPlot(
-  aircraft: RelayAircraftState[],
+  count: number,
   name: string | null,
   spacing: number | null,
 ): FormationDot[] {
-  if (name === null || aircraft.length === 0) return []
-  const slots = formationSlots(name, aircraft.length, spacing ?? 1)
-  if (slots.length !== aircraft.length) return []
+  if (name === null || count === 0) return []
+  const slots = formationSlots(name, count, spacing ?? 1)
+  if (slots.length !== count) return []
   const span = Math.max(1.2, ...slots.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y)))) * 2.4
-  return aircraft.map((drone, i) => {
-    const [x, y] = slots[i]
+  return slots.map(([x, y], i) => {
     return {
-      id: formatDroneId(drone.drone_id),
-      droneId: drone.drone_id,
+      id: `Slot ${i + 1}`,
       left: `${50 + (x / span) * 100}%`,
       top: `${50 + (y / span) * 100}%`,
       slot:
         spacing === null
           ? `slot ${i + 1} · spacing unreported`
           : `slot ${i + 1} · ${x.toFixed(1)} m, ${y.toFixed(1)} m`,
-      ready: isReady(drone),
     }
   })
 }

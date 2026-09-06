@@ -398,7 +398,7 @@ class FleetSnapshot:
     now_ms: int
     formation: str = "none"
     spacing: float = 0.8
-    fleet_observation_complete: bool = True
+    fleet_observation_complete: bool = False
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.roster_version):
@@ -466,7 +466,7 @@ class FleetSnapshot:
         if not isinstance(selection_raw, Iterable) or isinstance(selection_raw, str | bytes):
             raise ValueError("selection must be an iterable of aircraft ids")
         selection = tuple(_parse_drone_id(value) for value in selection_raw)
-        fleet_observation_complete = raw.get("fleet_observation_complete", True)
+        fleet_observation_complete = raw.get("fleet_observation_complete", False)
         if not isinstance(fleet_observation_complete, bool):
             raise ValueError("fleet_observation_complete must be a boolean")
 
@@ -850,7 +850,7 @@ class RelaySnapshotEnrichment:
     operator_present: bool
     operator_last_seen_ms: int
     aircraft: Mapping[int, RelayAircraftSafetyEnrichment]
-    fleet_observation_complete: bool = True
+    fleet_observation_complete: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.operator_present, bool):
