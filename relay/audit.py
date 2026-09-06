@@ -187,9 +187,19 @@ class SessionAuditLog:
         *,
         after_sequence: int = 0,
         deadline: float | None = None,
+        max_records: int | None = None,
+        max_bytes: int | None = None,
     ) -> tuple[list[dict[str, object]], int]:
         if after_sequence < 0:
             raise ValueError("after_sequence must be non-negative")
+        if max_records is not None and (
+            not isinstance(max_records, int) or isinstance(max_records, bool) or max_records <= 0
+        ):
+            raise ValueError("max_records must be positive")
+        if max_bytes is not None and (
+            not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0
+        ):
+            raise ValueError("max_bytes must be positive")
         if deadline is None:
             deadline = monotonic() + LIVE_REPLAY_TIMEOUT_SECONDS
         remaining = deadline - monotonic()
@@ -209,7 +219,12 @@ class SessionAuditLog:
                     raise AuditLogError(
                         "session log replay is uncertain after an incomplete operation"
                     )
-            records = self._committed_records(parse=True)
+            records = self._committed_records(
+                parse=True,
+                max_records=max_records,
+                max_bytes=max_bytes,
+                deadline=deadline,
+            )
             return [record for record in records if record["seq"] > after_sequence], len(records)
         finally:
             self._lock.release()
@@ -746,7 +761,14 @@ class SessionAuditLog:
             if mirror is not None:
                 mirror.close()
 
-    def _committed_records(self, *, parse: bool) -> list[dict[str, object]]:
+    def _committed_records(
+        self,
+        *,
+        parse: bool,
+        max_records: int | None = None,
+        max_bytes: int | None = None,
+        deadline: float | None = None,
+    ) -> list[dict[str, object]]:
         """Verify every mirror line against its committed digest, parsing on request."""
         rows = self._database_rows()
         if not self.path.exists():
@@ -756,9 +778,20 @@ class SessionAuditLog:
         records: list[dict[str, object]] = []
         try:
             with open(self.path, "rb", buffering=_MIRROR_READ_BUFFER) as stream:
+                if max_bytes is not None and os.fstat(stream.fileno()).st_size > max_bytes:
+                    raise AuditLogError("session log mirror exceeds the replay byte limit")
                 for line_number, row in enumerate(rows, start=1):
+                    if deadline is not None and monotonic() >= deadline:
+                        raise AuditLogError("session log replay exceeded the live replay deadline")
+                    if max_records is not None and line_number > max_records:
+                        raise AuditLogError("session log exceeds the replay record limit")
                     chunk = stream.read(row.length)
                     if len(chunk) != row.length or hashlib.sha256(chunk).digest() != row.digest:
+                        if max_bytes is not None:
+                            raise AuditLogError(
+                                f"cannot replay {self.path.name}: "
+                                "mirror differs from committed audit"
+                            )
                         self._fail_divergent_mirror()
                     if not parse:
                         continue
@@ -769,7 +802,15 @@ class SessionAuditLog:
                     _validate_record(record, line_number, self.session, line_number)
                     records.append(record)
                 if stream.read(1):
+                    if max_bytes is not None:
+                        if os.fstat(stream.fileno()).st_size > max_bytes:
+                            raise AuditLogError("session log mirror exceeds the replay byte limit")
+                        raise AuditLogError(
+                            f"cannot replay {self.path.name}: mirror differs from committed audit"
+                        )
                     self._fail_divergent_mirror()
+                if deadline is not None and monotonic() >= deadline:
+                    raise AuditLogError("session log replay exceeded the live replay deadline")
         except OSError as error:
             raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
         return records

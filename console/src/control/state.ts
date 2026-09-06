@@ -371,6 +371,33 @@ function reduceRelayEvent(
       // client-side source of aircraft truth here.
       return stateWithEvent
     case 'safety_action':
+      if (event.reason === 'operator_presence_expired') {
+        const targetLabel =
+          event.targets.length === 0
+            ? 'No active aircraft required an action.'
+            : `Targets: ${event.targets.map((target) => `D-${String(target.drone_id).padStart(2, '0')}`).join(', ')}.`
+        const presentation = {
+          requested: ['danger', 'Operator presence expired', `Requested fleet ${event.action}.`] as const,
+          retrying: ['danger', 'Retrying presence safety action', `Retrying fleet ${event.action}.`] as const,
+          awaiting: ['danger', 'Awaiting presence safety confirmation', `Fleet ${event.action} is not yet confirmed.`] as const,
+          confirmed: ['warning', 'Presence safety action confirmed', `Fleet ${event.action} completed.`] as const,
+          failed: ['danger', 'Presence safety action failed', `Fleet ${event.action} will be retried.`] as const,
+          not_required: ['warning', 'Operator presence expired while idle', 'No emergency state was latched.'] as const,
+        }[event.status]
+        return {
+          ...stateWithEvent,
+          notices: prependNotice(
+            stateWithEvent.notices,
+            makeNotice(
+              `operator-presence-safety-${event.event_id}`,
+              presentation[0],
+              presentation[1],
+              `${presentation[2]} ${targetLabel}`,
+              event.t,
+            ),
+          ),
+        }
+      }
       return {
         ...stateWithEvent,
         notices: prependNotice(

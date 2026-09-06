@@ -208,6 +208,42 @@ def test_control_heartbeat_cadence_stays_inside_a_short_hold_window(
     asyncio.run(exercise())
 
 
+def test_control_heartbeat_gate_suppresses_the_node_lease(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+) -> None:
+    class GatedSink:
+        capability_profile = C1_CAPABILITY_PROFILE
+
+        def __call__(self, _intent, _state) -> None:
+            return None
+
+        def control_heartbeats_allowed(self) -> bool:
+            return False
+
+    async def exercise() -> None:
+        gate = GatedSink()
+        runtime = RelayRuntime(
+            app_settings,
+            clock=clock,
+            event_ids=event_ids,
+            intent_sink_factory=lambda _session: gate,
+        )
+        session = runtime.session(SESSION)
+        adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        subscription = await runtime.subscribe(SESSION, adapter)
+        session.process_membership(
+            membership_payload(action="join", event_id="gated-heartbeat-join"), adapter
+        )
+
+        await runtime._publish_control_heartbeats(SESSION, session)
+
+        assert subscription.queue.empty()
+
+    asyncio.run(exercise())
+
+
 def test_first_frame_authentication_precedes_state_and_intent_results(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:
