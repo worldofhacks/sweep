@@ -19,6 +19,7 @@ from planner.controller import AutonomyController
 from planner.models import (
     Command,
     CommandOperation,
+    FleetSnapshot,
     LifecycleStatus,
     Plan,
     RefusalReason,
@@ -60,6 +61,7 @@ class ScriptedLink:
         self._capabilities = dict(capabilities or {})
         self._media = dict(media or {})
         self.sent: list[CommandRequest] = []
+        self.navigation_authorizations: list[tuple[Plan, Command, FleetSnapshot]] = []
         self._pending: dict[str, deque[WireAcknowledgement]] = {}
         self._clock = 100_000
 
@@ -90,6 +92,11 @@ class ScriptedLink:
                 )
             )
         self._pending[request.command_id] = acknowledgements
+
+    def authorize_navigation(
+        self, plan: Plan, command: Command, snapshot: FleetSnapshot
+    ) -> None:
+        self.navigation_authorizations.append((plan, command, snapshot))
 
     def await_acknowledgement(
         self, command_id: str, *, timeout_ms: int
@@ -211,6 +218,33 @@ def test_hover_returns_the_latest_acknowledgement_until_a_terminal_one(
     )
     assert validated.status is expected
     assert validated.reason is None
+
+
+def test_authorized_navigation_goto_keeps_the_route_identity_on_the_wire() -> None:
+    from planner.test_navigation_runtime import _intent, _runtime, _snapshot
+
+    snapshot = _snapshot()
+    runtime = _runtime()
+    runtime.require_phone_authorization = True
+    plan = runtime.prepare(_intent(), snapshot)
+    assert isinstance(plan, Plan)
+    command = next(item for item in plan.commands if item.operation is CommandOperation.GOTO)
+    link = ScriptedLink(epochs={1: 1})
+    adapter = _adapter(link)
+
+    adapter.authorize_navigation(plan, command, snapshot)
+    with adapter.for_commands(plan.intent_id, plan.roster_version, plan.commands):
+        adapter.goto(
+            command.drone_id,
+            float(command.parameters["x"]),
+            float(command.parameters["y"]),
+            float(command.parameters["z"]),
+            float(command.parameters["speed"]),
+        )
+
+    assert link.navigation_authorizations == [(plan, command, snapshot)]
+    assert link.sent[0].command_id == command.command_id
+    assert link.sent[0].args["navigation_route_id"] == plan.intent_id
 
 
 def test_failed_acknowledgement_carries_the_node_reason_into_detail() -> None:
