@@ -668,3 +668,13 @@ def test_relay_snapshot_marks_a_requested_stop_before_the_relay_latches_it(
     assert plain.estop_active is False
     assert stopped.estop_active is True
     assert stopped.aircraft == plain.aircraft
+
+
+@pytest.mark.parametrize("field", ["max_fix_age_ms", "measured"])
+def test_localization_config_rejects_duplicate_fields(field: str) -> None:
+    raw = json.dumps(_localization_config())
+    marker = f'"{field}":'
+    assert marker in raw
+    raw = raw.replace(marker, f'"{field}": null, {marker}', 1)
+    with pytest.raises(SettingsError, match="unique fields"):
+        AutonomyConfig.from_env(_env_example() | {"SWEEP_CONTROL_LOCALIZATION_JSON": raw})

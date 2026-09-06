@@ -119,14 +119,7 @@ class AutonomyConfig:
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
-        """Read planner, safety, optional sim camera, and optional localization configuration.
-
-        Each value is one JSON object whose keys are exactly the config's fields; the
-        config's own validation then rejects values that could disable a gate. The sim
-        camera is optional here and required by ``create_autonomy_app`` on ``sim``. Localization
-        needs every host-owned pin and measured bound, so it stays unavailable when its JSON is
-        absent.
-        """
+        """Load exact deployment contracts; optional localization requires measured pins and bounds."""
         values = os.environ if environ is None else environ
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
         localization_raw = values.get("SWEEP_CONTROL_LOCALIZATION_JSON", "")
@@ -1055,10 +1048,18 @@ def _build_config[T](cls: type[T], value: object, name: str) -> T:
 
 
 def _localization_projector_from_json(raw: str, name: str) -> ControlLocalizationProjector:
+    def unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate localization field")
+            result[key] = value
+        return result
+
     try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        raise SettingsError(f"{name} must be valid JSON") from None
+        value = json.loads(raw, object_pairs_hook=unique_fields)
+    except ValueError:
+        raise SettingsError(f"{name} must be valid JSON with unique fields") from None
     expected = {
         "relay_clock_id",
         "max_clock_error_ms",
