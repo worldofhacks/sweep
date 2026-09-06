@@ -584,3 +584,31 @@ def test_the_grid_is_built_from_the_frame_the_relay_retained() -> None:
     assert grid.value_at(0.0, 1.0) > 0
     assert grid.value_at(1.0, 0.0) == 0
     assert grid.value_at(0.0, 0.5) < 0
+
+
+def test_map_placement_headers_are_readable_by_the_console_origin(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    app = _app(tmp_path, clock, event_ids, SessionMapper(clock=clock))
+    with TestClient(app) as client:
+        session = app.state.relay_runtime.session(SESSION)
+        _join(session, clock)
+        _scan(session, clock)
+        response = client.get(
+            f"/api/sessions/{SESSION}/map",
+            headers={**BEARER, "Origin": "http://localhost:5173"},
+        )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    exposed = {
+        value.strip().lower()
+        for value in response.headers["access-control-expose-headers"].split(",")
+    }
+    assert {
+        "x-sweep-map-resolution-m",
+        "x-sweep-map-origin-x",
+        "x-sweep-map-origin-y",
+        "x-sweep-map-width",
+        "x-sweep-map-height",
+        "x-sweep-map-updated-at",
+    } <= exposed

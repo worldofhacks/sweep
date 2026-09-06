@@ -58,14 +58,15 @@ class RejectedIntent:
 type ValidationResult = AcceptedIntent | RejectedIntent
 
 # Intent v1 addresses the current four-aircraft physical fleet and the documented
-# four-to-six-aircraft simulator. Identifiers remain comfortably within the audit
+# four-to-six-aircraft simulator plus four ground vehicles. Identifiers remain
+# comfortably within the audit
 # reserve even under Unicode JSON escaping; timestamps and aircraft IDs match the
 # signed 64-bit epoch and Android Int domains used by the transport peers.
 MAX_INTENT_IDENTIFIER_CHARS = 128
 MAX_INTENT_SESSION_CHARS = 512
 MAX_INTENT_SOURCE_CHARS = 64
 MAX_INTENT_NAME_CHARS = 64
-MAX_INTENT_DRONE_IDS = 6
+MAX_INTENT_DRONE_IDS = 10
 MAX_INTENT_DRONE_ID = (1 << 31) - 1
 MAX_INTENT_TIMESTAMP = (1 << 63) - 1
 FORMATION_NAMES = ("line", "column", "wedge", "diamond")
@@ -77,7 +78,7 @@ FORMATION_NAMES = ("line", "column", "wedge", "diamond")
 REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam", "language"})
 # Intent v1 names each registered source may emit. The console owns every implemented
 # name; the keyboard socket carries only the Shift+Escape network stop; the
-# webcam gesture producer drafts only the two names its gesture policy may emit
+# webcam gesture producer drafts only the names its gesture policy may emit
 # (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES), so the console's
 # never-gesture-emittable list is enforced by the relay as well. A name outside
 # its source's set is refused with `source_not_allowed` only after the effective
@@ -87,7 +88,14 @@ SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
     {
         "console": IMPLEMENTED_INTENT_NAMES,
         "keyboard": frozenset({IntentName.ESTOP}),
-        "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
+        "webcam": frozenset(
+            {
+                IntentName.CAPTURE_ROOM,
+                IntentName.HOLD,
+                IntentName.TRANSLATE,
+                IntentName.FORMATION_NEXT,
+            }
+        ),
         # This is only the schema ceiling. RelaySession additionally requires a
         # one-shot audited compiler-plan binding for every language intent.
         "language": C1_IMPLEMENTED_INTENT_NAMES,

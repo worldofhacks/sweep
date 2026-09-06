@@ -151,7 +151,7 @@ def test_translate_keeps_the_flight_speed_and_height_for_an_aircraft() -> None:
     assert speeds[11] == (config.drive_speed_m_s, 0.0)
 
 
-def test_aircraft_relative_translation_uses_the_ground_vehicle_heading() -> None:
+def test_ground_translation_uses_room_axes_even_with_aircraft_relative_configuration() -> None:
     snapshot = make_mixed_snapshot(aircraft_ids=(), ground_ids=(11,))
     snapshot = replace_aircraft(snapshot, 11, heading_deg=90.0)
     planner = _planner(translation_frame="aircraft_relative")
@@ -162,8 +162,8 @@ def test_aircraft_relative_translation_uses_the_ground_vehicle_heading() -> None
 
     assert isinstance(result, Plan)
     (command,) = result.commands
-    assert command.parameters["x"] == pytest.approx(0.0, abs=1e-9)
-    assert command.parameters["y"] == pytest.approx(6.5)
+    assert command.parameters["x"] == pytest.approx(0.5)
+    assert command.parameters["y"] == pytest.approx(6.0)
     assert command.parameters["z"] == 0.0
 
 

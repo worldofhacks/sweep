@@ -28,7 +28,7 @@ from planner.models import (
     TranslationPolicy,
 )
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
-from relay.intent_v1 import FORMATION_NAMES, MAX_INTENT_DRONE_IDS, IntentName, IntentV1
+from relay.intent_v1 import FORMATION_NAMES, IntentName, IntentV1
 
 FORMATION_SPACING_CLEARANCE_FACTOR = 1.01
 
@@ -74,6 +74,8 @@ GROUND_VEHICLE_OPERATIONS = frozenset(
 )
 """The adapter operations a ground node accepts; this issue adds no new operation."""
 _GROUND_FLOOR_Z_M = 0.0
+# Assignment search stays bounded per class even when the mixed selection is larger.
+MAX_FORMATION_CLASS_SIZE = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,7 +312,12 @@ class DeterministicPlanner:
                 )
             displacements: dict[int, tuple[float, float]] = {}
             for drone_id in selected:
-                if translation_frame == "world":
+                # Telemetry v1 has no heading. Ground controls use room axes without
+                # changing aircraft-relative semantics or the Android wire contract.
+                if (
+                    translation_frame == "world"
+                    or snapshot.aircraft[drone_id].device_class is DeviceClass.GROUND_VEHICLE
+                ):
                     displacements[drone_id] = (dx, dy)
                 else:
                     heading = snapshot.aircraft[drone_id].heading_deg
@@ -907,7 +914,7 @@ def _class_formation_targets(
         )
     if (
         name not in FORMATION_NAMES
-        or not 2 <= count <= MAX_INTENT_DRONE_IDS
+        or not 2 <= count <= MAX_FORMATION_CLASS_SIZE
         or (name in {"wedge", "diamond"} and count < 4)
     ):
         return None
@@ -940,9 +947,9 @@ def _formation_offsets(name: str, count: int) -> tuple[tuple[float, float], ...]
         raw = tuple((index - (count - 1) / 2, 0.0) for index in range(count))
     elif name == "column":
         raw = tuple((0.0, index - (count - 1) / 2) for index in range(count))
-    elif name == "wedge" and 4 <= count <= MAX_INTENT_DRONE_IDS:
+    elif name == "wedge" and 4 <= count <= MAX_FORMATION_CLASS_SIZE:
         raw = _wedge_offsets(count)
-    elif name == "diamond" and 4 <= count <= MAX_INTENT_DRONE_IDS:
+    elif name == "diamond" and 4 <= count <= MAX_FORMATION_CLASS_SIZE:
         raw = tuple(_diamond_perimeter(4 * index / count) for index in range(count))
     else:
         return None
@@ -1002,7 +1009,7 @@ def _minimum_cost_formation_assignment(
     without nesting a second factorial search for command order.
     """
     drone_ids = tuple(sorted(selected))
-    if len(drone_ids) != len(targets) or not 1 <= len(drone_ids) <= MAX_INTENT_DRONE_IDS:
+    if len(drone_ids) != len(targets) or not 1 <= len(drone_ids) <= MAX_FORMATION_CLASS_SIZE:
         return None
     costs = tuple(
         tuple(snapshot.aircraft[drone_id].pose.distance_to(target) for target in targets)
@@ -1197,7 +1204,7 @@ def _sequential_formation_order(
     }
     by_drone = dict(assignments)
     drone_ids = tuple(sorted(by_drone))
-    if not 1 <= len(drone_ids) <= MAX_INTENT_DRONE_IDS:
+    if not 1 <= len(drone_ids) <= MAX_FORMATION_CLASS_SIZE:
         return None
     dead_ends: set[frozenset[int]] = set()
 

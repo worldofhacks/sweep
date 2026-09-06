@@ -413,7 +413,8 @@ def test_capacity_is_enforced_per_class_and_the_audit_bound_is_the_sum() -> None
     ]
     projection = _material_state_projection(state)
     assert '"device_class":"ground_vehicle"' in projection and '"unit":4' in projection
-    state["drones"].append(dict(state["drones"][0]))
+    # C2 retains six simulated aircraft in addition to four ground vehicles.
+    state["drones"].extend(dict(state["drones"][0]) for _ in range(3))
     with pytest.raises(AuditLogError, match="bounded device list"):
         _material_state_projection(state)
 

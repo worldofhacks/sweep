@@ -985,6 +985,14 @@ def create_app(
             settings.console_origins if settings is not None else console_origins_from_env()
         ),
         allow_methods=["GET", "POST"],
+        expose_headers=[
+            "X-Sweep-Map-Resolution-M",
+            "X-Sweep-Map-Origin-X",
+            "X-Sweep-Map-Origin-Y",
+            "X-Sweep-Map-Width",
+            "X-Sweep-Map-Height",
+            "X-Sweep-Map-Updated-At",
+        ],
         allow_headers=[
             "Authorization",
             "Content-Type",

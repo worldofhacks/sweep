@@ -799,7 +799,12 @@ def test_source_allowlist_covers_every_registered_source() -> None:
     assert all(names <= IMPLEMENTED_INTENT_NAMES for names in SOURCE_ALLOWED_NAMES.values())
     assert SOURCE_ALLOWED_NAMES["console"] is IMPLEMENTED_INTENT_NAMES
     assert SOURCE_ALLOWED_NAMES["keyboard"] == {IntentName.ESTOP}
-    assert SOURCE_ALLOWED_NAMES["webcam"] == {IntentName.CAPTURE_ROOM, IntentName.HOLD}
+    assert SOURCE_ALLOWED_NAMES["webcam"] == {
+        IntentName.CAPTURE_ROOM,
+        IntentName.HOLD,
+        IntentName.TRANSLATE,
+        IntentName.FORMATION_NEXT,
+    }
 
 
 @pytest.mark.parametrize("name", sorted(C1_IMPLEMENTED_INTENT_NAMES))
@@ -828,7 +833,10 @@ def test_keyboard_may_only_emit_the_network_stop(name: IntentName) -> None:
     assert result.detail == f"{name.value} is not allowed from source keyboard"
 
 
-@pytest.mark.parametrize("name", [IntentName.HOLD, IntentName.CAPTURE_ROOM])
+@pytest.mark.parametrize(
+    "name",
+    [IntentName.HOLD, IntentName.CAPTURE_ROOM, IntentName.TRANSLATE, IntentName.FORMATION_NEXT],
+)
 def test_webcam_gesture_names_pass_validation(name: IntentName) -> None:
     result = validate_intent(_c1_payload("webcam", name))
 
@@ -839,7 +847,15 @@ def test_webcam_gesture_names_pass_validation(name: IntentName) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    sorted(C1_IMPLEMENTED_INTENT_NAMES - {IntentName.HOLD, IntentName.CAPTURE_ROOM}),
+    sorted(
+        C1_IMPLEMENTED_INTENT_NAMES
+        - {
+            IntentName.HOLD,
+            IntentName.CAPTURE_ROOM,
+            IntentName.TRANSLATE,
+            IntentName.FORMATION_NEXT,
+        }
+    ),
 )
 def test_webcam_never_gesture_emittable_names_are_refused(name: IntentName) -> None:
     result = validate_intent(_c1_payload("webcam", name))
