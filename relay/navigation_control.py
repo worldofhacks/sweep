@@ -178,8 +178,7 @@ class NavigationControl:
         with self._lock:
             active_routes = tuple(self._active.items())
         observations = [
-            (drone_id, active, session.control_pose(drone_id))
-            for drone_id, active in active_routes
+            (drone_id, active, session.control_pose(drone_id)) for drone_id, active in active_routes
         ]
         registry = getattr(session, "registry", None)
         with self._lock:
@@ -188,9 +187,7 @@ class NavigationControl:
                 if self._active.get(drone_id) != active:
                     continue
                 active_identity = (
-                    None
-                    if registry is None
-                    else registry.active_connection_identity(drone_id)
+                    None if registry is None else registry.active_connection_identity(drone_id)
                 )
                 if registry is not None and (
                     active_identity is None or active_identity[0] != active.connection_epoch

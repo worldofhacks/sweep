@@ -239,7 +239,7 @@ _NAVIGATION_COVARIANCE = (
 )
 
 
-def test_explicit_navigation_gate_delivers_authorization_and_pose_before_goto(
+def test_authorized_route_receives_initial_and_updated_poses_until_localization_expires(
     control_relay: ControlRelay,
 ) -> None:
     from adapters.dji_mini3.remote import CommandRequest
@@ -262,6 +262,7 @@ def test_explicit_navigation_gate_delivers_authorization_and_pose_before_goto(
             )
         )
         approved = control.approved_snapshot(current, control_relay.session)
+        control_relay.composition.session(SESSION).navigation_control = control
         link = RelayNodeLink(
             control_relay.runtime,
             SESSION,
@@ -295,6 +296,32 @@ def test_explicit_navigation_gate_delivers_authorization_and_pose_before_goto(
         authorization = _receive_until(adapter, "navigation_route_authorization")
         initial_pose = _receive_until(adapter, "navigation_pose")
         goto = _receive_until(adapter, "command")
+        control_relay.clock.advance(100)
+        _publish_localization(
+            control_relay,
+            event_id="producer-pose-2",
+            evaluated_at_s=1.1,
+            position_map_enu_m=(2.01, 3.0, 1.0),
+            covariance_map_enu_m2=((0.0001, 0.0, 0.0), (0.0, 0.0001, 0.0), (0.0, 0.0, 0.0001)),
+        )
+        for _ in range(20):
+            updated_pose = _receive_until(adapter, "navigation_pose")
+            if updated_pose["pose_time_ms"] > initial_pose["pose_time_ms"]:
+                break
+        else:
+            raise AssertionError("the active route did not receive the new measured pose")
+        unsigned = {key: value for key, value in updated_pose.items() if key != "signature"}
+        assert verify_event_signature(unsigned, updated_pose["signature"], ADAPTER_KEY)
+        assert updated_pose["seq"] > initial_pose["seq"]
+        assert updated_pose["command_id"] == command.command_id
+        assert updated_pose["x_mm"] == 2010
+        assert control_relay.session.control_pose(1).flight_approved is False
+        control_relay.clock.advance(1_000)
+        events = control_relay.runtime.periodic_events(control_relay.session)
+        assert not any(
+            event.get("type") == "navigation_pose" and event.get("status") == "ready"
+            for event in events
+        )
 
     assert authorization["flight_approved"] is True
     assert initial_pose["flight_approved"] is True
@@ -338,3 +365,32 @@ def test_navigation_authorization_delivery_failure_blocks_the_goto(
     with pytest.raises(AdapterError, match="authorization could not be delivered"):
         asyncio.run(asyncio.to_thread(link.authorize_navigation, prepared.plan, command, approved))
     assert control_relay.session.metrics()["commands_issued"] == 0
+
+
+@pytest.mark.parametrize("event_type", ["navigation_pose", "navigation_route_authorization"])
+def test_navigation_packets_reach_only_the_authorized_aircraft(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds, event_type: str
+) -> None:
+    runtime = RelayRuntime(
+        RelaySettings(relay_token=CONSOLE_KEY, adapter_keys={1: ADAPTER_KEY}, log_dir=tmp_path),
+        clock=clock,
+        event_ids=event_ids,
+    )
+    runtime.session(SESSION)
+
+    async def exercise() -> None:
+        recipients = [
+            await runtime.subscribe(SESSION, principal)
+            for principal in (
+                Principal("adapter", 1, ADAPTER_KEY),
+                Principal("adapter", 2, b"other-aircraft-credential-32bytes"),
+                Principal("console", signing_key=CONSOLE_KEY),
+                Principal("localization", 1, LOCALIZATION_KEY),
+            )
+        ]
+        packet = {"type": event_type, "drone_id": 1, "event_id": "route-packet"}
+        await runtime.publish(SESSION, [packet])
+        assert recipients[0].queue.get_nowait().event == packet
+        assert all(recipient.queue.empty() for recipient in recipients[1:])
+
+    asyncio.run(exercise())

@@ -12,6 +12,8 @@ The deployment uses these configuration files and identities:
 | `SWEEP_NAVIGATION_CONFIG` | Pins the map, geometry, motion limits, zones, arrival slots, and deployment evidence. |
 | `SWEEP_CONTROL_LOCALIZATION_CONFIG` | Pins each aircraft's measured sources, capture-clock mapping, and freshness limits. Required for remote mapped motion. |
 | `SWEEP_MISSION_CONFIG` | Enables configured formations and search areas, with camera geometry and permissions. |
+| `SWEEP_ENABLE_LOCALIZED_NAVIGATION` | Explicitly enables approved remote route control when set to `true`. |
+| `SWEEP_PERCEPTION_KEY` | Authenticates the signed detection publisher; use a credential distinct from the relay and aircraft keys. |
 | `SWEEP_LOCALIZATION_KEYS_JSON` | Gives each localization publisher its own aircraft credential. |
 | `SWEEP_DETECTION_CAMERA_IDS_JSON` | Binds each detection producer to its physical camera identity. |
 | `ANTHROPIC_API_KEY` | Enables grounded text compilation. |
@@ -32,7 +34,9 @@ and bounds while disconnected and landed before connecting to the relay.
 
 Start the detection producer with
 `uv run python -m perception.detection_publisher --config detector.json` for the
-active mission identity. Search counts coverage only after a processed frame
+active mission identity. Set its `mission_id` to the search preview allocation's
+`task_id` with the final `:<drone_id>` removed; that value binds the mission version
+and epoch. Search counts coverage only after a processed frame
 passes capture timing, localization, camera identity, camera height, and mission
 checks. Arriving at the end of a route without eligible frames leaves search
 incomplete. A sighting must belong to an accepted processed frame and match the
