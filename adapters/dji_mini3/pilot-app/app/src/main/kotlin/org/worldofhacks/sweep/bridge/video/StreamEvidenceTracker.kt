@@ -4,6 +4,7 @@ import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,6 +33,7 @@ class StreamEvidenceTracker(
     private val clock: Clock = SystemClock,
     private val publishIntervalMs: Long = PUBLISH_INTERVAL_MS,
     private val logIntervalMs: Long = LOG_INTERVAL_MS,
+    private val receivedAtMonotonicMs: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     private val monitor = StreamMonitor()
     private val worker = Executors.newSingleThreadExecutor { runnable ->
@@ -56,6 +58,7 @@ class StreamEvidenceTracker(
     private var writer: BufferedWriter? = null
     private var recorder: BenchRecorder? = null
     private var lastLogAt = 0L
+    private val frameSequence = AtomicLong()
 
     fun frame(frame: StreamFrame, data: ByteArray?, offset: Int, length: Int) {
         val now = clock.nowMs()
@@ -67,7 +70,9 @@ class StreamEvidenceTracker(
         }
         val sizeBytes = frame.sizeBytes
         val keyframe = frame.keyFrame
-        worker.execute { record(sizeBytes, keyframe, changed) }
+        val sequence = frameSequence.incrementAndGet()
+        val receipt = receivedAtMonotonicMs()
+        worker.execute { record(sizeBytes, keyframe, changed, sequence, frame.presentationTimeMs, receipt) }
     }
 
     /** Opens a fresh log; called when a Surface attaches. */
@@ -94,9 +99,22 @@ class StreamEvidenceTracker(
         _evidence.value = null
     }
 
-    private fun record(sizeBytes: Int, keyframe: Boolean, changed: Boolean) {
+    private fun record(
+        sizeBytes: Int,
+        keyframe: Boolean,
+        changed: Boolean,
+        sequence: Long,
+        presentationTimeMs: Long,
+        receiptAtMs: Long,
+    ) {
         val recorder = recorder ?: return
-        recorder.videoFrame(sizeBytes = sizeBytes, keyframe = keyframe)
+        recorder.videoFrame(
+            sizeBytes = sizeBytes,
+            keyframe = keyframe,
+            frameSequence = sequence,
+            sdkPresentationTimeMs = presentationTimeMs,
+            receivedAtAndroidElapsedRealtimeMs = receiptAtMs,
+        )
         val now = clock.nowMs()
         if (changed || now - lastLogAt >= logIntervalMs) {
             lastLogAt = now
