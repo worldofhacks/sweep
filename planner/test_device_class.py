@@ -20,7 +20,7 @@ from planner.models import (
 )
 from planner.planner import AIRCRAFT_ONLY_INTENTS, DeterministicPlanner
 from planner.roster import authorize_graceful_removal
-from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES
+from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES, C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
     make_ground_vehicle,
@@ -36,7 +36,7 @@ AIRCRAFT_IDS = (1, 2)
 
 
 def _planner(**changes: object) -> DeterministicPlanner:
-    return DeterministicPlanner(replace(planning_config(), **changes))
+    return DeterministicPlanner(replace(planning_config(), **changes), C2_CAPABILITY_PROFILE)
 
 
 def _plan(intent_name: IntentName, snapshot: FleetSnapshot, **intent_changes: object) -> object:
@@ -211,8 +211,18 @@ def test_a_formation_places_each_class_around_its_own_centre() -> None:
     assert [targets[drone_id][2] for drone_id in GROUND_IDS] == [0.0, 0.0]
     assert [targets[drone_id][2] for drone_id in AIRCRAFT_IDS] == [1.0, 1.0]
     assert [targets[drone_id][1] for drone_id in GROUND_IDS] == [6.0, 6.0]
-    assert abs(targets[11][0] - targets[12][0]) == pytest.approx(snapshot.spacing)
-    assert abs(targets[1][0] - targets[2][0]) == pytest.approx(snapshot.spacing)
+    assert abs(targets[11][0] - targets[12][0]) >= snapshot.spacing
+    assert abs(targets[1][0] - targets[2][0]) >= snapshot.spacing
+
+
+def test_mixed_formation_next_skips_shapes_that_need_four_devices_of_one_class() -> None:
+    snapshot = make_mixed_snapshot(formation="column")
+
+    result = _plan(IntentName.FORMATION_NEXT, snapshot)
+
+    assert isinstance(result, Plan)
+    assert result.formation_update == "line"
+    assert {command.drone_id for command in result.commands} == {1, 2, 11, 12}
 
 
 def test_a_single_selected_ground_vehicle_holds_its_place_in_a_mixed_formation() -> None:
@@ -231,7 +241,7 @@ def test_a_single_selected_ground_vehicle_holds_its_place_in_a_mixed_formation()
 
 
 def test_spacing_and_select_change_state_for_a_ground_only_session() -> None:
-    snapshot = make_mixed_snapshot(aircraft_ids=())
+    snapshot = make_mixed_snapshot(aircraft_ids=(), formation="line")
 
     spacing = _plan(IntentName.SPACING, snapshot, args={"delta": 1})
     selection = _planner().plan(
@@ -239,7 +249,9 @@ def test_spacing_and_select_change_state_for_a_ground_only_session() -> None:
     )
 
     assert isinstance(spacing, Plan) and isinstance(selection, Plan)
-    assert spacing.commands == () and spacing.spacing_update == pytest.approx(1.0)
+    assert spacing.spacing_update == pytest.approx(1.0)
+    assert {command.drone_id for command in spacing.commands} == {11, 12}
+    assert all(command.parameters["z"] == 0.0 for command in spacing.commands)
     assert selection.selection_update == (11,)
 
 

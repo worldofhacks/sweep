@@ -194,6 +194,7 @@ def make_mixed_snapshot(
         roster_version=roster_version,
         aircraft=devices,
         selection=selection if selection is not None else tuple(sorted(devices)),
+        fleet_observation_complete=True,
         armed=armed,
         estop_active=False,
         operator_present=True,
