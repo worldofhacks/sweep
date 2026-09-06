@@ -16,6 +16,7 @@ from typing import Literal, Protocol
 import av
 import httpx
 
+from relay.language_runtime import LanguageCompilationOutcome
 from relay.voice_telemetry import VoiceTraceSink, get_default_voice_trace_sink
 
 WHISPER_MODEL = "whisper-1"
@@ -190,6 +191,7 @@ class VoiceOutcome:
     source: Literal["whisper", "template"]
     reason: str | None
     transcript: str | None
+    compilation: LanguageCompilationOutcome | None = None
     emissions: tuple[()] = ()
 
     def to_dict(self, *, session_id: str, correlation_id: str) -> dict[str, object]:
@@ -202,6 +204,7 @@ class VoiceOutcome:
             "source": self.source,
             "reason": self.reason,
             "transcript": self.transcript,
+            "compilation": None if self.compilation is None else self.compilation.to_dict(),
             "emissions": [],
         }
 
@@ -310,8 +313,15 @@ class TranscriptService:
                 session_id=session_id,
                 cost_usd=cost_usd,
             )
+        compilation = compiler_result[0]
         return self._complete(
-            VoiceOutcome("transcribed", "whisper", None, transcript),
+            VoiceOutcome(
+                "transcribed",
+                "whisper",
+                None,
+                transcript,
+                compilation if isinstance(compilation, LanguageCompilationOutcome) else None,
+            ),
             correlation_id=correlation_id,
             session_id=session_id,
             cost_usd=cost_usd,

@@ -419,7 +419,7 @@ class AdapterDispatcher:
                 if plan.navigation is not None:
                     self._navigation_issued_at[command.command_id] = current.now_ms
                 with self._intent_scope(command.intent_id, command.roster_version, (command,)):
-                    outcome = self._execute(command, captures, provider)
+                    outcome = self._execute(plan, command, captures, provider)
             except AdapterTimeout as error:
                 failure = self._failure_for(
                     command,
@@ -1296,11 +1296,22 @@ class AdapterDispatcher:
 
     def _execute(
         self,
+        plan: Plan,
         command: Command,
         captures: dict[str, CaptureResult],
         provider: SnapshotProvider,
     ) -> CommandOutcome:
         operation = command.operation
+        if operation is CommandOperation.GOTO and "navigation_route_id" in command.parameters:
+            authorize = getattr(self.flight, "authorize_navigation", None)
+            if not callable(authorize):
+                return self._command_refusal(
+                    command,
+                    provider(),
+                    RefusalReason.INVALID_PLAN,
+                    "mapped goto requires an approved phone navigation link",
+                )
+            authorize(plan, command, provider())
         if operation is CommandOperation.TAKEOFF:
             raw = self.flight.takeoff([command.drone_id], float(command.parameters["z"]))[0]
             return self.validate_acknowledgement(command, raw, provider())

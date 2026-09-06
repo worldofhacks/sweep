@@ -432,6 +432,7 @@ def test_transcript_endpoint_is_authenticated_session_bound_and_key_safe(tmp_pat
         "source": "whisper",
         "reason": None,
         "transcript": "hold the selected aircraft",
+        "compilation": None,
         "emissions": [],
     }
     assert CONSOLE_KEY.decode() not in accepted.text
@@ -1016,3 +1017,43 @@ def valid_relay_state() -> dict[str, object]:
         "mode": "indoor",
         "drones": [],
     }
+
+
+def test_transcript_service_preserves_injected_language_compilation_outcome() -> None:
+    from language.contracts import OutcomeKind
+    from relay.language_runtime import LanguageCompilationOutcome
+
+    compilation = LanguageCompilationOutcome(
+        kind=OutcomeKind.CLARIFY,
+        source="anthropic",
+        reason=None,
+        detail="which drone?",
+        pending_intent_id=None,
+        intents=(),
+        plan_digest=None,
+        expires_at_ms=None,
+        state_digest="facts-sha",
+    )
+
+    class Compiler:
+        def compile(self, *_args: object, **_kwargs: object) -> tuple[object, None]:
+            return compilation, None
+
+    outcome = TranscriptService(
+        transcription=FixedTranscriptionTransport(),
+        compiler=Compiler(),
+        duration_probe=fixed_audio_duration,
+    ).process(
+        session_id=SESSION,
+        correlation_id="voice-compilation-1",
+        content_type="audio/webm",
+        body=b"audio",
+        relay_state=valid_relay_state(),
+        now_ms=1_756_700_000_001,
+    )
+
+    assert outcome.compilation is compilation
+    assert (
+        outcome.to_dict(session_id=SESSION, correlation_id="voice-compilation-1")["compilation"]
+        == compilation.to_dict()
+    )

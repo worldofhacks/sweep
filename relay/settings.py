@@ -34,6 +34,7 @@ class RelaySettings:
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     allow_shared_adapter_token: bool = False
     localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
+    perception_key: bytes | None = field(default=None, repr=False)
     log_dir: Path = Path(".sweep/session-logs")
     intent_max_age_ms: int = 5_000
     transport_event_max_age_ms: int = 5_000
@@ -59,6 +60,8 @@ class RelaySettings:
                 raise SettingsError(
                     "localization IDs must be positive and keys at least 32 characters"
                 )
+        if self.perception_key is not None and len(self.perception_key) < 32:
+            raise SettingsError("SWEEP_PERCEPTION_KEY must contain at least 32 characters")
         if self.fanout_hz != 10:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
@@ -91,6 +94,7 @@ class RelaySettings:
         return cls(
             relay_token=token.encode(),
             adapter_keys=adapter_keys,
+            perception_key=values.get("SWEEP_PERCEPTION_KEY", "").encode() or None,
             localization_keys=_adapter_keys(values.get("SWEEP_LOCALIZATION_KEYS_JSON", "{}")),
             allow_shared_adapter_token=_boolean(
                 values.get("SWEEP_ALLOW_SHARED_ADAPTER_TOKEN", "false"),
@@ -144,6 +148,7 @@ class RelaySettings:
             adapter_keys=self.adapter_keys,
             allow_shared_adapter_token=self.allow_shared_adapter_token,
             localization_keys=self.localization_keys,
+            perception_key=self.perception_key,
         )
 
     def limits(self) -> RelayLimits:

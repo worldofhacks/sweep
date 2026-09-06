@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from concurrent.futures import TimeoutError as DeliveryTimeout
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink, RemoteBridgeAdapter
@@ -17,6 +18,10 @@ from planner.models import FleetSnapshot
 from relay.app import RelayRuntime
 from relay.contracts import AdapterAcknowledgement, CapabilitiesFrame, MediaFileRecord
 from relay.session import RelaySession
+
+if TYPE_CHECKING:
+    from planner.models import Command, Plan
+    from relay.navigation_control import NavigationControl
 from relay.settings import AdapterBackend
 
 
@@ -29,7 +34,14 @@ class RelayNodeLink:
     ``await_acknowledgement`` block the calling thread and refuse the loop thread.
     """
 
-    def __init__(self, runtime: RelayRuntime, session_id: str, *, delivery_timeout_ms: int) -> None:
+    def __init__(
+        self,
+        runtime: RelayRuntime,
+        session_id: str,
+        *,
+        delivery_timeout_ms: int,
+        navigation_control: NavigationControl | None = None,
+    ) -> None:
         session = runtime.sessions.get(session_id)
         if session is None:
             raise ValueError(f"session {session_id!r} is not active on this relay")
@@ -43,6 +55,7 @@ class RelayNodeLink:
         self._session_id = session_id
         self._session: RelaySession = session
         self._delivery_timeout_s = delivery_timeout_ms / 1000
+        self._navigation_control = navigation_control
 
     def connection_epoch(self, drone_id: int) -> int | None:
         return self._session.registry.connection_epoch(drone_id)
@@ -84,6 +97,29 @@ class RelayNodeLink:
                 f"{request.drone_id}"
             )
 
+    def authorize_navigation(self, plan: Plan, command: Command, snapshot: FleetSnapshot) -> None:
+        if self._navigation_control is None:
+            raise AdapterError("mapped navigation has no approved phone control")
+        packet = self._navigation_control.authorize(plan, command, snapshot, self._session_id)
+        initial_pose = self._navigation_control.pose(
+            snapshot, self._session_id, drone_ids=frozenset({command.drone_id})
+        )
+        self._session.record_navigation_authorization(packet)
+        for pose in initial_pose:
+            self._session.record_navigation_pose(pose)
+        loop = self._worker_loop()
+        for frame in (packet, *initial_pose):
+            future = asyncio.run_coroutine_threadsafe(
+                self._runtime.deliver_to_node(self._session_id, command.drone_id, frame), loop
+            )
+            try:
+                delivered = future.result(timeout=self._delivery_timeout_s)
+            except DeliveryTimeout:
+                future.cancel()
+                delivered = False
+            if not delivered:
+                raise AdapterError("navigation authorization could not be delivered")
+
     def await_acknowledgement(
         self, command_id: str, *, timeout_ms: int
     ) -> AdapterAcknowledgement | None:
@@ -123,6 +159,7 @@ def build_adapters(
     *,
     sim_camera_config: SimCameraConfig | None = None,
     link_wrapper: LinkWrapper | None = None,
+    navigation_control: NavigationControl | None = None,
 ) -> AdapterPair:
     """Construct the adapters ``SWEEP_ADAPTER_BACKEND`` selects for one session.
 
@@ -150,7 +187,12 @@ def build_adapters(
         )
         return AdapterPair(flight=flight, camera=camera)
     if backend is AdapterBackend.REMOTE:
-        node_link = RelayNodeLink(runtime, session_id, delivery_timeout_ms=settings.command_ttl_ms)
+        node_link = RelayNodeLink(
+            runtime,
+            session_id,
+            delivery_timeout_ms=settings.command_ttl_ms,
+            navigation_control=navigation_control,
+        )
         link: NodeLink = node_link if link_wrapper is None else link_wrapper(node_link)
         remote = RemoteBridgeAdapter.from_snapshot(
             link,
@@ -170,6 +212,7 @@ def build_dispatcher(
     arbiter: SafetyArbiter,
     sim_camera_config: SimCameraConfig | None = None,
     link_wrapper: LinkWrapper | None = None,
+    navigation_control: NavigationControl | None = None,
 ) -> AdapterDispatcher:
     """Construct a session's ``AdapterDispatcher`` on the configured backend."""
     adapters = build_adapters(
@@ -178,6 +221,7 @@ def build_dispatcher(
         snapshot,
         sim_camera_config=sim_camera_config,
         link_wrapper=link_wrapper,
+        navigation_control=navigation_control,
     )
     return AdapterDispatcher(flight=adapters.flight, camera=adapters.camera, arbiter=arbiter)
 

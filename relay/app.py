@@ -489,6 +489,15 @@ class RelayRuntime:
                 if not subscriptions:
                     self._subscriptions.pop(session_id, None)
             principal = subscription.principal
+            if principal.source == "console":
+                session = self.sessions.get(session_id)
+                cancel = (
+                    getattr(session.intent_sink, "cancel_navigation_previews", None)
+                    if session
+                    else None
+                )
+                if callable(cancel):
+                    cancel()
             if principal.source == "adapter":
                 assert principal.drone_id is not None
                 key = (session_id, principal.drone_id)
@@ -567,6 +576,11 @@ class RelayRuntime:
                 for event in events:
                     if event.get("type") == "control_localization" and (
                         subscription.principal.source != "localization"
+                        or subscription.principal.drone_id != event.get("drone_id")
+                    ):
+                        continue
+                    if event.get("type") == "control_pose" and (
+                        subscription.principal.source != "adapter"
                         or subscription.principal.drone_id != event.get("drone_id")
                     ):
                         continue
@@ -992,6 +1006,44 @@ def create_app(
             return runtime.replay(session_id, after_sequence=after_sequence)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
+
+    @application.post("/api/sessions/{session_id}/compile", response_model=None)
+    async def compile_text(
+        session_id: str, request: Request, authorization: str | None = Header(default=None)
+    ) -> dict[str, object]:
+        runtime = authorized_runtime(authorization)
+        session = runtime.sessions.get(session_id)
+        compiler = getattr(session.intent_sink, "compile_text", None) if session else None
+        if not callable(compiler):
+            raise HTTPException(status_code=409, detail="session compiler unavailable")
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 16_384:
+                raise HTTPException(status_code=413, detail="text request is too large")
+        try:
+            raw = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="invalid text request") from None
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"text", "correlation_id"}
+            or not isinstance(raw["text"], str)
+            or not raw["text"].strip()
+            or len(raw["text"]) > 4_000
+            or not isinstance(raw["correlation_id"], str)
+            or not 1 <= len(raw["correlation_id"]) <= 128
+        ):
+            raise HTTPException(status_code=400, detail="invalid text request")
+        outcome = await asyncio.to_thread(compiler, raw["text"], raw["correlation_id"])
+        return {
+            "v": 1,
+            "type": "language_compilation",
+            "session": session_id,
+            "correlation_id": raw["correlation_id"],
+            "t": runtime.clock(),
+            "compilation": outcome.to_dict(),
+        }
 
     @application.post("/api/sessions/{session_id}/transcripts", response_model=None)
     async def transcript(

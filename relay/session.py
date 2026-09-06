@@ -301,6 +301,10 @@ class RelaySession:
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Route one post-authentication frame according to its bound principal."""
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
+        if principal.source == "console" and frame_type == "navigation_preview_request":
+            return self.process_navigation_preview(raw, principal)
+        if principal.source == "perception":
+            return self.process_perception(raw, principal)
         if principal.source == "localization" and frame_type == "control_localization":
             return self.process_control_localization(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
@@ -320,6 +324,78 @@ class RelaySession:
                 detail="frame type is not allowed for the authenticated source",
             )
         ]
+
+    def process_navigation_preview(
+        self, raw: object, principal: Principal
+    ) -> list[dict[str, object]]:
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            draft = raw.get("intent") if isinstance(raw, Mapping) else None
+
+            def refuse(reason: str, detail: str) -> list[dict[str, object]]:
+                return [
+                    self._refuse_intent(
+                        draft, reason=reason, detail=detail, now=now, add_to_ledger=False
+                    )
+                ]
+
+            if (
+                principal.source != "console"
+                or principal.drone_id is not None
+                or not isinstance(raw, Mapping)
+                or set(raw) != {"v", "type", "intent"}
+                or type(raw.get("v")) is not int
+                or raw.get("v") != 1
+                or not isinstance(draft, Mapping)
+                or type(draft.get("confirm")) is not bool
+            ):
+                return refuse("invalid_payload", "invalid navigation preview request")
+            result = validate_intent(
+                {**draft, "confirm": True}, capability_profile=self.capability_profile
+            )
+            if isinstance(result, RejectedIntent):
+                return refuse(result.reason.value, result.detail)
+            intent = result.intent
+            if (
+                intent.name
+                not in {IntentName.NAVIGATE, IntentName.SEARCH, IntentName.FORMATION_SET}
+                or intent.source != principal.source
+            ):
+                return refuse("source_not_allowed", "only console navigation may be previewed")
+            if intent.session != self.session_id:
+                return refuse("session_mismatch", "preview belongs to another session")
+            if intent.intent_id in self._intents or intent.intent_id.startswith("safety:"):
+                return refuse("duplicate_intent", "preview intent ID is already in use")
+            age = self._timestamp_error(intent.t, now, self.limits.intent_max_age_ms)
+            if age is not None:
+                return refuse(age, "preview timestamp is outside the freshness window")
+            prepare = getattr(self.intent_sink, "prepare_navigation_preview", None)
+            if not callable(prepare) or not self._sink_profile_agrees():
+                return refuse("downstream_unavailable", "navigation previews are unavailable")
+            from planner.models import Refusal
+
+            result = prepare(intent, self._state_event(now))
+            if isinstance(result, Refusal):
+                return refuse(result.reason.value, result.detail)
+            expires, prepared = result
+            cancel = getattr(self.intent_sink, "cancel_navigation_previews", None)
+            if callable(cancel):
+                assert self._audit_undo is not None
+                self._audit_undo.append(lambda: cancel(intent.intent_id))
+            event = {
+                "v": 1,
+                "type": "navigation_preview",
+                "t": now,
+                "event_id": self.event_ids(),
+                "session": self.session_id,
+                "intent_id": intent.intent_id,
+                "roster_version": prepared.plan.roster_version,
+                "expires_at_ms": expires,
+                "plan": prepared.plan.to_dict(),
+            }
+            self._append_audit(event)
+            return [event]
 
     def protocol_refusal(self, *, reason: str, detail: str) -> dict[str, object]:
         with self._lock, self._audit_operation():
@@ -439,6 +515,29 @@ class RelaySession:
                         normalized=intent,
                     )
                 ]
+
+            requires_preview = getattr(self.intent_sink, "requires_route_preview", None)
+            if (
+                requires_preview(intent)
+                if callable(requires_preview)
+                else intent.name in {IntentName.NAVIGATE, IntentName.SEARCH}
+            ):
+                validate = getattr(self.intent_sink, "validate_navigation_confirmation", None)
+                detail = (
+                    validate(intent, self._state_event(now))
+                    if callable(validate)
+                    else "navigation requires a server preview"
+                )
+                if detail is not None:
+                    return [
+                        self._refuse_intent(
+                            raw,
+                            reason="navigation_preview_required",
+                            detail=detail,
+                            now=now,
+                            normalized=intent,
+                        )
+                    ]
 
             self._remember_intent(intent.intent_id)
             self._intents[intent.intent_id] = _IntentLedgerEntry(
@@ -974,6 +1073,81 @@ class RelaySession:
                     now,
                 )
             return [event]
+
+    def process_perception(self, raw: object, principal: Principal) -> list[dict[str, object]]:
+        consumer = getattr(self.intent_sink, "process_perception", None)
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if (
+                principal.source != "perception"
+                or principal.drone_id is not None
+                or not callable(consumer)
+                or not isinstance(raw, dict)
+                or raw.get("type") not in {"perception.frame_processed", "perception.sighting"}
+                or raw.get("session") != self.session_id
+                or not isinstance(raw.get("signature"), str)
+            ):
+                return [
+                    self._protocol_refusal(
+                        reason="invalid_payload",
+                        detail="perception input is unavailable or invalid",
+                        now=now,
+                    )
+                ]
+            unsigned = {key: value for key, value in raw.items() if key != "signature"}
+            if not verify_event_signature(unsigned, raw["signature"], principal.signing_key):
+                return [
+                    self._protocol_refusal(
+                        reason="invalid_signature", detail="perception signature rejected", now=now
+                    )
+                ]
+            self._append_audit(
+                {
+                    "v": 1,
+                    "type": "perception_ingress",
+                    "session": self.session_id,
+                    "event_id": self.event_ids(),
+                    "t": now,
+                    "payload": unsigned,
+                }
+            )
+        # Persist the input before it can advance the coverage ledger.
+        return consumer(raw, principal, now)
+
+    def record_search_event(self, payload: Mapping[str, object]) -> dict[str, object]:
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            event = {
+                **payload,
+                "v": 1,
+                "session": self.session_id,
+                "event_id": self.event_ids(),
+                "t": self.clock(),
+            }
+            self._append_audit(event)
+            return event
+
+    def record_navigation_authorization(self, packet: dict[str, object]) -> dict[str, object]:
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self.registry.check_current(packet["drone_id"], packet["connection_epoch"])
+            self._append_audit({key: value for key, value in packet.items() if key != "signature"})
+            return packet
+
+    def record_navigation_pose(self, packet: dict[str, object]) -> dict[str, object]:
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self.registry.check_current(packet["drone_id"], packet["connection_epoch"])
+            self._append_audit({key: value for key, value in packet.items() if key != "signature"})
+            return packet
+
+    def record_control_pose(self, packet: dict[str, object]) -> dict[str, object]:
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self.registry.check_current(packet["drone_id"], packet["connection_epoch"])
+            self._append_audit({key: value for key, value in packet.items() if key != "signature"})
+            return packet
 
     def control_localization(self, drone_id: int) -> ControlLocalizationFrame | None:
         with self._lock:
@@ -2163,11 +2337,13 @@ class RelaySession:
             raise AuditLogError("relay session is unusable after an audit failure")
 
     def _state_event(self, now: int) -> dict[str, object]:
-        return self.registry.state_event(
-            session=self.session_id,
-            t=now,
-            event_id=self.event_ids(),
-        )
+        state = self.registry.state_event(session=self.session_id, t=now, event_id=self.event_ids())
+        metadata = getattr(self.intent_sink, "navigation_metadata", None)
+        if callable(metadata):
+            navigation = metadata()
+            if navigation is not None:
+                state["navigation"] = navigation
+        return state
 
 
 def _intent_to_dict(intent: IntentV1) -> dict[str, object]:

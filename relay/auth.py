@@ -46,7 +46,11 @@ class StaticCredentialResolver:
     allow_shared_adapter_token: bool = False
     localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
 
+    perception_key: bytes | None = field(default=None, repr=False)
+
     def resolve(self, source: str, drone_id: int | None) -> bytes | None:
+        if source == "perception" and drone_id is None:
+            return self.perception_key
         if source in REGISTERED_SOURCES and drone_id is None:
             return self.relay_token
         if source == "localization" and drone_id is not None:
@@ -75,7 +79,7 @@ def authenticate(raw: object, resolver: CredentialResolver) -> Principal:
         raise AuthenticationError("invalid_auth", "v must be integer 1")
     if raw["type"] != "auth":
         raise AuthenticationError("invalid_auth", "first frame must have type auth")
-    if source not in {"adapter", "localization"} and source not in REGISTERED_SOURCES:
+    if source not in {"adapter", "localization", "perception"} and source not in REGISTERED_SOURCES:
         raise AuthenticationError("unknown_source", "source is not registered")
     token = raw["token"]
     if not isinstance(token, str) or not token:

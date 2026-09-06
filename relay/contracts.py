@@ -1342,10 +1342,15 @@ def _command_arguments(
 ) -> Mapping[str, int | str]:
     spec = COMMAND_ARGUMENT_FIELDS[operation]
     value = _mapping(raw, code, "command args must be an object")
-    if set(value) != set(spec):
+    fields = set(spec)
+    if operation is CommandOperation.GOTO and "navigation_route_id" in value:
+        fields.add("navigation_route_id")
+    if set(value) != fields:
         raise ContractError(code, f"{operation.value} arguments do not match the v1 contract")
     result: dict[str, int | str] = {}
-    for field, kind in spec.items():
+    for field, kind in (
+        {**spec, **({"navigation_route_id": "id"} if "navigation_route_id" in value else {})}
+    ).items():
         if kind == "id":
             result[field] = _nonempty_string(value[field], field, code)
         elif kind == "positive":

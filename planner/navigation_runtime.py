@@ -76,6 +76,8 @@ class NavigationExecution:
     config: NavigationExecutionConfig
     prepared_at_ms: int
     intent_name: IntentName = IntentName.NAVIGATE
+    route_id: str = ""
+    phone_authorization: bool = False
     search_camera_preparations: tuple[SearchCameraPreparation, ...] = ()
 
     def __post_init__(self) -> None:
@@ -121,6 +123,11 @@ class NavigationExecution:
                             "y": segment.end.y_m,
                             "z": segment.end.z_m,
                             "speed": self.config.speed_m_s,
+                            **(
+                                {"navigation_route_id": self.route_id}
+                                if self.phone_authorization
+                                else {}
+                            ),
                         },
                     )
                 )
@@ -161,6 +168,7 @@ class NavigationRuntime:
         self.planner = NavigationPlanner()
         self.control_pins: Mapping[int, object] | None = None
         self.maximum_aircraft: int | None = None
+        self.require_phone_authorization = False
 
     def prepare(self, intent: IntentV1, snapshot: FleetSnapshot) -> Plan | Refusal:
         try:
@@ -197,6 +205,8 @@ class NavigationRuntime:
             self.config,
             snapshot.now_ms,
             intent.name if intent_name is None else intent_name,
+            intent.intent_id,
+            self.require_phone_authorization,
             search_camera_preparations,
         )
         epochs = {drone.drone_id: drone.connection_epoch for drone in route.selected}

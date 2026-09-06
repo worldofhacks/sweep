@@ -167,6 +167,7 @@ def test_env_example_autonomy_values_are_the_ci_fixtures() -> None:
     )
     assert config.safety == safety_config()
     assert config.sim_camera == camera_config()
+    assert config.enable_localized_navigation is False
 
 
 @pytest.mark.parametrize(("failure", "clock_ms"), [("wrong-map", 101_000), ("stale", 101_600)])
@@ -263,6 +264,14 @@ def test_configured_localization_source_fences_stale_or_wrong_map_motion(
     assert snapshot.aircraft[1].position_quality == 0.0
     assert refusal is not None
     assert refusal.reason is RefusalReason.POSITION_QUALITY
+
+
+def test_localized_navigation_flag_requires_an_explicit_boolean() -> None:
+    environment = _env_example()
+    environment["SWEEP_ENABLE_LOCALIZED_NAVIGATION"] = "yes"
+
+    with pytest.raises(SettingsError, match="SWEEP_ENABLE_LOCALIZED_NAVIGATION"):
+        AutonomyConfig.from_env(environment)
 
 
 def test_missing_sim_camera_is_allowed_only_off_the_sim_backend(tmp_path: Path) -> None:
@@ -527,13 +536,11 @@ def test_sim_backend_runs_the_checkpoint_intents_in_process_without_wire_command
     assert armed_state["selection"] == []
     assert (select["status"], select["reason"]) == ("completed", None)
     assert (takeoff["status"], takeoff["reason"]) == ("completed", None)
-    # The simulator flew in process; the authoritative relay state is still the node's
-    # last telemetry, so the arbiter refuses motion from a landed aircraft.
-    assert (translate["type"], translate["reason"]) == ("refusal", "invalid_state")
-    assert translate["drone_id"] == 1
+    assert (translate["type"], translate["status"]) == ("acknowledgement", "completed")
     assert estop["status"] == "completed"
     assert stopped_state["selection"] == [1]
-    assert stopped_state["drones"][0]["flight_state"] == "landed"
+    assert stopped_state["drones"][0]["flight_state"] == "hovering"
+    assert stopped_state["drones"][0]["telemetry"]["x"] == 1.5
 
     records = [record["event"] for record in replay["events"]]
     assert "command" not in {record["type"] for record in records}
@@ -546,7 +553,7 @@ def test_sim_backend_runs_the_checkpoint_intents_in_process_without_wire_command
         ("arm-1", "completed"),
         ("select-1", "completed"),
         ("takeoff-1", "completed"),
-        ("translate-1", "refused"),
+        ("translate-1", "completed"),
         ("estop-1", "completed"),
     ]
     assert all(
