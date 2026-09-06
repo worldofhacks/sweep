@@ -84,6 +84,24 @@ function captureIntent(id = 'intent-capture'): IntentV1 {
   }
 }
 
+function navigationIntent(id = 'intent-navigation'): IntentV1 {
+  return { ...captureIntent(id), name: 'navigate', args: { zone_id: 'atrium' } }
+}
+
+function navigationPreview(intentId = 'intent-navigation'): Extract<RelayServerEvent, { type: 'navigation_preview' }> {
+  const pose = { x_m: 1, y_m: 2, z_m: 1, floor_id: 'level-1' }
+  return {
+    v: 1, t: t + 20, type: 'navigation_preview', event_id: `preview-${intentId}`, session, intent_id: intentId,
+    roster_version: 1, expires_at_ms: t + 60_000,
+    plan: { commands: [], navigation: {
+      map_pin: { version: 'map-v1', content_sha256: 'map-sha' }, geometry_pin: { version: 'geometry-v1', content_sha256: 'geometry-sha' },
+      destination_zone_id: 'atrium', selected: [{ drone_id: 1, connection_epoch: 1, pose }],
+      routes: [{ drone: 1, arrival_slot: { slot_id: 'atrium-a', zone_id: 'atrium', pose: { ...pose, x_m: 8 }, radius_m: 0.5 }, waypoints: [{ ...pose, x_m: 4 }], swept_segments: [] }],
+      execution_order: [1], roster_version: 1, config: { hold_behavior: 'hold' }, prepared_at_ms: t + 20, intent_name: 'navigate',
+    } },
+  }
+}
+
 function withReadyState(): ControlState {
   return controlReducer(createInitialControlState(session, t), {
     type: 'relay_event',
@@ -107,6 +125,49 @@ function withPendingCapture(): ControlState {
 }
 
 describe('control reducer fleet lifecycle', () => {
+  test('accepts only a matching route preview and invalidates it when navigation metadata changes', () => {
+    const intent = navigationIntent()
+    let state = withReadyState()
+    state = { ...state, navigation: { map_pin: ['map', 'v1'], geometry_pin: ['geometry', 'v1'], configuration_id: 'nav-v1', floor_id: 'level-1', catalog_version: 'catalog-v1', zones: [] } }
+    state = controlReducer(state, { type: 'request_created', request: createRequestRecord(intent, t + 2) })
+    state = controlReducer(state, { type: 'request_pending_confirmation', intentId: intent.intent_id, t: t + 3,
+      plan: { title: 'Navigate', steps: [], rosterVersion: 1, navigationKey: JSON.stringify(state.navigation) } })
+    state = controlReducer(state, { type: 'relay_event', event: navigationPreview() })
+    expect(state.requests[0].plan?.navigation?.routes[0].arrival_slot.slot_id).toBe('atrium-a')
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: { ...stateEvent('state-nav-change', 1, [drone()], [1]), t: t + 30,
+        capability_profile: 'navigation-enabled', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'navigate'],
+        navigation: { ...(state.navigation!), catalog_version: 'catalog-v2' } },
+    })
+    expect(state.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_navigation' })
+  })
+
+  test('does not revive a cancelled navigation preview when its response arrives late', () => {
+    const intent = navigationIntent()
+    let state = withReadyState()
+    state = controlReducer(state, { type: 'request_created', request: createRequestRecord(intent, t + 2) })
+    state = controlReducer(state, { type: 'request_pending_confirmation', intentId: intent.intent_id, t: t + 3 })
+    state = controlReducer(state, { type: 'request_cancelled', intentId: intent.intent_id, t: t + 4 })
+    state = controlReducer(state, { type: 'relay_event', event: navigationPreview() })
+    expect(state.requests[0]).toMatchObject({ status: 'cancelled', plan: undefined })
+  })
+
+  test('ignores a route response after the authoritative selection changes', () => {
+    const intent = navigationIntent()
+    let state = withReadyState()
+    state = controlReducer(state, { type: 'request_created', request: createRequestRecord(intent, t + 2) })
+    state = controlReducer(state, { type: 'request_pending_confirmation', intentId: intent.intent_id, t: t + 3,
+      plan: { title: 'Navigate', steps: [], rosterVersion: 1, navigationKey: JSON.stringify(null) } })
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: { ...stateEvent('state-new-selection', 1, [drone(), drone({ drone_id: 2 })], [2]), t: t + 10,
+        capability_profile: 'navigation-enabled', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'navigate'] },
+    })
+    state = controlReducer(state, { type: 'relay_event', event: navigationPreview() })
+    expect(state.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'selection_changed', plan: expect.not.objectContaining({ navigation: expect.anything() }) })
+  })
   test('keeps the formation and spacing the relay reports, and nothing before the first frame', () => {
     const initial = createInitialControlState(session, t)
     expect(initial.formation).toBeNull()

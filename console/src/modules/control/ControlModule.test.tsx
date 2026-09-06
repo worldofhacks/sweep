@@ -4,7 +4,7 @@ import { describe, expect, test } from 'vitest'
 import App from '../../App'
 import type { IntentFactoryDependencies } from '../../control/intent'
 import { useControlConsole, type ControlClients } from '../../control/use-control-console'
-import { C1_BASIC_CONTROL_INTENTS } from '../../relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, type IntentV1 } from '../../relay/contract'
 import { formatTime } from '../../shell/format'
 import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
 import { CapturePane, GuidancePanel } from './CapturePane'
@@ -49,6 +49,19 @@ async function confirmDock(user: User) {
   await user.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
 }
 
+function emitPreparedRoute(client: FixtureRelayClient, intent: IntentV1, eventId: string) {
+  client.emitServer({
+    v: 1, t: t0 + 40, type: 'navigation_preview', event_id: eventId, session, intent_id: intent.intent_id,
+    roster_version: 7, expires_at_ms: t0 + 60_000,
+    plan: { commands: [], navigation: {
+      map_pin: { version: 'map-v1', content_sha256: 'map-sha' }, geometry_pin: { version: 'geometry-v1', content_sha256: 'geometry-sha' },
+      destination_zone_id: 'atrium', selected: [{ drone_id: 1, connection_epoch: 1, pose: { x_m: 0, y_m: 0, z_m: 1, floor_id: 'level-1' } }],
+      routes: [{ drone: 1, arrival_slot: { slot_id: 'atrium-a', zone_id: 'atrium', pose: { x_m: 10, y_m: 4, z_m: 1, floor_id: 'level-1' }, radius_m: 0.5 }, waypoints: [{ x_m: 4, y_m: 2, z_m: 1, floor_id: 'level-1' }], swept_segments: [] }],
+      execution_order: [1], roster_version: 7, config: { hold_behavior: 'hold' }, prepared_at_ms: t0 + 40, intent_name: 'navigate',
+    } },
+  })
+}
+
 const guidance: CaptureReadiness = {
   guidance_mode: 'visual_advisory',
   pose_source: 'visual_odometry',
@@ -64,6 +77,96 @@ const guidance: CaptureReadiness = {
 }
 
 describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
+  test('navigation sends only a preview request, displays the returned route, and confirms once', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
+    await screen.findByText('1 of 4 selected')
+    act(() => {
+      clients.console.emitServer({
+        v: 1, t: t0 + 10, type: 'state', event_id: 'navigation-ready', session, roster_version: 7,
+        armed: true, estop: false, selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
+        capability_profile: 'navigation-enabled', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'navigate'],
+        navigation: { map_pin: ['map', 'v1'], geometry_pin: ['geometry', 'v1'], configuration_id: 'nav-v1', floor_id: 'level-1', catalog_version: 'catalog-v1', zones: [{ zone_id: 'atrium', floor_id: 'level-1', navigation_allowed: true, arrival_slots: ['atrium-a'], aliases: ['Atrium'] }] },
+        drones: fixtureAircraft(t0),
+      })
+    })
+    await openPane(user, 'Commands')
+    await user.click(screen.getByRole('button', { name: 'Atrium' }))
+    await waitFor(() => expect(clients.console.previewRequests).toHaveLength(1))
+    expect(clients.console.sent).toHaveLength(0)
+    expect(screen.getByRole('button', { name: 'Confirm and send' })).toBeDisabled()
+    const intent = clients.console.previewRequests[0].intent
+    act(() => {
+      clients.console.emitServer({
+        v: 1, t: t0 + 20, type: 'navigation_preview', event_id: 'navigation-plan', session, intent_id: intent.intent_id,
+        roster_version: 7, expires_at_ms: t0 + 60_000,
+        plan: { commands: [], navigation: {
+          map_pin: { version: 'map-v1', content_sha256: 'map-sha' }, geometry_pin: { version: 'geometry-v1', content_sha256: 'geometry-sha' },
+          destination_zone_id: 'atrium', selected: [{ drone_id: 1, connection_epoch: 1, pose: { x_m: 0, y_m: 0, z_m: 1, floor_id: 'level-1' } }],
+          routes: [{ drone: 1, arrival_slot: { slot_id: 'atrium-a', zone_id: 'atrium', pose: { x_m: 10, y_m: 4, z_m: 1, floor_id: 'level-1' }, radius_m: 0.5 }, waypoints: [{ x_m: 4, y_m: 2, z_m: 1, floor_id: 'level-1' }], swept_segments: [] }],
+          execution_order: [1], roster_version: 7, config: { hold_behavior: 'hold' }, prepared_at_ms: t0 + 20, intent_name: 'navigate',
+        } },
+      })
+    })
+    const route = await screen.findByRole('region', { name: 'Prepared navigation route' })
+    expect(route).toHaveTextContent('atrium')
+    expect(route).toHaveTextContent('D-01')
+    expect(route).toHaveTextContent('atrium-a')
+    expect(route).toHaveTextContent('Hold at the assigned slot')
+    const confirm = screen.getByRole('button', { name: 'Confirm and send' })
+    await user.click(confirm)
+    await user.click(confirm)
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    expect(clients.console.sent[0]).toMatchObject({ intent_id: intent.intent_id, name: 'navigate', confirm: true })
+  })
+
+  test('configured formations and searches require a prepared route, and search events clear after reconnect', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
+    await screen.findByText('1 of 4 selected')
+    act(() => clients.console.emitServer({
+      v: 1, t: t0 + 30, type: 'state', event_id: 'search-configured', session, roster_version: 7,
+      armed: true, estop: false, selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
+      capability_profile: 'mapped-search', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'navigate', 'search'],
+      navigation: { map_pin: ['map', 'v1'], geometry_pin: ['geometry', 'v1'], configuration_id: 'nav-v1', floor_id: 'level-1', catalog_version: 'catalog-v1', zones: [{ zone_id: 'atrium', floor_id: 'level-1', navigation_allowed: true, arrival_slots: ['atrium-a'], aliases: ['Atrium'] }], formations: [{ name: 'atrium-line', zone_id: 'atrium' }], search: { zones: [{ zone_id: 'atrium' }], target_classes: ['backpack'] } },
+      drones: fixtureAircraft(t0),
+    }))
+    await openPane(user, 'Commands')
+    await user.click(screen.getByRole('button', { name: 'atrium-line' }))
+    await waitFor(() => expect(clients.console.previewRequests).toHaveLength(1))
+    expect(clients.console.previewRequests[0].intent).toMatchObject({ name: 'formation_set', args: { name: 'atrium-line' }, confirm: false })
+    expect(clients.console.sent).toHaveLength(0)
+    expect(screen.getByRole('button', { name: 'Confirm and send' })).toBeDisabled()
+    act(() => emitPreparedRoute(clients.console, clients.console.previewRequests[0].intent, 'mapped-formation-route'))
+    await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    expect(clients.console.sent[0]).toMatchObject({ intent_id: clients.console.previewRequests[0].intent.intent_id, name: 'formation_set', confirm: true })
+
+    await user.click(screen.getByRole('button', { name: 'backpack · atrium' }))
+    await waitFor(() => expect(clients.console.previewRequests).toHaveLength(2))
+    const search = clients.console.previewRequests[1].intent
+    expect(search).toMatchObject({ name: 'search', args: { zone_id: 'atrium', target_class: 'backpack' }, confirm: false })
+    expect(clients.console.sent).toHaveLength(1)
+    act(() => emitPreparedRoute(clients.console, search, 'search-route'))
+    await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+    expect(clients.console.sent[1]).toMatchObject({ intent_id: search.intent_id, name: 'search', confirm: true })
+
+    act(() => {
+      clients.console.emitServer({ v: 1, t: t0 + 50, type: 'search_progress', event_id: 'search-running', session, intent_id: search.intent_id, state: 'running', tasks: [{ task_id: 'lane-1', state: 'running', covered_cells: 6, total_cells: 10 }] })
+      clients.console.emitServer({ v: 1, t: t0 + 51, type: 'perception.sighting', event_id: 'sighting-1', session, sighting_id: 'sighting-1', label: 'backpack', confidence: 0.92, bbox_xyxy: [1, 2, 3, 4] })
+    })
+    expect(screen.getByText('Search running: 6 / 10 cells covered.')).toBeInTheDocument()
+    expect(screen.getByText('Latest sighting: backpack at 92% confidence.')).toBeInTheDocument()
+    act(() => clients.console.emitConnection('disconnected', 'test disconnect'))
+    expect(screen.queryByText(/Search running:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Latest sighting:/)).not.toBeInTheDocument()
+    act(() => clients.console.emitConnection('connected'))
+    expect(screen.queryByText(/Search running:/)).not.toBeInTheDocument()
+  })
+
   test('arm, select all, takeoff, translate, hold, come home, land all — one intent id per request, confirmed where the rule says', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()

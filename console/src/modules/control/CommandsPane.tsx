@@ -53,6 +53,49 @@ export function CommandsPane({ controller, steps, onSteps }: CommandsPaneProps) 
           ))}
         </div>
       ))}
+      {state.enabledIntentNames.includes('navigate') && state.navigation !== null && (
+        <div className="ct-navigation" aria-label="Navigation destination">
+          <p className="ct-eyebrow">Navigate</p>
+          <p className="ct-commands-note">Routes use the advertised map and end in an arrival hold.</p>
+          <div className="ct-static-chips" role="group" aria-label="Destination zones">
+            {state.navigation.zones.filter((zone) => zone.navigation_allowed && zone.floor_id === state.navigation?.floor_id).map((zone) => (
+              <button key={zone.zone_id} type="button" className="ct-static-chip is-sans"
+                disabled={state.selection.length === 0}
+                onClick={() => issueIntent({ name: 'navigate', args: { zone_id: zone.zone_id } })}>
+                {zone.aliases[0] ?? zone.zone_id}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {state.navigation?.formations?.length && state.enabledIntentNames.includes('formation_set') ? (
+        <div className="ct-navigation" aria-label="Mapped formations">
+          <p className="ct-eyebrow">Mapped formations</p>
+          <div className="ct-static-chips" role="group" aria-label="Mapped formation set">
+            {state.navigation.formations.map((formation) => (
+              <button key={formation.name} type="button" className="ct-static-chip is-sans" disabled={!state.armed || state.selection.length === 0}
+                onClick={() => issueIntent({ name: 'formation_set', args: { name: formation.name as never } })}>
+                {formation.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {state.navigation?.search && state.enabledIntentNames.includes('search') ? (
+        <div className="ct-navigation" aria-label="Search mission">
+          <p className="ct-eyebrow">Search mission</p>
+          <div className="ct-static-chips" role="group" aria-label="Search targets">
+            {state.navigation.search.zones.flatMap((zone) => state.navigation!.search!.target_classes.map((targetClass) => (
+              <button key={`${zone.zone_id}-${targetClass}`} type="button" className="ct-static-chip is-sans" disabled={!state.armed || state.selection.length === 0}
+                onClick={() => issueIntent({ name: 'search', args: { zone_id: zone.zone_id, target_class: targetClass } })}>
+                {targetClass} · {zone.zone_id}
+              </button>
+            )))}
+          </div>
+          {state.searchProgress && <p className="ct-commands-note" aria-live="polite">Search {state.searchProgress.state}: {state.searchProgress.tasks.reduce((covered, task) => covered + task.covered_cells, 0)} / {state.searchProgress.tasks.reduce((total, task) => total + task.total_cells, 0)} cells covered.</p>}
+          {state.sightings.length > 0 && <p className="ct-commands-note" aria-live="polite">Latest sighting: {state.sightings[0].label} at {Math.round(state.sightings[0].confidence * 100)}% confidence.</p>}
+        </div>
+      ) : null}
       <div className="ct-commands-extras">
         <div>
           <p className="ct-eyebrow">Translate</p>

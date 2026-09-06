@@ -7,6 +7,8 @@ import type {
   IntentSource,
   MembershipAction,
   RelayAircraftState,
+  NavigationMetadata,
+  NavigationPlanPreview,
   RelayServerEvent,
 } from '../relay/contract'
 import { followsSelection } from '../relay/contract'
@@ -36,6 +38,8 @@ export interface PlanPreview {
    * no countdown.
    */
   expiresAt?: number
+  navigationKey?: string
+  navigation?: NavigationPlanPreview
 }
 
 export interface RequestRecord {
@@ -90,6 +94,9 @@ export interface ControlState {
   /** Null until a validated relay state advertises its active capability contract. */
   capabilityProfile: string | null
   enabledIntentNames: ConsoleIntentName[]
+  navigation: NavigationMetadata | null
+  searchProgress: Extract<RelayServerEvent, { type: 'search_progress' }> | null
+  sightings: Extract<RelayServerEvent, { type: 'perception.sighting' }>[]
   departed: DepartureRecord[]
   requests: RequestRecord[]
   selectedFeedId: DroneId | null
@@ -108,7 +115,7 @@ export type ControlAction =
   | { type: 'webcam_connection_changed'; connection: RelayConnection }
   | { type: 'relay_event'; event: RelayServerEvent; source?: IntentSource }
   | { type: 'request_created'; request: RequestRecord }
-  | { type: 'request_pending_confirmation'; intentId: string; t: number; plan: PlanPreview }
+  | { type: 'request_pending_confirmation'; intentId: string; t: number; plan?: PlanPreview }
   | { type: 'request_confirmed'; intent: IntentV1; t: number }
   | { type: 'request_sent'; intentId: string; t: number }
   | { type: 'request_send_failed'; intentId: string; t: number; detail: string }
@@ -145,6 +152,9 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     spacing: null,
     capabilityProfile: null,
     enabledIntentNames: [],
+    navigation: null,
+    searchProgress: null,
+    sightings: [],
     departed: [],
     requests: [],
     selectedFeedId: null,
@@ -248,7 +258,16 @@ function reduceConnection(state: ControlState, connection: RelayConnection): Con
     connection.reason ?? 'No reason was provided.',
     connection.changedAt,
   )
-  return { ...state, connection, notices: prependNotice(state.notices, notice) }
+  const previewIds = state.requests
+    .filter((request) => request.status === 'pending_confirmation' && request.plan?.navigationKey !== undefined)
+    .map((request) => request.intent.intent_id)
+  return invalidateRequests(
+    { ...state, connection, searchProgress: null, sightings: [], notices: prependNotice(state.notices, notice) },
+    previewIds,
+    connection.changedAt,
+    'preview_connection_lost',
+    'The relay connection changed while the route preview was pending. Request a new route.',
+  )
 }
 
 function reduceKeyboardConnection(state: ControlState, connection: RelayConnection): ControlState {
@@ -327,6 +346,12 @@ function reduceRelayEvent(
       // projection. Retain the event ID for dedupe, but do not build a second
       // client-side source of aircraft truth here.
       return stateWithEvent
+    case 'navigation_preview':
+      return reduceNavigationPreview(stateWithEvent, event)
+    case 'search_progress':
+      return { ...stateWithEvent, searchProgress: event }
+    case 'perception.sighting':
+      return { ...stateWithEvent, sightings: [event, ...stateWithEvent.sightings.filter((sighting) => sighting.sighting_id !== event.sighting_id)].slice(0, 8) }
     case 'safety_action':
       return {
         ...stateWithEvent,
@@ -480,6 +505,7 @@ function reduceStateEvent(
     spacing: event.spacing,
     capabilityProfile: event.capability_profile,
     enabledIntentNames: [...event.enabled_intent_names],
+    navigation: event.navigation ?? null,
     armed: event.armed,
     estop: event.estop || (ambiguousOrder && state.estop),
     lastStateEvent: {
@@ -584,7 +610,53 @@ function reduceStateEvent(
     'selection_changed',
     'The authoritative aircraft selection changed. Build and confirm a new preview.',
   )
+  const changedNavigationRequests = next.requests
+    .filter((request) => request.status === 'pending_confirmation' && request.intent.name === 'navigate' &&
+      request.plan?.navigationKey !== undefined && request.plan.navigationKey !== navigationIdentity(event.navigation ?? null))
+    .map((request) => request.intent.intent_id)
+  next = invalidateRequests(
+    next,
+    changedNavigationRequests,
+    event.t,
+    'stale_navigation',
+    'The map, geometry, navigation configuration, or destination catalog changed. Request a new route.',
+  )
   return next
+}
+
+function reduceNavigationPreview(
+  state: ControlState,
+  event: Extract<RelayServerEvent, { type: 'navigation_preview' }>,
+): ControlState {
+  const request = state.requests.find((item) => item.intent.intent_id === event.intent_id)
+  const destination = routeDestination(request?.intent, state.navigation)
+  if (!request || request.status !== 'pending_confirmation' || destination === null || request.intent.confirm ||
+    request.plan?.navigation !== undefined || request.intent.session !== event.session || event.plan.navigation.destination_zone_id !== destination ||
+    event.roster_version !== state.rosterVersion || event.plan.navigation.roster_version !== event.roster_version ||
+    request.plan?.navigationKey !== navigationIdentity(state.navigation) ||
+    !sameDroneSet(request.intent.selection, event.plan.navigation.selected.map((selected) => selected.drone_id))) {
+    return state
+  }
+  const plan: PlanPreview = {
+    title: 'Navigate',
+    steps: ['Follow the prepared route to the assigned arrival slot.', 'Hold at the arrival slot after route completion.'],
+    rosterVersion: event.roster_version,
+    expiresAt: event.expires_at_ms,
+    navigationKey: navigationIdentity(state.navigation),
+    navigation: event.plan.navigation,
+  }
+  return updateRequest(state, event.intent_id, (current) => ({ ...current, plan }))
+}
+
+function routeDestination(intent: IntentV1 | undefined, navigation: NavigationMetadata | null): string | null {
+  if (!intent || navigation === null) return null
+  if ((intent.name === 'navigate' || intent.name === 'search') && 'zone_id' in intent.args) return intent.args.zone_id
+  if (intent.name === 'formation_set') return navigation.formations?.find((formation) => formation.name === (intent.args as { name: string }).name)?.zone_id ?? null
+  return null
+}
+
+function navigationIdentity(navigation: NavigationMetadata | null): string {
+  return JSON.stringify(navigation)
 }
 
 function reduceMembershipEvent(

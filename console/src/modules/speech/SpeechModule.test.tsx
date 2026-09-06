@@ -2,8 +2,10 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test, vi } from 'vitest'
 import App from '../../App'
-import { FixtureRelayClient } from '../../testing/fixture-relay-client'
+import { C1_BASIC_CONTROL_INTENTS, type RelayServerEvent } from '../../relay/contract'
+import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
 import type { TranscriptClient, TranscriptRequest, VoiceOutcome } from '../../voice/client'
+import type { LanguageClient, LanguageCompilation } from '../../speech/client'
 import type { RecorderFactory } from '../../voice/use-push-to-talk'
 import type { VoiceDependencies } from '../types'
 
@@ -57,7 +59,7 @@ function outcome(overrides: Partial<VoiceOutcome>): VoiceOutcome {
   }
 }
 
-function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Promise<MediaStream> } = {}) {
+function mount(options: { transcript?: TranscriptClient; language?: LanguageClient; requestAudio?: () => Promise<MediaStream> } = {}) {
   let current = 1_756_700_000_000
   const now = () => current
   let sequence = 0
@@ -81,7 +83,7 @@ function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Pr
       clients={clients}
       intentDependencies={{ now, nextId: () => `speech-intent-${++sequence}` }}
       initialModule="speech"
-      services={{ transcript: options.transcript, voice }}
+      services={{ transcript: options.transcript, language: options.language, voice }}
     />
   )
   const view = render(element())
@@ -93,6 +95,51 @@ function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Pr
       current += ms
       view.rerender(element())
     },
+  }
+}
+
+function navigationState(selection: number[], t: number): Extract<RelayServerEvent, { type: 'state' }> {
+  return {
+    v: 1 as const,
+    t,
+    type: 'state' as const,
+    event_id: `navigation-state-${t}`,
+    session,
+    roster_version: 7,
+    armed: true,
+    estop: false,
+    selection,
+    formation: 'none',
+    spacing: 0.8,
+    mode: 'indoor' as const,
+    pending: null,
+    accepted_plan: null,
+    capability_profile: 'navigation-enabled',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'navigate'],
+    navigation: {
+      map_pin: ['map', 'v1'] as [string, string],
+      geometry_pin: ['geometry', 'v1'] as [string, string],
+      configuration_id: 'nav-v1',
+      floor_id: 'level-1',
+      catalog_version: 'catalog-v1',
+      zones: [{ zone_id: 'atrium', floor_id: 'level-1', navigation_allowed: true, arrival_slots: ['atrium-a'], aliases: ['Atrium'] }],
+    },
+    drones: fixtureAircraft(t),
+  }
+}
+
+function languagePlan(): LanguageClient {
+  return {
+    compile: vi.fn(async (): Promise<LanguageCompilation> => ({
+      kind: 'plan',
+      source: 'anthropic',
+      reason: null,
+      detail: null,
+      intents: [
+        { name: 'select', args: { ids: [2] }, selection: [1] },
+        { name: 'navigate', args: { zone_id: 'atrium' }, selection: [2] },
+      ],
+    })),
   }
 }
 
@@ -338,4 +385,83 @@ describe('Speech module', () => {
     expect(transcript.requests).toHaveLength(0)
     expect(clients.console.sent).toHaveLength(0)
   })
+})
+
+
+test('stages a language navigation plan only after the select completes with the proposed selection', async () => {
+  const { clients } = mount({ language: languagePlan() })
+  const u = user()
+  await screen.findByText(/Development fixture active/i)
+  act(() => clients.console.emitServer(navigationState([1], 1_756_700_000_010)))
+
+  await compileTyped(u, 'select two then fly to atrium')
+  await screen.findByText('1. select')
+  await u.click(screen.getByRole('button', { name: /Stage step 1 of 2/ }))
+  expect(clients.console.sent).toHaveLength(0)
+
+  await u.click(screen.getByRole('button', { name: 'Confirm and send' }))
+  await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+  expect(clients.console.sent[0]).toMatchObject({ name: 'select', selection: [1], confirm: true })
+  expect(screen.getByRole('button', { name: /Stage step 2 of 2/ })).toBeDisabled()
+
+  act(() => {
+    clients.console.emitServer({
+      v: 1, t: 1_756_700_000_020, type: 'acknowledgement', event_id: 'language-select-completed', session,
+      intent_id: clients.console.sent[0].intent_id, command_id: null, status: 'completed', source: 'relay', drone_id: null,
+      connection_epoch: null, reason: null, detail: 'Selection completed.', roster_version: 7,
+    })
+    clients.console.emitServer(navigationState([2], 1_756_700_000_021))
+  })
+  await waitFor(() => expect(screen.getByRole('button', { name: /Stage step 2 of 2/ })).toBeEnabled())
+
+  await u.click(screen.getByRole('button', { name: /Stage step 2 of 2/ }))
+  await waitFor(() => expect(clients.console.previewRequests).toHaveLength(1))
+  expect(clients.console.previewRequests[0].intent).toMatchObject({ name: 'navigate', selection: [2], confirm: false })
+  expect(clients.console.sent).toHaveLength(1)
+  expect(screen.getByRole('button', { name: 'Confirm and send' })).toBeDisabled()
+
+  const navigation = clients.console.previewRequests[0].intent
+  act(() => {
+    clients.console.emitServer({
+      v: 1, t: 1_756_700_000_030, type: 'navigation_preview', event_id: 'language-navigation-preview', session,
+      intent_id: navigation.intent_id, roster_version: 7, expires_at_ms: 1_756_700_060_000,
+      plan: { commands: [], navigation: {
+        map_pin: { version: 'map-v1', content_sha256: 'map-sha' }, geometry_pin: { version: 'geometry-v1', content_sha256: 'geometry-sha' },
+        destination_zone_id: 'atrium', selected: [{ drone_id: 2, connection_epoch: 1, pose: { x_m: 0, y_m: 0, z_m: 1, floor_id: 'level-1' } }],
+        routes: [{ drone: 2, arrival_slot: { slot_id: 'atrium-a', zone_id: 'atrium', pose: { x_m: 10, y_m: 4, z_m: 1, floor_id: 'level-1' }, radius_m: 0.5 }, waypoints: [{ x_m: 4, y_m: 2, z_m: 1, floor_id: 'level-1' }], swept_segments: [] }],
+        execution_order: [2], roster_version: 7, config: { hold_behavior: 'hold' }, prepared_at_ms: 1_756_700_030, intent_name: 'navigate',
+      } },
+    })
+  })
+  await screen.findByRole('region', { name: 'Prepared navigation route' })
+  const confirm = screen.getByRole('button', { name: 'Confirm and send' })
+  await u.click(confirm)
+  await u.click(confirm)
+  await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+  expect(clients.console.sent[1]).toMatchObject({ intent_id: navigation.intent_id, name: 'navigate', selection: [2], confirm: true })
+})
+
+test.each(['cancelled', 'failed', 'disconnected'] as const)('discards remaining language steps after a select is %s', async (outcome) => {
+  const { clients } = mount({ language: languagePlan() })
+  const u = user()
+  await screen.findByText(/Development fixture active/i)
+  await compileTyped(u, 'select two then fly to atrium')
+  await u.click(screen.getByRole('button', { name: /Stage step 1 of 2/ }))
+
+  if (outcome === 'cancelled') {
+    await u.click(screen.getByRole('button', { name: 'Cancel' }))
+  } else if (outcome === 'failed') {
+    await u.click(screen.getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    act(() => clients.console.emitServer({
+      v: 1, t: 1_756_700_000_040, type: 'acknowledgement', event_id: 'language-select-failed', session,
+      intent_id: clients.console.sent[0].intent_id, command_id: null, status: 'failed', source: 'relay', drone_id: null,
+      connection_epoch: null, reason: 'operator_refused', detail: 'Selection failed.', roster_version: 7,
+    }))
+  } else {
+    act(() => clients.console.emitConnection('disconnected', 'Connection dropped.'))
+  }
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: /Stage step 2 of 2/ })).not.toBeInTheDocument())
+  expect(clients.console.previewRequests).toHaveLength(0)
 })

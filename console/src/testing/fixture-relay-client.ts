@@ -11,9 +11,11 @@ import type { RelayClient, RelayClientEvent, RelayClientListener } from '../rela
 import type {
   DroneId,
   IntentV1,
+  NavigationPreviewRequest,
   RelayAircraftState,
   RelayServerEvent,
   IntentSource,
+  NavigationMetadata,
 } from '../relay/contract'
 import { C1_BASIC_CONTROL_INTENTS, isSupportedIntent } from '../relay/contract'
 
@@ -24,13 +26,14 @@ export type FixtureFleetSize = 4 | 6
  * contract fixture; `pending4`, `six6`, and `down` are the Sweep Console v4
  * design scenarios as relay data only. Nothing here reaches production state.
  */
-export type FixtureScenarioName = 'control' | 'pending4' | 'six6' | 'down'
+export type FixtureScenarioName = 'control' | 'pending4' | 'six6' | 'down' | 'navigation'
 
 export const FIXTURE_SCENARIO_NAMES: readonly FixtureScenarioName[] = [
   'control',
   'pending4',
   'six6',
   'down',
+  'navigation',
 ]
 
 export function isFixtureScenarioName(value: string): value is FixtureScenarioName {
@@ -65,6 +68,7 @@ export interface FixtureScenario {
   departures: FixtureDeparture[]
   /** Relay-side pending record; opaque to the console, which discards it. */
   pending: Record<string, unknown> | null
+  navigation?: NavigationMetadata
   /** Captures, building, jobs, node details, services, metrics, configuration. */
   catalog: (now: number) => CatalogSnapshot
 }
@@ -77,6 +81,7 @@ const CONNECTED: FixtureLink = {
 export class FixtureRelayClient implements RelayClient {
   readonly transport = 'fixture' as const
   readonly sent: IntentV1[] = []
+  readonly previewRequests: NavigationPreviewRequest[] = []
   private readonly listeners = new Set<RelayClientListener>()
   private readonly scenario: FixtureScenario
   private selection: DroneId[] = [1]
@@ -137,6 +142,16 @@ export class FixtureRelayClient implements RelayClient {
       })
     }
     this.emitState(this.now())
+    if (this.scenario.navigation?.search) {
+      this.emitServer({
+        v: 1, t: this.now(), event_id: this.nextEventId(), type: 'search_progress', session: this.sessionId,
+        intent_id: 'fixture-search-1', state: 'running', tasks: [{ task_id: 'fixture-lane-1', state: 'running', covered_cells: 6, total_cells: 10 }],
+      })
+      this.emitServer({
+        v: 1, t: this.now(), event_id: this.nextEventId(), type: 'perception.sighting', session: this.sessionId,
+        sighting_id: 'fixture-sighting-1', label: 'backpack', confidence: 0.92, bbox_xyxy: [1, 2, 3, 4],
+      })
+    }
   }
 
   stop(): void {}
@@ -198,6 +213,28 @@ export class FixtureRelayClient implements RelayClient {
     })
   }
 
+  async sendNavigationPreview(request: NavigationPreviewRequest): Promise<void> {
+    this.previewRequests.push(request)
+    if (this.link.status === 'disconnected') {
+      throw new Error('Fixture relay is disconnected; the navigation preview was not sent.')
+    }
+    if (!this.scenario.navigation || request.intent.name !== 'navigate' || !('zone_id' in request.intent.args)) return
+    const pose = { x_m: 1, y_m: 1, z_m: 1, floor_id: this.scenario.navigation.floor_id }
+    const zoneId = request.intent.args.zone_id
+    this.emitServer({
+      v: 1, t: this.now(), type: 'navigation_preview', event_id: this.nextEventId(), session: this.sessionId,
+      intent_id: request.intent.intent_id, roster_version: this.scenario.rosterVersion, expires_at_ms: this.now() + 60_000,
+      plan: { commands: [], navigation: {
+        map_pin: { version: this.scenario.navigation.map_pin[1], content_sha256: 'fixture-map-sha' },
+        geometry_pin: { version: this.scenario.navigation.geometry_pin[1], content_sha256: 'fixture-geometry-sha' },
+        destination_zone_id: zoneId,
+        selected: request.intent.selection.map((drone_id, index) => ({ drone_id, connection_epoch: 1, pose: { ...pose, y_m: index + 1 } })),
+        routes: request.intent.selection.map((drone, index) => ({ drone, arrival_slot: { slot_id: `${zoneId}-${index + 1}`, zone_id: zoneId, pose: { ...pose, x_m: 9, y_m: index + 2 }, radius_m: 0.5 }, waypoints: [{ ...pose, x_m: 4, y_m: index + 1 }], swept_segments: [] })),
+        execution_order: [...request.intent.selection], roster_version: this.scenario.rosterVersion, config: { hold_behavior: 'hold' }, prepared_at_ms: this.now(), intent_name: 'navigate',
+      } },
+    })
+  }
+
   emitServer(event: RelayServerEvent): void {
     this.emit({ kind: 'server_event', event })
   }
@@ -230,6 +267,7 @@ export class FixtureRelayClient implements RelayClient {
       mode: 'indoor',
       capability_profile: 'c1_basic_control',
       enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      ...(this.scenario.navigation ? { capability_profile: 'fixture_navigation', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'navigate', ...(this.scenario.navigation.search ? ['search' as const] : [])], navigation: this.scenario.navigation } : {}),
       pending: this.scenario.pending,
       accepted_plan: null,
       drones: this.scenario.fleet(this.now()),
@@ -318,6 +356,18 @@ export function fixtureScenario(name: FixtureScenarioName): FixtureScenario {
         catalog: (now) => designCatalog(now, 4),
       }
     }
+    case 'navigation':
+      return {
+        ...controlScenario(4),
+        name,
+        navigation: {
+          map_pin: ['map', 'fixture-v1'], geometry_pin: ['geometry', 'fixture-v1'], configuration_id: 'fixture-navigation',
+          floor_id: 'level-1', catalog_version: 'fixture-catalog-v1',
+          zones: [{ zone_id: 'atrium', floor_id: 'level-1', navigation_allowed: true, arrival_slots: ['atrium-1'], aliases: ['Atrium'] }],
+          formations: [{ name: 'atrium-line', zone_id: 'atrium' }],
+          search: { zones: [{ zone_id: 'atrium' }], target_classes: ['backpack', 'bottle', 'suitcase'] },
+        },
+      }
   }
 }
 

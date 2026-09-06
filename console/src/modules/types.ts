@@ -4,6 +4,7 @@ import type { useControlConsole } from '../control/use-control-console'
 import type { GestureProducerDependencies } from '../gesture/use-gesture-producer'
 import type { MediaRuntime } from '../media/runtime'
 import type { TranscriptClient } from '../voice/client'
+import type { LanguageClient } from '../speech/client'
 import type { UsePushToTalkOptions } from '../voice/use-push-to-talk'
 
 /** Everything the hook returns: authoritative state plus the intent functions. */
@@ -30,6 +31,7 @@ export type VoiceDependencies = Pick<
  */
 export interface ModuleServices {
   transcript?: TranscriptClient
+  language?: LanguageClient
   gesture?: GestureProducerDependencies
   voice?: VoiceDependencies
 }

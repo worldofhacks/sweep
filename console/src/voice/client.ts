@@ -3,6 +3,8 @@
  * Copied from PR #49 (issue-42-push-to-talk, console/src/voice/client.ts) so the
  * Speech module binds to the transcription contract that branch defines.
  */
+import type { LanguageCompilation } from '../speech/client'
+
 export type VoiceOutcome = {
   v?: 1
   type?: 'voice_outcome'
@@ -12,6 +14,7 @@ export type VoiceOutcome = {
   source: 'whisper' | 'template'
   reason: string | null
   transcript: string | null
+  compilation?: LanguageCompilation | null
   emissions: []
 }
 
@@ -122,6 +125,7 @@ function isVoiceOutcome(value: unknown, sessionId: string, correlationId: string
     (record.source === 'whisper' || record.source === 'template') &&
     (record.reason === null || typeof record.reason === 'string') &&
     (record.transcript === null || typeof record.transcript === 'string') &&
+    (record.compilation === undefined || record.compilation === null || (typeof record.compilation === 'object' && !Array.isArray(record.compilation))) &&
     Array.isArray(record.emissions) &&
     record.emissions.length === 0
   )
