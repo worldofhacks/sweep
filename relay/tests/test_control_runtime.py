@@ -21,7 +21,7 @@ def config():
             "limits": {
                 "max_clock_error_ms": 5,
                 "max_fix_age_ms": 500,
-                "max_position_uncertainty_m": 0.2,
+                "max_position_uncertainty_m": 0.3,
                 "land_after_fix_age_ms": 2_000,
             },
             "drones": [
@@ -47,7 +47,6 @@ def config():
                 }
             ],
         },
-        node_keys={1: KEY},
     )
 
 
@@ -112,7 +111,7 @@ def frame():
 
 
 def test_verified_frame_projects_and_emits_a_signed_fixed_point_packet():
-    runtime = ControlRuntime(config())
+    runtime = ControlRuntime(config(), node_keys={1: KEY})
     assert runtime.ingest(frame(), 1, 1, 101_000).accepted
     applied = runtime.apply(make_snapshot(1, now_ms=101_000))
     packet = runtime.control_pose(1, applied, "s", 101_000)
@@ -120,14 +119,20 @@ def test_verified_frame_projects_and_emits_a_signed_fixed_point_packet():
     del unsigned["signature"]
     assert packet["status"] == "ready"
     assert packet["fix_time_ms"] == 100_895
+    assert packet["flight_approved"] is False
+    assert packet["position_frame"] == "map_enu"
+    assert packet["t"] >= packet["pose_time_ms"] >= packet["fix_time_ms"]
+    assert packet["position_uncertainty_mm"] == 282
     assert verify_event_signature(unsigned, packet["signature"], KEY)
 
 
 def test_duplicate_and_stale_evidence_hold_then_land():
-    runtime = ControlRuntime(config())
+    runtime = ControlRuntime(config(), node_keys={1: KEY})
     accepted = frame()
     assert runtime.ingest(accepted, 1, 1, 101_000).accepted
     assert runtime.ingest(accepted, 1, 1, 101_000).reason == "duplicate_event"
+    ready = runtime.apply(make_snapshot(1, now_ms=101_000))
+    assert runtime.control_pose(1, ready, "s", 101_000)["status"] == "ready"
     stale = runtime.apply(make_snapshot(1, now_ms=101_600))
     assert runtime.control_pose(1, stale, "s", 101_600)["status"] == "hold"
     landed = runtime.apply(make_snapshot(1, now_ms=103_600))
@@ -135,7 +140,7 @@ def test_duplicate_and_stale_evidence_hold_then_land():
 
 
 def test_repeated_loss_packets_preserve_fix_and_never_freshen():
-    runtime = ControlRuntime(config())
+    runtime = ControlRuntime(config(), node_keys={1: KEY})
     assert runtime.ingest(frame(), 1, 1, 101_000).accepted
     applied = runtime.apply(make_snapshot(1, now_ms=101_000))
     ready = runtime.control_pose(1, applied, "s", 101_000)
@@ -143,13 +148,13 @@ def test_repeated_loss_packets_preserve_fix_and_never_freshen():
     first = runtime.control_pose(1, stale, "s", 101_600)
     again = runtime.control_pose(1, stale, "s", 101_700)
     assert first["fix_time_ms"] == again["fix_time_ms"] == ready["fix_time_ms"]
-    assert again["pose_time_ms"] > first["pose_time_ms"]
+    assert again["pose_time_ms"] == first["pose_time_ms"] == ready["pose_time_ms"]
 
 
 def test_config_rejects_unknown_keys_and_has_secret_free_identity():
     raw = {"limits": {}, "drones": [], "unknown": True}
     try:
-        ControlRuntimeConfig.from_mapping(raw, node_keys={1: KEY})
+        ControlRuntimeConfig.from_mapping(raw)
     except ValueError:
         pass
     else:
@@ -167,7 +172,7 @@ def test_config_loads_from_environment_path(tmp_path):
                 "limits": {
                     "max_clock_error_ms": 5,
                     "max_fix_age_ms": 500,
-                    "max_position_uncertainty_m": 0.2,
+                    "max_position_uncertainty_m": 0.3,
                     "land_after_fix_age_ms": 2000,
                 },
                 "drones": [
@@ -196,9 +201,7 @@ def test_config_loads_from_environment_path(tmp_path):
         )
     )
     assert (
-        ControlRuntimeConfig.from_env(
-            {"SWEEP_CONTROL_LOCALIZATION_CONFIG": str(path)}, node_keys={1: KEY}
-        )
+        ControlRuntimeConfig.from_env({"SWEEP_CONTROL_LOCALIZATION_CONFIG": str(path)})
         .pins[1]
         .map_id
         == "map"
@@ -206,9 +209,45 @@ def test_config_loads_from_environment_path(tmp_path):
 
 
 def test_repeated_ready_publication_cannot_refresh_pose_time():
-    runtime = ControlRuntime(config())
+    runtime = ControlRuntime(config(), node_keys={1: KEY})
     runtime.ingest(frame(), 1, 1, 101_000)
     applied = runtime.apply(make_snapshot(1, now_ms=101_000))
     first = runtime.control_pose(1, applied, "s", 101_000)
     assert first["pose_time_ms"] == applied.aircraft[1].control_provenance.evaluated_at_relay_ms
     assert runtime.control_pose(1, applied, "s", 101_100) is None
+
+
+def test_missing_evidence_emits_no_fictitious_control_pose():
+    runtime = ControlRuntime(config(), node_keys={1: KEY})
+
+    assert runtime.control_pose(1, make_snapshot(1, now_ms=101_000), "s", 101_000) is None
+
+
+def test_packet_shape_matches_the_diagnostic_control_pose_contract():
+    runtime = ControlRuntime(config(), node_keys={1: KEY})
+    assert runtime.ingest(frame(), 1, 1, 101_000).accepted
+    packet = runtime.control_pose(1, runtime.apply(make_snapshot(1, now_ms=101_000)), "s", 101_000)
+
+    assert set(packet) == {
+        "v",
+        "type",
+        "t",
+        "event_id",
+        "session",
+        "drone_id",
+        "connection_epoch",
+        "map_id",
+        "geometry_id",
+        "camera_calibration_id",
+        "body_extrinsics_id",
+        "pose_time_ms",
+        "fix_time_ms",
+        "position_frame",
+        "x_mm",
+        "y_mm",
+        "z_mm",
+        "position_uncertainty_mm",
+        "status",
+        "flight_approved",
+        "signature",
+    }

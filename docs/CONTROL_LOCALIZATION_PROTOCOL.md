@@ -58,3 +58,17 @@ The file contains exactly `limits` and `drones`:
 A frame with a stale capture time or different pinned identity is retained in the audit
 trail but marks that aircraft's localization unavailable. The next autonomy snapshot then
 has zero position quality, so position-requiring motion is refused.
+
+## Proposed diagnostic control pose
+
+`ControlRuntime.control_pose` emits a signed `control_pose` packet for phone diagnostics. Every
+packet has `flight_approved: false` and `position_frame: "map_enu"`; nodes must keep treating it
+as display evidence. The packet's timestamps satisfy `t >= pose_time_ms >= fix_time_ms` and hold
+or land packets retain the last genuine pose and its original times. No packet is emitted before
+there is retained localization evidence.
+
+`position_uncertainty_mm` is the conservative three-dimensional 95 percent Gaussian radius. It
+uses `ceil(1000 * sqrt(max_eigenvalue(covariance)) * 2.796)`. The 2.796 multiplier is the square
+root of the 95 percent chi-square value for three degrees of freedom. [NIST Engineering
+Statistics Handbook](https://www.itl.nist.gov/div898/handbook/eda/section3/eda3674.htm) lists the
+chi-square distribution values used for this bound.
