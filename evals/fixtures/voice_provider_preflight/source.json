@@ -1,0 +1,15 @@
+{
+  "schema": "sweep.voice.provider-preflight-source.v1",
+  "purpose": "One-sample live transcription transport preflight",
+  "audio": "en-us-stop.ogg",
+  "content_type": "audio/ogg",
+  "reference_transcript": "stop",
+  "duration_seconds": 0.893968,
+  "sha256": "f2eda1f309e948d72371c7b497e172769a64f512a4adba76db94c8ef7aa1f6a1",
+  "source_page": "https://commons.wikimedia.org/w/index.php?title=File:En-us-stop.ogg&oldid=942449717",
+  "download_url": "https://commons.wikimedia.org/wiki/Special:FilePath/En-us-stop.ogg",
+  "author": "Dvortygirl",
+  "recorded_date": "2006-03-18",
+  "license": "CC BY-SA 3.0",
+  "license_url": "https://creativecommons.org/licenses/by-sa/3.0/"
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -70,6 +71,21 @@ def test_benchmark_calls_both_providers_and_replay_never_reports_network_latency
     assert replay["summary"]["deepgram"]["failures"] == 0
     assert replay["summary"]["whisper"]["word_accuracy"] == 1
     assert (output / "live-results.json").exists()
+
+
+
+def test_public_stop_preflight_replays_provider_cassettes_without_http(monkeypatch) -> None:
+    fixture_root = Path(__file__).parent / "fixtures" / "voice_provider_preflight"
+    source = json.loads((fixture_root / "source.json").read_text())
+    audio = (fixture_root / source["audio"]).read_bytes()
+    assert hashlib.sha256(audio).hexdigest() == source["sha256"]
+    upload = voice.AudioUpload(source["content_type"], audio)
+
+    monkeypatch.setattr(voice.httpx, "post", lambda *args, **kwargs: pytest.fail("replay HTTP"))
+    for provider in ("deepgram", "whisper"):
+        cassette = Path(__file__).parent / "cassettes" / f"voice-{provider}-wikimedia-stop-v1.json"
+        replay = voice.ReplayTranscriptionTransport(cassette, provider=provider)
+        assert replay.transcribe(upload) == "Stop."
 
 
 def test_benchmark_rejects_transcript_only_fixture_before_provider_io(tmp_path: Path) -> None:
