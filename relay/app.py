@@ -1108,6 +1108,8 @@ def create_app(
             return runtime.replay(session_id, after_sequence=after_sequence)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
+        except AuditLogError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from None
 
     @application.post("/api/sessions/{session_id}/transcripts", response_model=None)
     async def transcript(
