@@ -107,7 +107,7 @@ def search_demo_server(tmp_path) -> Iterator[tuple[RelayServer, SearchDemo]]:
 
 
 def test_synthetic_search_demo_runs_from_http_preview_through_fake_node(
-    search_demo_server: tuple[RelayServer, SearchDemo]
+    search_demo_server: tuple[RelayServer, SearchDemo],
 ) -> None:
     server, demo = search_demo_server
     console = ConsoleProbe(server.url)
@@ -127,6 +127,7 @@ def test_synthetic_search_demo_runs_from_http_preview_through_fake_node(
     console.start()
     node.start()
     try:
+
         def drone() -> dict[str, object] | None:
             session = server.runtime.sessions.get(SESSION)
             if session is None:
@@ -149,9 +150,11 @@ def test_synthetic_search_demo_runs_from_http_preview_through_fake_node(
         console.send(takeoff)
         assert _outcome(console, takeoff["intent_id"])["status"] == "completed"
         _wait_until(
-            lambda: (item := drone()) is not None
-            and item["telemetry"] is not None
-            and item["telemetry"]["state"] == "hovering",
+            lambda: (
+                (item := drone()) is not None
+                and item["telemetry"] is not None
+                and item["telemetry"]["state"] == "hovering"
+            ),
             what="synthetic search node hover telemetry",
         )
 
@@ -178,12 +181,14 @@ def test_synthetic_search_demo_runs_from_http_preview_through_fake_node(
 
         status_url = f"{http_url}/session/{SESSION}/search/{search['intent_id']}"
         _wait_until(
-            lambda: bool(
-                (
-                    payload := httpx.get(status_url, headers=headers, timeout=WAIT_S).json()
-                )["candidates"]
-            )
-            and payload["candidates"][0]["position"] is not None,
+            lambda: (
+                bool(
+                    (payload := httpx.get(status_url, headers=headers, timeout=WAIT_S).json())[
+                        "candidates"
+                    ]
+                )
+                and payload["candidates"][0]["position"] is not None
+            ),
             what="localized synthetic search candidate",
         )
         status = httpx.get(status_url, headers=headers, timeout=WAIT_S).json()
