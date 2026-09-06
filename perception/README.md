@@ -51,3 +51,9 @@ the selected map and geometry, measured camera/body calibration, source identiti
 clock provenance, and recorded physical evidence. Signed transport, relay/arbiter
 wiring, active-tag coverage drills, and real flight approval remain outside this
 component.
+
+## Object detection
+
+The bounded COCO detector library and its event payloads are documented in
+[OBJECT_DETECTION.md](OBJECT_DETECTION.md). Relay logging, attention promotion, confirmation,
+pose projection, and real-aircraft camera integration are not wired by that library slice.
