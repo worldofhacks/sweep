@@ -94,3 +94,5 @@ jobs:
         working-directory: console
       - run: pnpm test:m14-browser
         working-directory: console
+      - run: pnpm test:fleet-browser
+        working-directory: console

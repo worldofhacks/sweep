@@ -51,7 +51,7 @@ from planner.models import (
 )
 from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
-from relay.app import RelayRuntime, create_app
+from relay.app import RelayRuntime, TranscriptServiceFactory, create_app
 from relay.bridge import RelayNodeLink, build_dispatcher
 from relay.capabilities import CapabilityProfile
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
@@ -918,6 +918,7 @@ def create_autonomy_app(
     *,
     clock: Clock | None = None,
     event_ids: EventIdFactory | None = None,
+    transcript_service_factory: TranscriptServiceFactory | None = None,
 ) -> tuple[FastAPI, AutonomyComposition]:
     """Build the relay app with the planner and arbiter consuming every accepted intent."""
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
@@ -930,6 +931,7 @@ def create_autonomy_app(
         intent_sink_factory=composition.intent_sink_factory,
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
+        transcript_service_factory=transcript_service_factory,
     )
     composition.bind(app)
     return app, composition
