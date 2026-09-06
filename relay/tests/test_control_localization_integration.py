@@ -100,9 +100,11 @@ def control_relay(tmp_path: Path, clock: MutableClock, event_ids: EventIds) -> C
         composition.close()
 
 
-def _localization_frame(relay: ControlRelay, *, event_id: str) -> dict[str, object]:
+def _localization_frame(
+    relay: ControlRelay, *, event_id: str, **wire_changes: object
+) -> dict[str, object]:
     return sign_localization_frame(
-        wire(),
+        wire(**wire_changes),
         timestamp_ms=relay.clock(),
         event_id=event_id,
         session=SESSION,
@@ -138,10 +140,12 @@ def _receive_until(
     raise AssertionError(f"expected {event_type} WebSocket event")
 
 
-def _publish_localization(relay: ControlRelay, *, event_id: str = "producer-pose-1") -> None:
+def _publish_localization(
+    relay: ControlRelay, *, event_id: str = "producer-pose-1", **wire_changes: object
+) -> None:
     with relay.client.websocket_connect(f"/ws/{SESSION}") as producer:
         _authenticate(producer, source="localization")
-        producer.send_json(_localization_frame(relay, event_id=event_id))
+        producer.send_json(_localization_frame(relay, event_id=event_id, **wire_changes))
 
 
 def test_signed_producer_emits_only_a_diagnostic_control_pose_to_the_node(
@@ -212,11 +216,11 @@ def _prepared_navigation(relay: ControlRelay):
         now_ms=now,
         operator_last_seen_ms=now,
         aircraft={
-                drone_id: replace(
-                    aircraft,
-                    link_last_seen_ms=now,
-                    position_last_seen_ms=now,
-                )
+            drone_id: replace(
+                aircraft,
+                link_last_seen_ms=now,
+                position_last_seen_ms=now,
+            )
             for drone_id, aircraft in base_snapshot.aircraft.items()
         },
     )
@@ -228,6 +232,13 @@ def _prepared_navigation(relay: ControlRelay):
     return navigation, prepared, command, current
 
 
+_NAVIGATION_COVARIANCE = (
+    (0.00001, 0.0, 0.0),
+    (0.0, 0.00001, 0.0),
+    (0.0, 0.0, 0.00001),
+)
+
+
 def test_explicit_navigation_gate_delivers_authorization_and_pose_before_goto(
     control_relay: ControlRelay,
 ) -> None:
@@ -236,7 +247,10 @@ def test_explicit_navigation_gate_delivers_authorization_and_pose_before_goto(
 
     with control_relay.client.websocket_connect(f"/ws/{SESSION}") as adapter:
         _authenticate(adapter, source="adapter")
-        _publish_localization(control_relay)
+        _publish_localization(
+            control_relay,
+            covariance_map_enu_m2=_NAVIGATION_COVARIANCE,
+        )
         _receive_until(adapter, "control_pose")
         navigation, prepared, command, current = _prepared_navigation(control_relay)
         control = NavigationControl(
@@ -295,7 +309,10 @@ def test_navigation_authorization_delivery_failure_blocks_the_goto(
     from adapters.protocols import AdapterError
     from relay.bridge import RelayNodeLink
 
-    _publish_localization(control_relay)
+    _publish_localization(
+        control_relay,
+        covariance_map_enu_m2=_NAVIGATION_COVARIANCE,
+    )
     navigation, prepared, command, current = _prepared_navigation(control_relay)
     control = NavigationControl(
         NavigationControlConfig(
