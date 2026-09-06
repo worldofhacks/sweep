@@ -1,8 +1,11 @@
 package org.worldofhacks.sweep.bridge.core.flight
 
 import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.sqrt
 import org.worldofhacks.sweep.bridge.core.admission.Clock
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
+import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
 import org.worldofhacks.sweep.bridge.core.watchdog.Watchdog
 import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogConfig
 import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
@@ -75,6 +78,16 @@ class FlightController(
         data class Holding(val sinceMs: Long) : Phase
 
         data class Bench(val frame: StickFrame, val untilMs: Long, val label: String) : Phase
+
+        data object Navigating : Phase
+
+        data class NavigationHolding(val sinceMs: Long, val detail: String) : Phase
+    }
+
+    private sealed interface NavigationCheck {
+        data class Ready(val arrived: Boolean, val frame: StickFrame) : NavigationCheck
+
+        data class Invalid(val reason: FlightReason, val detail: String) : NavigationCheck
     }
 
     private class Active(val command: FlightCommand, val sink: ReportSink, val startedMs: Long, val startDetail: String) {
@@ -98,6 +111,7 @@ class FlightController(
 
     private var facts = AircraftFacts()
     private var link = LinkFacts()
+    private var navigation = NavigationEvidence()
     private var settings: FlightSettings? = null
     private var watchdog: Watchdog? = null
     private var lastRelayActivityMs: Long? = null
@@ -159,6 +173,10 @@ class FlightController(
             flownIntoHold = false
             event("joined the relay; deadman armed (hold ${dog.config.holdMs} ms, failsafe ${dog.config.failsafeMs} ms)")
         }
+    }
+
+    fun updateNavigation(next: NavigationEvidence) {
+        navigation = next
     }
 
     private fun applySettings(next: FlightSettings) {
@@ -340,6 +358,24 @@ class FlightController(
             fail(sink, FlightReason.NOT_AIRBORNE, "aircraft is ${facts.flightState}; goto needs a hovering aircraft")
             return
         }
+        if (args.navigationRouteId != null) {
+            when (val route = navigationCheck(command, args, now)) {
+                is NavigationCheck.Invalid -> {
+                    fail(sink, route.reason, route.detail)
+                    return
+                }
+                is NavigationCheck.Ready -> {
+                    if (route.arrived) {
+                        sink.executing("within the signed route arrival tolerance")
+                        sink.completed("route arrival confirmed by signed pose")
+                        return
+                    }
+                    active = Active(command, sink, now, "signed route ${args.navigationRouteId}: tracking mapped pose")
+                    beginVirtualStick(now) { transition(Phase.Navigating) }
+                    return
+                }
+            }
+        }
         val step = MotionPlanner.goto(args, facts, config.limits, config.minDisplacementM)
         if (step == null) {
             sink.executing("already within ${format(config.minDisplacementM)} m of the target")
@@ -450,6 +486,7 @@ class FlightController(
         pollDeadman(nowMs)
         checkLink()
         checkEstop(nowMs)
+        checkNavigation(nowMs)
         advancePhase(nowMs)
         streamSticks(nowMs)
         publish(nowMs)
@@ -533,7 +570,7 @@ class FlightController(
             // whose Virtual Stick enable answered after it, reaches Running under an asserted
             // stop and is cut on the first tick that sees it, before this tick's frame goes out.
             when (phase) {
-                is Phase.Running, is Phase.Bench -> {
+                is Phase.Running, is Phase.Navigating, is Phase.NavigationHolding, is Phase.Bench -> {
                     failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted: sticks neutral, hovering")
                     transition(Phase.Settling(now + config.settleMs, "network stop hover"))
                 }
@@ -569,6 +606,12 @@ class FlightController(
                 transition(Phase.Idle)
             }
             is Phase.Running -> advanceRunning(current, now)
+            Phase.Navigating -> advanceNavigation(now)
+            is Phase.NavigationHolding -> if (now - current.sinceMs >= navigationLossLandAfterMs()) {
+                event("navigation evidence remained unavailable for ${now - current.sinceMs} ms: landing")
+                releaseVirtualStick()
+                if (facts.flying) startLanding(now, "navigation_lost")
+            }
             is Phase.Settling -> if (now >= current.untilMs) {
                 completeActive("${current.detail}; measured speed ${format(facts.speedMS)} m/s")
                 releaseVirtualStick()
@@ -578,6 +621,146 @@ class FlightController(
             is Phase.Bench -> if (now >= current.untilMs) {
                 completeActive("bench ${current.label} held ${frameWord(current.frame)} for ${now - (active?.startedMs ?: now)} ms")
                 releaseVirtualStick()
+            }
+        }
+    }
+
+    private fun checkNavigation(now: Long) {
+        if (phase !is Phase.Navigating) return
+        val current = active ?: return
+        val args = current.command.args as? CommandArgs.Goto ?: return
+        when (val check = navigationCheck(current.command, args, now)) {
+            is NavigationCheck.Ready -> Unit
+            is NavigationCheck.Invalid -> when (check.reason) {
+                FlightReason.NAVIGATION_LAND -> {
+                    failActive(check.reason, check.detail)
+                    releaseVirtualStick()
+                    if (facts.flying) startLanding(now, "navigation_land")
+                }
+                else -> {
+                    failActive(check.reason, check.detail)
+                    event("navigation hold: ${check.detail}")
+                    transition(Phase.NavigationHolding(now, check.detail))
+                }
+            }
+        }
+    }
+
+    private fun navigationCheck(command: FlightCommand, args: CommandArgs.Goto, now: Long): NavigationCheck {
+        val config = config.navigation ?: return navigationInvalid("navigation is not configured on this node")
+        val authorization = navigation.authorization ?: return navigationInvalid("signed route authorization is unavailable")
+        val pose = navigation.pose ?: return navigationInvalid("signed navigation pose is unavailable")
+        val relayOffset = navigation.relayOffsetMs ?: return navigationInvalid("relay clock offset is unavailable")
+        val relayNow = now + relayOffset
+        val routeId = args.navigationRouteId ?: return navigationInvalid("goto has no navigation route id")
+        val authorizationPins = listOf(
+            authorization.navigationConfigId, authorization.mapId, authorization.geometryId,
+            authorization.cameraCalibrationId, authorization.bodyExtrinsicsId,
+        )
+        val localPins = listOf(
+            config.navigationConfigId, config.mapId, config.geometryId,
+            config.cameraCalibrationId, config.bodyExtrinsicsId,
+        )
+        if (authorizationPins != localPins) return navigationInvalid("signed route provenance does not match this node")
+        if (authorization.commandId != command.commandId || authorization.routeId != routeId) {
+            return navigationInvalid("signed route does not bind command ${command.commandId} and route $routeId")
+        }
+        if (args.xMm != authorization.targetXMm || args.yMm != authorization.targetYMm || args.zMm != authorization.targetZMm ||
+            args.speedMmS > authorization.maxSpeedMmS
+        ) {
+            return navigationInvalid("goto target or speed does not match the signed route")
+        }
+        if (authorization.expiresAtMs - authorization.t > config.authorizationLifetimeMs) {
+            return navigationInvalid("signed route lifetime exceeds the configured bound")
+        }
+        if (authorization.expiresAtMs <= relayNow) return navigationLost("signed route authorization expired")
+        val posePins = listOf(pose.navigationConfigId, pose.mapId, pose.geometryId, pose.cameraCalibrationId, pose.bodyExtrinsicsId)
+        if (pose.commandId != authorization.commandId || pose.routeId != authorization.routeId || posePins != authorizationPins) {
+            return navigationLost("signed navigation pose does not bind the active route")
+        }
+        when (pose.status) {
+            NavigationPose.Status.HOLD -> return NavigationCheck.Invalid(FlightReason.NAVIGATION_HOLD, "signed navigation pose requested hold")
+            NavigationPose.Status.LAND -> return NavigationCheck.Invalid(FlightReason.NAVIGATION_LAND, "signed navigation pose requested landing")
+            NavigationPose.Status.READY -> Unit
+        }
+        val poseTime = pose.poseTimeMs ?: return navigationLost("ready navigation pose omitted pose time")
+        val fixTime = pose.fixTimeMs ?: return navigationLost("ready navigation pose omitted fix time")
+        val freshUntil = navigation.poseFreshUntilMs ?: return navigationLost("navigation pose has no local freshness deadline")
+        if (now >= freshUntil || relayNow - poseTime !in 0..config.poseFreshnessMs || relayNow - fixTime !in 0..config.poseFreshnessMs) {
+            return navigationLost("signed navigation pose or fix is stale")
+        }
+        val x = pose.xMm ?: return navigationLost("ready navigation pose omitted x")
+        val y = pose.yMm ?: return navigationLost("ready navigation pose omitted y")
+        val z = pose.zMm ?: return navigationLost("ready navigation pose omitted z")
+        val uncertaintyMm = pose.positionUncertaintyMm ?: return navigationLost("ready navigation pose omitted uncertainty")
+        if (uncertaintyMm > authorization.maxPositionUncertaintyMm || uncertaintyMm / 1000.0 > config.maxPositionUncertaintyM) {
+            return navigationLost("navigation position uncertainty exceeds the route bound")
+        }
+        val uncertaintyM = uncertaintyMm / 1000.0
+        val point = Triple(x / 1000.0, y / 1000.0, z / 1000.0)
+        val start = Triple(authorization.startXMm / 1000.0, authorization.startYMm / 1000.0, authorization.startZMm / 1000.0)
+        val target = Triple(authorization.targetXMm / 1000.0, authorization.targetYMm / 1000.0, authorization.targetZMm / 1000.0)
+        if (distanceToSegment(point, start, target) + uncertaintyM > authorization.tubeRadiusMm / 1000.0) {
+            return navigationLost("navigation pose is outside the signed 3D route tube")
+        }
+        val east = target.first - point.first
+        val north = target.second - point.second
+        val up = target.third - point.third
+        val horizontalDistance = hypot(east, north)
+        val verticalDistance = abs(up)
+        val arrived = config.isWithinArrival(horizontalDistance, verticalDistance, uncertaintyM) &&
+            horizontalDistance + uncertaintyM <= authorization.horizontalToleranceMm / 1000.0 &&
+            verticalDistance + uncertaintyM <= authorization.verticalToleranceMm / 1000.0
+        if (arrived) return NavigationCheck.Ready(arrived = true, frame = StickFrame.NEUTRAL)
+        val distance = sqrt(east * east + north * north + up * up)
+        val speed = minOf(args.speedMmS, authorization.maxSpeedMmS) / 1000.0
+        val scale = speed / distance
+        val (forward, right) = GroundFrame.toBody(east * scale, north * scale, facts.yawDeg)
+        val body = this.config.limits.clamp(BodyVelocity(forwardMS = forward, rightMS = right, upMS = up * scale))
+        return NavigationCheck.Ready(arrived = false, frame = mapping.toFrame(body))
+    }
+
+    private fun navigationFrame(now: Long): StickFrame {
+        val command = active?.command ?: return StickFrame.NEUTRAL
+        val args = command.args as? CommandArgs.Goto ?: return StickFrame.NEUTRAL
+        return (navigationCheck(command, args, now) as? NavigationCheck.Ready)?.frame ?: StickFrame.NEUTRAL
+    }
+
+    private fun navigationInvalid(detail: String): NavigationCheck.Invalid =
+        NavigationCheck.Invalid(FlightReason.NAVIGATION_NOT_AUTHORIZED, detail)
+
+    private fun navigationLost(detail: String): NavigationCheck.Invalid =
+        NavigationCheck.Invalid(FlightReason.NAVIGATION_LOST, detail)
+
+    private fun navigationLossLandAfterMs(): Long = config.navigation?.lossLandAfterMs ?: 0
+
+    private fun distanceToSegment(
+        point: Triple<Double, Double, Double>,
+        start: Triple<Double, Double, Double>,
+        target: Triple<Double, Double, Double>,
+    ): Double {
+        val dx = target.first - start.first
+        val dy = target.second - start.second
+        val dz = target.third - start.third
+        val lengthSquared = dx * dx + dy * dy + dz * dz
+        val projection = ((point.first - start.first) * dx + (point.second - start.second) * dy + (point.third - start.third) * dz) / lengthSquared
+        val t = projection.coerceIn(0.0, 1.0)
+        val ex = point.first - (start.first + dx * t)
+        val ey = point.second - (start.second + dy * t)
+        val ez = point.third - (start.third + dz * t)
+        return sqrt(ex * ex + ey * ey + ez * ez)
+    }
+
+    private fun advanceNavigation(now: Long) {
+        val current = active ?: return
+        val args = current.command.args as? CommandArgs.Goto ?: return
+        when (val check = navigationCheck(current.command, args, now)) {
+            is NavigationCheck.Invalid -> Unit
+            is NavigationCheck.Ready -> if (check.arrived) {
+                completeActive("route arrival confirmed by signed pose")
+                releaseVirtualStick()
+            } else {
+                progress(now, "signed route ${args.navigationRouteId}: tracking mapped pose")
             }
         }
     }
@@ -727,6 +910,7 @@ class FlightController(
         if (!vsEnabled) return
         val frame = when (val current = phase) {
             is Phase.Running -> frameFor(current.steps[current.index])
+            Phase.Navigating -> navigationFrame(now)
             is Phase.Bench -> current.frame
             else -> StickFrame.NEUTRAL
         }
@@ -883,6 +1067,8 @@ class FlightController(
         is Phase.TakingOff -> "taking_off"
         is Phase.Landing -> "landing"
         is Phase.Holding -> "watchdog_hold"
+        Phase.Navigating -> "navigating"
+        is Phase.NavigationHolding -> "navigation_hold"
         is Phase.Bench -> "bench_${phase.label}"
     }
 
