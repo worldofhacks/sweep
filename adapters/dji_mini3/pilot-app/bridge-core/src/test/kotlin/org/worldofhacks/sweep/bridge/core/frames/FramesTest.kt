@@ -261,6 +261,11 @@ class FramesTest {
             ControlPose.MAX_SESSION_LENGTH,
             ControlPose.parse(wire.with("session", Json.value("s".repeat(ControlPose.MAX_SESSION_LENGTH)))).session.length,
         )
+        val astralSession = "😀".repeat(ControlPose.MAX_SESSION_LENGTH)
+        assertEquals(
+            ControlPose.MAX_SESSION_LENGTH,
+            ControlPose.parse(wire.with("session", Json.value(astralSession))).session.codePointCount(0, astralSession.length),
+        )
     }
 
     @Test
