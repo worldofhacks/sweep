@@ -77,6 +77,7 @@ const CONNECTED: FixtureLink = {
 export class FixtureRelayClient implements RelayClient {
   readonly transport = 'fixture' as const
   readonly sent: IntentV1[] = []
+  readonly acknowledgedDetections: string[] = []
   private readonly listeners = new Set<RelayClientListener>()
   private readonly scenario: FixtureScenario
   private selection: DroneId[] = [1]
@@ -197,6 +198,10 @@ export class FixtureRelayClient implements RelayClient {
       detail: 'Accepted by the explicit development fixture.',
       roster_version: this.scenario.rosterVersion,
     })
+  }
+
+  async acknowledgeDetection(detectionId: string): Promise<void> {
+    this.acknowledgedDetections.push(detectionId)
   }
 
   emitServer(event: RelayServerEvent): void {

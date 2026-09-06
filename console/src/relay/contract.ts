@@ -480,10 +480,44 @@ export interface RelaySafetyActionEvent {
   loss_behavior: 'hold' | 'failsafe'
 }
 
+export interface RelayDetectionEvent {
+  v: 1
+  t: number
+  type: 'detection'
+  event_id: string
+  session: string
+  detection_id: string
+  drone_id: DroneId
+  source_id: string
+  sighting_id: string
+  frame_id: string
+  label: string
+  confidence: number
+  bbox_xyxy: [number, number, number, number]
+  frame_decoded_at_monotonic_s: number
+  evaluation_completed_at_monotonic_s: number
+  observation_count: number
+  attention: 'promoted' | 'suppressed_duplicate'
+  acknowledged: false
+}
+
+export interface RelayDetectionAcknowledgementEvent {
+  v: 1
+  t: number
+  type: 'detection_acknowledgement'
+  event_id: string
+  session: string
+  detection_id: string
+  drone_id: DroneId
+  operator_source: 'console'
+}
+
 export type RelayServerEvent =
   | RelayAcknowledgementEvent
   | RelayAuthAcceptedEvent
   | RelayAuthRefusedEvent
+  | RelayDetectionAcknowledgementEvent
+  | RelayDetectionEvent
   | RelayMembershipEvent
   | RelayRefusalEvent
   | RelayStateEvent
@@ -1160,6 +1194,45 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       return null
     }
     return value as unknown as RelaySafetyActionEvent
+  }
+
+  if (value.type === 'detection') {
+    if (
+      typeof value.detection_id !== 'string' ||
+      value.detection_id !== value.event_id ||
+      !isDroneId(value.drone_id) ||
+      !['source_id', 'sighting_id', 'frame_id', 'label'].every(
+        (field) => typeof value[field] === 'string' && value[field].length > 0,
+      ) ||
+      !isFiniteNumber(value.confidence) ||
+      value.confidence <= 0 ||
+      value.confidence > 1 ||
+      !Array.isArray(value.bbox_xyxy) ||
+      value.bbox_xyxy.length !== 4 ||
+      !value.bbox_xyxy.every(isFiniteNumber) ||
+      !isFiniteNumber(value.frame_decoded_at_monotonic_s) ||
+      !isFiniteNumber(value.evaluation_completed_at_monotonic_s) ||
+      value.evaluation_completed_at_monotonic_s < value.frame_decoded_at_monotonic_s ||
+      !Number.isInteger(value.observation_count) ||
+      value.observation_count < 1 ||
+      !['promoted', 'suppressed_duplicate'].includes(String(value.attention)) ||
+      value.acknowledged !== false
+    ) {
+      return null
+    }
+    return value as unknown as RelayDetectionEvent
+  }
+
+  if (value.type === 'detection_acknowledgement') {
+    if (
+      typeof value.detection_id !== 'string' ||
+      value.detection_id.length === 0 ||
+      !isDroneId(value.drone_id) ||
+      value.operator_source !== 'console'
+    ) {
+      return null
+    }
+    return value as unknown as RelayDetectionAcknowledgementEvent
   }
 
   if (value.type === 'acknowledgement') {

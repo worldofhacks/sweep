@@ -238,6 +238,53 @@ describe('Live module walls', () => {
 })
 
 describe('Live module focus', () => {
+  test('a promoted detection focuses its feed and acknowledgement stays outside intent dispatch', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    renderLive(clients)
+    await screen.findByText(/Development fixture active/i)
+
+    clients.console.emitServer({
+      v: 1,
+      t: clock() + 1,
+      type: 'detection',
+      event_id: 'detection-1',
+      detection_id: 'detection-1',
+      session,
+      drone_id: 2,
+      source_id: 'drone2',
+      sighting_id: 'sighting-1',
+      frame_id: 'frame-1',
+      label: 'backpack',
+      confidence: 0.91,
+      bbox_xyxy: [4, 4, 24, 24],
+      frame_decoded_at_monotonic_s: 10,
+      evaluation_completed_at_monotonic_s: 10.1,
+      observation_count: 1,
+      attention: 'promoted',
+      acknowledged: false,
+    })
+
+    await openPane(user, 'Focus feed')
+    expect(await screen.findByRole('region', { name: 'Focused aircraft D-02' })).toBeInTheDocument()
+    expect(screen.getByText('backpack')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Acknowledge detection' }))
+    expect(clients.console.acknowledgedDetections).toEqual(['detection-1'])
+    expect(clients.console.sent).toEqual([])
+
+    clients.console.emitServer({
+      v: 1,
+      t: clock() + 2,
+      type: 'detection_acknowledgement',
+      event_id: 'detection-ack-1',
+      session,
+      detection_id: 'detection-1',
+      drone_id: 2,
+      operator_source: 'console',
+    })
+    expect(await screen.findByRole('button', { name: 'Acknowledged' })).toBeDisabled()
+  })
+
   test('focus follows a single selection, survives video loss, and clears only when the aircraft leaves', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()

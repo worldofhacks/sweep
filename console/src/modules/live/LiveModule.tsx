@@ -24,7 +24,7 @@ const PANES: PaneTab[] = [
  */
 export function LiveModule({ controller, now, media }: ModuleProps) {
   const [pane, setPane] = useState<LivePane>('wall4')
-  const { state, selectFeed, toggleAircraft } = controller
+  const { state, selectFeed, toggleAircraft, acknowledgeDetection } = controller
   const aircraft = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
   useSecondTick(aircraft.some((drone) => drone.video?.last_frame_at != null))
   const currentNow = now()
@@ -34,7 +34,7 @@ export function LiveModule({ controller, now, media }: ModuleProps) {
   return (
     <Pane
       title="Live view"
-      note="Every reported camera source with its focus pane. Detections are not reported yet."
+      note="Every reported camera source with its focus pane and operator-confirmed detections."
       tabs={PANES}
       activeTab={pane}
       onTabChange={(id) => setPane(id as LivePane)}
@@ -46,7 +46,14 @@ export function LiveModule({ controller, now, media }: ModuleProps) {
           detail="No aircraft have joined this session, so there is no wall and nothing to focus."
         />
       ) : pane === 'focus' ? (
-        <FocusFeed focused={focused} requests={state.requests} now={currentNow} media={media} />
+        <FocusFeed
+          focused={focused}
+          requests={state.requests}
+          detections={state.detections}
+          onAcknowledge={acknowledgeDetection}
+          now={currentNow}
+          media={media}
+        />
       ) : (
         <Mosaic
           aircraft={aircraft}
