@@ -61,6 +61,11 @@ from relay.capabilities import CapabilityProfile
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
 from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
+from relay.control_localization import (
+    ClockMapping,
+    ControlLocalizationPins,
+    ControlLocalizationProjector,
+)
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
@@ -115,18 +120,15 @@ class AutonomyConfig:
     planning: PlanningConfig
     safety: SafetyConfig
     sim_camera: SimCameraConfig | None = None
+    control_localization_projector: ControlLocalizationProjector | None = None
     navigation_deployment: NavigationDeployment | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
-        """Read ``SWEEP_PLANNING_JSON``, ``SWEEP_SAFETY_JSON``, and ``SWEEP_SIM_CAMERA_JSON``.
-
-        Each value is one JSON object whose keys are exactly the config's fields; the
-        config's own validation then rejects values that could disable a gate. The sim
-        camera is optional here and required by ``create_autonomy_app`` on ``sim``.
-        """
+        """Load exact deployment contracts; localization requires measured pins and bounds."""
         values = os.environ if environ is None else environ
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
+        localization_raw = values.get("SWEEP_CONTROL_LOCALIZATION_JSON", "")
         adapter_backend = values.get("SWEEP_ADAPTER_BACKEND", "sim")
         if adapter_backend not in {"sim", "remote"}:
             raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
@@ -144,6 +146,13 @@ class AutonomyConfig:
                 None
                 if not camera_raw
                 else _config_from_json(SimCameraConfig, camera_raw, "SWEEP_SIM_CAMERA_JSON")
+            ),
+            control_localization_projector=(
+                None
+                if not localization_raw
+                else _localization_projector_from_json(
+                    localization_raw, "SWEEP_CONTROL_LOCALIZATION_JSON"
+                )
             ),
             navigation_deployment=navigation,
         )
@@ -1075,6 +1084,11 @@ def create_autonomy_app(
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
     composition = AutonomyComposition(config)
+    control_localization_factory = (
+        None
+        if config.control_localization_projector is None
+        else lambda _session_id: config.control_localization_projector
+    )
     app = create_app(
         settings,
         clock=clock,
@@ -1082,6 +1096,7 @@ def create_autonomy_app(
         intent_sink_factory=composition.intent_sink_factory,
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
+        control_localization_factory=control_localization_factory,
     )
 
     @app.get("/session/{session_id}/navigation/catalog")
@@ -1254,4 +1269,70 @@ def _build_config[T](cls: type[T], value: object, name: str) -> T:
     try:
         return cls(**arguments)
     except Exception as error:  # every validator failure is a configuration error
+        raise SettingsError(f"{name}: {error}") from None
+
+
+def _localization_projector_from_json(raw: str, name: str) -> ControlLocalizationProjector:
+    def unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate localization field")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=unique_fields)
+    except ValueError:
+        raise SettingsError(f"{name} must be valid JSON with unique fields") from None
+    expected = {
+        "relay_clock_id",
+        "max_clock_error_ms",
+        "max_fix_age_ms",
+        "max_velocity_age_ms",
+        "max_height_age_ms",
+        "max_position_uncertainty_p95_m",
+        "pins",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise SettingsError(f"{name} keys must be exactly {sorted(expected)}")
+    pins_raw = value["pins"]
+    if not isinstance(pins_raw, list):
+        raise SettingsError(f"{name}.pins must be a JSON array")
+    try:
+        pins = {
+            item["drone_id"]: ControlLocalizationPins(
+                drone_id=item["drone_id"],
+                map_id=item["map_id"],
+                geometry_id=item["geometry_id"],
+                camera_calibration_id=item["camera_calibration_id"],
+                body_extrinsics_id=item["body_extrinsics_id"],
+                source_ids=item["source_ids"],
+                clock_mapping=ClockMapping.from_mapping(item["clock_mapping"]),
+            )
+            for item in pins_raw
+            if isinstance(item, Mapping)
+            and set(item)
+            == {
+                "drone_id",
+                "map_id",
+                "geometry_id",
+                "camera_calibration_id",
+                "body_extrinsics_id",
+                "source_ids",
+                "clock_mapping",
+            }
+        }
+        if len(pins) != len(pins_raw):
+            raise ValueError("pins must contain exact, unique pin objects")
+        return ControlLocalizationProjector(
+            pins,
+            relay_clock_id=value["relay_clock_id"],
+            max_clock_error_ms=value["max_clock_error_ms"],
+            max_fix_age_ms=value["max_fix_age_ms"],
+            max_velocity_age_ms=value["max_velocity_age_ms"],
+            max_height_age_ms=value["max_height_age_ms"],
+            max_position_uncertainty_p95_m=value["max_position_uncertainty_p95_m"],
+        )
+    except (KeyError, TypeError, ValueError) as error:
         raise SettingsError(f"{name}: {error}") from None

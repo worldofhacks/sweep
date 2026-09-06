@@ -147,6 +147,7 @@ def _execution(value: dict[str, object]) -> NavigationExecutionConfig:
             "pose_uncertainty_m",
             "tracking_allowance_m",
             "stopping_allowance_m",
+            "max_altitude_layer_offset_m",
         },
     )
     try:
