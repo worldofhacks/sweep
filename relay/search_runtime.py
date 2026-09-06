@@ -218,22 +218,25 @@ class SearchRuntime:
     ) -> LiveDetectionWorker:
         mission = self._mission(intent_id)
         assignment = next(
-            item for item in mission.preview.search.assignments
+            item
+            for item in mission.preview.search.assignments
             if item.drone.drone.drone_id == drone_id
         )
 
         def consume(event: ProcessedFrameEvent | SightingEvent) -> None:
             if isinstance(event, ProcessedFrameEvent):
-                self.observe_processed_frame(
-                    intent_id, event, pose_for_frame(event), now_s=now_s()
-                )
+                self.observe_processed_frame(intent_id, event, pose_for_frame(event), now_s=now_s())
             else:
                 self.observe_sighting(intent_id, event)
 
         return LiveDetectionWorker(
-            stream, detector, source_id=assignment.drone.source_id,
+            stream,
+            detector,
+            source_id=assignment.drone.source_id,
             mission_id=mission.preview.search.mission.frame_mission_id,
-            worker_run_id=worker_run_id, on_event=consume, monotonic_clock=now_s,
+            worker_run_id=worker_run_id,
+            on_event=consume,
+            monotonic_clock=now_s,
         )
 
     def hold(self, intent_id: str, reason: str) -> SearchMissionStatus:
@@ -291,38 +294,84 @@ class SearchRuntime:
                 segments.extend(leg.swept_segments)
                 drone = replace(drone, pose=endpoint)
                 current[drone.drone_id] = drone
-            routes.append(DroneRoute(
-                route.drone,
-                ArrivalSlot(f"{assignment.task.task_id}:complete", search.zone.zone_id, drone.pose,
-                            self.navigation.config.motion.swept_radius_m,
-                            self.navigation.config.motion.swept_half_height_m),
-                tuple(waypoints), tuple(segments)))
+            routes.append(
+                DroneRoute(
+                    route.drone,
+                    ArrivalSlot(
+                        f"{assignment.task.task_id}:complete",
+                        search.zone.zone_id,
+                        drone.pose,
+                        self.navigation.config.motion.swept_radius_m,
+                        self.navigation.config.motion.swept_half_height_m,
+                    ),
+                    tuple(waypoints),
+                    tuple(segments),
+                )
+            )
         return NavigationPlan(
-            artifact.map_pin, artifact.geometry_pin, artifact.navigation_pin, artifact.evidence,
-            self.navigation.config.motion, self.config.permission, search.roster_version,
-            search.plan_revision, search.zone.zone_id, tuple(route.drone for route in routes),
+            artifact.map_pin,
+            artifact.geometry_pin,
+            artifact.navigation_pin,
+            artifact.evidence,
+            self.navigation.config.motion,
+            self.config.permission,
+            search.roster_version,
+            search.plan_revision,
+            search.zone.zone_id,
+            tuple(route.drone for route in routes),
             tuple(sorted(positions, key=lambda item: item.drone_id)),
-            tuple(route.arrival_slot for route in routes), tuple(routes), search.execution_order,
+            tuple(route.arrival_slot for route in routes),
+            tuple(routes),
+            search.execution_order,
             artifact.semantic_sha256,
         )
 
     def _coverage_leg(
-        self, drone: DronePose, endpoint: Pose, search: SearchPreview,
-        artifact: NavigationArtifact, positions: tuple[DronePose, ...],
+        self,
+        drone: DronePose,
+        endpoint: Pose,
+        search: SearchPreview,
+        artifact: NavigationArtifact,
+        positions: tuple[DronePose, ...],
     ) -> DroneRoute | NavigationRefusal:
         zone = next(item for item in artifact.zones if item.zone_id == search.zone.zone_id)
         slot = ArrivalSlot(
-            f"{search.mission.frame_mission_id}:{drone.drone_id}:{len(positions)}", zone.zone_id,
-            endpoint, self.navigation.config.motion.swept_radius_m,
+            f"{search.mission.frame_mission_id}:{drone.drone_id}:{len(positions)}",
+            zone.zone_id,
+            endpoint,
+            self.navigation.config.motion.swept_radius_m,
             self.navigation.config.motion.swept_half_height_m,
         )
-        overlay = replace(artifact, zones=tuple(
-            Zone(zone.zone_id, zone.floor_id, zone.owner_approved, zone.polygon_xy,
-                 zone.z_min_m, zone.z_max_m, (slot,), zone.aliases)
-            if item.zone_id == zone.zone_id else item for item in artifact.zones))
-        planned = self.navigation.planner.plan(NavigationRequest(
-            zone.zone_id, search.roster_version, search.plan_revision, (drone,), positions,
-            self.navigation.config.motion, self.config.permission), overlay)
+        overlay = replace(
+            artifact,
+            zones=tuple(
+                Zone(
+                    zone.zone_id,
+                    zone.floor_id,
+                    zone.owner_approved,
+                    zone.polygon_xy,
+                    zone.z_min_m,
+                    zone.z_max_m,
+                    (slot,),
+                    zone.aliases,
+                )
+                if item.zone_id == zone.zone_id
+                else item
+                for item in artifact.zones
+            ),
+        )
+        planned = self.navigation.planner.plan(
+            NavigationRequest(
+                zone.zone_id,
+                search.roster_version,
+                search.plan_revision,
+                (drone,),
+                positions,
+                self.navigation.config.motion,
+                self.config.permission,
+            ),
+            overlay,
+        )
         return planned if isinstance(planned, NavigationRefusal) else planned.routes[0]
 
     @staticmethod
