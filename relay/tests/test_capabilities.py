@@ -47,7 +47,7 @@ def test_c1_profile_enables_only_earned_intents() -> None:
 
 
 def test_c2_profile_is_a_strict_c1_superset() -> None:
-    assert C2_CAPABILITY_PROFILE.enabled_intent_names == IMPLEMENTED_INTENT_NAMES
+    assert C2_CAPABILITY_PROFILE.enabled_intent_names < IMPLEMENTED_INTENT_NAMES
     assert C2_CAPABILITY_PROFILE.enabled_intent_names == (
         C1_CAPABILITY_PROFILE.enabled_intent_names | C2_ADDITIONAL_INTENT_NAMES
     )

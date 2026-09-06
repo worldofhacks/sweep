@@ -140,7 +140,7 @@ def test_m15_sim_intents_are_accepted_on_the_indoor_contract(
 ) -> None:
     console_select_payload.update(name=name, args=args, selection=[1, 2], confirm=confirm)
 
-    result = validate_intent(console_select_payload)
+    result = validate_intent(console_select_payload, capability_profile=C2_CAPABILITY_PROFILE)
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.name.value == name

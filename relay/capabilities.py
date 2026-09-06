@@ -105,5 +105,5 @@ C1_CAPABILITY_PROFILE = CapabilityProfile(
 
 C2_CAPABILITY_PROFILE = CapabilityProfile(
     name="c2_fleet_operations",
-    enabled_intent_names=IMPLEMENTED_INTENT_NAMES,
+    enabled_intent_names=C1_IMPLEMENTED_INTENT_NAMES | C2_ADDITIONAL_INTENT_NAMES,
 )
