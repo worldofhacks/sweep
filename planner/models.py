@@ -11,8 +11,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from math import dist, isfinite
 from types import MappingProxyType
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
+if TYPE_CHECKING:
+    from planner.navigation_runtime import NavigationExecution
+
+
+from planner.control_provenance import ControlProvenance
 from relay.intent_v1 import IntentName, IntentV1
 
 type JsonScalar = None | bool | int | float | str
@@ -258,6 +263,7 @@ class AircraftState:
     heading_deg: float | None = None
     active_task_id: str | None = None
     position_loss_since_ms: int | None = None
+    control_provenance: ControlProvenance | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -315,6 +321,10 @@ class AircraftState:
             self.position_loss_since_ms
         ):
             raise ValueError("position_loss_since_ms must be null or non-negative")
+        if self.control_provenance is not None and not isinstance(
+            self.control_provenance, ControlProvenance
+        ):
+            raise ValueError("control_provenance must be ControlProvenance or null")
 
     @property
     def airborne(self) -> bool:
@@ -359,6 +369,11 @@ class AircraftState:
             heading_deg=_optional_heading(raw.get("heading_deg")),
             active_task_id=_optional_string(raw.get("active_task_id")),
             position_loss_since_ms=_optional_nonnegative_int(raw.get("position_loss_since_ms")),
+            control_provenance=(
+                None
+                if raw.get("control_provenance") is None
+                else ControlProvenance.from_mapping(raw.get("control_provenance"))
+            ),
         )
 
     def to_dict(self) -> dict[str, JsonValue]:
@@ -383,6 +398,9 @@ class AircraftState:
             "heading_deg": self.heading_deg,
             "active_task_id": self.active_task_id,
             "position_loss_since_ms": self.position_loss_since_ms,
+            "control_provenance": (
+                None if self.control_provenance is None else self.control_provenance.to_dict()
+            ),
         }
 
 
@@ -670,6 +688,7 @@ class Plan:
     hold_scope: HoldScope | None = None
     status: LifecycleStatus = LifecycleStatus.ACCEPTED
     altitude_grounding: AltitudeGrounding | None = None
+    navigation: NavigationExecution | None = None
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {
@@ -694,6 +713,7 @@ class Plan:
             "spacing_update": self.spacing_update,
             "hold_scope": self.hold_scope.value if self.hold_scope is not None else None,
             "status": self.status.value,
+            **({"navigation": self.navigation.to_dict()} if self.navigation is not None else {}),
         }
 
 
