@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from planner.models import CommandOperation, Plan
 from planner.test_navigation_runtime import _intent, _runtime, _snapshot
 from relay.auth import verify_event_signature
@@ -102,3 +104,15 @@ def test_signed_navigation_packets_bind_the_exact_phone_route() -> None:
             "position_uncertainty_mm",
         )
     )
+
+
+def test_approved_snapshot_ignores_a_pose_from_a_prior_connection() -> None:
+    runtime = _runtime()
+    projector = _projector()
+    control = NavigationControl(NavigationControlConfig(runtime, projector, "config", {1: KEY}))
+    snapshot = _snapshot()
+
+    approved = control.approved_snapshot(snapshot, _Session(replace(_pose(), connection_epoch=2)))
+
+    assert approved.aircraft[1] == snapshot.aircraft[1]
+    assert approved.aircraft[1].control_provenance is None
