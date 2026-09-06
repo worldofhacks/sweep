@@ -5,7 +5,7 @@ from __future__ import annotations
 import queue
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Lock
 
@@ -218,12 +218,14 @@ class SearchDemo:
         return True
 
 
-def search_demo() -> SearchDemo:
-    navigation = _navigation_runtime()
+def search_demo(base: AutonomyConfig | None = None) -> SearchDemo:
+    deployment = None if base is None else base.navigation_deployment
+    navigation = _navigation_runtime() if deployment is None else deployment.runtime
     artifact = navigation.artifact()
+    zone = next(zone for zone in artifact.zones if zone.zone_id == "atrium")
     search = SearchRuntime(
         SearchRuntimeConfig(
-            {"atrium": SearchArea("atrium", "level_1", ((0, 0), (8, 0), (8, 4), (0, 4)), 0)},
+            {"atrium": SearchArea(zone.zone_id, zone.floor_id, zone.polygon_xy, 0)},
             artifact.map_pin,
             CameraPolicy(90, 90, 1, -90, -90, 0, 0.25),
             "synthetic-search-camera-v1",
@@ -245,16 +247,15 @@ def search_demo() -> SearchDemo:
         _MODEL_SHA256,
         calibration,
     )
-    return SearchDemo(
-        AutonomyConfig(
-            planning=_planning_config(),
-            safety=_safety_config(),
-            navigation_deployment=NavigationDeployment(
-                navigation, 1, "synthetic-search-demo", "synthetic", "synthetic-search-demo-v1"
-            ),
-            search_runtime=search,
-            search_detection=SearchDetectionConfig({1: source}),
+    config = base or AutonomyConfig(
+        planning=_planning_config(),
+        safety=_safety_config(),
+        navigation_deployment=NavigationDeployment(
+            navigation, 1, "synthetic-search-demo", "synthetic", "synthetic-search-demo-v1"
         ),
+    )
+    return SearchDemo(
+        replace(config, search_runtime=search, search_detection=SearchDetectionConfig({1: source}))
     )
 
 
