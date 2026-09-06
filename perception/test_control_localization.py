@@ -508,6 +508,8 @@ def test_config_and_extrinsics_are_canonical_immutable_values():
 
     with pytest.raises(ValueError):
         config(map_id=" map-sha")
+    with pytest.raises(ValueError, match="at most 128"):
+        config(map_id="m" * 129)
     with pytest.raises(ValueError):
         config(horizon_s=True)
     with pytest.raises(ValueError):

@@ -40,7 +40,13 @@ from relay.contracts import (
     parse_telemetry,
     refusal_event,
 )
-from relay.control_frames import ControlLocalizationFrame
+from relay.control_frames import ControlLocalizationFrame, sign_control_pose
+from relay.control_localization import (
+    ControlLocalizationProjector,
+    ControlPose,
+    LocalizationProjectionError,
+)
+from relay.control_localization_contracts import session_identifier
 from relay.intent_v1 import (
     REGISTERED_SOURCES,
     AcceptedIntent,
@@ -53,6 +59,7 @@ from relay.state import FleetRegistry, MembershipTransition, RegistryError
 
 Clock = Callable[[], int]
 EventIdFactory = Callable[[], str]
+ControlPoseSigningKey = Callable[[int], bytes | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +128,8 @@ _NODE_FRAME_PARSERS: dict[str, Callable[[object], NodeFrame]] = {
 _COMMAND_LEDGER_MAX = 4_096
 _COMMAND_RETENTION_MIN_MS = 60_000
 _COMMAND_RETENTION_MULTIPLIER = 30
+_TRANSPORT_REPLAY_LEDGER_MAX = 8_192
+_TRANSPORT_REPLAY_PRUNE_AT = 4_096
 
 
 def _declared_sink_capability_profile(sink: IntentSink) -> CapabilityProfile | None:
@@ -234,15 +243,26 @@ class RelaySession:
         intent_sink: IntentSink | None = None,
         leave_authorizer: LeaveAuthorizer | None = None,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        control_localization_projector: ControlLocalizationProjector | None = None,
+        control_pose_signing_key: ControlPoseSigningKey | None = None,
+        relay_clock_id: str = "unix_epoch_ms",
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
-        self.session_id = session_id
+        self.session_id = session_identifier(session_id)
         self.audit_log = audit_log
         self.limits = limits
         self.clock = clock or _epoch_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
         self.leave_authorizer = leave_authorizer
+        if (
+            control_localization_projector is not None
+            and control_localization_projector.relay_clock_id != relay_clock_id
+        ):
+            raise ValueError("control localization and relay runtime use different clocks")
+        self.control_localization_projector = control_localization_projector
+        self.control_pose_signing_key = control_pose_signing_key
+        self.relay_clock_id = relay_clock_id
         self._capability_profile = capability_profile
         self._intent_sink: IntentSink | None = None
         self.intent_sink = intent_sink
@@ -250,7 +270,10 @@ class RelaySession:
             telemetry_freshness_ms=limits.telemetry_freshness_ms,
             capability_profile=capability_profile,
         )
-        self._seen_transport_event_ids: set[str] = set()
+        # Values are the last instant when the exact signed event could still pass
+        # the transport freshness check. This keeps replay protection bounded for
+        # high-rate diagnostic producers without accepting a still-fresh replay.
+        self._seen_transport_event_ids: dict[str, int] = {}
         self._last_transport_t: dict[tuple[str, int | None], int] = {}
         self._intents: dict[str, _IntentLedgerEntry] = {}
         self._command_seq: dict[tuple[int, int], int] = {}
@@ -258,7 +281,7 @@ class RelaySession:
         self._command_waiters: dict[str, queue.SimpleQueue[AdapterAcknowledgement]] = {}
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
-        self._control_localization: dict[int, ControlLocalizationFrame] = {}
+        self._control_pose: dict[int, ControlPose] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
@@ -922,23 +945,62 @@ class RelaySession:
     def process_control_localization(
         self, raw: object, principal: Principal
     ) -> list[dict[str, object]]:
+        """Authenticate, pin, audit, and re-sign one diagnostic localization pose.
+
+        The incoming floating-point payload is never fanned out. The retained and
+        returned ``control_pose`` is integer-only and explicitly not flight-approved.
+        """
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             try:
                 if principal.source != "localization" or principal.drone_id is None:
                     raise ContractError("source_not_allowed", "localization producer required")
+                projector = self.control_localization_projector
+                if projector is None:
+                    raise ContractError(
+                        "localization_not_configured",
+                        "host-owned localization pins are not configured",
+                    )
                 frame = ControlLocalizationFrame.parse(raw)
                 self._check_adapter_binding(frame.wire.drone_id, principal)
                 if frame.session != self.session_id:
                     raise ContractError("session_mismatch", "localization session differs")
-                if not verify_event_signature(
-                    frame.unsigned_event(), frame.wire.signature, principal.signing_key
-                ):
+                if not frame.signature_valid(principal.signing_key):
                     raise ContractError("invalid_signature", "localization signature rejected")
                 self.registry.check_current(frame.wire.drone_id, frame.wire.connection_epoch)
                 self._claim_transport_event(frame.event_id, frame.t, principal, now)
+                signing_key = (
+                    None
+                    if self.control_pose_signing_key is None
+                    else self.control_pose_signing_key(frame.wire.drone_id)
+                )
+                if type(signing_key) is not bytes or not 32 <= len(signing_key) <= 4_096:
+                    raise ContractError(
+                        "control_pose_signing_key_missing",
+                        "no bounded aircraft-specific relay signing key is configured",
+                    )
+                drone_id = frame.wire.drone_id
+                pose_event_id = self.event_ids()
+                if pose_event_id in self._seen_transport_event_ids or any(
+                    retained.event_id == pose_event_id for retained in self._control_pose.values()
+                ):
+                    raise ContractError(
+                        "event_id_collision",
+                        "relay event identity collides with retained session evidence",
+                    )
+                pose = projector.project(
+                    frame.wire,
+                    authenticated_drone_id=principal.drone_id,
+                    authenticated_connection_epoch=frame.wire.connection_epoch,
+                    now_ms=now,
+                    event_id=pose_event_id,
+                    session=self.session_id,
+                    previous=self._control_pose.get(drone_id),
+                )
             except (ContractError, RegistryError) as error:
+                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
+            except LocalizationProjectionError as error:
                 return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
             except (ValueError, TypeError, OverflowError):
                 return [
@@ -948,32 +1010,38 @@ class RelaySession:
                         now=now,
                     )
                 ]
-            drone_id = frame.wire.drone_id
-            previous = self._control_localization.get(drone_id)
+            previous = self._control_pose.get(drone_id)
 
             def undo() -> None:
                 if previous is None:
-                    self._control_localization.pop(drone_id, None)
+                    self._control_pose.pop(drone_id, None)
                 else:
-                    self._control_localization[drone_id] = previous
+                    self._control_pose[drone_id] = previous
 
             assert self._audit_undo is not None
             self._audit_undo.append(undo)
-            self._control_localization[drone_id] = frame
-            event = {**frame.unsigned_event(), "signature_verified": True}
-            self._append_audit(event)
-            return [event]
+            self._control_pose[drone_id] = pose
+            signed_pose = sign_control_pose(pose, signing_key)
+            self._append_audit(
+                {
+                    **frame.unsigned_event(),
+                    "signature_verified": True,
+                    "projected_event_id": pose.event_id,
+                }
+            )
+            self._append_audit({**pose.unsigned_event(), "signature_emitted": True})
+            return [signed_pose]
 
-    def control_localization(self, drone_id: int) -> ControlLocalizationFrame | None:
+    def control_pose(self, drone_id: int) -> ControlPose | None:
         with self._lock:
-            frame = self._control_localization.get(drone_id)
-            if frame is None:
+            pose = self._control_pose.get(drone_id)
+            if pose is None:
                 return None
             try:
-                self.registry.check_current(drone_id, frame.wire.connection_epoch)
+                self.registry.check_current(drone_id, pose.connection_epoch)
             except RegistryError:
                 return None
-            return frame
+            return pose
 
     def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Accept a node-authored frame; only capabilities and node_status change state.
@@ -1797,15 +1865,32 @@ class RelaySession:
         error = self._timestamp_error(timestamp, now, self.limits.transport_event_max_age_ms)
         if error is not None:
             raise ContractError(error, "transport event is outside the freshness window")
+        pruned: dict[str, int] = {}
+        if len(self._seen_transport_event_ids) >= _TRANSPORT_REPLAY_PRUNE_AT:
+            pruned = {
+                seen_id: expires_at
+                for seen_id, expires_at in self._seen_transport_event_ids.items()
+                if expires_at < now
+            }
+            for seen_id in pruned:
+                self._seen_transport_event_ids.pop(seen_id)
+            if pruned:
+                assert self._audit_undo is not None
+                self._audit_undo.append(lambda: self._seen_transport_event_ids.update(pruned))
         if event_id in self._seen_transport_event_ids:
             raise ContractError("replayed_event", "event_id has already been observed")
+        if len(self._seen_transport_event_ids) >= _TRANSPORT_REPLAY_LEDGER_MAX:
+            raise ContractError(
+                "transport_replay_capacity",
+                "fresh transport replay evidence exceeds the bounded session ledger",
+            )
         key = (principal.source, principal.drone_id)
         previous_t = self._last_transport_t.get(key)
         if previous_t is not None and timestamp < previous_t:
             raise ContractError("out_of_order_event", "event timestamp precedes the prior event")
 
         def undo_claim() -> None:
-            self._seen_transport_event_ids.discard(event_id)
+            self._seen_transport_event_ids.pop(event_id, None)
             if previous_t is None:
                 self._last_transport_t.pop(key, None)
             else:
@@ -1813,7 +1898,9 @@ class RelaySession:
 
         assert self._audit_undo is not None
         self._audit_undo.append(undo_claim)
-        self._seen_transport_event_ids.add(event_id)
+        self._seen_transport_event_ids[event_id] = (
+            timestamp + self.limits.transport_event_max_age_ms
+        )
         self._last_transport_t[key] = timestamp
 
     def _timestamp_error(self, timestamp: int, now: int, max_age: int) -> str | None:
