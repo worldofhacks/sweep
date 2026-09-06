@@ -243,7 +243,10 @@ class FleetRegistry:
             return record.connection_epoch, self._roster_version
 
     def device_identity(self, drone_id: int) -> DeviceIdentity:
-        """The configured class and unit of a device id; unconfigured ids are aircraft."""
+        """The configured class and unit of a device id; an unconfigured id is an aircraft
+        whose unit is its id. ``RelaySettings`` keeps that fallback collision-free by
+        refusing the shared-token fallback unless the configured aircraft ids are 1
+        through N ascending (``relay/README.md``)."""
         identity = self._devices.get(drone_id)
         if identity is None:
             return DeviceIdentity(DeviceClass.AIRCRAFT, drone_id)

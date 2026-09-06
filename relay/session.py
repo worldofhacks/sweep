@@ -1266,7 +1266,13 @@ class RelaySession:
 
     def _sensor_rate_exceeded(self, drone_id: int, now: int) -> bool:
         last = self._sensor_accepted_at.get(drone_id)
-        return last is not None and last <= now < last + _SENSOR_MIN_INTERVAL_MS
+        if last is None or now < last:
+            # A backward relay-clock step starts a fresh window at ``now`` (the caller
+            # rewrites ``_sensor_accepted_at``) instead of dropping every frame until the
+            # old timestamp catches up, the same restart ``_sensor_digest_due`` and the
+            # state-audit sampler use. The admitted frame still opens the new window.
+            return False
+        return now < last + _SENSOR_MIN_INTERVAL_MS
 
     def _sensor_digest_due(self, drone_id: int, now: int) -> bool:
         last = self._sensor_digest_at.get(drone_id)

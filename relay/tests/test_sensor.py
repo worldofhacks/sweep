@@ -247,10 +247,21 @@ def test_frames_above_five_hertz_are_dropped_silently_and_counted(
     )
     assert [event["event_id"] for event in late] == ["scan-2"]
     assert session.latest_sensor(GROUND_ID).event_id == "scan-2"
-    # A relay clock that steps backwards reopens the window instead of dropping forever;
-    # the transport ordering check, not the rate limiter, refuses the regressed frame.
-    assert session._sensor_rate_exceeded(GROUND_ID, clock() - 5_000) is False
-    assert session._sensor_rate_exceeded(GROUND_ID, clock() + 1) is True
+    # A backward relay-clock step restarts the window at the regressed instant instead of
+    # dropping every frame until the old timestamp catches up, the restart the digest
+    # sampler and the state-audit sampler already use. The frame that reopens the window
+    # still counts against it, so the burst behind the step stays limited at 5 Hz.
+    regressed = clock() - 5_000
+    assert session._sensor_rate_exceeded(GROUND_ID, regressed) is False
+    session._sensor_accepted_at[GROUND_ID] = regressed
+    assert session._sensor_rate_exceeded(GROUND_ID, regressed + 1) is True
+    assert session._sensor_rate_exceeded(GROUND_ID, regressed + _MIN_INTERVAL_MS) is False
+    # A frame whose own timestamp regressed is refused by the transport ordering check,
+    # which compares against the node's previous event and not against the relay clock.
+    refused = session.process_frame(
+        sensor_payload(event_id="scan-4", timestamp=regressed), ground_principal
+    )
+    assert [event["reason"] for event in refused] == ["out_of_order_event"]
 
 
 def test_rate_limit_and_digest_sampling_are_per_device(
