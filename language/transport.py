@@ -17,30 +17,12 @@ from weakref import WeakKeyDictionary
 import httpx
 
 from language.contracts import CompilerReason
+from relay.intent_v1 import IntentName
 
 PINNED_COMPILER_MODEL = "claude-sonnet-5"
 PROMPT_SCHEMA_VERSION = "intent-v1-compiler-8"
 _CASSETTE_LOCK = Lock()
-_COMPILER_INTENT_NAMES = (
-    "arm",
-    "disarm",
-    "estop",
-    "select",
-    "takeoff",
-    "land",
-    "land_all",
-    "hold",
-    "translate",
-    "altitude",
-    "formation_next",
-    "formation_set",
-    "spacing",
-    "come_home",
-    "sweep",
-    "capture_room",
-    "survey_area",
-    "map_area",
-)
+_COMPILER_INTENT_NAMES = tuple(name.value for name in IntentName)
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,6 +424,7 @@ def _tool_schema() -> dict[str, object]:
                     },
                     "room_id": {"type": "string", "minLength": 1, "maxLength": 128},
                     "area_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "zone_id": {"type": "string", "minLength": 1, "maxLength": 128},
                     "pattern": {"type": "string", "enum": ["pano_360", "reconstruct_8"]},
                 },
             },
