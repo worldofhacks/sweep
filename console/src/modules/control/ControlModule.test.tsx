@@ -16,13 +16,16 @@ const t0 = 1_756_700_000_000
 
 type User = ReturnType<typeof userEvent.setup>
 
-function fixtureClients(now: () => number = () => t0): ControlClients & {
+function fixtureClients(
+  now: () => number = () => t0,
+  capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations' = 'c1_basic_control',
+): ControlClients & {
   console: FixtureRelayClient
   keyboard: FixtureRelayClient
 } {
   return {
-    console: new FixtureRelayClient(session, now, 'console'),
-    keyboard: new FixtureRelayClient(session, now, 'keyboard'),
+    console: new FixtureRelayClient(session, now, 'console', 4, true, capabilityProfile),
+    keyboard: new FixtureRelayClient(session, now, 'keyboard', 4, true, capabilityProfile),
   }
 }
 
@@ -63,7 +66,7 @@ const guidance: CaptureReadiness = {
   suggested_delta: 'yaw +42°',
 }
 
-describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
+describe('Control › Swarm: capability-profile behavior on the fixture client', () => {
   test('arm, select all, takeoff, translate, hold, come home, land all — one intent id per request, confirmed where the rule says', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
@@ -186,7 +189,7 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(clients.console.sent[1]).toMatchObject({ name, selection: name === 'land' ? [1] : [], confirm: true })
   })
 
-  test('the advertised profile disables omitted intents while M1.5 controls remain available', async () => {
+  test('the advertised C1 profile keeps every C2 control inert', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
@@ -194,44 +197,19 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
 
     const disarm = fleetGroup().getByRole('button', { name: /^Disarm/ })
     expect(disarm).toBeDisabled()
-    expect(disarm).toHaveClass('is-unsupported')
-    expect(disarm).toHaveTextContent('unsupported')
+    expect(disarm).not.toHaveClass('is-unsupported')
     expect(disarm).toHaveAttribute(
       'title',
       'disarm is disabled by relay capability profile c1_basic_control.',
     )
     for (const label of [/^Sweep/, /^Spacing tighter/, /^Spacing wider/, /^Formation next/]) {
       const button = motionGroup().getByRole('button', { name: label })
-      expect(button).toBeEnabled()
+      expect(button).toBeDisabled()
     }
+    expect(screen.getByRole('button', { name: 'circle' })).toBeDisabled()
 
     await user.click(disarm)
     expect(clients.console.sent).toHaveLength(0)
-
-    await user.click(motionGroup().getByRole('button', { name: /^Formation next/ }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
-    expect(clients.console.sent[0]).toMatchObject({ name: 'formation_next', args: {} })
-
-    await user.click(motionGroup().getByRole('button', { name: /^Sweep/ }))
-    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent('Sweep area')
-    await confirmDock(user)
-    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
-    expect(clients.console.sent[1]).toMatchObject({ name: 'sweep', args: {}, confirm: true })
-
-    await user.click(screen.getByRole('button', { name: 'circle' }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(3))
-    expect(clients.console.sent[2]).toMatchObject({ name: 'formation_set', args: { name: 'circle' } })
-    expect(screen.getByRole('button', { name: 'circle' })).toHaveAttribute('aria-pressed', 'true')
-    expect(
-      screen.getByText('Requested circle. The relay still reports none until execution completes.'),
-    ).toBeInTheDocument()
-
-    await openPane(user, 'Requests')
-    expect(screen.queryByRole('listitem', { name: /disarm/ })).not.toBeInTheDocument()
-    for (const name of ['formation_next', 'sweep', 'formation_set']) {
-      const row = screen.getByRole('listitem', { name: `${name} accepted` })
-      expect(within(row).getByLabelText('Lifecycle timestamps')).toHaveTextContent('accepted')
-    }
   })
 
   test('retrying selected landing waits for a fresh confirmation before sending', async () => {
@@ -271,7 +249,7 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
   })
 
   test('retrying a confirmed sweep mints a new id and sends without a second preview', async () => {
-    const clients = fixtureClients()
+    const clients = fixtureClients(() => t0, 'c2_fleet_operations')
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
     await screen.findByText('1 of 4 selected')

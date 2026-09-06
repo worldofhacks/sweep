@@ -369,7 +369,10 @@ def test_intent_argument_identifiers_accept_the_exact_shared_ceiling(
 ) -> None:
     console_select_payload.update(name=name, args=args, selection=selection, confirm=confirm)
 
-    result = validate_intent(console_select_payload)
+    result = validate_intent(
+        console_select_payload,
+        capability_profile=C2_CAPABILITY_PROFILE,
+    )
 
     if exact_reason is None:
         assert isinstance(result, AcceptedIntent)

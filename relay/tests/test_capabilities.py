@@ -176,7 +176,10 @@ def _safe_profile_cases() -> tuple[tuple[object, object], ...]:
             make_intent(IntentName.ARM, selection=()),
             make_snapshot(1, selection=(), flight_state=FlightState.DISARMED, armed=False),
         ),
-        (make_intent(IntentName.DISARM, selection=()), make_snapshot(1, selection=(), armed=True)),
+        (
+            make_intent(IntentName.DISARM, selection=()),
+            make_snapshot(1, selection=(), flight_state=FlightState.LANDED, armed=True),
+        ),
         (
             make_intent(IntentName.SELECT, selection=(), args={"ids": (1,)}),
             make_snapshot(1, selection=()),

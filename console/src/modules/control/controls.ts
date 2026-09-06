@@ -144,7 +144,16 @@ export function fleetControls(state: ControlState): ControlSpec[] {
   const ready = readyIds(state)
   return [
     control(state, 'arm', 'Arm', { name: 'arm', args: {} }),
-    control(state, 'disarm', 'Disarm', { name: 'disarm', args: {} }),
+    control(
+      state,
+      'disarm',
+      'Disarm',
+      { name: 'disarm', args: {} },
+      {
+        okNote:
+          'Withdraws session arm authorization only after the relay proves the fleet grounded; it does not command the aircraft.',
+      },
+    ),
     control(
       state,
       'select-all',

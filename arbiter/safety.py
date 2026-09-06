@@ -487,7 +487,15 @@ class SafetyArbiter:
         operator_refusal = self._check_operator(plan.intent_id, snapshot)
         if operator_refusal is not None:
             return operator_refusal
-        targets = plan.selection if plan.intent_name is IntentName.ARM else plan.selection_update
+        if plan.intent_name is IntentName.ARM:
+            targets = plan.selection
+        elif plan.intent_name is IntentName.DISARM:
+            # The relay's arm bit is session-wide. Refusing to clear it while any
+            # registered aircraft is still physically armed avoids presenting an
+            # airborne fleet as disarmed merely because it was not selected.
+            targets = tuple(sorted(snapshot.aircraft))
+        else:
+            targets = plan.selection_update
         for drone_id in targets or ():
             aircraft = snapshot.aircraft.get(drone_id)
             if aircraft is None:
@@ -511,6 +519,17 @@ class SafetyArbiter:
                     snapshot,
                     RefusalReason.INVALID_STATE,
                     "arm requires a landed and disarmed aircraft",
+                    aircraft=aircraft,
+                )
+            if plan.intent_name is IntentName.DISARM and (
+                aircraft.flight_state not in {FlightState.DISARMED, FlightState.LANDED}
+                or aircraft.armed
+            ):
+                return self._refusal_for(
+                    plan.intent_id,
+                    snapshot,
+                    RefusalReason.INVALID_STATE,
+                    "disarm requires every aircraft to be landed and physically disarmed",
                     aircraft=aircraft,
                 )
             authority_refusal = self._check_authority(plan.intent_id, snapshot, aircraft)
@@ -1526,6 +1545,8 @@ class SafetyArbiter:
                     "select args contain no normalized ids",
                 )
             return tuple(raw_ids)
+        if intent.name is IntentName.DISARM:
+            return tuple(sorted(snapshot.aircraft))
         if intent.name in {IntentName.LAND_ALL, IntentName.ESTOP}:
             return tuple(
                 drone_id
@@ -1674,6 +1695,18 @@ class SafetyArbiter:
                     snapshot,
                     RefusalReason.INVALID_STATE,
                     "arm requires a landed and disarmed aircraft",
+                    aircraft.drone_id,
+                )
+        elif intent.name is IntentName.DISARM:
+            if (
+                aircraft.flight_state not in {FlightState.DISARMED, FlightState.LANDED}
+                or aircraft.armed
+            ):
+                return self._intent_refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_STATE,
+                    "disarm requires every aircraft to be landed and physically disarmed",
                     aircraft.drone_id,
                 )
         elif intent.name is IntentName.TAKEOFF:

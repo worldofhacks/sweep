@@ -7,6 +7,7 @@ from typing import Literal
 
 from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
+    C1_IMPLEMENTED_INTENT_NAMES,
     IMPLEMENTED_INTENT_NAMES,
     CapabilityProfile,
     IntentName,
