@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
 from typing import Literal
 
@@ -176,6 +177,7 @@ class FramePoseEvidence:
 
 
 TaskState = Literal["pending", "active", "covered", "incomplete", "hold", "cancel"]
+MAX_ACCEPTED_FRAME_RECEIPTS = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +245,7 @@ class CoverageLedger:
         max_frame_age_s: float = 0.5,
         max_pose_age_s: float = 0.5,
         max_pose_skew_s: float = 0.2,
+        max_accepted_frame_receipts: int = 512,
     ) -> None:
         if not tasks or len({task.task_id for task in tasks}) != len(tasks):
             raise ValueError("coverage tasks must be nonempty and unique")
@@ -260,8 +263,17 @@ class CoverageLedger:
         self._tasks = {task.task_id: task for task in tasks}
         self._task_for_source = {task.source_id: task.task_id for task in tasks}
         self._states: dict[str, TaskState] = {task.task_id: "pending" for task in tasks}
+        if (
+            isinstance(max_accepted_frame_receipts, bool)
+            or not isinstance(max_accepted_frame_receipts, int)
+            or not 1 <= max_accepted_frame_receipts <= MAX_ACCEPTED_FRAME_RECEIPTS
+        ):
+            raise ValueError("max_accepted_frame_receipts is outside the accepted bound")
         self._covered: dict[str, set[str]] = {task.task_id: set() for task in tasks}
         self._accepted_frames: set[tuple[str, str, str]] = set()
+        self._accepted_frame_order: deque[tuple[str, str, str]] = deque()
+        self._last_accepted_frame_sequence: dict[str, tuple[str, int]] = {}
+        self._max_accepted_frame_receipts = max_accepted_frame_receipts
         self._candidates: dict[str, SearchCandidateEvent] = {}
         self._max_frame_age_s = max_frame_age_s
         self._max_pose_age_s = max_pose_age_s
@@ -302,23 +314,26 @@ class CoverageLedger:
             return CoverageObservation(False, "task_not_active", ())
         if event.outcome not in {"detections", "empty"}:
             return CoverageObservation(False, "processed_outcome_not_covering", ())
-        if (
-            now_s - event.evaluation_completed_at_monotonic_s > self._max_frame_age_s
-            or event.evaluation_completed_at_monotonic_s < event.frame_decoded_at_monotonic_s
+        if not (
+            0 <= now_s - event.frame_decoded_at_monotonic_s <= self._max_frame_age_s
+            and event.frame_decoded_at_monotonic_s
+            <= event.evaluation_completed_at_monotonic_s
+            <= now_s
         ):
             return CoverageObservation(False, "stale_frame", ())
         if pose.identity != event.identity:
             return CoverageObservation(False, "pose_frame_mismatch", ())
         if pose.connection_epoch != task.connection_epoch:
             return CoverageObservation(False, "connection_epoch_mismatch", ())
-        if (
-            now_s - pose.observed_at_s > self._max_pose_age_s
-            or abs(pose.pose_timestamp_s - event.frame_decoded_at_monotonic_s)
-            > self._max_pose_skew_s
+        if not (
+            0 <= now_s - pose.observed_at_s <= self._max_pose_age_s
+            and pose.pose_timestamp_s <= pose.observed_at_s <= now_s
+            and abs(pose.pose_timestamp_s - event.frame_decoded_at_monotonic_s)
+            <= self._max_pose_skew_s
         ):
             return CoverageObservation(False, "stale_pose", ())
         frame_key = (event.identity.source_id, event.identity.frame_id, event.identity.mission_id)
-        if frame_key in self._accepted_frames:
+        if frame_key in self._accepted_frames or self._frame_sequence_was_accepted(event):
             return CoverageObservation(False, "duplicate_frame", ())
         covered = self._covered[task_id]
         newly_covered = tuple(
@@ -327,12 +342,32 @@ class CoverageLedger:
             if cell.cell_id not in covered and self._camera.covers(pose.pose, cell.pose)
         )
         covered.update(newly_covered)
-        self._accepted_frames.add(frame_key)
+        self._remember_accepted_frame(event, frame_key)
         task_event = None
         if len(covered) == len(task.cells):
             self._states[task_id] = "covered"
             task_event = SearchTaskEvent(task_id, "covered", "footprint_coverage_complete")
         return CoverageObservation(True, "accepted", newly_covered, task_event)
+
+    def _frame_sequence_was_accepted(self, event: ProcessedFrameEvent) -> bool:
+        receipt = self._last_accepted_frame_sequence.get(event.identity.source_id)
+        return (
+            receipt is not None
+            and receipt[0] == event.identity.worker_run_id
+            and event.identity.frame_sequence <= receipt[1]
+        )
+
+    def _remember_accepted_frame(
+        self, event: ProcessedFrameEvent, frame_key: tuple[str, str, str]
+    ) -> None:
+        self._last_accepted_frame_sequence[event.identity.source_id] = (
+            event.identity.worker_run_id,
+            event.identity.frame_sequence,
+        )
+        self._accepted_frames.add(frame_key)
+        self._accepted_frame_order.append(frame_key)
+        if len(self._accepted_frame_order) > self._max_accepted_frame_receipts:
+            self._accepted_frames.discard(self._accepted_frame_order.popleft())
 
     def observe_sighting(self, event: SightingEvent) -> SearchCandidateEvent | None:
         task_id = self._task_for_source.get(event.identity.source_id)
