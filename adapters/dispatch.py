@@ -342,6 +342,7 @@ class AdapterDispatcher:
         media_files: list[MediaFile] = []
         degraded: set[int] = set()
         failures: list[Refusal] = []
+        deflected_commands: list[Command] = []
         projected = {}
         for completed in prior_affected:
             aircraft = initial.aircraft.get(completed.drone_id)
@@ -384,6 +385,8 @@ class AdapterDispatcher:
             effective_command = self.arbiter.filtered_goto_commands(plan, current).get(
                 command.command_id, command
             )
+            if effective_command != command:
+                deflected_commands.append(effective_command)
             effective_projected = self._effective_projected_positions(
                 projected, evidence_baseline, current
             )
@@ -578,6 +581,7 @@ class AdapterDispatcher:
                     status=LifecycleStatus.EXECUTING,
                     plan=plan,
                     acknowledgements=tuple(acknowledgements),
+                    deflected_commands=tuple(deflected_commands),
                 )
             if latest.status is not LifecycleStatus.COMPLETED:
                 reason = latest.reason or RefusalReason.ADAPTER_FAILURE
@@ -677,6 +681,18 @@ class AdapterDispatcher:
             plan=plan,
             acknowledgements=tuple(acknowledgements),
             capture_bundle=bundle,
+            deflected_commands=tuple(deflected_commands),
+            completion_detail=self._bvc_completion_detail(deflected_commands),
+        )
+
+    @staticmethod
+    def _bvc_completion_detail(deflected_commands: Iterable[Command]) -> str | None:
+        command_ids = tuple(command.command_id for command in deflected_commands)
+        if not command_ids:
+            return None
+        return (
+            "BVC reached safe interim setpoints for "
+            f"{', '.join(command_ids)}; requested targets remain outstanding."
         )
 
     def _altitude_grounding_refusal(
@@ -992,6 +1008,8 @@ class AdapterDispatcher:
                 status=LifecycleStatus.COMPLETED,
                 plan=plan,
                 acknowledgements=tuple(prior_acks),
+                deflected_commands=pending.deflected_commands,
+                completion_detail=self._bvc_completion_detail(pending.deflected_commands),
             )
         if plan.roster_version != current.roster_version:
             holds = self._hold_affected(
@@ -1131,6 +1149,8 @@ class AdapterDispatcher:
                 status=LifecycleStatus.COMPLETED,
                 plan=plan,
                 acknowledgements=tuple(prior_acks),
+                deflected_commands=pending.deflected_commands,
+                completion_detail=self._bvc_completion_detail(pending.deflected_commands),
             )
         resumed = self._dispatch_checked(
             plan,
@@ -1150,6 +1170,14 @@ class AdapterDispatcher:
             refusal=resumed.refusal,
             capture_bundle=resumed.capture_bundle,
             degraded_aircraft=resumed.degraded_aircraft,
+            deflected_commands=(*pending.deflected_commands, *resumed.deflected_commands),
+            completion_detail=(
+                self._bvc_completion_detail(
+                    (*pending.deflected_commands, *resumed.deflected_commands)
+                )
+                if resumed.status is LifecycleStatus.COMPLETED
+                else None
+            ),
         )
 
     def _resume_estop(
