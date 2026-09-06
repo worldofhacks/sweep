@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import './map.css'
 import { formatDeviceId } from '../../control/state'
 import type { RelayAircraftState, RelaySensorEvent } from '../../relay/contract'
+import { isFreshScan } from '../../sensor/status'
 import { prepareCanvas } from './canvas'
 import { readMapPalette, scanColor } from './palette'
 import { drawPolarScan, polarRange } from './polar'
@@ -13,6 +14,7 @@ export interface LidarPolarProps {
   scan: RelaySensorEvent | null
   /** Canvas edge in CSS pixels. */
   size?: number
+  now?: number
 }
 
 const DEFAULT_SIZE = 96
@@ -21,7 +23,7 @@ const DEFAULT_SIZE = 96
  * The newest scan for one device, plotted in its own frame with forward up.
  * Without a scan it says so rather than drawing an empty circle.
  */
-export function LidarPolar({ device, scan, size = DEFAULT_SIZE }: LidarPolarProps) {
+export function LidarPolar({ device, scan, size = DEFAULT_SIZE, now }: LidarPolarProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const label = formatDeviceId(device)
   useEffect(() => {
@@ -39,6 +41,7 @@ export function LidarPolar({ device, scan, size = DEFAULT_SIZE }: LidarPolarProp
       </p>
     )
   }
+  const fresh = now !== undefined && isFreshScan(scan, now)
   const returns = scanReturns(scan).length
   return (
     <figure className="mp-polar" aria-label={`${label} lidar scan`}>
@@ -50,7 +53,7 @@ export function LidarPolar({ device, scan, size = DEFAULT_SIZE }: LidarPolarProp
         aria-label={`${label} polar lidar plot`}
       />
       <figcaption className="mp-polar-caption">
-        {returns} of {scan.ranges_cm.length} returns · {polarRange(scan).toFixed(1)} m
+        {now === undefined ? 'Freshness unreported' : fresh ? 'Live' : 'Stale · coverage unknown'} · {returns} of {scan.ranges_cm.length} returns · {polarRange(scan).toFixed(1)} m
       </figcaption>
     </figure>
   )

@@ -41,7 +41,7 @@ export interface FetchMapOptions {
 
 export async function fetchOccupancyMap(
   endpoint: MapEndpoint,
-  { fetcher = fetch, decode = decodeMapImage, signal }: FetchMapOptions = {},
+  { fetcher = endpoint.fetcher ?? fetch, decode = decodeMapImage, signal }: FetchMapOptions = {},
 ): Promise<OccupancyResult> {
   let response: Response
   try {
@@ -70,7 +70,7 @@ export async function fetchOccupancyMap(
 /** Clears the grid; false when the relay refused or could not be reached. */
 export async function resetOccupancyMap(
   endpoint: MapEndpoint,
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = endpoint.fetcher ?? fetch,
 ): Promise<boolean> {
   try {
     const response = await fetcher(endpoint.resetUrl, {

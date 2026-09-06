@@ -589,7 +589,7 @@ describe('Control / Capture console', () => {
     render(<App sessionId={session} clients={clients} />)
     await screen.findByText(/Development fixture active/i)
 
-    await user.click(screen.getByRole('button', { name: /^D-02 / }))
+    await user.click(screen.getByRole('button', { name: 'Select only D-02' }))
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
     expect(clients.console.sent[0]).toMatchObject({ name: 'select', args: { ids: [2] } })
     expect(screen.getByRole('button', { name: /^D-02 / })).toHaveAttribute('aria-pressed', 'true')

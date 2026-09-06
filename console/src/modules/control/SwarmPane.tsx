@@ -38,7 +38,7 @@ export interface SwarmPaneProps {
 
 /** Control › Swarm: target, chips, fleet and motion controls, translate pad, formation panel. */
 export function SwarmPane({ controller, steps, onSteps, formationPreview, onFormationPreview }: SwarmPaneProps) {
-  const { state, pendingRequest, issueIntent, selectAircraft, selectAllReady } = controller
+  const { state, pendingRequest, issueIntent, toggleAircraft, selectAllReady } = controller
   const chips = aircraftChips(state)
   const blockers = chipBlockers(state)
   const ready = readyIds(state)
@@ -74,20 +74,32 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
           </button>
         </div>
 
+        <div className="ct-selection-groups" role="group" aria-label="Select device class">
+          {(['aircraft', 'ground_vehicle'] as const).map((deviceClass) => {
+            const ids = ready.filter((id) => state.aircraft[id].device_class === deviceClass)
+            return <button key={deviceClass} type="button" className="ct-select-all"
+              disabled={!selectEnabled || ids.length === 0}
+              onClick={() => issueIntent({ name: 'select', args: { ids }, targets: ids })}>
+              {deviceClass === 'aircraft' ? 'Select aircraft' : 'Select robots'}
+            </button>
+          })}
+        </div>
+        <p className="ct-dpad-note">Toggle devices to build a group, or choose Only to move one device.</p>
         <div className="ct-chips" role="group" aria-label="Devices">
           {chips.map((chip) => (
-            <button
+            <span key={chip.droneId} className="ct-chip-group"><button
               key={chip.droneId}
               type="button"
               className={chip.selected ? 'ct-chip is-selected' : 'ct-chip'}
               aria-pressed={chip.selected}
-              disabled={!chip.selectable}
+              disabled={!chip.selectable || (chip.selected && state.selection.length === 1)}
               title={chip.reason || undefined}
-              onClick={() => selectAircraft(chip.droneId)}
+              onClick={() => toggleAircraft(chip.droneId)}
             >
               <span className="ct-chip-id">{chip.id}</span>{' '}
               <span className="ct-chip-sub">{chip.sub}</span>
-            </button>
+            </button><button type="button" className="ct-select-only" disabled={!chip.selectable}
+              aria-label={`Select only ${chip.id}`} onClick={() => issueIntent({ name: 'select', args: { ids: [chip.droneId] }, targets: [chip.droneId] })}>Only</button></span>
           ))}
         </div>
         {blockers && (
@@ -135,6 +147,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
                 onChange={(event) => onSteps(clampTranslateSteps(Number(event.target.value)))}
               />
             </label>
+            <p className="ct-dpad-note">Robots: room east +x, north +y. Aircraft: relay-configured translation frame. One step is configured by the relay.</p>
             {dpadReason && <p className="ct-dpad-note">{dpadReason}</p>}
           </div>
         </div>
@@ -236,7 +249,14 @@ function FormationPanel({
   const { state, issueIntent } = controller
   const shown = preview ?? state.formation
   const selected = sortedAircraft(state.aircraft).filter((drone) => state.selection.includes(drone.drone_id))
-  const dots = formationPlot(selected.length, shown, state.spacing)
+  const classes = [...new Set(selected.map((device) => device.device_class))]
+  const groups = classes.map((deviceClass) => {
+    const count = selected.filter((device) => device.device_class === deviceClass).length
+    return { deviceClass, count, dots: formationPlot(count, shown, state.spacing) }
+  })
+  const dots = groups.flatMap((group) => group.dots.map((dot) => ({ ...dot,
+    id: classes.length > 1 ? `${group.deviceClass === 'aircraft' ? 'Aircraft' : 'Robot'} ${dot.id}` : dot.id,
+  })))
   const options = formationControls(state)
   return (
     <div className="ct-panel" aria-label="Formation">
@@ -268,21 +288,17 @@ function FormationPanel({
           )
         })}
       </div>
-      <div className="ct-plot" aria-hidden="true">
-        {dots.map((dot) => (
-          <span
-            key={dot.id}
-            className="ct-plot-dot"
-            style={{ left: dot.left, top: dot.top }}
-          >
-            {dot.id}
-          </span>
-        ))}
-      </div>
+      {groups.map((group) => <section key={group.deviceClass} aria-label={`${group.deviceClass === 'aircraft' ? 'Aircraft' : 'Robot'} formation preview`}>
+        {classes.length > 1 && <p className="ct-eyebrow">{group.deviceClass === 'aircraft' ? 'Aircraft' : 'Robots'} · {group.count}</p>}
+        {classes.length > 1 && group.count === 1 ? <p className="ct-dpad-note">Single device holds its current pose.</p> : <div className="ct-plot" aria-hidden="true">
+          {group.dots.map((dot) => <span key={dot.id} className="ct-plot-dot" style={{ left: dot.left, top: dot.top }}>{dot.id}</span>)}
+        </div>}
+      </section>)}
       <p className="ct-formation-relay">{formationRelayNote(preview, state.formation)}</p>
       <p className="ct-formation-planner">
-        Shape-only slots: aircraft-to-slot assignments are not projected by the relay and are therefore not
-        guessed here. The arbiter refuses the whole plan if any assigned route breaks spacing, the ceiling or
+        Shape-only slots: device-to-slot assignments are not projected by the relay and are therefore not
+        guessed here. Robots form on the floor plane; aircraft retain their flight altitude. Mixed groups
+        form independently within each class, with spacing checked within that class. The arbiter refuses the whole plan if any assigned route breaks spacing, the ceiling or
         the geofence. The requested shape is not authoritative until relay state reports the completed update.
       </p>
       {dots.map((dot) => (

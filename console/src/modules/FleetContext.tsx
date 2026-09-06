@@ -8,6 +8,8 @@ import {
   rosterNoun,
 } from '../control/state'
 import type { RelayAircraftState, RelaySensorEvent } from '../relay/contract'
+import { sensorStatus } from '../sensor/status'
+import { useSecondTick } from './live/use-second-tick'
 import { useSensorStore } from '../sensor/store'
 import { authorityWords, isReady, membershipTone, metricTone, sortedAircraft } from '../shell/derive'
 import { formatPercent, formatTime, humanizeCode } from '../shell/format'
@@ -21,20 +23,23 @@ import type { ModuleProps } from './types'
  * Registry cards and the departed list, bound to the authoritative state. The
  * context column renders it for every module; Control › Fleet renders it wide.
  */
-export function FleetContext({ controller }: ModuleProps) {
-  return <FleetRegistry controller={controller} layout="column" />
+export function FleetContext({ controller, now }: ModuleProps) {
+  return <FleetRegistry controller={controller} layout="column" now={now} />
 }
 
 export function FleetRegistry({
   controller,
   layout,
+  now,
 }: {
   controller: ModuleProps['controller']
   layout: 'column' | 'two'
+  now: () => number
 }) {
   const { state, toggleAircraft, sensors } = controller
   const snapshot = useSensorStore(sensors)
   const fleet = sortedAircraft(state.aircraft)
+  useSecondTick(fleet.some((device) => device.sensor?.last_scan_at != null))
   const registry = (
     <div>
       {layout === 'two' && (
@@ -49,6 +54,7 @@ export function FleetRegistry({
           <FleetCard
             key={drone.drone_id}
             drone={drone}
+            now={now()}
             selected={state.selection.includes(drone.drone_id)}
             lastInSelection={state.selection.length === 1 && state.selection[0] === drone.drone_id}
             selectionEnabled={isIntentEnabled(state, 'select')}
@@ -101,6 +107,7 @@ export function FleetRegistry({
 
 function FleetCard({
   drone,
+  now,
   selected,
   lastInSelection,
   selectionEnabled,
@@ -109,6 +116,7 @@ function FleetCard({
   onToggle,
 }: {
   drone: RelayAircraftState
+  now: number
   selected: boolean
   lastInSelection: boolean
   selectionEnabled: boolean
@@ -152,8 +160,9 @@ function FleetCard({
           {drone.last_seen_at === null ? 'last seen unreported' : `seen ${formatTime(drone.last_seen_at)}`}
         </span>
       </p>
-      {drone.device_class === 'ground_vehicle' && drone.adapter_capabilities.includes('lidar') && (
-        <LidarPolar device={drone} scan={scan} size={92} />
+      <p className={`fleet-line tone-${sensorStatus(drone, now).tone}`}>{sensorStatus(drone, now).text}</p>
+      {drone.adapter_capabilities.includes('lidar') && (
+        <LidarPolar device={drone} scan={scan} size={92} now={now} />
       )}
       {drone.readiness_reasons.length > 0 && (
         <div className="fleet-reasons">

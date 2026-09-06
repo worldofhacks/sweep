@@ -54,13 +54,13 @@ describe('Devices module', () => {
     expect(row(one, 'link')).toHaveTextContent('87% · battery 71% · position 60%')
     expect(row(one, 'authority')).toHaveTextContent('Sweep · spotter present')
     expect(row(one, 'video')).toHaveTextContent('live · just now')
-    expect(row(one, 'sensor')).toHaveTextContent('lidar_scan · just now')
+    expect(row(one, 'sensor')).toHaveTextContent('Lidar live · single scan plane only')
     expect(one.getByText('ready', { selector: '.dv-ready' })).toBeInTheDocument()
     expect(one.getByText('no refusal has named this device')).toBeInTheDocument()
 
     const three = card('G-03')
     expect(three.getByText('docked')).toBeInTheDocument()
-    expect(row(three, 'sensor')).toHaveTextContent('no lidar')
+    expect(row(three, 'sensor')).toHaveTextContent('No lidar fitted / advertised · obstacle coverage unavailable')
     expect(row(three, 'video')).toHaveTextContent('unreported')
     expect(row(three, 'authority')).toHaveTextContent('Sweep · spotter absent')
     expect(three.getByText('rc_safety_operator_missing')).toBeInTheDocument()
@@ -69,7 +69,7 @@ describe('Devices module', () => {
     const aircraft = card('D-02')
     expect(aircraft.getByText('aircraft', { selector: '.dv-class' })).toBeInTheDocument()
     expect(row(aircraft, 'authority')).toHaveTextContent('Sweep · rc safety operator present')
-    expect(row(aircraft, 'sensor')).toHaveTextContent('no lidar')
+    expect(row(aircraft, 'sensor')).toHaveTextContent('No lidar fitted / advertised · obstacle coverage unavailable')
     expect(row(aircraft, 'video')).toHaveTextContent('offline · 38 s ago')
     const pane = within(screen.getByRole('region', { name: 'Working pane' }))
     expect(pane.getByText('No devices have left.')).toBeInTheDocument()
@@ -135,15 +135,15 @@ describe('Devices module', () => {
     expect(lastRefusal(state, 11)).toMatchObject({ t: t + 3, reasonCode: 'unsupported_for_device_class' })
     expect(lastRefusal(state, 12)).toBeNull()
 
-    expect(sensorWord(drones[2], t)).toEqual({ text: 'lidar_scan · just now', tone: 'ink' })
-    expect(sensorWord(drones[4], t)).toEqual({ text: 'no lidar', tone: 'muted' })
+    expect(sensorWord(drones[2], t)).toEqual({ text: 'Lidar live · single scan plane only', tone: 'ink' })
+    expect(sensorWord(drones[4], t)).toEqual({ text: 'No lidar fitted / advertised · obstacle coverage unavailable', tone: 'warn' })
     expect(sensorWord({ ...drones[2], sensor: undefined }, t)).toEqual({
-      text: 'lidar advertised · no scan reported',
-      tone: 'muted',
+      text: 'Lidar advertised · no scan reported · coverage unknown',
+      tone: 'warn',
     })
     expect(sensorWord({ ...drones[2], sensor: { kind: 'lidar_scan', last_scan_at: null } }, t)).toEqual({
-      text: 'lidar_scan · no scan yet',
-      tone: 'muted',
+      text: 'Lidar advertised · no scan reported · coverage unknown',
+      tone: 'warn',
     })
   })
 })

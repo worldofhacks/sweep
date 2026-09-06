@@ -13,10 +13,11 @@
  * | Thumb_Up    | 400 ms   | ≥ 0.8 | confirm the pending preview               |
  * | Thumb_Down  | 400 ms   | ≥ 0.8 | cancel the pending preview                |
  *
- * `estop`, `arm`, `takeoff`, and free-flight motion are never gesture-emittable;
- * they stay on the console controls and the physical RC. See
+ * `estop`, `arm`, and `takeoff` stay on manual controls; the Fleet profile
+ * drafts bounded translations and the Swarm profile drafts formations. See
  * NEVER_GESTURE_EMITTABLE and validateGesturePairs.
  */
+import type { TranslateDirection } from '../control/intent'
 import type { ConsoleIntentName } from '../relay/contract'
 
 export type GestureCategory =
@@ -40,10 +41,12 @@ export const GESTURE_CATEGORIES: readonly GestureCategory[] = [
   'ILoveYou',
 ]
 
-export type GestureEmittableName = Extract<ConsoleIntentName, 'capture_room' | 'hold'>
+export type GestureProfile = 'capture' | 'fleet' | 'swarm'
+export type GestureEmittableName = Extract<ConsoleIntentName, 'capture_room' | 'hold' | 'translate' | 'formation_next'>
 
 export type GestureAction =
-  | { kind: 'draft'; name: GestureEmittableName }
+  | { kind: 'draft'; name: 'capture_room' | 'hold' | 'formation_next' }
+  | { kind: 'draft'; name: 'translate'; direction: TranslateDirection }
   | { kind: 'confirm' }
   | { kind: 'cancel' }
 
@@ -60,12 +63,13 @@ export interface GesturePair {
 export const GESTURE_EMITTABLE_NAMES: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'capture_room',
   'hold',
+  'translate',
+  'formation_next',
 ])
 
 /**
  * Names that no gesture pair may ever target. The network stop, arming,
- * takeoff, and every free-flight motion stay on the console controls and the
- * physical RC. This list is checked against every pair set, including the
+ * takeoff, landing, altitude and the network stop stay on manual controls. This list is checked against every pair set, including the
  * default, and is shown in the panel.
  */
 export const NEVER_GESTURE_EMITTABLE: readonly string[] = Object.freeze([
@@ -75,9 +79,7 @@ export const NEVER_GESTURE_EMITTABLE: readonly string[] = Object.freeze([
   'takeoff',
   'land',
   'land_all',
-  'translate',
   'altitude',
-  'formation_next',
   'formation_set',
   'spacing',
   'come_home',
@@ -132,6 +134,30 @@ export const DEFAULT_GESTURE_POLICY_CONFIG: GesturePolicyConfig = Object.freeze(
   maxFrameGapMs: DEFAULT_MAX_FRAME_GAP_MS,
 })
 
+/** Explicit opt-in; every action drafts through the shared preview/confirmation flow. */
+export const FLEET_GESTURE_PAIRS: readonly GesturePair[] = Object.freeze([
+  { gesture: 'Open_Palm', action: { kind: 'draft', name: 'hold' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  { gesture: 'Pointing_Up', action: { kind: 'draft', name: 'translate', direction: 'north' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  { gesture: 'Victory', action: { kind: 'draft', name: 'translate', direction: 'east' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  { gesture: 'Closed_Fist', action: { kind: 'draft', name: 'translate', direction: 'south' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  { gesture: 'ILoveYou', action: { kind: 'draft', name: 'translate', direction: 'west' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  ...DEFAULT_GESTURE_PAIRS.filter((pair) => pair.action.kind !== 'draft'),
+])
+
+export const FLEET_GESTURE_POLICY_CONFIG: GesturePolicyConfig = Object.freeze({
+  ...DEFAULT_GESTURE_POLICY_CONFIG,
+  pairs: FLEET_GESTURE_PAIRS,
+})
+
+export const SWARM_GESTURE_POLICY_CONFIG: GesturePolicyConfig = Object.freeze({
+  ...DEFAULT_GESTURE_POLICY_CONFIG,
+  pairs: [
+    { gesture: 'Open_Palm', action: { kind: 'draft', name: 'hold' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+    { gesture: 'Victory', action: { kind: 'draft', name: 'formation_next' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+    ...DEFAULT_GESTURE_PAIRS.filter((pair) => pair.action.kind !== 'draft'),
+  ] satisfies GesturePair[],
+})
+
 /** Returns every reason a pair set is unacceptable; empty means acceptable. */
 export function validateGesturePairs(pairs: readonly GesturePair[]): string[] {
   const problems: string[] = []
@@ -142,6 +168,9 @@ export function validateGesturePairs(pairs: readonly GesturePair[]): string[] {
     seen.add(pair.gesture)
     if (pair.action.kind === 'draft') {
       const name: string = pair.action.name
+      if (pair.action.name === 'translate' && !['north', 'south', 'east', 'west'].includes(pair.action.direction)) {
+        problems.push('translate needs an explicit direction.')
+      }
       if (NEVER_GESTURE_EMITTABLE.includes(name)) {
         problems.push(`${name} is never gesture-emittable.`)
       } else if (!GESTURE_EMITTABLE_NAMES.has(pair.action.name)) {
@@ -163,7 +192,7 @@ export function isGestureEmittable(name: string): name is GestureEmittableName {
 }
 
 {
-  const problems = validateGesturePairs(DEFAULT_GESTURE_PAIRS)
+  const problems = [...validateGesturePairs(DEFAULT_GESTURE_PAIRS), ...validateGesturePairs(FLEET_GESTURE_PAIRS), ...validateGesturePairs(SWARM_GESTURE_POLICY_CONFIG.pairs)]
   if (problems.length > 0) {
     throw new Error(`Default gesture pairs are invalid: ${problems.join(' ')}`)
   }
@@ -298,6 +327,7 @@ function idle(t: number): GesturePolicyState {
 }
 
 export function describeGestureAction(action: GestureAction): string {
+  if (action.kind === 'draft' && action.name === 'translate') return `draft ${action.direction} one step`
   if (action.kind === 'draft') return `draft ${action.name}`
   return action.kind === 'confirm' ? 'confirm pending preview' : 'cancel pending preview'
 }

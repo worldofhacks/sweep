@@ -14,6 +14,7 @@ import {
   ROBOT_UNSUPPORTED_NOTE,
   STOP_ACTIVE_REASON,
   deviceClassBlockedReason,
+  classFormationReason,
   noSelectionReason,
   aircraftChips,
   altitudeControls,
@@ -470,7 +471,7 @@ describe('mission steps', () => {
 
 describe('control gating per device class', () => {
   const mixed = (selection: number[]) =>
-    connected(selection, { drones: fixtureScenario('mixed').fleet(t), roster_version: 14 })
+    connected(selection, { drones: fixtureScenario('mixed').fleet(t), roster_version: 14, capability_profile: 'c2_fleet_operations', enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS] })
   const byKey = (state: ControlState) =>
     Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((spec) => [spec.key, spec]))
 
@@ -540,4 +541,19 @@ describe('control gating per device class', () => {
       { id: 'G-01', cmd: 'hold' },
     ])
   })
+})
+
+
+test('mixed formations apply capacity and minimums per class, while singleton classes hold', () => {
+  const robots = fixtureScenario('mixed').fleet(t).filter((device) => device.device_class === 'ground_vehicle')
+  robots.push({ ...robots[0], drone_id: 14, unit: 4 })
+  const drones = [...fixtureAircraft(t, 6), ...robots].map((device) => ({ ...device, membership: 'ready' as const, selectable: true, readiness_reasons: [] }))
+  const all = drones.map((device) => device.drone_id)
+  const state = connected(all, { drones, capability_profile: 'c2_fleet_operations', enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS] })
+  expect(all).toHaveLength(10)
+  expect(classFormationReason(state, 'diamond')).toBeNull()
+  expect(formationControls(state).every((control) => control.enabled)).toBe(true)
+  expect(classFormationReason({ ...state, selection: [1, 11, 12] }, 'line')).toBeNull()
+  expect(classFormationReason({ ...state, selection: [1, 11, 12] }, 'diamond')).toContain('Robot group')
+  expect(classFormationReason({ ...state, selection: [1, 11] }, 'line')).toBeNull()
 })

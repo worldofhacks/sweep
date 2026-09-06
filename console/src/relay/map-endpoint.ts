@@ -11,6 +11,8 @@ export interface MapEndpoint {
   /** POST: clears the session's occupancy grid. */
   resetUrl: string
   authorization: string
+  /** Injected fixture transport; real endpoints use the browser fetch. */
+  fetcher?: typeof fetch
 }
 
 /** Null unless the bootstrap gives an HTTP-capable relay URL, a session, and a token. */

@@ -48,8 +48,8 @@ function renderConsole(initialModule: 'devices' | 'control') {
 
 describe('LidarPolar', () => {
   test('plots the returns of the newest scan with the forward axis up', () => {
-    render(<LidarPolar device={device} scan={scan} size={100} />)
-    expect(screen.getByText('2 of 360 returns · 2.0 m')).toBeInTheDocument()
+    render(<LidarPolar device={device} scan={scan} size={100} now={scan.t} />)
+    expect(screen.getByText('Live · 2 of 360 returns · 2.0 m')).toBeInTheDocument()
     const canvas = screen.getByRole('img', { name: 'G-01 polar lidar plot' }) as HTMLCanvasElement
     const dots = callsNamed(canvasCalls(canvas), 'fillRect').filter((args) => args[2] === 2)
     // Two metres forward fills the plot; one metre to its left is half of it.

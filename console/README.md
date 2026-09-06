@@ -247,3 +247,39 @@ selection, confirmed takeoff, configured-step translation, hold, come home, and 
 land-all. Takeoff and land-all stay in preview until the operator confirms the exact request,
 selection, and roster version. The network E-stop remains available from both its button and the
 separately authenticated keyboard connection.
+
+
+### Mixed fleet controls and sensing
+
+Control › Swarm chips add or remove one device from the current selection. **Only** selects
+one device; **Select aircraft**, **Select robots**, and **Select all ready** select a class
+or the full ready roster. The relay remains authoritative: a selection change invalidates
+an older movement preview. Intent selections support up to ten ids (six simulated aircraft
+plus four robots); physical capacity remains a relay concern.
+
+Gesture starts with Capture / HOLD. **Fleet motion** is an explicit opt-in profile:
+point up → north, Victory → east, closed fist → south, I love you → west, open palm → hold.
+Each translation drafts one relay-configured step for the selected devices. **Swarm
+formations** maps Victory to formation_next and open palm to hold. Thumb up confirms a
+webcam draft; thumb down cancels it. Changing profile stops tracking and cancels the pending
+preview. Arming, takeoff, landing and network stop remain manual controls. Gestures use the
+same Intent v1 preview, selection invalidation and relay outcome path as manual controls.
+
+Robot translation uses room +x east / +y north. Aircraft retain the relay's configured
+translation frame. No telemetry yaw extension is required. Formation previews show
+anonymous slots separately for aircraft and robots; a singleton class holds its pose.
+C2 formation controls remain disabled unless the relay advertises them. The simulator-only
+C2 release restriction remains in force for real hardware.
+
+Reference › Map reads the authenticated occupancy PNG and displays fresh scans from either
+class. Sensors are displayed by capability, including aircraft that advertise lidar.
+After two seconds without a scan, the live overlay disappears and the device reports stale
+coverage. The historical occupancy raster is retained by the relay. Devices without lidar
+report unavailable coverage; no return, no hardware, or a stale feed never means clear.
+Lidar samples a single plane and does not detect obstacles above or below that plane.
+
+`?fixture=mixed` supplies two aircraft, three robots, continuous synthetic lidar on two robots,
+and a grayscale room PNG through an isolated fixture transport. The third robot has no lidar
+and an absent spotter, so its missing coverage and readiness blocker remain visible. No
+fixture command contacts a robot. Production video playback still requires media credentials
+from the normal runtime configuration endpoint.

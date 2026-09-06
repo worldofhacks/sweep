@@ -1,3 +1,4 @@
+import { isFreshScan } from '../../sensor/status'
 import { formatDeviceId } from '../../control/state'
 import type { DeviceClass, DroneId, RelayAircraftState, RelaySensorEvent } from '../../relay/contract'
 import type { SensorSnapshot } from '../../sensor/store'
@@ -41,10 +42,12 @@ export function telemetryPose(
 export function mapDevices(
   fleet: readonly RelayAircraftState[],
   sensors: SensorSnapshot,
+  now?: number,
 ): MapDevice[] {
   const devices: MapDevice[] = []
   for (const device of fleet) {
-    const scan = deviceScan(device, sensors)
+    const latest = deviceScan(device, sensors)
+    const scan = latest && (now === undefined || isFreshScan(latest, now)) ? latest : null
     const pose = telemetryPose(device.telemetry)
     const common = {
       droneId: device.drone_id,

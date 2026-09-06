@@ -55,6 +55,8 @@ describe('sensor store', () => {
     expect(store.apply(scan({ event_id: 'c', t: 1_756_700_000_100, connection_epoch: 4 }))).toBe(true)
     expect(store.snapshot().trails[11].map((item) => item.event_id)).toEqual(['c'])
     expect(store.snapshot().latest[11].connection_epoch).toBe(4)
+    expect(store.apply(scan({ event_id: 'late-old-epoch', t: 1_756_700_000_999, connection_epoch: 3 }))).toBe(false)
+    expect(store.snapshot().latest[11].event_id).toBe('c')
   })
 
   test('reset empties the store once and notifies only when something was held', () => {

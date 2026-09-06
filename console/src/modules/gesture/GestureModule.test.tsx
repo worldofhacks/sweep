@@ -97,7 +97,7 @@ describe('Gesture module', () => {
     expect(never).toHaveTextContent('estop')
     expect(never).toHaveTextContent('arm')
     expect(never).toHaveTextContent('takeoff')
-    expect(never).toHaveTextContent('translate')
+    expect(never).not.toHaveTextContent('translate')
     expect(never).toHaveTextContent('stay on the console controls and the physical RC')
     expect(screen.getByText(/Nothing recognised yet/)).toBeInTheDocument()
 
@@ -285,4 +285,19 @@ describe('Gesture module', () => {
     expect(clients.webcam?.sent).toHaveLength(0)
     expect(clients.console.sent).toHaveLength(0)
   })
+})
+
+
+test('changing a gesture profile closes tracking and invalidates its previous preview', async () => {
+  const { clients, hold } = mount()
+  const user = userEvent.setup()
+  await user.click(enableButton())
+  hold('Open_Palm', 650)
+  expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBeInTheDocument()
+  await user.click(screen.getByRole('radio', { name: 'Fleet motion (opt in)' }))
+  expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+  expect(enableButton()).toHaveAttribute('aria-pressed', 'false')
+  expect(screen.getByRole('radio', { name: 'Fleet motion (opt in)' })).toBeChecked()
+  expect(screen.getByText(/Point up: north/)).toBeInTheDocument()
+  expect(clients.webcam?.sent).toHaveLength(0)
 })

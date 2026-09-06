@@ -21,10 +21,10 @@ import type {
   IntentArgs,
   IntentArgsByName,
   SelectionRule,
+  RelayAircraftState,
 } from '../../relay/contract'
 import {
   FORMATION_NAMES as CONTRACT_FORMATION_NAMES,
-  MAX_INTENT_DRONE_IDS,
   followsSelection,
   isSupportedIntent,
   requiresConfirmation,
@@ -255,13 +255,13 @@ export function motionControls(state: ControlState): ControlSpec[] {
       'formation_next',
       'Formation next',
       { name: 'formation_next', args: {} },
-      { sel: true, extra: formationCountReason(state.selection.length) },
+      { sel: true, extra: classFormationReason(state) },
     ),
   ]
 }
 
 export const MOTION_FOOTNOTE =
-  'Motion controls use the authoritative selection. Steps resolve against the room frame and every target remains subject to the arbiter.'
+  'Motion controls use the authoritative selection. Robot steps resolve against the room frame; aircraft use the relay-configured frame. Every target remains subject to the arbiter.'
 
 /** Commands: the four MVP formations and the two altitude steps. */
 export function formationControls(state: ControlState): ControlSpec[] {
@@ -273,10 +273,27 @@ export function formationControls(state: ControlState): ControlSpec[] {
       { name: 'formation_set', args: { name } },
       {
         sel: true,
-        extra: formationSelectionReason(name, state.selection.length),
+        extra: classFormationReason(state, name),
       },
     ),
   )
+}
+
+/** Classes form independently; a singleton holds its pose in a mixed formation. */
+export function classFormationReason(state: ControlState, name?: FormationName): string | null {
+  const devices = state.selection.flatMap((id) => state.aircraft[id] ? [state.aircraft[id]] : [])
+  const classes = [...new Set(devices.map((device) => device.device_class))]
+  if (classes.length < 2) {
+    const reason = name ? formationSelectionReason(name, devices.length) : formationCountReason(devices.length)
+    return devices[0]?.device_class === 'ground_vehicle' ? reason?.replaceAll('aircraft', 'robots') ?? null : reason
+  }
+  for (const deviceClass of classes) {
+    const count = devices.filter((device) => device.device_class === deviceClass).length
+    if (count === 1) continue
+    const reason = name ? formationSelectionReason(name, count) : formationCountReason(count)
+    if (reason) return `${deviceClass === 'aircraft' ? 'Aircraft' : 'Robot'} group: ${reason.replaceAll('aircraft', 'devices')}`
+  }
+  return null
 }
 
 function formationSelectionReason(name: FormationName, count: number): string | null {
@@ -291,8 +308,8 @@ function formationCountReason(
 ): string | null {
   const subject = name === undefined ? 'formation' : `${name} formation`
   if (count < minimum) return `${subject} requires at least ${minimum} selected aircraft.`
-  if (count > MAX_INTENT_DRONE_IDS) {
-    return `formation supports at most ${MAX_INTENT_DRONE_IDS} selected aircraft.`
+  if (count > 6) {
+    return `formation supports at most 6 selected aircraft.`
   }
   return null
 }
@@ -418,7 +435,7 @@ export function formationSlots(name: string, count: number, spacing: number): Ar
     !FORMATION_NAMES.includes(name as FormationName) ||
     !Number.isInteger(count) ||
     count < 2 ||
-    count > MAX_INTENT_DRONE_IDS ||
+    count > 6 ||
     !Number.isFinite(spacing) ||
     spacing <= 0 ||
     ((name === 'wedge' || name === 'diamond') && count < 4)

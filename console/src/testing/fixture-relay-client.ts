@@ -95,6 +95,8 @@ export class FixtureRelayClient implements RelayClient {
   private readonly source: IntentSource
   private readonly capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations'
   private armed: boolean
+  private readonly liveSensors: boolean
+  private sensorTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
     sessionId: string,
@@ -103,7 +105,9 @@ export class FixtureRelayClient implements RelayClient {
     scenario: FixtureFleetSize | FixtureScenarioName | boolean = 4,
     armed = true,
     capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations' = 'c1_basic_control',
+    liveSensors = false,
   ) {
+    this.liveSensors = liveSensors
     this.sessionId = sessionId
     this.now = now
     this.source = source
@@ -123,6 +127,7 @@ export class FixtureRelayClient implements RelayClient {
   }
 
   start(): void {
+    this.stop()
     const link = this.link
     this.emitConnection(link.status, link.reason)
     if (link.status === 'disconnected') return
@@ -159,10 +164,21 @@ export class FixtureRelayClient implements RelayClient {
       for (const scan of this.scenario.scans?.(this.now()) ?? []) {
         this.emitServer({ ...scan, v: 1, event_id: this.nextEventId(), session: this.sessionId })
       }
+      if (this.liveSensors && this.scenario.scans) {
+        this.sensorTimer = setInterval(() => {
+          this.emitState(this.now())
+          for (const scan of this.scenario.scans?.(this.now()) ?? []) {
+            this.emitServer({ ...scan, v: 1, event_id: this.nextEventId(), session: this.sessionId })
+          }
+        }, 1_000)
+      }
     }
   }
 
-  stop(): void {}
+  stop(): void {
+    if (this.sensorTimer !== null) clearInterval(this.sensorTimer)
+    this.sensorTimer = null
+  }
 
   subscribe(listener: RelayClientListener): () => void {
     this.listeners.add(listener)

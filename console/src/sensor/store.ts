@@ -43,6 +43,7 @@ export function createSensorStore(): SensorStore {
     apply(event) {
       const previous = snapshot.latest[event.drone_id]
       if (previous !== undefined) {
+        if (event.connection_epoch < previous.connection_epoch) return false
         if (previous.event_id === event.event_id) return false
         if (previous.connection_epoch === event.connection_epoch && event.t < previous.t) return false
       }

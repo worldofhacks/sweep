@@ -124,7 +124,7 @@ function DeviceCard({
         <Row k="last seen" v={device.last_seen_at === null ? 'unreported' : formatAgo(now, device.last_seen_at)} />
       </dl>
       {device.adapter_capabilities.includes('lidar') && (
-        <LidarPolar device={device} scan={scan} size={104} />
+        <LidarPolar device={device} scan={scan} size={104} now={now} />
       )}
       {device.readiness_reasons.length > 0 ? (
         <div className="dv-reasons">

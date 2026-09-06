@@ -1,3 +1,4 @@
+import { fixtureMapEndpoint } from './testing/fixture-map.ts'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
@@ -32,7 +33,7 @@ async function resolveRuntime() {
   if (fixtureScenario) {
     return {
       sessionId: fixtureSessionId,
-      client: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'console', fixtureScenario),
+      client: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'console', fixtureScenario, true, 'c1_basic_control', fixtureScenario === 'mixed'),
       keyboardClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'keyboard', fixtureScenario),
       webcamClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'webcam', fixtureScenario),
       languageClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'language', fixtureScenario),
@@ -40,7 +41,7 @@ async function resolveRuntime() {
       transcriptClient: null,
       // The fixture has no relay, so only a same-origin media endpoint can enable playback.
       mediaConfigurationSource: null,
-      mapEndpoint: null,
+      mapEndpoint: fixtureScenario === 'mixed' ? fixtureMapEndpoint(() => Date.now()) : null,
       baseUrl: null,
       catalogClient: new FixtureCatalogClient(fixtureScenario, () => Date.now()),
     }

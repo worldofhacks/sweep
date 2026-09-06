@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './map.css'
+import { isFreshScan, sensorStatus } from '../../sensor/status'
+import { useSecondTick } from '../live/use-second-tick'
 import { formatDeviceId } from '../../control/state'
 import { useSensorStore } from '../../sensor/store'
 import { sortedAircraft } from '../../shell/derive'
@@ -33,11 +35,13 @@ type MapStatus = 'idle' | 'map' | 'absent' | 'error'
  * that reports a position, drawn as a heading triangle. Nothing here is
  * estimated between frames; a device without a position is listed, not placed.
  */
-export function FleetMap({ controller, catalog, mapEndpoint }: ModuleProps) {
+export function FleetMap({ controller, catalog, mapEndpoint, now }: ModuleProps) {
   const { state, sensors } = controller
+  useSecondTick(true)
+  const at = now()
   const snapshot = useSensorStore(sensors)
   const fleet = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
-  const devices = useMemo(() => mapDevices(fleet, snapshot), [fleet, snapshot])
+  const devices = useMemo(() => mapDevices(fleet, snapshot, at), [fleet, snapshot, at])
   const scanned = useMemo(
     () =>
       scanningDevices(fleet, snapshot).map(({ device, scan }) => ({
@@ -48,8 +52,8 @@ export function FleetMap({ controller, catalog, mapEndpoint }: ModuleProps) {
     [fleet, snapshot],
   )
   const scans = useMemo<MapScan[]>(
-    () => scanned.map(({ device, scan, trail }) => ({ unit: device.unit, scan, trail })),
-    [scanned],
+    () => scanned.filter(({ scan }) => isFreshScan(scan, at)).map(({ device, scan, trail }) => ({ unit: device.unit, scan, trail })),
+    [scanned, at],
   )
   const geofence = catalog.snapshot.config?.geofence ?? null
 
@@ -226,7 +230,8 @@ export function FleetMap({ controller, catalog, mapEndpoint }: ModuleProps) {
       </div>
       <p className="mp-hint">
         Drag to pan, scroll to zoom. {view.scale.toFixed(0)} pixels per metre. The room frame is x
-        east, y north, in metres.
+        east, y north, in metres. Lidar samples one plane and cannot prove an obstacle-free route.
+        Stale scans are removed from live overlays; the occupancy raster retains historical observations.
       </p>
       {scanned.length > 0 && (
         <ul className="mp-legend" aria-label="Scanning devices">
@@ -242,6 +247,11 @@ export function FleetMap({ controller, catalog, mapEndpoint }: ModuleProps) {
           ))}
         </ul>
       )}
+      <ul className="mp-legend" aria-label="Device sensing coverage">
+        {fleet.map((device) => <li key={device.drone_id} className={`tone-${sensorStatus(device, at).tone}`}>
+          {formatDeviceId(device)} · {sensorStatus(device, at).text}
+        </li>)}
+      </ul>
       {unplaced.length > 0 && (
         <p className="mp-unplaced">
           No position reported for {unplaced.map(formatDeviceId).join(', ')}; they are not drawn.
