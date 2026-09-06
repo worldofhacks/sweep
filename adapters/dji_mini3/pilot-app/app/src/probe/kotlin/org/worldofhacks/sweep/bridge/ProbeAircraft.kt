@@ -63,13 +63,14 @@ import org.worldofhacks.sweep.bridge.session.AircraftIdentity
  * the camera and media commands fail with `unsupported` until Phase G, so the node never
  * claims it executed something it cannot drive.
  */
-class ProbeAircraft(
+internal class ProbeAircraft(
     phoneModel: String,
     androidVersion: String,
     private val sdkVersion: () -> String,
     private val log: (name: String, detail: String) -> Unit,
     /** Bench log hook: one call per key and listener event (`attached`, `product_connected`, `first_value`). */
     private val record: (key: String, event: String, status: TelemetryKeyStatus) -> Unit = { _, _, _ -> },
+    private val rawRecorder: SensorRawRecorder = SensorRawRecorder.NONE,
 ) : AircraftSource, CommandExecutor {
     private val lock = Any()
 
@@ -267,6 +268,13 @@ class ProbeAircraft(
         if (first != null) {
             log("Telemetry key", "${binding.name} first value" + (sinceAttachMs?.let { " $it ms after its listener was registered" } ?: ""))
             record(binding.name, "first_value", first)
+        }
+        when (binding.name) {
+            "KeyAircraftVelocity" -> (value as? Velocity3D)?.let { velocity ->
+                rawRecorder.recordVelocityNedMps(velocity.x, velocity.y, velocity.z)
+            }
+            "KeyAltitude" -> (value as? Double)?.let(rawRecorder::recordBarometricHeightM)
+            "KeyUltrasonicHeight" -> (value as? Int)?.let(rawRecorder::recordUltrasonicHeightDm)
         }
         publish()
     }

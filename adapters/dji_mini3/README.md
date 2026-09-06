@@ -49,6 +49,7 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 cd adapters/dji_mini3/pilot-app
 printf 'sdk.dir=%s/Library/Android/sdk\n' "$HOME" > local.properties   # gitignored
 ./gradlew :bridge-core:test :bench:test :bridge-node:test :bridge-publish:test   # what CI runs; no Android SDK needed
+./gradlew :app:testFakeDebugUnitTest :app:testProbeDebugUnitTest                 # Android unit tests run in CI
 ./gradlew :app:assembleFakeDebug               # any phone, no DJI dependency
 ./gradlew :app:assembleProbeDebug              # DJI MSDK 5.18.0, arm64-v8a only
 ```
@@ -205,6 +206,29 @@ in the exported probe report, and in `filesDir/bench/telemetry-keys-<stamp>.json
 pull it like the Phase D logs; `BenchAnalysis` lists the first values under `notes`). An
 aircraft power cycle asks support again without registering a second listener: every
 listener shares one holder object and is cancelled by it.
+
+### Raw phone sensor records (diagnostic only)
+
+While the probe flavor has an authenticated, joined relay identity and a connected product,
+it records the values delivered by `KeyAircraftVelocity`, `KeyAltitude`, and
+`KeyUltrasonicHeight` under `filesDir/sensor-records/`. DJI callback threads only validate
+the typed scalars and offer them to a bounded queue; a background writer performs JSON and
+file I/O. Velocity remains explicit N-E-D metres per second. Barometric altitude remains in
+metres and ultrasonic height remains in the SDK's decimetres: this recorder does not fuse,
+calibrate, or convert either source into localization evidence.
+
+Every JSONL record carries a UUID event id plus the immutable UUID recording run, relay
+session/drone/connection epoch, DJI product id/generation/type/firmware, SDK version, and a
+SHA-256 digest of the app/variant and recorder source contract. A changed relay or product
+identity starts a new run. Files rotate at 4 MiB, and both segment count (8) and total storage
+(32 MiB) are bounded across process restarts. Queue drops, invalid values, writer errors,
+rotation, retention, and bounded-close timeouts are counted and surfaced in the SDK event
+log. Stopping the relay service closes the active recorder; reconnecting creates a new one.
+
+`received_at_android_elapsed_realtime_ms` is Android callback receipt time. It is not a DJI
+sensor capture time, and these records are not source-timing-qualified, flight-approved, or
+wired into localization, navigation, or control. Calibration, time alignment, source
+selection/fusion, AprilTag localization, and physical qualification remain separate work.
 
 ### Staged localization diagnostics (non-flight)
 
