@@ -182,7 +182,12 @@ class FleetDemo:
                 self._configure_app(self.app, self.composition)
             self.server = uvicorn.Server(
                 uvicorn.Config(
-                    self.app, log_level="warning", lifespan="on", timeout_graceful_shutdown=2
+                    self.app,
+                    log_level="warning",
+                    lifespan="on",
+                    timeout_graceful_shutdown=2,
+                    # Profiling showed compression dominating the local feed's event-loop work.
+                    ws_per_message_deflate=False,
                 )
             )
             self._thread = threading.Thread(
