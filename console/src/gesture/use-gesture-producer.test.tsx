@@ -1,13 +1,20 @@
 import { act, render } from '@testing-library/react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { describe, expect, test } from 'vitest'
 import { createInitialControlState, type ConnectionStatus } from '../control/state'
 import { useControlConsole, type ControlClients } from '../control/use-control-console'
-import { isConsoleIntentV1 } from '../relay/contract'
-import { FixtureRelayClient } from '../testing/fixture-relay-client'
+import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1 } from '../relay/contract'
+import { FixtureRelayClient, fixtureAircraft } from '../testing/fixture-relay-client'
 import { createGestureTestRig, type GestureTestRig } from '../testing/gesture-fixtures'
 import type { GestureCategory } from './policy'
 import { emissionBlockedReason, useGestureProducer } from './use-gesture-producer'
+
+/** The three flight pairs, each drafted into the dock with source webcam. */
+const FLIGHT_PAIRS: ReadonlyArray<readonly [GestureCategory, 'takeoff' | 'translate' | 'land', object]> = [
+  ['Pointing_Up', 'takeoff', {}],
+  ['Victory', 'translate', { dx: 1, dy: 0 }],
+  ['ILoveYou', 'land', {}],
+]
 
 const session = 'gesture-hook-session'
 
@@ -27,13 +34,13 @@ function Harness({
   roomId: string
   onRender: (latest: Latest) => void
 }) {
-  let sequence = 0
+  const sequence = useRef(0)
   const control = useControlConsole({
     sessionId: session,
     clients,
     intentDependencies: {
       now: () => rig.dependencies.clock.wall(),
-      nextId: () => `gesture-intent-${++sequence}`,
+      nextId: () => `gesture-intent-${++sequence.current}`,
     },
   })
   const producer = useGestureProducer({ control, roomId, dependencies: rig.dependencies })
@@ -336,7 +343,16 @@ describe('useGestureProducer', () => {
     expect(rig.downloads[0].name).toBe(`gesture-session-${session}.jsonl`)
     const lines = rig.downloads[0].contents.trimEnd().split('\n').map((line) => JSON.parse(line))
     expect(lines[0]).toMatchObject({ kind: 'header', v: 1, session, source: 'webcam' })
-    expect(lines[0].pairs).toHaveLength(4)
+    expect(lines[0].pairs).toHaveLength(7)
+    expect(lines[0].pairs.map((pair: { gesture: string; action: string }) => [pair.gesture, pair.action])).toEqual([
+      ['Open_Palm', 'draft:capture_room'],
+      ['Closed_Fist', 'draft:hold'],
+      ['Pointing_Up', 'draft:takeoff'],
+      ['Victory', 'draft:translate'],
+      ['ILoveYou', 'draft:land'],
+      ['Thumb_Up', 'confirm'],
+      ['Thumb_Down', 'cancel'],
+    ])
     const kinds = new Set(lines.slice(1).map((line) => line.kind))
     expect(kinds).toEqual(new Set(['status', 'recognizer', 'policy', 'intent']))
     const intents = lines.filter((line) => line.kind === 'intent')
@@ -366,13 +382,281 @@ describe('useGestureProducer', () => {
     hold('Closed_Fist', 650)
     hold(null, 250)
     hold('Thumb_Up', 450)
+    for (const [gesture] of FLIGHT_PAIRS) {
+      hold(null, 250)
+      hold(gesture, 650)
+      hold(null, 250)
+      hold('Thumb_Up', 450)
+    }
 
     const sent = clients.webcam?.sent ?? []
-    expect(sent.map((intent) => intent.name)).toEqual(['capture_room', 'hold'])
+    expect(sent.map((intent) => intent.name)).toEqual(['capture_room', 'hold', 'takeoff', 'translate', 'land'])
+    expect(sent.map((intent) => intent.args)).toEqual([
+      expect.objectContaining({ pattern: 'pano_360' }),
+      {},
+      {},
+      { dx: 1, dy: 0 },
+      {},
+    ])
     sent.forEach((intent) => {
       expect(intent.source).toBe('webcam')
+      expect(intent.confirm).toBe(true)
       expect(isConsoleIntentV1(intent)).toBe(true)
     })
+    expect(new Set(sent.map((intent) => intent.intent_id)).size).toBe(5)
+  })
+})
+
+describe('useGestureProducer flight pairs', () => {
+  /** A console state frame over the fixture roster with the control fields overridden. */
+  const emitState = (
+    clients: FixtureClients,
+    wall: () => number,
+    overrides: { estop?: boolean; selection?: number[] },
+  ) => {
+    act(() =>
+      clients.console.emitServer({
+        v: 1,
+        t: wall(),
+        event_id: `producer-state-${wall()}`,
+        type: 'state',
+        session,
+        roster_version: 7,
+        armed: true,
+        estop: overrides.estop ?? false,
+        selection: overrides.selection ?? [1],
+        formation: 'none',
+        spacing: 0.8,
+        mode: 'indoor',
+        capability_profile: 'c1_basic_control',
+        enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+        pending: null,
+        accepted_plan: null,
+        drones: fixtureAircraft(wall(), 4),
+      }),
+    )
+  }
+
+  test('pointing up drafts a webcam takeoff into the dock and a thumb up confirms the same intent_id', async () => {
+    const { rig, clients, get, hold, enable } = await mount()
+    await enable()
+
+    hold('Pointing_Up', 650)
+    const pending = get().control.pendingRequest
+    expect(pending).not.toBeNull()
+    expect(pending?.intent).toMatchObject({
+      name: 'takeoff',
+      source: 'webcam',
+      confirm: false,
+      args: {},
+      selection: [1],
+    })
+    expect(pending?.status).toBe('pending_confirmation')
+    expect(pending?.plan?.title).toBe('Takeoff')
+    expect(clients.webcam?.sent).toHaveLength(0)
+    expect(clients.console.sent).toHaveLength(0)
+    expect(get().producer.view.lastAction).toMatchObject({
+      kind: 'draft',
+      intentId: pending?.intent.intent_id,
+      detail: 'Pointing_Up drafted takeoff for preview; nothing sent.',
+    })
+
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    const sent = clients.webcam?.sent ?? []
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({
+      intent_id: pending?.intent.intent_id,
+      name: 'takeoff',
+      source: 'webcam',
+      confirm: true,
+      selection: [1],
+      t: rig.dependencies.clock.wall(),
+    })
+    expect(isConsoleIntentV1(sent[0])).toBe(true)
+    expect(clients.console.sent).toHaveLength(0)
+    expect(get().control.state.requests[0]).toMatchObject({
+      status: 'accepted',
+      intent: { intent_id: pending?.intent.intent_id },
+    })
+    expect(get().control.pendingRequest).toBeNull()
+    expect(get().producer.view.lastAction).toMatchObject({ kind: 'confirm', intentId: pending?.intent.intent_id })
+  })
+
+  test('a victory sign drafts one forward translate step into the dock and sends nothing until confirmed', async () => {
+    const { clients, get, hold, enable } = await mount()
+    await enable()
+
+    hold('Victory', 650)
+    const pending = get().control.pendingRequest
+    expect(pending?.intent).toMatchObject({
+      name: 'translate',
+      source: 'webcam',
+      confirm: false,
+      args: { dx: 1, dy: 0 },
+      selection: [1],
+    })
+    expect(pending?.status).toBe('pending_confirmation')
+    expect(pending?.plan?.title).toBe('Translate')
+    expect(pending?.plan?.steps[0]).toBe("Move D-01 by dx 1, dy 0 steps in the planner's translation frame.")
+    expect(get().control.state.requests).toHaveLength(1)
+    expect(get().control.state.requests[0].status).toBe('pending_confirmation')
+    expect(get().control.state.requests[0].timestamps.sent).toBeUndefined()
+    expect(clients.webcam?.sent).toHaveLength(0)
+    expect(clients.console.sent).toHaveLength(0)
+    expect(get().producer.view.lastAction).toMatchObject({
+      kind: 'draft',
+      detail: 'Victory drafted translate forward one step for preview; nothing sent.',
+    })
+
+    hold('Victory', 600)
+    expect(get().control.state.requests).toHaveLength(1)
+    expect(clients.webcam?.sent).toHaveLength(0)
+
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({
+      intent_id: pending?.intent.intent_id,
+      name: 'translate',
+      source: 'webcam',
+      args: { dx: 1, dy: 0 },
+      confirm: true,
+    })
+    expect(isConsoleIntentV1(clients.webcam?.sent[0])).toBe(true)
+    expect(clients.console.sent).toHaveLength(0)
+  })
+
+  test('the I-love-you sign drafts land into the dock and a thumb up confirms it', async () => {
+    const { clients, get, hold, enable } = await mount()
+    await enable()
+
+    hold('ILoveYou', 650)
+    const pending = get().control.pendingRequest
+    expect(pending?.intent).toMatchObject({ name: 'land', source: 'webcam', confirm: false, args: {}, selection: [1] })
+    expect(pending?.plan?.title).toBe('Land')
+    expect(clients.webcam?.sent).toHaveLength(0)
+
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({
+      intent_id: pending?.intent.intent_id,
+      name: 'land',
+      source: 'webcam',
+      confirm: true,
+    })
+    expect(isConsoleIntentV1(clients.webcam?.sent[0])).toBe(true)
+    expect(get().control.state.requests[0]).toMatchObject({ status: 'accepted', intent: { name: 'land' } })
+  })
+
+  test('a thumb down cancels each flight preview and nothing is sent', async () => {
+    const { clients, get, hold, enable } = await mount()
+    await enable()
+
+    for (const [gesture, name] of FLIGHT_PAIRS) {
+      hold(gesture, 650)
+      const pending = get().control.pendingRequest
+      expect(pending?.intent).toMatchObject({ name, source: 'webcam', confirm: false })
+      hold(null, 250)
+      hold('Thumb_Down', 450)
+      expect(get().control.pendingRequest).toBeNull()
+      expect(get().control.state.requests[0]).toMatchObject({
+        status: 'cancelled',
+        intent: { intent_id: pending?.intent.intent_id, name },
+      })
+      expect(get().producer.view.lastAction).toMatchObject({
+        kind: 'cancel',
+        intentId: pending?.intent.intent_id,
+        detail: `Thumb_Down cancelled the ${name} preview; nothing sent.`,
+      })
+      hold(null, 250)
+    }
+    expect(get().control.state.requests).toHaveLength(3)
+    expect(get().control.state.requests.every((request) => request.status === 'cancelled')).toBe(true)
+    expect(clients.webcam?.sent).toHaveLength(0)
+    expect(clients.console.sent).toHaveLength(0)
+  })
+
+  test('flight gestures draft nothing without a non-empty ready selection', async () => {
+    const { rig, clients, get, hold, enable } = await mount()
+    await enable()
+    const wall = () => rig.dependencies.clock.wall()
+
+    emitState(clients, wall, { selection: [] })
+    expect(get().control.state.selection).toEqual([])
+    expect(get().producer.view.emissionBlockedReason).toBe('Select at least one ready aircraft.')
+    for (const [gesture, name] of FLIGHT_PAIRS) {
+      hold(gesture, 650)
+      expect(get().control.pendingRequest).toBeNull()
+      expect(get().producer.view.lastAction).toMatchObject({
+        kind: 'blocked',
+        intentId: null,
+        detail: 'Select at least one ready aircraft.',
+      })
+      expect(get().control.state.requests).toHaveLength(0)
+      hold(null, 250)
+      void name
+    }
+
+    // The reducer keeps only selectable aircraft from a state frame, so a
+    // degraded D-03 in the relay's selection leaves nothing to draft against.
+    emitState(clients, wall, { selection: [3] })
+    expect(get().control.state.aircraft[3]?.selectable).toBe(false)
+    expect(get().control.state.selection).toEqual([])
+    expect(get().producer.view.emissionBlockedReason).toBe('Select at least one ready aircraft.')
+    hold('Pointing_Up', 650)
+    expect(get().control.state.requests).toHaveLength(0)
+    expect(get().producer.view.lastAction).toMatchObject({
+      kind: 'blocked',
+      detail: 'Select at least one ready aircraft.',
+    })
+    expect(clients.webcam?.sent).toHaveLength(0)
+    expect(clients.console.sent).toHaveLength(0)
+
+    // The pure check still names the aircraft when a selection holds one that is not ready.
+    const state = get().control.state
+    expect(
+      emissionBlockedReason({ state: { ...state, selection: [3] }, pendingRequest: null }, null, 'room-01'),
+    ).toBe('D-03 is not ready or selectable.')
+  })
+
+  test('an active network stop blocks flight drafting with the reason stated', async () => {
+    const { rig, clients, get, hold, enable } = await mount()
+    await enable()
+
+    emitState(clients, () => rig.dependencies.clock.wall(), { estop: true })
+    expect(get().producer.view.emissionBlockedReason).toBe(
+      'The network stop is active; no gesture intent can be drafted until the relay reports it clear.',
+    )
+    hold('Victory', 650)
+    expect(get().control.state.requests).toHaveLength(0)
+    expect(get().producer.view.lastAction).toMatchObject({ kind: 'blocked' })
+    expect(clients.webcam?.sent).toHaveLength(0)
+  })
+
+  test('the control flow refuses a webcam flight draft that the hook would not park in the dock', async () => {
+    const { clients, get, hold, enable } = await mount()
+    await enable()
+
+    let refused: unknown = 'unset'
+    act(() => {
+      refused = get().control.issueIntent({ name: 'translate', args: { dx: 1, dy: 0 }, source: 'webcam', targets: [] })
+    })
+    expect(refused).toBeNull()
+    expect(get().control.state.requests).toHaveLength(0)
+
+    let parked: unknown = null
+    act(() => {
+      parked = get().control.issueIntent({ name: 'translate', args: { dx: 1, dy: 0 }, source: 'webcam' })
+    })
+    expect(parked).toMatchObject({ name: 'translate', source: 'webcam', confirm: false })
+    expect(get().control.pendingRequest?.status).toBe('pending_confirmation')
+    expect(clients.webcam?.sent).toHaveLength(0)
+
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({ name: 'translate', source: 'webcam', confirm: true })
   })
 })
 

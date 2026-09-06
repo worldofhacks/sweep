@@ -63,17 +63,28 @@ type ValidationResult = AcceptedIntent | RejectedIntent
 REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
 # Intent v1 names each registered source may emit. The console owns every C1
 # name; the keyboard socket carries only the Shift+Escape network stop; the
-# webcam gesture producer drafts only the two names its gesture policy may emit
-# (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES), so the console's
-# never-gesture-emittable list is enforced by the relay as well. A name outside
-# its source's set is refused with `source_not_allowed` only after the effective
-# capability profile accepts it. The console aliases the single implemented-name
-# registry rather than maintaining another capability list.
+# webcam gesture producer drafts only the five names its gesture policy may emit
+# (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES: capture_room, hold,
+# takeoff, translate, land), each confirmed in the console before it is sent,
+# so the console's never-gesture-emittable list (estop, arm, disarm, land_all,
+# come_home, altitude, formation_next, formation_set, spacing, sweep, select) is
+# enforced by the relay as well. A name outside its source's set is refused
+# with `source_not_allowed` only after the effective capability profile accepts
+# it. The console aliases the single implemented-name registry rather than
+# maintaining another capability list.
 SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
     {
         "console": C1_IMPLEMENTED_INTENT_NAMES,
         "keyboard": frozenset({IntentName.ESTOP}),
-        "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
+        "webcam": frozenset(
+            {
+                IntentName.CAPTURE_ROOM,
+                IntentName.HOLD,
+                IntentName.TAKEOFF,
+                IntentName.TRANSLATE,
+                IntentName.LAND,
+            }
+        ),
     }
 )
 _REQUIRED_FIELDS = frozenset(

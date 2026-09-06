@@ -129,13 +129,18 @@ pending plan through the control hook so the shell states it.
 Gesture (`src/gesture/`, panel in `src/modules/gesture/`) is the webcam producer: tracking is off
 until the operator enables it, then the browser asks for camera permission and the MediaPipe
 GestureRecognizer runtime and model load from the MediaPipe CDN. Open palm drafts `capture_room`,
-closed fist drafts `hold`, thumb up confirms and thumb down cancels a gesture-drafted preview; a
-draft carries source `webcam` and is never sent until it is confirmed in the dock. Low confidence,
+closed fist drafts `hold`, pointing up drafts `takeoff`, victory drafts one forward `translate` step
+(`dx: 1, dy: 0` in the planner's translation frame), the I-love-you sign drafts `land`, thumb up
+confirms and thumb down cancels a gesture-drafted preview; a draft carries source `webcam`, parks in
+the dock even where the button would send at once, and is never sent until it is confirmed by the
+thumb-up gesture or the dock button. Low confidence,
 an interrupted dwell, a repeated pose, a denied permission, a dropped webcam, a model that fails to
 load, and a refused webcam relay source are each shown as states that emit nothing, and a draft is
 blocked while the console connection is not connected, because the roster and selection it would
-be built from arrive on that connection. `estop`, `arm`, `takeoff`, and free-flight motion are never
-gesture-emittable (`src/gesture/policy.ts`). Download session (JSONL) saves the recognizer frames,
+be built from arrive on that connection. `estop`, `arm`, `disarm`, `land_all`, `come_home`,
+`altitude`, `formation_next`, `formation_set`, `spacing`, `sweep`, and `select` are never
+gesture-emittable (`src/gesture/policy.ts`), and the relay's webcam allowlist refuses them as well.
+Download session (JSONL) saves the recognizer frames,
 policy transitions, status changes, and intent events.
 
 Both panes share the target strip (`src/modules/gesture/TargetStrip.tsx`): the selection count,

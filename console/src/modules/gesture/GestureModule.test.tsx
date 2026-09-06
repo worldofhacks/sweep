@@ -14,7 +14,7 @@ interface FixtureClients extends ControlClients {
   webcam?: FixtureRelayClient
 }
 
-function mount(options: { loadError?: Error; withWebcam?: boolean } = {}) {
+function mount(options: { loadError?: Error; withWebcam?: boolean; nextId?: () => string } = {}) {
   const rig = createGestureTestRig({ loadError: options.loadError })
   const wall = () => rig.dependencies.clock.wall()
   const clients: FixtureClients = {
@@ -26,7 +26,7 @@ function mount(options: { loadError?: Error; withWebcam?: boolean } = {}) {
     <App
       sessionId={session}
       clients={clients}
-      intentDependencies={{ now: wall, nextId: () => 'panel-intent-0123456789abcdef' }}
+      intentDependencies={{ now: wall, nextId: options.nextId ?? (() => 'panel-intent-0123456789abcdef') }}
       initialModule="gesture"
       services={{ gesture: rig.dependencies }}
     />,
@@ -88,17 +88,29 @@ describe('Gesture module', () => {
     expect(trackingState()).toHaveTextContent('webcam source connected')
 
     expect(screen.getByLabelText('Open palm pair')).toHaveTextContent(
-      'Open palmemits capture_room as a preview600 ms dwell · score 0.80',
+      'Open palmdrafts capture_room · confirm required600 ms dwell · score 0.80',
     )
-    expect(screen.getByLabelText('Closed fist pair')).toHaveTextContent('emits hold as a preview600 ms dwell')
+    expect(screen.getByLabelText('Closed fist pair')).toHaveTextContent('drafts hold · confirm required600 ms dwell')
+    expect(screen.getByLabelText('Pointing up pair')).toHaveTextContent(
+      'Pointing updrafts takeoff · confirm required600 ms dwell · score 0.80',
+    )
+    expect(screen.getByLabelText('Victory pair')).toHaveTextContent(
+      'Victorydrafts translate forward one step · confirm required600 ms dwell · score 0.80',
+    )
+    expect(screen.getByLabelText('I love you pair')).toHaveTextContent(
+      'I love youdrafts land · confirm required600 ms dwell · score 0.80',
+    )
     expect(screen.getByLabelText('Thumb up pair')).toHaveTextContent('confirms the pending preview400 ms dwell')
     expect(screen.getByLabelText('Thumb down pair')).toHaveTextContent('cancels the pending preview400 ms dwell')
+    expect(screen.getAllByLabelText(/ pair$/)).toHaveLength(7)
     const never = screen.getByText(/Never gesture-emittable/)
-    expect(never).toHaveTextContent('estop')
-    expect(never).toHaveTextContent('arm')
-    expect(never).toHaveTextContent('takeoff')
-    expect(never).toHaveTextContent('translate')
-    expect(never).toHaveTextContent('stay on the console controls and the physical RC')
+    expect(never).toHaveTextContent(
+      'Never gesture-emittable: estop, arm, disarm, land_all, come_home, altitude, formation_next, formation_set, spacing, sweep, select. They stay on the console controls and the physical RC.',
+    )
+    expect(never).not.toHaveTextContent('takeoff')
+    expect(never).not.toHaveTextContent('translate')
+    expect(never).not.toHaveTextContent(/\bland\b(?!_all)/)
+    expect(screen.getByText(/Every gesture draft lands in the dock and needs the confirm gesture/)).toBeInTheDocument()
     expect(screen.getByText(/Nothing recognised yet/)).toBeInTheDocument()
 
     const target = within(screen.getByRole('group', { name: 'Target' }))
@@ -158,6 +170,71 @@ describe('Gesture module', () => {
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     expect(readout.getByText('confirmed')).toBeInTheDocument()
     expect(rig.downloads).toHaveLength(0)
+  })
+
+  test('pointing up drafts takeoff into the dock; the dock button or a thumb up sends it, a victory step waits, a thumb down cancels', async () => {
+    let sequence = 0
+    const { clients, hold } = mount({ nextId: () => `panel-flight-${++sequence}` })
+    const user = userEvent.setup()
+    await screen.findByText(/Development fixture active/i)
+    await act(async () => {})
+    await user.click(enableButton())
+    await act(async () => {})
+
+    hold('Pointing_Up', 650)
+    const takeoffDock = screen.getByRole('region', { name: 'Pending confirmation' })
+    expect(within(takeoffDock).getByText('Takeoff', { selector: '.sh-dock-title' })).toBeInTheDocument()
+    expect(takeoffDock).toHaveTextContent('source webcam')
+    expect(screen.getByText('Takeoff ·', { selector: '.gs-preview strong', exact: false })).toBeInTheDocument()
+    expect(clients.webcam?.sent).toHaveLength(0)
+
+    await user.click(within(takeoffDock).getByRole('button', { name: 'Confirm and send' }))
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({
+      intent_id: 'panel-flight-1',
+      name: 'takeoff',
+      source: 'webcam',
+      selection: [1],
+      confirm: true,
+    })
+    expect(clients.console.sent).toHaveLength(0)
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Last gesture action: Draft\. Pointing_Up drafted takeoff for preview/)).toBeInTheDocument()
+
+    hold(null, 250)
+    hold('Victory', 650)
+    const stepDock = screen.getByRole('region', { name: 'Pending confirmation' })
+    expect(within(stepDock).getByText('Translate', { selector: '.sh-dock-title' })).toBeInTheDocument()
+    expect(stepDock).toHaveTextContent("Move D-01 by dx 1, dy 0 steps in the planner's translation frame.")
+    expect(stepDock).toHaveTextContent('source webcam')
+    expect(clients.webcam?.sent).toHaveLength(1)
+
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(2)
+    expect(clients.webcam?.sent[1]).toMatchObject({
+      intent_id: 'panel-flight-2',
+      name: 'translate',
+      args: { dx: 1, dy: 0 },
+      source: 'webcam',
+      confirm: true,
+    })
+    expect(screen.getByText(/Last gesture action: Confirm\. Thumb_Up confirmed translate/)).toBeInTheDocument()
+
+    hold(null, 250)
+    hold('ILoveYou', 650)
+    const landDock = screen.getByRole('region', { name: 'Pending confirmation' })
+    expect(within(landDock).getByText('Land', { selector: '.sh-dock-title' })).toBeInTheDocument()
+    expect(landDock).toHaveTextContent('source webcam')
+    hold(null, 250)
+    hold('Thumb_Down', 450)
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(clients.webcam?.sent).toHaveLength(2)
+    expect(clients.console.sent).toHaveLength(0)
+    const readout = within(screen.getByRole('list', { name: 'Gesture readout' }))
+    expect(readout.getByText('cancelled')).toBeInTheDocument()
+    expect(readout.getByText(/Thumb_Down cancelled the land preview; nothing sent\./)).toBeInTheDocument()
+    expect(screen.getByText(/Last gesture action: Cancel\. Thumb_Down cancelled the land preview/)).toBeInTheDocument()
   })
 
   test('renders model failure as a distinct non-emitting state and downloads the session', async () => {

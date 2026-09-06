@@ -1,9 +1,15 @@
 import { describe, expect, test } from 'vitest'
+import type { ConsoleIntentName } from '../relay/contract'
 import {
   DEFAULT_GESTURE_PAIRS,
   DEFAULT_GESTURE_POLICY_CONFIG,
+  GESTURE_CATEGORIES,
+  GESTURE_EMITTABLE_NAMES,
+  GESTURE_TRANSLATE_STEP,
   NEVER_GESTURE_EMITTABLE,
   createGesturePolicyState,
+  describeGestureAction,
+  gestureLabel,
   isGestureEmittable,
   stepGesturePolicy,
   validateGesturePairs,
@@ -51,23 +57,48 @@ function held(
 
 const kinds = (outcomes: GesturePolicyOutcome[]) => outcomes.map((outcome) => outcome.kind)
 
+/** The default pair for a gesture, so tests never depend on table order. */
+function pairFor(gesture: GestureCategory): GesturePair {
+  const pair = DEFAULT_GESTURE_PAIRS.find((item) => item.gesture === gesture)
+  if (!pair) throw new Error(`${gesture} is not in the default pairs`)
+  return pair
+}
+
 describe('gesture pairs', () => {
-  test('default pairs map exactly the four enabled gestures and pass validation', () => {
+  test('default pairs map exactly the seven enabled gestures and pass validation', () => {
     expect(
       DEFAULT_GESTURE_PAIRS.map((pair) => [pair.gesture, pair.action, pair.minScore, pair.dwellMs]),
     ).toEqual([
       ['Open_Palm', { kind: 'draft', name: 'capture_room' }, 0.8, 600],
       ['Closed_Fist', { kind: 'draft', name: 'hold' }, 0.8, 600],
+      ['Pointing_Up', { kind: 'draft', name: 'takeoff' }, 0.8, 600],
+      ['Victory', { kind: 'draft', name: 'translate' }, 0.8, 600],
+      ['ILoveYou', { kind: 'draft', name: 'land' }, 0.8, 600],
       ['Thumb_Up', { kind: 'confirm' }, 0.8, 400],
       ['Thumb_Down', { kind: 'cancel' }, 0.8, 400],
     ])
     expect(validateGesturePairs(DEFAULT_GESTURE_PAIRS)).toEqual([])
+    expect(GESTURE_TRANSLATE_STEP).toEqual({ dx: 1, dy: 0 })
+    expect([...GESTURE_EMITTABLE_NAMES]).toEqual(['capture_room', 'hold', 'takeoff', 'translate', 'land'])
   })
 
-  test('estop, arm, takeoff, and free-flight motion are never gesture-emittable', () => {
-    for (const name of ['estop', 'arm', 'takeoff', 'translate', 'altitude', 'come_home', 'land_all']) {
-      expect(NEVER_GESTURE_EMITTABLE).toContain(name)
+  test('estop, arm, disarm, land_all, come_home, altitude, formation, spacing, sweep and select are never gesture-emittable', () => {
+    expect([...NEVER_GESTURE_EMITTABLE]).toEqual([
+      'estop',
+      'arm',
+      'disarm',
+      'land_all',
+      'come_home',
+      'altitude',
+      'formation_next',
+      'formation_set',
+      'spacing',
+      'sweep',
+      'select',
+    ])
+    for (const name of NEVER_GESTURE_EMITTABLE) {
       expect(isGestureEmittable(name)).toBe(false)
+      expect(GESTURE_EMITTABLE_NAMES.has(name as ConsoleIntentName)).toBe(false)
       const pair = {
         gesture: 'Victory',
         action: { kind: 'draft', name },
@@ -76,8 +107,31 @@ describe('gesture pairs', () => {
       } as unknown as GesturePair
       expect(validateGesturePairs([pair])).toEqual([`${name} is never gesture-emittable.`])
     }
-    expect(isGestureEmittable('capture_room')).toBe(true)
-    expect(isGestureEmittable('hold')).toBe(true)
+    for (const name of ['capture_room', 'hold', 'takeoff', 'translate', 'land']) {
+      expect(isGestureEmittable(name)).toBe(true)
+    }
+    const offList = {
+      gesture: 'Victory',
+      action: { kind: 'draft', name: 'survey_area' },
+      minScore: 0.8,
+      dwellMs: 600,
+    } as unknown as GesturePair
+    expect(validateGesturePairs([offList])).toEqual(['survey_area is not on the gesture-emittable allowlist.'])
+  })
+
+  test('gesture labels read the way the design names poses', () => {
+    expect(GESTURE_CATEGORIES.map(gestureLabel)).toEqual([
+      'None',
+      'Closed fist',
+      'Open palm',
+      'Pointing up',
+      'Thumb down',
+      'Thumb up',
+      'Victory',
+      'I love you',
+    ])
+    expect(describeGestureAction(pairFor('Victory').action)).toBe('draft translate forward one step')
+    expect(describeGestureAction(pairFor('Pointing_Up').action)).toBe('draft takeoff')
   })
 
   test('rejects duplicate, neutral, and malformed pairs', () => {
@@ -226,7 +280,11 @@ describe('gesture policy state machine', () => {
   })
 
   test('unmapped gestures are reported and never build a candidate', () => {
-    const { outcomes, state } = run(held('Victory', 0, 1000))
+    const withoutVictory: GesturePolicyConfig = {
+      ...DEFAULT_GESTURE_POLICY_CONFIG,
+      pairs: DEFAULT_GESTURE_PAIRS.filter((pair) => pair.gesture !== 'Victory'),
+    }
+    const { outcomes, state } = run(held('Victory', 0, 1000), withoutVictory)
     expect(new Set(kinds(outcomes))).toEqual(new Set(['unmapped']))
     expect(outcomes[0]).toEqual({ kind: 'unmapped', category: 'Victory' })
     expect(state.phase).toBe('idle')
@@ -243,9 +301,66 @@ describe('gesture policy state machine', () => {
     const accepted = outcomes.filter((outcome) => outcome.kind === 'accepted')
     expect(accepted).toHaveLength(2)
     expect(accepted[0]).toMatchObject({ pair: DEFAULT_GESTURE_PAIRS[0] })
-    expect(accepted[1]).toMatchObject({ pair: DEFAULT_GESTURE_PAIRS[2], heldMs: 400 })
+    expect(accepted[1]).toMatchObject({ pair: pairFor('Thumb_Up'), heldMs: 400 })
     expect(outcomes[20]).toMatchObject({ kind: 'duplicate_suppressed', category: 'Thumb_Up' })
     expect(outcomes[27]).toMatchObject({ kind: 'duplicate_suppressed', category: 'Victory' })
+  })
+
+  describe.each([
+    ['Pointing_Up', 'takeoff'],
+    ['Victory', 'translate'],
+    ['ILoveYou', 'land'],
+  ] as const)('%s drafts %s', (gesture, name) => {
+    test('is accepted once after the 600 ms draft dwell at score 0.8, then suppressed until neutral', () => {
+      const pair = pairFor(gesture)
+      expect(pair).toMatchObject({ action: { kind: 'draft', name }, minScore: 0.8, dwellMs: 600 })
+      const { outcomes, state } = run([...held(gesture, 0, 600, 0.8), ...held(gesture, 650, 900), ...held(null, 950, 1150)])
+      expect(outcomes[0]).toEqual({ kind: 'candidate', pair, heldMs: 0, progress: 0 })
+      expect(outcomes[11]).toMatchObject({ kind: 'candidate', heldMs: 550 })
+      expect(outcomes[12]).toEqual({ kind: 'accepted', pair, heldMs: 600 })
+      expect(kinds(outcomes).filter((kind) => kind === 'accepted')).toHaveLength(1)
+      expect(kinds(outcomes.slice(13, 19))).toEqual(Array(6).fill('duplicate_suppressed'))
+      expect(outcomes[13]).toMatchObject({ kind: 'duplicate_suppressed', pair, category: gesture })
+      expect(outcomes.at(-1)).toEqual({ kind: 'released', pair })
+      expect(state.phase).toBe('idle')
+    })
+
+    test('low confidence never starts a candidate and abandons one in progress', () => {
+      const pair = pairFor(gesture)
+      const idle = run([frame(0, gesture, 0.79)])
+      expect(idle.outcomes).toEqual([{ kind: 'low_confidence', pair, score: 0.79 }])
+      expect(idle.state.phase).toBe('idle')
+
+      const dip = run([...held(gesture, 0, 300), frame(350, gesture, 0.5), ...held(gesture, 400, 950)])
+      expect(dip.outcomes[7]).toEqual({ kind: 'low_confidence', pair, score: 0.5 })
+      expect(dip.outcomes[8]).toMatchObject({ kind: 'candidate', heldMs: 0 })
+      expect(kinds(dip.outcomes)).not.toContain('accepted')
+    })
+
+    test('releasing, changing gesture, or a frame gap before the dwell is a timeout that emits nothing', () => {
+      const pair = pairFor(gesture)
+      const released = run([...held(gesture, 0, 300), frame(350, null)])
+      expect(released.outcomes.at(-1)).toEqual({ kind: 'dwell_timeout', pair, heldMs: 350, reason: 'released' })
+      expect(released.state.phase).toBe('idle')
+
+      const changed = run([...held(gesture, 0, 300), frame(350, 'Open_Palm')])
+      expect(changed.outcomes.at(-1)).toMatchObject({ kind: 'dwell_timeout', pair, heldMs: 350, reason: 'gesture_changed' })
+
+      const gap = run([frame(0, gesture), frame(100, gesture), frame(900, gesture)])
+      expect(gap.outcomes[2]).toEqual({ kind: 'dwell_timeout', pair, heldMs: 100, reason: 'frame_gap' })
+      expect(gap.state.phase).toBe('idle')
+      for (const { outcomes } of [released, changed, gap]) expect(kinds(outcomes)).not.toContain('accepted')
+    })
+
+    test('a held pose drafts once and a repeat before neutral is a suppressed duplicate', () => {
+      const pair = pairFor(gesture)
+      const { outcomes } = run([...held(gesture, 0, 1500), frame(1550, null), frame(1600, 'None'), ...held(gesture, 1650, 2300)])
+      expect(outcomes.filter((outcome) => outcome.kind === 'accepted')).toEqual([{ kind: 'accepted', pair, heldMs: 600 }])
+      expect(outcomes[13]).toMatchObject({ kind: 'duplicate_suppressed', pair, category: gesture })
+      expect(outcomes[31]).toMatchObject({ kind: 'wait_for_release', neutralMs: 0 })
+      expect(outcomes[32]).toMatchObject({ kind: 'wait_for_release', neutralMs: 50 })
+      expect(outcomes[33]).toMatchObject({ kind: 'duplicate_suppressed', pair, category: gesture })
+    })
   })
 
   test('a neutral flicker shorter than the release window does not re-arm', () => {

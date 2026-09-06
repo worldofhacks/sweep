@@ -644,22 +644,26 @@ def test_source_allowlist_refuses_names_a_source_never_emits(
     keyboard_principal: Principal,
     webcam_principal: Principal,
 ) -> None:
-    webcam_takeoff = intent_payload(source="webcam")
-    webcam_takeoff.update(name="takeoff", confirm=True)
+    webcam_land_all = intent_payload(source="webcam")
+    webcam_land_all.update(name="land_all", selection=[], confirm=True)
     keyboard_hold = intent_payload(source="keyboard", intent_id="intent-2")
 
-    refused_takeoff = relay_session.process_frame(webcam_takeoff, webcam_principal)
+    refused_land_all = relay_session.process_frame(webcam_land_all, webcam_principal)
     refused_hold = relay_session.process_frame(keyboard_hold, keyboard_principal)
     accepted_hold = relay_session.process_frame(
         intent_payload(source="webcam", intent_id="intent-3"), webcam_principal
     )
+    webcam_takeoff = intent_payload(source="webcam", intent_id="intent-4")
+    webcam_takeoff.update(name="takeoff", confirm=True)
+    accepted_takeoff = relay_session.process_frame(webcam_takeoff, webcam_principal)
 
-    assert refused_takeoff[0]["type"] == "refusal"
-    assert refused_takeoff[0]["reason"] == "source_not_allowed"
-    assert refused_takeoff[0]["detail"] == "takeoff is not allowed from source webcam"
+    assert refused_land_all[0]["type"] == "refusal"
+    assert refused_land_all[0]["reason"] == "source_not_allowed"
+    assert refused_land_all[0]["detail"] == "land_all is not allowed from source webcam"
     assert refused_hold[0]["reason"] == "source_not_allowed"
     assert refused_hold[0]["detail"] == "hold is not allowed from source keyboard"
     assert accepted_hold[0]["status"] == "accepted"
+    assert accepted_takeoff[0]["status"] == "accepted"
     assert relay_session.current_state()["estop"] is False
 
 

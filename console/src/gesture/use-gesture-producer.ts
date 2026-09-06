@@ -2,19 +2,26 @@
  * Binds the webcam camera, the MediaPipe recognizer, and the pure policy to the
  * existing control flow. An accepted draft gesture becomes a previewed Intent v1
  * draft with source `webcam` through the same factory and reducer as the
- * buttons; an accepted confirm or cancel gesture acts on that pending preview.
- * Nothing is sent without a preview, the intent_id assigned at draft time is
- * kept through confirmation, and the confirmed intent leaves through the
- * webcam-bound relay client. Tracking is off until the operator enables it.
+ * buttons: capture_room and hold through their prepare functions, takeoff, the
+ * forward translate step, and land through issueIntent, which parks every
+ * webcam request in the dock. An accepted confirm or cancel gesture acts on
+ * that pending preview. Nothing is sent without a preview, the intent_id
+ * assigned at draft time is kept through confirmation, and the confirmed
+ * intent leaves through the webcam-bound relay client. Tracking is off until
+ * the operator enables it.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { formatDroneId, type ControlState, type RequestRecord } from '../control/state'
-import type { IntentV1 } from '../relay/contract'
+import type { IntentRequest } from '../control/use-control-console'
+import type { ConsoleIntentName, IntentV1 } from '../relay/contract'
 import { createCameraController, type CameraController, type CameraState } from './camera'
 import {
   DEFAULT_GESTURE_POLICY_CONFIG,
+  GESTURE_TRANSLATE_STEP,
   createGesturePolicyState,
+  describeGestureDraft,
   stepGesturePolicy,
+  type GestureEmittableName,
   type GesturePair,
   type GesturePhase,
   type GesturePolicyConfig,
@@ -36,8 +43,33 @@ export interface GestureControlBindings {
   pendingRequest: RequestRecord | null
   prepareCapture(roomId: string, source: 'webcam'): IntentV1 | null
   prepareHold(source: 'webcam'): IntentV1 | null
+  /** The buttons' path; with source webcam the request is always parked in the dock. */
+  issueIntent<N extends ConsoleIntentName>(request: IntentRequest<N>): IntentV1 | null
   confirmRequest(intentId: string): IntentV1 | null
   cancelRequest(intentId: string): void
+}
+
+/**
+ * Drafts one gesture-emittable name through the control flow with source
+ * webcam. Every branch parks the draft in the dock; none sends.
+ */
+export function draftGestureIntent(
+  bindings: GestureControlBindings,
+  name: GestureEmittableName,
+  roomId: string,
+): IntentV1 | null {
+  switch (name) {
+    case 'capture_room':
+      return bindings.prepareCapture(roomId, 'webcam')
+    case 'hold':
+      return bindings.prepareHold('webcam')
+    case 'takeoff':
+      return bindings.issueIntent({ name: 'takeoff', args: {}, source: 'webcam' })
+    case 'translate':
+      return bindings.issueIntent({ name: 'translate', args: { ...GESTURE_TRANSLATE_STEP }, source: 'webcam' })
+    case 'land':
+      return bindings.issueIntent({ name: 'land', args: {}, source: 'webcam' })
+  }
 }
 
 export interface GestureClock {
@@ -250,13 +282,11 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
         return
       }
       if (pair.action.kind === 'draft') {
-        const intent =
-          pair.action.name === 'capture_room'
-            ? bindings.prepareCapture(roomIdRef.current, 'webcam')
-            : bindings.prepareHold('webcam')
+        const intent = draftGestureIntent(bindings, pair.action.name, roomIdRef.current)
+        const drafted = describeGestureDraft(pair.action.name)
         const detail = intent
-          ? `${pair.gesture} drafted ${intent.name} for preview; nothing sent.`
-          : `${pair.gesture} could not draft ${pair.action.name}; the control flow refused it.`
+          ? `${pair.gesture} drafted ${drafted} for preview; nothing sent.`
+          : `${pair.gesture} could not draft ${drafted}; the control flow refused it.`
         recorder.record({
           kind: 'intent',
           t,
@@ -567,6 +597,9 @@ export function emissionBlockedReason(
     }
     return null
   }
+  if (state.estop) {
+    return 'The network stop is active; no gesture intent can be drafted until the relay reports it clear.'
+  }
   if (pendingRequest) {
     return 'A plan preview is already pending; confirm or cancel it before drafting another.'
   }
@@ -575,7 +608,8 @@ export function emissionBlockedReason(
     (id) => state.aircraft[id]?.membership !== 'ready' || !state.aircraft[id]?.selectable,
   )
   if (notReady !== undefined) return `${formatDroneId(notReady)} is not ready or selectable.`
-  if (action.name === 'hold') return null
+  // hold, takeoff, translate, and land address the ready selection and need nothing more.
+  if (action.name !== 'capture_room') return null
   if (!roomId.trim()) return 'Enter a room identifier.'
   if (state.selection.length !== 1) return 'Select exactly one ready aircraft for capture_room.'
   const selected = state.aircraft[state.selection[0]]

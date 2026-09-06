@@ -544,12 +544,23 @@ def _c1_payload(source: str, name: IntentName) -> dict[str, object]:
     }
 
 
+_WEBCAM_GESTURE_NAMES = frozenset(
+    {
+        IntentName.CAPTURE_ROOM,
+        IntentName.HOLD,
+        IntentName.TAKEOFF,
+        IntentName.TRANSLATE,
+        IntentName.LAND,
+    }
+)
+
+
 def test_source_allowlist_covers_every_registered_source() -> None:
     assert set(SOURCE_ALLOWED_NAMES) == REGISTERED_SOURCES
     assert all(names <= C1_IMPLEMENTED_INTENT_NAMES for names in SOURCE_ALLOWED_NAMES.values())
     assert SOURCE_ALLOWED_NAMES["console"] is C1_IMPLEMENTED_INTENT_NAMES
     assert SOURCE_ALLOWED_NAMES["keyboard"] == {IntentName.ESTOP}
-    assert SOURCE_ALLOWED_NAMES["webcam"] == {IntentName.CAPTURE_ROOM, IntentName.HOLD}
+    assert SOURCE_ALLOWED_NAMES["webcam"] == _WEBCAM_GESTURE_NAMES
 
 
 @pytest.mark.parametrize("name", sorted(C1_IMPLEMENTED_INTENT_NAMES))
@@ -578,7 +589,7 @@ def test_keyboard_may_only_emit_the_network_stop(name: IntentName) -> None:
     assert result.detail == f"{name.value} is not allowed from source keyboard"
 
 
-@pytest.mark.parametrize("name", [IntentName.HOLD, IntentName.CAPTURE_ROOM])
+@pytest.mark.parametrize("name", sorted(_WEBCAM_GESTURE_NAMES))
 def test_webcam_gesture_names_pass_validation(name: IntentName) -> None:
     result = validate_intent(_c1_payload("webcam", name))
 
@@ -587,11 +598,42 @@ def test_webcam_gesture_names_pass_validation(name: IntentName) -> None:
     assert result.intent.name is name
 
 
+def test_webcam_forward_step_envelope_passes_validation() -> None:
+    payload = _c1_payload("webcam", IntentName.TRANSLATE)
+    payload["args"] = {"dx": 1, "dy": 0}
+
+    result = validate_intent(payload)
+
+    assert isinstance(result, AcceptedIntent)
+    assert result.intent.args == {"dx": 1, "dy": 0}
+
+
+@pytest.mark.parametrize("name", sorted(C1_IMPLEMENTED_INTENT_NAMES - _WEBCAM_GESTURE_NAMES))
+def test_webcam_never_gesture_emittable_names_are_refused(name: IntentName) -> None:
+    result = validate_intent(_c1_payload("webcam", name))
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.SOURCE_NOT_ALLOWED
+    assert result.detail == f"{name.value} is not allowed from source webcam"
+
+
 @pytest.mark.parametrize(
     "name",
-    sorted(C1_IMPLEMENTED_INTENT_NAMES - {IntentName.HOLD, IntentName.CAPTURE_ROOM}),
+    [
+        IntentName.ESTOP,
+        IntentName.ARM,
+        IntentName.LAND_ALL,
+        IntentName.COME_HOME,
+        IntentName.FORMATION_SET,
+        IntentName.SELECT,
+    ],
 )
-def test_webcam_never_gesture_emittable_names_are_refused(name: IntentName) -> None:
+def test_webcam_flight_widening_keeps_the_named_never_emittable_refusals(
+    name: IntentName,
+) -> None:
+    """The gesture widening to takeoff, translate, and land leaves these refused by name."""
+    assert name not in SOURCE_ALLOWED_NAMES["webcam"]
+
     result = validate_intent(_c1_payload("webcam", name))
 
     assert isinstance(result, RejectedIntent)

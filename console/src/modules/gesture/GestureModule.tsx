@@ -3,7 +3,8 @@ import './gesture.css'
 import { drawLandmarkOverlay } from '../../gesture/overlay'
 import {
   NEVER_GESTURE_EMITTABLE,
-  type GestureCategory,
+  describeGestureDraft,
+  gestureLabel as gestureName,
   type GesturePair,
 } from '../../gesture/policy'
 import {
@@ -119,8 +120,10 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
             <TrackingStatus view={view} connection={controller.state.webcamConnection} />
             <Meters view={view} />
             <p className="gs-safety-note">
-              estop, arm, takeoff and free-flight motion are never gesture-emittable. The network stop stays
-              on its own keyboard connection, and the physical RC pilot stays primary.
+              Every gesture draft lands in the dock and needs the confirm gesture or the dock button. estop, arm,
+              disarm, land_all, come_home, altitude, formations, spacing, sweep and select are never
+              gesture-emittable. The network stop stays on its own keyboard connection, and the physical RC pilot
+              stays primary.
             </p>
           </div>
 
@@ -172,9 +175,9 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
         <div data-two="1" className="gs-two">
           <div className="gs-column">
             <p className="gs-intro">
-              The four MediaPipe poses this console maps. A pose needs a classifier score of 0.80 and its full
-              dwell window; confirm and cancel use the shorter 400 ms window so an operator can answer a preview
-              quickly.
+              The seven MediaPipe poses this console maps. A pose needs a classifier score of 0.80 and its full
+              dwell window; each draft parks in the dock and needs confirmation, and confirm and cancel use the
+              shorter 400 ms window so an operator can answer a preview quickly.
             </p>
             {pairs.map((pair) => (
               <div key={pair.gesture} className="gs-vocab-row">
@@ -377,8 +380,9 @@ function CandidatePreview({
         <>
           <strong>No gesture-drafted preview</strong>
           <p>
-            Hold an open palm to draft capture_room or a closed fist to draft hold. The draft appears in the
-            dock and here; it is never sent without confirmation.
+            Hold an open palm to draft capture_room, a closed fist to draft hold, a raised index finger to draft
+            takeoff, a victory sign to draft one forward step, or the I-love-you sign to draft land. The draft
+            appears in the dock and here; it is never sent without confirmation.
           </p>
         </>
       )}
@@ -523,8 +527,9 @@ function describeNotable(outcome: GestureProducerView['outcome']): string {
   }
 }
 
+/** What the pair does and whether the dock must confirm it; every draft is confirmation-gated. */
 function pairStatus(pair: GesturePair): string {
-  if (pair.action.kind === 'draft') return `emits ${pair.action.name} as a preview`
+  if (pair.action.kind === 'draft') return `drafts ${describeGestureDraft(pair.action.name)} · confirm required`
   return pair.action.kind === 'confirm' ? 'confirms the pending preview' : 'cancels the pending preview'
 }
 
@@ -532,8 +537,3 @@ function dwellLabel(pair: GesturePair): string {
   return `${pair.dwellMs} ms dwell · score ${pair.minScore.toFixed(2)}`
 }
 
-/** "Open_Palm" reads as "Open palm", the way the design names poses. */
-function gestureName(category: GestureCategory): string {
-  const words = category.replaceAll('_', ' ')
-  return words.charAt(0).toUpperCase() + words.slice(1).toLowerCase()
-}

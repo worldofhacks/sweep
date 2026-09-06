@@ -6,18 +6,23 @@
  *
  * Gesture-to-intent mapping (MediaPipe built-in gesture classes):
  *
- * | Gesture     | Held for | Score | Action                                   |
- * |-------------|----------|-------|------------------------------------------|
- * | Open_Palm   | 600 ms   | ≥ 0.8 | draft `capture_room` (preview, not sent)  |
- * | Closed_Fist | 600 ms   | ≥ 0.8 | draft `hold` (preview, not sent)          |
- * | Thumb_Up    | 400 ms   | ≥ 0.8 | confirm the pending preview               |
- * | Thumb_Down  | 400 ms   | ≥ 0.8 | cancel the pending preview                |
+ * | Gesture     | Held for | Score | Action                                          |
+ * |-------------|----------|-------|-------------------------------------------------|
+ * | Open_Palm   | 600 ms   | ≥ 0.8 | draft `capture_room` (preview, not sent)         |
+ * | Closed_Fist | 600 ms   | ≥ 0.8 | draft `hold` (preview, not sent)                 |
+ * | Pointing_Up | 600 ms   | ≥ 0.8 | draft `takeoff` (preview, not sent)              |
+ * | Victory     | 600 ms   | ≥ 0.8 | draft `translate` forward one step (preview)     |
+ * | ILoveYou    | 600 ms   | ≥ 0.8 | draft `land` (preview, not sent)                 |
+ * | Thumb_Up    | 400 ms   | ≥ 0.8 | confirm the pending preview                      |
+ * | Thumb_Down  | 400 ms   | ≥ 0.8 | cancel the pending preview                       |
  *
- * `estop`, `arm`, `takeoff`, and free-flight motion are never gesture-emittable;
- * they stay on the console controls and the physical RC. See
- * NEVER_GESTURE_EMITTABLE and validateGesturePairs.
+ * Every draft lands in the confirmation dock; only the confirm gesture or the
+ * dock button sends it. `estop`, `arm`, `disarm`, `land_all`, `come_home`,
+ * `altitude`, `formation_next`, `formation_set`, `spacing`, `sweep`, and
+ * `select` are never gesture-emittable; they stay on the console controls and
+ * the physical RC. See NEVER_GESTURE_EMITTABLE and validateGesturePairs.
  */
-import type { ConsoleIntentName } from '../relay/contract'
+import type { ConsoleIntentName, TranslateArgs } from '../relay/contract'
 
 export type GestureCategory =
   | 'None'
@@ -40,7 +45,10 @@ export const GESTURE_CATEGORIES: readonly GestureCategory[] = [
   'ILoveYou',
 ]
 
-export type GestureEmittableName = Extract<ConsoleIntentName, 'capture_room' | 'hold'>
+export type GestureEmittableName = Extract<
+  ConsoleIntentName,
+  'capture_room' | 'hold' | 'takeoff' | 'translate' | 'land'
+>
 
 export type GestureAction =
   | { kind: 'draft'; name: GestureEmittableName }
@@ -56,31 +64,42 @@ export interface GesturePair {
   dwellMs: number
 }
 
-/** The only Intent v1 names a gesture may draft. */
+/**
+ * The only Intent v1 names a gesture may draft. Each one is parked in the
+ * confirmation dock; the relay's webcam allowlist mirrors this set.
+ */
 export const GESTURE_EMITTABLE_NAMES: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'capture_room',
   'hold',
+  'takeoff',
+  'translate',
+  'land',
 ])
 
 /**
- * Names that no gesture pair may ever target. The network stop, arming,
- * takeoff, and every free-flight motion stay on the console controls and the
- * physical RC. This list is checked against every pair set, including the
- * default, and is shown in the panel.
+ * The one translate a gesture may draft: a single step along +x of the
+ * planner's translation frame. With `translation_frame` aircraft_relative the
+ * planner rotates it by the aircraft heading, so it is one step forward.
+ */
+export const GESTURE_TRANSLATE_STEP: Readonly<TranslateArgs> = Object.freeze({ dx: 1, dy: 0 })
+
+/**
+ * Names that no gesture pair may ever target. The network stop, arming and
+ * disarming, the fleet-wide land, come home, altitude, formation, spacing,
+ * sweep, and selection stay on the console controls and the physical RC. This
+ * list is checked against every pair set, including the default, and is shown
+ * in the panel.
  */
 export const NEVER_GESTURE_EMITTABLE: readonly string[] = Object.freeze([
   'estop',
   'arm',
   'disarm',
-  'takeoff',
-  'land',
   'land_all',
-  'translate',
+  'come_home',
   'altitude',
   'formation_next',
   'formation_set',
   'spacing',
-  'come_home',
   'sweep',
   'select',
 ])
@@ -103,6 +122,24 @@ export const DEFAULT_GESTURE_PAIRS: readonly GesturePair[] = Object.freeze([
   {
     gesture: 'Closed_Fist',
     action: { kind: 'draft', name: 'hold' },
+    minScore: DEFAULT_MIN_SCORE,
+    dwellMs: DRAFT_DWELL_MS,
+  },
+  {
+    gesture: 'Pointing_Up',
+    action: { kind: 'draft', name: 'takeoff' },
+    minScore: DEFAULT_MIN_SCORE,
+    dwellMs: DRAFT_DWELL_MS,
+  },
+  {
+    gesture: 'Victory',
+    action: { kind: 'draft', name: 'translate' },
+    minScore: DEFAULT_MIN_SCORE,
+    dwellMs: DRAFT_DWELL_MS,
+  },
+  {
+    gesture: 'ILoveYou',
+    action: { kind: 'draft', name: 'land' },
     minScore: DEFAULT_MIN_SCORE,
     dwellMs: DRAFT_DWELL_MS,
   },
@@ -164,6 +201,11 @@ export function isGestureEmittable(name: string): name is GestureEmittableName {
 
 {
   const problems = validateGesturePairs(DEFAULT_GESTURE_PAIRS)
+  NEVER_GESTURE_EMITTABLE.forEach((name) => {
+    if (GESTURE_EMITTABLE_NAMES.has(name as ConsoleIntentName)) {
+      problems.push(`${name} is both never-emittable and on the gesture-emittable allowlist.`)
+    }
+  })
   if (problems.length > 0) {
     throw new Error(`Default gesture pairs are invalid: ${problems.join(' ')}`)
   }
@@ -297,7 +339,19 @@ function idle(t: number): GesturePolicyState {
   return { phase: 'idle', pair: null, since: null, lastFrameAt: t }
 }
 
+/** What a draft pair drafts, as the panel and the recorder name it. */
+export function describeGestureDraft(name: GestureEmittableName): string {
+  return name === 'translate' ? 'translate forward one step' : name
+}
+
 export function describeGestureAction(action: GestureAction): string {
-  if (action.kind === 'draft') return `draft ${action.name}`
+  if (action.kind === 'draft') return `draft ${describeGestureDraft(action.name)}`
   return action.kind === 'confirm' ? 'confirm pending preview' : 'cancel pending preview'
+}
+
+/** "Open_Palm" reads as "Open palm", the way the design names poses. */
+export function gestureLabel(category: GestureCategory): string {
+  if (category === 'ILoveYou') return 'I love you'
+  const words = category.replaceAll('_', ' ')
+  return words.charAt(0).toUpperCase() + words.slice(1).toLowerCase()
 }

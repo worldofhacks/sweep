@@ -7,6 +7,7 @@ const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
   land: 'Land',
   land_all: 'Land all fleet',
   sweep: 'Sweep area',
+  translate: 'Translate',
 }
 
 /** Plan-card title from the design; other intents show their name. */
@@ -33,6 +34,12 @@ export function planSteps(intent: IntentV1): string[] {
       `Confirm ${ids} is armed and ready.`,
       'Take off to the indoor hover altitude.',
       'Hold and report hovering.',
+    ]
+  }
+  if (intent.name === 'translate' && 'dx' in intent.args) {
+    return [
+      `Move ${ids} by dx ${intent.args.dx}, dy ${intent.args.dy} steps in the planner's translation frame.`,
+      'Refuse before dispatch if the destination leaves the configured geofence.',
     ]
   }
   if (intent.name === 'land_all') {

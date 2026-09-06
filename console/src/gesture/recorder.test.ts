@@ -60,6 +60,9 @@ describe('session recorder', () => {
       pairs: [
         { gesture: 'Open_Palm', action: 'draft:capture_room', minScore: 0.8, dwellMs: 600 },
         { gesture: 'Closed_Fist', action: 'draft:hold', minScore: 0.8, dwellMs: 600 },
+        { gesture: 'Pointing_Up', action: 'draft:takeoff', minScore: 0.8, dwellMs: 600 },
+        { gesture: 'Victory', action: 'draft:translate', minScore: 0.8, dwellMs: 600 },
+        { gesture: 'ILoveYou', action: 'draft:land', minScore: 0.8, dwellMs: 600 },
         { gesture: 'Thumb_Up', action: 'confirm', minScore: 0.8, dwellMs: 400 },
         { gesture: 'Thumb_Down', action: 'cancel', minScore: 0.8, dwellMs: 400 },
       ],
@@ -113,7 +116,7 @@ describe('session recorder', () => {
   })
 
   test('summarizes every outcome kind without the nested pair object', () => {
-    const pair = DEFAULT_GESTURE_PAIRS[2]
+    const pair = DEFAULT_GESTURE_PAIRS.find((item) => item.gesture === 'Thumb_Up') as (typeof DEFAULT_GESTURE_PAIRS)[number]
     expect(summarizeOutcome({ kind: 'idle' })).toEqual({ kind: 'idle' })
     expect(summarizeOutcome({ kind: 'unmapped', category: 'Victory' })).toEqual({ kind: 'unmapped', category: 'Victory' })
     expect(summarizeOutcome({ kind: 'low_confidence', pair, score: 0.51 })).toEqual({

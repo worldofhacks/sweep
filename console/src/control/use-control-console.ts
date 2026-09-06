@@ -25,6 +25,7 @@ import {
   createInitialControlState,
   createRequestRecord,
   isIntentEnabled,
+  type ControlState,
   type RequestRecord,
 } from './state'
 
@@ -50,6 +51,12 @@ export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> 
   args: IntentArgsByName[N]
   /** Defaults to the authoritative selection. `land_all` passes the whole roster. */
   targets?: DroneId[]
+  /**
+   * Defaults to console. A webcam request is the gesture producer drafting
+   * through the same path as the buttons; it is always parked in the dock and
+   * needs a non-empty ready selection, because a gesture never sends on its own.
+   */
+  source?: DraftSource
 }
 
 export function useControlConsole({
@@ -175,7 +182,9 @@ export function useControlConsole({
 
   /**
    * Records a freshly minted intent, then either parks it for confirmation
-   * (with its plan preview) or sends it at once.
+   * (with its plan preview) or sends it at once. A webcam draft is always
+   * parked, whatever its name: a gesture never sends without the confirm
+   * gesture or the dock button.
    */
   const stageIntent = useCallback(
     (intent: IntentV1) => {
@@ -186,7 +195,7 @@ export function useControlConsole({
             detail: 'A new selection was requested. Preview the command again after relay state updates.' })
         })
       }
-      if (requiresConfirmation(intent.name)) {
+      if (requiresConfirmation(intent.name) || intent.source === 'webcam') {
         stageForConfirmation(intent)
         return
       }
@@ -206,19 +215,27 @@ export function useControlConsole({
   )
 
   const issueIntent = useCallback(
-    <N extends ConsoleIntentName>(request: IntentRequest<N>) => {
-      if (!isIntentEnabled(state, request.name)) return
+    <N extends ConsoleIntentName>(request: IntentRequest<N>): IntentV1 | null => {
+      if (!isIntentEnabled(state, request.name)) return null
+      const source = request.source ?? 'console'
+      const selection = ['arm', 'land_all', 'estop'].includes(request.name)
+        ? []
+        : request.targets ?? state.selection
+      if (source === 'webcam' && (selection.length === 0 || !selectionReady(state, selection))) {
+        return null
+      }
       const intent = createIntent(
         {
           name: request.name,
           args: request.args,
-          selection: ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection,
-          source: 'console',
+          selection,
+          source,
           session: state.sessionId,
         },
         intentDependencies,
       )
       stageIntent(intent)
+      return intent
     },
     [intentDependencies, stageIntent, state],
   )
@@ -339,11 +356,7 @@ export function useControlConsole({
     (ids: DroneId[], source: DraftSource): IntentV1 | null => {
       if (!isIntentEnabled(state, 'select')) return null
       const desired = [...new Set(ids)].sort((a, b) => a - b)
-      if (desired.length === 0) return null
-      const allReady = desired.every(
-        (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
-      )
-      if (!allReady) return null
+      if (desired.length === 0 || !selectionReady(state, desired)) return null
       const draft = createIntent(
         {
           name: 'select',
@@ -363,11 +376,7 @@ export function useControlConsole({
   const prepareHold = useCallback(
     (source: DraftSource): IntentV1 | null => {
       if (!isIntentEnabled(state, 'hold')) return null
-      if (state.selection.length === 0) return null
-      const selectionReady = state.selection.every(
-        (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
-      )
-      if (!selectionReady) return null
+      if (state.selection.length === 0 || !selectionReady(state, state.selection)) return null
       const draft = createIntent(
         {
           name: 'hold',
@@ -561,6 +570,11 @@ export function useControlConsole({
     retryRequest,
     selectFeed: (droneId: DroneId) => dispatch({ type: 'feed_selected', droneId }),
   }
+}
+
+/** Every named aircraft is in the roster, ready, and selectable. */
+function selectionReady(state: ControlState, ids: readonly DroneId[]): boolean {
+  return ids.every((id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable)
 }
 
 function sendToRelay(
