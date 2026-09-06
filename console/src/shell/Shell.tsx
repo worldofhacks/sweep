@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useState } from 'react'
 import './shell.css'
 import type { CatalogController } from '../catalog/use-catalog'
+import { deviceLabeller } from '../control/state'
 import type { MediaRuntime } from '../media/runtime'
 import { MODULES, getModule } from '../modules/registry'
 import type { ConsoleController, ModuleId, ModuleServices } from '../modules/types'
@@ -28,6 +29,8 @@ export interface ShellProps {
   services?: ModuleServices
   /** Playback runtime handed to every module; absent without a media bootstrap. */
   media?: MediaRuntime
+  /** Relay WebSocket base URL from the bootstrap; absent in the fixture and without a bootstrap. */
+  relayBaseUrl?: string
 }
 
 const TICK_MS = 1_000
@@ -40,6 +43,7 @@ export function Shell({
   initialModule = 'control',
   services = {},
   media,
+  relayBaseUrl,
 }: ShellProps) {
   const { state, pendingRequest, confirmRequest, cancelRequest, issueNetworkStop } = controller
   const [activeId, setActiveId] = useState<ModuleId>(initialModule)
@@ -62,7 +66,16 @@ export function Shell({
   // gesture producer says so itself and the header stays as it was.
   const webcam =
     state.webcamConnection.transport === 'unavailable' ? undefined : state.webcamConnection.status
-  const moduleProps = { controller, catalog, now, roomId, onRoomIdChange: setRoomId, services, media }
+  const moduleProps = {
+    controller,
+    catalog,
+    now,
+    roomId,
+    onRoomIdChange: setRoomId,
+    services,
+    media,
+    relayBaseUrl,
+  }
 
   return (
     <Frame
@@ -79,7 +92,7 @@ export function Shell({
         >
           {isFixture && (
             <p className="sh-fixture-line" role="status">
-              Development fixture active — no aircraft commands leave this browser.
+              Development fixture active — no device commands leave this browser.
             </p>
           )}
           <DangerBanner notice={newestDanger(state.notices)} />
@@ -100,6 +113,7 @@ export function Shell({
           now={currentNow}
           onConfirm={confirmRequest}
           onCancel={cancelRequest}
+          label={deviceLabeller(state.aircraft)}
         />
       }
       tabBar={<TabBar modules={MODULES} active={activeId} onSelect={setActiveId} />}

@@ -25,6 +25,8 @@ export interface ConsoleRuntime {
    */
   mediaConfigurationSource: MediaConfigurationSource | null
   sessionId: string
+  /** The relay base URL a node would connect to; null without a bootstrap. */
+  baseUrl: string | null
 }
 
 declare global {
@@ -51,11 +53,13 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       ),
       transcriptClient: null,
       mediaConfigurationSource: null,
+      baseUrl: null,
     }
   }
 
   return {
     sessionId: config.sessionId,
+    baseUrl: config.baseUrl,
     client: new WebSocketRelayClient({
       baseUrl: config.baseUrl,
       sessionId: config.sessionId,

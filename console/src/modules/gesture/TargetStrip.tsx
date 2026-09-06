@@ -1,14 +1,18 @@
 import {
   capabilityBlockedReason,
-  formatDroneId,
+  deviceLabeller,
+  deviceNoun,
+  formatDeviceId,
   isIntentEnabled,
+  pluralNoun,
+  rosterNoun,
   type ControlState,
   type RequestRecord,
 } from '../../control/state'
 import { isSupportedIntent, selectionRule } from '../../relay/contract'
 import { isReady, sortedAircraft } from '../../shell/derive'
 import { formatPercent, humanizeCode } from '../../shell/format'
-import { rosterIds } from '../control/controls'
+import { deviceClassBlockedReason, motionStateWord, noReadyReason, rosterIds } from '../control/controls'
 import type { ModuleProps } from '../types'
 
 type Controller = ModuleProps['controller']
@@ -62,9 +66,10 @@ interface QuickCommandView {
 }
 
 /**
- * Mirrors the design's control gating order: unsupported name, console
- * connection, network stop, pending preview, empty selection, readiness.
- * land_all addresses the roster, so it needs a roster rather than a selection.
+ * Mirrors the design's control gating order: unsupported name, device class,
+ * console connection, network stop, pending preview, empty selection,
+ * readiness. land_all addresses the roster, so it needs a roster rather than
+ * a selection.
  */
 function quickCommandView(
   spec: QuickCommandSpec,
@@ -73,6 +78,10 @@ function quickCommandView(
 ): QuickCommandView {
   const capability = capabilityBlockedReason(state, spec.name)
   if (capability) return { badge: null, reason: capability, note: capability }
+  const wholeRoster = selectionRule(spec.name) === 'all'
+  const targets = wholeRoster ? rosterIds(state) : state.selection
+  const deviceClass = deviceClassBlockedReason(state, spec.name, targets)
+  if (deviceClass) return { badge: 'unsupported', reason: deviceClass, note: deviceClass }
   if (!isSupportedIntent(spec.name)) {
     const sentences = [
       `The relay refuses ${spec.name} as unsupported; it is listed until the relay accepts it.`,
@@ -82,8 +91,8 @@ function quickCommandView(
     return { badge: 'unsupported', reason: sentences.join(' '), note: sentences.join(' ') }
   }
   const badge = spec.confirm ? 'confirm' : null
-  const wholeRoster = selectionRule(spec.name) === 'all'
-  const targets = wholeRoster ? rosterIds(state) : state.selection
+  const label = deviceLabeller(state.aircraft)
+  const nouns = pluralNoun(rosterNoun(sortedAircraft(state.aircraft)))
   let reason: string | null = null
   if (state.connection.status !== 'connected') {
     reason = `The console connection is ${state.connection.status}. Nothing can be sent.`
@@ -92,14 +101,14 @@ function quickCommandView(
   } else if (pending) {
     reason = 'Confirm or cancel the pending preview first.'
   } else if (targets.length === 0) {
-    reason = wholeRoster ? 'No aircraft in the roster.' : 'No aircraft selected.'
+    reason = wholeRoster ? `No ${nouns} in the roster.` : `No ${nouns} selected.`
   } else if (!wholeRoster) {
     const notReady = targets.filter((id) => !isReady(state.aircraft[id]))
     if (notReady.length > 0) {
-      reason = `${notReady.map(formatDroneId).join(', ')} ${notReady.length > 1 ? 'are' : 'is'} not ready.`
+      reason = `${notReady.map(label).join(', ')} ${notReady.length > 1 ? 'are' : 'is'} not ready.`
     }
   }
-  const named = targets.map(formatDroneId).join(', ')
+  const named = targets.map(label).join(', ')
   const action = spec.confirm
     ? `Drafts a ${spec.name} preview for ${named}; nothing is sent until the dock confirms it.`
     : `Sends ${spec.name} to ${named} at once; the relay's answer is recorded under Requests.`
@@ -121,6 +130,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
   const ready = fleet.filter(isReady).map((drone) => drone.drone_id)
   const blockers = fleet.filter((drone) => !isReady(drone))
   const canSelect = isIntentEnabled(state, 'select')
+  const rosterWord = rosterNoun(fleet)
   const allReadySelected = ready.length > 0 && ready.every((id) => state.selection.includes(id))
   const allReadyDisabled = !canSelect || ready.length === 0 || allReadySelected || pendingRequest !== null
   return (
@@ -140,7 +150,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
             ? capabilityBlockedReason(state, 'select') ?? undefined
             : can
             ? lastSelected
-              ? 'Intent v1 requires at least one aircraft in a select request.'
+              ? `Intent v1 requires at least one ${deviceNoun(drone.device_class)} in a select request.`
               : undefined
             : humanizeCode(drone.readiness_reasons[0] ?? drone.membership)
           const classes = ['tg-chip']
@@ -152,14 +162,14 @@ export function TargetStrip({ controller }: { controller: Controller }) {
               type="button"
               className={classes.join(' ')}
               aria-pressed={on}
-              aria-label={`${on ? 'Deselect' : 'Select'} ${formatDroneId(drone.drone_id)}`}
+              aria-label={`${on ? 'Deselect' : 'Select'} ${formatDeviceId(drone)}`}
               disabled={!can || lastSelected}
               title={reason}
               onClick={() => toggleAircraft(drone.drone_id)}
             >
-              <span className="tg-chip-id">{formatDroneId(drone.drone_id)}</span>
+              <span className="tg-chip-id">{formatDeviceId(drone)}</span>
               <span className="tg-chip-sub">
-                {drone.flight_state ?? 'unreported'} · {formatPercent(drone.battery)}
+                {drone.flight_state ?? motionStateWord(drone)} · {formatPercent(drone.battery)}
               </span>
             </button>
           )
@@ -174,10 +184,10 @@ export function TargetStrip({ controller }: { controller: Controller }) {
               : pendingRequest
               ? 'Confirm or cancel the pending preview first.'
               : allReadySelected
-                ? 'Every ready aircraft is already selected.'
+                ? `Every ready ${rosterWord} is already selected.`
                 : ready.length === 0
-                  ? 'No aircraft is ready.'
-                  : 'Drafts a select preview for every ready aircraft.'
+                  ? noReadyReason(state)
+                  : `Drafts a select preview for every ready ${rosterWord}.`
           }
           onClick={() => prepareSelect(ready, 'console')}
         >
@@ -192,7 +202,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
           {blockers
             .map(
               (drone) =>
-                `${formatDroneId(drone.drone_id)} ${humanizeCode(drone.readiness_reasons[0] ?? 'not selectable').toLowerCase()}`,
+                `${formatDeviceId(drone)} ${humanizeCode(drone.readiness_reasons[0] ?? 'not selectable').toLowerCase()}`,
             )
             .join(' · ')}{' '}
           — these cannot be selected or commanded.

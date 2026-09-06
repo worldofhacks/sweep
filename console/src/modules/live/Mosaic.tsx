@@ -1,14 +1,20 @@
-import { formatDroneId } from '../../control/state'
+import { deviceNoun, formatDeviceId, type DeviceNoun } from '../../control/state'
 import { LivePlayer } from '../../media/LivePlayer'
 import type { MediaRuntime } from '../../media/runtime'
 import type { DroneId, RelayAircraftState } from '../../relay/contract'
 import { isReady, membershipTone } from '../../shell/derive'
 import { formatPercent } from '../../shell/format'
-import { deriveReadiness, deriveStream, mosaicNote, mosaicSlots, type WallSize } from './derive-live'
+import { deriveReadiness, deriveStream, mosaicSlots, type WallSize } from './derive-live'
 
 export interface MosaicProps {
-  aircraft: RelayAircraftState[]
+  devices: RelayAircraftState[]
   count: WallSize
+  /** Accessible name of the wall region. */
+  label: string
+  /** The sentence above the wall. */
+  note: string
+  /** The word for an empty slot's missing device. */
+  noun: DeviceNoun
   now: number
   focusedId: DroneId | null
   selection: DroneId[]
@@ -21,14 +27,17 @@ export interface MosaicProps {
 }
 
 /**
- * The wall of four or six: one tile per reported aircraft, empty slots stay
- * empty. Every tile whose stream the relay reports live hosts its own player,
- * so the Wall of 4 holds four concurrent WHEP sessions; a player is torn down
- * with its tile, on pane change, and the moment the relay stops saying live.
+ * A wall of tiles: one per reported device, empty slots stay empty. Every
+ * tile whose stream the relay reports live hosts its own player, so the Wall
+ * of 4 holds four concurrent WHEP sessions; a player is torn down with its
+ * tile, on pane change, and the moment the relay stops saying live.
  */
 export function Mosaic({
-  aircraft,
+  devices,
   count,
+  label,
+  note,
+  noun,
   now,
   focusedId,
   selection,
@@ -38,10 +47,10 @@ export function Mosaic({
   onToggleSelection,
   media,
 }: MosaicProps) {
-  const slots = mosaicSlots(aircraft, count)
+  const slots = mosaicSlots(devices, count)
   return (
-    <section className="lv-wall" aria-label={`Wall of ${count}`}>
-      <p className="lv-note">{mosaicNote(count, aircraft.length)}</p>
+    <section className="lv-wall" aria-label={label}>
+      <p className="lv-note">{note}</p>
       <div data-mosaic="1">
         {slots.map((drone, index) =>
           drone ? (
@@ -59,7 +68,7 @@ export function Mosaic({
               media={media}
             />
           ) : (
-            <EmptySlot key={`slot-${index + 1}`} slot={index + 1} />
+            <EmptySlot key={`slot-${index + 1}`} slot={index + 1} noun={noun} />
           ),
         )}
       </div>
@@ -90,7 +99,8 @@ function Tile({
   onToggleSelection: (droneId: DroneId) => void
   media?: MediaRuntime
 }) {
-  const id = formatDroneId(drone.drone_id)
+  const id = formatDeviceId(drone)
+  const noun = deviceNoun(drone.device_class)
   const stream = deriveStream(drone, now)
   const readiness = deriveReadiness(drone)
   // Mounted only while the relay says live; unmounting closes the WHEP session.
@@ -99,14 +109,14 @@ function Tile({
   const selectLabel = selected ? 'in selection' : canSelect ? 'add to selection' : 'not selectable'
   const selectDisabled = !canSelect || lastInSelection
   const selectTitle = selectionDisabledReason ?? (lastInSelection
-    ? 'Intent v1 requires at least one aircraft in a select request.'
+    ? `Intent v1 requires at least one ${noun} in a select request.`
     : !canSelect
-      ? 'Relay reports this aircraft is not selectable.'
+      ? `Relay reports this ${noun} is not selectable.`
       : undefined)
   return (
     <article className={`lv-tile is-${stream.status}`} aria-label={`${id} camera tile`}>
       <div className="lv-visual">
-        {plays && <LivePlayer key={drone.drone_id} droneId={drone.drone_id} media={media} />}
+        {plays && <LivePlayer key={drone.drone_id} device={drone} media={media} />}
         <div className="lv-bar">
           <span>{id}</span>
           <span className="lv-bar-status">
@@ -153,7 +163,7 @@ function Tile({
   )
 }
 
-function EmptySlot({ slot }: { slot: number }) {
+function EmptySlot({ slot, noun }: { slot: number; noun: DeviceNoun }) {
   return (
     <article className="lv-tile is-empty" aria-label={`Slot ${slot} empty`}>
       <div className="lv-visual">
@@ -163,11 +173,11 @@ function EmptySlot({ slot }: { slot: number }) {
             <span aria-hidden="true" className="lv-dot" />
             unreported
           </span>
-          <span>no aircraft</span>
+          <span>no {noun}</span>
         </div>
       </div>
       <p className="lv-meta">
-        <span className="tone-muted">No aircraft reported for this slot.</span>
+        <span className="tone-muted">No {noun} reported for this slot.</span>
       </p>
     </article>
   )

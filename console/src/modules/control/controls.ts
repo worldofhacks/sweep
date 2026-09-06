@@ -3,8 +3,16 @@
  * design's controlSpec, dpad, catalog, slots, captureBlock and flow. Every
  * input is authoritative relay state; nothing here invents a value.
  */
-import type { ControlState, RequestRecord, RequestStatus } from '../../control/state'
-import { capabilityBlockedReason, formatDroneId } from '../../control/state'
+import type { ControlState, DeviceLabeller, RequestRecord, RequestStatus } from '../../control/state'
+import {
+  capabilityBlockedReason,
+  deviceLabeller,
+  formatDeviceId,
+  formatDroneId,
+  pluralNoun,
+  rosterNoun,
+  selectionNoun,
+} from '../../control/state'
 import type { TranslateDirection } from '../../control/intent'
 import type {
   ConsoleIntentName,
@@ -54,8 +62,48 @@ export function connectionReason(state: ControlState): string | null {
 
 export const STOP_ACTIVE_REASON =
   'The network stop is active. Motion intents are refused until the relay reports it clear.'
+/** The aircraft wording; `noSelectionReason` and `noReadyReason` follow the roster's classes. */
 export const NO_SELECTION_REASON = 'No aircraft selected.'
 export const NO_READY_REASON = 'No aircraft is ready.'
+
+export function noSelectionReason(state: ControlState): string {
+  return `No ${pluralNoun(rosterNoun(sortedAircraft(state.aircraft)))} selected.`
+}
+
+export function noReadyReason(state: ControlState): string {
+  return `No ${rosterNoun(sortedAircraft(state.aircraft))} is ready.`
+}
+
+/** Intents the relay refuses for ground vehicles with `unsupported_for_device_class`. */
+export const AIRCRAFT_ONLY_INTENTS: readonly ConsoleIntentName[] = [
+  'takeoff',
+  'land',
+  'land_all',
+  'altitude',
+  'sweep',
+  'capture_room',
+]
+export const ROBOT_UNSUPPORTED_NOTE = 'Not available for robots.'
+
+/** True when the ids name at least one roster device and every one is a ground vehicle. */
+export function allGroundVehicles(state: ControlState, ids: readonly DroneId[]): boolean {
+  const devices = ids.flatMap((id) => (state.aircraft[id] ? [state.aircraft[id]] : []))
+  return devices.length > 0 && devices.every((device) => device.device_class === 'ground_vehicle')
+}
+
+/**
+ * The note for an aircraft-only intent whose every target is a ground vehicle.
+ * A mixed set keeps the control enabled: the relay decides per device and
+ * `land_all` skips ground vehicles rather than refusing.
+ */
+export function deviceClassBlockedReason(
+  state: ControlState,
+  name: ConsoleIntentName,
+  targets: readonly DroneId[] = state.selection,
+): string | null {
+  if (!AIRCRAFT_ONLY_INTENTS.includes(name)) return null
+  return allGroundVehicles(state, targets) ? ROBOT_UNSUPPORTED_NOTE : null
+}
 
 export function readyIds(state: ControlState): DroneId[] {
   return sortedAircraft(state.aircraft)
@@ -70,42 +118,54 @@ export function rosterIds(state: ControlState): DroneId[] {
 function notReadySentence(state: ControlState): string | null {
   const notReady = state.selection.filter((id) => !isReady(state.aircraft[id]))
   if (notReady.length === 0) return null
-  return `${notReady.map(formatDroneId).join(', ')} ${notReady.length > 1 ? 'are' : 'is'} not ready.`
+  const label = deviceLabeller(state.aircraft)
+  return `${notReady.map(label).join(', ')} ${notReady.length > 1 ? 'are' : 'is'} not ready.`
 }
 
 interface GateOptions {
-  /** The rule needs at least one selected aircraft. */
+  /** The rule needs at least one selected device. */
   sel?: boolean
-  /** Every selected aircraft must be ready. */
+  /** Every selected device must be ready. */
   ready?: boolean
   /** Reason that applies before the capability check, for select-all with nothing ready. */
   extra?: string | null
   okNote?: string
+  /** The devices the press addresses when not the selection, for the class gate. */
+  targets?: readonly DroneId[]
 }
 
 interface Gate {
   reason: string | null
+  /** The intent is refused for every target's device class; shown as unsupported. */
+  unsupported: boolean
 }
 
 /**
- * Reason order: connection, authoritative relay capability, selection rule,
- * then the local implementation set and network stop. Capability metadata is
- * authoritative; unsupported names stay visible but never draft or dispatch.
+ * Reason order: connection, authoritative relay capability, device class,
+ * selection rule, then the local implementation set and network stop.
+ * Capability metadata is authoritative; unsupported names stay visible but
+ * never draft or dispatch.
  */
 export function gateControl(state: ControlState, name: ConsoleIntentName, options: GateOptions = {}): Gate {
   const connection = connectionReason(state)
-  if (connection) return { reason: connection }
+  if (connection) return { reason: connection, unsupported: false }
   const capability = capabilityBlockedReason(state, name)
-  if (capability) return { reason: capability }
-  if (options.sel && state.selection.length === 0) return { reason: NO_SELECTION_REASON }
+  if (capability) return { reason: capability, unsupported: false }
+  const deviceClass = deviceClassBlockedReason(state, name, options.targets)
+  if (deviceClass) return { reason: deviceClass, unsupported: true }
+  if (options.sel && state.selection.length === 0) return { reason: noSelectionReason(state), unsupported: false }
   if (options.ready) {
     const notReady = notReadySentence(state)
-    if (notReady) return { reason: notReady }
+    if (notReady) return { reason: notReady, unsupported: false }
   }
-  if (options.extra) return { reason: options.extra }
-  if (!isSupportedIntent(name)) return { reason: `${name} is not implemented by this console.` }
-  if (state.estop && name !== 'estop' && name !== 'land' && name !== 'land_all') return { reason: STOP_ACTIVE_REASON }
-  return { reason: null }
+  if (options.extra) return { reason: options.extra, unsupported: false }
+  if (!isSupportedIntent(name)) {
+    return { reason: `${name} is not implemented by this console.`, unsupported: true }
+  }
+  if (state.estop && name !== 'estop' && name !== 'land' && name !== 'land_all') {
+    return { reason: STOP_ACTIVE_REASON, unsupported: false }
+  }
+  return { reason: null, unsupported: false }
 }
 
 function control(
@@ -117,8 +177,8 @@ function control(
 ): ControlSpec {
   const { name } = press
   const confirm = requiresConfirmation(name)
-  const supported = isSupportedIntent(name)
-  const gate = gateControl(state, name, options)
+  const gate = gateControl(state, name, { ...options, targets: options.targets ?? press.targets })
+  const supported = isSupportedIntent(name) && !gate.unsupported
   const enabled = gate.reason === null
   const note =
     gate.reason ??
@@ -150,12 +210,15 @@ export function fleetControls(state: ControlState): ControlSpec[] {
       'select-all',
       'Select all ready',
       { name: 'select', args: { ids: ready }, targets: ready },
-      { extra: ready.length === 0 ? NO_READY_REASON : null, okNote: 'Selects every ready aircraft.' },
+      {
+        extra: ready.length === 0 ? noReadyReason(state) : null,
+        okNote: `Selects every ready ${rosterNoun(sortedAircraft(state.aircraft))}.`,
+      },
     ),
   ]
 }
 
-/** Swarm › Motion: every selected aircraft. */
+/** Swarm › Motion: every selected device. */
 export function motionControls(state: ControlState): ControlSpec[] {
   return [
     control(state, 'takeoff', 'Takeoff', { name: 'takeoff', args: {} }, { sel: true, ready: true }),
@@ -296,7 +359,7 @@ export function dpadBlockedReason(state: ControlState): string | null {
   return (
     connectionReason(state) ??
     capabilityBlockedReason(state, 'translate') ??
-    (state.estop ? STOP_ACTIVE_REASON : state.selection.length === 0 ? NO_SELECTION_REASON : null)
+    (state.estop ? STOP_ACTIVE_REASON : state.selection.length === 0 ? noSelectionReason(state) : null)
   )
 }
 
@@ -345,7 +408,7 @@ export function formationPlot(
   return aircraft.map((drone, i) => {
     const [x, y] = slots[i]
     return {
-      id: formatDroneId(drone.drone_id),
+      id: formatDeviceId(drone),
       droneId: drone.drone_id,
       left: `${50 + (x / span) * 100}%`,
       top: `${50 + (y / span) * 100}%`,
@@ -374,11 +437,16 @@ export interface FanoutRow {
   cmd: string
 }
 
-/** What the planner would propose per aircraft for a pending, confirmation-gated draft. */
-export function fanoutFor(name: ConsoleIntentName, args: IntentArgs, targets: DroneId[]): FanoutRow[] {
+/** What the planner would propose per device for a pending, confirmation-gated draft. */
+export function fanoutFor(
+  name: ConsoleIntentName,
+  args: IntentArgs,
+  targets: DroneId[],
+  label: DeviceLabeller = formatDroneId,
+): FanoutRow[] {
   const pattern = 'pattern' in args ? args.pattern : 'the requested pattern'
   return targets.map((droneId, i) => {
-    const id = formatDroneId(droneId)
+    const id = label(droneId)
     switch (name) {
       case 'takeoff':
         return { id, cmd: 'take off to the indoor hover altitude, then hover' }
@@ -411,14 +479,20 @@ export interface ChipView {
   reason: string
 }
 
+/** The device's motion state word: the flight state, or the drive state for a ground vehicle. */
+export function motionStateWord(drone: RelayAircraftState): string {
+  if (drone.flight_state !== null) return drone.flight_state
+  return drone.device_class === 'ground_vehicle' ? 'drive state unreported' : 'flight state unreported'
+}
+
 export function aircraftChips(state: ControlState): ChipView[] {
   return sortedAircraft(state.aircraft).map((drone) => {
     const selectCapability = capabilityBlockedReason(state, 'select')
     const selectable = selectCapability === null && isReady(drone)
     return {
       droneId: drone.drone_id,
-      id: formatDroneId(drone.drone_id),
-      sub: `${drone.flight_state ?? 'flight state unreported'} · ${drone.battery === null ? '—' : `${Math.round(drone.battery * 100)}%`}`,
+      id: formatDeviceId(drone),
+      sub: `${motionStateWord(drone)} · ${drone.battery === null ? '—' : `${Math.round(drone.battery * 100)}%`}`,
       selected: state.selection.includes(drone.drone_id),
       selectable,
       reason: selectCapability ?? (selectable
@@ -430,13 +504,13 @@ export function aircraftChips(state: ControlState): ChipView[] {
   })
 }
 
-/** "D-03 telemetry stale · D-04 control authority missing", or empty when every aircraft is ready. */
+/** "D-03 telemetry stale · G-01 control authority missing", or empty when every device is ready. */
 export function chipBlockers(state: ControlState): string {
   return sortedAircraft(state.aircraft)
     .filter((drone) => !isReady(drone))
     .map(
       (drone) =>
-        `${formatDroneId(drone.drone_id)} ${(drone.readiness_reasons[0] ?? 'not selectable').replaceAll('_', ' ')}`,
+        `${formatDeviceId(drone)} ${(drone.readiness_reasons[0] ?? 'not selectable').replaceAll('_', ' ')}`,
     )
     .join(' · ')
 }
@@ -548,7 +622,10 @@ export function captureGate(
     }
   }
   const drone = state.aircraft[state.selection[0]]
-  const id = formatDroneId(state.selection[0])
+  const id = deviceLabeller(state.aircraft)(state.selection[0])
+  if (drone?.device_class === 'ground_vehicle') {
+    return { ready: false, text: ROBOT_UNSUPPORTED_NOTE }
+  }
   if (!isReady(drone)) {
     const reasons = drone?.readiness_reasons.length ? drone.readiness_reasons.join(', ') : 'not selectable'
     return { ready: false, text: `${id} is not ready: ${reasons}.` }
@@ -591,15 +668,17 @@ export function captureFlow(
   guidance: CaptureReadiness | null,
 ): FlowStep[] {
   const one = state.selection.length === 1 ? state.aircraft[state.selection[0]] : undefined
-  const oneReady = one !== undefined && isReady(one)
+  const oneReady = one !== undefined && isReady(one) && one.device_class === 'aircraft'
   const stepOne =
     one !== undefined && oneReady
-      ? `${formatDroneId(one.drone_id)} selected, ${one.flight_state ?? 'flight state unreported'} and ready`
+      ? `${formatDeviceId(one)} selected, ${motionStateWord(one)} and ready`
       : state.selection.length === 0
       ? 'no aircraft selected'
       : state.selection.length > 1
         ? `${state.selection.length} selected — capture_room takes exactly one`
-        : `${formatDroneId(state.selection[0])} is not ready`
+        : one?.device_class === 'ground_vehicle'
+          ? `${formatDeviceId(one)} is a robot — capture_room is not available for robots`
+          : `${deviceLabeller(state.aircraft)(state.selection[0])} is not ready`
   const failing = guidance ? failingGates(guidance) : []
   const gatesWord = !guidance
     ? 'gates unreported'
@@ -722,7 +801,8 @@ export function retryBlockedReason(request: RequestRecord, state: ControlState):
   if (followsSelection(request.intent.name)) {
     const gone = request.intent.selection.find((id) => !isReady(state.aircraft[id]))
     if (gone !== undefined) {
-      return `Disabled: ${formatDroneId(gone)} is no longer ready. No substitute aircraft is selected.`
+      const noun = selectionNoun(state.aircraft, request.intent.selection)
+      return `Disabled: ${deviceLabeller(state.aircraft)(gone)} is no longer ready. No substitute ${noun} is selected.`
     }
   }
   return null

@@ -1,10 +1,18 @@
 import type { DepartureRecord } from '../../control/state'
-import { capabilityBlockedReason, formatDroneId, isIntentEnabled } from '../../control/state'
+import {
+  capabilityBlockedReason,
+  deviceNoun,
+  formatDeviceId,
+  isIntentEnabled,
+  pluralNoun,
+  rosterNoun,
+} from '../../control/state'
 import type { RelayAircraftState } from '../../relay/contract'
-import { isReady, membershipTone, metricTone, sortedAircraft } from '../../shell/derive'
+import { authorityWords, isReady, membershipTone, metricTone, sortedAircraft } from '../../shell/derive'
 import { formatAgo, formatPercent, formatTime, humanizeCode } from '../../shell/format'
-import { MEMBERSHIP_REASON, READINESS } from '../../shell/sentences'
+import { membershipReasonSentence, readinessSentence } from '../../shell/sentences'
 import type { ModuleProps } from '../types'
+import { motionStateWord } from './controls'
 
 export interface FleetPaneProps {
   controller: ModuleProps['controller']
@@ -22,7 +30,7 @@ export function FleetPane({ controller, now }: FleetPaneProps) {
         <p className="ct-eyebrow ct-fleet-eyebrow">Registry · roster v{state.rosterVersion}</p>
         {fleet.length === 0 ? (
           <p className="ct-registry-empty">
-            No aircraft have joined this session. The relay reports an empty roster.
+            No devices have joined this session. The relay reports an empty roster.
           </p>
         ) : (
           fleet.map((drone) => (
@@ -42,7 +50,7 @@ export function FleetPane({ controller, now }: FleetPaneProps) {
       <div className="ct-column">
         <p className="ct-eyebrow ct-fleet-eyebrow">Departed this session</p>
         {state.departed.length === 0 ? (
-          <p className="ct-departed-none">No aircraft have left.</p>
+          <p className="ct-departed-none">No {pluralNoun(rosterNoun(fleet))} have left.</p>
         ) : (
           state.departed.map((record, index) => (
             <DepartedCard
@@ -53,7 +61,7 @@ export function FleetPane({ controller, now }: FleetPaneProps) {
           ))
         )}
         <p className="ct-fleet-footnote">
-          The registry follows the relay's state frame, never telemetry. A departed aircraft returns here with
+          The registry follows the relay's state frame, never telemetry. A departed device returns here with
           a higher connection epoch, and any selection that named it is cleared with the reason stated.
         </p>
       </div>
@@ -78,20 +86,22 @@ function RegistryCard({
   selectionDisabledReason: string | null
   onToggle: () => void
 }) {
-  const id = formatDroneId(drone.drone_id)
+  const id = formatDeviceId(drone)
+  const noun = deviceNoun(drone.device_class)
+  const words = authorityWords(drone)
   const canSelect = selectionEnabled && isReady(drone)
   const disabled = !canSelect || lastInSelection
   const title = selectionDisabledReason ?? (lastInSelection
-    ? 'Intent v1 requires at least one aircraft in a select request.'
+    ? `Intent v1 requires at least one ${noun} in a select request.`
     : !canSelect
-      ? 'Relay reports this aircraft is not selectable.'
+      ? `Relay reports this ${noun} is not selectable.`
       : undefined)
   return (
     <article className="ct-registry-card" aria-label={`${id} registry card`}>
       <div className="ct-registry-head">
         <span className="ct-registry-id">{id}</span>{' '}
         <span className={`ct-registry-membership tone-${membershipTone(drone.membership)}`}>{drone.membership}</span>{' '}
-        <span className="ct-registry-flight">{drone.flight_state ?? 'flight state unreported'}</span>{' '}
+        <span className="ct-registry-flight">{motionStateWord(drone)}</span>{' '}
         <span className="ct-registry-stamp">epoch {drone.connection_epoch}</span>{' '}
         <span className="ct-registry-stamp">{formatAgo(now, drone.last_seen_at)}</span>
       </div>
@@ -101,11 +111,9 @@ function RegistryCard({
         <Metric label="position" value={drone.pos_quality} />
       </div>
       <p className="ct-registry-authority">
-        <span className={drone.control_authority ? 'tone-ink' : 'tone-danger'}>
-          {drone.control_authority ? 'Sweep' : 'RC takeover'}
-        </span>
+        <span className={drone.control_authority ? 'tone-ink' : 'tone-danger'}>{words.authority}</span>
         <span className={drone.rc_safety_operator_present ? undefined : 'tone-danger'}>
-          RC safety operator {drone.rc_safety_operator_present ? 'present' : 'absent'}
+          {words.operator} {drone.rc_safety_operator_present ? 'present' : 'absent'}
         </span>
       </p>
       <div className="ct-registry-patterns" aria-label="Advertised capture patterns">
@@ -123,7 +131,7 @@ function RegistryCard({
         <div className="ct-registry-reasons">
           {drone.readiness_reasons.map((code) => (
             <p key={code}>
-              <code>{code}</code> — {READINESS[code] ?? humanizeCode(code)}
+              <code>{code}</code> — {readinessSentence(code, noun) ?? humanizeCode(code)}
             </p>
           ))}
         </div>
@@ -158,7 +166,8 @@ function Metric({ label, value }: { label: string; value: number | null }) {
 
 function DepartedCard({ record, current }: { record: DepartureRecord; current: RelayAircraftState | undefined }) {
   const rejoined = current !== undefined && current.connection_epoch > record.drone.connection_epoch
-  const id = formatDroneId(record.drone.drone_id)
+  const id = formatDeviceId(record.drone)
+  const noun = deviceNoun(record.drone.device_class)
   return (
     <div className="ct-departed" aria-label={`${id} departed`}>
       <p className="ct-departed-head">
@@ -167,7 +176,8 @@ function DepartedCard({ record, current }: { record: DepartureRecord; current: R
         <span className="ct-departed-at">{formatTime(record.t)}</span>
       </p>
       <p className="ct-departed-reason">
-        <code>{record.reasonCode}</code> — {MEMBERSHIP_REASON[record.reasonCode] ?? record.detail}
+        <code>{record.reasonCode}</code> —{' '}
+        {membershipReasonSentence(record.reasonCode, noun) ?? record.detail}
       </p>
       <p className="ct-departed-rejoin">
         {rejoined

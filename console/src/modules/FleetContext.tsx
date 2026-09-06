@@ -1,9 +1,17 @@
 import type { DepartureRecord } from '../control/state'
-import { capabilityBlockedReason, formatDroneId, isIntentEnabled } from '../control/state'
+import {
+  capabilityBlockedReason,
+  deviceNoun,
+  formatDeviceId,
+  isIntentEnabled,
+  pluralNoun,
+  rosterNoun,
+} from '../control/state'
 import type { RelayAircraftState } from '../relay/contract'
-import { isReady, membershipTone, metricTone, sortedAircraft } from '../shell/derive'
+import { authorityWords, isReady, membershipTone, metricTone, sortedAircraft } from '../shell/derive'
 import { formatPercent, formatTime, humanizeCode } from '../shell/format'
-import { MEMBERSHIP_REASON, READINESS } from '../shell/sentences'
+import { membershipReasonSentence, readinessSentence } from '../shell/sentences'
+import { motionStateWord } from './control/controls'
 import type { ModuleProps } from './types'
 
 /**
@@ -30,7 +38,7 @@ export function FleetRegistry({
       )}
       {fleet.length === 0 ? (
         <p className="fleet-empty">
-          No aircraft have joined this session. The relay reports an empty roster.
+          No devices have joined this session. The relay reports an empty roster.
         </p>
       ) : (
         fleet.map((drone) => (
@@ -53,7 +61,7 @@ export function FleetRegistry({
         Departed this session
       </p>
       {state.departed.length === 0 ? (
-        <p className="fleet-none">No aircraft have left.</p>
+        <p className="fleet-none">No {pluralNoun(rosterNoun(fleet))} have left.</p>
       ) : (
         state.departed.map((record, index) => (
           <DepartedCard
@@ -101,13 +109,15 @@ function FleetCard({
   selectionDisabledReason: string | null
   onToggle: () => void
 }) {
-  const id = formatDroneId(drone.drone_id)
+  const id = formatDeviceId(drone)
+  const noun = deviceNoun(drone.device_class)
+  const words = authorityWords(drone)
   const canSelect = selectionEnabled && isReady(drone)
   const disabled = !canSelect || lastInSelection
   const title = selectionDisabledReason ?? (lastInSelection
-    ? 'Intent v1 requires at least one aircraft in a select request.'
+    ? `Intent v1 requires at least one ${noun} in a select request.`
     : !canSelect
-      ? 'Relay reports this aircraft is not selectable.'
+      ? `Relay reports this ${noun} is not selectable.`
       : undefined)
   return (
     <article className="fleet-card" aria-label={`${id} registry card`}>
@@ -116,7 +126,7 @@ function FleetCard({
         <span className={`fleet-membership tone-${membershipTone(drone.membership)}`}>
           {drone.membership}
         </span>
-        <span className="fleet-flight">{drone.flight_state ?? 'flight state unreported'}</span>
+        <span className="fleet-flight">{motionStateWord(drone)}</span>
       </div>
       <div className="fleet-metrics">
         <FleetMetric label="battery" value={drone.battery} />
@@ -125,10 +135,10 @@ function FleetCard({
       </div>
       <p className="fleet-line">
         <span className={drone.control_authority ? 'tone-ink' : 'tone-danger'}>
-          {drone.control_authority ? 'Sweep' : 'RC takeover'}
+          {words.authority}
         </span>
         <span className={drone.rc_safety_operator_present ? undefined : 'tone-danger'}>
-          RC safety operator {drone.rc_safety_operator_present ? 'present' : 'absent'}
+          {words.operator} {drone.rc_safety_operator_present ? 'present' : 'absent'}
         </span>
         <span className="mono">epoch {drone.connection_epoch}</span>
         <span className="mono">
@@ -139,7 +149,7 @@ function FleetCard({
         <div className="fleet-reasons">
           {drone.readiness_reasons.map((code) => (
             <p key={code}>
-              <code>{code}</code> — {READINESS[code] ?? humanizeCode(code)}
+              <code>{code}</code> — {readinessSentence(code, noun) ?? humanizeCode(code)}
             </p>
           ))}
         </div>
@@ -180,15 +190,17 @@ function DepartedCard({
   current: RelayAircraftState | undefined
 }) {
   const rejoined = current !== undefined && current.connection_epoch > record.drone.connection_epoch
+  const noun = deviceNoun(record.drone.device_class)
   return (
     <div className="fleet-departed">
       <p className="fleet-departed-head">
-        <span className="fleet-departed-id">{formatDroneId(record.drone.drone_id)}</span>
+        <span className="fleet-departed-id">{formatDeviceId(record.drone)}</span>
         <span>epoch {record.drone.connection_epoch}</span>
         <span>{formatTime(record.t)}</span>
       </p>
       <p>
-        <code>{record.reasonCode}</code> — {MEMBERSHIP_REASON[record.reasonCode] ?? record.detail}
+        <code>{record.reasonCode}</code> —{' '}
+        {membershipReasonSentence(record.reasonCode, noun) ?? record.detail}
       </p>
       <p className="fleet-departed-rejoin">
         {rejoined

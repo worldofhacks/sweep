@@ -1,6 +1,12 @@
 import { clampTranslateSteps, createTranslateArgs } from '../../control/intent'
-import { capabilityBlockedReason, isIntentEnabled } from '../../control/state'
-import type { RequestRecord } from '../../control/state'
+import {
+  capabilityBlockedReason,
+  deviceLabeller,
+  isIntentEnabled,
+  rosterNoun,
+  selectionNoun,
+} from '../../control/state'
+import type { ControlState, RequestRecord } from '../../control/state'
 import { planTitle } from '../../control/plan'
 import { sortedAircraft } from '../../shell/derive'
 import type { ModuleProps } from '../types'
@@ -17,6 +23,7 @@ import {
   formationPlot,
   formationRelayNote,
   motionControls,
+  noReadyReason,
   readyIds,
   type ControlSpec,
 } from './controls'
@@ -37,6 +44,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
   const ready = readyIds(state)
   const selectEnabled = isIntentEnabled(state, 'select')
   const dpadReason = dpadBlockedReason(state)
+  const rosterWord = rosterNoun(sortedAircraft(state.aircraft))
   const run = (spec: ControlSpec) => {
     if (spec.name === 'select') selectAllReady()
     else issueIntent(spec.press)
@@ -58,7 +66,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
             disabled={!selectEnabled || ready.length === 0}
             title={
               capabilityBlockedReason(state, 'select') ??
-              (ready.length === 0 ? 'No aircraft is ready.' : undefined)
+              (ready.length === 0 ? noReadyReason(state) : undefined)
             }
             onClick={selectAllReady}
           >
@@ -66,7 +74,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
           </button>
         </div>
 
-        <div className="ct-chips" role="group" aria-label="Aircraft">
+        <div className="ct-chips" role="group" aria-label="Devices">
           {chips.map((chip) => (
             <button
               key={chip.droneId}
@@ -100,7 +108,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
 
         <div className="ct-motion-wrap">
           <div className="ct-motion">
-            <p className="ct-eyebrow">Motion — every selected aircraft</p>
+            <p className="ct-eyebrow">Motion — every selected {rosterWord}</p>
             <div className="ct-motion-list" role="group" aria-label="Motion controls">
               {motionControls(state).map((spec) => (
                 <ControlButton key={spec.key} spec={spec} motion onPress={run} />
@@ -138,7 +146,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
           preview={formationPreview}
           onPreview={onFormationPreview}
         />
-        {pendingRequest && <FanoutCard pending={pendingRequest} />}
+        {pendingRequest && <FanoutCard pending={pendingRequest} state={state} />}
       </div>
     </div>
   )
@@ -287,16 +295,22 @@ function FormationPanel({
   )
 }
 
-function FanoutCard({ pending }: { pending: RequestRecord }) {
-  const rows = fanoutFor(pending.intent.name, pending.intent.args, pending.intent.selection)
+function FanoutCard({ pending, state }: { pending: RequestRecord; state: ControlState }) {
+  const rows = fanoutFor(
+    pending.intent.name,
+    pending.intent.args,
+    pending.intent.selection,
+    deviceLabeller(state.aircraft),
+  )
+  const noun = selectionNoun(state.aircraft, pending.intent.selection)
   return (
-    <div className="ct-plan-card" aria-label="Per-aircraft fan-out">
-      <p className="ct-eyebrow">Per-aircraft fan-out</p>
+    <div className="ct-plan-card" aria-label={`Per-${noun} fan-out`}>
+      <p className="ct-eyebrow">Per-{noun} fan-out</p>
       <h2 className="ct-plan-title">{pending.plan?.title ?? planTitle(pending.intent)}</h2>
       <p className="ct-fanout-note">
         {rows.length === 0
-          ? 'The draft names no aircraft; the planner fans out over the roster it holds.'
-          : `The planner proposes ${rows.length} per-aircraft commands. The arbiter checks each one before dispatch.`}
+          ? 'The draft names no device; the planner fans out over the roster it holds.'
+          : `The planner proposes ${rows.length} per-${noun} commands. The arbiter checks each one before dispatch.`}
       </p>
       {rows.map((row) => (
         <p key={row.id} className="ct-fanout-row">

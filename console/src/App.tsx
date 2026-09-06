@@ -20,6 +20,8 @@ interface AppProps {
   services?: ModuleServices
   /** Playback runtime from the media bootstrap; absent means playback is not configured. */
   media?: MediaRuntime
+  /** Relay WebSocket base URL from the bootstrap, shown by the Devices module for node configuration. */
+  relayBaseUrl?: string
 }
 
 /** Runtime clients in, the control hook, and the persistent shell around every module. */
@@ -31,6 +33,7 @@ export default function App({
   initialModule,
   services,
   media,
+  relayBaseUrl,
 }: AppProps) {
   const controller = useControlConsole({ sessionId, clients, intentDependencies })
   const [fallbackCatalog] = useState(() => new UnreportedCatalogClient())
@@ -43,6 +46,7 @@ export default function App({
       initialModule={initialModule}
       services={services}
       media={media}
+      relayBaseUrl={relayBaseUrl}
     />
   )
 }
