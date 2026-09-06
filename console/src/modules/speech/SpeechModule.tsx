@@ -76,10 +76,9 @@ const INITIAL: SpeechState = {
 
 /**
  * Speech to intents: hold to talk through the PR #49 recorder and transcript
- * client, or type; the local fallback compiles the transcript to one canonical
- * intent; the operator drafts it for preview and confirms in the dock. Nothing
- * is sent from a compile, and the relay's missing language service is shown
- * rather than papered over.
+ * client, or type; use the configured relay compiler or the local fallback.
+ * The operator stages each intent for preview and confirms in the dock.
+ * Compilation itself sends no aircraft commands.
  */
 export function SpeechModule({ controller, now, roomId, services }: ModuleProps) {
   const [pane, setPane] = useState<SpeechPane>('talk')
@@ -274,6 +273,7 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
             {speech.remote && (
               <div className="sp-result" role="region" aria-label="Compiler result">
                 <p className="sp-result-head"><span className="sp-eyebrow is-inline">Relay compilation</span><span className={`sp-result-status is-${speech.remote.kind}`}>{speech.remote.kind}</span></p>
+                <p className="sp-result-line">compiled by relay · source <span className="mono">{speech.remote.source}</span></p>
                 {speech.remote.detail && <p className="sp-result-sentence">{speech.remote.detail}</p>}
                 {speech.remote.reason && <p className="sp-result-line">reason <span className="mono">{speech.remote.reason}</span></p>}
                 {speech.remote.intents.map((intent, index) => <p className="sp-result-intent" key={`${intent.name}-${index}`}><span className="is-name">{index + 1}. {intent.name}</span><span className="is-args">{JSON.stringify(intent.args)}</span></p>)}
@@ -307,7 +307,7 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
                   compiled by <span className="mono">local fallback</span>
                   {speech.relayCompilerReason
                     ? ` · relay compiler ${speech.relayCompilerReason}`
-                    : ' · the relay has no language service on this console'}
+                    : !compilerEnabled ? ' · the relay has no language service on this console' : ''}
                   {' · transcript '}
                   <span className="mono">{speech.origin ?? 'typed'}</span>
                 </p>
@@ -358,6 +358,7 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
         <div>
           {pipelineSteps({
             languageEnabled,
+            compilerEnabled,
             status: voice.status,
             remainingSeconds,
             utterance: speech.utterance,
@@ -382,10 +383,9 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
             </div>
           ))}
           <p className="sp-note">
-            The compiler is the only place a model would touch the request path, and its output is
-            schema-constrained to canonical intent names. The relay has no language service on this console yet,
-            so the local fallback compiles the same schema at reduced accuracy, and the outcome card says which
-            one ran.
+            {compilerEnabled
+              ? 'The configured relay compiler returns intents grounded in the current fleet state. The result identifies the compiler source. Review and stage one step at a time; commands are sent only after confirmation.'
+              : 'The compiler is the only place a model would touch the request path, and its output is schema-constrained to canonical intent names. The relay has no language service on this console yet, so the local fallback compiles the same schema at reduced accuracy, and the outcome card says which one ran.'}
           </p>
         </div>
       )}
@@ -530,6 +530,7 @@ function describeCapture(
 
 function pipelineSteps(input: {
   languageEnabled: boolean
+  compilerEnabled: boolean
   status: PushToTalkStatus
   remainingSeconds: number | null
   utterance: string
@@ -541,7 +542,7 @@ function pipelineSteps(input: {
   pending: boolean
 }): Array<{ n: string; title: string; value: string; note: string }> {
   const capture = !input.languageEnabled
-    ? 'language disabled'
+    ? input.compilerEnabled ? 'microphone unavailable · typed input ready' : 'language disabled'
     : input.status === 'recording'
       ? `listening · ${input.remainingSeconds ?? CAP_SECONDS} s left`
       : input.status === 'uploading'
@@ -567,19 +568,24 @@ function pipelineSteps(input: {
     {
       n: '3',
       title: 'Compile',
-      value: input.compiled ? `${input.compiled.status} · local fallback` : 'waiting',
+      value: input.remote
+        ? `${input.remote.kind} · relay · ${input.remote.source}`
+        : input.compiled ? `${input.compiled.status} · local fallback` : 'waiting',
       note: 'Schema-constrained output: canonical intent names and args only. Ambiguity returns options instead of a guess.',
     },
     {
       n: '4',
       title: 'Validate',
-      value: input.compiled?.status === 'compiled' ? 'Intent v1 mirror, then the relay arbiter' : 'nothing to validate',
+      value: input.remote?.kind === 'plan' || input.compiled?.status === 'compiled'
+        ? 'Intent v1 mirror, then the relay arbiter' : 'nothing to validate',
       note: 'The console checks the envelope against its Intent v1 mirror before it leaves; safety rules live in the relay arbiter, not the prompt.',
     },
     {
       n: '5',
       title: 'Confirm',
-      value: input.pending ? 'pending in the dock' : 'no pending request',
+      value: input.remote?.kind === 'plan'
+        ? `${input.remoteIndex} of ${input.remote.intents.length} steps staged · ${input.pending ? 'pending in the dock' : 'no pending request'}`
+        : input.pending ? 'pending in the dock' : 'no pending request',
       note: 'One intent at a time, exactly like a console press.',
     },
   ]

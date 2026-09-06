@@ -1,6 +1,8 @@
 """Language integration on the isolated fleet, with explicit synthetic test inputs.
 
 The default uses the normal Anthropic compiler and Whisper transcription transports.
+``--provider-env PATH`` reads only their two API keys, without loading other settings
+or evaluating shell expressions. Demo tracing is disabled in every provider mode.
 ``--synthetic-inputs`` substitutes bounded phrase fixtures and queued transcripts;
 these are synthetic software checks, not recorded provider or recognition evidence.
 Audio still passes through the production upload and duration validation, and model
@@ -12,9 +14,11 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import re
+import shlex
 import signal
 import threading
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -28,13 +32,62 @@ from language.telemetry import NoOpTraceSink
 from language.transport import (
     PINNED_COMPILER_MODEL,
     PROMPT_SCHEMA_VERSION,
+    AnthropicTransport,
     ModelRequest,
     ModelResponse,
 )
 from relay.autonomy import AutonomyComposition
 from relay.language_runtime import LanguageRuntime
-from relay.voice import AudioUpload, TranscriptionError, TranscriptService
+from relay.voice import (
+    AudioUpload,
+    OpenAIWhisperTransport,
+    TranscriptionError,
+    TranscriptService,
+)
 from relay.voice_telemetry import NoOpVoiceTraceSink
+
+_PROVIDER_KEYS = frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY"})
+_PROVIDER_ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?(ANTHROPIC_API_KEY|OPENAI_API_KEY)\s*=(.*)$")
+
+
+def load_provider_keys(path: Path) -> dict[str, str]:
+    """Read allowlisted plain/quoted assignments; never expand or execute values.
+
+    Blank lines, comments, optional export prefixes and inline comments are accepted.
+    Other variable names are ignored before their values are parsed. As with ordinary
+    env files, the last assignment wins. Both nonempty provider keys are required.
+    """
+    keys: dict[str, str] = {}
+    try:
+        with path.open(encoding="utf-8") as source:
+            for line in source:
+                match = _PROVIDER_ASSIGNMENT.fullmatch(line.rstrip("\r\n"))
+                if match is None:
+                    continue
+                name, raw = match.groups()
+                try:
+                    parts = shlex.split(raw, comments=True, posix=True)
+                except ValueError:
+                    raise ValueError(f"invalid quoting for {name}") from None
+                if len(parts) > 1:
+                    raise ValueError(f"invalid provider assignment for {name}")
+                keys[name] = parts[0] if parts else ""
+    except (OSError, UnicodeError):
+        raise ValueError("could not read provider credential file") from None
+    _validate_provider_keys(keys)
+    return keys
+
+
+def _validate_provider_keys(keys: Mapping[str, str]) -> None:
+    if set(keys) != _PROVIDER_KEYS or any(
+        not isinstance(value, str)
+        or not value
+        or any(character.isspace() or ord(character) < 32 for character in value)
+        for value in keys.values()
+    ):
+        raise ValueError(
+            "provider credentials require only nonempty OPENAI_API_KEY and ANTHROPIC_API_KEY"
+        )
 
 
 class SyntheticPhraseTransport:
@@ -132,12 +185,23 @@ class _SyntheticTranscriptService(TranscriptService):
         return replace(outcome, source="template")
 
 
-def language_demo(config: DemoConfig | None = None, *, synthetic_inputs: bool = False) -> FleetDemo:
+def language_demo(
+    config: DemoConfig | None = None,
+    *,
+    synthetic_inputs: bool = False,
+    provider_keys: Mapping[str, str] | None = None,
+) -> FleetDemo:
     """Create a fleet with language enabled and no navigation/hardware artifacts."""
-    language = (
-        LanguageRuntime(SyntheticPhraseTransport(), tracer=NoOpTraceSink())
+    if synthetic_inputs and provider_keys is not None:
+        raise ValueError("provider credentials cannot be combined with synthetic inputs")
+    keys = None if provider_keys is None else dict(provider_keys)
+    if keys is not None:
+        _validate_provider_keys(keys)
+    language = LanguageRuntime(
+        SyntheticPhraseTransport()
         if synthetic_inputs
-        else LanguageRuntime()
+        else AnthropicTransport(api_key=None if keys is None else keys["ANTHROPIC_API_KEY"]),
+        tracer=NoOpTraceSink(),
     )
     autonomy = replace(demo_autonomy_config(), language=language)
     transcription = SyntheticTranscriptionTransport()
@@ -164,7 +228,13 @@ def language_demo(config: DemoConfig | None = None, *, synthetic_inputs: bool = 
                         tracer=NoOpVoiceTraceSink(),
                     )
                     if synthetic_inputs
-                    else TranscriptService(compiler=Compiler())
+                    else TranscriptService(
+                        transcription=OpenAIWhisperTransport(
+                            api_key=None if keys is None else keys["OPENAI_API_KEY"]
+                        ),
+                        compiler=Compiler(),
+                        tracer=NoOpVoiceTraceSink(),
+                    )
                 )
                 yield
 
@@ -205,16 +275,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--log-dir", type=Path)
     parser.add_argument("--console-dist", type=Path)
     parser.add_argument("--synthetic-inputs", action="store_true")
+    parser.add_argument("--provider-env", type=Path)
     args = parser.parse_args(argv)
     values = vars(args).copy()
     synthetic = values.pop("synthetic_inputs")
+    provider_env = values.pop("provider_env")
+    if synthetic and provider_env is not None:
+        parser.error("--provider-env cannot be combined with --synthetic-inputs")
+    try:
+        provider_keys = None if provider_env is None else load_provider_keys(provider_env)
+    except ValueError as error:
+        parser.error(str(error))
     if values["session"] is None:
         del values["session"]
     config = DemoConfig(**values)
     stopped = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stopped.set())
     signal.signal(signal.SIGTERM, lambda *_: stopped.set())
-    with language_demo(config, synthetic_inputs=synthetic) as demo:
+    with language_demo(config, synthetic_inputs=synthetic, provider_keys=provider_keys) as demo:
         print(
             json.dumps(
                 {

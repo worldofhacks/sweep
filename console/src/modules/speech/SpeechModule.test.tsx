@@ -388,6 +388,33 @@ describe('Speech module', () => {
 })
 
 
+test.each(['anthropic', 'synthetic'])('shows the relay compiler result and staged progress for %s input', async (source) => {
+  const language: LanguageClient = {
+    compile: async () => ({ kind: 'plan', source, reason: null, detail: null,
+      intents: [{ name: 'hold', args: {}, selection: [1] }] }),
+  }
+  const { clients } = mount({ language })
+  const u = user()
+  await screen.findByText(/Development fixture active/i)
+  await compileTyped(u, 'hold position')
+  await waitFor(() => expect(result()).toHaveTextContent(`compiled by relay · source ${source}`))
+  const tabs = within(screen.getByRole('group', { name: 'Speech panes' }))
+
+  await u.click(tabs.getByRole('button', { name: 'Compiler pipeline' }))
+  expect(screen.getByText(`plan · relay · ${source}`)).toBeInTheDocument()
+  expect(screen.getByText('Intent v1 mirror, then the relay arbiter')).toBeInTheDocument()
+  expect(screen.getByText('0 of 1 steps staged · no pending request')).toBeInTheDocument()
+  expect(screen.getByText('microphone unavailable · typed input ready')).toBeInTheDocument()
+  expect(screen.getByText(/The configured relay compiler returns intents grounded/)).toBeInTheDocument()
+  expect(screen.queryByText(/The relay has no language service on this console yet/)).not.toBeInTheDocument()
+
+  await u.click(tabs.getByRole('button', { name: 'Speak or type' }))
+  await u.click(screen.getByRole('button', { name: 'Stage step 1 of 1' }))
+  await u.click(tabs.getByRole('button', { name: 'Compiler pipeline' }))
+  expect(screen.getByText('1 of 1 steps staged · pending in the dock')).toBeInTheDocument()
+  expect(clients.console.sent).toHaveLength(0)
+})
+
 test.each(['arm', 'land_all', 'estop'] as const)('stages compiled fleet-wide %s with an empty selection and waits for confirmation', async (name) => {
   const language: LanguageClient = {
     compile: async () => ({ kind: 'plan', source: 'synthetic', reason: null, detail: null,

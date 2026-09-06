@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import wave
 from pathlib import Path
 
@@ -8,7 +9,12 @@ import httpx
 import pytest
 
 from adapters.sim.demo import DemoConfig
-from adapters.sim.language_demo import SyntheticPhraseTransport, language_demo
+from adapters.sim.language_demo import (
+    SyntheticPhraseTransport,
+    language_demo,
+    load_provider_keys,
+    main,
+)
 from language.telemetry import NoOpTraceSink
 from relay.voice_telemetry import NoOpVoiceTraceSink
 
@@ -91,16 +97,20 @@ def test_synthetic_text_still_refuses_ungrounded_motion_and_unknown_phrases(tmp_
             assert demo.runtime.session(demo.config.session).current_state()["selection"] == []
 
 
+@pytest.mark.parametrize("explicit_keys", [False, True])
 def test_live_provider_mode_uses_provider_transports_and_exposes_no_synthetic_queue(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_keys: bool
 ) -> None:
     calls: list[str] = []
+    keys = {"OPENAI_API_KEY": "openai-dummy", "ANTHROPIC_API_KEY": "anthropic-dummy"}
 
     def transcribe(_transport, _upload):
+        assert _transport._api_key == (keys["OPENAI_API_KEY"] if explicit_keys else None)
         calls.append("whisper")
         return "arm the fleet"
 
     def complete(_transport, request):
+        assert _transport._api_key == (keys["ANTHROPIC_API_KEY"] if explicit_keys else None)
         calls.append("anthropic")
         return SyntheticPhraseTransport().complete(request)
 
@@ -108,7 +118,9 @@ def test_live_provider_mode_uses_provider_transports_and_exposes_no_synthetic_qu
     monkeypatch.setattr("language.transport.AnthropicTransport.complete", complete)
     monkeypatch.setattr("relay.voice.get_default_voice_trace_sink", NoOpVoiceTraceSink)
     monkeypatch.setattr("language.compiler.get_default_trace_sink", NoOpTraceSink)
-    with language_demo(DemoConfig(count=1, log_dir=tmp_path)) as demo:
+    with language_demo(
+        DemoConfig(count=1, log_dir=tmp_path), provider_keys=keys if explicit_keys else None
+    ) as demo:
         with httpx.Client(base_url=demo.http_url, timeout=10) as client:
             response = client.post(
                 "/demo/language/next",
@@ -127,3 +139,52 @@ def test_live_provider_mode_uses_provider_transports_and_exposes_no_synthetic_qu
             )
             assert response.json()["compilation"]["kind"] == "plan"
             assert calls == ["whisper", "anthropic"]
+
+
+def test_provider_file_only_loads_allowed_names_without_evaluation_or_environment_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "providers.env"
+    marker = tmp_path / "must-not-exist"
+    path.write_text(
+        f"SWEEP_RELAY_TOKEN=$(touch {marker})\n"
+        'SWEEP_ADAPTER_KEYS_JSON={"1":"unrelated-node-key"}\n'
+        "UNRELATED='unterminated text is ignored\n"
+        "OPENAI_API_KEY=old-dummy\n"
+        "export OPENAI_API_KEY='openai-dummy' # a comment\n"
+        '  export ANTHROPIC_API_KEY = "anthropic-$UNSET"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "host-openai-dummy")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "host-anthropic-dummy")
+    keys = load_provider_keys(path)
+    assert keys == {"OPENAI_API_KEY": "openai-dummy", "ANTHROPIC_API_KEY": "anthropic-$UNSET"}
+    assert os.environ["OPENAI_API_KEY"] == "host-openai-dummy"
+    assert os.environ["ANTHROPIC_API_KEY"] == "host-anthropic-dummy"
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "OPENAI_API_KEY=\nANTHROPIC_API_KEY=anthropic-dummy\n",
+        "OPENAI_API_KEY=openai-dummy\n",
+        "OPENAI_API_KEY='private-dummy-unclosed\nANTHROPIC_API_KEY=anthropic-dummy\n",
+    ],
+)
+def test_provider_file_errors_do_not_echo_values(tmp_path: Path, contents: str) -> None:
+    path = tmp_path / "providers.env"
+    path.write_text(contents, encoding="utf-8")
+    with pytest.raises(ValueError) as failure:
+        load_provider_keys(path)
+    assert "dummy" not in str(failure.value)
+
+
+def test_synthetic_mode_rejects_provider_credentials_before_reading_the_file(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SystemExit) as failure:
+        main(["--synthetic-inputs", "--provider-env", str(tmp_path / "missing.env")])
+    assert failure.value.code == 2
+    with pytest.raises(ValueError, match="cannot be combined"):
+        language_demo(synthetic_inputs=True, provider_keys={})
