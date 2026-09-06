@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from evals.language_corpus import StaticResponseTransport
@@ -22,6 +23,7 @@ from relay.tests.conftest import (
     membership_payload,
     telemetry_payload,
 )
+from relay.tests.test_search_runtime import _search_runtime
 from relay.voice import compiler_capability_version
 from tests.autonomy_fixtures import planning_config, safety_config
 
@@ -50,8 +52,10 @@ def _runtime() -> NavigationRuntime:
     )
 
 
+@pytest.mark.parametrize("search_enabled", [False, True])
 def test_transcript_service_factory_resolves_configured_navigation_for_the_relay_compiler(
     tmp_path,
+    search_enabled,
 ) -> None:
     runtime = _runtime()
     config = AutonomyConfig(
@@ -61,6 +65,8 @@ def test_transcript_service_factory_resolves_configured_navigation_for_the_relay
             runtime, 1, "control-store", "synthetic", "navigation-config"
         ),
     )
+    if search_enabled:
+        config = replace(config, search_runtime=_search_runtime())
     settings = RelaySettings(
         relay_token=CONSOLE_KEY,
         adapter_keys={1: ADAPTER_KEY},

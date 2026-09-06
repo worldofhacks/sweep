@@ -138,6 +138,23 @@ class AutonomyConfig:
     search_runtime: SearchRuntime | None = None
     search_detection: SearchDetectionConfig | None = None
 
+    def effective_capability_profile(self) -> CapabilityProfile:
+        base_profile = self.planning.effective_capability_profile()
+        profile = (
+            base_profile
+            if self.navigation_deployment is None
+            else CapabilityProfile(
+                f"{base_profile.name}.navigation",
+                base_profile.enabled_intent_names | {IntentName.NAVIGATE},
+            )
+        )
+        if self.search_runtime is not None and self.navigation_deployment is not None:
+            profile = CapabilityProfile(
+                f"{profile.name}.search",
+                profile.enabled_intent_names | {IntentName.SEARCH},
+            )
+        return profile
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
         """Load exact deployment contracts; localization requires measured pins and bounds."""
@@ -1100,20 +1117,7 @@ class AutonomyComposition:
         detection_camera_provider_factory: CameraProviderFactory | None = None,
     ) -> None:
         self.config = config
-        base_profile = config.planning.effective_capability_profile()
-        self.capability_profile = (
-            base_profile
-            if config.navigation_deployment is None
-            else CapabilityProfile(
-                f"{base_profile.name}.navigation",
-                base_profile.enabled_intent_names | {IntentName.NAVIGATE},
-            )
-        )
-        if config.search_runtime is not None and config.navigation_deployment is not None:
-            self.capability_profile = CapabilityProfile(
-                f"{self.capability_profile.name}.search",
-                self.capability_profile.enabled_intent_names | {IntentName.SEARCH},
-            )
+        self.capability_profile = config.effective_capability_profile()
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -1204,21 +1208,13 @@ def create_autonomy_app(
     *,
     clock: Clock | None = None,
     event_ids: EventIdFactory | None = None,
-<<<<<<< HEAD
     detection_stream_factory: StreamFactory | None = None,
     detection_detector_factory: DetectorFactory | None = None,
     detection_pose_provider_factory: PoseProviderFactory | None = None,
     detection_camera_provider_factory: CameraProviderFactory | None = None,
-=======
     transcript_service_factory: TranscriptServiceFactory | None = None,
->>>>>>> 50862f4
 ) -> tuple[FastAPI, AutonomyComposition]:
-    """Build the relay app with the planner and arbiter consuming every accepted intent.
-
-    ``transcript_service_factory`` is ``create_app``'s hook for the voice endpoint;
-    ``relay.main`` builds one that compiles transcripts against this composition's
-    planning policy and capability profile.
-    """
+    """Build the relay app with the planner and arbiter consuming every accepted intent."""
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
     composition = AutonomyComposition(
@@ -1241,12 +1237,9 @@ def create_autonomy_app(
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_factory=control_localization_factory,
-<<<<<<< HEAD
         startup_callback=composition.start,
         shutdown_callback=composition.close,
-=======
         transcript_service_factory=transcript_service_factory,
->>>>>>> 50862f4
     )
 
     @app.get("/session/{session_id}/navigation/catalog")

@@ -24,7 +24,6 @@ from language.transport import AnthropicTransport, ModelTransport
 from planner.models import TranslationPolicy
 from relay.app import RelayRuntime
 from relay.autonomy import AutonomyConfig, create_autonomy_app
-from relay.capabilities import CapabilityProfile, IntentName
 from relay.navigation_metadata import navigation_metadata
 from relay.settings import RelaySettings, SettingsError
 from relay.voice import TranscriptionTransport, TranscriptService
@@ -62,15 +61,7 @@ def build_transcript_service(
             )
             return TranscriptService(transcription=transcription)
         transport = AnthropicTransport(api_key=api_key)
-    base_profile = config.planning.effective_capability_profile()
-    capability_profile = (
-        base_profile
-        if config.navigation_deployment is None
-        else CapabilityProfile(
-            f"{base_profile.name}.navigation",
-            base_profile.enabled_intent_names | {IntentName.NAVIGATE},
-        )
-    )
+    capability_profile = config.effective_capability_profile()
 
     def navigation(_relay_state: Mapping[str, object]):
         deployment = config.navigation_deployment
