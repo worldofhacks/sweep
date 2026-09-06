@@ -335,10 +335,11 @@ class NavigationPlanner:
         motion: MotionConfig,
         reservations: dict[int, Reservation],
     ) -> tuple[DroneRoute, ...] | None:
-        """Search deterministic slot assignments instead of committing greedily."""
+        """Choose the minimum-cost feasible assignment with stable tie-breaking."""
         if not drones:
             return ()
         drone = drones[0]
+        best: tuple[tuple[float, tuple[str, ...]], tuple[DroneRoute, ...]] | None = None
         for index, slot in enumerate(slots):
             path = self._route(drone, slot.pose, artifact, motion, reservations)
             if path is None:
@@ -370,8 +371,16 @@ class NavigationPlanner:
                 next_reservations,
             )
             if tail is not None:
-                return (route, *tail)
-        return None
+                candidate = (route, *tail)
+                cost = sum(
+                    dist(segment.start.xyz, segment.end.xyz)
+                    for item in candidate
+                    for segment in item.swept_segments
+                )
+                key = (cost, tuple(item.arrival_slot.slot_id for item in candidate))
+                if best is None or key < best[0]:
+                    best = (key, candidate)
+        return None if best is None else best[1]
 
     def _route(
         self,
@@ -461,12 +470,14 @@ class NavigationPlanner:
             artifact.grids,
             artifact.grid_clearance_m,
             motion.swept_half_height_m,
+            motion.max_altitude_layer_offset_m,
         )
         goal_level = level_for_pose(
             goal,
             artifact.grids,
             artifact.grid_clearance_m,
             motion.swept_half_height_m,
+            motion.max_altitude_layer_offset_m,
         )
         if start_level is None or goal_level is None:
             return None
@@ -515,16 +526,21 @@ class NavigationPlanner:
         drone_id: int,
         grid_clearance_m: float,
     ) -> list[Pose] | None:
-        if not grid_covers_pose(
-            level,
-            start,
-            grid_clearance_m,
-            motion.swept_half_height_m,
-        ) or not grid_covers_pose(
-            level,
-            goal,
-            grid_clearance_m,
-            motion.swept_half_height_m,
+        if (
+            not grid_covers_pose(
+                level,
+                start,
+                grid_clearance_m,
+                motion.swept_half_height_m,
+            )
+            or abs(level.z_m - start.z_m) > motion.max_altitude_layer_offset_m + EPS
+            or not grid_covers_pose(
+                level,
+                goal,
+                grid_clearance_m,
+                motion.swept_half_height_m,
+            )
+            or abs(level.z_m - goal.z_m) > motion.max_altitude_layer_offset_m + EPS
         ):
             return None
         start_cell, goal_cell = level.cell_for(start), level.cell_for(goal)

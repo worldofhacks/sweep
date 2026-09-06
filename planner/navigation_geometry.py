@@ -35,11 +35,13 @@ def level_for_pose(
     levels: tuple[GridLevel, ...],
     grid_clearance_m: float,
     half_height_m: float,
+    max_altitude_layer_offset_m: float,
 ) -> GridLevel | None:
     candidates = [
         level
         for level in levels
-        if free_grid_covers_pose(level, pose, grid_clearance_m, half_height_m)
+        if abs(level.z_m - pose.z_m) <= max_altitude_layer_offset_m + EPS
+        and free_grid_covers_pose(level, pose, grid_clearance_m, half_height_m)
     ]
     return min(candidates, key=lambda level: (abs(level.z_m - pose.z_m), level.z_m), default=None)
 
@@ -59,6 +61,7 @@ def pose_supported(pose: Pose, artifact: NavigationArtifact, motion: MotionConfi
             artifact.grids,
             artifact.grid_clearance_m,
             motion.swept_half_height_m,
+            motion.max_altitude_layer_offset_m,
         )
         is not None
     )
@@ -77,12 +80,17 @@ def vertical_path_clear(
     if available < -EPS:
         return False
     intervals = []
-    for level in artifact.grids:
-        probe = Pose(start.x_m, start.y_m, level.z_m, level.floor_id)
-        if level.free(level.cell_for(probe)):
-            intervals.append((level.z_m - available, level.z_m + available))
+    relevant_floors = {start.floor_id, end.floor_id}
+    relevant_levels = tuple(level for level in artifact.grids if level.floor_id in relevant_floors)
     low = min(start.z_m, end.z_m)
     high = max(start.z_m, end.z_m)
+    for level in relevant_levels:
+        probe = Pose(start.x_m, start.y_m, level.z_m, level.floor_id)
+        free = level.free(level.cell_for(probe))
+        if low - EPS <= level.z_m <= high + EPS and not free:
+            return False
+        if free:
+            intervals.append((level.z_m - available, level.z_m + available))
     cursor = low
     for interval_low, interval_high in sorted(intervals):
         if interval_high < cursor - EPS:
@@ -282,12 +290,14 @@ def segment_geometry_clear(
                 artifact.grid_clearance_m,
                 motion.swept_half_height_m,
             )
+            and abs(level.z_m - start.z_m) <= motion.max_altitude_layer_offset_m + EPS
             and grid_covers_pose(
                 level,
                 end,
                 artifact.grid_clearance_m,
                 motion.swept_half_height_m,
             )
+            and abs(level.z_m - end.z_m) <= motion.max_altitude_layer_offset_m + EPS
         ]
         if levels:
             level = min(levels, key=lambda item: (abs(item.z_m - start.z_m), item.z_m))

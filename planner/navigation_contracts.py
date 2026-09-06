@@ -98,6 +98,7 @@ class MotionConfig:
     pose_uncertainty_m: float
     tracking_allowance_m: float
     stopping_allowance_m: float
+    max_altitude_layer_offset_m: float
 
     def __post_init__(self) -> None:
         positive = {"aircraft_radius_m", "aircraft_height_m"}

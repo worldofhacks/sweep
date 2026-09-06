@@ -32,7 +32,7 @@ from planner.navigation import (
 from planner.navigation_geometry import Reservation, line_is_free, segment_hits_reservation
 from tools.map_geometry import generate
 
-MOTION = MotionConfig(0.15, 0.2, 0.05, 0.03, 0.1, 0.05)
+MOTION = MotionConfig(0.15, 0.2, 0.05, 0.03, 0.1, 0.05, 0.2)
 PERMISSION = NavigationPermission(frozenset({"atrium"}))
 ZONE_BOUNDARY = ((-1.0, -1.0), (9.0, -1.0), (9.0, 6.0), (-1.0, 6.0), (-1.0, -1.0))
 GEOFENCE = ((-2.0, -2.0), (10.0, -2.0), (10.0, 7.0), (-2.0, 7.0), (-2.0, -2.0))
@@ -185,7 +185,13 @@ def generated_geometry(
 
 @pytest.mark.parametrize(
     "field",
-    ("map_uncertainty_m", "pose_uncertainty_m", "tracking_allowance_m", "stopping_allowance_m"),
+    (
+        "map_uncertainty_m",
+        "pose_uncertainty_m",
+        "tracking_allowance_m",
+        "stopping_allowance_m",
+        "max_altitude_layer_offset_m",
+    ),
 )
 def test_motion_config_rejects_negative_allowances(field: str) -> None:
     values = {
@@ -195,6 +201,7 @@ def test_motion_config_rejects_negative_allowances(field: str) -> None:
         "pose_uncertainty_m": 0.03,
         "tracking_allowance_m": 0.1,
         "stopping_allowance_m": 0.05,
+        "max_altitude_layer_offset_m": 0.2,
     }
     values[field] = -0.01
 
@@ -358,7 +365,7 @@ def test_motion_envelope_must_fit_both_horizontal_and_vertical_inflation() -> No
     assert vertical.code == "clearance_exceeds_geometry"
 
 
-def test_altitude_must_be_in_an_exact_floor_band_and_geofence_volume() -> None:
+def test_altitude_must_be_near_an_accepted_layer_and_inside_geofence_volume() -> None:
     no_band = NavigationPlanner().plan(request(drone(1, 0.5, 1.5, z=100.0)), artifact())
     outside_geofence = NavigationPlanner().plan(
         request(drone(1, 0.5, 1.5, z=4.8)),
@@ -367,6 +374,22 @@ def test_altitude_must_be_in_an_exact_floor_band_and_geofence_volume() -> None:
 
     assert no_band.code == "position_unmapped"
     assert outside_geofence.code == "position_unmapped"
+
+
+def test_distant_layer_is_not_selected_even_when_geometry_clearance_is_large() -> None:
+    result = NavigationPlanner().plan(
+        request(drone(1, 0.5, 1.5)),
+        artifact(
+            slots=(arrival("atrium-a", 6.5, 1.5),),
+            grids=(grid(z=1.21),),
+            clearance=10.0,
+        ),
+    )
+
+    assert result == NavigationRefusal(
+        "position_unmapped",
+        "aircraft 1 has no clearance-checked map and altitude band",
+    )
 
 
 def test_unknown_blocked_strip_cannot_be_crossed() -> None:
@@ -434,6 +457,23 @@ def test_vertical_connector_refuses_when_an_intermediate_band_is_blocked() -> No
     assert result.code == "route_unreachable"
 
 
+def test_vertical_route_rejects_blocked_band_even_when_free_band_margins_overlap() -> None:
+    levels = (
+        grid("level_1", 1.0),
+        grid("level_1", 1.4, frozenset({(6, 1)})),
+        grid("level_1", 1.8),
+    )
+    result = NavigationPlanner().plan(
+        request(drone(1, 0.5, 1.5, z=1.0)),
+        artifact(
+            slots=(arrival("atrium-a", 6.5, 1.5, z=1.8),),
+            grids=levels,
+        ),
+    )
+
+    assert result.code == "route_unreachable"
+
+
 def test_physical_overlap_ignores_conflicting_floor_labels() -> None:
     levels = (grid("level_1", 1.0), grid("mezzanine", 1.0))
     active = drone(1, 0.5, 1.5)
@@ -450,7 +490,7 @@ def test_physical_overlap_ignores_conflicting_floor_labels() -> None:
 def test_vertical_connector_collision_is_physical_not_floor_label_based() -> None:
     map_artifact = multilevel_artifact()
     active = drone(1, 0.5, 1.5)
-    stationary = drone(2, 2.5, 1.5, z=2.2, floor="level_1")
+    stationary = drone(2, 2.5, 1.5, z=1.8, floor="level_1")
 
     result = NavigationPlanner().plan(
         request(active, all_positions=(active, stationary)),
@@ -536,6 +576,37 @@ def test_assignment_search_backtracks_when_near_slot_would_block_deeper_slot() -
 
     assert isinstance(result, NavigationPlan)
     assert tuple(route.arrival_slot.slot_id for route in result.routes) == ("b-deep", "a-near")
+
+
+def test_assignment_uses_later_slot_when_first_slot_is_occupied() -> None:
+    active = drone(1, 0.5, 1.5)
+    stationary = drone(2, 6.5, 1.5)
+    result = NavigationPlanner().plan(
+        request(active, all_positions=(active, stationary)),
+        artifact(
+            slots=(arrival("a-occupied", 6.5, 1.5), arrival("b-free", 6.5, 3.5)),
+        ),
+    )
+
+    assert isinstance(result, NavigationPlan)
+    assert result.arrival_slots[0].slot_id == "b-free"
+
+
+def test_assignment_minimizes_feasible_route_cost_before_stable_tie_breaking() -> None:
+    right = drone(1, 6.5, 1.5)
+    left = drone(2, 1.5, 1.5)
+    result = NavigationPlanner().plan(
+        request(right, left),
+        artifact(
+            slots=(arrival("a-left", 1.5, 3.5), arrival("b-right", 6.5, 3.5)),
+        ),
+    )
+
+    assert isinstance(result, NavigationPlan)
+    assert tuple(route.arrival_slot.slot_id for route in result.routes) == (
+        "b-right",
+        "a-left",
+    )
 
 
 def test_excluded_destination_and_permission_are_independent() -> None:
@@ -639,6 +710,38 @@ def test_revalidation_refuses_artifact_and_connection_epoch_changes() -> None:
         ).code
         == "connection_changed"
     )
+
+
+def test_public_artifact_rebinds_changed_slot_and_permission() -> None:
+    planner, map_artifact, plan = planned(drone(1, 0.5, 1.5))
+    zone = map_artifact.zones[0]
+    changed_slot = replace(zone.arrival_slots[0], pose=pose(6.5, 2.5))
+    slot_changed = replace(map_artifact, zones=(replace(zone, arrival_slots=(changed_slot,)),))
+    permission_changed = replace(
+        map_artifact,
+        zones=(replace(zone, owner_approved=False),),
+    )
+
+    assert slot_changed.navigation_pin != map_artifact.navigation_pin
+    assert permission_changed.navigation_pin != map_artifact.navigation_pin
+    assert planner.revalidate(plan, slot_changed, live_for(plan), 0, 0, 0.1).code == (
+        "artifact_changed"
+    )
+    assert planner.revalidate(plan, permission_changed, live_for(plan), 0, 0, 0.1).code == (
+        "artifact_changed"
+    )
+
+
+def test_public_artifact_rebinds_changed_connector() -> None:
+    map_artifact = multilevel_artifact()
+    planner, _, plan = planned(drone(1, 0.5, 1.5), map_artifact=map_artifact)
+    changed = replace(
+        map_artifact,
+        connectors=(replace(map_artifact.connectors[0], enabled=False),),
+    )
+
+    assert changed.navigation_pin != map_artifact.navigation_pin
+    assert planner.revalidate(plan, changed, live_for(plan), 0, 0, 0.1).code == ("artifact_changed")
 
 
 def test_revalidation_refuses_pose_drift_beyond_frozen_tolerance() -> None:
