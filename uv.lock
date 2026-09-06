@@ -514,6 +514,7 @@ dependencies = [
     { name = "langfuse" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
+    { name = "pydantic" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
@@ -532,6 +533,7 @@ requires-dist = [
     { name = "langfuse", specifier = ">=4.15,<5" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "opencv-python-headless", specifier = ">=4.13,<5" },
+    { name = "pydantic", specifier = ">=2.13,<3" },
     { name = "uvicorn", specifier = ">=0.35,<1" },
     { name = "websockets", specifier = ">=15,<17" },
 ]
