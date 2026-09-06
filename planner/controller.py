@@ -203,7 +203,7 @@ class PreparedExecutionRouter:
                     position_loss_since_ms=aircraft.position_loss_since_ms,
                     last_known_pose=aircraft.pose,
                     last_known_home=aircraft.home,
-                    last_known_flight_state=aircraft.flight_state.value,
+                    last_known_flight_state=aircraft.telemetry_state,
                     last_known_battery=aircraft.battery,
                     last_known_link_quality=aircraft.link_quality,
                     last_known_position_quality=aircraft.position_quality,
@@ -1404,7 +1404,7 @@ class AutonomyController:
         affected = tuple(
             aircraft
             for aircraft in current.aircraft.values()
-            if aircraft.airborne
+            if aircraft.mobile
             and (
                 aircraft.position_quality < self.arbiter.config.min_position_quality
                 or self.arbiter.timestamp_exceeds_future_skew(
