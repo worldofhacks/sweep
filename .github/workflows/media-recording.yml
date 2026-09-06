@@ -7,6 +7,9 @@ on:
       - docker-compose.recording.yml
       - media/**
       - tests/test_mediamtx_recording.py
+      - tests/conftest.py
+      - pyproject.toml
+      - uv.lock
       - .github/workflows/media-recording.yml
   push:
     branches: [main]
@@ -15,6 +18,9 @@ on:
       - docker-compose.recording.yml
       - media/**
       - tests/test_mediamtx_recording.py
+      - tests/conftest.py
+      - pyproject.toml
+      - uv.lock
       - .github/workflows/media-recording.yml
 
 permissions:
@@ -38,5 +44,5 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: docker compose -f docker-compose.yml -f docker-compose.recording.yml pull mediamtx
+      - run: docker compose -f docker-compose.yml pull mediamtx
       - run: uv run --no-sync pytest -q tests/test_mediamtx_recording.py

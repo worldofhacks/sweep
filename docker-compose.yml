@@ -7,7 +7,7 @@ name: sweep
 
 services:
   mediamtx:
-    image: bluenviron/mediamtx:1.20.1
+    image: bluenviron/mediamtx:1.20.1@sha256:1b029d11049be75630e9b73bb0d5f47b08a7db4eaee89a80bf8f53bc40e56414
     container_name: sweep-mediamtx
     ports:
       - "8554:8554"                 # RTSP ingest from drones and cameras
@@ -34,6 +34,8 @@ services:
       # The relay's control-API reader (media/mediamtx.yml `sweep-api`); locked without a value.
       - MTX_AUTHINTERNALUSERS_5_USER=${SWEEP_MEDIA_API_USERNAME:-sweep-api}
       - MTX_AUTHINTERNALUSERS_5_PASS=${SWEEP_MEDIA_API_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
+      # Recording is fail-closed by default. The opt-in override changes this exact value.
+      - MTX_PATHDEFAULTS_RECORD=false
     volumes:
       # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
       - ./media/mediamtx.yml:/mediamtx.yml:ro
