@@ -40,7 +40,13 @@ from relay.session import (
     RelaySession,
 )
 from relay.settings import RelaySettings, console_origins_from_env
-from relay.voice import MAX_AUDIO_BYTES, MAX_AUDIO_DURATION_MS, TranscriptService, VoiceOutcome
+from relay.voice import (
+    MAX_AUDIO_BYTES,
+    MAX_AUDIO_DURATION_MS,
+    TranscriptService,
+    VoiceOutcome,
+    configured_transcription,
+)
 
 IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
@@ -926,7 +932,11 @@ def create_app(
         )
         application.state.relay_runtime = runtime
         application.state.transcript_service = (
-            TranscriptService()
+            TranscriptService(
+                transcription=configured_transcription(
+                    provider=runtime.settings.transcription_provider
+                )
+            )
             if transcript_service_factory is None
             else transcript_service_factory(runtime)
         )

@@ -8,6 +8,8 @@ ACTIVE_ENVIRONMENT_KEYS = {
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
     "OPENAI_API_KEY",
+    "DEEPGRAM_API_KEY",
+    "SWEEP_TRANSCRIPTION_PROVIDER",
     "SWEEP_ADAPTER_BACKEND",
     "SWEEP_ADAPTER_KEYS_JSON",
     "SWEEP_ALLOW_SHARED_ADAPTER_TOKEN",
@@ -58,5 +60,4 @@ def test_env_example_lists_the_runtime_environment_contract_once() -> None:
 def test_env_example_does_not_advertise_unimplemented_provider_keys() -> None:
     text = ENV_EXAMPLE.read_text()
 
-    assert "DEEPGRAM_API_KEY" not in text
     assert "WORLD_API_KEY" not in text

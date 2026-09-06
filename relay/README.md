@@ -52,7 +52,7 @@ Video settings are optional and read from the same environment. `SWEEP_MEDIA_API
 
 ## Voice transcription
 
-`POST /api/sessions/{id}/transcripts` accepts a bearer-authenticated `audio/webm`, `audio/ogg`, `audio/wav`, or `audio/mpeg` body up to 8 MiB and 30 seconds. The browser reports duration in `X-Sweep-Audio-Duration-Ms`; the relay rejects an oversized declaration and independently decodes the audio before provider I/O so a false or missing header cannot bypass the limit. Audio that cannot be decoded, lacks a sample rate, or carries negative, repeated, or non-monotonic frame timestamps is refused. The request carries a bounded `X-Sweep-Correlation-Id`. The relay reads `OPENAI_API_KEY` only on the server and sends valid uploads to OpenAI's `whisper-1` endpoint. Browser code never receives that credential.
+`POST /api/sessions/{id}/transcripts` accepts a bearer-authenticated `audio/webm`, `audio/ogg`, `audio/wav`, or `audio/mpeg` body up to 8 MiB and 30 seconds. The browser reports duration in `X-Sweep-Audio-Duration-Ms`; the relay rejects an oversized declaration and independently decodes the audio before provider I/O so a false or missing header cannot bypass the limit. Audio that cannot be decoded, lacks a sample rate, or carries negative, repeated, or non-monotonic frame timestamps is refused. The request carries a bounded `X-Sweep-Correlation-Id`. The relay selects Deepgram `nova-3` when `DEEPGRAM_API_KEY` is configured, otherwise OpenAI `whisper-1`. Set `SWEEP_TRANSCRIPTION_PROVIDER=deepgram` or `whisper` to select explicitly. Credentials remain in the relay process. A selected provider failure produces the existing typed refusal; switching providers is an operator configuration choice.
 
 Browser uploads are allowed only from the explicit origins in `SWEEP_CONSOLE_ORIGINS`, which defaults to the local Vite development origins. Configure the deployed console origin rather than using a wildcard.
 
@@ -302,3 +302,9 @@ A live session ID is scoped to one relay process lifetime. After restart, any ID
 On first reopen of a legacy JSONL log, the relay removes only a nonempty, unterminated EOF fragment after validating every complete record, then imports that prefix into the transaction database. Later recovery verifies the JSONL mirror against completed database operations. Complete malformed records and divergent mirrors fail closed. A repaired log remains evidence of prior session use even when its first record was torn, so that session ID stays replay-only.
 
 Controller-generated safety stops reserve the `safety:` intent ID prefix. Public requests using that prefix are refused without occupying the intent ledger.
+
+Deepgram uploads use one request with the command vocabulary as keyterms, following
+the [prerecorded API](https://developers.deepgram.com/reference/speech-to-text/listen-pre-recorded)
+and [keyterm guidance](https://developers.deepgram.com/docs/keyterm). Voice telemetry
+records the selected model; Deepgram cost remains unset until a measured pricing
+configuration is available. Replay keys include the provider model.
