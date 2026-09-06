@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from relay.auth import StaticCredentialResolver
@@ -49,16 +50,41 @@ class RelaySettings:
     console_origins: tuple[str, ...] = DEFAULT_CONSOLE_ORIGINS
 
     def __post_init__(self) -> None:
-        if len(self.relay_token) < 32:
-            raise SettingsError("SWEEP_RELAY_TOKEN must contain at least 32 characters")
-        for drone_id, key in self.adapter_keys.items():
-            if drone_id <= 0 or len(key) < 32:
-                raise SettingsError("adapter IDs must be positive and keys at least 32 characters")
-        for drone_id, key in self.localization_keys.items():
-            if type(drone_id) is not int or drone_id <= 0 or len(key) < 32:
+        if type(self.relay_token) is not bytes or not 32 <= len(self.relay_token) <= 4_096:
+            raise SettingsError("SWEEP_RELAY_TOKEN must contain 32 through 4096 bytes")
+        if not isinstance(self.adapter_keys, Mapping) or not isinstance(
+            self.localization_keys, Mapping
+        ):
+            raise SettingsError("aircraft credentials must be mappings")
+        adapter_keys = dict(self.adapter_keys)
+        localization_keys = dict(self.localization_keys)
+        for label, keys in (
+            ("adapter", adapter_keys),
+            ("localization", localization_keys),
+        ):
+            if len(keys) > 64:
+                raise SettingsError(f"{label} credentials exceed the 64-aircraft limit")
+            if any(
+                type(drone_id) is not int
+                or not 1 <= drone_id <= 2**31 - 1
+                or type(key) is not bytes
+                or not 32 <= len(key) <= 4_096
+                for drone_id, key in keys.items()
+            ):
                 raise SettingsError(
-                    "localization IDs must be positive and keys at least 32 characters"
+                    f"{label} IDs and credentials must satisfy the bounded aircraft contract"
                 )
+        credentials = [
+            self.relay_token,
+            *adapter_keys.values(),
+            *localization_keys.values(),
+        ]
+        if len(set(credentials)) != len(credentials):
+            raise SettingsError(
+                "relay, adapter, and localization credentials must be globally distinct"
+            )
+        object.__setattr__(self, "adapter_keys", MappingProxyType(adapter_keys))
+        object.__setattr__(self, "localization_keys", MappingProxyType(localization_keys))
         if self.fanout_hz != 10:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
@@ -87,11 +113,17 @@ class RelaySettings:
         token = values.get("SWEEP_RELAY_TOKEN", "")
         if not token:
             raise SettingsError("SWEEP_RELAY_TOKEN is required")
-        adapter_keys = _adapter_keys(values.get("SWEEP_ADAPTER_KEYS_JSON", "{}"))
+        adapter_keys = _credential_keys(
+            values.get("SWEEP_ADAPTER_KEYS_JSON", "{}"),
+            "SWEEP_ADAPTER_KEYS_JSON",
+        )
         return cls(
             relay_token=token.encode(),
             adapter_keys=adapter_keys,
-            localization_keys=_adapter_keys(values.get("SWEEP_LOCALIZATION_KEYS_JSON", "{}")),
+            localization_keys=_credential_keys(
+                values.get("SWEEP_LOCALIZATION_KEYS_JSON", "{}"),
+                "SWEEP_LOCALIZATION_KEYS_JSON",
+            ),
             allow_shared_adapter_token=_boolean(
                 values.get("SWEEP_ALLOW_SHARED_ADAPTER_TOKEN", "false"),
                 "SWEEP_ALLOW_SHARED_ADAPTER_TOKEN",
@@ -165,23 +197,23 @@ class RelaySettings:
         }
 
 
-def _adapter_keys(raw: str) -> dict[int, bytes]:
+def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as error:
-        raise SettingsError("SWEEP_ADAPTER_KEYS_JSON must be valid JSON") from error
+        raise SettingsError(f"{name} must be valid JSON") from error
     if not isinstance(value, dict):
-        raise SettingsError("SWEEP_ADAPTER_KEYS_JSON must be an object")
+        raise SettingsError(f"{name} must be an object")
     result: dict[int, bytes] = {}
     for raw_id, raw_key in value.items():
         try:
             drone_id = int(raw_id)
         except (TypeError, ValueError):
-            raise SettingsError("adapter key IDs must be positive integers") from None
+            raise SettingsError(f"{name} IDs must be positive integers") from None
         if str(drone_id) != str(raw_id) or drone_id <= 0:
-            raise SettingsError("adapter key IDs must be canonical positive integers")
+            raise SettingsError(f"{name} IDs must be canonical positive integers")
         if not isinstance(raw_key, str) or not raw_key:
-            raise SettingsError("adapter credentials must be non-empty strings")
+            raise SettingsError(f"{name} credentials must be non-empty strings")
         result[drone_id] = raw_key.encode()
     return result
 

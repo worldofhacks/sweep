@@ -36,12 +36,15 @@ Install the locked environment, copy `.env.example` to the git-ignored `.env`, a
 ```dotenv
 SWEEP_RELAY_TOKEN=<at-least-32-characters>
 SWEEP_ADAPTER_KEYS_JSON='{"1":"<adapter-1-key-at-least-32-characters>"}'
+SWEEP_LOCALIZATION_KEYS_JSON='{}'
 SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 ```
 
 Single-quote JSON values in `.env`: `just relay` and `just fake-node` read the file with `uv run --env-file`, which strips double quotes from unquoted values.
 
 `SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true` is a demo-only fallback. It proves that a frame came from a holder of the shared secret, but cannot prove which aircraft sent it; keep it false for hardware. The freshness settings in `.env.example` are explicit demo values and must be measured and configured for a hardware session.
+
+`SWEEP_LOCALIZATION_KEYS_JSON` is an optional, separately generated per-aircraft credential map. It defaults to empty, and every configured relay, adapter, and localization secret must be distinct. Credentials alone do not enable localization projection: the host must also inject a `ControlLocalizationProjector` with measured clock mappings, exact deployment/source pins, and bounded freshness and uncertainty limits. A projected pose also requires an explicit per-aircraft adapter key; the demo-only shared relay-token fallback is never used to sign one. The stock app does not inject a projector and therefore refuses localization frames.
 
 ## Voice transcription
 
