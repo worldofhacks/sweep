@@ -35,6 +35,13 @@ def _nonnegative_integer(value: object, name: str) -> int:
     return value
 
 
+def _positive_integer(value: object, name: str) -> int:
+    value = _nonnegative_integer(value, name)
+    if value == 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
 def _text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError(f"{name} must be nonempty text")
@@ -248,14 +255,9 @@ class SensorRecordAdapter:
         ):
             _text(raw[name], name)
         _sha256(raw["recorder_config_sha256"], "recorder_config_sha256")
-        for name in (
-            "product_id",
-            "drone_id",
-            "connection_generation",
-            "connection_epoch",
-            "run_sequence",
-        ):
-            _nonnegative_integer(raw[name], name)
+        _nonnegative_integer(raw["product_id"], "product_id")
+        for name in ("drone_id", "connection_generation", "connection_epoch", "run_sequence"):
+            _positive_integer(raw[name], name)
         received_ms = _nonnegative_integer(
             raw["received_at_android_elapsed_realtime_ms"], "received timestamp"
         )

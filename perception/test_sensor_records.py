@@ -154,6 +154,7 @@ def test_adapter_requires_the_current_android_v3_contract(tmp_path):
         ("source_timestamp_status", "capture_timestamp", "timestamp status"),
         ("received_at_android_elapsed_realtime_ms", 10.1, "received timestamp"),
         ("connection_epoch", 4, "connection epoch"),
+        ("run_sequence", 0, "run_sequence must be positive"),
         ("recorder_config_sha256", "b" * 64, "recorder configuration"),
     ]:
         with pytest.raises(ValueError, match=message):
