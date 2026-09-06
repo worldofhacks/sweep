@@ -41,11 +41,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import org.worldofhacks.sweep.bridge.BridgeNode
 import org.worldofhacks.sweep.bridge.SetupSummary
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 import org.worldofhacks.sweep.bridge.flight.FlightCards
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
-import org.worldofhacks.sweep.bridge.node.FlightStates
-import org.worldofhacks.sweep.bridge.core.flight.LocalizationConfigJson
 import org.worldofhacks.sweep.bridge.node.CommandRecord
+import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.ReadinessInput
 import org.worldofhacks.sweep.bridge.node.RelayConnection
@@ -215,7 +215,7 @@ private fun SetupCard(
                 if (running) OutlinedButton(onClick = node::disconnect) { Text("Disconnect") }
             }
             disabledReason?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            LocalizationCard(setup, running, aircraft, node)
+            LocalizationDiagnosticsCard(setup, running, aircraft, node)
             BatteryOptimizationRow()
         }
     }
@@ -223,7 +223,7 @@ private fun SetupCard(
 
 
 @Composable
-private fun LocalizationCard(
+private fun LocalizationDiagnosticsCard(
     setup: SetupSummary,
     running: Boolean,
     aircraft: AircraftSnapshot,
@@ -239,19 +239,15 @@ private fun LocalizationCard(
         else -> null
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Localized navigation", style = MaterialTheme.typography.titleMedium)
-        val active = setup.localization
+        Text("Localization diagnostics (staged)", style = MaterialTheme.typography.titleMedium)
+        val active = setup.localizationPins
         if (active == null) {
-            Text("Disabled. Import a complete, versioned map and calibration configuration to enable it.")
+            Text("Inactive. Import versioned identity pins to stage signed relay-pose validation. This cannot move the aircraft.")
         } else {
-            Text("Configured; reconnect to apply these pins.")
+            Text("Pins configured for diagnostic ingestion only; navigation remains disabled.")
             Text("Map ${active.mapId} · geometry ${active.geometryId}", style = MaterialTheme.typography.bodySmall)
             Text(
                 "Camera ${active.cameraCalibrationId} · body ${active.bodyExtrinsicsId}",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Text(
-                "Fix ${active.fixFreshnessMs} ms · pose ${active.poseFreshnessMs} ms · tube ${active.trackingTubeMm} mm · tolerance ${active.targetToleranceMm} mm · hold ${active.settledHoldMs} ms · land ${active.tagLossLandAfterMs} ms",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -266,20 +262,20 @@ private fun LocalizationCard(
             Button(
                 enabled = writable && importedJson.isNotBlank(),
                 onClick = {
-                    runCatching { LocalizationConfigJson.parse(importedJson) }
+                    runCatching { LocalizationPinsJson.parse(importedJson) }
                         .onSuccess {
-                            node.saveLocalization(it)
-                            message = "Configuration import submitted. Reconnect after it appears above."
+                            node.saveLocalizationPins(it)
+                            message = "Diagnostic pins submitted. Reconnect after they appear above."
                             importedJson = ""
                         }
                         .onFailure { message = "Import rejected: ${it.message ?: "invalid JSON"}" }
                 },
-            ) { Text("Import config") }
+            ) { Text("Import pins") }
             OutlinedButton(
                 enabled = writable && active != null,
                 onClick = {
-                    node.saveLocalization(null)
-                    message = "Configuration clear submitted."
+                    node.saveLocalizationPins(null)
+                    message = "Diagnostic pin clear submitted."
                 },
             ) { Text("Clear config") }
         }

@@ -86,7 +86,7 @@ data class ControlHeartbeat(
     }
 }
 
-/** A relay-signed localization observation used only by explicitly configured local navigation. */
+/** A relay-signed localization observation retained for diagnostics, never flight control. */
 data class ControlPose(
     val t: Long,
     val eventId: String,
@@ -99,14 +99,36 @@ data class ControlPose(
     val bodyExtrinsicsId: String,
     val poseTimeMs: Long,
     val fixTimeMs: Long,
+    val positionFrame: String,
     val xMm: Long,
     val yMm: Long,
     val zMm: Long,
     val positionUncertaintyMm: Long,
     val status: Status,
+    val flightApproved: Boolean,
     val signature: String,
 ) {
     enum class Status { READY, HOLD, LAND }
+
+    init {
+        require(droneId > 0 && connectionEpoch > 0) { "drone_id and connection_epoch must be positive" }
+        require(fixTimeMs >= 0) { "fix_time_ms must be nonnegative" }
+        require(Signing.isWellFormed(signature)) { "signature must be lowercase HMAC-SHA256 hex" }
+        require(!flightApproved) { "flight_approved must be false for diagnostic control_pose v1" }
+        require(positionFrame == POSITION_FRAME) { "position_frame must be $POSITION_FRAME" }
+        require(t >= poseTimeMs && poseTimeMs >= fixTimeMs) { "timestamps must satisfy t >= pose_time_ms >= fix_time_ms" }
+        require(validIdentity(eventId)) { "event_id must be a canonical string of at most $MAX_ID_LENGTH characters" }
+        require(validSession(session)) { "session must match the relay's nonempty $MAX_SESSION_LENGTH-character bound" }
+        require(listOf(mapId, geometryId, cameraCalibrationId, bodyExtrinsicsId).all(::validIdentity)) {
+            "localization identities must be canonical strings of at most $MAX_ID_LENGTH characters"
+        }
+        require(listOf(xMm, yMm, zMm).all { it in -MAX_ABS_POSITION_MM..MAX_ABS_POSITION_MM }) {
+            "position must stay within the diagnostic envelope"
+        }
+        require(positionUncertaintyMm in 0..MAX_POSITION_UNCERTAINTY_MM) {
+            "position_uncertainty_mm must stay within the diagnostic envelope"
+        }
+    }
 
     fun unsignedEvent(): JsonObject = JsonObject(linkedMapOf(
         "v" to JsonInt(1), "t" to JsonInt(t), "type" to JsonString(TYPE), "event_id" to JsonString(eventId),
@@ -114,16 +136,28 @@ data class ControlPose(
         "connection_epoch" to JsonInt(connectionEpoch.toLong()), "map_id" to JsonString(mapId),
         "geometry_id" to JsonString(geometryId), "camera_calibration_id" to JsonString(cameraCalibrationId),
         "body_extrinsics_id" to JsonString(bodyExtrinsicsId), "pose_time_ms" to JsonInt(poseTimeMs),
-        "fix_time_ms" to JsonInt(fixTimeMs), "x_mm" to JsonInt(xMm), "y_mm" to JsonInt(yMm), "z_mm" to JsonInt(zMm),
+        "fix_time_ms" to JsonInt(fixTimeMs), "position_frame" to JsonString(positionFrame),
+        "x_mm" to JsonInt(xMm), "y_mm" to JsonInt(yMm), "z_mm" to JsonInt(zMm),
         "position_uncertainty_mm" to JsonInt(positionUncertaintyMm), "status" to JsonString(status.name.lowercase()),
+        "flight_approved" to JsonBool(flightApproved),
     ))
 
     fun verifies(key: ByteArray): Boolean = Signing.verify(unsignedEvent(), signature, key)
 
     companion object {
         const val TYPE = "control_pose"
+        const val POSITION_FRAME = "map_enu"
+        internal const val MAX_ID_LENGTH = 128
+        internal const val MAX_SESSION_LENGTH = 512
+        internal const val MAX_ABS_POSITION_MM = 1_000_000L
+        internal const val MAX_POSITION_UNCERTAINTY_MM = 1_000_000L
         private const val CODE = "invalid_control_pose"
-        private val FIELDS = setOf("v", "type", "t", "event_id", "session", "drone_id", "connection_epoch", "map_id", "geometry_id", "camera_calibration_id", "body_extrinsics_id", "pose_time_ms", "fix_time_ms", "x_mm", "y_mm", "z_mm", "position_uncertainty_mm", "status", "signature")
+        private val FIELDS = setOf(
+            "v", "type", "t", "event_id", "session", "drone_id", "connection_epoch",
+            "map_id", "geometry_id", "camera_calibration_id", "body_extrinsics_id",
+            "pose_time_ms", "fix_time_ms", "position_frame", "x_mm", "y_mm", "z_mm",
+            "position_uncertainty_mm", "status", "flight_approved", "signature",
+        )
 
         fun parse(json: JsonObject): ControlPose {
             Fields.exact(json, FIELDS, CODE)
@@ -136,17 +170,38 @@ data class ControlPose(
                 "land" -> Status.LAND
                 else -> throw ContractError(CODE, "status must be ready, hold, or land (was $value)")
             }
-            return ControlPose(
-                Fields.nonNegativeInt(json["t"], "t", CODE), Fields.nonEmptyString(json["event_id"], "event_id", CODE),
-                Fields.nonEmptyString(json["session"], "session", CODE), Fields.positiveInt32(json["drone_id"], "drone_id", CODE),
-                Fields.nonNegativeInt32(json["connection_epoch"], "connection_epoch", CODE),
-                Fields.nonEmptyString(json["map_id"], "map_id", CODE), Fields.nonEmptyString(json["geometry_id"], "geometry_id", CODE),
-                Fields.nonEmptyString(json["camera_calibration_id"], "camera_calibration_id", CODE), Fields.nonEmptyString(json["body_extrinsics_id"], "body_extrinsics_id", CODE),
-                Fields.nonNegativeInt(json["pose_time_ms"], "pose_time_ms", CODE), Fields.nonNegativeInt(json["fix_time_ms"], "fix_time_ms", CODE),
-                Fields.integer(json["x_mm"], "x_mm", CODE), Fields.integer(json["y_mm"], "y_mm", CODE), Fields.integer(json["z_mm"], "z_mm", CODE),
-                Fields.nonNegativeInt(json["position_uncertainty_mm"], "position_uncertainty_mm", CODE), status, signature,
-            )
+            val flightApproved = Fields.boolean(json["flight_approved"], "flight_approved", CODE)
+            Fields.exactString(json["position_frame"], "position_frame", POSITION_FRAME, CODE)
+            try {
+                return ControlPose(
+                    t = Fields.nonNegativeInt(json["t"], "t", CODE),
+                    eventId = Fields.nonEmptyString(json["event_id"], "event_id", CODE),
+                    session = Fields.nonEmptyString(json["session"], "session", CODE),
+                    droneId = Fields.positiveInt32(json["drone_id"], "drone_id", CODE),
+                    connectionEpoch = Fields.positiveInt32(json["connection_epoch"], "connection_epoch", CODE),
+                    mapId = Fields.nonEmptyString(json["map_id"], "map_id", CODE),
+                    geometryId = Fields.nonEmptyString(json["geometry_id"], "geometry_id", CODE),
+                    cameraCalibrationId = Fields.nonEmptyString(json["camera_calibration_id"], "camera_calibration_id", CODE),
+                    bodyExtrinsicsId = Fields.nonEmptyString(json["body_extrinsics_id"], "body_extrinsics_id", CODE),
+                    poseTimeMs = Fields.nonNegativeInt(json["pose_time_ms"], "pose_time_ms", CODE),
+                    fixTimeMs = Fields.nonNegativeInt(json["fix_time_ms"], "fix_time_ms", CODE),
+                    positionFrame = POSITION_FRAME,
+                    xMm = Fields.integer(json["x_mm"], "x_mm", CODE),
+                    yMm = Fields.integer(json["y_mm"], "y_mm", CODE),
+                    zMm = Fields.integer(json["z_mm"], "z_mm", CODE),
+                    positionUncertaintyMm = Fields.nonNegativeInt(json["position_uncertainty_mm"], "position_uncertainty_mm", CODE),
+                    status = status,
+                    flightApproved = flightApproved,
+                    signature = signature,
+                )
+            } catch (error: IllegalArgumentException) {
+                throw ContractError(CODE, error.message ?: "control_pose values are invalid")
+            }
         }
+
+        private fun validIdentity(value: String): Boolean = Fields.isCanonicalPrintable(value, MAX_ID_LENGTH)
+
+        private fun validSession(value: String): Boolean = Fields.isCanonicalPrintable(value, MAX_SESSION_LENGTH)
     }
 }
 

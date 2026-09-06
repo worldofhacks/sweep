@@ -16,9 +16,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
 import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.LinkState
-import org.worldofhacks.sweep.bridge.core.flight.LocalizationConfig
 import org.worldofhacks.sweep.bridge.node.NodeConfig
 import org.worldofhacks.sweep.bridge.node.ReadinessInput
 import org.worldofhacks.sweep.bridge.node.RelayLink
@@ -89,17 +89,17 @@ class BridgeNode(private val application: Application, val session: AircraftSess
         }
     }
 
-    fun saveLocalization(config: LocalizationConfig?) {
+    fun saveLocalizationPins(pins: LocalizationPins?) {
         scope.launch(Dispatchers.IO) {
             if (_running.value || session.aircraft.snapshot.value.state != FlightStates.LANDED) {
                 logLine("localization configuration requires a disconnected, landed aircraft")
                 return@launch
             }
-            store.saveLocalization(config)
+            store.saveLocalizationPins(pins)
             _setup.value = store.summary()
             logLine(
-                if (config == null) "localized navigation configuration cleared"
-                else "localized navigation configuration saved; reconnect to apply it",
+                if (pins == null) "localization diagnostic pins cleared"
+                else "localization diagnostic pins saved; reconnect to apply them",
             )
         }
     }
@@ -141,7 +141,6 @@ class BridgeNode(private val application: Application, val session: AircraftSess
             logLine("relay network: $networkLabel")
             synchronized(lock) {
                 if (relayLink != null) return@launch
-                session.flight?.executor?.setLocalization(setup.localization)
                 val config = NodeConfig(
                     relayUrl = setup.relayUrl,
                     session = setup.session,
@@ -149,7 +148,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     token = setup.token,
                     adapterId = "${BuildConfig.AIRCRAFT}-${setup.droneId}",
                     capabilities = AircraftVariant.capabilities,
-                    localization = setup.localization,
+                    localizationPins = setup.localizationPins,
                 )
                 val link = RelayLink(
                     config = config,

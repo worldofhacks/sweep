@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.admission.FakeClock
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
-import org.worldofhacks.sweep.bridge.core.frames.ControlPose
 
 /**
  * The control loop against the kinematic fixture and a stepped clock: acknowledgement
@@ -115,36 +114,6 @@ class FlightControllerTest {
             model.advance(clock.nowMs())
             controller.updateAircraft(model.facts)
         }
-    }
-
-    @Test
-    fun `localized goto completes only after fresh observed target settles`() {
-        val clock = FakeClock(1_000)
-        val model = FakeFlightModel()
-        model.place(zUp = 1.0, flying = true)
-        model.advance(clock.nowMs())
-        val controller = FlightController(model, clock, FlightConfig(
-            localization = LocalizationConfig("map", "geometry", "camera", "body", settledHoldMs = 200),
-            settleMs = 100,
-        ))
-        controller.updateAircraft(model.facts)
-        val sink = RecordingSink()
-        fun pose(x: Long, y: Long, t: Long = clock.nowMs()) = ControlPose(
-            t, "event-$t-$x-$y", "session", 1, 1, "map", "geometry", "camera", "body", t, t, x, y, 1000, 10, ControlPose.Status.READY, "",
-        )
-        controller.updateLink(LinkFacts(joined = true, lastRelayActivityMs = clock.nowMs(), controlAuthorityGranted = true, settings = FlightSettings(10, 1_000, 3_000), controlPose = pose(0, 0)))
-        controller.execute(FlightCommand("localized", CommandArgs.Goto(1_000, 0, 1_000, 500)), sink)
-        clock.advance(1_000)
-        controller.updateLink(LinkFacts(joined = true, lastRelayActivityMs = clock.nowMs(), controlAuthorityGranted = true, settings = FlightSettings(10, 1_000, 3_000), controlPose = pose(0, 0)))
-        controller.tick(clock.nowMs())
-        assertNull(sink.terminal, "elapsed time and acknowledgements do not complete a localized goto")
-        clock.advance(100)
-        controller.updateLink(LinkFacts(joined = true, lastRelayActivityMs = clock.nowMs(), controlAuthorityGranted = true, settings = FlightSettings(10, 1_000, 3_000), controlPose = pose(1_000, 0)))
-        controller.tick(clock.nowMs())
-        clock.advance(200)
-        controller.updateLink(LinkFacts(joined = true, lastRelayActivityMs = clock.nowMs(), controlAuthorityGranted = true, settings = FlightSettings(10, 1_000, 3_000), controlPose = pose(1_000, 0)))
-        controller.tick(clock.nowMs())
-        assertEquals("completed", sink.terminal?.first, sink.events.toString())
     }
 
     @Test

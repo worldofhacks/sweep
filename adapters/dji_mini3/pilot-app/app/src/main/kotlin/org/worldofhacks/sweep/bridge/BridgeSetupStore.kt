@@ -4,10 +4,17 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import org.worldofhacks.sweep.bridge.core.flight.LocalizationConfig
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 
-/** The four Setup values. The token is the per-node relay credential and HMAC key. */
-data class BridgeSetup(val relayUrl: String, val session: String, val droneId: Int, val token: String, val localization: LocalizationConfig? = null) {
+/** The four relay Setup values plus optional diagnostic pins. The token is also the HMAC key. */
+data class BridgeSetup(
+    val relayUrl: String,
+    val session: String,
+    val droneId: Int,
+    val token: String,
+    val localizationPins: LocalizationPins? = null,
+) {
     /** Never includes the token. */
     override fun toString(): String = "BridgeSetup(relayUrl=$relayUrl, session=$session, droneId=$droneId, token=<redacted>)"
 }
@@ -20,7 +27,7 @@ data class SetupSummary(
     val tokenStored: Boolean = false,
     val tokenLength: Int = 0,
     val loaded: Boolean = false,
-    val localization: LocalizationConfig? = null,
+    val localizationPins: LocalizationPins? = null,
 ) {
     val complete: Boolean
         get() = tokenStored && relayUrl.isNotBlank() && session.isNotBlank() && droneId > 0
@@ -42,7 +49,7 @@ class BridgeSetupStore(context: Context) {
             session = prefs.getString(KEY_SESSION, DEFAULT_SESSION) ?: DEFAULT_SESSION,
             droneId = prefs.getInt(KEY_DRONE_ID, 1),
             token = token,
-            localization = localization(),
+            localizationPins = localizationPins(),
         )
     }
 
@@ -55,7 +62,7 @@ class BridgeSetupStore(context: Context) {
             tokenStored = !token.isNullOrEmpty(),
             tokenLength = token?.length ?: 0,
             loaded = true,
-            localization = localization(),
+            localizationPins = localizationPins(),
         )
     }
 
@@ -73,43 +80,16 @@ class BridgeSetupStore(context: Context) {
         prefs.edit().remove(KEY_TOKEN).apply()
     }
 
-    /** Stores a complete, versioned import; partial pin sets never enable localized navigation. */
-    fun saveLocalization(config: LocalizationConfig?) {
-        prefs.edit().apply {
-            if (config == null) {
-                LOCALIZATION_KEYS.forEach(::remove)
-            } else {
-                putString(KEY_MAP_ID, config.mapId)
-                putString(KEY_GEOMETRY_ID, config.geometryId)
-                putString(KEY_CAMERA_CALIBRATION_ID, config.cameraCalibrationId)
-                putString(KEY_BODY_EXTRINSICS_ID, config.bodyExtrinsicsId)
-                putLong(KEY_FIX_FRESHNESS_MS, config.fixFreshnessMs)
-                putLong(KEY_POSE_FRESHNESS_MS, config.poseFreshnessMs)
-                putLong(KEY_TRACKING_TUBE_MM, config.trackingTubeMm)
-                putLong(KEY_TARGET_TOLERANCE_MM, config.targetToleranceMm)
-                putLong(KEY_SETTLED_HOLD_MS, config.settledHoldMs)
-                putLong(KEY_TAG_LOSS_LAND_AFTER_MS, config.tagLossLandAfterMs)
-            }
-        }.apply()
+    /** Stores the exact versioned import atomically; it remains diagnostic-only. */
+    fun saveLocalizationPins(pins: LocalizationPins?) {
+        val editor = prefs.edit()
+        if (pins == null) editor.remove(KEY_LOCALIZATION_CONFIG)
+        else editor.putString(KEY_LOCALIZATION_CONFIG, LocalizationPinsJson.encode(pins))
+        editor.apply()
     }
 
-    private fun localization(): LocalizationConfig? {
-        if (!LOCALIZATION_KEYS.all(prefs::contains)) return null
-        return runCatching {
-            LocalizationConfig(
-                mapId = prefs.getString(KEY_MAP_ID, null) ?: return null,
-                geometryId = prefs.getString(KEY_GEOMETRY_ID, null) ?: return null,
-                cameraCalibrationId = prefs.getString(KEY_CAMERA_CALIBRATION_ID, null) ?: return null,
-                bodyExtrinsicsId = prefs.getString(KEY_BODY_EXTRINSICS_ID, null) ?: return null,
-                fixFreshnessMs = prefs.getLong(KEY_FIX_FRESHNESS_MS, 0),
-                poseFreshnessMs = prefs.getLong(KEY_POSE_FRESHNESS_MS, 0),
-                trackingTubeMm = prefs.getLong(KEY_TRACKING_TUBE_MM, 0),
-                targetToleranceMm = prefs.getLong(KEY_TARGET_TOLERANCE_MM, 0),
-                settledHoldMs = prefs.getLong(KEY_SETTLED_HOLD_MS, -1),
-                tagLossLandAfterMs = prefs.getLong(KEY_TAG_LOSS_LAND_AFTER_MS, 0),
-            )
-        }.getOrNull()
-    }
+    private fun localizationPins(): LocalizationPins? = prefs.getString(KEY_LOCALIZATION_CONFIG, null)
+        ?.let { runCatching { LocalizationPinsJson.parse(it) }.getOrNull() }
 
     @Suppress("DEPRECATION")
     private fun open(): SharedPreferences {
@@ -133,20 +113,6 @@ class BridgeSetupStore(context: Context) {
         private const val KEY_SESSION = "session"
         private const val KEY_DRONE_ID = "drone_id"
         private const val KEY_TOKEN = "token"
-        private const val KEY_MAP_ID = "localization_map_id"
-        private const val KEY_GEOMETRY_ID = "localization_geometry_id"
-        private const val KEY_CAMERA_CALIBRATION_ID = "localization_camera_calibration_id"
-        private const val KEY_BODY_EXTRINSICS_ID = "localization_body_extrinsics_id"
-        private const val KEY_FIX_FRESHNESS_MS = "localization_fix_freshness_ms"
-        private const val KEY_POSE_FRESHNESS_MS = "localization_pose_freshness_ms"
-        private const val KEY_TRACKING_TUBE_MM = "localization_tracking_tube_mm"
-        private const val KEY_TARGET_TOLERANCE_MM = "localization_target_tolerance_mm"
-        private const val KEY_SETTLED_HOLD_MS = "localization_settled_hold_ms"
-        private const val KEY_TAG_LOSS_LAND_AFTER_MS = "localization_tag_loss_land_after_ms"
-        private val LOCALIZATION_KEYS = listOf(
-            KEY_MAP_ID, KEY_GEOMETRY_ID, KEY_CAMERA_CALIBRATION_ID, KEY_BODY_EXTRINSICS_ID,
-            KEY_FIX_FRESHNESS_MS, KEY_POSE_FRESHNESS_MS, KEY_TRACKING_TUBE_MM,
-            KEY_TARGET_TOLERANCE_MM, KEY_SETTLED_HOLD_MS, KEY_TAG_LOSS_LAND_AFTER_MS,
-        )
+        private const val KEY_LOCALIZATION_CONFIG = "localization_diagnostic_pins_json"
     }
 }

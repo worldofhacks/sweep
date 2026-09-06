@@ -2,10 +2,10 @@ package org.worldofhacks.sweep.bridge.node
 
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
-import org.worldofhacks.sweep.bridge.core.flight.LocalizationConfig
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusBody
 import org.worldofhacks.sweep.bridge.core.frames.RefusalEvent
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
 import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
 
 /** What the pilot enters once on the Setup screen. The token is also the HMAC signing key. */
@@ -16,7 +16,7 @@ data class NodeConfig(
     val token: String,
     val adapterId: String,
     val capabilities: List<String>,
-    val localization: LocalizationConfig? = null,
+    val localizationPins: LocalizationPins? = null,
 ) {
     init {
         require(relayUrl.startsWith("ws://") || relayUrl.startsWith("wss://")) { "relay URL must start with ws:// or wss://" }
@@ -27,11 +27,10 @@ data class NodeConfig(
         require(capabilities.isNotEmpty() && capabilities.toSet().size == capabilities.size) {
             "capabilities must be a non-empty list without duplicates"
         }
-        require("localized_navigation" !in capabilities) { "localized_navigation is derived from the pinned localization configuration" }
+        require("localized_navigation" !in capabilities) {
+            "localized_navigation is not implemented; localization input is diagnostic-only"
+        }
     }
-
-    val advertisedCapabilities: List<String>
-        get() = if (localization == null) capabilities else capabilities + "localized_navigation"
 
     val key: ByteArray
         get() = token.toByteArray(Charsets.UTF_8)
@@ -133,8 +132,10 @@ data class LinkState(
     val lastRelayFrameAtMs: Long? = null,
     /** When an authorized control heartbeat last arrived: the deadman's clock for the flight loop. */
     val lastRelayActivityMs: Long? = null,
+    /** Signed current-epoch diagnostic only; never copied into the physical flight loop. */
     val controlPose: ControlPose? = null,
-    val controlPoseFreshUntilMs: Long? = null,
+    /** Local-clock deadline at which [controlPose] is cleared. */
+    val controlPoseExpiresAtMs: Long? = null,
     val estop: Boolean = false,
     val lastRefusal: RefusalEvent? = null,
     val lastAuthRefusal: AuthRefused? = null,

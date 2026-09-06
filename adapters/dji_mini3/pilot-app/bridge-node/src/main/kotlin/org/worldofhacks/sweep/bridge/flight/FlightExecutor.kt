@@ -26,7 +26,6 @@ import org.worldofhacks.sweep.bridge.core.flight.FlightReason
 import org.worldofhacks.sweep.bridge.core.flight.FlightSettings
 import org.worldofhacks.sweep.bridge.core.flight.FlightStatus
 import org.worldofhacks.sweep.bridge.core.flight.LinkFacts
-import org.worldofhacks.sweep.bridge.core.flight.LocalizationConfig
 import org.worldofhacks.sweep.bridge.core.flight.PortResult
 import org.worldofhacks.sweep.bridge.core.flight.ReportSink
 import org.worldofhacks.sweep.bridge.core.flight.StickFrame
@@ -142,8 +141,6 @@ class FlightExecutor(
 
     fun setMapping(mapping: AxisMapping) = post { controller.mapping = mapping }
 
-    fun setLocalization(config: LocalizationConfig?) = post { controller.localization = config }
-
     fun reportFailsafeSetting(value: String) = post { controller.reportFailsafeSetting(value) }
 
     fun startBench(label: String, frame: StickFrame, durationMs: Long, sink: ReportSink) = post { controller.startBench(label, frame, durationMs, sink) }
@@ -223,8 +220,6 @@ class FlightExecutor(
             lastRelayActivityMs = state.lastRelayActivityMs,
             controlAuthorityGranted = state.readiness.controlAuthority,
             settings = state.nodeSettings?.let { FlightSettings(it.virtualStickHz, it.watchdogHoldMs, it.watchdogFailsafeMs) },
-            controlPose = state.controlPose,
-            controlPoseFreshUntilMs = state.controlPoseFreshUntilMs,
         )
     }
 }
