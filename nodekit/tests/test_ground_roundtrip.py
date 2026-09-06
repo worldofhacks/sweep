@@ -31,10 +31,10 @@ from relay.tests.test_bridge_roundtrip import ConsoleProbe, RelayServer
 WAIT_S = 10.0
 GROUND_ID = 11
 GROUND_KEY = b"ground-vehicle-key-that-is-at-least-32"
-# Short enough that a test can watch the deadman act, long enough that the relay's own
-# heartbeat interval (half the hold window) still keeps a healthy node nominal.
-HOLD_MS = 400
-FAILSAFE_MS = 1_200
+# Only the deadman test shortens the watchdog. Every other test keeps the relay's own
+# defaults, so a slow runner cannot starve a healthy node into a hold it never earned.
+QUICK_HOLD_MS = 400
+QUICK_FAILSAFE_MS = 1_200
 
 
 def _wait_until(predicate, *, what: str) -> None:  # type: ignore[no-untyped-def]
@@ -46,21 +46,21 @@ def _wait_until(predicate, *, what: str) -> None:  # type: ignore[no-untyped-def
     raise AssertionError(f"timed out waiting for {what}")
 
 
-def build_settings(tmp_path: Path) -> RelaySettings:
+def build_settings(
+    tmp_path: Path, *, hold_ms: int = 2_000, failsafe_ms: int = 10_000
+) -> RelaySettings:
     return RelaySettings(
         relay_token=CONSOLE_KEY,
         adapter_keys={GROUND_ID: GROUND_KEY},
         device_classes={GROUND_ID: DeviceClass.GROUND_VEHICLE},
         log_dir=tmp_path,
         adapter_backend=AdapterBackend.REMOTE,
-        node_watchdog_hold_ms=HOLD_MS,
-        node_watchdog_failsafe_ms=FAILSAFE_MS,
+        node_watchdog_hold_ms=hold_ms,
+        node_watchdog_failsafe_ms=failsafe_ms,
     )
 
 
-@pytest.fixture
-def relay_server(tmp_path: Path) -> Iterator[RelayServer]:
-    settings = build_settings(tmp_path)
+def serve(settings: RelaySettings) -> Iterator[RelayServer]:
     app = create_app(
         settings,
         intent_sink_factory=lambda _session: CapabilityBoundIntentSink(
@@ -86,6 +86,17 @@ def relay_server(tmp_path: Path) -> Iterator[RelayServer]:
         if thread.is_alive():
             server.force_exit = True
             thread.join(timeout=WAIT_S)
+
+
+@pytest.fixture
+def relay_server(tmp_path: Path) -> Iterator[RelayServer]:
+    yield from serve(build_settings(tmp_path))
+
+
+@pytest.fixture
+def quick_watchdog_relay(tmp_path: Path) -> Iterator[RelayServer]:
+    """A relay whose hold and failsafe windows are short enough to watch."""
+    yield from serve(build_settings(tmp_path, hold_ms=QUICK_HOLD_MS, failsafe_ms=QUICK_FAILSAFE_MS))
 
 
 class GroundFleet:
@@ -254,8 +265,9 @@ def test_the_ground_command_set_drives_the_robot_and_refuses_what_it_cannot_do(
 
 
 def test_the_deadman_holds_and_then_disables_when_the_control_lease_stops(
-    relay_server: RelayServer,
+    quick_watchdog_relay: RelayServer,
 ) -> None:
+    relay_server = quick_watchdog_relay
     fleet = GroundFleet(relay_server, start=(0.0, 0.0, 0.0))
     fleet.start()
     try:
