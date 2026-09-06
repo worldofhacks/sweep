@@ -228,6 +228,8 @@ class AdapterDispatcher:
         media_files: list[MediaFile] = []
         degraded: set[int] = set()
         failures: list[Refusal] = []
+        independent_stops = self._independent_stop_plan(plan)
+        waiting_for_stop = False
         projected = {}
         for completed in prior_affected:
             aircraft = initial.aircraft.get(completed.drone_id)
@@ -271,6 +273,11 @@ class AdapterDispatcher:
             if refusal is None:
                 refusal = self._altitude_grounding_refusal(plan, command, current)
             if refusal is not None:
+                if independent_stops:
+                    failures.append(refusal)
+                    degraded.add(command.drone_id)
+                    acknowledgements.append(self._failed_ack(command, refusal))
+                    continue
                 if plan.intent_name is IntentName.CAPTURE_ROOM:
                     affected[command.drone_id] = command
                 acknowledgements.extend(
@@ -343,6 +350,11 @@ class AdapterDispatcher:
                 continue
 
             if isinstance(outcome, Refusal):
+                if independent_stops:
+                    failures.append(outcome)
+                    degraded.add(command.drone_id)
+                    acknowledgements.append(self._failed_ack(command, outcome))
+                    continue
                 if outcome.reason in {
                     RefusalReason.STALE_ROSTER,
                     RefusalReason.STALE_CONNECTION_EPOCH,
@@ -422,6 +434,11 @@ class AdapterDispatcher:
 
             # Dependent work advances only after a terminal completed ack.
             if latest.status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}:
+                if independent_stops:
+                    # Stops on distinct devices have no motion dependency. A slow
+                    # first acknowledgement must not strand the remaining targets.
+                    waiting_for_stop = True
+                    continue
                 return ExecutionResult(
                     intent_id=plan.intent_id,
                     roster_version=provider().roster_version,
@@ -432,10 +449,14 @@ class AdapterDispatcher:
             if latest.status is not LifecycleStatus.COMPLETED:
                 reason = latest.reason or RefusalReason.ADAPTER_FAILURE
                 failure = self._failure_for(command, provider(), reason, latest.detail)
-                if reason in {
-                    RefusalReason.STALE_ROSTER,
-                    RefusalReason.STALE_CONNECTION_EPOCH,
-                }:
+                if (
+                    reason
+                    in {
+                        RefusalReason.STALE_ROSTER,
+                        RefusalReason.STALE_CONNECTION_EPOCH,
+                    }
+                    and not independent_stops
+                ):
                     failure = Refusal(
                         intent_id=failure.intent_id,
                         roster_version=failure.roster_version,
@@ -490,6 +511,15 @@ class AdapterDispatcher:
                 refusal=failure,
                 capture_bundle=self._failed_bundle(plan, media_files, failure),
                 degraded_aircraft=tuple(sorted(degraded)),
+            )
+
+        if waiting_for_stop:
+            return ExecutionResult(
+                intent_id=plan.intent_id,
+                roster_version=provider().roster_version,
+                status=LifecycleStatus.EXECUTING,
+                plan=plan,
+                acknowledgements=tuple(acknowledgements),
             )
 
         completion_snapshot = None
@@ -738,26 +768,26 @@ class AdapterDispatcher:
             )
         if pending.status is not LifecycleStatus.EXECUTING or pending.plan != plan:
             return self._invalid_resume(plan, current, "result has no waiting command")
-        if plan.intent_name is IntentName.ESTOP:
+        if plan.intent_name is IntentName.ESTOP or self._independent_stop_plan(plan):
+            command_index = self._stop_completion_index(plan, pending, terminal_ack)
+            if command_index is None:
+                return self._invalid_resume(
+                    plan, current, "fleet stop completion does not match a waiting command"
+                )
             if plan.roster_version != current.roster_version:
-                command_index = self._estop_completion_index(plan, pending, terminal_ack)
-                if command_index is None:
-                    return self._invalid_resume(
-                        plan, current, "estop completion does not match a waiting command"
-                    )
                 acknowledgements = list(pending.acknowledgements)
                 acknowledgements[command_index] = terminal_ack
                 return self._invalidated_resume(
                     plan,
                     current,
                     RefusalReason.STALE_ROSTER,
-                    "estop plan was invalidated by a roster change while awaiting completion",
+                    "fleet stop plan was invalidated by a roster change while awaiting completion",
                     acknowledgements=acknowledgements,
                 )
             authorization = self.arbiter.check_plan_authorization(plan, current)
             if authorization is not None:
                 return self._invalid_resume(plan, current, authorization.detail)
-            return self._resume_estop(plan, pending, terminal_ack, current)
+            return self._resume_fleet_stop(plan, pending, terminal_ack, current)
 
         acknowledged_count = len(pending.acknowledgements)
         if acknowledged_count == 0 or acknowledged_count > len(plan.commands):
@@ -978,7 +1008,7 @@ class AdapterDispatcher:
             degraded_aircraft=resumed.degraded_aircraft,
         )
 
-    def _resume_estop(
+    def _resume_fleet_stop(
         self,
         plan: Plan,
         pending: ExecutionResult,
@@ -989,7 +1019,7 @@ class AdapterDispatcher:
             not self._ack_matches_command(ack, command)
             for ack, command in zip(pending.acknowledgements, plan.commands, strict=True)
         ):
-            return self._invalid_resume(plan, current, "estop acknowledgements are incomplete")
+            return self._invalid_resume(plan, current, "fleet stop acknowledgements are incomplete")
         waiting_indexes = [
             index
             for index, ack in enumerate(pending.acknowledgements)
@@ -1004,7 +1034,9 @@ class AdapterDispatcher:
             }
             for ack in pending.acknowledgements
         ):
-            return self._invalid_resume(plan, current, "estop acknowledgement set has a failure")
+            return self._invalid_resume(
+                plan, current, "fleet stop acknowledgement set has a failure"
+            )
         command_index = next(
             (
                 index
@@ -1014,7 +1046,7 @@ class AdapterDispatcher:
             None,
         )
         if command_index is None:
-            return self._invalid_resume(plan, current, "estop completion is not pending")
+            return self._invalid_resume(plan, current, "fleet stop completion is not pending")
         command = plan.commands[command_index]
         if (
             terminal_ack.status
@@ -1023,7 +1055,9 @@ class AdapterDispatcher:
             or current.aircraft.get(command.drone_id) is None
             or current.aircraft[command.drone_id].connection_epoch != command.connection_epoch
         ):
-            return self._invalid_resume(plan, current, "estop completion is stale or mismatched")
+            return self._invalid_resume(
+                plan, current, "fleet stop completion is stale or mismatched"
+            )
         acknowledgements = list(pending.acknowledgements)
         acknowledgements[command_index] = terminal_ack
         if terminal_ack.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}:
@@ -1062,7 +1096,20 @@ class AdapterDispatcher:
         )
 
     @staticmethod
-    def _estop_completion_index(
+    def _independent_stop_plan(plan: Plan) -> bool:
+        """Only validated one-stop-per-device plans may fan out without terminal ACKs."""
+        return (
+            plan.intent_name is IntentName.HOLD
+            and bool(plan.commands)
+            and all(
+                command.operation is CommandOperation.HOVER and command.safety_action is True
+                for command in plan.commands
+            )
+            and len({command.drone_id for command in plan.commands}) == len(plan.commands)
+        )
+
+    @staticmethod
+    def _stop_completion_index(
         plan: Plan,
         pending: ExecutionResult,
         terminal_ack: CommandAcknowledgement,

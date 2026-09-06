@@ -305,7 +305,8 @@ def test_safety_plan_resume_proves_full_targets_without_resending() -> None:
     flight = ExecutingHoverOnceFlight.from_snapshot(snapshot)
     dispatcher = AdapterDispatcher(flight=flight, camera=camera, arbiter=arbiter)
     pending = dispatcher.dispatch(plan, snapshot)
-    terminal = replace(pending.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
+    assert [call.drone_ids for call in flight.calls] == [(1,), (2,)]
+    terminal = replace(pending.acknowledgements[0], status=LifecycleStatus.COMPLETED)
 
     result = dispatcher.resume_after_completion(plan, pending, terminal, snapshot)
 

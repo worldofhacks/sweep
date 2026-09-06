@@ -13,6 +13,7 @@ from arbiter.safety import SafetyArbiter
 from planner.coordination import MOTION_INTENTS, ConflictResolution, resolve_intent_pair
 from planner.models import (
     CommandAcknowledgement,
+    DeviceClass,
     ExecutionResult,
     FleetSnapshot,
     LifecycleStatus,
@@ -44,6 +45,7 @@ class PositioningLossResult:
     detected: bool
     action: str | None
     execution: ExecutionResult | None
+    hold_execution: ExecutionResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1433,6 +1435,26 @@ class AutonomyController:
         land = invalid_future_time or (
             current.now_ms - loss_since >= self.arbiter.config.positioning_loss_hold_ms
         )
+        # An observation can arrive after the whole dwell (or with invalid clock
+        # evidence), before any earlier HOLD was sent. Ground nodes still need a
+        # stop in that case; LAND_ALL deliberately contains only aircraft.
+        land = land and any(aircraft.airborne for aircraft in current.aircraft.values())
+        hold_execution = None
+        if land and any(
+            aircraft.device_class is DeviceClass.GROUND_VEHICLE
+            and aircraft.mobile
+            and aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+            for aircraft in current.aircraft.values()
+        ):
+            hold_plan = self.planner.fleet_position_loss_plan(
+                intent_id=f"safety:position-loss:{loss_since}:hold",
+                snapshot=current,
+                land=False,
+            )
+            hold_execution = self.dispatcher.dispatch(hold_plan, current, current_snapshot=provider)
+            # A ground stop failure must remain visible without preventing an
+            # aircraft landing. Each phase uses its normal arbiter validation.
+            current = provider()
         action = "land" if land else "hold"
         plan = self.planner.fleet_position_loss_plan(
             intent_id=f"safety:position-loss:{loss_since}:{action}",
@@ -1444,7 +1466,7 @@ class AutonomyController:
             current,
             current_snapshot=provider,
         )
-        return PositioningLossResult(True, action, execution)
+        return PositioningLossResult(True, action, execution, hold_execution)
 
     def _planner_failure(
         self,
