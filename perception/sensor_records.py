@@ -347,7 +347,7 @@ class SensorRecordAdapter:
         frame = raw["attitude_frame"]
         if (key, frame) not in {
             ("KeyAircraftAttitude", "aircraft_body_to_ned"),
-            ("KeyGimbalAttitude", "gimbal_body_relative_to_aircraft"),
+            ("KeyGimbalAttitude", "raw_sdk_axes"),
         }:
             raise ValueError("attitude key and frame do not match Android schema")
         for name in ("yaw_deg", "pitch_deg", "roll_deg"):

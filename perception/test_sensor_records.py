@@ -167,7 +167,7 @@ def test_attitude_is_validated_then_kept_out_of_publisher_input(tmp_path):
     adapter = SensorRecordAdapter(recording_config(tmp_path))
     attitude = raw_common("phone_attitude_raw") | {
         "sdk_key": "KeyGimbalAttitude",
-        "attitude_frame": "gimbal_body_relative_to_aircraft",
+        "attitude_frame": "raw_sdk_axes",
         "yaw_deg": 1,
         "pitch_deg": 2,
         "roll_deg": 3,
@@ -176,7 +176,9 @@ def test_attitude_is_validated_then_kept_out_of_publisher_input(tmp_path):
     with pytest.raises(ValueError, match="not publisher input"):
         adapter.record(attitude)
     with pytest.raises(ValueError, match="key and frame"):
-        adapter.record_if_selected(attitude | {"attitude_frame": "aircraft_body_to_ned"})
+        adapter.record_if_selected(
+            attitude | {"attitude_frame": "gimbal_body_relative_to_aircraft"}
+        )
 
 
 def test_unselected_height_key_is_validated_and_skipped(tmp_path):

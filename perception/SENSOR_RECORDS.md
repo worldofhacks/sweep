@@ -25,6 +25,7 @@ measurement ID and `measured: true`.
   "publisher": { "mode": "replay", "session": "run-42", "websocket_url": null, "drones": [] },
   "phone": {
     "drone_id": 1,
+    "recorder_config_sha256": "<digest copied from the Android raw run>",
     "velocity": {
       "source_id": "msdk-velocity",
       "sdk_key": "KeyAircraftVelocity",
@@ -54,7 +55,8 @@ measurement ID and `measured: true`.
 ```
 
 The full `publisher.drones` array is required. The abbreviated publisher object only shows where
-it belongs in the file.
+it belongs in the file. Copy `phone.recorder_config_sha256` from the selected Android raw run;
+every selected sample must carry the same digest.
 
 ## Raw input and conversion
 
