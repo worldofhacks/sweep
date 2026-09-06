@@ -1,5 +1,6 @@
 import type { IntentV1 } from '../relay/contract'
 import { formatDroneId, type PlanPreview } from './state'
+import type { NavigationMetadata } from '../relay/contract'
 
 const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
   capture_room: 'Capture room',
@@ -7,6 +8,7 @@ const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
   land: 'Land',
   land_all: 'Land all fleet',
   sweep: 'Sweep area',
+  navigate: 'Navigate',
 }
 
 /** Plan-card title from the design; other intents show their name. */
@@ -53,10 +55,18 @@ export function planSteps(intent: IntentV1): string[] {
       `Send the frozen lanes to ${ids}.`,
     ]
   }
+  if (intent.name === 'navigate' && 'zone_id' in intent.args) {
+    return [
+      `Route ${ids} to zone ${intent.args.zone_id} on the authoritative map.`,
+      'Follow the frozen route and arrival slot from the planner preview.',
+      'Hold at the assigned arrival slot after route completion.',
+    ]
+  }
   return [`Send ${intent.name} to ${ids || 'the roster'}.`]
 }
 
 /** The preview a confirmation-gated draft carries into the dock. */
-export function buildPlanPreview(intent: IntentV1, rosterVersion: number): PlanPreview {
-  return { title: planTitle(intent), steps: planSteps(intent), rosterVersion }
+export function buildPlanPreview(intent: IntentV1, rosterVersion: number, navigation: NavigationMetadata | null = null): PlanPreview {
+  const navigationKey = navigation === null ? undefined : JSON.stringify(navigation)
+  return { title: planTitle(intent), steps: planSteps(intent), rosterVersion, navigationKey }
 }

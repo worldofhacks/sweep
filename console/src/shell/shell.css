@@ -518,6 +518,7 @@
   box-shadow: var(--shadow-confirm);
 }
 .sh-confirm:hover { background: var(--color-ink-hover); box-shadow: var(--shadow-hover); }
+.sh-confirm:disabled { cursor: wait; opacity: .45; box-shadow: none; }
 .sh-cancel {
   flex: 0 0 auto;
   min-height: var(--min-h-48);
@@ -530,6 +531,18 @@
 .sh-cancel:hover { background: var(--color-ground); }
 .sh-dock-steps { margin: 10px 0 0; padding-left: 19px; font-size: var(--text-13-5); line-height: var(--leading-1-55); }
 .sh-dock-steps li { padding: 2px 0; }
+.sh-route-wait { margin: 10px 0 0; color: var(--color-ink-2); font-size: var(--text-12-5); }
+.sh-route-preview { margin-top: 12px; padding: 10px; border: 1px solid var(--color-hairline); background: var(--color-panel); }
+.sh-route-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; align-items: baseline; font-family: var(--font-mono); font-size: var(--text-11); letter-spacing: var(--tracking-eyebrow-12); text-transform: uppercase; color: var(--color-ink-3); }
+.sh-route-heading p { margin: 0; }
+.sh-route-map { display: block; width: min(100%, 340px); height: 142px; margin-top: 8px; border: 1px solid var(--color-hairline); background-image: repeating-linear-gradient(0deg, transparent 0 22px, var(--color-ground) 22px 23px), repeating-linear-gradient(90deg, transparent 0 22px, var(--color-ground) 22px 23px); }
+.sh-route-line { fill: none; stroke: var(--color-ink); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.sh-route-start { fill: var(--color-ink-2); }
+.sh-route-arrival { fill: var(--color-surface); stroke: var(--color-ink); stroke-width: 1.5; }
+.sh-route-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 14px; margin: 9px 0 0; }
+.sh-route-details div { min-width: 0; }
+.sh-route-details dt { font-family: var(--font-mono); font-size: var(--text-10); letter-spacing: var(--tracking-eyebrow-12); text-transform: uppercase; color: var(--color-ink-3); }
+.sh-route-details dd { margin: 2px 0 0; overflow-wrap: anywhere; font-size: var(--text-12); color: var(--color-ink); }
 .sh-json-toggle {
   display: block;
   margin-top: 10px;
@@ -591,4 +604,5 @@
   .sh-detail-toggle { margin-left: auto; }
   /* Roster, source and intent id wrap inside the dock summary. */
   .sh-dock-meta { white-space: normal; }
+  .sh-route-details { grid-template-columns: 1fr; }
 }

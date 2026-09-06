@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useReducer, type Dispatch } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, type Dispatch } from 'react'
 import type { RelayClient } from '../relay/client'
 import type {
   CapturePattern,
   ConsoleIntentName,
   DroneId,
+  IntentArgs,
   IntentArgsByName,
   IntentSource,
   IntentV1,
+  NavigationPreviewRequest,
 } from '../relay/contract'
 import { isConsoleIntentV1, requiresConfirmation, selectionRule } from '../relay/contract'
 import {
@@ -57,6 +59,7 @@ export function useControlConsole({
   clients,
   intentDependencies = browserIntentDependencies,
 }: UseControlConsoleOptions) {
+  const confirmedIntentIds = useRef(new Set<string>())
   const [state, dispatch] = useReducer(
     controlReducer,
     sessionId,
@@ -156,21 +159,32 @@ export function useControlConsole({
   const stageForConfirmation = useCallback(
     (intent: IntentV1): IntentV1 => {
       const t = intentDependencies.now()
+      confirmedIntentIds.current.delete(intent.intent_id)
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
         .filter((request) => request.status === 'pending_confirmation')
         .forEach((request) => {
           dispatch({ type: 'request_cancelled', intentId: request.intent.intent_id, t })
-        })
-      dispatch({
-        type: 'request_pending_confirmation',
-        intentId: intent.intent_id,
-        t,
-        plan: buildPlanPreview(intent, state.rosterVersion),
       })
+      if (needsRoutePreview(intent, state.navigation)) {
+        dispatch({
+          type: 'request_pending_confirmation',
+          intentId: intent.intent_id,
+          t,
+          plan: { title: 'Navigate', steps: [], rosterVersion: state.rosterVersion, navigationKey: JSON.stringify(state.navigation) },
+        })
+        sendNavigationPreview(intent, clients.console, intentDependencies.now, dispatch)
+      } else {
+        dispatch({
+          type: 'request_pending_confirmation',
+          intentId: intent.intent_id,
+          t,
+          plan: buildPlanPreview(intent, state.rosterVersion, state.navigation),
+        })
+      }
       return intent
     },
-    [intentDependencies, state.requests, state.rosterVersion],
+    [clients.console, intentDependencies, state.navigation, state.requests, state.rosterVersion],
   )
 
   /**
@@ -186,7 +200,7 @@ export function useControlConsole({
             detail: 'A new selection was requested. Preview the command again after relay state updates.' })
         })
       }
-      if (requiresConfirmation(intent.name)) {
+      if (requiresConfirmation(intent.name) || needsRoutePreview(intent, state.navigation)) {
         stageForConfirmation(intent)
         return
       }
@@ -194,7 +208,7 @@ export function useControlConsole({
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       sendNow(intent, t)
     },
-    [intentDependencies, sendNow, stageForConfirmation, state.requests],
+    [intentDependencies, sendNow, stageForConfirmation, state.navigation, state.requests],
   )
 
   const sendExistingIntent = useCallback(
@@ -385,6 +399,7 @@ export function useControlConsole({
 
   const confirmRequest = useCallback(
     (intentId: string): IntentV1 | null => {
+      if (confirmedIntentIds.current.has(intentId)) return null
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
       if (!request || request.status !== 'pending_confirmation') return null
       if (!isIntentEnabled(state, request.intent.name)) {
@@ -404,6 +419,24 @@ export function useControlConsole({
           t: intentDependencies.now(),
           reasonCode: 'stale_roster',
           detail: `Preview used roster version ${request.plan?.rosterVersion}; current roster is ${state.rosterVersion}.`,
+        })
+        return null
+      }
+      if (needsRoutePreview(request.intent, state.navigation) && request.plan?.navigationKey !== JSON.stringify(state.navigation)) {
+        dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
+          reasonCode: 'stale_navigation', detail: 'The authoritative map, route configuration, or destination catalog changed. Preview the route again.' })
+        return null
+      }
+      if (needsRoutePreview(request.intent, state.navigation) && (!request.plan?.navigation ||
+        request.plan.expiresAt === undefined || request.plan.expiresAt <= intentDependencies.now())) {
+        dispatch({
+          type: 'request_invalidated',
+          intentId,
+          t: intentDependencies.now(),
+          reasonCode: request.plan?.navigation ? 'preview_expired' : 'preview_unavailable',
+          detail: request.plan?.navigation
+            ? 'The prepared route expired. Request a new route.'
+            : 'Waiting for the relay to prepare this route. Confirmation remains unavailable.',
         })
         return null
       }
@@ -432,6 +465,7 @@ export function useControlConsole({
       }
       const confirmedAt = intentDependencies.now()
       const confirmed = confirmIntent(request.intent, confirmedAt)
+      confirmedIntentIds.current.add(intentId)
       sendExistingIntent(confirmed, confirmedAt)
       return confirmed
     },
@@ -526,7 +560,7 @@ export function useControlConsole({
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
       const intent = retryIntent(request.intent, intentDependencies)
-      if (['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
+      if (['takeoff', 'land', 'land_all', 'capture_room', 'navigate'].includes(intent.name)) {
         stageForConfirmation({ ...intent, confirm: false })
         return
       }
@@ -535,6 +569,16 @@ export function useControlConsole({
       sendNow(intent, t)
     },
     [intentDependencies, sendNow, stageForConfirmation],
+  )
+
+  const stageProposedIntent = useCallback(
+    (proposal: { name: ConsoleIntentName; args: IntentArgs; selection: DroneId[] }): IntentV1 | null => {
+      if (!isIntentEnabled(state, proposal.name) || proposal.selection.length === 0) return null
+      const intent = createIntent({ name: proposal.name, args: proposal.args as never, selection: proposal.selection, source: 'console', session: state.sessionId }, intentDependencies)
+      stageForConfirmation(intent)
+      return intent
+    },
+    [intentDependencies, stageForConfirmation, state],
   )
 
   const pendingRequest = useMemo(
@@ -552,6 +596,7 @@ export function useControlConsole({
     prepareCapture,
     prepareHold,
     prepareSelect,
+    stageProposedIntent,
     confirmRequest,
     cancelRequest,
     issueHold,
@@ -589,4 +634,27 @@ function sendToRelay(
       detail: error instanceof Error ? error.message : 'Relay send failed for an unknown reason.',
     })
   })
+}
+
+function sendNavigationPreview(
+  intent: IntentV1,
+  client: RelayClient,
+  now: () => number,
+  dispatch: Dispatch<Parameters<typeof controlReducer>[1]>,
+): void {
+  const request: NavigationPreviewRequest = { v: 1, type: 'navigation_preview_request', intent }
+  void client.sendNavigationPreview(request).catch((error: unknown) => {
+    dispatch({
+      type: 'request_invalidated',
+      intentId: intent.intent_id,
+      t: now(),
+      reasonCode: 'preview_send_failed',
+      detail: error instanceof Error ? error.message : 'Relay preview request failed for an unknown reason.',
+    })
+  })
+}
+
+function needsRoutePreview(intent: IntentV1, navigation: import('../relay/contract').NavigationMetadata | null): boolean {
+  if (intent.name === 'navigate' || intent.name === 'search') return navigation !== null
+  return intent.name === 'formation_set' && navigation?.formations?.some((formation) => formation.name === (intent.args as { name: string }).name) === true
 }

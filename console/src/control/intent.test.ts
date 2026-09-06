@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   CONSOLE_INTENT_NAMES,
+  C1_BASIC_CONTROL_INTENTS,
   isConsoleIntentV1,
   requiresConfirmation,
   selectionRule,
@@ -44,9 +45,16 @@ const ENVELOPES: Record<ConsoleIntentName, { args: IntentArgs; selection: number
     args: { room_id: 'kitchen-01', capture_id: 'capture-intent-1', pattern: 'pano_360' },
     selection: [1],
   },
+  navigate: { args: { zone_id: 'atrium' }, selection: [1] },
+  search: { args: { zone_id: 'atrium', target_class: 'backpack' }, selection: [1] },
 }
 
 describe('intent envelopes', () => {
+  test('navigation remains unavailable in the default capability profile', () => {
+    expect(CONSOLE_INTENT_NAMES).toContain('navigate')
+    expect(C1_BASIC_CONTROL_INTENTS).not.toContain('navigate')
+    expect(requiresConfirmation('navigate')).toBe(true)
+  })
   test.each(CONSOLE_INTENT_NAMES)('%s builds a conformant Intent v1 envelope', (name) => {
     const { args, selection } = ENVELOPES[name]
     const draft = createIntent({ name, args, selection, source: 'console', session }, deps)
@@ -68,7 +76,17 @@ describe('intent envelopes', () => {
     expect(isConsoleIntentV1(wire)).toBe(true)
   })
 
-  test.each(['takeoff', 'land', 'land_all', 'sweep', 'capture_room'] as const)(
+  test('navigation preview describes the frozen route arrival hold', () => {
+    const preview = buildPlanPreview(
+      createIntent({ name: 'navigate', args: { zone_id: 'atrium' }, selection: [1], source: 'console', session }, deps),
+      4,
+      { map_pin: ['map', 'v1'], geometry_pin: ['geometry', 'v1'], configuration_id: 'nav-v1', floor_id: 'level_1', catalog_version: 'catalog-v1', zones: [] },
+    )
+    expect(preview.steps.join(' ')).toContain('arrival slot')
+    expect(preview.navigationKey).toContain('catalog-v1')
+  })
+
+  test.each(['takeoff', 'land', 'land_all', 'sweep', 'capture_room', 'navigate'] as const)(
     '%s requires confirmation and is refused locally without it',
     (name) => {
       expect(requiresConfirmation(name)).toBe(true)
@@ -157,7 +175,7 @@ describe('intent envelopes', () => {
       { name: 'formation_set', args: { name: 'grid' }, selection: [1], source: 'console', session },
       deps,
     )
-    expect(isConsoleIntentV1({ ...formation, args: { name: 'hexagon' } as unknown as IntentArgs })).toBe(false)
+    expect(isConsoleIntentV1({ ...formation, args: { name: '' } as unknown as IntentArgs })).toBe(false)
     expect(isConsoleIntentV1({ ...formation, name: 'survey_area' as unknown as ConsoleIntentName })).toBe(false)
   })
 })

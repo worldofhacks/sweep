@@ -1,4 +1,4 @@
-import type { IntentSource, IntentV1, RelayAuthFrame, RelayServerEvent } from './contract'
+import type { IntentSource, IntentV1, NavigationPreviewRequest, RelayAuthFrame, RelayServerEvent } from './contract'
 import { parseRelayServerEvent } from './contract'
 import type { RelayConnection } from '../control/state'
 
@@ -14,6 +14,7 @@ export interface RelayClient {
   stop(): void
   subscribe(listener: RelayClientListener): () => void
   sendIntent(intent: IntentV1): Promise<void>
+  sendNavigationPreview(request: NavigationPreviewRequest): Promise<void>
 }
 
 export interface WebSocketRelayConfig {
@@ -149,6 +150,13 @@ export class WebSocketRelayClient implements RelayClient {
     this.socket.send(JSON.stringify(intent))
   }
 
+  async sendNavigationPreview(request: NavigationPreviewRequest): Promise<void> {
+    if (!this.socket || this.socket.readyState !== 1 || !this.authenticated) {
+      throw new Error('Relay is not authenticated; the navigation preview was not sent.')
+    }
+    this.socket.send(JSON.stringify(request))
+  }
+
   private emitConnection(status: RelayConnection['status'], reason?: string): void {
     this.emit({
       kind: 'connection',
@@ -197,6 +205,10 @@ export class UnavailableRelayClient implements RelayClient {
   }
 
   async sendIntent(): Promise<void> {
+    throw new Error(this.reason)
+  }
+
+  async sendNavigationPreview(): Promise<void> {
     throw new Error(this.reason)
   }
 

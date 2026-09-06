@@ -545,4 +545,16 @@ describe('console Intent v1 mirror', () => {
       }),
     ).toBe(false)
   })
+
+  test('parses search progress and perception sightings from the relay', () => {
+    expect(parseRelayServerEvent({
+      v: 1, t: 1_756_700_000_000, type: 'search_progress', event_id: 'search-1', session,
+      intent_id: 'intent-search-1', state: 'running', tasks: [{ task_id: 'lane-1', state: 'running', covered_cells: 6, total_cells: 10 }],
+    })).toMatchObject({ type: 'search_progress', state: 'running' })
+    expect(parseRelayServerEvent({
+      v: 1, t: 1_756_700_000_001, type: 'perception.sighting', event_id: 'sighting-1', session,
+      sighting_id: 'sighting-1', source_id: 'camera-1', frame_id: 'frame-1', mission_id: 'intent-search-1',
+      label: 'backpack', class_id: 24, confidence: 0.92, bbox_xyxy: [1, 2, 3, 4], observation_count: 1,
+    })).toMatchObject({ type: 'perception.sighting', label: 'backpack', confidence: 0.92 })
+  })
 })

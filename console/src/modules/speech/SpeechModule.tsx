@@ -15,6 +15,7 @@ import {
   type CompileOutcome,
 } from '../../speech/compiler'
 import { UnavailableTranscriptClient, type VoiceOutcome } from '../../voice/client'
+import type { LanguageCompilation } from '../../speech/client'
 import {
   RELAY_MAX_AUDIO_DURATION_MS,
   usePushToTalk,
@@ -48,6 +49,9 @@ interface SpeechState {
   utterance: string
   origin: TranscriptOrigin | null
   compiled: CompileOutcome | null
+  remote: LanguageCompilation | null
+  remoteIndex: number
+  stagedIds: string[]
   /** Set when the relay transcribed but refused to compile, so the local fallback ran instead. */
   relayCompilerReason: string | null
   sttError: string | null
@@ -60,6 +64,9 @@ const INITIAL: SpeechState = {
   utterance: '',
   origin: null,
   compiled: null,
+  remote: null,
+  remoteIndex: 0,
+  stagedIds: [],
   relayCompilerReason: null,
   sttError: null,
   draftedIntentId: null,
@@ -76,8 +83,9 @@ const INITIAL: SpeechState = {
  */
 export function SpeechModule({ controller, now, roomId, services }: ModuleProps) {
   const [pane, setPane] = useState<SpeechPane>('talk')
-  const { state, pendingRequest, prepareCapture, prepareHold, prepareSelect } = controller
+  const { state, pendingRequest, prepareCapture, prepareHold, prepareSelect, stageProposedIntent } = controller
   const languageEnabled = services.transcript !== undefined
+  const compilerEnabled = services.language !== undefined
   const voice = usePushToTalk({
     sessionId: state.sessionId,
     client: services.transcript ?? unavailableTranscriptClient,
@@ -101,6 +109,21 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
       : Math.max(0, Math.ceil((voice.startedAt + voice.maxRecordingMs - now()) / 1_000))
   const captureWord = describeCapture(voice.status, languageEnabled)
   const compiled = speech.compiled
+  const remoteStep = speech.remote?.intents[speech.remoteIndex] ?? null
+  const previousStep = speech.remoteIndex === 0 ? null : state.requests.find((request) => request.intent.intent_id === speech.stagedIds[speech.remoteIndex - 1])
+  const priorComplete = previousStep?.status === 'completed'
+  const priorSelectionMatches = previousStep?.intent.name !== 'select' || (() => { const ids = (previousStep.intent.args as { ids: number[] }).ids; return ids.length === state.selection.length && ids.every((id) => state.selection.includes(id)) })()
+  const canStageRemote = remoteStep !== null && pendingRequest === null && state.connection.status === 'connected' && (speech.remoteIndex === 0 || (priorComplete && priorSelectionMatches))
+  const queueInvalid =
+    state.connection.status !== 'connected' ||
+    (speech.remote?.expires_at_ms !== undefined && speech.remote.expires_at_ms !== null && speech.remote.expires_at_ms <= now()) ||
+    (previousStep !== null && previousStep !== undefined &&
+      !['pending_confirmation', 'sent', 'accepted', 'executing', 'completed'].includes(previousStep.status))
+  useEffect(() => {
+    if (!queueInvalid || speech.remote === null) return
+    const timer = window.setTimeout(() => setSpeech((previous) => ({ ...previous, remote: null, remoteIndex: 0, stagedIds: [], draftNote: 'The relay state changed or the plan expired; remaining proposed steps were discarded.' })), 0)
+    return () => window.clearTimeout(timer)
+  }, [queueInvalid, speech.remote])
   const blocked = compiled?.status === 'compiled' ? emissionBlockedReason(compiled, state, pendingRequest) : null
   const drafted =
     speech.draftedIntentId === null
@@ -113,6 +136,9 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
       utterance,
       origin,
       compiled: compile ? compileUtterance(utterance, context) : null,
+      remote: null,
+  remoteIndex: 0,
+  stagedIds: [],
       relayCompilerReason: null,
       draftNote: null,
     }))
@@ -219,7 +245,13 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
             <button
               type="button"
               className="sp-compile"
-              onClick={() => setUtterance(speech.utterance, speech.origin ?? 'typed', true)}
+              onClick={() => {
+                if (!compilerEnabled) { setUtterance(speech.utterance, speech.origin ?? 'typed', true); return }
+                const text = speech.utterance.trim()
+                if (!text) return
+                const correlation = `text-${crypto.randomUUID()}`
+                void services.language!.compile(text, correlation).then((remote) => setSpeech((previous) => ({ ...previous, remote, remoteIndex: 0, stagedIds: [], compiled: null, utterance: text, origin: 'typed', draftNote: null }))).catch((error: unknown) => setSpeech((previous) => ({ ...previous, remote: null, compiled: { status: 'refused', reason: 'compiler_unavailable', sentence: error instanceof Error ? error.message : 'Language compilation failed. Nothing was emitted.' } })))
+              }}
             >
               Compile to intents
             </button>
@@ -239,6 +271,18 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
           </div>
 
           <div className="sp-column">
+            {speech.remote && (
+              <div className="sp-result" role="region" aria-label="Compiler result">
+                <p className="sp-result-head"><span className="sp-eyebrow is-inline">Relay compilation</span><span className={`sp-result-status is-${speech.remote.kind}`}>{speech.remote.kind}</span></p>
+                {speech.remote.detail && <p className="sp-result-sentence">{speech.remote.detail}</p>}
+                {speech.remote.reason && <p className="sp-result-line">reason <span className="mono">{speech.remote.reason}</span></p>}
+                {speech.remote.intents.map((intent, index) => <p className="sp-result-intent" key={`${intent.name}-${index}`}><span className="is-name">{index + 1}. {intent.name}</span><span className="is-args">{JSON.stringify(intent.args)}</span></p>)}
+                {speech.remote.kind === 'plan' && <p className="sp-drafted">Stage one step at a time. Each confirmation waits for the relay lifecycle and current state before the next step. Navigation requests a server preview before confirmation.</p>}
+                {speech.remote.kind === 'plan' && remoteStep && <button type="button" className="sp-emit" disabled={!canStageRemote} onClick={() => { const staged = stageProposedIntent({ name: remoteStep.name as never, args: remoteStep.args as never, selection: remoteStep.selection }); setSpeech((previous) => staged ? ({ ...previous, stagedIds: [...previous.stagedIds, staged.intent_id], remoteIndex: previous.remoteIndex + 1, draftNote: `Step ${previous.remoteIndex + 1} is in the confirmation dock. Confirm it, then wait for the authoritative completion before staging the next step.` }) : ({ ...previous, remote: null, remoteIndex: 0, stagedIds: [], draftNote: 'The current authoritative state refused this proposed step; remaining steps were discarded.' })) }}>Stage step {speech.remoteIndex + 1} of {speech.remote.intents.length}</button>}
+                {speech.remote.kind === 'plan' && previousStep && !priorComplete && <p className="sp-result-blocked">Wait for the relay to report the preceding step completed before staging the next step.</p>}
+                {speech.remote.kind === 'plan' && previousStep?.intent.name === 'select' && priorComplete && !priorSelectionMatches && <p className="sp-result-blocked">The authoritative selection differs from the proposed selection; remaining steps were discarded.</p>}
+              </div>
+            )}
             {compiled && (
               <div className="sp-result" role="region" aria-label="Compiler result">
                 <p className="sp-result-head">
@@ -319,6 +363,9 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
             utterance: speech.utterance,
             origin: speech.origin,
             compiled,
+            remote: speech.remote,
+            remoteIndex: speech.remoteIndex,
+            stagedIds: speech.stagedIds,
             pending: pendingRequest !== null,
           }).map((step) => (
             <div key={step.n} className="sp-step">
@@ -379,7 +426,10 @@ function absorbVoice(
         ...next,
         utterance: transcript,
         origin: outcome.source,
-        compiled: compileUtterance(transcript, context),
+        compiled: outcome.compilation ? null : compileUtterance(transcript, context),
+        remote: outcome.compilation ?? null,
+        remoteIndex: 0,
+        stagedIds: [],
         relayCompilerReason: outcome.status === 'refused' ? (outcome.reason ?? 'unavailable') : null,
         sttError: null,
         draftNote: null,
@@ -485,6 +535,9 @@ function pipelineSteps(input: {
   utterance: string
   origin: TranscriptOrigin | null
   compiled: CompileOutcome | null
+  remote: LanguageCompilation | null
+  remoteIndex: number
+  stagedIds: string[]
   pending: boolean
 }): Array<{ n: string; title: string; value: string; note: string }> {
   const capture = !input.languageEnabled

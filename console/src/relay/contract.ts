@@ -9,7 +9,7 @@
 export type DroneId = number
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard' | 'webcam'
-export type FormationName = 'line' | 'column' | 'circle' | 'grid' | 'V'
+export type FormationName = string
 
 /**
  * Every intent name this console can build. Mirrors relay/intent_v1.py
@@ -32,6 +32,8 @@ export type ConsoleIntentName =
   | 'come_home'
   | 'sweep'
   | 'capture_room'
+  | 'navigate'
+  | 'search'
 
 export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'arm',
@@ -50,6 +52,8 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'come_home',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ]
 
 /**
@@ -73,6 +77,8 @@ export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Console
   'formation_set',
   'spacing',
   'sweep',
+  'navigate',
+  'search',
 ])
 
 /** The exact profile emitted by the current C1 relay. */
@@ -109,6 +115,7 @@ export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<
   'land_all',
   'sweep',
   'capture_room',
+  'navigate',
 ])
 
 export function requiresConfirmation(name: ConsoleIntentName): boolean {
@@ -135,6 +142,8 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   come_home: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
+  navigate: 'selected',
+  search: 'selected',
 }
 
 export function selectionRule(name: ConsoleIntentName): SelectionRule {
@@ -186,6 +195,8 @@ export interface CaptureRoomArgs {
   capture_id: string
   pattern: CapturePattern
 }
+export interface NavigateArgs { zone_id: string }
+export interface SearchArgs { zone_id: string; target_class: string }
 
 /** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
 export interface IntentArgsByName {
@@ -205,9 +216,29 @@ export interface IntentArgsByName {
   come_home: EmptyArgs
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
+  navigate: NavigateArgs
+  search: SearchArgs
 }
 
 export type IntentArgs = IntentArgsByName[ConsoleIntentName]
+
+export interface NavigationZoneMetadata {
+  zone_id: string
+  floor_id: string
+  navigation_allowed: boolean
+  arrival_slots: string[]
+  aliases: string[]
+}
+export interface NavigationMetadata {
+  map_pin: [string, string]
+  geometry_pin: [string, string]
+  configuration_id: string
+  floor_id: string
+  catalog_version: string
+  zones: NavigationZoneMetadata[]
+  formations?: Array<{ name: string; zone_id: string }>
+  search?: { zones: Array<{ zone_id: string }>; target_classes: string[] }
+}
 
 export interface IntentV1 {
   v: 1
@@ -222,6 +253,67 @@ export interface IntentV1 {
   selection: DroneId[]
   mode: 'indoor'
   confirm: boolean
+}
+
+export interface NavigationPreviewRequest {
+  v: 1
+  type: 'navigation_preview_request'
+  intent: IntentV1
+}
+
+export interface NavigationPose {
+  x_m: number
+  y_m: number
+  z_m: number
+  floor_id: string
+}
+
+export interface NavigationContentPin {
+  version: string
+  content_sha256: string
+}
+
+export interface NavigationRoute {
+  drone: DroneId
+  arrival_slot: { slot_id: string; zone_id: string; pose: NavigationPose; radius_m: number }
+  waypoints: NavigationPose[]
+  swept_segments: Array<{ start: NavigationPose; end: NavigationPose; radius_m: number; height_m: number }>
+}
+
+export interface NavigationPlanPreview {
+  map_pin: NavigationContentPin
+  geometry_pin: NavigationContentPin
+  destination_zone_id: string
+  selected: Array<{ drone_id: DroneId; connection_epoch: number; pose: NavigationPose }>
+  routes: NavigationRoute[]
+  execution_order: DroneId[]
+  roster_version: number
+  config: Record<string, unknown>
+  prepared_at_ms: number
+  intent_name: 'navigate'
+}
+
+export interface RelayNavigationPreviewEvent {
+  v: 1
+  t: number
+  type: 'navigation_preview'
+  event_id: string
+  session: string
+  intent_id: string
+  roster_version: number
+  expires_at_ms: number
+  plan: { navigation: NavigationPlanPreview; commands: unknown[] }
+}
+
+export interface RelaySearchProgressEvent {
+  v: 1; t: number; type: 'search_progress'; event_id: string; session: string; intent_id: string
+  state: 'prepared' | 'running' | 'hold' | 'cancelled' | 'incomplete' | 'covered'
+  tasks: Array<{ task_id: string; state: string; covered_cells: number; total_cells: number }>
+}
+
+export interface RelaySightingEvent {
+  v: 1; t: number; type: 'perception.sighting'; event_id: string; session: string
+  sighting_id: string; label: string; confidence: number; bbox_xyxy: [number, number, number, number]
 }
 
 export type MediaStreamStatus = 'live' | 'offline' | 'unreported'
@@ -271,6 +363,7 @@ export interface RelayStateEvent {
   enabled_intent_names: ConsoleIntentName[]
   pending: Record<string, unknown> | null
   accepted_plan: Record<string, unknown> | null
+  navigation?: NavigationMetadata
   drones: RelayAircraftState[]
   invalidated_intent_ids?: string[]
   invalidation_reason?: 'graceful_leave_roster_change'
@@ -411,6 +504,9 @@ export type RelayServerEvent =
   | RelayAuthAcceptedEvent
   | RelayAuthRefusedEvent
   | RelayMembershipEvent
+  | RelayNavigationPreviewEvent
+  | RelaySearchProgressEvent
+  | RelaySightingEvent
   | RelayRefusalEvent
   | RelayStateEvent
   | RelaySafetyActionEvent
@@ -499,6 +595,45 @@ function isNullableRecord(value: unknown): value is Record<string, unknown> | nu
   return value === null || isRecord(value)
 }
 
+function isNavigationMetadata(value: unknown): value is NavigationMetadata {
+  if (!isRecord(value) || !Array.isArray(value.map_pin) || !Array.isArray(value.geometry_pin) ||
+    value.map_pin.length !== 2 || value.geometry_pin.length !== 2 ||
+    !value.map_pin.every((item) => typeof item === 'string') || !value.geometry_pin.every((item) => typeof item === 'string') ||
+    !['configuration_id', 'floor_id', 'catalog_version'].every((key) => typeof value[key] === 'string') ||
+    !Array.isArray(value.zones)) return false
+  return value.zones.every((zone) => isRecord(zone) && typeof zone.zone_id === 'string' &&
+    typeof zone.floor_id === 'string' && typeof zone.navigation_allowed === 'boolean' &&
+    isStringArray(zone.arrival_slots) && isStringArray(zone.aliases)) &&
+    (value.formations === undefined || (Array.isArray(value.formations) && value.formations.every((formation) =>
+      isRecord(formation) && typeof formation.name === 'string' && typeof formation.zone_id === 'string'))) &&
+    (value.search === undefined || (isRecord(value.search) && Array.isArray(value.search.zones) &&
+      value.search.zones.every((zone) => isRecord(zone) && typeof zone.zone_id === 'string') && isStringArray(value.search.target_classes)))
+}
+
+function isNavigationPose(value: unknown): value is NavigationPose {
+  return isRecord(value) && ['x_m', 'y_m', 'z_m'].every((key) => isFiniteNumber(value[key])) && typeof value.floor_id === 'string'
+}
+
+function isNavigationPin(value: unknown): value is NavigationContentPin {
+  return isRecord(value) && typeof value.version === 'string' && typeof value.content_sha256 === 'string'
+}
+
+function isNavigationPlanPreview(value: unknown): value is NavigationPlanPreview {
+  if (!isRecord(value) || !isNavigationPin(value.map_pin) || !isNavigationPin(value.geometry_pin) ||
+    typeof value.destination_zone_id !== 'string' || !Array.isArray(value.selected) || !Array.isArray(value.routes) ||
+    !isDroneIds(value.execution_order) || !isNonNegativeInteger(value.roster_version) || !isRecord(value.config) ||
+    !isNonNegativeInteger(value.prepared_at_ms) || value.intent_name !== 'navigate') return false
+  return value.selected.every((selected) => isRecord(selected) && isDroneId(selected.drone_id) &&
+    isNonNegativeInteger(selected.connection_epoch) && isNavigationPose(selected.pose)) &&
+    value.routes.every((route) => isRecord(route) && isDroneId(route.drone) && isRecord(route.arrival_slot) &&
+      typeof route.arrival_slot.slot_id === 'string' && typeof route.arrival_slot.zone_id === 'string' &&
+      isNavigationPose(route.arrival_slot.pose) && isFiniteNumber(route.arrival_slot.radius_m) &&
+      Array.isArray(route.waypoints) && route.waypoints.every(isNavigationPose) &&
+      Array.isArray(route.swept_segments) && route.swept_segments.every((segment) => isRecord(segment) &&
+        isNavigationPose(segment.start) && isNavigationPose(segment.end) &&
+        isFiniteNumber(segment.radius_m) && isFiniteNumber(segment.height_m)))
+}
+
 export function isRelayAircraftState(value: unknown): value is RelayAircraftState {
   if (!isRecord(value)) return false
   const patterns = value.camera_patterns
@@ -569,6 +704,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isCapabilityAdvertisement(value.capability_profile, value.enabled_intent_names) ||
       !isNullableRecord(value.pending) ||
       !isNullableRecord(value.accepted_plan) ||
+      (value.navigation !== undefined && !isNavigationMetadata(value.navigation)) ||
       !Array.isArray(value.drones) ||
       !value.drones.every(isRelayAircraftState) ||
       (value.invalidated_intent_ids !== undefined && !isStringArray(value.invalidated_intent_ids)) ||
@@ -585,6 +721,26 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       return null
     }
     return value as unknown as RelayStateEvent
+  }
+
+  if (value.type === 'navigation_preview') {
+    if (typeof value.intent_id !== 'string' || value.intent_id.length === 0 || !isNonNegativeInteger(value.roster_version) ||
+      !isNonNegativeInteger(value.expires_at_ms) || !isRecord(value.plan) ||
+      !isNavigationPlanPreview(value.plan.navigation) || !Array.isArray(value.plan.commands)) return null
+    return value as unknown as RelayNavigationPreviewEvent
+  }
+
+  if (value.type === 'search_progress') {
+    if (typeof value.intent_id !== 'string' || !['prepared', 'running', 'hold', 'cancelled', 'incomplete', 'covered'].includes(String(value.state)) ||
+      !Array.isArray(value.tasks) || !value.tasks.every((task) => isRecord(task) && typeof task.task_id === 'string' && typeof task.state === 'string' &&
+        isNonNegativeInteger(task.covered_cells) && isNonNegativeInteger(task.total_cells))) return null
+    return value as unknown as RelaySearchProgressEvent
+  }
+
+  if (value.type === 'perception.sighting') {
+    if (typeof value.sighting_id !== 'string' || typeof value.label !== 'string' || typeof value.confidence !== 'number' || value.confidence < 0 || value.confidence > 1 ||
+      !Array.isArray(value.bbox_xyxy) || value.bbox_xyxy.length !== 4 || !value.bbox_xyxy.every(isFiniteNumber)) return null
+    return value as unknown as RelaySightingEvent
   }
 
   if (value.type === 'membership') {
@@ -768,8 +924,6 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   return hasValidSelection(name, selection)
 }
 
-const FORMATION_NAMES = new Set<FormationName>(['line', 'column', 'circle', 'grid', 'V'])
-
 /** Mirrors relay/intent_v1.py _parse_args for the console-built subset. */
 function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): boolean {
   const keys = Object.keys(args)
@@ -782,7 +936,7 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
     case 'spacing':
       return keys.length === 1 && isFiniteNumber(args.delta)
     case 'formation_set':
-      return keys.length === 1 && FORMATION_NAMES.has(args.name as FormationName)
+      return keys.length === 1 && typeof args.name === 'string' && args.name.length > 0 && args.name.length <= 128
     case 'sweep':
       return keys.length === 0 || (keys.length === 1 && isSweepBox(args.box))
     case 'capture_room':
@@ -794,6 +948,10 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
         args.capture_id.length > 0 &&
         CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
       )
+    case 'navigate':
+      return keys.length === 1 && typeof args.zone_id === 'string' && args.zone_id.length > 0 && args.zone_id.length <= 128
+    case 'search':
+      return keys.length === 2 && typeof args.zone_id === 'string' && args.zone_id.length > 0 && typeof args.target_class === 'string' && args.target_class.length > 0
     case 'arm':
     case 'disarm':
     case 'estop':

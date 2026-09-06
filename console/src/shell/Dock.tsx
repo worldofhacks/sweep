@@ -3,6 +3,7 @@ import type { RequestRecord } from '../control/state'
 import { formatDroneId } from '../control/state'
 import type { InvalidationView } from './derive'
 import { shortId } from './format'
+import type { NavigationPlanPreview, NavigationPose } from '../relay/contract'
 
 const COUNTDOWN_URGENT_MS = 15_000
 
@@ -57,6 +58,7 @@ function PendingPlan({
   const [jsonOpen, setJsonOpen] = useState(true)
   const intentId = pending.intent.intent_id
   const plan = pending.plan
+  const navigation = plan?.navigation
   const expiresAt = plan?.expiresAt
   const remainingMs = expiresAt === undefined ? null : Math.max(0, expiresAt - now)
 
@@ -75,7 +77,7 @@ function PendingPlan({
     >
       <div className="sh-dock-row">
         <p className="sh-dock-summary">
-          <span className="sh-dock-eyebrow">Pending — nothing sent</span>
+          <span className="sh-dock-eyebrow">{navigation ? 'Route prepared — nothing sent' : pending.intent.name === 'navigate' ? 'Preparing route — nothing sent' : 'Pending — nothing sent'}</span>
           <br />
           <span className="sh-dock-title">{plan?.title ?? pending.intent.name}</span>{' '}
           <span className="sh-dock-targets">
@@ -98,7 +100,7 @@ function PendingPlan({
           )}
         </p>
         <span className="sh-dock-actions">
-          <button type="button" className="sh-confirm" onClick={() => onConfirm(intentId)}>
+          <button type="button" className="sh-confirm" disabled={pending.plan?.steps.length === 0 && !navigation} onClick={() => onConfirm(intentId)}>
             Confirm and send
           </button>
           <button type="button" className="sh-cancel" onClick={() => onCancel(intentId)}>
@@ -106,6 +108,10 @@ function PendingPlan({
           </button>
         </span>
       </div>
+      {navigation && <NavigationRoutePreview navigation={navigation} />}
+      {pending.plan?.steps.length === 0 && !navigation && (
+        <p className="sh-route-wait">The relay is preparing the route. Confirmation unlocks when its matching plan arrives.</p>
+      )}
       {plan && plan.steps.length > 0 && (
         <ol className="sh-dock-steps">
           {plan.steps.map((step) => (
@@ -133,4 +139,51 @@ function PendingPlan({
       )}
     </div>
   )
+}
+
+function NavigationRoutePreview({ navigation }: { navigation: NavigationPlanPreview }) {
+  const poses = navigation.routes.flatMap((route) => [
+    navigation.selected.find((selected) => selected.drone_id === route.drone)?.pose,
+    ...route.waypoints,
+    route.arrival_slot.pose,
+  ].filter((pose): pose is NavigationPose => pose !== undefined))
+  const bounds = routeBounds(poses)
+  const point = (pose: NavigationPose) => `${mapCoordinate(pose.x_m, bounds.minX, bounds.maxX)} ${mapCoordinate(pose.y_m, bounds.minY, bounds.maxY, true)}`
+  return (
+    <section className="sh-route-preview" aria-label="Prepared navigation route">
+      <div className="sh-route-heading">
+        <p>Prepared route</p>
+        <span>map {navigation.map_pin.version}</span>
+      </div>
+      <svg className="sh-route-map" viewBox="0 0 100 100" role="img" aria-label={`Route to ${navigation.destination_zone_id}`} preserveAspectRatio="xMidYMid meet">
+        {navigation.routes.map((route) => {
+          const routePoses = [navigation.selected.find((selected) => selected.drone_id === route.drone)?.pose, ...route.waypoints, route.arrival_slot.pose]
+            .filter((pose): pose is NavigationPose => pose !== undefined)
+          return <g key={route.drone}>
+            <polyline points={routePoses.map(point).join(' ')} className="sh-route-line" />
+            {routePoses[0] && <circle cx={mapCoordinate(routePoses[0].x_m, bounds.minX, bounds.maxX)} cy={mapCoordinate(routePoses[0].y_m, bounds.minY, bounds.maxY, true)} r="2.5" className="sh-route-start" />}
+            <circle cx={mapCoordinate(route.arrival_slot.pose.x_m, bounds.minX, bounds.maxX)} cy={mapCoordinate(route.arrival_slot.pose.y_m, bounds.minY, bounds.maxY, true)} r="3" className="sh-route-arrival" />
+          </g>
+        })}
+      </svg>
+      <dl className="sh-route-details">
+        <div><dt>Destination</dt><dd>{navigation.destination_zone_id}</dd></div>
+        <div><dt>Aircraft</dt><dd>{navigation.execution_order.map(formatDroneId).join(' ')}</dd></div>
+        <div><dt>Arrival slots</dt><dd>{navigation.routes.map((route) => `${formatDroneId(route.drone)} · ${route.arrival_slot.slot_id}`).join('; ')}</dd></div>
+        <div><dt>After arrival</dt><dd>Hold at the assigned slot</dd></div>
+      </dl>
+    </section>
+  )
+}
+
+function routeBounds(poses: NavigationPose[]) {
+  const xs = poses.map((pose) => pose.x_m)
+  const ys = poses.map((pose) => pose.y_m)
+  return { minX: Math.min(...xs, 0), maxX: Math.max(...xs, 1), minY: Math.min(...ys, 0), maxY: Math.max(...ys, 1) }
+}
+
+function mapCoordinate(value: number, min: number, max: number, invert = false) {
+  const span = Math.max(max - min, 1)
+  const scaled = 10 + ((value - min) / span) * 80
+  return invert ? 100 - scaled : scaled
 }
