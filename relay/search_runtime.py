@@ -407,9 +407,7 @@ class SearchRuntime:
             search = mission.preview.search
 
         zone = next(
-            zone
-            for zone in self.navigation.artifact().zones
-            if zone.zone_id == search.zone.zone_id
+            zone for zone in self.navigation.artifact().zones if zone.zone_id == search.zone.zone_id
         )
         zones = (replace(zone, z_min_m=search.zone.floor_z_m),)
         localizers: dict[str, FiveFrameLocalizer] = {}
