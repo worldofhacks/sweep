@@ -103,6 +103,31 @@ def test_m15_motion_intents_share_the_existing_conflict_gate() -> None:
     assert resolution.hold_required
 
 
+def test_search_and_navigation_share_the_motion_conflict_gate() -> None:
+    snapshot = make_snapshot(1)
+    navigation = make_intent(
+        IntentName.NAVIGATE,
+        intent_id="navigate",
+        t=100,
+        selection=(1,),
+        args={"zone_id": "atrium"},
+        confirm=True,
+    )
+    search = make_intent(
+        IntentName.SEARCH,
+        intent_id="search",
+        t=200,
+        selection=(1,),
+        args={"zone_id": "atrium", "target_class": "backpack"},
+        confirm=True,
+    )
+
+    resolution = resolve_intent_group((navigation, search), snapshot, conflict_window_ms=500)
+
+    assert tuple(refusal.intent_id for refusal in resolution.refusals) == ("navigate", "search")
+    assert resolution.hold_required
+
+
 def test_delivered_hold_survives_an_undelivered_estop_reservation() -> None:
     hold = _admission(IntentName.HOLD, "hold", t=100, delivered=True)
     estop = _admission(IntentName.ESTOP, "estop", t=200, delivered=False)

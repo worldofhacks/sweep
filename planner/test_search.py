@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -316,3 +317,14 @@ def test_camera_policy_uses_yaw_independent_inscribed_footprint() -> None:
         camera.conservative_footprint_side_m * (1 - camera.overlap_fraction)
     )
     assert not camera.covers(camera_pose, outside)
+
+
+def test_same_floor_coverage_uses_the_grid_nearest_the_camera_height() -> None:
+    levels = (
+        GridLevel("level_1", 0.2, (0, 0), 1, 14, 5, frozenset()),
+        GridLevel("level_1", 1.0, (0, 0), 1, 14, 5, frozenset()),
+    )
+    preview = SearchPlanner().plan(request(1), replace(artifact(), grids=levels))
+
+    assert not isinstance(preview, SearchRefusal)
+    assert {cell.pose.z_m for cell in preview.assignments[0].task.cells} == {1.0}

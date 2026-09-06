@@ -21,7 +21,7 @@ from planner.navigation import (
     Zone,
 )
 from planner.navigation_geometry import pose_supported
-from tools.geometry_math import point_inside, polygon, segments_intersect
+from tools.geometry_math import distance_to_segment, point_inside, polygon, segments_intersect
 
 FormationShape = Literal["line", "column", "wedge", "diamond"]
 
@@ -223,8 +223,8 @@ class MappedFormationPlanner:
                     f"slot is outside formation volume: {slot.slot_id}",
                 )
             if not (
-                zone.z_min_m <= slot.pose.z_m - motion.aircraft_height_m / 2
-                and slot.pose.z_m + motion.aircraft_height_m / 2 <= zone.z_max_m
+                zone.z_min_m <= slot.pose.z_m - motion.swept_half_height_m
+                and slot.pose.z_m + motion.swept_half_height_m <= zone.z_max_m
             ):
                 return FormationRefusal(
                     "slot_outside_formation_zone",
@@ -316,9 +316,10 @@ def _formation_artifact(
 
 
 def _circle_inside(boundary: list[list[float]], pose: Pose, radius_m: float) -> bool:
-    return all(
-        point_inside(boundary, (pose.x_m + radius_m * cos(angle), pose.y_m + radius_m * sin(angle)))
-        for angle in tuple(index * 2 * 3.141592653589793 / 16 for index in range(16))
+    center = (pose.x_m, pose.y_m)
+    return point_inside(boundary, center) and all(
+        distance_to_segment(center, first, second) >= radius_m - 1e-9
+        for first, second in zip(boundary, boundary[1:], strict=False)
     )
 
 

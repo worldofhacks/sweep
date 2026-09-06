@@ -21,6 +21,7 @@ from planner.navigation_runtime import NavigationRuntime
 from planner.search import SearchArea
 from relay.search_runtime import SearchRuntimeConfig
 from relay.settings import SettingsError
+from tools.geometry_math import polygon
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +85,10 @@ def _formations(value: dict[str, object], navigation: NavigationRuntime) -> Mapp
     except ValueError as error:
         raise SettingsError(f"invalid mapped formation configuration: {error}") from error
     return MappedFormationRuntime(
-        navigation.artifact, config, FormationPermission(frozenset(permission_ids))
+        navigation.artifact,
+        config,
+        FormationPermission(frozenset(permission_ids)),
+        navigation,
     )
 
 
@@ -255,7 +259,11 @@ def _polygon(value: object, name: str) -> tuple[tuple[float, float], ...]:
         if not isinstance(point, list) or len(point) != 2:
             raise SettingsError(f"{name} points must have two coordinates")
         points.append((_number(point[0], name), _number(point[1], name)))
-    return tuple(points)
+    try:
+        closed = points if points[0] == points[-1] else [*points, points[0]]
+        return tuple(tuple(point) for point in polygon([list(point) for point in closed]))
+    except ValueError as error:
+        raise SettingsError(f"{name} must be a simple polygon: {error}") from error
 
 
 def _read(path: Path) -> object:
