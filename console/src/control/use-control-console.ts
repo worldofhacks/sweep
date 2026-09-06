@@ -531,11 +531,22 @@ export function useControlConsole({
     [intentDependencies, state.requests],
   )
 
+  /**
+   * A retry mints a new intent id with retry_of set. The confirmation-gated
+   * names return to the dock for fresh confirmation of the same arguments, and
+   * so does every webcam-sourced request whatever its name: a gesture-drafted
+   * request is sent only by the confirm gesture or the dock button, and a retry
+   * from the Requests pane is no exception. Other retries keep their
+   * confirmation and send at once.
+   */
   const retryRequest = useCallback(
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
       const intent = retryIntent(request.intent, intentDependencies)
-      if (['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
+      if (
+        ['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name) ||
+        intent.source === 'webcam'
+      ) {
         stageForConfirmation({ ...intent, confirm: false })
         return
       }

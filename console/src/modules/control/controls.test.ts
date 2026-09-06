@@ -374,6 +374,25 @@ describe('requests', () => {
       t,
     )
     expect(retryBlockedReason(landAll, state)).toBeNull()
+
+    // A webcam-sourced retry re-opens the dock over the console roster and is
+    // sent through the webcam source, so both links gate the button.
+    const webcamHold = createRequestRecord(
+      createIntent({ name: 'hold', args: {}, selection: [1], source: 'webcam', session }, deps),
+      t,
+    )
+    expect(retryBlockedReason(webcamHold, state)).toBe('Disabled: the webcam connection is disconnected.')
+    const withWebcam = controlReducer(state, {
+      type: 'webcam_connection_changed',
+      connection: { status: 'connected', transport: 'fixture', changedAt: t },
+    })
+    expect(retryBlockedReason(webcamHold, withWebcam)).toBeNull()
+    expect(
+      retryBlockedReason(webcamHold, {
+        ...withWebcam,
+        connection: { ...withWebcam.connection, status: 'disconnected' },
+      }),
+    ).toBe('Disabled: the console connection is disconnected.')
   })
 })
 

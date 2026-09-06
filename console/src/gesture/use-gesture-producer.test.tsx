@@ -1,9 +1,9 @@
 import { act, render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { describe, expect, test } from 'vitest'
-import { createInitialControlState, type ConnectionStatus } from '../control/state'
+import { createInitialControlState, type ConnectionStatus, type RequestRecord } from '../control/state'
 import { useControlConsole, type ControlClients } from '../control/use-control-console'
-import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1 } from '../relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1, type IntentV1 } from '../relay/contract'
 import { FixtureRelayClient, fixtureAircraft } from '../testing/fixture-relay-client'
 import { createGestureTestRig, type GestureTestRig } from '../testing/gesture-fixtures'
 import type { GestureCategory } from './policy'
@@ -658,6 +658,78 @@ describe('useGestureProducer flight pairs', () => {
     expect(clients.webcam?.sent).toHaveLength(1)
     expect(clients.webcam?.sent[0]).toMatchObject({ name: 'translate', source: 'webcam', confirm: true })
   })
+
+  test.each([
+    ['Victory', 'translate', { dx: 1, dy: 0 }],
+    ['Closed_Fist', 'hold', {}],
+  ] as const)(
+    'a refused %s draft retried from the Requests pane re-opens the dock and waits for the confirm gesture',
+    async (gesture, name, args) => {
+      const { rig, clients, get, hold, enable } = await mount()
+      await enable()
+
+      hold(gesture, 650)
+      const original = get().control.pendingRequest?.intent as IntentV1
+      expect(original).toMatchObject({ name, source: 'webcam', args })
+      hold(null, 250)
+      hold('Thumb_Up', 450)
+      expect(clients.webcam?.sent).toHaveLength(1)
+
+      // The arbiter's refusal for that intent id arrives on the webcam connection.
+      act(() => {
+        clients.webcam?.emitServer({
+          v: 1,
+          t: rig.dependencies.clock.wall(),
+          event_id: `webcam-refusal-${name}`,
+          type: 'refusal',
+          session,
+          intent_id: original.intent_id,
+          command_id: null,
+          status: 'refused',
+          source: 'relay',
+          reason: 'invalid_state',
+          detail: `${name} requires an airborne aircraft.`,
+          roster_version: 7,
+          drone_id: null,
+          connection_epoch: null,
+        })
+      })
+      const refused = get().control.state.requests.find(
+        (request) => request.intent.intent_id === original.intent_id,
+      )
+      expect(refused?.status).toBe('refused')
+
+      // Retry re-opens the dock with the same envelope under a new id; nothing leaves.
+      act(() => get().control.retryRequest(refused as RequestRecord))
+      const retry = get().control.pendingRequest
+      expect(retry?.status).toBe('pending_confirmation')
+      expect(retry?.intent).toMatchObject({
+        name,
+        args,
+        selection: original.selection,
+        source: 'webcam',
+        confirm: false,
+        retry_of: original.intent_id,
+      })
+      expect(retry?.intent.intent_id).not.toBe(original.intent_id)
+      expect(clients.webcam?.sent).toHaveLength(1)
+      expect(clients.console.sent).toHaveLength(0)
+
+      hold(null, 250)
+      hold('Thumb_Up', 450)
+      expect(clients.webcam?.sent).toHaveLength(2)
+      expect(clients.webcam?.sent[1]).toMatchObject({
+        intent_id: retry?.intent.intent_id,
+        retry_of: original.intent_id,
+        name,
+        args,
+        source: 'webcam',
+        confirm: true,
+      })
+      expect(isConsoleIntentV1(clients.webcam?.sent[1])).toBe(true)
+      expect(get().control.pendingRequest).toBeNull()
+    },
+  )
 })
 
 describe('emissionBlockedReason', () => {

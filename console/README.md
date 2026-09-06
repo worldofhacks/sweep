@@ -101,9 +101,10 @@ retry as a new intent with `retry_of`), and Fleet (registry rows and the departe
 Appendix E mission tracker under Reference › Mission. `controls.ts` holds the pure gating and
 geometry; every control builds its envelope through `control/intent.ts`, which now covers every
 Appendix E name the contract lists. `takeoff`, `land`, `land_all`, `sweep` and `capture_room` park
-in the dock until the operator confirms the exact envelope; the rest send at once. A retry creates a new intent id with `retry_of` set. Takeoff, fleet landing and capture retries
-return to the dock for fresh confirmation of the same arguments; other retries retain their
-confirmation and send immediately. The authoritative state projection carries the relay's
+in the dock until the operator confirms the exact envelope; the rest send at once. A retry creates a new intent id with `retry_of` set. Takeoff, fleet landing and capture retries,
+and every retry of a `webcam`-sourced request, return to the dock for fresh confirmation of the
+same arguments; other retries retain their confirmation and send immediately. Retry on a
+`webcam`-sourced request is disabled while the console or the webcam connection is down. The authoritative state projection carries the relay's
 capability profile and exact enabled-intent list. Controls outside that list remain visible with
 their reason but are disabled before preview or dispatch; the network stop remains universally
 available by explicit safety policy. Missing or malformed capability metadata fails closed at the
@@ -133,7 +134,9 @@ closed fist drafts `hold`, pointing up drafts `takeoff`, victory drafts one forw
 (`dx: 1, dy: 0` in the planner's translation frame), the I-love-you sign drafts `land`, thumb up
 confirms and thumb down cancels a gesture-drafted preview; a draft carries source `webcam`, parks in
 the dock even where the button would send at once, and is never sent until it is confirmed by the
-thumb-up gesture or the dock button. Low confidence,
+thumb-up gesture or the dock button. A refused or failed gesture-drafted request retried from the
+Requests pane returns to the dock the same way, so a retry never sends without that confirmation
+either. Low confidence,
 an interrupted dwell, a repeated pose, a denied permission, a dropped webcam, a model that fails to
 load, and a refused webcam relay source are each shown as states that emit nothing, and a draft is
 blocked while the console connection is not connected, because the roster and selection it would

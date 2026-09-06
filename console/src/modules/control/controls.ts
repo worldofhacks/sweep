@@ -703,11 +703,21 @@ export function requestTone(status: RequestStatus): Tone {
   return 'ink'
 }
 
-/** Retry is offered on failed and refused requests; the reason it is disabled is stated in text. */
+/**
+ * Retry is offered on failed and refused requests; the reason it is disabled is
+ * stated in text. A keyboard request retries over the keyboard link. A webcam
+ * request re-opens the dock over the console link's roster and is then sent
+ * through the webcam link, so both must be up.
+ */
 export function retryBlockedReason(request: RequestRecord, state: ControlState): string | null {
-  const connection = request.intent.source === 'keyboard' ? state.keyboardConnection : state.connection
+  const source = request.intent.source
+  const link = source === 'keyboard' ? 'keyboard' : 'console'
+  const connection = source === 'keyboard' ? state.keyboardConnection : state.connection
   if (!isLinkUp(connection.status)) {
-    return `Disabled: the ${request.intent.source} connection is ${connection.status}.`
+    return `Disabled: the ${link} connection is ${connection.status}.`
+  }
+  if (source === 'webcam' && !isLinkUp(state.webcamConnection.status)) {
+    return `Disabled: the webcam connection is ${state.webcamConnection.status}.`
   }
   const capability = capabilityBlockedReason(state, request.intent.name)
   if (capability) return `Disabled: ${capability}`
