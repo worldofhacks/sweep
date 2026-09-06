@@ -29,6 +29,16 @@ class AdapterBackend(StrEnum):
     REMOTE = "remote"
 
 
+def transcription_provider_from_env(environ: Mapping[str, str] | None = None) -> str:
+    values = os.environ if environ is None else environ
+    provider = values.get("SWEEP_TRANSCRIPTION_PROVIDER") or (
+        "deepgram" if values.get("DEEPGRAM_API_KEY", "").strip() else "whisper"
+    )
+    if provider not in {"deepgram", "whisper"}:
+        raise SettingsError("SWEEP_TRANSCRIPTION_PROVIDER must be deepgram or whisper")
+    return provider
+
+
 @dataclass(frozen=True, slots=True)
 class RelaySettings:
     relay_token: bytes = field(repr=False)
@@ -40,6 +50,7 @@ class RelaySettings:
     transport_event_max_age_ms: int = 5_000
     future_clock_skew_ms: int = 1_000
     telemetry_freshness_ms: int = 1_000
+    transcription_provider: str = field(default_factory=transcription_provider_from_env)
     fanout_hz: int = 10
     adapter_backend: AdapterBackend = AdapterBackend.SIM
     command_ttl_ms: int = 2_000
@@ -96,6 +107,8 @@ class RelaySettings:
             )
         object.__setattr__(self, "adapter_keys", MappingProxyType(adapter_keys))
         object.__setattr__(self, "localization_keys", MappingProxyType(localization_keys))
+        if self.transcription_provider not in {"deepgram", "whisper"}:
+            raise SettingsError("SWEEP_TRANSCRIPTION_PROVIDER must be deepgram or whisper")
         if self.fanout_hz != 10:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
@@ -173,6 +186,7 @@ class RelaySettings:
                 values.get("SWEEP_TELEMETRY_FRESHNESS_MS", "1000"),
                 "SWEEP_TELEMETRY_FRESHNESS_MS",
             ),
+            transcription_provider=transcription_provider_from_env(values),
             adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
             command_ttl_ms=_positive_integer(
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"

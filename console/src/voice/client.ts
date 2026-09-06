@@ -1,11 +1,3 @@
-/**
- * Transcript upload client for the relay push-to-talk endpoint.
- * Copied from PR #49 (issue-42-push-to-talk, console/src/voice/client.ts) so the
- * Speech module binds to the transcription contract that branch defines, then
- * extended with the versioned `plan` field the relay-side compiler fills in.
- * `emissions` stays empty forever: the console emits, one step at a time, after
- * the operator confirms.
- */
 import { isVoicePlan, type VoicePlan } from '../relay/contract'
 
 export type VoiceOutcome = {
@@ -14,7 +6,7 @@ export type VoiceOutcome = {
   session: string
   correlation_id: string
   status: 'transcribed' | 'refused'
-  source: 'whisper' | 'template'
+  source: 'whisper' | 'deepgram' | 'template'
   reason: string | null
   transcript: string | null
   emissions: []
@@ -130,7 +122,7 @@ export function isVoiceOutcome(value: unknown, sessionId: string, correlationId:
     record.session === sessionId &&
     record.correlation_id === correlationId &&
     (record.status === 'transcribed' || record.status === 'refused') &&
-    (record.source === 'whisper' || record.source === 'template') &&
+    (record.source === 'whisper' || record.source === 'deepgram' || record.source === 'template') &&
     (record.reason === null || typeof record.reason === 'string') &&
     (record.transcript === null || typeof record.transcript === 'string') &&
     Array.isArray(record.emissions) &&
