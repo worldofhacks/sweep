@@ -416,7 +416,10 @@ def test_future_dated_motion_history_survives_pruning_before_late_related_admiss
     assert _execute(session, original)["status"] == "completed"
     original_x = harness.flight.aircraft[1].pose.x
 
-    elapsed[0] = 5.6
+    # Keep a deliberate margin below the six-second retention horizon. The
+    # coordinator itself waits half a second, and runner scheduling must not decide
+    # whether this record is retained.
+    elapsed[0] = 4.5
     for increment in [500] * 11 + [100]:
         harness.clock.advance(increment)
         harness.factory.nodes[SESSION].periodic_events()

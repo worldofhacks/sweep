@@ -720,6 +720,26 @@ def test_yolox_detector_decodes_filters_and_declares_default_labels() -> None:
     assert len(detector.detector_config_sha256) == 64
 
 
+def test_yolox_detector_keeps_the_model_bgr_channel_order() -> None:
+    predictions = np.zeros((1, 8400, 85), dtype=np.float32)
+    predictions[0, 0, :5] = [10, 10, np.log(4), np.log(4), 0.9]
+    predictions[0, 0, 29] = 0.9
+
+    class Net:
+        def setInput(self, blob: np.ndarray) -> None:
+            self.channels = tuple(blob[0, :, 0, 0])
+
+        def forward(self) -> np.ndarray:
+            return predictions
+
+    net = Net()
+    YoloXOnnxDetector("unused.onnx", net=net, injected_model_sha256=_TEST_MODEL_SHA256).detect(
+        np.full((2, 2, 3), (11, 22, 33), dtype=np.uint8)
+    )
+
+    assert net.channels == pytest.approx((11, 22, 33))
+
+
 def test_detector_configuration_digest_binds_model_thresholds_and_labels() -> None:
     def configured(**overrides: object) -> YoloXOnnxDetector:
         arguments = {
