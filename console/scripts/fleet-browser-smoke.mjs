@@ -1,7 +1,7 @@
 /** Four-node production-wire acceptance. Scripted gestures are not recognition-accuracy evidence. */
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { chromium } from 'playwright'
 
@@ -17,6 +17,7 @@ const session = `fleet-browser-${Date.now()}`
 const directory = resolve(repositoryRoot, 'output/playwright', session)
 const logs = join(directory, 'audit')
 await mkdir(logs, { recursive: true })
+const auditReader = createAuditReader(logs, session)
 const evidence = { session, nodes: 4, aircraft: 'synthetic signed bridge nodes', gestures: 'scripted MediaPipe results', language: liveLanguage ? 'real Whisper and Anthropic providers with computer-generated speech; not a human microphone accuracy test' : language ? 'synthetic provider responses through real compiler and audio upload' : 'typed local fallback', checks: [], utterances: [] }
 const child = spawn(join(repositoryRoot, '.venv/bin/python'), [
   '-m', language ? 'adapters.sim.language_demo' : 'adapters.sim.demo',
@@ -172,6 +173,21 @@ try {
   await page.screenshot({ path: join(directory, 'fleet-landed.png'), fullPage: true })
   evidence.checks.push('fleet landing reflected in authoritative telemetry and console')
   assert.deepEqual(pageErrors, [])
+  // Exercise authenticated replay once after flight assertions. Polling this
+  // full-history endpoint during flight also verifies the entire audit mirror
+  // under its append lock, which can delay telemetry as the history grows.
+  const replayResponse = await fetch(`${baseUrl}/session/${session}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000) })
+  assert.ok(replayResponse.ok, `authenticated replay: ${replayResponse.status}`)
+  const replay = await replayResponse.json()
+  assert.equal(replay.session, session)
+  assert.equal(replay.after_sequence, 0)
+  assert.equal(replay.last_sequence, replay.events.length)
+  await events()
+  assert.deepEqual(auditReader.records.slice(0, replay.last_sequence), replay.events)
+  const replayText = JSON.stringify(replay)
+  assert.ok(!replayText.includes(token), 'replay must not contain the console credential')
+  assert.ok(!replayText.includes('"signature"'), 'replay must redact signatures')
+  evidence.checks.push('authenticated replay matches retained audit records and redacts credentials')
   const files = (await readdir(logs)).filter((file) => file.endsWith('.jsonl'))
   assert.equal(files.length, 1)
   const audit = await readFile(join(logs, files[0]), 'utf8')
@@ -206,10 +222,54 @@ async function pendingIntent() { await dock().waitFor(); return JSON.parse(await
 async function module(name) { await page.getByRole('navigation', { name: 'Modules' }).getByRole('button', { name, exact: true }).click() }
 async function controlPane(name) { await page.getByRole('group', { name: 'Control panes' }).getByRole('button', { name, exact: true }).click() }
 async function status() { return (await fetch(`${baseUrl}/demo/status`)).json() }
-async function events() {
-  const result = await fetch(`${baseUrl}/session/${session}`, { headers: { Authorization: `Bearer ${token}` } })
-  assert.ok(result.ok)
-  return (await result.json()).events.map((record) => record.event)
+async function events() { return auditReader.readEvents() }
+function createAuditReader(logDirectory, expectedSession) {
+  const records = [], allEvents = []
+  let path, identity, position = 0, pending = Buffer.alloc(0)
+  return {
+    records,
+    async readEvents() {
+      if (!path) {
+        const files = (await readdir(logDirectory)).filter((file) => file.endsWith('.jsonl'))
+        if (files.length === 0) return allEvents
+        assert.equal(files.length, 1, 'demo must retain exactly one session audit')
+        path = join(logDirectory, files[0])
+      }
+      const file = await open(path, 'r')
+      try {
+        const metadata = await file.stat()
+        const currentIdentity = `${metadata.dev}:${metadata.ino}`
+        if (identity) assert.equal(currentIdentity, identity, 'retained audit must not be replaced')
+        identity = currentIdentity
+        assert.ok(metadata.size >= position, 'retained audit must not be truncated')
+        while (position < metadata.size) {
+          const buffer = Buffer.alloc(Math.min(65536, metadata.size - position))
+          const { bytesRead } = await file.read(buffer, 0, buffer.length, position)
+          assert.ok(bytesRead > 0, 'retained audit shortened during read')
+          position += bytesRead
+          const available = Buffer.concat([pending, buffer.subarray(0, bytesRead)])
+          const completeThrough = available.lastIndexOf(10)
+          if (completeThrough < 0) {
+            pending = available
+            continue
+          }
+          // Decode only complete lines so a partial append or UTF-8 character
+          // waits for the next poll and cannot become a fabricated record.
+          for (const line of available.subarray(0, completeThrough).toString('utf8').split('\n')) {
+            const record = JSON.parse(line)
+            assert.equal(record.seq, records.length + 1, 'retained audit sequence must be contiguous')
+            assert.equal(record.event.session, expectedSession, 'retained audit session must match')
+            records.push(record)
+            allEvents.push(record.event)
+          }
+          pending = Buffer.from(available.subarray(completeThrough + 1))
+        }
+        return allEvents
+      } finally {
+        await file.close()
+      }
+    },
+  }
 }
 async function api(path, body) {
   const response = await fetch(`${baseUrl}${path}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
