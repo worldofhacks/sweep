@@ -1012,7 +1012,7 @@ def create_app(
                             session,
                             frame,
                             principal,
-                            wait_for_connection_id=subscription.connection_id,
+                            wait_for_connection_id=None,
                         )
                     else:
                         events = await runtime.process_and_publish(
@@ -1021,9 +1021,13 @@ def create_app(
                                 session, received, principal
                             ),
                             wait_for_connection_id=(
-                                None
-                                if principal.source == "localization"
-                                else subscription.connection_id
+                                subscription.connection_id
+                                if (
+                                    principal.source in REGISTERED_SOURCES
+                                    and isinstance(frame, Mapping)
+                                    and frame.get("type") == "intent"
+                                )
+                                else None
                             ),
                         )
                     if (
