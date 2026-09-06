@@ -224,6 +224,22 @@ class PreparedExecutionRouter:
             aircraft={
                 drone_id: replace(
                     aircraft,
+                    pose=(
+                        enriched.aircraft[drone_id].pose
+                        if enriched.aircraft[drone_id].control_provenance is not None
+                        else aircraft.pose
+                    ),
+                    position_quality=(
+                        enriched.aircraft[drone_id].position_quality
+                        if enriched.aircraft[drone_id].control_provenance is not None
+                        else aircraft.position_quality
+                    ),
+                    position_last_seen_ms=(
+                        enriched.aircraft[drone_id].position_last_seen_ms
+                        if enriched.aircraft[drone_id].control_provenance is not None
+                        else aircraft.position_last_seen_ms
+                    ),
+                    control_provenance=enriched.aircraft[drone_id].control_provenance,
                     heading_deg=(
                         aircraft.heading_deg
                         if aircraft.heading_deg is not None

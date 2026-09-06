@@ -27,6 +27,8 @@ class IntentName(StrEnum):
     CAPTURE_ROOM = "capture_room"
     SURVEY_AREA = "survey_area"
     MAP_AREA = "map_area"
+    NAVIGATE = "navigate"
+    SEARCH = "search"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +51,7 @@ class CapabilityProfile:
         if not names:
             raise ValueError("enabled intent names must not be empty")
         object.__setattr__(self, "enabled_intent_names", names)
-        unsupported = names - C1_IMPLEMENTED_INTENT_NAMES
+        unsupported = names - IMPLEMENTED_INTENT_NAMES
         if unsupported:
             names = ", ".join(sorted(name.value for name in unsupported))
             raise ValueError(f"capability profile enables unimplemented intents: {names}")
@@ -83,6 +85,8 @@ C1_IMPLEMENTED_INTENT_NAMES = frozenset(
         IntentName.SWEEP,
     }
 )
+
+IMPLEMENTED_INTENT_NAMES = C1_IMPLEMENTED_INTENT_NAMES | {IntentName.NAVIGATE, IntentName.SEARCH}
 
 C1_CAPABILITY_PROFILE = CapabilityProfile(
     name="c1_basic_control",

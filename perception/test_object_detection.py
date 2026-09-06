@@ -667,7 +667,7 @@ def test_worker_preserves_explicit_falsy_dependencies() -> None:
 
 @pytest.mark.parametrize(
     ("component", "value"),
-    [("source_id", "drone:1"), ("mission_id", "mission:7"), ("worker_run_id", "run:1")],
+    [("source_id", "drone:1"), ("worker_run_id", "run:1")],
 )
 def test_worker_rejects_ambiguous_identity_components(component: str, value: str) -> None:
     arguments = {
@@ -679,6 +679,25 @@ def test_worker_rejects_ambiguous_identity_components(component: str, value: str
 
     with pytest.raises(ValueError, match="reserved"):
         LiveDetectionWorker(_Frames([]), _Detector(), **arguments)
+
+
+def test_worker_escapes_colon_delimited_mission_ids_in_frame_identity() -> None:
+    worker = LiveDetectionWorker(
+        _Frames([(_image(), 1.0)]),
+        _Detector(),
+        source_id="drone1",
+        mission_id="intent-1:v1:e7",
+        worker_run_id="run-1",
+        monotonic_clock=_Clock(1.1),
+    )
+
+    event = worker.poll()[0]
+
+    assert event.identity.frame_id == "frame:intent-1%3Av1%3Ae7:drone1:run-1:1"
+    assert (
+        event.identity.frame_id
+        != FrameIdentity("drone1", "intent-1%3Av1%3Ae7", "run-1", 1).frame_id
+    )
 
 
 class _BlockedThread:

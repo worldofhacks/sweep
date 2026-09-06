@@ -84,4 +84,7 @@ requires explicit deployment configuration plus the existing live acceptance gat
 Later formation, sweep, `map_area`, and route-allocation behavior remains
 future scope and must earn a capability before planning.
 
+The confirmed, bounded visual-search preview and coverage ledger are documented in
+[SEARCH.md](SEARCH.md).
+
 PRD: sections 5.3 and 5.4 (modes: indoor constrained is the capstone mode).

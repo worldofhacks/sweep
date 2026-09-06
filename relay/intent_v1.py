@@ -7,7 +7,7 @@ from typing import Literal
 
 from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
-    C1_IMPLEMENTED_INTENT_NAMES,
+    IMPLEMENTED_INTENT_NAMES,
     CapabilityProfile,
     IntentName,
 )
@@ -71,7 +71,7 @@ REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
 # registry rather than maintaining another capability list.
 SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
     {
-        "console": C1_IMPLEMENTED_INTENT_NAMES,
+        "console": IMPLEMENTED_INTENT_NAMES,
         "keyboard": frozenset({IntentName.ESTOP}),
         "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
     }
@@ -202,6 +202,8 @@ def _is_valid_retry_of(value: object, intent_id: object) -> bool:
 
 
 def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
+    if name in {IntentName.NAVIGATE, IntentName.SEARCH}:
+        return raw["confirm"] is True and bool(raw["selection"])
     if name is IntentName.CAPTURE_ROOM:
         return raw["confirm"] is True and len(raw["selection"]) == 1
     if name is IntentName.SURVEY_AREA:
@@ -216,6 +218,27 @@ def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
 def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise ValueError
+
+    if name is IntentName.SEARCH:
+        if (
+            set(value) != {"zone_id", "target_class"}
+            or not isinstance(value["zone_id"], str)
+            or not 1 <= len(value["zone_id"]) <= 128
+            or value["zone_id"].strip() != value["zone_id"]
+            or value["target_class"] not in {"backpack", "bottle", "suitcase"}
+        ):
+            raise ValueError
+        return MappingProxyType(dict(value))
+
+    if name is IntentName.NAVIGATE:
+        if (
+            set(value) != {"zone_id"}
+            or not isinstance(value["zone_id"], str)
+            or not 1 <= len(value["zone_id"]) <= 128
+            or value["zone_id"].strip() != value["zone_id"]
+        ):
+            raise ValueError
+        return MappingProxyType({"zone_id": value["zone_id"]})
 
     if name is IntentName.SELECT:
         if set(value) != {"ids"} or not _is_drone_ids(value["ids"], allow_empty=False):

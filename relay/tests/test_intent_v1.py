@@ -1,6 +1,6 @@
 import pytest
 
-from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES
+from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES, IMPLEMENTED_INTENT_NAMES
 from relay.intent_v1 import (
     REGISTERED_SOURCES,
     SOURCE_ALLOWED_NAMES,
@@ -546,8 +546,8 @@ def _c1_payload(source: str, name: IntentName) -> dict[str, object]:
 
 def test_source_allowlist_covers_every_registered_source() -> None:
     assert set(SOURCE_ALLOWED_NAMES) == REGISTERED_SOURCES
-    assert all(names <= C1_IMPLEMENTED_INTENT_NAMES for names in SOURCE_ALLOWED_NAMES.values())
-    assert SOURCE_ALLOWED_NAMES["console"] is C1_IMPLEMENTED_INTENT_NAMES
+    assert all(names <= IMPLEMENTED_INTENT_NAMES for names in SOURCE_ALLOWED_NAMES.values())
+    assert SOURCE_ALLOWED_NAMES["console"] is IMPLEMENTED_INTENT_NAMES
     assert SOURCE_ALLOWED_NAMES["keyboard"] == {IntentName.ESTOP}
     assert SOURCE_ALLOWED_NAMES["webcam"] == {IntentName.CAPTURE_ROOM, IntentName.HOLD}
 

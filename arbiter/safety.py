@@ -33,6 +33,8 @@ _CONFIRMED_INTENTS: Final = frozenset(
         IntentName.LAND_ALL,
         IntentName.CAPTURE_ROOM,
         IntentName.SWEEP,
+        IntentName.NAVIGATE,
+        IntentName.SEARCH,
     }
 )
 _SAFE_WHILE_STOPPED: Final = frozenset(
@@ -49,6 +51,8 @@ _STOPPED_OPERATION_BY_INTENT: Final = {
 _ARMED_INTENTS: Final = frozenset(
     {
         IntentName.TRANSLATE,
+        IntentName.NAVIGATE,
+        IntentName.SEARCH,
         IntentName.ALTITUDE,
         IntentName.FORMATION_NEXT,
         IntentName.FORMATION_SET,
@@ -843,9 +847,22 @@ class SafetyArbiter:
             IntentName.TRANSLATE: frozenset({CommandOperation.GOTO}),
             IntentName.ALTITUDE: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
             IntentName.FORMATION_NEXT: frozenset({CommandOperation.GOTO}),
-            IntentName.FORMATION_SET: frozenset({CommandOperation.GOTO}),
+            IntentName.FORMATION_SET: (
+                frozenset({CommandOperation.GOTO})
+                if plan.navigation is None
+                else frozenset({CommandOperation.GOTO, CommandOperation.HOVER})
+            ),
             IntentName.SPACING: frozenset(),
             IntentName.SWEEP: frozenset({CommandOperation.GOTO}),
+            IntentName.NAVIGATE: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
+            IntentName.SEARCH: frozenset(
+                {
+                    CommandOperation.GOTO,
+                    CommandOperation.HOVER,
+                    CommandOperation.SET_GIMBAL_PITCH,
+                    CommandOperation.CAMERA_READY,
+                }
+            ),
             IntentName.HOLD: frozenset({CommandOperation.HOVER}),
             IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
             IntentName.LAND: frozenset({CommandOperation.LAND}),
@@ -1048,14 +1065,31 @@ class SafetyArbiter:
                     snapshot,
                     "altitude requires one ordered goto/hover pair per selected aircraft",
                 )
-        if plan.intent_name in {
-            IntentName.TAKEOFF,
-            IntentName.TRANSLATE,
-            IntentName.FORMATION_NEXT,
-            IntentName.FORMATION_SET,
-            IntentName.COME_HOME,
-            IntentName.LAND,
-        }:
+        if (
+            plan.intent_name in {IntentName.NAVIGATE, IntentName.SEARCH}
+            or plan.navigation is not None
+        ):
+            if (
+                plan.intent_name
+                not in {IntentName.NAVIGATE, IntentName.SEARCH, IntentName.FORMATION_SET}
+                or plan.navigation is None
+                or not plan.navigation.matches_commands(plan)
+            ):
+                return self._invalid_plan_refusal(
+                    plan, snapshot, "navigation commands differ from the frozen route"
+                )
+        if (
+            plan.intent_name
+            in {
+                IntentName.TAKEOFF,
+                IntentName.TRANSLATE,
+                IntentName.FORMATION_NEXT,
+                IntentName.FORMATION_SET,
+                IntentName.COME_HOME,
+                IntentName.LAND,
+            }
+            and plan.navigation is None
+        ):
             expected = tuple(sorted(plan.selection))
             actual = tuple(sorted(command.drone_id for command in plan.commands))
             if not expected or actual != expected:

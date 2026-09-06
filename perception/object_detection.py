@@ -27,6 +27,7 @@ from perception.detection_contracts import (
     SightingEvent,
     _finite_nonnegative,
     _finite_positive,
+    _identifier,
     _identity_component,
     _sha256_digest,
     _target_labels,
@@ -87,7 +88,7 @@ class LiveDetectionWorker:
         clock: Callable[[], float] | None = None,
     ) -> None:
         _identity_component(source_id, "source_id")
-        _identity_component(mission_id, "mission_id")
+        _identifier(mission_id, "mission_id", max_length=64)
         if worker_run_id is None:
             worker_run_id = uuid.uuid4().hex
         _identity_component(worker_run_id, "worker_run_id")
@@ -141,7 +142,8 @@ class LiveDetectionWorker:
 
     def poll(self, now: float | None = None) -> tuple[PerceptionEvent, ...]:
         with self._poll_lock:
-            frame = self._stream.read(0)
+            timed_read = getattr(self._stream, "read_timed", None)
+            frame = timed_read(0) if callable(timed_read) else self._stream.read(0)
             sample = _frame_sample(frame)
             if sample is None:
                 return ()
