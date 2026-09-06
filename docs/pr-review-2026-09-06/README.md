@@ -43,3 +43,9 @@ Each slice ledger contains its focused commands and results. Some focused suites
 #234 remains a draft pending measured camera calibration, capture-time alignment, a producer for decoded frames and capture-aligned attitudes, and walked-camera/covered-tag checks. The raw Android exporter preserves diagnostic timing and axis conventions. It cannot establish those measurements by itself.
 
 The integration branch contains the reviewed code from the concurrently closed #224, #225, #228, and #233. Confirm their intended disposition before choosing the final merge scope. No shared branch merge or deployment was performed by this review.
+
+## Final CI reconciliation
+
+The fleet browser CI audit showed a simulated node becoming stale during startup, then recovering between arm acceptance and application. The demo now uses the fake bridge's normal 10 Hz telemetry cadence. The production freshness threshold and stale-roster refusal are unchanged. Two subsequent fleet browser runs passed all 16 checks.
+
+The revised recording helper passed 17 tests using real Docker, FFmpeg, and ffprobe. Its global lifecycle lock prevents separate recording roots from replacing or stopping the same MediaMTX service.

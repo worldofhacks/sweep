@@ -26,3 +26,9 @@ No Android producer currently supplies decoded frames or the capture-aligned att
 The #84 patch passed `pytest -q perception/test_verified_localization.py perception/test_sensor_records.py perception/test_control_publisher.py` with 56 tests, Ruff checks and format checks, and `git diff --check`. Pytest printed pre-existing cleanup warnings for unrelated MediaMTX recording directories; the test results were successful.
 
 The published branches were reviewed from the exact saved diffs at `pr-177.diff`, `pr-180.diff`, `pr-185.diff`, `pr-186.diff`, `pr-190.diff`, `pr-227.diff`, `pr-228.diff`, and `pr-229.diff` in this directory. No simulated run was represented as physical flight evidence.
+
+## Revised recording head
+
+The later #229 revision `19c7132` added the bounded recording helper, durable export verification, and a pinned image digest. Review followed every helper function from CLI parsing through service startup, storage polling, finalization, hashing, and export.
+
+Different working roots could acquire independent locks while controlling the same MediaMTX container. Commits `cccc7f2` and `4614cd0` serialize the service lifecycle with one global lock and refuse a running service before creating a run or executing cleanup. The cross-process regression uses an isolated test lock. The final source head is `4614cd0821ffb8038f4cb4515a67a6014ce3ac27`; all 17 recording tests passed with real Docker, FFmpeg, and ffprobe.

@@ -325,7 +325,7 @@
       "number": 181,
       "title": "fix(relay): retain telemetry while bounding redundant state audits",
       "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
-      "head": "2a098388ced7a1124bb493288eda7fe00203222e",
+      "head": "8b78204e9c0091d6557ecf0709bcb2d6530769cb",
       "head_ref": "fix/relay-audit-volume",
       "slice": "docs_evidence",
       "coverage_kind": "symbol_group",
@@ -334,14 +334,24 @@
         "SessionAuditLog._complete_operation",
         "SessionAuditLog._recover_mirror_from_database",
         "SessionAuditLog._migrate_legacy_database",
-        "RelaySession state projection"
+        "RelaySession state projection",
+        "bounded persisted record cursor and signed SQLite metadata validation",
+        "control projection canonical byte preflight",
+        "parse_capture_bundle media count bound",
+        "CaptureLedger._commit aggregate canonical projection bound"
       ],
       "call_chains_checked": [
         "relay mutation -> material state projection -> SessionAuditLog.append_batch -> SQLite digest records -> JSONL mirror",
         "reopen -> database row validation -> mirror comparison/recovery -> replay"
       ],
-      "review_result": "no confirmed issue",
-      "evidence_source": "docs_evidence-coverage.json"
+      "review_result": "Revised audit metadata and record bounds reviewed; capture media count bound fixed in 8b78204. Aggregate capture projection bound fixed in integration 2139105.",
+      "evidence_source": "docs_evidence-coverage.json",
+      "original_head": "2a098388ced7a1124bb493288eda7fe00203222e",
+      "reviewed_heads": [
+        "2a098388ced7a1124bb493288eda7fe00203222e",
+        "521bb2916a7374e6c9ec854eaa61d05ed2de3ba8",
+        "8b78204e9c0091d6557ecf0709bcb2d6530769cb"
+      ]
     },
     {
       "number": 183,
@@ -1324,18 +1334,28 @@
       "number": 229,
       "title": "Add opt-in MediaMTX camera recording",
       "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
-      "head": "adbaf440e5fe0ad65ca0148e6a4ba5837348192c",
+      "head": "4614cd0821ffb8038f4cb4515a67a6014ce3ac27",
       "head_ref": "feat/opt-in-mediamtx-recording",
       "slice": "phone_media",
       "coverage_kind": "individual_function_or_method",
       "symbols_or_calls_checked": [
-        "MediaMTX recording profile and archive checksum workflow"
+        "recording._lock",
+        "recording.record",
+        "recording._prepare",
+        "recording._segments",
+        "recording._export"
       ],
       "call_chains_checked": [
-        "docker compose recording profile -> MediaMTX segments -> operator archive -> archive-relative SHA-256 file"
+        "recording.main -> global MediaMTX lock -> record preflight -> Compose MediaMTX -> finalized fMP4 segments -> manifest validation -> atomic durable export"
       ],
-      "review_result": "pass",
-      "evidence_source": "phone_media-coverage.json"
+      "review_result": "Reviewed helper and all callers; repaired lifecycle ownership with a global lock and already-running service refusal; isolated the cross-process lock regression. 17 real Docker/media tests pass.",
+      "evidence_source": "phone_media-coverage.json",
+      "original_head": "adbaf440e5fe0ad65ca0148e6a4ba5837348192c",
+      "reviewed_heads": [
+        "adbaf440e5fe0ad65ca0148e6a4ba5837348192c",
+        "19c7132d6d790acf5717e86fd51ad2d98d1638cb",
+        "4614cd0821ffb8038f4cb4515a67a6014ce3ac27"
+      ]
     },
     {
       "number": 230,
@@ -1466,7 +1486,8 @@
     "search pending cancellation and failure",
     "Deepgram parser",
     "BVC actual setpoint metadata",
-    "detection attention state interface, client acknowledgement method, and contract test retained after the initial integration cherry-pick"
+    "detection attention state interface, client acknowledgement method, and contract test retained after the initial integration cherry-pick",
+    "Fleet demo startup telemetry cadence matches the fake bridge default; production freshness and stale-roster refusal remain intact."
   ],
   "validation_status": {
     "python": {
@@ -1500,6 +1521,11 @@
       "status": "final head pending"
     },
     "hardware": "no physical flight validation",
-    "asr": "20 recorded utterance comparison and provider cassettes pending"
+    "asr": "20 recorded utterance comparison and provider cassettes pending",
+    "recording": {
+      "head": "4614cd0821ffb8038f4cb4515a67a6014ce3ac27",
+      "passed": 17,
+      "dependencies": "real Docker, FFmpeg, ffprobe"
+    }
   }
 }
