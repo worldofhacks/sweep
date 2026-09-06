@@ -49,6 +49,7 @@ from planner.models import (
     RelayAircraftSafetyEnrichment,
     RelaySnapshotEnrichment,
 )
+from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
 from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
 from relay.app import RelayRuntime, create_app
@@ -71,6 +72,7 @@ HOLD_PREEMPTS = frozenset(
         IntentName.ALTITUDE,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
+        IntentName.NAVIGATE,
     }
 )
 """Operator motion and camera plans a hold cancels; a running safety plan finishes first."""
@@ -110,6 +112,7 @@ class AutonomyConfig:
     planning: PlanningConfig
     safety: SafetyConfig
     sim_camera: SimCameraConfig | None = None
+    navigation_deployment: NavigationDeployment | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
@@ -121,6 +124,12 @@ class AutonomyConfig:
         """
         values = os.environ if environ is None else environ
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
+        adapter_backend = values.get("SWEEP_ADAPTER_BACKEND", "sim")
+        if adapter_backend not in {"sim", "remote"}:
+            raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
+        navigation = load_navigation_deployment(
+            values, backend="remote" if adapter_backend == "remote" else "synthetic"
+        )
         return cls(
             planning=_config_from_json(
                 PlanningConfig, values.get("SWEEP_PLANNING_JSON", ""), "SWEEP_PLANNING_JSON"
@@ -133,6 +142,7 @@ class AutonomyConfig:
                 if not camera_raw
                 else _config_from_json(SimCameraConfig, camera_raw, "SWEEP_SIM_CAMERA_JSON")
             ),
+            navigation_deployment=navigation,
         )
 
 
@@ -423,6 +433,7 @@ class AutonomySession:
         self.planner = DeterministicPlanner(
             composition.config.planning,
             self.capability_profile,
+            navigation=composition.navigation_runtime,
         )
         self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
@@ -647,6 +658,7 @@ class AutonomySession:
                 arbiter=self.arbiter,
                 sim_camera_config=self._composition.config.sim_camera,
                 link_wrapper=gate,
+                navigation=self._composition.navigation_runtime,
             )
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
@@ -862,7 +874,15 @@ class AutonomyComposition:
 
     def __init__(self, config: AutonomyConfig) -> None:
         self.config = config
-        self.capability_profile: CapabilityProfile = config.planning.effective_capability_profile()
+        base_profile = config.planning.effective_capability_profile()
+        self.capability_profile = (
+            base_profile
+            if config.navigation_deployment is None
+            else CapabilityProfile(
+                f"{base_profile.name}.navigation",
+                base_profile.enabled_intent_names | {IntentName.NAVIGATE},
+            )
+        )
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -890,6 +910,11 @@ class AutonomyComposition:
 
     def runtime_if_bound(self) -> RelayRuntime | None:
         return self._runtime_source()
+
+    @property
+    def navigation_runtime(self):
+        deployment = self.config.navigation_deployment
+        return None if deployment is None else deployment.runtime
 
     def intent_sink_factory(self, session: RelaySession) -> IntentSink:
         return self.session(session.session_id)
