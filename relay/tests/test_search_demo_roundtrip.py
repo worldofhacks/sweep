@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -177,7 +178,7 @@ def test_synthetic_search_demo_runs_from_http_preview_through_fake_node(
             demo.publish_frame()
             time.sleep(0.04)
         outcome = _outcome(console, search["intent_id"])
-        assert outcome["status"] == "completed", outcome
+        assert outcome["status"] == "completed", json.dumps(outcome, indent=2)
 
         status_url = f"{http_url}/session/{SESSION}/search/{search['intent_id']}"
         _wait_until(
