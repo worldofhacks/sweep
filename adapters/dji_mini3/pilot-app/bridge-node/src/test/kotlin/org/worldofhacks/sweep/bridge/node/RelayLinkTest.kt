@@ -290,6 +290,7 @@ class RelayLinkTest {
                 val command = stub.issueCommand(
                     CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-1"),
                     commandId = "route-command-1",
+                    ttlMs = 10_000,
                 )
 
                 val refusal = stub.awaitAck(command.commandId, "failed")
