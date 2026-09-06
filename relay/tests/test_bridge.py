@@ -13,9 +13,18 @@ from adapters.sim.flight import SimFlightAdapter
 from arbiter.safety import SafetyArbiter
 from planner.models import CommandOperation
 from relay.app import RelayRuntime
+from relay.auth import Principal, verify_event_signature
 from relay.bridge import RelayNodeLink, build_adapters, build_dispatcher
+from relay.contracts import parse_command
 from relay.settings import AdapterBackend, RelaySettings
-from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION, EventIds, MutableClock
+from relay.tests.conftest import (
+    ADAPTER_KEY,
+    CONSOLE_KEY,
+    SESSION,
+    EventIds,
+    MutableClock,
+    membership_payload,
+)
 from tests.autonomy_fixtures import camera_config, make_snapshot, safety_config
 
 
@@ -38,6 +47,56 @@ def _hover_request() -> CommandRequest:
         operation=CommandOperation.HOVER,
         args={},
     )
+
+
+def test_node_link_issues_a_signed_navigation_goto_with_its_route_id(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    async def exercise() -> dict[str, object]:
+        runtime = RelayRuntime(
+            _settings(tmp_path, AdapterBackend.REMOTE), clock=clock, event_ids=event_ids
+        )
+        await runtime.start()
+        try:
+            session = await runtime.activate_session(SESSION)
+            principal = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+            session.process_membership(
+                membership_payload(action="join", event_id="join-1"), principal
+            )
+            delivered: list[dict[str, object]] = []
+            runtime.node_connected = lambda _session, _drone: True
+
+            async def capture(_session: str, _drone: int, frame: dict[str, object]) -> bool:
+                delivered.append(frame)
+                return True
+
+            runtime.deliver_to_node = capture
+            link = RelayNodeLink(runtime, SESSION, delivery_timeout_ms=100)
+            request = CommandRequest(
+                command_id="route-command",
+                intent_id="route-intent",
+                roster_version=session.registry.roster_version,
+                drone_id=1,
+                connection_epoch=1,
+                operation=CommandOperation.GOTO,
+                args={
+                    "x_mm": 1_000,
+                    "y_mm": -400,
+                    "z_mm": 1_000,
+                    "speed_mm_s": 500,
+                    "navigation_route_id": "route-intent",
+                },
+            )
+            await asyncio.to_thread(link.send, request)
+            assert len(delivered) == 1
+            return delivered[0]
+        finally:
+            await runtime.stop()
+
+    frame = asyncio.run(exercise())
+    parsed = parse_command(frame)
+    assert parsed.args["navigation_route_id"] == "route-intent"
+    assert verify_event_signature(parsed.unsigned_event(), parsed.signature, ADAPTER_KEY)
 
 
 def test_node_link_refuses_the_relay_loop_thread_for_send_and_await(

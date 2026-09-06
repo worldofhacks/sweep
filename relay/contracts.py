@@ -1342,7 +1342,9 @@ def _command_arguments(
 ) -> Mapping[str, int | str]:
     spec = COMMAND_ARGUMENT_FIELDS[operation]
     value = _mapping(raw, code, "command args must be an object")
-    if set(value) != set(spec):
+    route_id = operation is CommandOperation.GOTO and "navigation_route_id" in value
+    expected = set(spec) | ({"navigation_route_id"} if route_id else set())
+    if set(value) != expected:
         raise ContractError(code, f"{operation.value} arguments do not match the v1 contract")
     result: dict[str, int | str] = {}
     for field, kind in spec.items():
@@ -1352,6 +1354,17 @@ def _command_arguments(
             result[field] = _positive_int(value[field], field, code)
         else:
             result[field] = _integer(value[field], field, code)
+    if route_id:
+        navigation_route_id = _nonempty_string(
+            value["navigation_route_id"], "navigation_route_id", code
+        )
+        if (
+            len(navigation_route_id) > 128
+            or navigation_route_id != navigation_route_id.strip()
+            or not navigation_route_id.isprintable()
+        ):
+            raise ContractError(code, "navigation_route_id must be a canonical identifier")
+        result["navigation_route_id"] = navigation_route_id
     return MappingProxyType(result)
 
 

@@ -92,7 +92,7 @@ class _Subscription:
         if self.overflowed.is_set() or self.sender_failed.is_set():
             _resolve_delivery(outbound, False)
             return False
-        if outbound.event.get("type") in {"state", "control_pose"}:
+        if outbound.event.get("type") in {"state", "control_pose", "navigation_pose"}:
             retained: list[_Outbound] = []
             while not self.queue.empty():
                 pending = self.queue.get_nowait()
@@ -127,8 +127,8 @@ class _Outbound:
 def _supersedes_control_pose(new: _Outbound, pending: _Outbound) -> bool:
     """Conflate a drone's diagnostics without hiding a queued safer transition."""
     if (
-        new.event.get("type") != "control_pose"
-        or pending.event.get("type") != "control_pose"
+        new.event.get("type") not in {"control_pose", "navigation_pose"}
+        or pending.event.get("type") != new.event.get("type")
         or pending.delivered is not None
         or pending.event.get("drone_id") != new.event.get("drone_id")
     ):
@@ -655,7 +655,11 @@ class RelayRuntime:
                 if subscription.sender_failed.is_set():
                     continue
                 for event in events:
-                    if event.get("type") == "control_pose" and (
+                    if event.get("type") in {
+                        "control_pose",
+                        "navigation_pose",
+                        "navigation_route_authorization",
+                    } and (
                         subscription.principal.source != "adapter"
                         or subscription.principal.drone_id != event.get("drone_id")
                     ):

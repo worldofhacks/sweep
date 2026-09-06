@@ -193,6 +193,30 @@ def test_issue_command_signs_audits_and_sequences_per_epoch(
         _issue_hover(relay_session, "command-1")
 
 
+def test_issue_command_preserves_an_authorized_navigation_route_id(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    issued = _issue_hover(
+        relay_session,
+        "navigation-command",
+        operation=CommandOperation.GOTO,
+        args={
+            "x_mm": 1_000,
+            "y_mm": -400,
+            "z_mm": 1_000,
+            "speed_mm_s": 500,
+            "navigation_route_id": "route-1",
+        },
+    )
+
+    command = parse_command(issued)
+    assert command.args["navigation_route_id"] == "route-1"
+    unsigned = dict(issued)
+    signature = unsigned.pop("signature")
+    assert verify_event_signature(unsigned, signature, ADAPTER_KEY)
+
+
 def test_issue_command_registers_autonomy_intents_and_refuses_terminal_ones(
     relay_session: RelaySession,
     adapter_principal: Principal,
