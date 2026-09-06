@@ -48,3 +48,32 @@ def test_jsonl_fixture_preserves_command_refusal_telemetry_and_timing(tmp_path: 
 
     assert output == report_path(tmp_path, SESSION)
     assert json.loads(output.read_text()) == report
+
+
+def test_report_reads_commands_and_acknowledgements_from_real_relay_audit(
+    relay_session, adapter_principal, console_principal, clock
+) -> None:
+    from relay.tests.conftest import acknowledgement_payload, intent_payload, telemetry_payload
+    from relay.tests.test_session_bridge import _issue_hover, _join
+
+    _join(relay_session, adapter_principal)
+    relay_session.process_telemetry(
+        telemetry_payload(event_id="report-telemetry"), adapter_principal
+    )
+    relay_session.process_intent(intent_payload(), console_principal)
+    _issue_hover(relay_session, "report-command")
+    clock.advance(50)
+    events = relay_session.process_acknowledgement(
+        acknowledgement_payload(
+            timestamp=clock(),
+            event_id="report-ack",
+            command_id="report-command",
+            status="completed",
+        ),
+        adapter_principal,
+    )
+    assert events[0]["status"] == "completed"
+    report = build_session_report(relay_session.session_id, relay_session.audit_log.replay())
+    assert report["commands"][0]["command_id"] == "report-command"
+    assert report["timing"]["command_acknowledgements"][0]["completion_latency_ms"] == 50
+    assert report["telemetry_summary"]["1"]["samples"] == 1

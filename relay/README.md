@@ -306,3 +306,9 @@ On first reopen of a legacy JSONL log, the relay removes only a nonempty, unterm
 Controller-generated safety stops reserve the `safety:` intent ID prefix. Public requests using that prefix are refused without occupying the intent ledger.
 
 When a composed relay stops, it writes `<session-sha256>.report.json` beside that session's JSONL log. The report keeps the recorded command, refusal, and telemetry events, summarizes battery samples per drone, and records session and command acknowledgement timing. `relay.session_report` can also build the same report from a saved JSONL fixture or replay records.
+
+The visible authenticated console sends `operator_presence` once per second. The
+relay timestamps and audits these frames on receipt; browser timestamps cannot
+extend the deadline. Closing the console, losing the link, or hiding the tab stops
+refreshing presence. Accepted operator intents also refresh it. A renewed presence
+frame permits a fresh confirmation; it does not restart an interrupted plan.

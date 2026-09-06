@@ -38,6 +38,7 @@ export class WebSocketRelayClient implements RelayClient {
   private readonly listeners = new Set<RelayClientListener>()
   private socket: WebSocket | null = null
   private authenticated = false
+  private presenceTimer: ReturnType<typeof setInterval> | null = null
   private readonly config: WebSocketRelayConfig
   private readonly dependencies: WebSocketDependencies
 
@@ -104,6 +105,13 @@ export class WebSocketRelayClient implements RelayClient {
           return
         }
         this.authenticated = true
+        if (this.config.source === 'console' && this.presenceTimer === null) {
+          this.presenceTimer = setInterval(() => {
+            if (this.socket !== socket || !this.authenticated || socket.readyState !== 1) return
+            if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+            socket.send(JSON.stringify({ v: 1, type: 'operator_presence' }))
+          }, 1_000)
+        }
         this.emitConnection('connected', 'Relay authenticated this console source.')
       } else if (!this.authenticated) {
         if (event.type === 'auth.refused') {
@@ -126,6 +134,7 @@ export class WebSocketRelayClient implements RelayClient {
       if (this.socket !== socket) return
       this.socket = null
       this.authenticated = false
+      this.stopPresenceTimer()
       this.emitConnection('disconnected', `Relay socket closed (code ${event.code}). No retry was attempted.`)
     })
   }
@@ -134,6 +143,7 @@ export class WebSocketRelayClient implements RelayClient {
     const socket = this.socket
     this.socket = null
     this.authenticated = false
+    this.stopPresenceTimer()
     socket?.close(1000, 'console_unmounted')
   }
 
@@ -147,6 +157,11 @@ export class WebSocketRelayClient implements RelayClient {
       throw new Error('Relay is not authenticated; the intent was not sent.')
     }
     this.socket.send(JSON.stringify(intent))
+  }
+
+  private stopPresenceTimer(): void {
+    if (this.presenceTimer !== null) clearInterval(this.presenceTimer)
+    this.presenceTimer = null
   }
 
   private emitConnection(status: RelayConnection['status'], reason?: string): void {
