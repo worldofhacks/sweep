@@ -70,6 +70,7 @@ from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_inten
 from relay.search_deployment import load_search_runtime
 from relay.search_detection import (
     DetectorFactory,
+    PoseProviderFactory,
     SearchDetectionConfig,
     SearchDetectionFactory,
     StreamFactory,
@@ -833,10 +834,33 @@ class AutonomySession:
             if intent.name is IntentName.SEARCH and self._composition.search_runtime is not None:
                 search = self._composition.search_runtime
                 if factory := self._composition.detection_factory:
-                    factory.start_mission(intent.intent_id, session)
-                result = search.execute(
-                    intent.intent_id, dispatcher, snapshot, current_snapshot=current
-                )
+                    if not factory.start_mission(intent.intent_id, session):
+                        search.hold(intent.intent_id, "detection_worker_start_failed")
+                        result = ExecutionResult(
+                            intent_id=intent.intent_id,
+                            roster_version=snapshot.roster_version,
+                            status=LifecycleStatus.FAILED,
+                            refusal=Refusal(
+                                intent_id=intent.intent_id,
+                                roster_version=snapshot.roster_version,
+                                drone_id=None,
+                                connection_epoch=None,
+                                reason=RefusalReason.INVALID_PLAN,
+                                detail="search detection worker failed to start",
+                                status=LifecycleStatus.FAILED,
+                            ),
+                        )
+                    else:
+                        try:
+                            result = search.execute(
+                                intent.intent_id, dispatcher, snapshot, current_snapshot=current
+                            )
+                        finally:
+                            factory.finish_mission(intent.intent_id)
+                else:
+                    result = search.execute(
+                        intent.intent_id, dispatcher, snapshot, current_snapshot=current
+                    )
             else:
                 result = (
                     controller.execute(intent, snapshot, current_snapshot=current)
@@ -1057,6 +1081,7 @@ class AutonomyComposition:
         *,
         detection_stream_factory: StreamFactory | None = None,
         detection_detector_factory: DetectorFactory | None = None,
+        detection_pose_provider_factory: PoseProviderFactory | None = None,
     ) -> None:
         self.config = config
         base_profile = config.planning.effective_capability_profile()
@@ -1081,6 +1106,8 @@ class AutonomyComposition:
             factory_args["stream_factory"] = detection_stream_factory
         if detection_detector_factory is not None:
             factory_args["detector_factory"] = detection_detector_factory
+        if detection_pose_provider_factory is not None:
+            factory_args["pose_provider_factory"] = detection_pose_provider_factory
         self._detection_factory = (
             None
             if config.search_detection is None or config.search_runtime is None
@@ -1161,6 +1188,7 @@ def create_autonomy_app(
     event_ids: EventIdFactory | None = None,
     detection_stream_factory: StreamFactory | None = None,
     detection_detector_factory: DetectorFactory | None = None,
+    detection_pose_provider_factory: PoseProviderFactory | None = None,
 ) -> tuple[FastAPI, AutonomyComposition]:
     """Build the relay app with the planner and arbiter consuming every accepted intent."""
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
@@ -1169,6 +1197,7 @@ def create_autonomy_app(
         config,
         detection_stream_factory=detection_stream_factory,
         detection_detector_factory=detection_detector_factory,
+        detection_pose_provider_factory=detection_pose_provider_factory,
     )
     control_localization_factory = (
         None

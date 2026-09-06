@@ -13,7 +13,7 @@ from typing import Protocol
 import numpy as np
 
 from perception.object_detection import LiveDetectionWorker, ProcessedFrameEvent, YoloXOnnxDetector
-from perception.search_events import FramePoseEvidence
+from perception.search_events import CoverageTask, FramePoseEvidence
 from perception.webcam_stream import WebcamStream
 from planner.navigation import Pose
 from relay.search_runtime import SearchRuntime
@@ -105,6 +105,8 @@ class SearchDetectionConfig:
 
 StreamFactory = Callable[[str], _Stream]
 DetectorFactory = Callable[[DetectionSourceConfig], object]
+FramePoseProvider = Callable[[ProcessedFrameEvent], FramePoseEvidence | None]
+PoseProviderFactory = Callable[[RelaySession, int, CoverageTask], FramePoseProvider]
 
 
 class SearchDetectionFactory:
@@ -117,6 +119,7 @@ class SearchDetectionFactory:
         *,
         stream_factory: StreamFactory = WebcamStream,
         detector_factory: DetectorFactory | None = None,
+        pose_provider_factory: PoseProviderFactory | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not callable(stream_factory) or not callable(monotonic_clock):
@@ -127,6 +130,7 @@ class SearchDetectionFactory:
         self._detector_factory = (
             _default_detector_factory if detector_factory is None else detector_factory
         )
+        self._pose_provider_factory = pose_provider_factory
         self._monotonic_clock = monotonic_clock
         self._lock = RLock()
         self._started = False
@@ -140,50 +144,74 @@ class SearchDetectionFactory:
                 raise RuntimeError("search detection factory is closed")
             self._started = True
 
-    def start_mission(self, intent_id: str, session: RelaySession) -> None:
+    def start_mission(self, intent_id: str, session: RelaySession) -> bool:
         with self._lock:
             if not self._started or self._closed:
-                return
-        for drone_id in self.search.detection_drone_ids(intent_id):
+                return False
+        drone_ids = self.search.detection_drone_ids(intent_id)
+        with self._lock:
+            already_failed = any((intent_id, drone_id) in self._failures for drone_id in drone_ids)
+        if already_failed:
+            self.finish_mission(intent_id)
+            return False
+        started: list[tuple[str, int]] = []
+        for drone_id in drone_ids:
             key = (intent_id, drone_id)
             with self._lock:
-                if key in self._workers or key in self._failures:
+                if key in self._workers:
+                    started.append(key)
                     continue
             source = self.config.sources_by_drone.get(drone_id)
             if source is None:
                 self._record_failure(intent_id, drone_id, "source_not_configured")
-                continue
+                self.finish_mission(intent_id)
+                return False
             stream: _Stream | None = None
+            worker: LiveDetectionWorker | None = None
             try:
                 stream = self._stream_factory(source.stream_url)
                 detector = self._detector_factory(source)
                 task = self.search.detection_task(intent_id, drone_id)
+                pose_provider = (
+                    self._pose_provider(
+                        session, drone_id, task.connection_epoch, task.cells[0].pose.floor_id
+                    )
+                    if self._pose_provider_factory is None
+                    else self._pose_provider_factory(session, drone_id, task)
+                )
                 worker = self.search.detection_worker(
                     intent_id,
                     drone_id,
                     stream,
                     detector,
-                    self._pose_provider(
-                        session, drone_id, task.connection_epoch, task.cells[0].pose.floor_id
-                    ),
+                    pose_provider,
                     now_s=self._monotonic_clock,
                 )
                 stream.start()
                 worker.start()
             except Exception:
                 try:
+                    if worker is not None:
+                        worker.close()
                     if stream is not None:
                         stream.close()
                 except Exception:
                     pass
                 self._record_failure(intent_id, drone_id, "start_failed")
-                continue
+                self.finish_mission(intent_id)
+                return False
             with self._lock:
-                if self._closed:
-                    worker.close()
-                    stream.close()
-                else:
+                closed = self._closed
+                if not closed:
                     self._workers[key] = (stream, worker)
+                    started.append(key)
+            if closed:
+                worker.close()
+                stream.close()
+                self._record_failure(intent_id, drone_id, "factory_closed")
+                self.finish_mission(intent_id)
+                return False
+        return len(started) == len(drone_ids)
 
     def status(self, intent_id: str) -> list[dict[str, object]]:
         with self._lock:
@@ -200,11 +228,27 @@ class SearchDetectionFactory:
             status.append(
                 {
                     "drone_id": drone_id,
-                    "state": "failed" if failure is not None else "running",
+                    "state": (
+                        "failed" if failure is not None else "running" if key in workers else "idle"
+                    ),
                     "failure_reason": failure,
                 }
             )
         return status
+
+    def finish_mission(self, intent_id: str) -> None:
+        with self._lock:
+            workers = [
+                (key, worker) for key, worker in self._workers.items() if key[0] == intent_id
+            ]
+            for key, _ in workers:
+                self._workers.pop(key, None)
+        for key, (stream, worker) in workers:
+            worker.close()
+            stream.close()
+            with self._lock:
+                if worker.failure_reason is not None:
+                    self._failures.setdefault(key, worker.failure_reason)
 
     def close(self) -> None:
         with self._lock:
