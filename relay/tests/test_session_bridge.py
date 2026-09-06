@@ -739,3 +739,47 @@ def test_capture_readiness_is_retained_for_the_current_epoch_only(
     assert relay_session.registry.connection_epoch(1) == 2
     assert relay_session.capture_readiness(1) is None, "a rejoin starts a new epoch"
     assert relay_session.capture_readiness(2) is None
+
+
+def test_capture_projection_refuses_an_aggregate_that_would_exceed_the_audit_budget(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    first_storage_ref = ""
+    accepted = 0
+    refusal = None
+    for index in range(256):
+        storage_ref = f"node://media/{index}-" + "x" * 480
+        events = relay_session.process_frame(
+            media_file_payload(
+                event_id=f"media-large-{index}",
+                capture_id=f"capture-large-{index // 64}",
+                file_id=f"large-{index}",
+                storage_ref=storage_ref,
+            ),
+            adapter_principal,
+        )
+        if events[0]["type"] == "refusal":
+            refusal = events[0]
+            break
+        if index == 0:
+            first_storage_ref = storage_ref
+        accepted += 1
+
+    assert accepted > 64
+    assert refusal is not None
+    assert refusal["reason"] == "capture_limit_exceeded"
+    continued = relay_session.process_frame(
+        media_file_payload(
+            event_id="media-large-repeat",
+            capture_id="capture-large-0",
+            file_id="large-0",
+            storage_ref=first_storage_ref,
+        ),
+        adapter_principal,
+    )
+
+    assert [event["type"] for event in continued] == ["state"]
+    records = [item["event"] for item in relay_session.replay()["events"]]
+    retained = next(item for item in records if item.get("event_id") == "media-large-0")
+    assert retained["storage_ref"] == first_storage_ref

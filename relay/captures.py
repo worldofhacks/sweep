@@ -11,6 +11,8 @@ not a second persistence system.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 
 from relay.contracts import CaptureBundleFrame, MediaFileRecord
@@ -18,6 +20,7 @@ from relay.contracts import CaptureBundleFrame, MediaFileRecord
 CaptureKey = tuple[int, int, str]
 MAX_CAPTURE_ENTRIES = 64
 MAX_MEDIA_FILES_PER_CAPTURE = 64
+MAX_CAPTURE_STATE_PROJECTION_BYTES = 128 * 1024
 
 
 class CaptureLedgerError(ValueError):
@@ -75,11 +78,13 @@ class CaptureLedger:
         *,
         max_entries: int = MAX_CAPTURE_ENTRIES,
         max_media_per_capture: int = MAX_MEDIA_FILES_PER_CAPTURE,
+        max_projection_bytes: int = MAX_CAPTURE_STATE_PROJECTION_BYTES,
     ) -> None:
-        if min(max_entries, max_media_per_capture) <= 0:
+        if min(max_entries, max_media_per_capture, max_projection_bytes) <= 0:
             raise ValueError("capture ledger limits must be positive")
         self._max_entries = max_entries
         self._max_media_per_capture = max_media_per_capture
+        self._max_projection_bytes = max_projection_bytes
         self._entries: dict[CaptureKey, CaptureEntry] = {}
 
     def snapshot_entry(self, key: CaptureKey) -> CaptureEntry | None:
@@ -99,8 +104,7 @@ class CaptureLedger:
         entry = self._candidate(record.drone_id, record.connection_epoch, record.capture_id, t)
         _merge_media(entry, record)
         entry.updated_at = max(entry.updated_at, t)
-        self._evict_completed_for(key)
-        self._entries[key] = entry
+        self._commit(key, entry)
         return entry
 
     def record_bundle(self, bundle: CaptureBundleFrame, *, t: int) -> CaptureEntry:
@@ -117,8 +121,7 @@ class CaptureLedger:
         entry.reason = bundle.reason
         entry.detail = bundle.detail
         entry.updated_at = max(entry.updated_at, t)
-        self._evict_completed_for(key)
-        self._entries[key] = entry
+        self._commit(key, entry)
         return entry
 
     def eviction_candidate(self, key: CaptureKey) -> CaptureKey | None:
@@ -153,11 +156,7 @@ class CaptureLedger:
 
     def projection(self) -> list[dict[str, object]]:
         """Every retained capture, oldest first, newest activity last."""
-        ordered = sorted(
-            self._entries.values(),
-            key=lambda entry: (entry.updated_at, entry.drone_id, entry.capture_id),
-        )
-        return [entry.to_projection() for entry in ordered]
+        return _projection(self._entries.values())
 
     def _candidate(
         self, drone_id: int, connection_epoch: int, capture_id: str, t: int
@@ -186,10 +185,38 @@ class CaptureLedger:
                 f"capture projection is limited to {self._max_media_per_capture} files",
             )
 
-    def _evict_completed_for(self, key: CaptureKey) -> None:
-        candidate = self.eviction_candidate(key)
-        if candidate is not None:
-            self._entries.pop(candidate)
+    def _commit(self, key: CaptureKey, entry: CaptureEntry) -> None:
+        next_entries = dict(self._entries)
+        if evicted := self.eviction_candidate(key):
+            next_entries.pop(evicted)
+        next_entries[key] = entry
+        try:
+            encoded = json.dumps(
+                _projection(next_entries.values()),
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        except (TypeError, ValueError) as error:
+            raise CaptureLedgerError(
+                "invalid_capture_projection", f"capture projection is not JSON-native: {error}"
+            ) from None
+        if len(encoded) > self._max_projection_bytes:
+            raise CaptureLedgerError(
+                "capture_limit_exceeded",
+                f"capture projection is limited to {self._max_projection_bytes} bytes",
+            )
+        self._entries = next_entries
+
+
+def _projection(entries: Iterable[CaptureEntry]) -> list[dict[str, object]]:
+    return [
+        entry.to_projection()
+        for entry in sorted(
+            entries,
+            key=lambda entry: (entry.updated_at, entry.drone_id, entry.capture_id),
+        )
+    ]
 
 
 def _merge_media(entry: CaptureEntry, record: MediaFileRecord) -> None:
