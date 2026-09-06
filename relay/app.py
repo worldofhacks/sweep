@@ -1165,7 +1165,15 @@ def create_app(
                 status_code=413,
             )
         try:
-            body = await _bounded_request_body(request)
+            body = await _bounded_request_body(
+                request, timeout_s=runtime.settings.transcript_upload_timeout_ms / 1_000
+            )
+        except TimeoutError:
+            outcome = VoiceOutcome("refused", "template", "upload_timeout", None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=408,
+            )
         except ValueError as error:
             outcome = VoiceOutcome("refused", "template", str(error), None)
             return JSONResponse(
@@ -1216,12 +1224,13 @@ def _same_state_projection(left: Mapping[str, object], right: Mapping[str, objec
     }
 
 
-async def _bounded_request_body(request: Request) -> bytes:
+async def _bounded_request_body(request: Request, *, timeout_s: float = 15.0) -> bytes:
     body = bytearray()
-    async for chunk in request.stream():
-        if len(chunk) > MAX_AUDIO_BYTES - len(body):
-            raise ValueError("upload_too_large")
-        body.extend(chunk)
+    async with asyncio.timeout(timeout_s):
+        async for chunk in request.stream():
+            if len(chunk) > MAX_AUDIO_BYTES - len(body):
+                raise ValueError("upload_too_large")
+            body.extend(chunk)
     return bytes(body)
 
 
