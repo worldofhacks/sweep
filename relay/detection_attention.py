@@ -23,6 +23,7 @@ from relay.session import RelaySession
 from relay.settings import DetectionRecording, RelaySettings
 
 MAX_RETAINED_DETECTIONS_PER_SESSION = 128
+MAX_RECORDED_FRAME_WORKERS = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +65,7 @@ class HostRecordedFrameProcessor:
             item.recording_id: (item, self._load_image(item))
             for item in settings.detection_recordings
         }
-        self._workers: dict[tuple[str, str, int], LiveDetectionWorker] = {}
+        self._workers: OrderedDict[tuple[str, str, int], LiveDetectionWorker] = OrderedDict()
         self._lock = RLock()
 
     def __call__(
@@ -90,6 +91,10 @@ class HostRecordedFrameProcessor:
                     ).hexdigest(),
                 )
                 self._workers[key] = worker
+                while len(self._workers) > MAX_RECORDED_FRAME_WORKERS:
+                    _, expired = self._workers.popitem(last=False)
+                    expired.close()
+            self._workers.move_to_end(key)
             return worker.poll()
 
     @staticmethod

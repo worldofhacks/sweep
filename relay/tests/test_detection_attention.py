@@ -84,9 +84,24 @@ def test_host_processor_uses_configured_pinned_recording_and_live_worker(
             ),
         ),
     )
+    monkeypatch.setattr(detection_attention, "MAX_RECORDED_FRAME_WORKERS", 2)
     processor = HostRecordedFrameProcessor(settings)
     events = processor(SESSION, 1, "recorded-backpack", 1)
     assert any(isinstance(event, SightingEvent) for event in events)
+    first = processor._workers[(SESSION, "recorded-backpack", 1)]
+    closed = []
+    original_close = LiveDetectionWorker.close
+
+    def track_close(worker):
+        closed.append(worker)
+        original_close(worker)
+
+    monkeypatch.setattr(LiveDetectionWorker, "close", track_close)
+    for epoch in (2, 3):
+        events = processor(SESSION, 1, "recorded-backpack", epoch)
+        assert any(isinstance(event, SightingEvent) for event in events)
+    assert closed == [first]
+    assert len(processor._workers) == 2
     with pytest.raises(ValueError, match="not bound"):
         processor(SESSION, 2, "recorded-backpack", 1)
 
@@ -165,6 +180,13 @@ def test_recorded_frame_promotes_attention_acknowledges_without_motion_and_audit
                 )
                 socket.receive_json()
                 socket.receive_json()
+
+                def next_detection_event():
+                    while True:
+                        event = socket.receive_json()
+                        if event["type"] != "state":
+                            return event
+
                 started = time.monotonic()
                 response = client.post(
                     f"/api/sessions/{SESSION}/detections/recorded-frame",
@@ -172,8 +194,8 @@ def test_recorded_frame_promotes_attention_acknowledges_without_motion_and_audit
                     json={"recording_id": "recorded-backpack", "drone_id": 1},
                 )
                 assert response.status_code == 200
-                frame = socket.receive_json()
-                detection = socket.receive_json()
+                frame = next_detection_event()
+                detection = next_detection_event()
                 assert time.monotonic() - started < 1
                 assert frame["type"] == "detection_frame"
                 assert detection["type"] == "detection"
@@ -188,8 +210,8 @@ def test_recorded_frame_promotes_attention_acknowledges_without_motion_and_audit
                     json={"recording_id": "recorded-backpack", "drone_id": 1},
                 )
                 assert duplicate.status_code == 200
-                socket.receive_json()
-                repeated = socket.receive_json()
+                assert next_detection_event()["type"] == "detection_frame"
+                repeated = next_detection_event()
                 assert repeated["type"] == "detection"
                 assert repeated["attention"] == "suppressed_duplicate"
                 assert repeated["detection_id"] == detection["detection_id"]
@@ -201,7 +223,7 @@ def test_recorded_frame_promotes_attention_acknowledges_without_motion_and_audit
                         "detection_id": detection["detection_id"],
                     }
                 )
-                acknowledgement = socket.receive_json()
+                acknowledgement = next_detection_event()
                 assert acknowledgement["type"] == "detection_acknowledgement"
                 assert acknowledgement["t"] == clock.value
                 assert acknowledgement["session"] == SESSION
