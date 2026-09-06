@@ -228,7 +228,7 @@ class FakeNode:
                 _LOGGER.warning(
                     "relay refused a node frame: %s (%s)", frame.get("reason"), frame.get("detail")
                 )
-                self._retry_refused_periodic_telemetry()
+                self._release_refused_periodic_telemetry()
 
     async def _telemetry_loop(self) -> None:
         interval = 1.0 / self.config.telemetry_hz
@@ -425,7 +425,7 @@ class FakeNode:
                 self._periodic_telemetry = None
                 return
 
-    def _retry_refused_periodic_telemetry(self) -> None:
+    def _release_refused_periodic_telemetry(self) -> None:
         if self._periodic_telemetry is None:
             return
         self._periodic_telemetry = None

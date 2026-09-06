@@ -1579,6 +1579,21 @@
         "test_record_refuses_a_running_mediamtx_without_creating_or_stopping_a_run"
       ],
       "review_result": "Running-service refusal occurs before run creation and cleanup. 18 recording tests pass with real media tools."
+    },
+    {
+      "number": 238,
+      "base": "5dcc93cb54c7fd819e676c8954fc57ad4651b676",
+      "head": "2c6f2a4e7c9753c67c0ef5d875e24878c8ec88ca",
+      "integration_commit": "622ed8a",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "FakeNode._enqueue_periodic_telemetry",
+        "FakeNode._release_admitted_periodic_telemetry",
+        "FakeNode._release_refused_periodic_telemetry",
+        "FakeNode._finish_command",
+        "FakeNode._receive_loop"
+      ],
+      "review_result": "Periodic samples await admission of the same aircraft and epoch; refusals release the slot; the configured timer preserves cadence; forced terminal samples precede completion ACK. 90 affected Python tests and complete fleet browser rehearsal pass."
     }
   ],
   "review_commit_mappings": [
@@ -1657,11 +1672,17 @@
       "dependencies": "real Docker, FFmpeg, ffprobe"
     },
     "fleet_ci_correction": {
-      "integration_commits": [
-        "39fab13",
-        "97e8f99"
-      ],
-      "result": "18 focused Python tests and 16 fleet browser checks pass; full combined CI pending"
+      "integration_commit": "622ed8a",
+      "result": "90 affected Python tests and complete fleet browser rehearsal pass; see current PR236 checks for full combined CI."
+    },
+    "final_contract_reconciliation": {
+      "head": "ac4ad764ec0dd59b8977bcc1eea67ab462e968da",
+      "python_focused_passed": 238,
+      "console_passed": 542,
+      "bridge_core": "pass",
+      "lint": "pass",
+      "build": "pass",
+      "independent_review": "No further required fixes."
     }
   },
   "closed_without_merge_at_handoff": [

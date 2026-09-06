@@ -104,7 +104,7 @@ def test_refused_periodic_telemetry_frees_the_next_scheduled_sample() -> None:
         node._connection_epoch = 1
         node._enqueue_periodic_telemetry()
         refused = node._outbound.get_nowait()
-        node._retry_refused_periodic_telemetry()
+        node._release_refused_periodic_telemetry()
         assert node._outbound.empty()
         node._enqueue_periodic_telemetry()
         return [refused, node._outbound.get_nowait()]
