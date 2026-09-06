@@ -457,6 +457,56 @@ def test_vertical_connector_refuses_when_an_intermediate_band_is_blocked() -> No
     assert result.code == "route_unreachable"
 
 
+def test_vertical_connector_rejects_overlapping_blocked_band_from_another_floor() -> None:
+    mapped = multilevel_artifact()
+    result = NavigationPlanner().plan(
+        request(drone(1, 0.5, 1.5)),
+        replace(
+            mapped,
+            grids=(
+                *mapped.grids,
+                grid("service", 2.2, frozenset({(2, 1)})),
+            ),
+        ),
+    )
+
+    assert result.code == "route_unreachable"
+
+
+def test_vertical_connector_rejects_inflated_band_with_center_outside_path() -> None:
+    mapped = multilevel_artifact()
+    result = NavigationPlanner().plan(
+        request(drone(1, 0.5, 1.5)),
+        replace(
+            mapped,
+            grids=(
+                *mapped.grids,
+                grid("mezzanine", 3.2, frozenset({(2, 1)})),
+            ),
+        ),
+    )
+
+    assert result.code == "route_unreachable"
+
+
+def test_unrelated_floor_free_bands_cannot_supply_vertical_coverage() -> None:
+    levels = (
+        grid("level_1", 1.0),
+        grid("service", 1.8),
+        grid("service", 2.2),
+        grid("level_1", 3.0),
+    )
+    result = NavigationPlanner().plan(
+        request(drone(1, 0.5, 1.5)),
+        artifact(
+            slots=(arrival("atrium-a", 6.5, 1.5, z=3.0),),
+            grids=levels,
+        ),
+    )
+
+    assert result.code == "route_unreachable"
+
+
 def test_vertical_route_rejects_blocked_band_even_when_free_band_margins_overlap() -> None:
     levels = (
         grid("level_1", 1.0),
