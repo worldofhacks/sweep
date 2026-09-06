@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from relay.auth import StaticCredentialResolver
 from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
 from relay.session import RelayLimits
+from relay.state import aircraft_limit_for_profile
 
 DEFAULT_CONSOLE_ORIGINS = (
     "http://localhost:5173",
@@ -136,6 +137,12 @@ class RelaySettings:
             4 <= self.effective_sim_aircraft_count <= 6
         ):
             raise SettingsError("the C2 simulator requires 4 through 6 aircraft")
+        profile_limit = aircraft_limit_for_profile(self.capability_profile)
+        if self.effective_sim_aircraft_count > profile_limit:
+            raise SettingsError(
+                f"the {self.capability_release.value.upper()} simulator supports at most "
+                f"{profile_limit} aircraft"
+            )
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
         if self.command_deadline_ms < self.command_ttl_ms:

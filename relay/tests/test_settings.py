@@ -169,6 +169,17 @@ def test_sim_c2_rejects_aircraft_counts_outside_four_through_six(count: str) -> 
         )
 
 
+@pytest.mark.parametrize("count", [5, 6])
+def test_sim_c1_rejects_counts_above_its_four_aircraft_registry_limit(count: int) -> None:
+    with pytest.raises(SettingsError, match="C1 simulator supports at most 4 aircraft"):
+        RelaySettings.from_env(
+            {
+                "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+                "SWEEP_SIM_AIRCRAFT_COUNT": str(count),
+            }
+        )
+
+
 def test_remote_backend_and_thresholds_come_from_the_environment() -> None:
     settings = RelaySettings.from_env(
         {

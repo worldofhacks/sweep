@@ -35,6 +35,7 @@ from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import IntentName
 from relay.session import Clock, EventIdFactory, RelaySession
 from relay.settings import CapabilityRelease, RelaySettings
+from relay.state import aircraft_limit_for_profile
 
 
 class SimBridgeFactory:
@@ -130,11 +131,15 @@ class SimBridgeFactory:
         )
         nodes.bridge = bridge
         nodes.start_watchdog()
+        try:
+            if self.auto_start_nodes:
+                nodes.start()
+        except BaseException:
+            nodes.close()
+            raise
         self.bridges[session.session_id] = bridge
         self.flights[session.session_id] = flight
         self.nodes[session.session_id] = nodes
-        if self.auto_start_nodes:
-            nodes.start()
         return bridge
 
     def close(self) -> None:
@@ -250,7 +255,18 @@ class _SimNodeIngress:
             for drone_id in self.flight.aircraft:
                 self._active.add(drone_id)
                 self._activity_generation.setdefault(drone_id, 0)
-                self._activate(drone_id)
+                events = self._activate(drone_id)
+                if any(event.get("type") == "refusal" for event in events):
+                    raise RuntimeError(
+                        f"simulator aircraft {drone_id} failed its initial relay activation"
+                    )
+            joined = {
+                int(drone["drone_id"])
+                for drone in self.session.current_state()["drones"]
+                if drone.get("membership") == "ready"
+            }
+            if joined != set(self.flight.aircraft):
+                raise RuntimeError("simulator initial fleet did not fully join the relay")
 
     def periodic_events(self) -> list[dict[str, object]]:
         # Serialize complete periodic batches so a later timestamp cannot reach a
@@ -441,6 +457,12 @@ def create_m14_sim_app(
     starting = initial_snapshot or _initial_snapshot(
         now, active_settings.effective_sim_aircraft_count
     )
+    profile_limit = aircraft_limit_for_profile(active_settings.capability_profile)
+    if len(starting.aircraft) > profile_limit:
+        raise ValueError(
+            f"the {active_settings.capability_release.value.upper()} simulator supports at most "
+            f"{profile_limit} aircraft"
+        )
     if (
         active_settings.capability_profile.supports(IntentName.FORMATION_SET)
         and not 4 <= len(starting.aircraft) <= 6

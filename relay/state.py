@@ -30,6 +30,15 @@ _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
 _FORMATIONS = frozenset(FORMATION_NAMES)
 
 
+def aircraft_limit_for_profile(capability_profile: CapabilityProfile) -> int:
+    """Return the registry capacity advertised by one capability profile."""
+    return (
+        MAX_SIMULATED_AIRCRAFT
+        if capability_profile.supports(IntentName.FORMATION_SET)
+        else MAX_PHYSICAL_AIRCRAFT
+    )
+
+
 class RegistryError(ValueError):
     def __init__(self, code: str, detail: str) -> None:
         super().__init__(detail)
@@ -125,11 +134,7 @@ class FleetRegistry:
             )
         self.telemetry_freshness_ms = telemetry_freshness_ms
         self.capability_profile = capability_profile
-        self.aircraft_limit = (
-            MAX_SIMULATED_AIRCRAFT
-            if capability_profile.supports(IntentName.FORMATION_SET)
-            else MAX_PHYSICAL_AIRCRAFT
-        )
+        self.aircraft_limit = aircraft_limit_for_profile(capability_profile)
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
         self._aircraft: dict[int, _AircraftRecord] = {}

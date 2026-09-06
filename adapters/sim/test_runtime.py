@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
-from adapters.sim.runtime import create_m14_sim_app
+from adapters.sim.runtime import _initial_snapshot, _SimNodeIngress, create_m14_sim_app
 from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.settings import CapabilityRelease, RelaySettings
 
@@ -83,6 +83,60 @@ def test_m14_sim_app_threads_the_explicit_c2_profile(tmp_path) -> None:
         assert runtime.capability_profile is profile
         assert relay_session.capability_profile is profile
         assert app.state.sim_bridge_factory.bridges["sim-c2"].capability_profile is profile
+
+
+def test_c1_four_aircraft_simulator_fully_joins_the_registry(tmp_path: Path) -> None:
+    keys = {
+        drone_id: f"c1-four-aircraft-{drone_id}-credential".encode().ljust(32, b"x")
+        for drone_id in range(1, 5)
+    }
+    settings = RelaySettings(
+        relay_token=b"c1-four-aircraft-relay-credential",
+        adapter_keys=keys,
+        log_dir=tmp_path,
+        sim_aircraft_count=4,
+    )
+    app = create_m14_sim_app(settings)
+
+    with TestClient(app):
+        state = app.state.relay_runtime.session("sim-c1-four").current_state()
+
+    assert [drone["drone_id"] for drone in state["drones"]] == [1, 2, 3, 4]
+    assert all(drone["membership"] == "ready" for drone in state["drones"])
+
+
+def test_c1_rejects_an_oversized_custom_initial_snapshot(tmp_path: Path) -> None:
+    settings = RelaySettings(relay_token=b"r" * 32, log_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="C1 simulator supports at most 4 aircraft"):
+        create_m14_sim_app(settings, initial_snapshot=_initial_snapshot(1_000, 5))
+
+
+def test_failed_initial_join_closes_ingress_without_registering_partial_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = RelaySettings(relay_token=b"r" * 32, log_dir=tmp_path)
+    app = create_m14_sim_app(settings)
+    closed: list[_SimNodeIngress] = []
+    original_close = _SimNodeIngress.close
+
+    def tracked_close(ingress: _SimNodeIngress) -> None:
+        closed.append(ingress)
+        original_close(ingress)
+
+    monkeypatch.setattr(_SimNodeIngress, "close", tracked_close)
+
+    with TestClient(app):
+        with pytest.raises(ValueError, match="requires configured adapter credentials"):
+            app.state.relay_runtime.session("failed-initial-join")
+
+    factory = app.state.sim_bridge_factory
+    assert len(closed) == 1
+    assert closed[0]._watchdog_thread is not None
+    assert not closed[0]._watchdog_thread.is_alive()
+    assert "failed-initial-join" not in factory.bridges
+    assert "failed-initial-join" not in factory.flights
+    assert "failed-initial-join" not in factory.nodes
 
 
 @pytest.mark.parametrize("aircraft_count", [4, 5, 6])
