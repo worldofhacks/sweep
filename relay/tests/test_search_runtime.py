@@ -60,3 +60,87 @@ def test_search_prepare_refuses_changed_configuration_map_and_duplicate_intent()
     duplicate = runtime.prepare(_intent(), snapshot)
     assert isinstance(duplicate, Refusal)
     assert "already has a mission" in duplicate.detail
+
+
+def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frames() -> None:
+    from collections import deque
+    from dataclasses import replace
+
+    import numpy as np
+
+    from perception.object_detection import (
+        DEFAULT_TARGET_LABELS,
+        ProcessedFrameEvent,
+    )
+    from perception.search_events import FramePoseEvidence
+    from planner.models import LifecycleStatus
+    from tests.autonomy_fixtures import make_stack
+
+    class Frames:
+        def __init__(self):
+            self.frames = deque([(np.zeros((8, 8, 3), dtype=np.uint8), 10.0)])
+
+        def read(self, _timeout: float):
+            return self.frames.popleft() if self.frames else None
+
+    class Detector:
+        target_labels = DEFAULT_TARGET_LABELS
+        detector_config_sha256 = "a" * 64
+
+        def detect(self, _frame):
+            return ()
+
+    runtime = _search_runtime()
+    snapshot = _snapshot()
+    preview = runtime.prepare(_intent(), snapshot)
+    assert isinstance(preview, SearchMissionPreview)
+    _, _, _, dispatcher, flight, _ = make_stack(snapshot)
+    dispatcher.navigation = runtime.navigation
+    clock = [snapshot.now_ms]
+
+    def current():
+        clock[0] += 1
+        aircraft = {
+            drone_id: replace(
+                snapshot.aircraft[drone_id],
+                pose=drone.pose,
+                flight_state=drone.flight_state,
+                position_last_seen_ms=clock[0],
+            )
+            for drone_id, drone in flight.aircraft.items()
+        }
+        return replace(snapshot, now_ms=clock[0], aircraft=aircraft)
+
+    result = runtime.execute("search-runtime", dispatcher, snapshot, current_snapshot=current)
+    assert result.status is LifecycleStatus.COMPLETED, result.refusal
+    assert runtime.status("search-runtime").state == "running"
+    assert any(call.operation.value == "goto" for call in flight.calls)
+
+    task = preview.search.assignments[0].task
+    now = [10.02]
+
+    def pose_for(event: ProcessedFrameEvent):
+        return FramePoseEvidence(
+            event.identity, task.connection_epoch, task.cells[0].pose, 10.0, 10.01
+        )
+
+    worker = runtime.detection_worker(
+        "search-runtime",
+        1,
+        Frames(),
+        Detector(),
+        pose_for,
+        now_s=lambda: now[0],
+        worker_run_id="run-1",
+    )
+    events = worker.poll()
+    processed = events[0]
+    assert isinstance(processed, ProcessedFrameEvent)
+    accepted = runtime.observe_processed_frame(
+        "search-runtime",
+        processed,
+        pose_for(processed),
+        now_s=10.02,
+    )
+    assert not accepted.accepted
+    assert accepted.reason == "task_not_active" or accepted.reason == "duplicate_frame"
