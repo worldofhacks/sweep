@@ -44,7 +44,7 @@ class FakeAircraftSession(private val filesDir: File, phone: PhoneStatusSource? 
             phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifBlank { HardwareProfile.UNREPORTED },
             androidVersion = Build.VERSION.RELEASE?.ifBlank { null } ?: HardwareProfile.UNREPORTED,
             sdkVersion = "fake",
-            measuredHfovDeg = null,
+            measuredHfovDeg = 66.0,
         ),
     )
 

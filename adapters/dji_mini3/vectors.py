@@ -343,7 +343,6 @@ def frame_vectors() -> dict[str, object]:
     }
     retrieved_record = {
         **media_record,
-        "timestamp_ms": 8001,
         "checksum_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
         "storage_ref": "file:///data/user/0/org.worldofhacks.sweep.bridge/files/captures/cap-0042/DJI_0001.JPG",
         "retrieval_status": "completed",

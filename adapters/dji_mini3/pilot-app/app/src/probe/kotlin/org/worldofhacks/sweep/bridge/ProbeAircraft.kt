@@ -63,6 +63,7 @@ import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 internal class ProbeAircraft(
     phoneModel: String,
     androidVersion: String,
+    measuredHfovDeg: Double? = null,
     private val sdkVersion: () -> String,
     private val log: (name: String, detail: String) -> Unit,
     /** Bench log hook: one call per key and listener event (`attached`, `product_connected`, `first_value`). */
@@ -82,6 +83,11 @@ internal class ProbeAircraft(
     private var attitude: Attitude? = null
     private var altitude: Double? = null
     private var ultrasonicHeightDm: Int? = null
+    private var locationMeasuredAtMs: Long? = null
+    private var velocityMeasuredAtMs: Long? = null
+    private var attitudeMeasuredAtMs: Long? = null
+    private var altitudeMeasuredAtMs: Long? = null
+    private var ultrasonicMeasuredAtMs: Long? = null
     private var flightMode: FlightMode? = null
     private var motorsOn: Boolean? = null
     private var flying: Boolean? = null
@@ -99,14 +105,14 @@ internal class ProbeAircraft(
         phoneModel = phoneModel.ifBlank { HardwareProfile.UNREPORTED },
         androidVersion = androidVersion.ifBlank { HardwareProfile.UNREPORTED },
         sdkVersion = HardwareProfile.UNREPORTED,
-        measuredHfovDeg = null,
+        measuredHfovDeg = measuredHfovDeg,
     )
 
     /** The listened keys; each DJI key object is created on first use, once the SDK is initialized. */
     private val bindings: List<Binding<*>> = listOf(
         Binding("KeyConnection", FlightControllerKey.KeyConnection) { connected ->
             aircraftConnected = connected
-            if (!connected) origin = null
+            if (!connected) clearAircraftMeasurements()
         },
         Binding("KeyRcConnection", RemoteControllerKey.KeyConnection, ComponentIndexType.LEFT_OR_MAIN) { rcConnected = it },
         Binding("KeyAircraftLocation3D", FlightControllerKey.KeyAircraftLocation3D) { location = it },
@@ -184,10 +190,8 @@ internal class ProbeAircraft(
         val answers = if (connected) bindings.associate { it.name to it.supported(manager) } else emptyMap()
         val (registered, statuses) = synchronized(lock) {
             aircraftConnected = connected
-            if (!connected) {
-                rcConnected = false
-                origin = null
-            }
+            rcConnected = false
+            clearAircraftMeasurements()
             val names = if (connected) ledger.productConnected { answers.getValue(it) } else emptyList()
             Pair(names.map(byName::getValue), ledger.snapshot())
         }
@@ -255,6 +259,13 @@ internal class ProbeAircraft(
             rates.tick(binding.name, now)
             val status = if (ledger.value(binding.name, now)) ledger.status(binding.name) else null
             binding.accept(value)
+            when (binding.name) {
+                "KeyAircraftLocation3D" -> locationMeasuredAtMs = now
+                "KeyAircraftVelocity" -> velocityMeasuredAtMs = now
+                "KeyAircraftAttitude" -> attitudeMeasuredAtMs = now
+                "KeyAltitude" -> altitudeMeasuredAtMs = now
+                "KeyUltrasonicHeight" -> ultrasonicMeasuredAtMs = now
+            }
             Pair(status, ledger.attachedAtMs?.let { now - it })
         }
         if (first != null) {
@@ -288,7 +299,17 @@ internal class ProbeAircraft(
         if (fix != null && origin == null) origin = fix
         val base = origin
         val (x, y) = if (fix != null && base != null) eastNorthMetres(base, fix) else 0.0 to 0.0
-        val z = altitude ?: ultrasonicHeightDm?.let { it / 10.0 } ?: 0.0
+        val measuredAltitude = altitude ?: ultrasonicHeightDm?.let { it / 10.0 }
+        val altitudeTimestamp = if (altitude != null) altitudeMeasuredAtMs else ultrasonicMeasuredAtMs
+        val positionTimestamp = if (
+            fix != null && base != null && measuredAltitude != null &&
+            locationMeasuredAtMs != null && altitudeTimestamp != null
+        ) {
+            minOf(locationMeasuredAtMs!!, altitudeTimestamp)
+        } else {
+            null
+        }
+        val z = measuredAltitude ?: 0.0
         val v = velocity
         // KeyAircraftVelocity is N-E-D: SDK y (east) is planner x, SDK x (north) is planner y.
         val vx = v?.y ?: 0.0
@@ -310,9 +331,13 @@ internal class ProbeAircraft(
             x = x,
             y = y,
             z = z,
+            positionAvailable = positionTimestamp != null,
+            positionMeasuredAtMs = positionTimestamp,
             vx = vx,
             vy = vy,
             vz = vz,
+            velocityAvailable = v != null && velocityMeasuredAtMs != null,
+            velocityMeasuredAtMs = velocityMeasuredAtMs,
             battery = ((batteryPercent ?: 0) / 100.0).coerceIn(0.0, 1.0),
             state = state,
             link = ((signalQuality ?: 0) / 100.0).coerceIn(0.0, 1.0),
@@ -323,9 +348,30 @@ internal class ProbeAircraft(
             keyRatesHz = rates.snapshot(now),
             telemetryKeys = ledger.snapshot(),
             yawDeg = yaw,
+            attitudeAvailable = attitude != null && attitudeMeasuredAtMs != null,
+            attitudeMeasuredAtMs = attitudeMeasuredAtMs,
             virtualStickEnabled = virtualStickEnabled,
             authorityLostReason = authorityLostReason,
         )
+    }
+
+    private fun clearAircraftMeasurements() {
+        location = null
+        origin = null
+        velocity = null
+        attitude = null
+        altitude = null
+        ultrasonicHeightDm = null
+        locationMeasuredAtMs = null
+        velocityMeasuredAtMs = null
+        attitudeMeasuredAtMs = null
+        altitudeMeasuredAtMs = null
+        ultrasonicMeasuredAtMs = null
+        flightMode = null
+        motorsOn = null
+        flying = null
+        batteryPercent = null
+        signalQuality = null
     }
 
     private fun validFix(fix: LocationCoordinate3D): Boolean {

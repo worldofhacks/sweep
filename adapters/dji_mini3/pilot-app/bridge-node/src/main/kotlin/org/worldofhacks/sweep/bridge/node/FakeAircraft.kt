@@ -22,16 +22,23 @@ class FakeAircraft(
     camera: CameraProbe = FAKE_CAMERA,
     connected: Boolean = false,
 ) : AircraftSource, CommandExecutor {
+    private val startedAtMs = System.currentTimeMillis()
     private val _snapshot = MutableStateFlow(
         AircraftSnapshot(
             aircraftConnected = connected,
             rcConnected = connected,
+            positionAvailable = connected,
+            positionMeasuredAtMs = startedAtMs.takeIf { connected },
+            velocityAvailable = connected,
+            velocityMeasuredAtMs = startedAtMs.takeIf { connected },
             battery = 0.82,
             state = FlightStates.LANDED,
             link = 0.9,
             posQuality = 0.95,
             hardware = hardware,
             camera = camera,
+            attitudeAvailable = connected,
+            attitudeMeasuredAtMs = startedAtMs.takeIf { connected },
         ),
     )
     override val snapshot: StateFlow<AircraftSnapshot> = _snapshot.asStateFlow()
@@ -43,7 +50,19 @@ class FakeAircraft(
         private set
 
     fun setConnected(aircraft: Boolean, rc: Boolean = aircraft) {
-        _snapshot.update { it.copy(aircraftConnected = aircraft, rcConnected = rc) }
+        val now = System.currentTimeMillis()
+        _snapshot.update {
+            it.copy(
+                aircraftConnected = aircraft,
+                rcConnected = rc,
+                positionAvailable = aircraft,
+                positionMeasuredAtMs = now.takeIf { aircraft },
+                velocityAvailable = aircraft,
+                velocityMeasuredAtMs = now.takeIf { aircraft },
+                attitudeAvailable = aircraft,
+                attitudeMeasuredAtMs = now.takeIf { aircraft },
+            )
+        }
     }
 
     fun setHardware(hardware: HardwareProfile) {
@@ -52,15 +71,19 @@ class FakeAircraft(
 
     /** Phase E hook: the kinematic flight fixture writes its position, velocity, heading, and flight state here. */
     fun update(transform: (AircraftSnapshot) -> AircraftSnapshot) {
-        _snapshot.update(transform)
+        val now = System.currentTimeMillis()
+        _snapshot.update { stampMeasurements(transform(it), now) }
     }
 
     /** Deterministic drift so consecutive telemetry frames differ: slow drain, link ripple. */
     fun advance(nowMs: Long) {
         _snapshot.update { current ->
-            current.copy(
-                battery = (current.battery - 0.00002).coerceAtLeast(0.05),
-                link = (0.9 + 0.03 * sin(nowMs / 3000.0)).coerceIn(0.0, 1.0),
+            stampMeasurements(
+                current.copy(
+                    battery = (current.battery - 0.00002).coerceAtLeast(0.05),
+                    link = (0.9 + 0.03 * sin(nowMs / 3000.0)).coerceIn(0.0, 1.0),
+                ),
+                nowMs,
             )
         }
     }
@@ -73,15 +96,15 @@ class FakeAircraft(
 
     private fun apply(args: CommandArgs): Pair<String, String>? {
         when (args) {
-            is CommandArgs.Takeoff -> _snapshot.update { it.copy(z = args.zMm / 1000.0, state = FlightStates.HOVERING) }
-            is CommandArgs.Goto -> _snapshot.update {
+            is CommandArgs.Takeoff -> update { it.copy(z = args.zMm / 1000.0, state = FlightStates.HOVERING) }
+            is CommandArgs.Goto -> update {
                 it.copy(x = args.xMm / 1000.0, y = args.yMm / 1000.0, z = args.zMm / 1000.0, state = FlightStates.HOVERING)
             }
             is CommandArgs.RotateTo -> yawDeg = args.yawMdeg / 1000.0
-            CommandArgs.Hover, CommandArgs.Estop -> _snapshot.update {
+            CommandArgs.Hover, CommandArgs.Estop -> update {
                 if (it.state == FlightStates.LANDED) it else it.copy(state = FlightStates.HOVERING)
             }
-            CommandArgs.Land -> _snapshot.update { it.copy(z = HOME_Z, state = FlightStates.LANDED) }
+            CommandArgs.Land -> update { it.copy(z = HOME_Z, state = FlightStates.LANDED) }
             CommandArgs.CameraCapabilities, CommandArgs.CameraReady -> Unit
             is CommandArgs.SetGimbalPitch -> {
                 val pitch = args.pitchMdeg / 1000.0
@@ -97,6 +120,13 @@ class FakeAircraft(
         return null
     }
 
+    private fun stampMeasurements(snapshot: AircraftSnapshot, nowMs: Long): AircraftSnapshot =
+        snapshot.copy(
+            positionMeasuredAtMs = nowMs.takeIf { snapshot.positionAvailable },
+            velocityMeasuredAtMs = nowMs.takeIf { snapshot.velocityAvailable },
+            attitudeMeasuredAtMs = nowMs.takeIf { snapshot.attitudeAvailable },
+        )
+
     companion object {
         const val HOME_Z = 0.0
 
@@ -107,7 +137,7 @@ class FakeAircraft(
             phoneModel = "fake-node",
             androidVersion = "fake",
             sdkVersion = "fake",
-            measuredHfovDeg = null,
+            measuredHfovDeg = 66.0,
         )
 
         val FAKE_CAMERA = CameraProbe(

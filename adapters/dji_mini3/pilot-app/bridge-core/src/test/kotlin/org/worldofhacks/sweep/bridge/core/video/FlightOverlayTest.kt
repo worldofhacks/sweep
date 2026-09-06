@@ -161,9 +161,9 @@ class FlightOverlayTest {
         val state = FlightOverlay.derive(inputs())
         assertEquals(GuidanceMode.VISUAL_ADVISORY, state.guidanceMode)
         assertEquals("visual_advisory", state.guidanceMode.wire)
-        assertEquals("operator_approved", state.poseSource)
+        assertEquals("aircraft_telemetry", state.poseSource)
         assertEquals("Physical RC remains primary", state.rcPrimaryNote)
-        assertEquals("clearance: pilot approved", state.clearanceLabel)
+        assertEquals("clearance: unverified", state.clearanceLabel)
     }
 
     @Test

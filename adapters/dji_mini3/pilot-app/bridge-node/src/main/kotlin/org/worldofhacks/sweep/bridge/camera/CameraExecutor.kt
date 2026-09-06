@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
+import kotlin.math.sqrt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +34,7 @@ import org.worldofhacks.sweep.bridge.core.video.CapturePhase
 import org.worldofhacks.sweep.bridge.core.video.CaptureProgress
 import org.worldofhacks.sweep.bridge.core.video.FlightOverlay
 import org.worldofhacks.sweep.bridge.node.AircraftSource
+import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.node.CommandReport
 import org.worldofhacks.sweep.bridge.node.NodeLog
@@ -53,7 +55,42 @@ data class CameraConfig(
     val minStorageBytes: Long = 1_000_000,
     /** The only pattern this node drives; the overlay counts frames against it. */
     val framesPerCapture: Int = 8,
-)
+    /** Hard bound for the connection-epoch file ledger and the Capture card projection. */
+    val maxTrackedFiles: Int = 64,
+    /** Reject an announced photo above this size before it enters the retrieval ledger. */
+    val maxFileBytes: Long = 64L * 1024 * 1024,
+    /** Bound completed and temporary capture bytes retained below the app's capture root. */
+    val maxStoredBytes: Long = 512L * 1024 * 1024,
+    /** A shutter needs a measured near-stationary aircraft state, not default zero velocity. */
+    val maxCaptureSpeedMS: Double = 0.10,
+    /** Maximum age of each position, velocity, and attitude measurement used at the shutter. */
+    val maxTelemetryAgeMs: Long = 1_000,
+    /** Camera creation times commonly have whole-second precision. */
+    val fileTimestampSkewMs: Long = 2_000,
+) {
+    init {
+        require(
+            minOf(
+                gimbalPollMs,
+                gimbalTimeoutMs,
+                modeTimeoutMs,
+                shutterTimeoutMs,
+                fileAnnounceTimeoutMs,
+                downloadTimeoutMs,
+                progressIntervalMs,
+            ) > 0,
+        ) { "camera timeouts and intervals must be positive" }
+        require(gimbalToleranceDeg >= 0.0 && gimbalToleranceDeg.isFinite())
+        require(minStorageBytes >= 0)
+        require(framesPerCapture > 0)
+        require(maxTrackedFiles > 0)
+        require(maxFileBytes > 0)
+        require(maxStoredBytes > 0)
+        require(maxCaptureSpeedMS >= 0.0 && maxCaptureSpeedMS.isFinite())
+        require(maxTelemetryAgeMs > 0)
+        require(fileTimestampSkewMs >= 0)
+    }
+}
 
 /** One captured file as the camera path knows it, for the capture card and the media records. */
 data class CapturedFile(
@@ -76,6 +113,20 @@ data class CameraStatus(
     val lastEvent: String? = null,
 )
 
+private data class CaptureEvidence(
+    val timestampMs: Long,
+    val pose: WirePose,
+    val yawDeg: Double,
+    val gimbalPitchDeg: Double,
+    val intrinsics: WireIntrinsics,
+)
+
+private sealed interface CaptureEvidenceResult {
+    data class Available(val value: CaptureEvidence) : CaptureEvidenceResult
+
+    data class Missing(val detail: String) : CaptureEvidenceResult
+}
+
 /**
  * Runs the camera and media commands of a `capture_room` plan (issue #43, Phase G) on one
  * dedicated thread, in wire order: `camera_capabilities`, `set_gimbal_pitch`, `camera_ready`,
@@ -89,8 +140,8 @@ data class CameraStatus(
  * `completed` record (SHA-256 of the downloaded bytes, the phone file as `storage_ref`)
  * sent before the retrieval command completes; both carry the aircraft pose, heading, and
  * gimbal pitch at the shutter. The command wire carries only `capture_id`, so the node does
- * not know the room or pattern: the relay composes the closing `capture_bundle` from the
- * dispatcher's validated result.
+ * not claim room or pattern authority: the relay composes the closing `capture_bundle` from
+ * the dispatcher's validated plan and these immutable file records.
  */
 class CameraExecutor(
     private val port: CameraPort,
@@ -122,8 +173,10 @@ class CameraExecutor(
     private val lock = Any()
     private val ledger = LinkedHashMap<String, CapturedFile>()
     private val frameCounts = HashMap<String, Int>()
+    private var ledgerIdentity: NodeIdentity? = null
     private var activeCaptureId: String? = null
     private val announced = LinkedBlockingQueue<CameraFile>()
+    private val downloadGeneration = AtomicLong()
 
     init {
         port.setFileListener { file -> announced.offer(file) }
@@ -144,6 +197,8 @@ class CameraExecutor(
     }
 
     override fun current(): CaptureReadinessBody {
+        val identity = frames?.identity()
+        reconcileLedgerIdentity(identity)
         val facts = port.facts.value
         val snapshot = aircraft.snapshot.value
         val captureId = synchronized(lock) { activeCaptureId }
@@ -151,10 +206,13 @@ class CameraExecutor(
         return CaptureReadinessBody(
             roomId = null,
             captureId = captureId,
-            cameraOk = cameraOk(facts, snapshot.aircraftConnected),
+            poseOk = capturePoseAvailable(snapshot, clock.nowMs()),
+            clearanceOk = false,
+            cameraOk = captureCameraOk(facts, snapshot),
             storageOk = storageOk(facts),
-            motionOk = true,
-            imageQualityOk = true,
+            motionOk = captureMotionOk(snapshot, clock.nowMs()),
+            // No image-analysis result exists yet; never pre-approve image quality.
+            imageQualityOk = false,
             coverageMissing = missingHeadings(accepted),
             nextHeadingDeg = null,
             suggestedDelta = null,
@@ -162,9 +220,11 @@ class CameraExecutor(
     }
 
     override fun close() {
+        downloadGeneration.incrementAndGet()
         scope.cancel()
         port.setFileListener(null)
         worker.shutdownNow()
+        runCatching { worker.awaitTermination(2, TimeUnit.SECONDS) }
     }
 
     // ---- one command at a time on the camera thread ----
@@ -251,19 +311,24 @@ class CameraExecutor(
     private fun ready(report: CommandReport) {
         report.executing("camera to photo mode; checking storage")
         val mode = await(config.modeTimeoutMs) { done -> port.enterPhotoMode(done) }
-        await(config.modeTimeoutMs) { done -> port.refreshFacts(done) }
+        val refresh = await(config.modeTimeoutMs) { done -> port.refreshFacts(done) }
         val facts = port.facts.value
         onFacts(facts.toProbe())
-        val connected = aircraft.snapshot.value.aircraftConnected
-        val cameraOk = mode is PortResult.Ok && cameraOk(facts, connected)
-        val storageOk = storageOk(facts)
+        val snapshot = aircraft.snapshot.value
+        val fresh = refresh is PortResult.Ok
+        val cameraOk = mode is PortResult.Ok && fresh && captureCameraOk(facts, snapshot)
+        val storageOk = fresh && storageOk(facts)
         val body = current().copy(cameraOk = cameraOk, storageOk = storageOk)
         val sent = frames?.sendCaptureReadiness(body) ?: false
         val reasons = buildList {
             if (mode is PortResult.Failed) add("photo mode: ${mode.detail}")
-            if (!connected) add("aircraft not connected")
+            if (refresh is PortResult.Failed) add("camera facts: ${refresh.detail}")
+            if (!snapshot.aircraftConnected) add("aircraft not connected")
             if (!facts.cameraConnected) add("camera not connected")
             if (!facts.photoMode) add("camera not in photo mode")
+            if (port.gimbalPitchDeg() == null) add("gimbal attitude unreported")
+            if (!facts.photoDimensionsReported) add("photo dimensions unreported")
+            if (snapshot.hardware.measuredHfovDeg == null) add("measured horizontal field of view unreported")
             if (!facts.storageInserted) add("no storage inserted")
             if (!storageOk) add("storage ${facts.storageRemainingBytes ?: "unreported"} bytes below ${config.minStorageBytes}")
         }
@@ -278,31 +343,52 @@ class CameraExecutor(
 
     private fun photo(captureId: String, report: CommandReport) {
         val identity = frames?.identity()
+        reconcileLedgerIdentity(identity)
         if (identity == null) {
             report.failed(CAMERA_FAILURE, "relay link is not joined; the media record cannot name a connection epoch [retryable]")
             finish()
             return
         }
-        val facts = port.facts.value
-        val snapshot = aircraft.snapshot.value
-        if (!cameraOk(facts, snapshot.aircraftConnected)) {
-            report.failed(CAMERA_NOT_READY, "camera is not ready for a photo (run camera_ready first) [retryable]")
+        if (synchronized(lock) { ledger.size >= config.maxTrackedFiles }) {
+            report.failed(
+                CAPTURE_LIMIT_EXCEEDED,
+                "the connection-epoch camera ledger is limited to ${config.maxTrackedFiles} files; reconnect before another capture [terminal]",
+            )
             finish()
             return
         }
-        val frameNumber = synchronized(lock) {
-            activeCaptureId = captureId
-            val next = (frameCounts[captureId] ?: 0) + 1
-            frameCounts[captureId] = next
-            next
+        when (val evidence = captureEvidence()) {
+            is CaptureEvidenceResult.Missing -> {
+                report.failed(CAMERA_NOT_READY, "capture evidence unavailable before shutter: ${evidence.detail} [retryable]")
+                finish()
+                return
+            }
+            is CaptureEvidenceResult.Available -> Unit
         }
-        _progress.update { it.copy(phase = CapturePhase.Capturing(frameNumber, maxOf(frameNumber, config.framesPerCapture))) }
+        val newCapture = synchronized(lock) {
+            val changed = activeCaptureId != captureId
+            activeCaptureId = captureId
+            changed
+        }
+        if (newCapture) {
+            _progress.update { it.copy(acceptedHeadingsDeg = emptyList()) }
+        }
+        // Do not consume the frame number until a correlated file and its pending record exist.
+        val frameNumber = synchronized(lock) { (frameCounts[captureId] ?: 0) + 1 }
+        _progress.update {
+            it.copy(
+                phase = CapturePhase.Capturing(
+                    frameNumber,
+                    maxOf(frameNumber, config.framesPerCapture),
+                ),
+            )
+        }
         announced.clear()
-        // Pose, heading, and gimbal at the shutter: the relay validates these against the approved pose.
-        val pose = WirePose(snapshot.x, snapshot.y, snapshot.z)
-        val yaw = FlightOverlay.heading(snapshot.yawDeg)
-        val gimbal = port.gimbalPitchDeg() ?: 0.0
-        report.executing("shutter for $captureId frame $frameNumber at heading ${fmt(yaw)} deg")
+        val shutterStartedAt = clock.nowMs()
+        val preflightYaw = aircraft.snapshot.value.yawDeg
+        report.executing(
+            "shutter for $captureId frame $frameNumber at heading ${fmt(FlightOverlay.heading(preflightYaw))} deg",
+        )
         when (val shutter = await(config.shutterTimeoutMs) { done -> port.shootPhoto(done) }) {
             is PortResult.Failed -> {
                 report.failed(CAMERA_FAILURE, "shutter refused: ${shutter.detail} [retryable]")
@@ -311,9 +397,35 @@ class CameraExecutor(
             }
             PortResult.Ok -> Unit
         }
-        val file = announced.poll(config.fileAnnounceTimeoutMs, TimeUnit.MILLISECONDS)
+        // Snapshot immediately when the shutter action reports success. Waiting for the
+        // camera's file announcement can take seconds and must not move this timestamp.
+        val atShutter = when (val evidence = captureEvidence()) {
+            is CaptureEvidenceResult.Available -> evidence.value
+            is CaptureEvidenceResult.Missing -> {
+                report.failed(CAMERA_FAILURE, "photo fired but its shutter evidence is incomplete: ${evidence.detail} [terminal]")
+                finish()
+                return
+            }
+        }
+        val file = awaitNewFile(shutterStartedAt)
         if (file == null) {
-            report.failed(CAMERA_FAILURE, "the camera did not announce a new file within ${config.fileAnnounceTimeoutMs} ms [retryable]")
+            report.failed(
+                CAMERA_FAILURE,
+                "the camera did not announce a new, correlated file within ${config.fileAnnounceTimeoutMs} ms [retryable]",
+            )
+            finish()
+            return
+        }
+        val trackedBytes = synchronized(lock) { ledger.values.sumOf { it.camera.sizeBytes } }
+        if (
+            file.sizeBytes > config.maxFileBytes ||
+            trackedBytes > config.maxStoredBytes - file.sizeBytes
+        ) {
+            report.failed(
+                CAPTURE_LIMIT_EXCEEDED,
+                "camera file ${file.name} is ${file.sizeBytes} bytes; limits are " +
+                    "${config.maxFileBytes} per file and ${config.maxStoredBytes} per epoch [terminal]",
+            )
             finish()
             return
         }
@@ -321,33 +433,40 @@ class CameraExecutor(
         val record = MediaFileRecord(
             captureId = captureId,
             fileId = fileId,
-            timestampMs = clock.nowMs(),
+            timestampMs = atShutter.timestampMs,
             droneId = identity.droneId,
             connectionEpoch = identity.connectionEpoch,
-            pose = pose,
-            actualYawDeg = yaw,
-            gimbalPitchDeg = gimbal,
-            intrinsics = WireIntrinsics(facts.photoWidthPx, facts.photoHeightPx, facts.horizontalFovDeg, "rectilinear"),
+            pose = atShutter.pose,
+            actualYawDeg = atShutter.yawDeg,
+            gimbalPitchDeg = atShutter.gimbalPitchDeg,
+            intrinsics = atShutter.intrinsics,
             checksumSha256 = MediaFileRecord.PENDING_CHECKSUM,
             storageRef = "aircraft://camera/${file.index}/${file.name}",
             retrievalStatus = RetrievalStatus.PENDING,
         )
         val captured = CapturedFile(captureId, fileId, frameNumber, file, record, path = null)
-        synchronized(lock) { ledger[fileId] = captured }
-        _status.update { it.copy(files = synchronized(lock) { ledger.values.toList() }) }
-        _progress.update { it.copy(acceptedHeadingsDeg = it.acceptedHeadingsDeg + yaw) }
         val sent = frames?.sendMediaFile(record) ?: false
         if (!sent) {
             report.failed(CAMERA_FAILURE, "media_file for $fileId could not be sent: relay link not joined [retryable]")
             finish()
             return
         }
-        event("captured $fileId: ${file.name} (${file.sizeBytes} bytes) at heading ${fmt(yaw)} deg, gimbal ${fmt(gimbal)} deg")
+        synchronized(lock) {
+            frameCounts[captureId] = frameNumber
+            ledger[fileId] = captured
+        }
+        _status.update { it.copy(files = synchronized(lock) { ledger.values.toList() }) }
+        _progress.update { it.copy(acceptedHeadingsDeg = it.acceptedHeadingsDeg + atShutter.yawDeg) }
+        event(
+            "captured $fileId: ${file.name} (${file.sizeBytes} bytes) at heading " +
+                "${fmt(atShutter.yawDeg)} deg, gimbal ${fmt(atShutter.gimbalPitchDeg)} deg",
+        )
         report.completed("captured $fileId as ${file.name}, ${file.sizeBytes} bytes on the aircraft; media_file pending")
         finish(keepProgress = true)
     }
 
     private fun retrieve(fileId: String, report: CommandReport) {
+        reconcileLedgerIdentity(frames?.identity())
         val captured = synchronized(lock) { ledger[fileId] }
         if (captured == null) {
             report.failed(DOWNLOAD_FAILURE, "no file $fileId was captured in this connection epoch [terminal]")
@@ -355,26 +474,59 @@ class CameraExecutor(
             return
         }
         val identity = frames?.identity()
-        if (identity == null || identity.connectionEpoch != captured.record.connectionEpoch) {
+        if (
+            identity == null ||
+            identity.droneId != captured.record.droneId ||
+            identity.connectionEpoch != captured.record.connectionEpoch
+        ) {
             report.failed(DOWNLOAD_FAILURE, "the connection epoch changed since $fileId was captured [terminal]")
             finish()
+            return
+        }
+        // A transfer may have finalized locally just before its relay send failed. Keep that
+        // immutable result in the epoch ledger and retry only the publication; downloading it
+        // again would double-count storage and could assign different bytes to the same file id.
+        if (captured.record.retrievalStatus == RetrievalStatus.COMPLETED) {
+            republishCompleted(captured, report)
             return
         }
         val position = synchronized(lock) { ledger.values.count { it.captureId == captured.captureId && it.frameNumber <= captured.frameNumber } }
         val total = synchronized(lock) { ledger.values.count { it.captureId == captured.captureId } }
         _progress.update { it.copy(phase = CapturePhase.Downloading(position, total)) }
-        val target = File(File(root, safe(captured.captureId)), safe(captured.camera.name))
+        val captureRoot = File(root, safeSegment(captured.captureId))
+        val retainedBytes = storedBytes()
+        if (
+            captured.camera.sizeBytes > config.maxFileBytes ||
+            retainedBytes > config.maxStoredBytes - captured.camera.sizeBytes
+        ) {
+            report.failed(
+                CAPTURE_LIMIT_EXCEEDED,
+                "retrieving ${captured.camera.sizeBytes} bytes would exceed the " +
+                    "${config.maxStoredBytes}-byte capture-storage limit [terminal]",
+            )
+            finish()
+            return
+        }
+        val generation = downloadGeneration.incrementAndGet()
+        val target = File(captureRoot, ".${safeSegment(captured.fileId)}-$generation.part")
         report.executing("downloading ${captured.camera.name} (${captured.camera.sizeBytes} bytes) over the RC link")
         val outcome = CompletableFuture<String?>()
         var lastProgressAt = clock.nowMs()
-        // The size the port reports for the file; the bytes on disk must match it before a checksum goes out.
-        val expectedBytes = AtomicLong(0L)
+        // The camera announcement is the lower-bound contract. Progress may confirm
+        // the same total but cannot erase or weaken it.
+        val expectedBytes = AtomicLong(captured.camera.sizeBytes)
         port.download(
             captured.camera,
             target,
             object : DownloadListener {
                 override fun progress(bytes: Long, total: Long) {
-                    if (total > 0) expectedBytes.set(total)
+                    if (downloadGeneration.get() != generation) return
+                    if (total > 0 && total != expectedBytes.get()) {
+                        outcome.complete(
+                            "camera size changed from ${expectedBytes.get()} to $total bytes during download",
+                        )
+                        return
+                    }
                     val now = clock.nowMs()
                     if (total > 0 && now - lastProgressAt >= config.progressIntervalMs) {
                         lastProgressAt = now
@@ -383,30 +535,49 @@ class CameraExecutor(
                 }
 
                 override fun finished() {
-                    outcome.complete(null)
+                    if (downloadGeneration.get() == generation) {
+                        outcome.complete(null)
+                    } else {
+                        target.delete()
+                    }
                 }
 
                 override fun failed(detail: String) {
-                    outcome.complete(detail)
+                    if (downloadGeneration.get() == generation) {
+                        outcome.complete(detail)
+                    } else {
+                        target.delete()
+                    }
                 }
             },
         )
         val failure = try {
             outcome.get(config.downloadTimeoutMs, TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
+            downloadGeneration.compareAndSet(generation, generation + 1)
+            target.delete()
             "download did not finish within ${config.downloadTimeoutMs} ms"
         } catch (error: ExecutionException) {
             error.cause?.message ?: error.message ?: "download failed"
+        } catch (_: InterruptedException) {
+            downloadGeneration.compareAndSet(generation, generation + 1)
+            target.delete()
+            Thread.currentThread().interrupt()
+            "download interrupted"
         }
         await(config.modeTimeoutMs) { done -> port.leaveMediaMode(done) }
         if (failure != null) {
+            // Fence every later callback from this attempt before removing its target.
+            // The hardware transfer may finish after an early progress/list failure.
+            downloadGeneration.compareAndSet(generation, generation + 1)
+            target.delete()
             report.failed(DOWNLOAD_FAILURE, "$failure [retryable]")
             finish()
             return
         }
         val expected = expectedBytes.get()
         val onDisk = target.length()
-        if (expected > 0 && onDisk != expected) {
+        if (!target.isFile || expected <= 0 || onDisk != expected) {
             // A port that swallowed a write error would hand over a short file; never checksum one.
             target.delete()
             report.failed(DOWNLOAD_FAILURE, "download truncated: $onDisk of $expected bytes on the phone; partial file removed [retryable]")
@@ -416,37 +587,235 @@ class CameraExecutor(
         val checksum = try {
             sha256(target)
         } catch (error: java.io.IOException) {
+            target.delete()
             report.failed(DOWNLOAD_FAILURE, "downloaded file unreadable: ${error.message} [retryable]")
             finish()
             return
         }
         val size = target.length()
-        val record = captured.record.copy(
-            timestampMs = clock.nowMs().coerceAtLeast(captured.record.timestampMs + 1),
-            checksumSha256 = checksum,
-            storageRef = target.toURI().toString(),
-            retrievalStatus = RetrievalStatus.COMPLETED,
-        )
-        val retrieved = captured.copy(record = record, path = target.absolutePath)
-        synchronized(lock) { ledger[fileId] = retrieved }
-        _status.update { it.copy(files = synchronized(lock) { ledger.values.toList() }) }
-        if (frames?.sendMediaFile(record) != true) {
-            report.failed(DOWNLOAD_FAILURE, "media_file for $fileId could not be sent: relay link not joined [retryable]")
+        val extension = captured.camera.name.substringAfterLast('.', "bin").filter { it.isLetterOrDigit() }.take(8).ifEmpty { "bin" }
+        val completed = File(captureRoot, "${safeSegment(captured.fileId)}-${checksum.take(12)}.$extension")
+        if (completed.exists()) {
+            val existingMatches = completed.length() == size && runCatching { sha256(completed) }.getOrNull() == checksum
+            if (!existingMatches) {
+                target.delete()
+                report.failed(DOWNLOAD_FAILURE, "completed file path collision for $fileId [terminal]")
+                finish()
+                return
+            }
+            target.delete()
+        } else if (!target.renameTo(completed)) {
+            target.delete()
+            report.failed(DOWNLOAD_FAILURE, "downloaded file could not be finalized atomically [retryable]")
             finish()
             return
         }
-        event("retrieved $fileId: ${target.absolutePath}, $size bytes, sha256 $checksum")
-        report.completed("retrieved $fileId to ${target.absolutePath}: $size bytes, sha256 $checksum")
+        val record = captured.record.copy(
+            checksumSha256 = checksum,
+            storageRef = completed.toURI().toString(),
+            retrievalStatus = RetrievalStatus.COMPLETED,
+        )
+        val currentIdentity = frames?.identity()
+        if (
+            currentIdentity == null ||
+            currentIdentity.droneId != record.droneId ||
+            currentIdentity.connectionEpoch != record.connectionEpoch
+        ) {
+            report.failed(DOWNLOAD_FAILURE, "the connection identity changed while $fileId was downloading [terminal]")
+            finish()
+            return
+        }
+        val retrieved = captured.copy(record = record, path = completed.absolutePath)
+        synchronized(lock) { ledger[fileId] = retrieved }
+        _status.update { it.copy(files = synchronized(lock) { ledger.values.toList() }) }
+        if (frames?.sendMediaFile(record) != true) {
+            report.failed(
+                DOWNLOAD_FAILURE,
+                "media_file for $fileId could not be sent; the verified local file is retained for publication retry [retryable]",
+            )
+            finish()
+            return
+        }
+        captured.path?.let { prior ->
+            if (prior != completed.absolutePath) runCatching { File(prior).delete() }
+        }
+        event("retrieved $fileId: ${completed.absolutePath}, $size bytes, sha256 $checksum")
+        report.completed("retrieved $fileId to ${completed.absolutePath}: $size bytes, sha256 $checksum")
+        finish(keepProgress = true)
+    }
+
+    private fun republishCompleted(captured: CapturedFile, report: CommandReport) {
+        val path = captured.path
+        val file = path?.let(::File)
+        val insideCaptureRoot = runCatching {
+            file != null && file.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())
+        }.getOrDefault(false)
+        val checksum = if (file?.isFile == true) runCatching { sha256(file) }.getOrNull() else null
+        if (
+            !insideCaptureRoot ||
+            file == null ||
+            file.length() != captured.camera.sizeBytes ||
+            checksum != captured.record.checksumSha256
+        ) {
+            report.failed(
+                DOWNLOAD_FAILURE,
+                "the finalized local evidence for ${captured.fileId} is missing or changed; " +
+                    "refusing to remint its immutable file id [terminal]",
+            )
+            finish()
+            return
+        }
+        report.executing("republishing verified media_file ${captured.fileId}")
+        if (frames?.sendMediaFile(captured.record) != true) {
+            report.failed(
+                DOWNLOAD_FAILURE,
+                "media_file for ${captured.fileId} could not be sent; " +
+                    "the verified local file is retained for publication retry [retryable]",
+            )
+            finish()
+            return
+        }
+        event(
+            "republished ${captured.fileId}: ${file.absolutePath}, ${file.length()} bytes, " +
+                "sha256 ${captured.record.checksumSha256}",
+        )
+        report.completed(
+            "retrieved ${captured.fileId} to ${file.absolutePath}: ${file.length()} bytes, " +
+                "sha256 ${captured.record.checksumSha256}",
+        )
         finish(keepProgress = true)
     }
 
     // ---- helpers ----
 
-    private fun cameraOk(facts: CameraFacts, aircraftConnected: Boolean): Boolean =
-        aircraftConnected && facts.cameraConnected && facts.photoMode
+    private fun captureCameraOk(facts: CameraFacts, snapshot: AircraftSnapshot): Boolean {
+        val measuredHfov = snapshot.hardware.measuredHfovDeg
+        val gimbal = port.gimbalPitchDeg()
+        return snapshot.aircraftConnected &&
+            facts.cameraConnected &&
+            facts.photoMode &&
+            facts.photoDimensionsReported &&
+            facts.photoWidthPx > 0 &&
+            facts.photoHeightPx > 0 &&
+            gimbal != null &&
+            gimbal.isFinite() &&
+            measuredHfov != null &&
+            measuredHfov.isFinite() &&
+            measuredHfov > 0.0 &&
+            measuredHfov <= 180.0
+    }
+
+    private fun capturePoseAvailable(snapshot: AircraftSnapshot, nowMs: Long): Boolean =
+        snapshot.aircraftConnected &&
+            snapshot.positionAvailable &&
+            snapshot.attitudeAvailable &&
+            measurementFresh(snapshot.positionMeasuredAtMs, nowMs) &&
+            measurementFresh(snapshot.attitudeMeasuredAtMs, nowMs) &&
+            snapshot.posQuality > 0.0 &&
+            listOf(snapshot.x, snapshot.y, snapshot.z, snapshot.yawDeg).all(Double::isFinite)
+
+    private fun captureMotionOk(snapshot: AircraftSnapshot, nowMs: Long): Boolean =
+        snapshot.velocityAvailable &&
+            measurementFresh(snapshot.velocityMeasuredAtMs, nowMs) &&
+            listOf(snapshot.vx, snapshot.vy, snapshot.vz).all(Double::isFinite) &&
+            sqrt(snapshot.vx * snapshot.vx + snapshot.vy * snapshot.vy + snapshot.vz * snapshot.vz) <=
+            config.maxCaptureSpeedMS
+
+    private fun captureEvidence(): CaptureEvidenceResult {
+        val facts = port.facts.value
+        val snapshot = aircraft.snapshot.value
+        val now = clock.nowMs()
+        if (!snapshot.aircraftConnected) return CaptureEvidenceResult.Missing("aircraft disconnected")
+        if (!facts.cameraConnected || !facts.photoMode) {
+            return CaptureEvidenceResult.Missing("camera disconnected or not in still-photo mode")
+        }
+        if (!capturePoseAvailable(snapshot, now)) {
+            return CaptureEvidenceResult.Missing(
+                "measured position and attitude are unavailable or older than ${config.maxTelemetryAgeMs} ms",
+            )
+        }
+        if (!captureMotionOk(snapshot, now)) {
+            return CaptureEvidenceResult.Missing(
+                "measured velocity is unavailable, stale, or exceeds ${config.maxCaptureSpeedMS} m/s",
+            )
+        }
+        val gimbal = port.gimbalPitchDeg()
+        if (gimbal == null || !gimbal.isFinite()) {
+            return CaptureEvidenceResult.Missing("gimbal attitude is unreported")
+        }
+        if (!facts.photoDimensionsReported || facts.photoWidthPx <= 0 || facts.photoHeightPx <= 0) {
+            return CaptureEvidenceResult.Missing("photo dimensions are unreported")
+        }
+        val measuredHfov = snapshot.hardware.measuredHfovDeg
+        if (measuredHfov == null || !measuredHfov.isFinite() || measuredHfov <= 0.0 || measuredHfov > 180.0) {
+            return CaptureEvidenceResult.Missing("measured horizontal field of view is unreported")
+        }
+        return CaptureEvidenceResult.Available(
+            CaptureEvidence(
+                timestampMs = now,
+                pose = WirePose(snapshot.x, snapshot.y, snapshot.z),
+                yawDeg = FlightOverlay.heading(snapshot.yawDeg),
+                gimbalPitchDeg = gimbal,
+                intrinsics = WireIntrinsics(
+                    facts.photoWidthPx,
+                    facts.photoHeightPx,
+                    measuredHfov,
+                    "rectilinear",
+                ),
+            ),
+        )
+    }
+
+    private fun measurementFresh(measuredAtMs: Long?, nowMs: Long): Boolean =
+        measuredAtMs != null && measuredAtMs <= nowMs && nowMs - measuredAtMs <= config.maxTelemetryAgeMs
+
+    private fun awaitNewFile(shutterStartedAt: Long): CameraFile? {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(config.fileAnnounceTimeoutMs)
+        while (true) {
+            val remaining = deadline - System.nanoTime()
+            if (remaining <= 0) return null
+            val candidate = announced.poll(remaining, TimeUnit.NANOSECONDS) ?: return null
+            val now = clock.nowMs()
+            val duplicate = synchronized(lock) {
+                ledger.values.any {
+                    it.camera.index == candidate.index &&
+                        it.camera.name == candidate.name &&
+                        it.camera.createdAtMs == candidate.createdAtMs
+                }
+            }
+            val timestampMatches = candidate.createdAtMs == null ||
+                candidate.createdAtMs in
+                (shutterStartedAt - config.fileTimestampSkewMs)..(now + config.fileTimestampSkewMs)
+            if (candidate.sizeBytes > 0 && !duplicate && timestampMatches) return candidate
+            log.log(
+                "camera file announcement ignored: index=${candidate.index} name=${candidate.name} " +
+                    "size=${candidate.sizeBytes} created_at=${candidate.createdAtMs} duplicate=$duplicate",
+            )
+        }
+    }
 
     private fun storageOk(facts: CameraFacts): Boolean =
         facts.storageInserted && (facts.storageRemainingBytes ?: 0L) >= config.minStorageBytes
+
+    /** Keep all mutable capture bookkeeping scoped to the relay's authenticated epoch. */
+    private fun reconcileLedgerIdentity(identity: NodeIdentity?) {
+        val changed = synchronized(lock) {
+            if (ledgerIdentity == identity) {
+                false
+            } else {
+                ledgerIdentity = identity
+                ledger.clear()
+                frameCounts.clear()
+                activeCaptureId = null
+                announced.clear()
+                true
+            }
+        }
+        if (changed) {
+            _status.update { it.copy(files = emptyList()) }
+            _progress.value = CaptureProgress()
+        }
+    }
 
     /** Headings of the `reconstruct_8` sectors no accepted frame falls into yet, for the compass. */
     private fun missingHeadings(accepted: List<Double>): List<Double> {
@@ -495,7 +864,28 @@ class CameraExecutor(
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private fun safe(value: String): String = value.map { if (it.isLetterOrDigit() || it in "-_.") it else '_' }.joinToString("").take(200)
+    private fun safeSegment(value: String): String {
+        val readable = value
+            .map { if (it.isLetterOrDigit() || it in "-_.") it else '_' }
+            .joinToString("")
+            .take(80)
+            .ifEmpty { "id" }
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+            .take(12)
+        return "$readable-$digest"
+    }
+
+    private fun storedBytes(): Long {
+        var total = 0L
+        root.walkTopDown().filter { it.isFile }.forEach { file ->
+            val size = file.length().coerceAtLeast(0L)
+            if (total > Long.MAX_VALUE - size) return Long.MAX_VALUE
+            total += size
+        }
+        return total
+    }
 
     private fun fmt(value: Double): String = "%.1f".format(value)
 
@@ -504,6 +894,7 @@ class CameraExecutor(
         const val CAMERA_NOT_READY = "camera_not_ready"
         const val CAMERA_FAILURE = "camera_failure"
         const val DOWNLOAD_FAILURE = "download_failure"
+        const val CAPTURE_LIMIT_EXCEEDED = "capture_limit_exceeded"
         const val UNSUPPORTED = "unsupported"
     }
 }

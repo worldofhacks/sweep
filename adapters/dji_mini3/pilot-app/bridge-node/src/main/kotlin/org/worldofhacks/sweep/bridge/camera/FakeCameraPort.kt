@@ -35,6 +35,9 @@ class FakeCameraPort(
             gimbalPitchMinDeg = -90.0,
             gimbalPitchMaxDeg = 30.0,
             horizontalFovDeg = 66.0,
+            photoWidthPx = 4000,
+            photoHeightPx = 3000,
+            photoDimensionsReported = true,
         ),
     )
     override val facts: StateFlow<CameraFacts> = _facts.asStateFlow()
@@ -43,6 +46,7 @@ class FakeCameraPort(
     private var pitch: Double? = 0.0
     private var listener: ((CameraFile) -> Unit)? = null
     private var nextIndex = 1
+    private var downloadCount = 0
     private val files = LinkedHashMap<Int, ByteArray>()
 
     /**
@@ -64,6 +68,9 @@ class FakeCameraPort(
 
     val shots: Int
         get() = synchronized(lock) { nextIndex - 1 }
+
+    val downloads: Int
+        get() = synchronized(lock) { downloadCount }
 
     fun bytesOf(index: Int): ByteArray? = synchronized(lock) { files[index]?.copyOf() }
 
@@ -107,6 +114,7 @@ class FakeCameraPort(
         val (file, announce) = synchronized(lock) {
             val index = nextIndex++
             val bytes = synthesize(index)
+            while (files.size >= MAX_FILES) files.remove(files.keys.first())
             files[index] = bytes
             CameraFile(index = index, name = "FAKE_%04d.JPG".format(index), sizeBytes = bytes.size.toLong(), createdAtMs = System.currentTimeMillis()) to listener
         }
@@ -122,7 +130,10 @@ class FakeCameraPort(
     override fun download(file: CameraFile, target: File, listener: DownloadListener) {
         val failure = downloadFailure
         val truncateAt = truncateDownloadAt
-        val bytes = synchronized(lock) { files[file.index] }
+        val bytes = synchronized(lock) {
+            downloadCount += 1
+            files[file.index]
+        }
         later {
             when {
                 failure != null -> listener.failed(failure)
@@ -166,5 +177,6 @@ class FakeCameraPort(
 
     private companion object {
         const val SEED = 0x5EEDL
+        const val MAX_FILES = 64
     }
 }

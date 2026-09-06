@@ -975,6 +975,10 @@ def parse_capture_bundle(raw: object) -> CaptureBundleFrame:
     media_raw = value["media"]
     if isinstance(media_raw, str) or not isinstance(media_raw, Sequence):
         raise ContractError(code, "media must be a list")
+    if len(media_raw) > _MAX_MEDIA_RECORDS_PER_BUNDLE:
+        raise ContractError(
+            code, f"media must contain at most {_MAX_MEDIA_RECORDS_PER_BUNDLE} records"
+        )
     media = tuple(
         _media_record(_mapping(item, code, "media entries must be objects"), code)
         for item in media_raw
@@ -1375,6 +1379,8 @@ _MEDIA_RECORD_FIELDS = frozenset(
         "retrieval_status",
     }
 )
+_PENDING_MEDIA_CHECKSUM = "0" * 64
+_MAX_MEDIA_RECORDS_PER_BUNDLE = 64
 
 
 def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
@@ -1393,6 +1399,13 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         or any(character not in "0123456789abcdef" for character in checksum)
     ):
         raise ContractError(code, "checksum_sha256 must be 64 lowercase hex characters")
+    retrieval_status = _choice(
+        value["retrieval_status"], "retrieval_status", _MEDIA_RETRIEVAL_STATUSES, code
+    )
+    if retrieval_status == "pending" and checksum != _PENDING_MEDIA_CHECKSUM:
+        raise ContractError(code, "pending media requires the all-zero checksum sentinel")
+    if retrieval_status == "completed" and checksum == _PENDING_MEDIA_CHECKSUM:
+        raise ContractError(code, "completed media requires a content checksum")
     return MediaFileRecord(
         _nonempty_string(value["capture_id"], "capture_id", code),
         _nonempty_string(value["file_id"], "file_id", code),
@@ -1414,7 +1427,7 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         ),
         checksum,
         _nonempty_string(value["storage_ref"], "storage_ref", code),
-        _choice(value["retrieval_status"], "retrieval_status", _MEDIA_RETRIEVAL_STATUSES, code),
+        retrieval_status,
     )
 
 

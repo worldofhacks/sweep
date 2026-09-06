@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import socket
 import threading
 import time
@@ -781,9 +780,3 @@ def test_capture_room_reconstruct_8_retains_media_and_a_composed_bundle_in_state
     bundles = [record for record in records if record["type"] == "capture_bundle"]
     assert [bundle.get("source") for bundle in bundles] == ["autonomy"]
     assert bundles[0]["status"] == "completed" and len(bundles[0]["media"]) == 8
-    digest = hashlib.sha256(SESSION.encode()).hexdigest()
-    folder = relay_server.runtime.settings.log_dir / f"{digest}-captures" / "drone-1" / "epoch-1"
-    written = sorted(path.name for path in (folder / "cap-roundtrip").iterdir())
-    assert written == ["bundle.json"] + [
-        f"cap-roundtrip-frame-{number:02d}.json" for number in range(1, 9)
-    ]

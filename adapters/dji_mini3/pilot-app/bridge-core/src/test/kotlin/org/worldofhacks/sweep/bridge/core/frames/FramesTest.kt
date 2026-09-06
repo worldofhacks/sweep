@@ -528,6 +528,18 @@ class FramesTest {
             MediaFileFrame.parse(JsonObject(wire("media_file").fields + ("checksum_sha256" to Json.value("abc"))))
         }
         assertThrows(IllegalArgumentException::class.java) { record.copy(checksumSha256 = "ABC") }
+        assertThrows(IllegalArgumentException::class.java) { record.copy(checksumSha256 = "a".repeat(64)) }
+        assertThrows(IllegalArgumentException::class.java) {
+            record.copy(retrievalStatus = RetrievalStatus.COMPLETED)
+        }
+        assertThrows(ContractError::class.java) {
+            MediaFileFrame.parse(
+                JsonObject(
+                    wire("media_file").fields +
+                        ("checksum_sha256" to Json.value("a".repeat(64))),
+                ),
+            )
+        }
     }
 
     @Test
@@ -548,6 +560,9 @@ class FramesTest {
             CaptureBundleFrame.parse(JsonObject(wire("capture_bundle").fields + ("capture_id" to Json.value("other"))))
         }
         assertThrows(IllegalArgumentException::class.java) { bundle.copy(status = CaptureStatus.FAILED, reason = null) }
+        assertThrows(IllegalArgumentException::class.java) {
+            bundle.copy(media = List(CaptureBundleFrame.MAX_MEDIA_RECORDS + 1) { bundle.media.single() })
+        }
     }
 
     @Test

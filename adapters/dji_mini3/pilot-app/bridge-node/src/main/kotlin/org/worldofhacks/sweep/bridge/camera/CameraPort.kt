@@ -21,8 +21,10 @@ data class CameraFacts(
     val gimbalPitchMaxDeg: Double? = null,
     /** Published lens value until `measured_hfov_deg` exists; the wire field is `horizontal_fov_deg`. */
     val horizontalFovDeg: Double = CameraProbe().horizontalFovDeg,
-    val photoWidthPx: Int = 4000,
-    val photoHeightPx: Int = 3000,
+    val photoWidthPx: Int = 0,
+    val photoHeightPx: Int = 0,
+    /** True only when exact output pixel dimensions came from trusted calibration or the fake. */
+    val photoDimensionsReported: Boolean = false,
     /**
      * Panorama modes the camera itself advertises, kept for the record. The node never
      * drives one: a native panorama yaws the aircraft under the flight controller, outside
@@ -106,10 +108,14 @@ data class NodeIdentity(val droneId: Int, val connectionEpoch: Int)
 data class CaptureReadinessBody(
     val roomId: String? = null,
     val captureId: String? = null,
+    val poseSource: String = "dji_telemetry",
+    val poseOk: Boolean = false,
+    /** No camera key proves physical clearance; this stays false until an explicit pilot input exists. */
+    val clearanceOk: Boolean = false,
     val cameraOk: Boolean = false,
     val storageOk: Boolean = false,
-    val motionOk: Boolean = true,
-    val imageQualityOk: Boolean = true,
+    val motionOk: Boolean = false,
+    val imageQualityOk: Boolean = false,
     val coverageMissing: List<Double> = emptyList(),
     val nextHeadingDeg: Double? = null,
     val suggestedDelta: SuggestedDelta? = null,

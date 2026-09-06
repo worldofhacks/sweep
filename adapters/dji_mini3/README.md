@@ -71,6 +71,21 @@ The build resolves the key from that Gradle property, then from the `DJI_APP_KEY
 environment variable, else it stays empty so the probe flavor still assembles without one;
 registration then fails on the phone with a DJI error naming the missing key.
 
+The probe's capture path also requires calibration for the exact still-photo mode. Put all
+three measurements in the same local Gradle properties file only after measuring them; a
+partial or invalid set fails the build, and an absent set leaves `camera_ok=false` so a real
+shutter cannot be authorized with guessed intrinsics:
+
+```
+SWEEP_CAMERA_PHOTO_WIDTH_PX=<measured output width>
+SWEEP_CAMERA_PHOTO_HEIGHT_PX=<measured output height>
+SWEEP_CAMERA_MEASURED_HFOV_DEG=<measured horizontal field of view>
+```
+
+Record the method and values in `hardware-profile.json` with the aircraft, firmware, and
+photo-mode evidence. `KeyPhotoRatio` supplies only an aspect-ratio enum and is deliberately
+not treated as pixel dimensions.
+
 ### Flavors
 
 - `fake`: no DJI dependency. The launcher shows the same page driven by a simulated session
@@ -552,8 +567,8 @@ display is open; leaving the display (Session button or back) releases the Surfa
   - the amber next-heading marker on the ring and the `yaw +n°` / `yaw −n°` label under
     the reticle; the first heading is the sector the aircraft already looks at, so the
     delta starts small and follows the yaw;
-  - bottom scrim: the capture pill `Ready`, `visual_advisory`, `operator_approved`,
-    `clearance: pilot approved`, `next n°`, the sector rule, and the stream line
+  - bottom scrim: the capture pill `Ready`, `visual_advisory`, `aircraft_telemetry`,
+    `clearance: unverified`, `next n°`, the sector rule, and the stream line
     (`1280×720 29.9 Hz Main 3.1`) once the SPS has been read;
   - top scrim: `Authority Sweep` or `Authority RC (reason)`, `Video live`, and
     `Physical RC remains primary`; the fake flavor adds its banner.
@@ -628,10 +643,12 @@ evidence is also just `grep stream_info <log> | tail -1`.
 
 ## Phase G: camera operations and media retrieval for `capture_room`
 
-Phase G runs the camera half of a confirmed `capture_room` on the real Mini 3, so the
-planner's sequence (`camera_capabilities`, `set_gimbal_pitch`, `camera_ready`, then per
-heading `rotate_to`, `camera_ready`, `capture_photo`, `retrieve_media`) completes end to end
-and the relay holds every file's pose-anchored record and checksum. The path lives in
+Phase G's software path runs the camera half of a confirmed `capture_room`; the live
+Mini 3 acceptance in issue #43 remains hardware-blocked. The planner's sequence
+(`camera_capabilities`, `set_gimbal_pitch`, `camera_ready`, then per heading `rotate_to`,
+`camera_ready`, `capture_photo`, `retrieve_media`) is exercised end to end by the fake
+camera, and the relay holds a bounded projection of each file's pose-anchored record and
+checksum while the append-only audit remains the durable history. The path lives in
 `bridge-node/.../camera` (`CameraPort`, `CameraExecutor`, `FakeCameraPort`; plain JVM,
 tested in `CameraExecutorTest` behind `RelayLink` on the stub relay) and
 `app/src/probe/.../camera/DjiCameraPort.kt` (MSDK 5.18.0). `FlightExecutor` still owns
@@ -644,9 +661,9 @@ the aircraft.
 |---|---|---|
 | `camera_capabilities` | reads `KeyCameraStorageInfos`, the gimbal range, and the flat-mode and panorama facts, pushes them into the aircraft snapshot; the link then sends a fresh `capabilities` frame before the terminal acknowledgement | facts reported (`storage_remaining_bytes` from the current storage's remaining MB) |
 | `set_gimbal_pitch {pitch_mdeg}` | `KeyRotateByAngle`, absolute pitch, roll and yaw ignored, 1 s; then polls `KeyGimbalAttitude` | reported pitch within 1° of the target (the arbiter's `max_capture_gimbal_error_deg`); `camera_failure` past 6 s, `camera_unsupported` when no gimbal attitude has ever been reported |
-| `camera_ready` | releases the media manager if a download left it enabled, sets `PHOTO_NORMAL` (`KeyCameraFlatMode`, or `KeyCameraMode` on a camera without flat modes), rereads storage, and sends a `capture_readiness` frame with `camera_ok` (aircraft and camera connected, photo mode) and `storage_ok` (storage inserted with at least 1 MB free) | both gates true; `camera_not_ready` otherwise, the detail naming each failed gate |
-| `capture_photo {capture_id}` | records the aircraft pose, heading, and gimbal pitch, fires `KeyStartShootPhoto`, waits for `KeyNewlyGeneratedMediaFile`, and sends a `media_file` record with `retrieval_status: pending`, an all-zero checksum, and the aircraft file as `storage_ref`, before the terminal acknowledgement | the camera announced the file (8 s); `camera_not_ready` before `camera_ready`, `camera_failure` on a refused shutter or no announcement |
-| `retrieve_media {file_id}` | `IMediaManager.enable`, pulls the photo list from the current storage, finds the announced index, `pullOriginalMediaFileFromCamera` into `filesDir/captures/<capture_id>/DJI_<n>.JPG` with `executing` progress once a second, checks the bytes written against the size the camera listed, hashes the file, `disable`, and sends the `completed` `media_file` record (SHA-256 of the bytes, `file://` path as `storage_ref`) before the terminal acknowledgement | the file is on the phone with the listed byte count and its record was sent; `download_failure` on an unknown file, a changed connection epoch, a media-manager or download error, a write error or short file on the phone (the partial file is removed and the record stays `pending`), or the 120 s deadline |
+| `camera_ready` | releases the media manager if a download left it enabled, sets `PHOTO_NORMAL` (`KeyCameraFlatMode`, or `KeyCameraMode` on a camera without flat modes), rereads storage, and sends a `capture_readiness` frame | `camera_ok` requires connected aircraft and camera, still-photo mode, a reported gimbal attitude and photo dimensions, and a measured horizontal FOV; `storage_ok` requires inserted storage with at least 1 MB free; `camera_not_ready` names every missing fact |
+| `capture_photo {capture_id}` | verifies current measured position, attitude, velocity, gimbal, dimensions, and horizontal FOV; fires `KeyStartShootPhoto`; snapshots the pose evidence when the shutter callback succeeds; accepts only a positive-size, time-correlated new-file announcement; and sends `media_file` `pending` with an all-zero checksum before the terminal acknowledgement | the evidence and correlated announcement exist; `camera_not_ready` before the shutter, `camera_failure` after a refused shutter, incomplete post-shutter evidence, or no correlated announcement; a refused shutter does not consume the frame number |
+| `retrieve_media {file_id}` | `IMediaManager.enable`, pulls the photo list from the current storage, finds the announced index, downloads to a unique temporary file with `executing` progress once a second, checks the exact announced byte count, hashes and atomically names the completed file, `disable`, and sends the `completed` `media_file` record (SHA-256 of the bytes, `file://` path as `storage_ref`) before the terminal acknowledgement | the file is on the phone with the listed byte count and its record was sent; `download_failure` on an unknown file, a changed drone/epoch identity, a media-manager or download error, inconsistent size, a write error or short file (the partial is removed and the record stays `pending`), or the 120 s deadline; late callbacks from a timed-out attempt cannot complete a retry |
 | `capture_panorama {capture_id}` | nothing | never: `camera_unsupported`, because a native panorama yaws the aircraft under the flight controller, outside the Virtual Stick loop and the arbiter's pose lock; `reconstruct_8` is the working pattern |
 
 Both flavors therefore join with `capabilities: [flight, reconstruct_8]` and report
@@ -658,17 +675,24 @@ the node cannot name the room or pattern: the relay's autonomy composition recor
 `capture_bundle` the dispatcher validated (room, pattern, coverage, status) and projects it
 with the node's `media_file` records into `state.captures` (see `relay/README.md`).
 
-Per-file frame numbering is `<capture_id>-frame-NN` in shutter order for that capture id and
-connection epoch; a rejoin starts a new ledger, and a `retrieve_media` for a file captured in
-an earlier epoch fails `download_failure`. The relay bounds each command by
+Per-file frame numbering is `<capture_id>-frame-NN` in successful-shutter order for that
+capture id and connection epoch. The phone ledger and Capture card are capped at 64 files;
+the 65th shutter is refused before firing. A rejoin starts a new ledger, and a
+`retrieve_media` for a file captured under another drone identity or epoch fails
+`download_failure`; files already downloaded remain on disk under the bounded 512 MiB
+capture root. Each file is limited to 64 MiB. The fake camera also retains at most 64
+synthetic source files. The relay bounds each command by
 `SWEEP_COMMAND_DEADLINE_MS` (10 s by default); a retrieval that needs longer over the RC link
 must have that value raised before the session, because a retrieval the relay times out
 cannot be resumed.
 
-`capture_readiness` cadence: the link sends one frame on join (with the fake camera:
-`camera_ok=true`, since it boots in photo mode as the Mini 3 does; with the aircraft: whatever
-the keys report), one whenever a gate, the active capture id, or the missing-coverage sectors
-change (checked every 100 ms), and one at every `camera_ready`. The arbiter admits a
+`capture_readiness` cadence: the link sends one frame on join (with the deterministic fake
+camera and fake calibration, `camera_ok=true`; with the aircraft, only when the required
+facts are measured), one whenever a gate, the active capture id, or the missing-coverage
+sectors change (checked every 100 ms), and one at every `camera_ready`. `pose_ok` and
+`motion_ok` require reported position, attitude, and velocity measurements no more than
+one second old; cached values never authorize a shutter. `clearance_ok` and `image_quality_ok` remain
+false because this path has no evidence source for them. The arbiter currently admits a
 `capture_room` intent only after a current-epoch frame with `camera_ok` and `storage_ok`
 (`relay/autonomy.py`, `arbiter/safety.py`), and no plan step runs before that admission, so
 the camera must already be in the still-photo mode when the intent is drafted; the plan's
@@ -683,18 +707,14 @@ admission. `coverage_missing` lists the
   the active operation, the reported gimbal pitch, the camera and storage facts behind
   `capabilities`, the accepted headings, and every file captured this epoch with its
   heading, gimbal, pose, and either its aircraft reference (pending) or its path on the phone
-  and SHA-256 (completed).
+  and SHA-256 (completed). This connection-epoch view is capped at 64 files.
 - Flight display: the capture pill reads `Capturing` while a shutter command runs and
   `Downloading` during a retrieval, and the compass sector of each accepted heading turns
   solid.
-- Files: `filesDir/captures/<capture_id>/DJI_<n>.JPG`, that is
-  `/data/user/0/org.worldofhacks.sweep.bridge/files/captures/<capture_id>/`. Copy one with
-  `adb shell run-as org.worldofhacks.sweep.bridge cat files/captures/<capture_id>/DJI_0001.JPG > DJI_0001.JPG`
-  and check it with `shasum -a 256 DJI_0001.JPG` against the `checksum_sha256` in the relay's
-  `media_file` record (`state.captures`, the audit JSONL, or
-  `SWEEP_SESSION_LOG_DIR/<sha256 of the session id>-captures/drone-<n>/epoch-<e>/<capture_id>/<file_id>.json`).
-  On the phone, `adb shell run-as org.worldofhacks.sweep.bridge sha256sum files/captures/<capture_id>/DJI_0001.JPG`
-  gives the same digest without copying.
+- Files: below `/data/user/0/org.worldofhacks.sweep.bridge/files/captures/`, in a
+  collision-resistant capture-id directory and a file-id plus checksum name. Use the exact
+  `file:` URI reported by the completed `media_file`; compare the phone file's
+  `sha256sum` with `checksum_sha256` in `state.captures` or the append-only audit JSONL.
 - Fake flavor: the same path on synthetic files (`FAKE_<n>.JPG`, a header plus 4 KiB of
   seeded bytes); the checksums in the relay match the files under `files/captures/`.
 
@@ -705,7 +725,10 @@ Preconditions, as for the guarded-hover checklist: relay on the `remote` backend
 readiness toggles), the RC operator holding the aircraft at the approved hover pose, the
 console connected with the aircraft selected and the room id typed. `capture_gimbal_pitch_deg`
 in the planning JSON is the pitch the gimbal is driven to; keep it inside the range the
-Capture card reports. The camera must be in the still-photo mode before the draft: set the
+Capture card reports. The exact camera configuration must first have a measured horizontal
+FOV wired into the probe hardware profile; it deliberately remains unreported until that
+hardware evidence exists, so the probe flavor fails `camera_not_ready` rather than using a
+published or guessed value. The camera must also be in still-photo mode before the draft: set the
 RC-N1 photo/video switch to photo and check that the Capture card reads `photo mode yes`,
 so the phone's `capture_readiness` carries `camera_ok=true`. The arbiter refuses the
 `capture_room` intent `camera_not_ready` until a current-epoch readiness frame reports
@@ -730,11 +753,11 @@ What to watch:
    and the Captures module lists the capture under the session with 8 files, `pass`, and
    the pose of the first frame; while frames are still arriving the same module shows it
    under `In progress` with the captured and retrieved counts.
-4. The relay's audit JSONL holds 16 `media_file` records (pending, then completed, per
-   frame) and one `capture_bundle` with `source: "autonomy"`; the JSON files are under
-   `SWEEP_SESSION_LOG_DIR/<sha256 of the session id>-captures/drone-<n>/epoch-<e>/<capture_id>/`.
-5. Checksums: pick any frame, copy it from the phone as above, and compare
-   `shasum -a 256` with `checksum_sha256` in that frame's JSON file.
+4. The relay's append-only audit JSONL holds 16 `media_file` records (pending, then
+   completed, per frame) and one authoritative `capture_bundle` with `source: "autonomy"`.
+   `state.captures` is only a bounded live projection, not duplicate persistence.
+5. Checksums: pick any completed frame URI from the Capture card or state, hash that phone
+   file, and compare it with `checksum_sha256` in the audited `media_file` event.
 
 Abort and failure behavior: a stick past a third of its travel or the pause button ends the
 `rotate_to` in progress with `authority_lost` and the plan fails closed; the camera commands

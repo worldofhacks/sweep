@@ -301,6 +301,12 @@ def apply_result(
     session's roster; otherwise they are dropped and the result becomes
     ``invalidated`` with ``stale_roster``. The network stop latch is never dropped.
     """
+    if result.intent_id != intent.intent_id:
+        raise ValueError("execution result does not match its intent")
+    if result.plan is not None and (
+        result.plan.intent_id != intent.intent_id or result.plan.intent_name is not intent.name
+    ):
+        raise ValueError("execution plan does not match its intent")
     projection = control_projection(intent.name, result)
     plan = result.plan
     roster_version = session.registry.roster_version
@@ -325,11 +331,13 @@ def apply_result(
             ),
         )
     events: list[dict[str, object]] = []
+    if result.status is not LifecycleStatus.EXECUTING:
+        # Capture evidence is a prerequisite for terminal lifecycle state. Retain it
+        # before applying the control projection so malformed/conflicting evidence
+        # cannot produce a false completed intent.
+        events.extend(session.record_capture_bundle(result))
     if projection:
         events.append(session.update_control_projection(**projection))  # type: ignore[arg-type]
-    if result.status is not LifecycleStatus.EXECUTING:
-        # The dispatcher's validated capture bundle is the closing record for the capture.
-        events.extend(session.record_capture_bundle(result))
     events.append(record_result(session, result))
     return events
 

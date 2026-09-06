@@ -750,9 +750,9 @@ class RelayLink(
         roomId = body.roomId,
         captureId = body.captureId,
         guidanceMode = GuidanceMode.VISUAL_ADVISORY,
-        poseSource = POSE_SOURCE,
-        poseOk = true,
-        clearanceOk = true,
+        poseSource = body.poseSource,
+        poseOk = body.poseOk,
+        clearanceOk = body.clearanceOk,
         cameraOk = body.cameraOk,
         storageOk = body.storageOk,
         motionOk = body.motionOk,
@@ -1128,7 +1128,6 @@ class RelayLink(
         const val LOOP_CALL_TIMEOUT_MS = 5_000L
         const val LOOP_THREAD = "relay-link"
         /** The only pose source this node has: the operator-approved hover pose (visual_advisory). */
-        const val POSE_SOURCE = "operator_approved"
         val MOTION_OPERATIONS = setOf(CommandOperation.TAKEOFF, CommandOperation.GOTO, CommandOperation.ROTATE_TO)
         val HALT_REASONS = setOf("session_closed", "authentication_failed", "invalid_auth", "unknown_source")
     }

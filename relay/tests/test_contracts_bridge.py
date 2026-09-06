@@ -27,6 +27,7 @@ from relay.tests.conftest import (
     capture_readiness_payload,
     command_payload,
     media_file_payload,
+    media_record,
     node_status_payload,
 )
 
@@ -187,6 +188,24 @@ def test_media_file_frame_rejects_a_malformed_checksum() -> None:
     assert error.value.code == "invalid_media_file"
 
 
+@pytest.mark.parametrize(
+    ("retrieval_status", "checksum"),
+    [("pending", "a" * 64), ("completed", "0" * 64)],
+)
+def test_media_file_frame_binds_checksum_to_retrieval_status(
+    retrieval_status: str, checksum: str
+) -> None:
+    raw = media_file_payload(
+        event_id=f"media-{retrieval_status}",
+        retrieval_status=retrieval_status,
+        checksum_sha256=checksum,
+    )
+
+    with pytest.raises(ContractError, match="checksum") as error:
+        parse_media_file(raw)
+    assert error.value.code == "invalid_media_file"
+
+
 def test_capture_bundle_frame_nests_media_records() -> None:
     raw = capture_bundle_payload(event_id="bundle-1")
 
@@ -197,6 +216,15 @@ def test_capture_bundle_frame_nests_media_records() -> None:
     assert frame.status == "completed"
     assert frame.media[0].file_id == "capture-1-pano-360"
     assert frame.to_event() == raw
+
+
+def test_capture_bundle_frame_bounds_nested_media_records() -> None:
+    record = media_record()
+    raw = capture_bundle_payload(event_id="bundle-too-large", media=[record] * 65)
+
+    with pytest.raises(ContractError, match="at most 64") as error:
+        parse_capture_bundle(raw)
+    assert error.value.code == "invalid_capture_bundle"
 
 
 def test_capture_bundle_failure_requires_a_machine_readable_reason() -> None:

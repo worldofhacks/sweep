@@ -89,6 +89,12 @@ data class MediaFileRecord(
 ) {
     init {
         require(isChecksum(checksumSha256)) { "checksum_sha256 must be 64 lowercase hex characters" }
+        require(retrievalStatus != RetrievalStatus.PENDING || checksumSha256 == PENDING_CHECKSUM) {
+            "pending media requires the all-zero checksum sentinel"
+        }
+        require(retrievalStatus != RetrievalStatus.COMPLETED || checksumSha256 != PENDING_CHECKSUM) {
+            "completed media requires a content checksum"
+        }
     }
 
     fun toJson(): JsonObject = Json.json(
@@ -122,6 +128,12 @@ data class MediaFileRecord(
             if (checksum == null || !isChecksum(checksum)) throw ContractError(code, "checksum_sha256 must be 64 lowercase hex characters")
             val status = (json["retrieval_status"] as? JsonString)?.let { RetrievalStatus.fromWire(it.value) }
                 ?: throw ContractError(code, "retrieval_status must be pending, completed, unsupported, or failed")
+            if (status == RetrievalStatus.PENDING && checksum != PENDING_CHECKSUM) {
+                throw ContractError(code, "pending media requires the all-zero checksum sentinel")
+            }
+            if (status == RetrievalStatus.COMPLETED && checksum == PENDING_CHECKSUM) {
+                throw ContractError(code, "completed media requires a content checksum")
+            }
             return MediaFileRecord(
                 captureId = Fields.nonEmptyString(json["capture_id"], "capture_id", code),
                 fileId = Fields.nonEmptyString(json["file_id"], "file_id", code),
@@ -194,6 +206,7 @@ data class CaptureBundleFrame(
     init {
         require(status == CaptureStatus.COMPLETED || reason != null) { "failed or unsupported bundle requires a reason" }
         require(reason == null || Fields.isMachineCode(reason)) { "bundle reason must be snake_case" }
+        require(media.size <= MAX_MEDIA_RECORDS) { "capture bundle media is limited to $MAX_MEDIA_RECORDS records" }
         require(media.all { it.captureId == captureId && it.droneId == droneId && it.connectionEpoch == connectionEpoch }) {
             "media record does not belong to this bundle"
         }
@@ -222,6 +235,7 @@ data class CaptureBundleFrame(
         private const val CODE = "invalid_capture_bundle"
         val PATTERNS = setOf("pano_360", "reconstruct_8")
         val COVERAGES = setOf("full_equirectangular", "incomplete_vertical_coverage")
+        const val MAX_MEDIA_RECORDS = 64
         private val FIELDS = setOf(
             "v", "t", "type", "event_id", "session", "room_id", "capture_id", "drone_id", "connection_epoch",
             "pattern", "coverage", "status", "media", "reason", "detail",
@@ -237,6 +251,9 @@ data class CaptureBundleFrame(
             val status = (json["status"] as? JsonString)?.let { CaptureStatus.fromWire(it.value) }
                 ?: throw ContractError(CODE, "status must be completed, unsupported, or failed")
             val mediaRaw = json["media"] as? JsonArray ?: throw ContractError(CODE, "media must be a list")
+            if (mediaRaw.items.size > MAX_MEDIA_RECORDS) {
+                throw ContractError(CODE, "media must contain at most $MAX_MEDIA_RECORDS records")
+            }
             val captureId = Fields.nonEmptyString(json["capture_id"], "capture_id", CODE)
             val droneId = Fields.positiveInt32(json["drone_id"], "drone_id", CODE)
             val epoch = Fields.positiveInt32(json["connection_epoch"], "connection_epoch", CODE)

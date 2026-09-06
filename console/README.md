@@ -131,8 +131,8 @@ a `CatalogClient` from `src/catalog/`: captures, the building and its rooms, gen
 per-node details, shared services, health metrics and configuration groups. The relay exposes no
 endpoint for any of these yet, so production wires `UnreportedCatalogClient`: every surface reads
 unreported and every action refuses with its reason. The one exception is the relay's own
-`state.captures` projection (`src/catalog/relay-captures.ts`): the Captures module lists every
-capture the relay closed with a bundle as a record under the session id, with the pose of its
+`state.captures` bounded live projection (`src/catalog/relay-captures.ts`): the Captures module lists each
+currently retained capture the relay closed with an authoritative bundle as a record under the session id, with the pose of its
 first frame and the SHA-256 of a single retrieved file, and every capture that still has files
 without a bundle under `In progress` with its captured and retrieved counts; the download and
 export actions still go through the catalog client and refuse in production. The fixture scenarios carry the design's

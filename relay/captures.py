@@ -1,26 +1,30 @@
-"""Session-retained capture media and bundles, their state projection, and their files.
+"""Session-retained capture media and bundles and their bounded state projection.
 
 The node reports one ``media_file`` frame per captured file (``pending`` at capture time,
 ``completed`` once the bytes are on the phone with their SHA-256) and the autonomy
 composition records the bundle the dispatcher composed from the plan (room, pattern,
 coverage, validated status). Both land here, keyed by aircraft, connection epoch, and
-capture id, so the ``state`` fan-out can list every capture of the session and each
-record is also written as JSON under the session log directory.
+capture id, so the ``state`` fan-out can list the active MVP capture set. The append-only
+audit is the canonical durable record; this projection is deliberately bounded and is
+not a second persistence system.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 
 from relay.contracts import CaptureBundleFrame, MediaFileRecord
 
-_LOGGER = logging.getLogger(__name__)
-
 CaptureKey = tuple[int, int, str]
+MAX_CAPTURE_ENTRIES = 64
+MAX_MEDIA_FILES_PER_CAPTURE = 64
+
+
+class CaptureLedgerError(ValueError):
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
 
 
 @dataclass(slots=True)
@@ -64,29 +68,46 @@ class CaptureEntry:
 
 
 class CaptureLedger:
-    """Retained captures for one session; every mutation returns a snapshot for undo."""
+    """A bounded live projection; complete durable history stays in the audit log."""
 
-    def __init__(self, directory: Path | None) -> None:
-        self._directory = directory
+    def __init__(
+        self,
+        *,
+        max_entries: int = MAX_CAPTURE_ENTRIES,
+        max_media_per_capture: int = MAX_MEDIA_FILES_PER_CAPTURE,
+    ) -> None:
+        if min(max_entries, max_media_per_capture) <= 0:
+            raise ValueError("capture ledger limits must be positive")
+        self._max_entries = max_entries
+        self._max_media_per_capture = max_media_per_capture
         self._entries: dict[CaptureKey, CaptureEntry] = {}
 
-    def snapshot(self) -> dict[CaptureKey, CaptureEntry]:
-        return {key: entry.copy() for key, entry in self._entries.items()}
+    def snapshot_entry(self, key: CaptureKey) -> CaptureEntry | None:
+        entry = self._entries.get(key)
+        return None if entry is None else entry.copy()
 
-    def restore(self, snapshot: dict[CaptureKey, CaptureEntry]) -> None:
-        self._entries = snapshot
+    def restore_entry(self, key: CaptureKey, snapshot: CaptureEntry | None) -> None:
+        if snapshot is None:
+            self._entries.pop(key, None)
+        else:
+            self._entries[key] = snapshot
 
     def record_media(self, record: MediaFileRecord, *, t: int) -> CaptureEntry:
         """Retain one media record; a later record for the same file replaces it."""
-        entry = self._entry(record.drone_id, record.connection_epoch, record.capture_id, t)
+        key = (record.drone_id, record.connection_epoch, record.capture_id)
+        self._check_capacity(key, (record.file_id,))
+        entry = self._candidate(record.drone_id, record.connection_epoch, record.capture_id, t)
         _merge_media(entry, record)
         entry.updated_at = max(entry.updated_at, t)
-        self._write(entry, f"{_safe(record.file_id)}.json", record.to_dict())
+        self._evict_completed_for(key)
+        self._entries[key] = entry
         return entry
 
     def record_bundle(self, bundle: CaptureBundleFrame, *, t: int) -> CaptureEntry:
         """Close a capture with its bundle; nested media replace records of the same file."""
-        entry = self._entry(bundle.drone_id, bundle.connection_epoch, bundle.capture_id, t)
+        key = (bundle.drone_id, bundle.connection_epoch, bundle.capture_id)
+        self._check_capacity(key, tuple(record.file_id for record in bundle.media))
+        entry = self._candidate(bundle.drone_id, bundle.connection_epoch, bundle.capture_id, t)
         for record in bundle.media:
             _merge_media(entry, record)
         entry.room_id = bundle.room_id
@@ -96,8 +117,33 @@ class CaptureLedger:
         entry.reason = bundle.reason
         entry.detail = bundle.detail
         entry.updated_at = max(entry.updated_at, t)
-        self._write(entry, "bundle.json", bundle.to_event())
+        self._evict_completed_for(key)
+        self._entries[key] = entry
         return entry
+
+    def eviction_candidate(self, key: CaptureKey) -> CaptureKey | None:
+        """Oldest closed entry displaced by a new capture, if the projection is full.
+
+        Open captures are never discarded: if every retained entry is still open, the new
+        frame is refused instead. The append-only audit remains the complete history.
+        """
+        if key in self._entries or len(self._entries) < self._max_entries:
+            return None
+        closed = [entry for entry in self._entries.values() if entry.status is not None]
+        if not closed:
+            raise CaptureLedgerError(
+                "capture_limit_exceeded",
+                f"session capture projection is limited to {self._max_entries} open captures",
+            )
+        return min(
+            closed,
+            key=lambda entry: (
+                entry.updated_at,
+                entry.drone_id,
+                entry.connection_epoch,
+                entry.capture_id,
+            ),
+        ).key
 
     def media_files(
         self, drone_id: int, connection_epoch: int, capture_id: str
@@ -113,59 +159,74 @@ class CaptureLedger:
         )
         return [entry.to_projection() for entry in ordered]
 
-    def _entry(self, drone_id: int, connection_epoch: int, capture_id: str, t: int) -> CaptureEntry:
+    def _candidate(
+        self, drone_id: int, connection_epoch: int, capture_id: str, t: int
+    ) -> CaptureEntry:
+        """Return an isolated candidate so a bad bundle cannot partially mutate the projection."""
         key = (drone_id, connection_epoch, capture_id)
         entry = self._entries.get(key)
-        if entry is None:
-            entry = CaptureEntry(
-                capture_id=capture_id,
-                drone_id=drone_id,
-                connection_epoch=connection_epoch,
-                updated_at=t,
-            )
-            self._entries[key] = entry
-        return entry
-
-    def _write(self, entry: CaptureEntry, name: str, payload: Mapping[str, object]) -> None:
-        """Write one JSON record under the session log directory; a disk failure is logged.
-
-        The audit JSONL already holds the same record durably; these files exist so the
-        capture set can be handed on without replaying the session log.
-        """
-        root = self._directory
-        if root is None:
-            return
-        folder = (
-            root
-            / f"drone-{entry.drone_id}"
-            / f"epoch-{entry.connection_epoch}"
-            / _safe(entry.capture_id)
+        if entry is not None:
+            return entry.copy()
+        return CaptureEntry(
+            capture_id=capture_id,
+            drone_id=drone_id,
+            connection_epoch=connection_epoch,
+            updated_at=t,
         )
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            path = folder / name
-            text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-            temporary = path.with_suffix(path.suffix + ".tmp")
-            temporary.write_text(text, encoding="utf-8")
-            temporary.replace(path)
-        except OSError as error:
-            _LOGGER.warning(
-                "capture record not written drone=%s capture=%s name=%s: %s",
-                entry.drone_id,
-                entry.capture_id,
-                name,
-                error,
+
+    def _check_capacity(self, key: CaptureKey, incoming_file_ids: tuple[str, ...]) -> None:
+        # Resolve this before building a candidate so a full projection of open captures
+        # fails without mutation; a closed candidate is evicted only at commit below.
+        self.eviction_candidate(key)
+        entry = self._entries.get(key)
+        existing = () if entry is None else tuple(record.file_id for record in entry.media)
+        if len(set(existing).union(incoming_file_ids)) > self._max_media_per_capture:
+            raise CaptureLedgerError(
+                "capture_limit_exceeded",
+                f"capture projection is limited to {self._max_media_per_capture} files",
             )
+
+    def _evict_completed_for(self, key: CaptureKey) -> None:
+        candidate = self.eviction_candidate(key)
+        if candidate is not None:
+            self._entries.pop(candidate)
 
 
 def _merge_media(entry: CaptureEntry, record: MediaFileRecord) -> None:
     for index, existing in enumerate(entry.media):
         if existing.file_id == record.file_id:
+            if _capture_evidence(existing) != _capture_evidence(record):
+                raise CaptureLedgerError(
+                    "capture_evidence_mismatch",
+                    f"media file {record.file_id} changed immutable capture evidence",
+                )
+            if existing.retrieval_status == "completed" and record.retrieval_status != "completed":
+                raise CaptureLedgerError(
+                    "capture_status_regression",
+                    f"completed media file {record.file_id} cannot return to "
+                    f"{record.retrieval_status}",
+                )
+            if existing.retrieval_status == record.retrieval_status and existing != record:
+                raise CaptureLedgerError(
+                    "capture_record_conflict",
+                    f"media file {record.file_id} changed within retrieval status "
+                    f"{record.retrieval_status}",
+                )
             entry.media[index] = record
             return
     entry.media.append(record)
 
 
-def _safe(value: str) -> str:
-    """Keep ids usable as path segments; the ids themselves stay verbatim in the JSON."""
-    return "".join(char if char.isalnum() or char in "-_." else "_" for char in value)[:200]
+def _capture_evidence(record: MediaFileRecord) -> tuple[object, ...]:
+    """Fields fixed at shutter time; retrieval may change only location, checksum, and status."""
+    return (
+        record.capture_id,
+        record.file_id,
+        record.timestamp_ms,
+        record.drone_id,
+        record.connection_epoch,
+        record.pose,
+        record.actual_yaw_deg,
+        record.gimbal_pitch_deg,
+        record.intrinsics,
+    )

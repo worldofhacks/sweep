@@ -847,6 +847,7 @@ export function isRelayCaptureFile(value: unknown): value is RelayCaptureFile {
   if (!isRecord(value)) return false
   const pose = value.pose
   const intrinsics = value.intrinsics
+  const checksumIsPending = value.checksum_sha256 === '0'.repeat(64)
   return (
     typeof value.capture_id === 'string' &&
     value.capture_id.length > 0 &&
@@ -869,7 +870,9 @@ export function isRelayCaptureFile(value: unknown): value is RelayCaptureFile {
     typeof value.storage_ref === 'string' &&
     value.storage_ref.length > 0 &&
     typeof value.retrieval_status === 'string' &&
-    MEDIA_RETRIEVAL_STATUSES.has(value.retrieval_status)
+    MEDIA_RETRIEVAL_STATUSES.has(value.retrieval_status) &&
+    (value.retrieval_status !== 'pending' || checksumIsPending) &&
+    (value.retrieval_status !== 'completed' || !checksumIsPending)
   )
 }
 
@@ -887,6 +890,7 @@ export function isRelayCaptureRecord(value: unknown): value is RelayCaptureRecor
     isNullableString(value.reason) &&
     isNullableString(value.detail) &&
     Array.isArray(value.files) &&
+    value.files.length <= 64 &&
     value.files.every(isRelayCaptureFile) &&
     isNonNegativeInteger(value.updated_at)
   )
@@ -936,7 +940,9 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !Array.isArray(value.drones) ||
       !value.drones.every(isRelayAircraftState) ||
       (value.captures !== undefined &&
-        (!Array.isArray(value.captures) || !value.captures.every(isRelayCaptureRecord))) ||
+        (!Array.isArray(value.captures) ||
+          value.captures.length > 64 ||
+          !value.captures.every(isRelayCaptureRecord))) ||
       (value.invalidated_intent_ids !== undefined && !isStringArray(value.invalidated_intent_ids)) ||
       (value.invalidation_reason !== undefined &&
         value.invalidation_reason !== 'graceful_leave_roster_change') ||

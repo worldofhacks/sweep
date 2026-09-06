@@ -109,7 +109,7 @@
           },
           "retrieval_status": "completed",
           "storage_ref": "file:///data/user/0/org.worldofhacks.sweep.bridge/files/captures/cap-0042/DJI_0001.JPG",
-          "timestamp_ms": 8001
+          "timestamp_ms": 8000
         }
       ],
       "pattern": "reconstruct_8",

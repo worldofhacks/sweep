@@ -1,6 +1,7 @@
 package org.worldofhacks.sweep.bridge.camera
 
 import java.io.File
+import java.net.URI
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.CopyOnWriteArrayList
@@ -50,6 +51,7 @@ class CameraExecutorTest {
         val executor: CameraExecutor,
         val link: RelayLink,
         val root: File,
+        val frameSink: NodeFrameSink,
     ) : AutoCloseable {
         override fun close() {
             link.close()
@@ -58,7 +60,32 @@ class CameraExecutorTest {
         }
     }
 
-    private fun node(stub: StubRelay, config: CameraConfig = CameraConfig(gimbalTimeoutMs = 1_000, gimbalPollMs = 20)): Node {
+    private class RejectFirstCompleted(private val delegate: NodeFrameSink) : NodeFrameSink {
+        var rejected = false
+
+        override fun identity(): NodeIdentity? = delegate.identity()
+
+        override fun sendCaptureReadiness(body: CaptureReadinessBody): Boolean =
+            delegate.sendCaptureReadiness(body)
+
+        override fun sendMediaFile(record: MediaFileRecord): Boolean {
+            if (record.retrievalStatus == RetrievalStatus.COMPLETED && !rejected) {
+                rejected = true
+                return false
+            }
+            return delegate.sendMediaFile(record)
+        }
+    }
+
+    private fun node(
+        stub: StubRelay,
+        config: CameraConfig = CameraConfig(
+            gimbalTimeoutMs = 1_000,
+            gimbalPollMs = 20,
+            maxTelemetryAgeMs = 10_000,
+        ),
+        rejectFirstCompleted: Boolean = false,
+    ): Node {
         val aircraft = FakeAircraft(connected = true)
         aircraft.update { it.copy(state = FlightStates.HOVERING, x = 1.5, y = -0.25, z = 1.2, yawDeg = 45.0) }
         val port = FakeCameraPort(connected = { aircraft.snapshot.value.aircraftConnected })
@@ -73,10 +100,11 @@ class CameraExecutorTest {
         )
         val nodeConfig = NodeConfig(stub.url, stub.session, 1, String(key, Charsets.UTF_8), "test-node-1", listOf("flight", "reconstruct_8"))
         val link = RelayLink(nodeConfig, aircraft, executor, phone, timing = timing, log = { logs += it }, captureReadiness = executor)
-        executor.frames = link.frames
+        val frameSink = if (rejectFirstCompleted) RejectFirstCompleted(link.frames) else link.frames
+        executor.frames = frameSink
         link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
         link.start()
-        return Node(aircraft, port, executor, link, root)
+        return Node(aircraft, port, executor, link, root, frameSink)
     }
 
     @AfterEach
@@ -111,7 +139,11 @@ class CameraExecutorTest {
                 await("ready") { node.link.state.value.membership == "ready" }
                 val readiness = stub.awaitFrame("capture_readiness")
                 assertEquals("visual_advisory", readiness.str("guidance_mode"))
-                assertEquals("operator_approved", readiness.str("pose_source"))
+                assertEquals("dji_telemetry", readiness.str("pose_source"))
+                assertTrue(readiness.bool("pose_ok"))
+                assertFalse(readiness.bool("clearance_ok"))
+                assertTrue(readiness.bool("motion_ok"))
+                assertFalse(readiness.bool("image_quality_ok"))
                 // The fake camera boots in photo mode as a Mini 3 does, so the arbiter's camera gate is open from join.
                 assertTrue(readiness.bool("camera_ok"))
                 assertTrue(readiness.bool("storage_ok"))
@@ -157,6 +189,8 @@ class CameraExecutorTest {
                 assertEquals(1.5, (pose["x"] as org.worldofhacks.sweep.bridge.core.json.JsonFloat).value)
                 assertEquals(45.0, (pending["actual_yaw_deg"] as org.worldofhacks.sweep.bridge.core.json.JsonFloat).value)
                 assertEquals(-15.0, (pending["gimbal_pitch_deg"] as org.worldofhacks.sweep.bridge.core.json.JsonFloat).value)
+                val intrinsics = pending["intrinsics"] as JsonObject
+                assertEquals(66.0, (intrinsics["horizontal_fov_deg"] as org.worldofhacks.sweep.bridge.core.json.JsonFloat).value)
                 val order = stub.frames.map { it.str("type") + ((it["command_id"] as? JsonString)?.value?.let { id -> "/$id" } ?: "") + ((it["status"] as? JsonString)?.value?.let { s -> "/$s" } ?: "") }
                 val mediaIndex = order.indexOfFirst { it.startsWith("media_file") }
                 val photoCompleted = order.indexOf("acknowledgement/${photo.commandId}/completed")
@@ -169,7 +203,8 @@ class CameraExecutorTest {
                 val retrieve = stub.issueCommand(CommandArgs.RetrieveMedia("cap-1-frame-01"))
                 val retrieved = stub.awaitAck(retrieve.commandId, "completed")
                 val completed = stub.awaitFrame("media_file") { it.str("file_id") == "cap-1-frame-01" && it.str("retrieval_status") == "completed" }
-                val onDisk = File(node.root, "cap-1/FAKE_0001.JPG")
+                val onDisk = File(URI(completed.str("storage_ref")))
+                assertTrue(onDisk.toPath().startsWith(node.root.toPath()))
                 assertTrue(onDisk.isFile, "downloaded file exists at ${onDisk.absolutePath}")
                 assertEquals(sha256(onDisk), completed.str("checksum_sha256"))
                 assertTrue(node.port.bytesOf(1)!!.contentEquals(onDisk.readBytes()), "bytes on disk are the camera's bytes")
@@ -188,6 +223,7 @@ class CameraExecutorTest {
                 stub.awaitAck(other.commandId, "completed")
                 stub.awaitFrame("media_file") { it.str("file_id") == "cap-2-frame-01" }
                 assertEquals(RetrievalStatus.PENDING, node.executor.status.value.files.last().record.retrievalStatus)
+                assertEquals(listOf(45.0), node.executor.progress.value.acceptedHeadingsDeg)
             }
         }
     }
@@ -264,8 +300,10 @@ class CameraExecutorTest {
                 assertEquals("download_failure", failed.str("reason"))
                 assertTrue(failed.str("detail").contains("truncated: 100 of"), failed.str("detail"))
                 assertTrue(failed.str("detail").contains("[retryable]"), failed.str("detail"))
-                val onDisk = File(node.root, "cap-4/FAKE_0001.JPG")
-                assertFalse(onDisk.exists(), "the partial file is removed")
+                assertFalse(
+                    node.root.walkTopDown().any { it.isFile },
+                    "the partial file is removed",
+                )
                 val records = stub.frames("media_file") { it.str("file_id") == "cap-4-frame-01" }
                 assertEquals(listOf("pending"), records.map { it.str("retrieval_status") }, "no completed record for a short file")
                 assertEquals(RetrievalStatus.PENDING, node.executor.status.value.files.single().record.retrievalStatus)
@@ -276,9 +314,166 @@ class CameraExecutorTest {
                 val retry = stub.issueCommand(CommandArgs.RetrieveMedia("cap-4-frame-01"))
                 stub.awaitAck(retry.commandId, "completed")
                 val completed = stub.awaitFrame("media_file") { it.str("file_id") == "cap-4-frame-01" && it.str("retrieval_status") == "completed" }
+                val onDisk = File(URI(completed.str("storage_ref")))
                 assertTrue(onDisk.isFile)
                 assertEquals(sha256(onDisk), completed.str("checksum_sha256"))
                 assertTrue(node.port.bytesOf(1)!!.contentEquals(onDisk.readBytes()), "the retried file is whole")
+            }
+        }
+    }
+
+    @Test
+    fun `completed local evidence is retained and only republished after a relay send failure`() {
+        StubRelay(key).use { stub ->
+            node(stub, rejectFirstCompleted = true).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                stub.awaitAck(stub.issueCommand(CommandArgs.CameraReady).commandId, "completed")
+                val photo = stub.issueCommand(CommandArgs.CapturePhoto("cap-publish-retry"))
+                stub.awaitAck(photo.commandId, "completed")
+
+                val first = stub.issueCommand(CommandArgs.RetrieveMedia("cap-publish-retry-frame-01"))
+                val failed = stub.awaitAck(first.commandId, "failed")
+                assertEquals("download_failure", failed.str("reason"))
+                assertTrue(failed.str("detail").contains("retained for publication retry"))
+                assertEquals(1, node.port.downloads)
+                val retained = node.executor.status.value.files.single()
+                assertEquals(RetrievalStatus.COMPLETED, retained.record.retrievalStatus)
+                assertTrue(File(retained.path!!).isFile)
+
+                val retry = stub.issueCommand(CommandArgs.RetrieveMedia("cap-publish-retry-frame-01"))
+                stub.awaitAck(retry.commandId, "completed")
+                val completed = stub.awaitFrame("media_file") {
+                    it.str("file_id") == "cap-publish-retry-frame-01" &&
+                        it.str("retrieval_status") == "completed"
+                }
+                assertEquals(retained.record.checksumSha256, completed.str("checksum_sha256"))
+                assertEquals(1, node.port.downloads, "the verified local file is not downloaded again")
+                assertTrue((node.frameSink as RejectFirstCompleted).rejected)
+            }
+        }
+    }
+
+    @Test
+    fun `capture fails closed on unmeasured evidence preserves frame number and bounds the epoch ledger`() {
+        StubRelay(key).use { stub ->
+            node(
+                stub,
+                CameraConfig(gimbalTimeoutMs = 1_000, gimbalPollMs = 20, maxTrackedFiles = 1),
+            ).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+
+                val measured = node.aircraft.snapshot.value.hardware
+                node.aircraft.setHardware(measured.copy(measuredHfovDeg = null))
+                val noCalibration = stub.issueCommand(CommandArgs.CameraReady)
+                val calibrationFailure = stub.awaitAck(noCalibration.commandId, "failed")
+                assertEquals("camera_not_ready", calibrationFailure.str("reason"))
+                assertTrue(calibrationFailure.str("detail").contains("field of view unreported"))
+
+                node.aircraft.setHardware(measured)
+                node.aircraft.update { it.copy(positionAvailable = false) }
+                val noPose = stub.issueCommand(CommandArgs.CapturePhoto("cap-safe"))
+                val poseFailure = stub.awaitAck(noPose.commandId, "failed")
+                assertEquals("camera_not_ready", poseFailure.str("reason"))
+                assertTrue(poseFailure.str("detail").contains("position and attitude"))
+                assertEquals(0, node.port.shots, "missing pose must not fire the shutter")
+
+                node.aircraft.update { it.copy(positionAvailable = true) }
+                node.port.shutterFailure = "injected shutter refusal"
+                val refused = stub.issueCommand(CommandArgs.CapturePhoto("cap-safe"))
+                assertEquals("camera_failure", stub.awaitAck(refused.commandId, "failed").str("reason"))
+                assertEquals(0, node.port.shots, "a refused shutter must not consume a frame number")
+
+                node.port.shutterFailure = null
+                val retry = stub.issueCommand(CommandArgs.CapturePhoto("cap-safe"))
+                stub.awaitAck(retry.commandId, "completed")
+                stub.awaitFrame("media_file") { it.str("file_id") == "cap-safe-frame-01" }
+                assertEquals(1, node.port.shots)
+
+                val overLimit = stub.issueCommand(CommandArgs.CapturePhoto("cap-safe"))
+                val bounded = stub.awaitAck(overLimit.commandId, "failed")
+                assertEquals("capture_limit_exceeded", bounded.str("reason"))
+                assertEquals(1, node.port.shots, "the bounded ledger refuses before another shutter")
+                assertEquals(1, node.executor.status.value.files.size)
+            }
+        }
+    }
+
+    @Test
+    fun `capture refuses stale shutter telemetry until every measurement is refreshed`() {
+        StubRelay(key).use { stub ->
+            node(
+                stub,
+                CameraConfig(
+                    gimbalTimeoutMs = 1_000,
+                    gimbalPollMs = 20,
+                    maxTelemetryAgeMs = 250,
+                ),
+            ).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                Thread.sleep(300)
+
+                val stale = stub.issueCommand(CommandArgs.CapturePhoto("cap-stale"))
+                val refused = stub.awaitAck(stale.commandId, "failed")
+                assertEquals("camera_not_ready", refused.str("reason"))
+                assertTrue(refused.str("detail").contains("older than 250 ms"))
+                assertEquals(0, node.port.shots)
+
+                node.aircraft.update { it }
+                val fresh = stub.issueCommand(CommandArgs.CapturePhoto("cap-stale"))
+                stub.awaitAck(fresh.commandId, "completed")
+                stub.awaitFrame("media_file") { it.str("file_id") == "cap-stale-frame-01" }
+                assertEquals(1, node.port.shots)
+            }
+        }
+    }
+
+    @Test
+    fun `capture and retrieval enforce per-file and retained-byte limits`() {
+        StubRelay(key).use { stub ->
+            node(
+                stub,
+                CameraConfig(
+                    gimbalTimeoutMs = 1_000,
+                    gimbalPollMs = 20,
+                    maxFileBytes = 100,
+                    maxStoredBytes = 200,
+                ),
+            ).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                val photo = stub.issueCommand(CommandArgs.CapturePhoto("cap-large"))
+                val refused = stub.awaitAck(photo.commandId, "failed")
+                assertEquals("capture_limit_exceeded", refused.str("reason"))
+                assertTrue(refused.str("detail").contains("per file"))
+                assertTrue(node.executor.status.value.files.isEmpty())
+                assertTrue(stub.frames("media_file").isEmpty())
+            }
+        }
+
+        StubRelay(key).use { stub ->
+            node(
+                stub,
+                CameraConfig(
+                    gimbalTimeoutMs = 1_000,
+                    gimbalPollMs = 20,
+                    maxFileBytes = 5_000,
+                    maxStoredBytes = 5_000,
+                ),
+            ).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                val photo = stub.issueCommand(CommandArgs.CapturePhoto("cap-disk"))
+                stub.awaitAck(photo.commandId, "completed")
+                stub.awaitFrame("media_file") { it.str("file_id") == "cap-disk-frame-01" }
+                File(node.root, "prior-session.bin").writeBytes(ByteArray(1_000))
+
+                val retrieve = stub.issueCommand(CommandArgs.RetrieveMedia("cap-disk-frame-01"))
+                val refused = stub.awaitAck(retrieve.commandId, "failed")
+                assertEquals("capture_limit_exceeded", refused.str("reason"))
+                assertTrue(refused.str("detail").contains("capture-storage limit"))
+                assertEquals(
+                    listOf("pending"),
+                    stub.frames("media_file") { it.str("file_id") == "cap-disk-frame-01" }
+                        .map { it.str("retrieval_status") },
+                )
             }
         }
     }

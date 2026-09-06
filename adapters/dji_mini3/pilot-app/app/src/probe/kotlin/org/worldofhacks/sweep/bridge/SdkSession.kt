@@ -85,6 +85,7 @@ internal class SdkSession(private val application: Application) :
     private val probe = ProbeAircraft(
         phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
         androidVersion = Build.VERSION.RELEASE ?: "",
+        measuredHfovDeg = BuildConfig.CAMERA_MEASURED_HFOV_DEG.takeIf { it > 0.0 },
         sdkVersion = { runCatching { SDKManager.getInstance().sdkVersion }.getOrNull().orEmpty() },
         log = { name, detail -> model.event(name, detail) },
         record = { key, event, status -> recordKey(key, event, status) },
@@ -182,7 +183,11 @@ internal class SdkSession(private val application: Application) :
     // Phase G: the camera and media path on the DJI camera, gimbal, and media manager. Its
     // facts feed the capabilities frame through the aircraft snapshot; the relay link binds
     // its frame sink when it starts. Files land under filesDir/captures/<capture_id>/.
-    private val cameraPort = DjiCameraPort { name, detail -> model.event(name, detail) }
+    private val cameraPort = DjiCameraPort(
+        calibratedPhotoWidthPx = BuildConfig.CAMERA_PHOTO_WIDTH_PX,
+        calibratedPhotoHeightPx = BuildConfig.CAMERA_PHOTO_HEIGHT_PX,
+        calibratedHfovDeg = BuildConfig.CAMERA_MEASURED_HFOV_DEG.takeIf { it > 0.0 },
+    ) { name, detail -> model.event(name, detail) }
     override val camera: CameraExecutor = CameraExecutor(
         cameraPort,
         probe,
