@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from arbiter.safety import CONFIRMATION_REQUIRED_INTENTS
 from language.compiler import CompiledPlan, SessionCompilerAudit, TranscriptCompiler
 from language.contracts import CompilerOutcome, CompilerReason, OutcomeKind, ProposedIntent
+from language.navigation import NavigationGrounding
 from language.telemetry import TraceSink
 from language.transport import PINNED_COMPILER_MODEL, PROMPT_SCHEMA_VERSION, ModelTransport
 from planner.models import TranslationGrounding, TranslationPolicy
@@ -36,10 +37,15 @@ DEFAULT_STATE_MAX_AGE_MS = 2_000
 
 SessionResolver = Callable[[str], "RelaySession | None"]
 HeadingResolver = Callable[[Mapping[str, object]], Mapping[int, float]]
+NavigationResolver = Callable[[Mapping[str, object]], NavigationGrounding | None]
 
 
 def _no_headings(_relay_state: Mapping[str, object]) -> Mapping[int, float]:
     return {}
+
+
+def _no_navigation(_relay_state: Mapping[str, object]) -> NavigationGrounding | None:
+    return None
 
 
 class RelayTranscriptCompiler:
@@ -63,6 +69,7 @@ class RelayTranscriptCompiler:
         transport: ModelTransport,
         translation_policy: TranslationPolicy | None = None,
         headings: HeadingResolver = _no_headings,
+        navigation: NavigationResolver = _no_navigation,
         capability_profile: CapabilityProfile | None = None,
         tracer: TraceSink | None = None,
         plan_ttl_ms: int = DEFAULT_PLAN_TTL_MS,
@@ -74,6 +81,7 @@ class RelayTranscriptCompiler:
         self._transport = transport
         self._translation_policy = translation_policy
         self._headings = headings
+        self._navigation = navigation
         self._capability_profile = capability_profile
         self._tracer = tracer
         self._plan_ttl_ms = plan_ttl_ms
@@ -115,6 +123,7 @@ class RelayTranscriptCompiler:
             capability_version=capability_version,
             rooms=rooms,
             translation=self._translation(relay_state),
+            navigation=self._navigation(relay_state),
             capability_profile=self._capability_profile,
             qualified_voice_intents=(),
             now_ms=now_ms,

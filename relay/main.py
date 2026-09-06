@@ -18,11 +18,14 @@ from collections.abc import Callable, Mapping, Sequence
 
 import uvicorn
 
+from language.navigation import navigation_from_record
 from language.relay_compiler import RelayTranscriptCompiler
 from language.transport import AnthropicTransport, ModelTransport
 from planner.models import TranslationPolicy
 from relay.app import RelayRuntime
 from relay.autonomy import AutonomyConfig, create_autonomy_app
+from relay.capabilities import CapabilityProfile, IntentName
+from relay.navigation_metadata import navigation_metadata
 from relay.settings import RelaySettings, SettingsError
 from relay.voice import TranscriptionTransport, TranscriptService
 
@@ -59,6 +62,25 @@ def build_transcript_service(
             )
             return TranscriptService(transcription=transcription)
         transport = AnthropicTransport(api_key=api_key)
+    base_profile = config.planning.effective_capability_profile()
+    capability_profile = (
+        base_profile
+        if config.navigation_deployment is None
+        else CapabilityProfile(
+            f"{base_profile.name}.navigation",
+            base_profile.enabled_intent_names | {IntentName.NAVIGATE},
+        )
+    )
+
+    def navigation(_relay_state: Mapping[str, object]):
+        deployment = config.navigation_deployment
+        if deployment is None:
+            return None
+        metadata = navigation_metadata(deployment.runtime)
+        return navigation_from_record(
+            {**metadata, **capability_profile.state_value()}, capability_profile
+        )
+
     compiler = RelayTranscriptCompiler(
         sessions=runtime.sessions.get,
         transport=transport,
@@ -66,7 +88,8 @@ def build_transcript_service(
             frame=config.planning.translation_frame,
             step_m=config.planning.translation_step_m,
         ),
-        capability_profile=config.planning.effective_capability_profile(),
+        navigation=navigation,
+        capability_profile=capability_profile,
     )
     return TranscriptService(transcription=transcription, compiler=compiler)
 
