@@ -1,6 +1,7 @@
 package org.worldofhacks.sweep.bridge.video
 
 import android.view.Surface
+import android.os.SystemClock
 import dji.sdk.keyvalue.key.FlightControllerKey
 import dji.sdk.keyvalue.key.KeyTools
 import dji.sdk.keyvalue.value.common.Attitude
@@ -29,15 +30,19 @@ class DjiFpv(
     filesDir: File,
     phone: PhoneStatusSource?,
     private val log: (name: String, detail: String) -> Unit,
+    override val captureProgress: CaptureProgressSource = IdleCaptureProgress,
 ) : FpvSession {
-    private val tracker = StreamEvidenceTracker(filesDir, phone)
+    private val tracker = StreamEvidenceTracker(
+        filesDir,
+        phone,
+        receivedAtMonotonicMs = SystemClock::elapsedRealtime,
+    )
     private val holder = Any()
     private val lock = Any()
     private var listening = false
 
     private val _attitude = MutableStateFlow(AircraftAttitude())
     override val attitude: StateFlow<AircraftAttitude> = _attitude.asStateFlow()
-    override val captureProgress: CaptureProgressSource = IdleCaptureProgress
 
     private val camera = DjiCameraStream(tracker, log)
     override val cameraStream: CameraStream
@@ -143,6 +148,7 @@ class DjiCameraStream(
                 manager.addReceiveStreamListener(CAMERA, listener)
                 attached = true
             }
+            tracker.note("receive-stream listener attached")
             log("Camera stream", "surface attached ${width}x$height; receive-stream listener on")
         }.onFailure { error ->
             log("Camera stream", "attach failed: ${error.message ?: error.javaClass.simpleName}")
@@ -160,6 +166,7 @@ class DjiCameraStream(
             log("Camera stream", "release failed: ${error.message ?: error.javaClass.simpleName}")
         }
         attached = false
+        tracker.note("receive-stream listener released: $reason")
         log("Camera stream", "surface released: $reason")
     }
 

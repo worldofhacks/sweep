@@ -5,6 +5,12 @@ import pytest
 from planner.models import CommandOperation
 from relay.auth import sign_event, verify_event_signature
 from relay.contracts import (
+    MAX_CAPABILITY_ITEM_UTF8_BYTES,
+    MAX_CAPABILITY_LIST_CANONICAL_BYTES,
+    MAX_CAPABILITY_LIST_ITEMS,
+    MAX_CAPTURE_BUNDLE_MEDIA_ITEMS,
+    MAX_COVERAGE_MISSING_ITEMS,
+    MAX_STORAGE_REMAINING_BYTES,
     ContractError,
     DeltaKind,
     GuidanceMode,
@@ -27,6 +33,7 @@ from relay.tests.conftest import (
     capture_readiness_payload,
     command_payload,
     media_file_payload,
+    media_record,
     node_status_payload,
 )
 
@@ -150,6 +157,68 @@ def test_capabilities_frame_rejects_an_inverted_gimbal_range() -> None:
     assert error.value.code == "invalid_capabilities"
 
 
+def test_capabilities_frame_bounds_storage_to_the_android_long_contract() -> None:
+    frame = parse_capabilities(
+        capabilities_payload(
+            event_id="capabilities-storage-max",
+            storage_remaining_bytes=MAX_STORAGE_REMAINING_BYTES,
+        )
+    )
+    assert frame.storage_remaining_bytes == MAX_STORAGE_REMAINING_BYTES
+
+    raw = capabilities_payload(
+        event_id="capabilities-storage-overflow",
+        storage_remaining_bytes=MAX_STORAGE_REMAINING_BYTES + 1,
+    )
+    with pytest.raises(ContractError, match="storage_remaining_bytes must be at most") as error:
+        parse_capabilities(raw)
+    assert error.value.code == "invalid_capabilities"
+
+
+@pytest.mark.parametrize(
+    "modes",
+    [
+        [f"mode-{index}" for index in range(MAX_CAPABILITY_LIST_ITEMS)],
+        ["😀" * (MAX_CAPABILITY_ITEM_UTF8_BYTES // 4)],
+        [f"{index:02d}" + "x" * 122 for index in range(63)] + ["last-" + "x" * 182],
+    ],
+)
+def test_capabilities_frame_accepts_exact_mode_list_utf8_and_aggregate_edges(
+    modes: list[str],
+) -> None:
+    frame = parse_capabilities(
+        capabilities_payload(event_id="capabilities-bounded", native_panorama_modes=modes)
+    )
+
+    assert frame.native_panorama_modes == tuple(modes)
+
+
+@pytest.mark.parametrize(
+    ("modes", "detail"),
+    [
+        (
+            [f"mode-{index}" for index in range(MAX_CAPABILITY_LIST_ITEMS + 1)],
+            f"at most {MAX_CAPABILITY_LIST_ITEMS} items",
+        ),
+        (
+            [f"{index:02d}" + "😀" * 510 for index in range(44)],
+            f"at most {MAX_CAPABILITY_ITEM_UTF8_BYTES} UTF-8 bytes",
+        ),
+        (
+            [f"{index:02d}" + "x" * 122 for index in range(63)] + ["last-" + "x" * 183],
+            f"at most {MAX_CAPABILITY_LIST_CANONICAL_BYTES} UTF-8 bytes",
+        ),
+    ],
+)
+def test_capabilities_frame_rejects_oversized_mode_claims(modes: list[str], detail: str) -> None:
+    raw = capabilities_payload(event_id="capabilities-unbounded", native_panorama_modes=modes)
+
+    with pytest.raises(ContractError, match=detail) as error:
+        parse_capabilities(raw)
+
+    assert error.value.code == "invalid_capabilities"
+
+
 def test_media_file_frame_mirrors_the_adapter_media_file_shape() -> None:
     raw = media_file_payload(event_id="media-1")
 
@@ -163,8 +232,42 @@ def test_media_file_frame_mirrors_the_adapter_media_file_shape() -> None:
     assert frame.to_event() == raw
 
 
+def test_media_file_frame_accepts_a_pending_capture_time_record() -> None:
+    raw = media_file_payload(
+        event_id="media-pending", retrieval_status="pending", checksum_sha256="0" * 64
+    )
+
+    frame = parse_media_file(raw)
+
+    assert frame.file.retrieval_status == "pending"
+    assert frame.file.checksum_sha256 == "0" * 64
+    with pytest.raises(ContractError, match="retrieval_status"):
+        parse_media_file(media_file_payload(event_id="media-bad", retrieval_status="queued"))
+    # A bundle closes a set; its status vocabulary has no pending value.
+    with pytest.raises(ContractError, match="status"):
+        parse_capture_bundle(capture_bundle_payload(event_id="bundle-bad", status="pending"))
+
+
 def test_media_file_frame_rejects_a_malformed_checksum() -> None:
     raw = media_file_payload(event_id="media-bad", checksum_sha256="abc")
+
+    with pytest.raises(ContractError, match="checksum") as error:
+        parse_media_file(raw)
+    assert error.value.code == "invalid_media_file"
+
+
+@pytest.mark.parametrize(
+    ("retrieval_status", "checksum"),
+    [("pending", "a" * 64), ("completed", "0" * 64)],
+)
+def test_media_file_frame_binds_checksum_to_retrieval_status(
+    retrieval_status: str, checksum: str
+) -> None:
+    raw = media_file_payload(
+        event_id=f"media-{retrieval_status}",
+        retrieval_status=retrieval_status,
+        checksum_sha256=checksum,
+    )
 
     with pytest.raises(ContractError, match="checksum") as error:
         parse_media_file(raw)
@@ -181,6 +284,48 @@ def test_capture_bundle_frame_nests_media_records() -> None:
     assert frame.status == "completed"
     assert frame.media[0].file_id == "capture-1-pano-360"
     assert frame.to_event() == raw
+
+
+def test_capture_bundle_accepts_the_exact_reconstruct_eight_media_ceiling() -> None:
+    media = [
+        media_record(file_id=f"capture-1-frame-{index}", actual_yaw_deg=index * 45)
+        for index in range(MAX_CAPTURE_BUNDLE_MEDIA_ITEMS)
+    ]
+    raw = capture_bundle_payload(
+        event_id="bundle-reconstruct-8",
+        pattern="reconstruct_8",
+        coverage="incomplete_vertical_coverage",
+        media=media,
+    )
+
+    frame = parse_capture_bundle(raw)
+
+    assert len(frame.media) == MAX_CAPTURE_BUNDLE_MEDIA_ITEMS
+    assert frame.to_event() == raw
+
+
+def test_capture_bundle_rejects_more_than_the_capture_protocol_media_ceiling() -> None:
+    media = [
+        media_record(file_id=f"capture-1-frame-{index}")
+        for index in range(MAX_CAPTURE_BUNDLE_MEDIA_ITEMS + 1)
+    ]
+
+    with pytest.raises(ContractError, match=f"at most {MAX_CAPTURE_BUNDLE_MEDIA_ITEMS}") as error:
+        parse_capture_bundle(capture_bundle_payload(event_id="bundle-too-many", media=media))
+
+    assert error.value.code == "invalid_capture_bundle"
+
+
+def test_capture_bundle_rejects_duplicate_media_identity() -> None:
+    with pytest.raises(ContractError, match="duplicate file_id"):
+        parse_capture_bundle(
+            capture_bundle_payload(
+                event_id="bundle-duplicate-media",
+                media=[media_record(file_id="duplicate")] * 2,
+                status="failed",
+                reason="capture_failed",
+            )
+        )
 
 
 def test_capture_bundle_failure_requires_a_machine_readable_reason() -> None:
@@ -218,6 +363,29 @@ def test_capture_readiness_frame_keeps_guidance_mode_and_delta() -> None:
         coverage_missing=[],
     )
     assert parse_capture_readiness(unassigned).suggested_delta is None
+
+
+def test_capture_readiness_bounds_unique_missing_headings_to_reconstruct_eight() -> None:
+    headings = [index * 45 for index in range(MAX_COVERAGE_MISSING_ITEMS)]
+
+    frame = parse_capture_readiness(
+        capture_readiness_payload(event_id="readiness-max-coverage", coverage_missing=headings)
+    )
+    assert frame.coverage_missing == tuple(float(value) for value in headings)
+
+    with pytest.raises(ContractError, match=f"at most {MAX_COVERAGE_MISSING_ITEMS}"):
+        parse_capture_readiness(
+            capture_readiness_payload(
+                event_id="readiness-too-many-headings",
+                coverage_missing=[index * 40 for index in range(MAX_COVERAGE_MISSING_ITEMS + 1)],
+            )
+        )
+    with pytest.raises(ContractError, match="may not contain duplicates"):
+        parse_capture_readiness(
+            capture_readiness_payload(
+                event_id="readiness-duplicate-heading", coverage_missing=[0.0, -0.0]
+            )
+        )
 
 
 @pytest.mark.parametrize(

@@ -503,6 +503,114 @@ class FramesTest {
     }
 
     @Test
+    fun `capture readiness bounds unique missing coverage at reconstruct eight`() {
+        val headings = List(CaptureReadinessFrame.MAX_COVERAGE_MISSING_ITEMS) { it * 45.0 }
+        val exact = JsonObject(
+            wire("capture_readiness").fields + ("coverage_missing" to Json.value(headings)),
+        )
+        assertEquals(headings, CaptureReadinessFrame.parse(exact).coverageMissing)
+
+        val oversized = List(CaptureReadinessFrame.MAX_COVERAGE_MISSING_ITEMS + 1) { it * 40.0 }
+        assertThrows(ContractError::class.java) {
+            CaptureReadinessFrame.parse(
+                JsonObject(
+                    wire("capture_readiness").fields +
+                        ("coverage_missing" to Json.value(oversized)),
+                ),
+            )
+        }
+        assertThrows(ContractError::class.java) {
+            CaptureReadinessFrame.parse(
+                JsonObject(
+                    wire("capture_readiness").fields +
+                        ("coverage_missing" to Json.value(listOf(0.0, -0.0))),
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CaptureReadinessFrame.parse(exact).copy(coverageMissing = oversized)
+        }
+    }
+
+    @Test
+    fun `media file encodes and parses with the pending capture-time status`() {
+        val record = MediaFileRecord(
+            captureId = "cap-0042",
+            fileId = "cap-0042-frame-01",
+            timestampMs = 8000,
+            droneId = 1,
+            connectionEpoch = 1,
+            pose = WirePose(1.5, -0.25, 1.0),
+            actualYawDeg = 45.0,
+            gimbalPitchDeg = 0.0,
+            intrinsics = WireIntrinsics(4000, 3000, 82.1, "rectilinear"),
+            checksumSha256 = MediaFileRecord.PENDING_CHECKSUM,
+            storageRef = "aircraft://sdcard/DJI_0001.JPG",
+            retrievalStatus = RetrievalStatus.PENDING,
+        )
+        val frame = MediaFileFrame(t = 8000, eventId = "evt-media-1", session = "session-a", file = record)
+        assertSameWire("media_file", frame.toEvent())
+        assertEquals(frame, MediaFileFrame.parse(wire("media_file")))
+        assertThrows(ContractError::class.java) {
+            MediaFileFrame.parse(JsonObject(wire("media_file").fields + ("retrieval_status" to Json.value("queued"))))
+        }
+        assertThrows(ContractError::class.java) {
+            MediaFileFrame.parse(JsonObject(wire("media_file").fields + ("checksum_sha256" to Json.value("abc"))))
+        }
+        assertThrows(IllegalArgumentException::class.java) { record.copy(checksumSha256 = "ABC") }
+        assertThrows(IllegalArgumentException::class.java) { record.copy(checksumSha256 = "a".repeat(64)) }
+        assertThrows(IllegalArgumentException::class.java) {
+            record.copy(retrievalStatus = RetrievalStatus.COMPLETED)
+        }
+        assertThrows(ContractError::class.java) {
+            MediaFileFrame.parse(
+                JsonObject(
+                    wire("media_file").fields +
+                        ("checksum_sha256" to Json.value("a".repeat(64))),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `capture bundle accepts eight unique frames and refuses duplicate or ninth frames`() {
+        val bundle = CaptureBundleFrame.parse(wire("capture_bundle"))
+        val frames = List(8) { bundle.media.single().copy(fileId = "frame-$it") }
+        val exact = bundle.copy(media = frames)
+        assertEquals(exact, CaptureBundleFrame.parse(exact.toEvent()))
+        assertThrows(IllegalArgumentException::class.java) { bundle.copy(media = frames + frames.first()) }
+        assertThrows(IllegalArgumentException::class.java) { bundle.copy(media = listOf(frames.first(), frames.first())) }
+        for (invalid in listOf(frames + frames.first(), listOf(frames.first(), frames.first()))) {
+            assertThrows(ContractError::class.java) {
+                CaptureBundleFrame.parse(JsonObject(exact.toEvent().fields + ("media" to Json.value(invalid.map { it.toJson() }))))
+            }
+        }
+    }
+
+    @Test
+    fun `capture bundle nests media records and requires a reason on failure`() {
+        val bundle = CaptureBundleFrame.parse(wire("capture_bundle"))
+        assertSameWire("capture_bundle", bundle.toEvent())
+        assertEquals("reconstruct_8", bundle.pattern)
+        assertEquals(CaptureStatus.COMPLETED, bundle.status)
+        assertEquals(RetrievalStatus.COMPLETED, bundle.media.single().retrievalStatus)
+        assertEquals("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", bundle.media.single().checksumSha256)
+        assertThrows(ContractError::class.java) {
+            CaptureBundleFrame.parse(JsonObject(wire("capture_bundle").fields + ("status" to Json.value("failed"))))
+        }
+        assertThrows(ContractError::class.java) {
+            CaptureBundleFrame.parse(JsonObject(wire("capture_bundle").fields + ("status" to Json.value("pending"))))
+        }
+        assertThrows(ContractError::class.java) {
+            CaptureBundleFrame.parse(JsonObject(wire("capture_bundle").fields + ("capture_id" to Json.value("other"))))
+        }
+        assertThrows(IllegalArgumentException::class.java) { bundle.copy(status = CaptureStatus.FAILED, reason = null) }
+        assertThrows(IllegalArgumentException::class.java) {
+            bundle.copy(media = List(CaptureBundleFrame.MAX_MEDIA_RECORDS + 1) { bundle.media.single() })
+        }
+    }
+
+    @Test
     fun `node status encodes and parses`() {
         val status = NodeStatusFrame(
             t = 7000,

@@ -106,6 +106,7 @@ class FakeNode:
         self._frame_counts: dict[str, int] = {}
         self._media: dict[str, dict[str, object]] = {}
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
+        self._periodic_telemetry: tuple[int, int] | None = None
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -216,6 +217,7 @@ class FakeNode:
                 self._handle_membership(frame)
             elif frame_type == "state":
                 self._roster_version = int(frame.get("roster_version", self._roster_version))
+                self._release_admitted_periodic_telemetry(frame)
             elif (
                 frame_type == "refusal"
                 and frame.get("source") == "relay"
@@ -226,13 +228,14 @@ class FakeNode:
                 _LOGGER.warning(
                     "relay refused a node frame: %s (%s)", frame.get("reason"), frame.get("detail")
                 )
+                self._release_refused_periodic_telemetry()
 
     async def _telemetry_loop(self) -> None:
         interval = 1.0 / self.config.telemetry_hz
         while True:
             await asyncio.sleep(interval)
             if self._connection_epoch is not None:
-                self._enqueue(self._telemetry_frame())
+                self._enqueue_periodic_telemetry()
 
     def _handle_membership(self, frame: dict[str, object]) -> None:
         epoch = frame.get("connection_epoch")
@@ -243,7 +246,7 @@ class FakeNode:
             return
         self._connection_epoch = epoch
         self._last_seq = 0
-        self._enqueue(self._telemetry_frame())
+        self._enqueue_telemetry()
         self._enqueue(
             self._signed_membership(
                 "readiness",
@@ -288,6 +291,8 @@ class FakeNode:
 
     def _finish_command(self, frame: CommandFrame) -> None:
         status, reason, detail = self._execute(frame)
+        if status == "completed" and self._connection_epoch is not None:
+            self._enqueue_telemetry()
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
 
     def _admission_refusal(
@@ -386,6 +391,44 @@ class FakeNode:
     def _enqueue(self, frame: dict[str, object]) -> None:
         assert self._outbound is not None
         self._outbound.put_nowait(frame)
+
+    def _enqueue_periodic_telemetry(self) -> None:
+        if self._periodic_telemetry is not None:
+            return
+        frame = self._telemetry_frame()
+        t = frame["t"]
+        epoch = frame["connection_epoch"]
+        assert isinstance(t, int)
+        assert isinstance(epoch, int)
+        self._periodic_telemetry = (t, epoch)
+        self._enqueue(frame)
+
+    def _enqueue_telemetry(self) -> None:
+        assert self._outbound is not None
+        self._outbound.put_nowait(self._telemetry_frame())
+
+    def _release_admitted_periodic_telemetry(self, state: dict[str, object]) -> None:
+        pending = self._periodic_telemetry
+        drones = state.get("drones")
+        if pending is None or not isinstance(drones, list):
+            return
+        pending_t, pending_epoch = pending
+        for drone in drones:
+            if not isinstance(drone, dict):
+                continue
+            if (
+                drone.get("drone_id") == self.config.drone_id
+                and drone.get("connection_epoch") == pending_epoch
+                and isinstance(last_seen_at := drone.get("last_seen_at"), int)
+                and last_seen_at >= pending_t
+            ):
+                self._periodic_telemetry = None
+                return
+
+    def _release_refused_periodic_telemetry(self) -> None:
+        if self._periodic_telemetry is None:
+            return
+        self._periodic_telemetry = None
 
     def _next_t(self) -> int:
         self._last_t = max(self._last_t, _epoch_ms())

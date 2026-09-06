@@ -13,9 +13,11 @@ from adapters.protocols import AdapterError, CameraCapture, SwarmAdapter
 from adapters.sim.camera import SimCamera, SimCameraConfig
 from adapters.sim.flight import SimFlightAdapter
 from arbiter.safety import SafetyArbiter
-from planner.models import FleetSnapshot
+from planner.models import Command, FleetSnapshot, Plan
+from planner.navigation_runtime import NavigationRuntime
 from relay.app import RelayRuntime
 from relay.contracts import AdapterAcknowledgement, CapabilitiesFrame, MediaFileRecord
+from relay.navigation_control import NavigationControl
 from relay.session import RelaySession
 from relay.settings import AdapterBackend
 
@@ -29,7 +31,14 @@ class RelayNodeLink:
     ``await_acknowledgement`` block the calling thread and refuse the loop thread.
     """
 
-    def __init__(self, runtime: RelayRuntime, session_id: str, *, delivery_timeout_ms: int) -> None:
+    def __init__(
+        self,
+        runtime: RelayRuntime,
+        session_id: str,
+        *,
+        delivery_timeout_ms: int,
+        navigation_control: NavigationControl | None = None,
+    ) -> None:
         session = runtime.sessions.get(session_id)
         if session is None:
             raise ValueError(f"session {session_id!r} is not active on this relay")
@@ -43,6 +52,7 @@ class RelayNodeLink:
         self._session_id = session_id
         self._session: RelaySession = session
         self._delivery_timeout_s = delivery_timeout_ms / 1000
+        self._navigation_control = navigation_control
 
     def connection_epoch(self, drone_id: int) -> int | None:
         return self._session.registry.connection_epoch(drone_id)
@@ -84,6 +94,30 @@ class RelayNodeLink:
                 f"{request.drone_id}"
             )
 
+    def authorize_navigation(self, plan: Plan, command: Command, snapshot: FleetSnapshot) -> None:
+        if self._navigation_control is None:
+            raise AdapterError("mapped navigation has no approved phone control")
+        frames = (
+            self._navigation_control.authorize(plan, command, snapshot, self._session_id),
+            self._navigation_control.initial_pose(command.drone_id, self._session, snapshot.now_ms),
+        )
+        for frame in frames:
+            self._session.record_navigation_packet(frame)
+            self._deliver_navigation(command.drone_id, frame)
+
+    def _deliver_navigation(self, drone_id: int, frame: dict[str, object]) -> None:
+        loop = self._worker_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self._runtime.deliver_to_node(self._session_id, drone_id, frame), loop
+        )
+        try:
+            delivered = future.result(timeout=self._delivery_timeout_s)
+        except DeliveryTimeout:
+            future.cancel()
+            delivered = False
+        if not delivered:
+            raise AdapterError("navigation authorization could not be delivered")
+
     def await_acknowledgement(
         self, command_id: str, *, timeout_ms: int
     ) -> AdapterAcknowledgement | None:
@@ -123,6 +157,7 @@ def build_adapters(
     *,
     sim_camera_config: SimCameraConfig | None = None,
     link_wrapper: LinkWrapper | None = None,
+    navigation_control: NavigationControl | None = None,
 ) -> AdapterPair:
     """Construct the adapters ``SWEEP_ADAPTER_BACKEND`` selects for one session.
 
@@ -150,7 +185,12 @@ def build_adapters(
         )
         return AdapterPair(flight=flight, camera=camera)
     if backend is AdapterBackend.REMOTE:
-        node_link = RelayNodeLink(runtime, session_id, delivery_timeout_ms=settings.command_ttl_ms)
+        node_link = RelayNodeLink(
+            runtime,
+            session_id,
+            delivery_timeout_ms=settings.command_ttl_ms,
+            navigation_control=navigation_control,
+        )
         link: NodeLink = node_link if link_wrapper is None else link_wrapper(node_link)
         remote = RemoteBridgeAdapter.from_snapshot(
             link,
@@ -170,6 +210,8 @@ def build_dispatcher(
     arbiter: SafetyArbiter,
     sim_camera_config: SimCameraConfig | None = None,
     link_wrapper: LinkWrapper | None = None,
+    navigation: NavigationRuntime | None = None,
+    navigation_control: NavigationControl | None = None,
 ) -> AdapterDispatcher:
     """Construct a session's ``AdapterDispatcher`` on the configured backend."""
     adapters = build_adapters(
@@ -178,8 +220,14 @@ def build_dispatcher(
         snapshot,
         sim_camera_config=sim_camera_config,
         link_wrapper=link_wrapper,
+        navigation_control=navigation_control,
     )
-    return AdapterDispatcher(flight=adapters.flight, camera=adapters.camera, arbiter=arbiter)
+    return AdapterDispatcher(
+        flight=adapters.flight,
+        camera=adapters.camera,
+        arbiter=arbiter,
+        navigation=navigation,
+    )
 
 
 def _refuse_loop_thread(loop: asyncio.AbstractEventLoop) -> None:

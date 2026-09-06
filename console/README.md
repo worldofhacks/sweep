@@ -130,7 +130,12 @@ Captures, Worlds, and the Reference group's Health (Connectivity), Config and St
 a `CatalogClient` from `src/catalog/`: captures, the building and its rooms, generation jobs,
 per-node details, shared services, health metrics and configuration groups. The relay exposes no
 endpoint for any of these yet, so production wires `UnreportedCatalogClient`: every surface reads
-unreported and every action refuses with its reason. The fixture scenarios carry the design's
+unreported and every action refuses with its reason. The one exception is the relay's own
+`state.captures` bounded live projection (`src/catalog/relay-captures.ts`): the Captures module lists each
+currently retained capture the relay closed with an authoritative bundle as a record under the session id, with the pose of its
+first frame and the SHA-256 of a single retrieved file, and every capture that still has files
+without a bundle under `In progress` with its captured and retrieved counts; the download and
+export actions still go through the catalog client and refuse in production. The fixture scenarios carry the design's
 tables through `FixtureCatalogClient` (`control` present but empty, `pending4` and `six6`
 populated, `down` keeping the last snapshot while the console link is down and refusing actions);
 job chains run on an injectable scheduler so tests advance them by hand. Relay-owned facts on
@@ -139,6 +144,10 @@ from the control state, never the catalog, and an apply-now configuration save i
 pending plan through the control hook so the shell states it.
 
 ## Gesture and Speech modules
+
+The [four-aircraft input demo](../docs/FLEET_INPUT_DEMO.md) runs this console through
+the production relay and signed fake nodes, with repeatable gesture and fleet
+acceptance evidence.
 
 Gesture (`src/gesture/`, panel in `src/modules/gesture/`) is the webcam producer: tracking is off
 until the operator enables it, then the browser asks for camera permission and the MediaPipe

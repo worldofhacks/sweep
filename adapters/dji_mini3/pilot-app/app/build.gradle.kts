@@ -12,6 +12,37 @@ val djiAppKey: String = providers.gradleProperty("DJI_API_KEY").orNull
     ?: providers.environmentVariable("DJI_APP_KEY").orNull
     ?: ""
 
+// Phase G hardware calibration. Keep the probe unable to capture until all three
+// measurements for its exact still-photo configuration are supplied together.
+val cameraPhotoWidthRaw = providers.gradleProperty("SWEEP_CAMERA_PHOTO_WIDTH_PX").orNull
+val cameraPhotoHeightRaw = providers.gradleProperty("SWEEP_CAMERA_PHOTO_HEIGHT_PX").orNull
+val cameraMeasuredHfovRaw = providers.gradleProperty("SWEEP_CAMERA_MEASURED_HFOV_DEG").orNull
+val cameraPhotoWidthPx = cameraPhotoWidthRaw?.toIntOrNull()
+val cameraPhotoHeightPx = cameraPhotoHeightRaw?.toIntOrNull()
+val cameraMeasuredHfovDeg = cameraMeasuredHfovRaw?.toDoubleOrNull()
+require(cameraPhotoWidthRaw == null || cameraPhotoWidthPx != null) {
+    "SWEEP_CAMERA_PHOTO_WIDTH_PX must be an integer"
+}
+require(cameraPhotoHeightRaw == null || cameraPhotoHeightPx != null) {
+    "SWEEP_CAMERA_PHOTO_HEIGHT_PX must be an integer"
+}
+require(cameraMeasuredHfovRaw == null || cameraMeasuredHfovDeg != null) {
+    "SWEEP_CAMERA_MEASURED_HFOV_DEG must be a number"
+}
+val cameraCalibrationPresent = listOf(cameraPhotoWidthRaw, cameraPhotoHeightRaw, cameraMeasuredHfovRaw).count { it != null }
+require(cameraCalibrationPresent == 0 || cameraCalibrationPresent == 3) {
+    "SWEEP_CAMERA_PHOTO_WIDTH_PX, SWEEP_CAMERA_PHOTO_HEIGHT_PX, and " +
+        "SWEEP_CAMERA_MEASURED_HFOV_DEG must be supplied together"
+}
+if (cameraCalibrationPresent == 3) {
+    require(cameraPhotoWidthPx!! > 0 && cameraPhotoHeightPx!! > 0) {
+        "calibrated camera dimensions must be positive"
+    }
+    require(cameraMeasuredHfovDeg!!.isFinite() && cameraMeasuredHfovDeg > 0.0 && cameraMeasuredHfovDeg <= 180.0) {
+        "SWEEP_CAMERA_MEASURED_HFOV_DEG must be finite and in (0, 180]"
+    }
+}
+
 android {
     namespace = "org.worldofhacks.sweep.bridge"
     compileSdk = 35 // DJI MSDK 5.18's supported maximum
@@ -38,6 +69,9 @@ android {
         create("probe") {
             dimension = "aircraft"
             buildConfigField("String", "AIRCRAFT", "\"dji-probe\"")
+            buildConfigField("int", "CAMERA_PHOTO_WIDTH_PX", (cameraPhotoWidthPx ?: 0).toString())
+            buildConfigField("int", "CAMERA_PHOTO_HEIGHT_PX", (cameraPhotoHeightPx ?: 0).toString())
+            buildConfigField("double", "CAMERA_MEASURED_HFOV_DEG", (cameraMeasuredHfovDeg ?: 0.0).toString())
             ndk {
                 // DJI MSDK v5 ships arm64 native libraries only.
                 abiFilters += "arm64-v8a"

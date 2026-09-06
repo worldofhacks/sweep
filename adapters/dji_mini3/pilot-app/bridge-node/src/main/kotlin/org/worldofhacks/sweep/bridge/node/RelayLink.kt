@@ -1,11 +1,14 @@
 package org.worldofhacks.sweep.bridge.node
 
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.math.min
 import kotlin.random.Random
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,15 +27,26 @@ import org.worldofhacks.sweep.bridge.core.frames.AcknowledgementFrame
 import org.worldofhacks.sweep.bridge.core.frames.AuthAccepted
 import org.worldofhacks.sweep.bridge.core.frames.AuthFrame
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
+import org.worldofhacks.sweep.bridge.camera.CaptureReadinessBody
+import org.worldofhacks.sweep.bridge.camera.CaptureReadinessSource
+import org.worldofhacks.sweep.bridge.camera.NodeFrameSink
+import org.worldofhacks.sweep.bridge.camera.NodeIdentity
 import org.worldofhacks.sweep.bridge.core.frames.CapabilitiesFrame
+import org.worldofhacks.sweep.bridge.core.frames.CaptureReadinessFrame
+import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandOperation
 import org.worldofhacks.sweep.bridge.core.frames.ContractError
 import org.worldofhacks.sweep.bridge.core.frames.ControlHeartbeat
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
+import org.worldofhacks.sweep.bridge.core.frames.GuidanceMode
 import org.worldofhacks.sweep.bridge.core.frames.LifecycleStatus
+import org.worldofhacks.sweep.bridge.core.frames.MediaFileFrame
+import org.worldofhacks.sweep.bridge.core.frames.MediaFileRecord
 import org.worldofhacks.sweep.bridge.core.frames.MembershipEvent
 import org.worldofhacks.sweep.bridge.core.frames.MembershipFrame
+import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusBody
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusFrame
 import org.worldofhacks.sweep.bridge.core.frames.RefusalEvent
@@ -63,7 +77,10 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  * 5. Telemetry streams at [LinkTiming.telemetryHz] while an aircraft is connected;
  *    `node_status` is resent whenever its body changes; `readiness` is resent when a pilot
  *    toggle or the aircraft/RC connection changes (aircraft or RC loss reports
- *    `control_authority=false` while the socket stays up).
+ *    `control_authority=false` while the socket stays up). With a [captureReadiness]
+ *    source (Phase G), `capture_readiness` goes out on join and whenever its gates change,
+ *    and the camera path sends `media_file` frames through [frames] before the terminal
+ *    acknowledgement of the capture or retrieval command that produced them.
  * 6. `command` frames are verified and admitted; `accepted` is acknowledged on admission and
  *    the [CommandExecutor] reports `executing` then `completed` or `failed`. Rejections
  *    acknowledge `failed` with `stale_command` or `out_of_order_command`; forged frames are
@@ -98,6 +115,7 @@ class RelayLink(
     client: OkHttpClient? = null,
     clientProvider: (() -> OkHttpClient?)? = null,
     private val videoPublish: VideoPublishSource = VideoPublishSource { VideoPublishState.STOPPED },
+    private val captureReadiness: CaptureReadinessSource? = null,
 ) : AutoCloseable {
     init {
         require(client == null || clientProvider == null) { "supply either a fixed client or a client provider, not both" }
@@ -106,7 +124,7 @@ class RelayLink(
     private val ownedClient: OkHttpClient? = if (client == null && clientProvider == null) RelayClients.build(timing) else null
     private val clientProvider: () -> OkHttpClient? = clientProvider ?: { client ?: ownedClient }
     private val loop: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
-        Thread(runnable, "relay-link").apply { isDaemon = true }
+        Thread(runnable, LOOP_THREAD).apply { isDaemon = true }
     }
 
     private val _state = MutableStateFlow(LinkState())
@@ -127,6 +145,8 @@ class RelayLink(
     private var readiness = ReadinessInput()
     private var previousEpoch: Int? = null
     private var lastControlHeartbeatSeq: Long = 0
+    private var lastNavigationAuthorizationSeq: Long = 0
+    private var lastNavigationPoseSeq: Long = 0
     private val seenControlPoseEvents = ArrayDeque<String>()
     private var lastControlPoseEventTimeMs: Long? = null
     private var lastControlPoseTimeMs: Long? = null
@@ -136,6 +156,7 @@ class RelayLink(
     private var lastRcConnected: Boolean? = null
     private var lastAuthorityLost: String? = null
     private var lastNodeStatus: NodeStatusBody? = null
+    private var lastCaptureReadiness: CaptureReadinessBody? = null
     private val telemetryTimes = ArrayDeque<Long>()
     private val commands = LinkedHashMap<String, CommandRecord>()
 
@@ -165,6 +186,9 @@ class RelayLink(
                 watchdog = WatchdogState.DISARMED,
                 controlPose = null,
                 controlPoseExpiresAtMs = null,
+                navigationAuthorization = null,
+                navigationPose = null,
+                navigationPoseFreshUntilMs = null,
                 nextAttemptAtMs = null,
                 backoffMs = null,
             )
@@ -191,6 +215,7 @@ class RelayLink(
     fun setReadiness(input: ReadinessInput) = post {
         readiness = input
         update { it.copy(readiness = input) }
+        if (!effectiveAuthority(aircraft.snapshot.value)) clearNavigationAdmission()
         if (_state.value.joined) {
             sendReadiness()
             sendNodeStatusIfChanged(force = true)
@@ -294,6 +319,8 @@ class RelayLink(
             AuthRefused.TYPE -> onAuthRefused(json)
             ControlHeartbeat.TYPE -> onControlHeartbeat(json, now)
             ControlPose.TYPE -> onControlPose(json)
+            NavigationRouteAuthorization.TYPE -> onNavigationAuthorization(json)
+            NavigationPose.TYPE -> onNavigationPose(json)
             StateEvent.TYPE -> onState(json)
             MembershipEvent.TYPE -> onMembership(json)
             CommandFrame.TYPE -> onCommand(json)
@@ -406,6 +433,78 @@ class RelayLink(
         update { it.copy(controlPose = pose, controlPoseExpiresAtMs = clock.nowMs() + validForMs) }
     }
 
+    private fun onNavigationAuthorization(json: JsonObject) {
+        val authorization = parseOrLog("navigation_route_authorization") { NavigationRouteAuthorization.parse(json) } ?: return
+        val navigation = config.navigationAdmission ?: run {
+            log.log("dropping navigation route authorization without a measured navigation configuration")
+            return
+        }
+        val pins = navigation.measured
+        val current = _state.value
+        val relayNow = admission.relayNowMs()
+        val identityMatches = current.authenticated && current.joined &&
+            authorization.session == config.session && authorization.droneId == config.droneId &&
+            authorization.connectionEpoch == current.connectionEpoch && authorization.navigationConfigId == navigation.navigationConfigId &&
+            authorization.mapId == pins.mapId && authorization.geometryId == pins.geometryId &&
+            authorization.cameraCalibrationId == pins.cameraCalibrationId && authorization.bodyExtrinsicsId == pins.bodyExtrinsicsId
+        if (!identityMatches || !effectiveAuthority(aircraft.snapshot.value) || !authorization.verifies(config.key) ||
+            authorization.seq <= lastNavigationAuthorizationSeq || authorization.t > relayNow + RELAY_EVENT_FUTURE_SKEW_MS ||
+            authorization.expiresAtMs <= relayNow || authorization.expiresAtMs - authorization.t > navigation.maxAuthorizationLifetimeMs
+        ) {
+            log.log("dropping invalid, stale, or replayed navigation route authorization")
+            return
+        }
+        lastNavigationAuthorizationSeq = authorization.seq
+        lastNavigationPoseSeq = 0
+        update { it.copy(navigationAuthorization = authorization, navigationPose = null, navigationPoseFreshUntilMs = null) }
+    }
+
+    private fun onNavigationPose(json: JsonObject) {
+        val pose = parseOrLog("navigation_pose") { NavigationPose.parse(json) } ?: return
+        val navigation = config.navigationAdmission ?: run {
+            log.log("dropping navigation pose without a measured navigation configuration")
+            return
+        }
+        val pins = navigation.measured
+        val authorization = _state.value.navigationAuthorization ?: run {
+            log.log("dropping navigation pose without route authorization")
+            return
+        }
+        val current = _state.value
+        val relayNow = admission.relayNowMs()
+        val ready = pose.status == NavigationPose.Status.READY
+        val poseTime = pose.poseTimeMs
+        val fixTime = pose.fixTimeMs
+        val uncertainty = pose.positionUncertaintyMm
+        val identityMatches = current.authenticated && current.joined &&
+            pose.session == config.session && pose.droneId == config.droneId && pose.connectionEpoch == current.connectionEpoch &&
+            pose.commandId == authorization.commandId && pose.routeId == authorization.routeId &&
+            pose.navigationConfigId == navigation.navigationConfigId && pose.mapId == pins.mapId && pose.geometryId == pins.geometryId &&
+            pose.cameraCalibrationId == pins.cameraCalibrationId && pose.bodyExtrinsicsId == pins.bodyExtrinsicsId
+        val observationFresh = !ready || (poseTime != null && fixTime != null && uncertainty != null &&
+            poseTime <= relayNow + RELAY_EVENT_FUTURE_SKEW_MS && fixTime <= relayNow + RELAY_EVENT_FUTURE_SKEW_MS &&
+            relayNow - poseTime <= navigation.poseFreshnessMs && relayNow - fixTime <= navigation.poseFreshnessMs &&
+            uncertainty <= authorization.maxPositionUncertaintyMm)
+        if (!identityMatches || !effectiveAuthority(aircraft.snapshot.value) || !pose.verifies(config.key) ||
+            pose.seq <= lastNavigationPoseSeq || pose.seq <= authorization.seq || pose.t > relayNow + RELAY_EVENT_FUTURE_SKEW_MS ||
+            relayNow - pose.t > navigation.poseFreshnessMs || authorization.expiresAtMs <= relayNow || !observationFresh
+        ) {
+            log.log("dropping invalid, stale, or replayed navigation pose")
+            return
+        }
+        lastNavigationPoseSeq = pose.seq
+        val freshUntil = if (ready) {
+            clock.nowMs() + minOf(
+                navigation.poseFreshnessMs - (relayNow - poseTime!!),
+                navigation.poseFreshnessMs - (relayNow - fixTime!!),
+                authorization.expiresAtMs - relayNow,
+            )
+        } else {
+            null
+        }
+        update { it.copy(navigationPose = pose, navigationPoseFreshUntilMs = freshUntil) }
+    }
+
     private fun onAuthAccepted(json: JsonObject, receivedAtMs: Long) {
         val accepted = parseOrLog("auth.accepted") { AuthAccepted.parse(json) } ?: return
         val settings = accepted.node
@@ -506,6 +605,8 @@ class RelayLink(
         previousEpoch = epoch
         admission.bind(epoch, rosterVersion)
         lastControlHeartbeatSeq = 0
+        lastNavigationAuthorizationSeq = 0
+        lastNavigationPoseSeq = 0
         seenControlPoseEvents.clear()
         lastControlPoseEventTimeMs = null
         lastControlPoseTimeMs = null
@@ -525,13 +626,18 @@ class RelayLink(
                 rejoins = if (rejoin) it.rejoins + 1 else it.rejoins,
                 watchdog = dog?.state ?: WatchdogState.DISARMED,
                 controlPose = null, controlPoseExpiresAtMs = null,
+                navigationAuthorization = null,
+                navigationPose = null,
+                navigationPoseFreshUntilMs = null,
             )
         }
         log.log((if (rejoin) "rejoined" else "joined") + " as drone ${config.droneId}, connection epoch $epoch; watchdog armed")
+        lastCaptureReadiness = null
         if (snapshot.aircraftConnected) sendTelemetry(snapshot)
         sendReadiness()
         sendCapabilities(snapshot)
         sendNodeStatusIfChanged(force = true)
+        sendCaptureReadinessIfChanged(force = true)
     }
 
     private fun onRefusal(json: JsonObject) {
@@ -552,6 +658,9 @@ class RelayLink(
                 joined = false,
                 controlPose = null,
                 controlPoseExpiresAtMs = null,
+                navigationAuthorization = null,
+                navigationPose = null,
+                navigationPoseFreshUntilMs = null,
                 lastError = reason,
             )
         }
@@ -576,6 +685,9 @@ class RelayLink(
                     joined = false,
                     controlPose = null,
                     controlPoseExpiresAtMs = null,
+                    navigationAuthorization = null,
+                    navigationPose = null,
+                    navigationPoseFreshUntilMs = null,
                 )
             }
         }
@@ -723,6 +835,102 @@ class RelayLink(
         }
     }
 
+    private fun captureReadinessFrame(body: CaptureReadinessBody, epoch: Int): CaptureReadinessFrame = CaptureReadinessFrame(
+        t = nextT(),
+        eventId = eventId(),
+        session = config.session,
+        droneId = config.droneId,
+        connectionEpoch = epoch,
+        roomId = body.roomId,
+        captureId = body.captureId,
+        guidanceMode = GuidanceMode.VISUAL_ADVISORY,
+        poseSource = body.poseSource,
+        poseOk = body.poseOk,
+        clearanceOk = body.clearanceOk,
+        cameraOk = body.cameraOk,
+        storageOk = body.storageOk,
+        motionOk = body.motionOk,
+        imageQualityOk = body.imageQualityOk,
+        coverageMissing = body.coverageMissing,
+        nextHeadingDeg = body.nextHeadingDeg,
+        suggestedDelta = body.suggestedDelta,
+    )
+
+    private fun sendCaptureReadinessIfChanged(force: Boolean = false) {
+        val source = captureReadiness ?: return
+        val current = _state.value
+        if (!current.joined) return
+        val epoch = current.connectionEpoch ?: return
+        val body = source.current()
+        if (!force && body == lastCaptureReadiness) return
+        if (send(captureReadinessFrame(body, epoch).toEvent())) {
+            lastCaptureReadiness = body
+            log.log("capture_readiness sent: camera_ok=${body.cameraOk} storage_ok=${body.storageOk} capture=${body.captureId} missing=${body.coverageMissing.size} sectors")
+        }
+    }
+
+    /** The camera path's outlet for node-authored frames; every send runs on the loop thread. */
+    val frames: NodeFrameSink = object : NodeFrameSink {
+        override fun identity(): NodeIdentity? {
+            val current = _state.value
+            val epoch = current.connectionEpoch ?: return null
+            return if (current.joined) NodeIdentity(config.droneId, epoch) else null
+        }
+
+        override fun sendCaptureReadiness(body: CaptureReadinessBody): Boolean = onLoop {
+            val current = _state.value
+            val epoch = current.connectionEpoch
+            if (!current.joined || epoch == null) {
+                false
+            } else {
+                send(captureReadinessFrame(body, epoch).toEvent()).also { sent ->
+                    if (sent) {
+                        lastCaptureReadiness = body
+                        log.log("capture_readiness sent: camera_ok=${body.cameraOk} storage_ok=${body.storageOk} capture=${body.captureId}")
+                    }
+                }
+            }
+        }
+
+        override fun sendMediaFile(record: MediaFileRecord): Boolean = onLoop {
+            val current = _state.value
+            if (!current.joined || current.connectionEpoch != record.connectionEpoch || record.droneId != config.droneId) {
+                log.log("media_file ${record.fileId} not sent: connection identity is not current")
+                false
+            } else {
+                val frame = MediaFileFrame(t = nextT(), eventId = eventId(), session = config.session, file = record)
+                send(frame.toEvent()).also { sent ->
+                    if (sent) log.log("media_file sent: ${record.fileId} ${record.retrievalStatus.wire} sha256 ${record.checksumSha256.take(12)}")
+                }
+            }
+        }
+    }
+
+    /** Runs [block] on the loop thread and waits for its answer; false when the link is closed. */
+    private fun onLoop(block: () -> Boolean): Boolean {
+        if (Thread.currentThread().name == LOOP_THREAD) return block()
+        val future = CompletableFuture<Boolean>()
+        try {
+            loop.execute {
+                try {
+                    future.complete(block())
+                } catch (error: RuntimeException) {
+                    log.log("relay link task failed: $error")
+                    future.complete(false)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            return false
+        }
+        return try {
+            future.get(LOOP_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            false
+        } catch (_: ExecutionException) {
+            false
+        }
+    }
+
     private fun sendAck(command: CommandFrame, status: LifecycleStatus, reason: String? = null, detail: String? = null) {
         val frame = AcknowledgementFrame(
             t = nextT(),
@@ -782,9 +990,22 @@ class RelayLink(
                     record(command, "failed", AUTHORITY_LOST, detail)
                     return
                 }
+                val navigationGoto = command.args as? CommandArgs.Goto
+                if (navigationGoto?.navigationRouteId != null && !effectiveAuthority(aircraft.snapshot.value)) {
+                    clearNavigationAdmission()
+                    val detail = "mapped goto lost local aircraft, RC, or pilot authority"
+                    sendAck(command, LifecycleStatus.FAILED, AUTHORITY_LOST, detail)
+                    record(command, "failed", AUTHORITY_LOST, detail)
+                    return
+                }
+                if (navigationGoto?.navigationRouteId != null && !admitNavigationGoto(command, navigationGoto)) {
+                    val detail = "mapped goto is missing current signed route authorization and pose evidence"
+                    sendAck(command, LifecycleStatus.FAILED, NAVIGATION_NOT_AUTHORIZED, detail)
+                    record(command, "failed", NAVIGATION_NOT_AUTHORIZED, detail)
+                    return
+                }
                 sendAck(command, LifecycleStatus.ACCEPTED)
                 record(command, "accepted")
-                if (command.operation == CommandOperation.CAMERA_CAPABILITIES) sendCapabilities(aircraft.snapshot.value)
                 val report = Report(command)
                 try {
                     executor.execute(command, report)
@@ -793,6 +1014,31 @@ class RelayLink(
                 }
             }
         }
+    }
+
+    private fun admitNavigationGoto(command: CommandFrame, goto: CommandArgs.Goto): Boolean {
+        val navigation = config.navigationAdmission ?: return false
+        val pins = navigation.measured
+        val authorization = _state.value.navigationAuthorization ?: return false
+        val pose = _state.value.navigationPose ?: return false
+        val now = clock.nowMs()
+        val relayNow = admission.relayNowMs()
+        return effectiveAuthority(aircraft.snapshot.value) &&
+            authorization.verifies(config.key) && pose.verifies(config.key) &&
+            authorization.session == config.session && authorization.droneId == config.droneId &&
+            authorization.connectionEpoch == _state.value.connectionEpoch &&
+            authorization.navigationConfigId == navigation.navigationConfigId &&
+            authorization.mapId == pins.mapId && authorization.geometryId == pins.geometryId &&
+            authorization.cameraCalibrationId == pins.cameraCalibrationId && authorization.bodyExtrinsicsId == pins.bodyExtrinsicsId &&
+            authorization.commandId == command.commandId && authorization.routeId == goto.navigationRouteId &&
+            authorization.expiresAtMs > relayNow &&
+            goto.xMm == authorization.targetXMm && goto.yMm == authorization.targetYMm && goto.zMm == authorization.targetZMm &&
+            goto.speedMmS <= authorization.maxSpeedMmS && pose.status == NavigationPose.Status.READY &&
+            pose.commandId == authorization.commandId && pose.routeId == authorization.routeId &&
+            pose.connectionEpoch == authorization.connectionEpoch && pose.navigationConfigId == authorization.navigationConfigId &&
+            pose.mapId == authorization.mapId && pose.geometryId == authorization.geometryId &&
+            pose.cameraCalibrationId == authorization.cameraCalibrationId && pose.bodyExtrinsicsId == authorization.bodyExtrinsicsId &&
+            _state.value.navigationPoseFreshUntilMs?.let { now < it } == true
     }
 
     private inner class Report(private val command: CommandFrame) : CommandReport {
@@ -808,6 +1054,9 @@ class RelayLink(
         override fun completed(detail: String?) = post {
             if (live()) {
                 terminal = true
+                // The capabilities frame carries the facts the executor just refreshed and,
+                // like a media_file, precedes the terminal acknowledgement that reports them.
+                if (command.operation == CommandOperation.CAMERA_CAPABILITIES) sendCapabilities(aircraft.snapshot.value)
                 sendAck(command, LifecycleStatus.COMPLETED, detail = detail)
                 record(command, "completed", detail = detail)
             }
@@ -886,8 +1135,17 @@ class RelayLink(
         if (poseExpiry != null && clock.nowMs() >= poseExpiry) {
             update { it.copy(controlPose = null, controlPoseExpiresAtMs = null) }
         }
+        val authorization = _state.value.navigationAuthorization
+        if (authorization != null && admission.relayNowMs() >= authorization.expiresAtMs) {
+            clearNavigationAdmission()
+        }
+        val navigationExpiry = _state.value.navigationPoseFreshUntilMs
+        if (navigationExpiry != null && clock.nowMs() >= navigationExpiry) {
+            update { it.copy(navigationPose = null, navigationPoseFreshUntilMs = null) }
+        }
         checkAircraft()
         sendNodeStatusIfChanged()
+        sendCaptureReadinessIfChanged()
     }
 
     /**
@@ -908,6 +1166,7 @@ class RelayLink(
         lastAircraftConnected = snapshot.aircraftConnected
         lastRcConnected = snapshot.rcConnected
         lastAuthorityLost = snapshot.authorityLostReason
+        if (!effectiveAuthority(snapshot)) clearNavigationAdmission()
         log.log(
             "aircraft ${if (snapshot.aircraftConnected) "connected" else "disconnected"}, " +
                 "rc ${if (snapshot.rcConnected) "connected" else "disconnected"}" +
@@ -933,6 +1192,13 @@ class RelayLink(
         !snapshot.rcConnected -> "rc_disconnected"
         snapshot.authorityLostReason != null -> snapshot.authorityLostReason // Phase E: RC takeover, latched until the pilot re-arms
         else -> null
+    }
+
+    private fun clearNavigationAdmission() {
+        val current = _state.value
+        if (current.navigationAuthorization != null || current.navigationPose != null || current.navigationPoseFreshUntilMs != null) {
+            update { it.copy(navigationAuthorization = null, navigationPose = null, navigationPoseFreshUntilMs = null) }
+        }
     }
 
     private fun send(frame: JsonObject): Boolean {
@@ -1004,10 +1270,14 @@ class RelayLink(
         const val RATE_WINDOW_MS = 2_000L
         const val WATCHDOG_FAILSAFE = "watchdog_failsafe"
         const val AUTHORITY_LOST = "authority_lost"
+        const val NAVIGATION_NOT_AUTHORIZED = "navigation_not_authorized"
         const val RELAY_EVENT_FUTURE_SKEW_MS = 1_000L
         const val CONTROL_POSE_EVENT_MAX_AGE_MS = 1_000L
         const val CONTROL_POSE_READY_FRESHNESS_MS = 500L
         const val MAX_CONTROL_POSE_EVENTS = 256
+        const val LOOP_CALL_TIMEOUT_MS = 5_000L
+        const val LOOP_THREAD = "relay-link"
+        /** The only pose source this node has: the operator-approved hover pose (visual_advisory). */
         val MOTION_OPERATIONS = setOf(CommandOperation.TAKEOFF, CommandOperation.GOTO, CommandOperation.ROTATE_TO)
         val HALT_REASONS = setOf("session_closed", "authentication_failed", "invalid_auth", "unknown_source")
     }

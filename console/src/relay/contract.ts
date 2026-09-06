@@ -11,6 +11,13 @@ export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard' | 'webcam' | 'language'
 export type FormationName = 'line' | 'column' | 'circle' | 'grid' | 'V'
 
+export const MAX_INTENT_IDENTIFIER_CODE_POINTS = 128
+export const MAX_INTENT_SESSION_CODE_POINTS = 512
+export const MAX_INTENT_SOURCE_CODE_POINTS = 64
+export const MAX_INTENT_NAME_CODE_POINTS = 64
+export const MAX_INTENT_DRONE_IDS = 6
+export const MAX_INTENT_DRONE_ID = 2_147_483_647
+
 /**
  * Every intent name this console can build. Mirrors relay/intent_v1.py
  * IntentName minus survey_area and map_area, which the brief marks as later.
@@ -32,6 +39,8 @@ export type ConsoleIntentName =
   | 'come_home'
   | 'sweep'
   | 'capture_room'
+  | 'navigate'
+  | 'search'
 
 export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'arm',
@@ -50,6 +59,8 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'come_home',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ]
 
 /**
@@ -59,6 +70,7 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
  */
 export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'arm',
+  'disarm',
   'select',
   'takeoff',
   'translate',
@@ -73,6 +85,8 @@ export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Console
   'formation_set',
   'spacing',
   'sweep',
+  'navigate',
+  'search',
 ])
 
 /** The exact profile emitted by the current C1 relay. */
@@ -82,17 +96,28 @@ export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'capture_room',
   'come_home',
   'estop',
-  'formation_next',
-  'formation_set',
   'hold',
   'land',
   'land_all',
   'select',
-  'spacing',
-  'sweep',
   'takeoff',
   'translate',
 ]
+
+export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
+  ...C1_BASIC_CONTROL_INTENTS,
+  'disarm',
+  'formation_next',
+  'formation_set',
+  'spacing',
+  'sweep',
+]
+
+const CONFIGURED_DEPLOYMENT_INTENTS = new Set<ConsoleIntentName>([
+  ...C1_BASIC_CONTROL_INTENTS,
+  'navigate',
+  'search',
+])
 
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
   return SUPPORTED_INTENTS.has(name)
@@ -109,6 +134,8 @@ export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<
   'land_all',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ])
 
 export function requiresConfirmation(name: ConsoleIntentName): boolean {
@@ -135,6 +162,8 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   come_home: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
+  navigate: 'selected',
+  search: 'selected',
 }
 
 export function selectionRule(name: ConsoleIntentName): SelectionRule {
@@ -186,6 +215,13 @@ export interface CaptureRoomArgs {
   capture_id: string
   pattern: CapturePattern
 }
+export interface NavigateArgs {
+  zone_id: string
+}
+export interface SearchArgs {
+  zone_id: string
+  target_class: string
+}
 
 /** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
 export interface IntentArgsByName {
@@ -205,6 +241,8 @@ export interface IntentArgsByName {
   come_home: EmptyArgs
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
+  navigate: NavigateArgs
+  search: SearchArgs
 }
 
 export type IntentArgs = IntentArgsByName[ConsoleIntentName]
@@ -250,7 +288,48 @@ export interface RelayAircraftState {
   home_pose: unknown
   telemetry: unknown
   membership_history: unknown[]
+  membership_history_truncated: number
   video?: MediaStreamState
+}
+
+export type MediaRetrievalStatus = 'pending' | 'completed' | 'unsupported' | 'failed'
+export type CaptureBundleStatus = 'completed' | 'unsupported' | 'failed'
+export type CaptureCoverage = 'full_equirectangular' | 'incomplete_vertical_coverage'
+
+/** One node-authored `media_file` record as `state.captures[].files` carries it verbatim. */
+export interface RelayCaptureFile {
+  capture_id: string
+  file_id: string
+  timestamp_ms: number
+  drone_id: DroneId
+  connection_epoch: number
+  pose: { x: number; y: number; z: number }
+  actual_yaw_deg: number
+  gimbal_pitch_deg: number
+  intrinsics: { width_px: number; height_px: number; horizontal_fov_deg: number; projection: string }
+  /** Sixty-four lowercase hex characters; all zeros while `retrieval_status` is `pending`. */
+  checksum_sha256: string
+  storage_ref: string
+  retrieval_status: MediaRetrievalStatus
+}
+
+/**
+ * One retained capture in the relay's `state.captures` projection. `room_id`, `pattern`,
+ * `coverage`, `status`, `reason`, and `detail` stay null until a `capture_bundle` closes
+ * the set; an open capture is only its files so far.
+ */
+export interface RelayCaptureRecord {
+  capture_id: string
+  drone_id: DroneId
+  connection_epoch: number
+  room_id: string | null
+  pattern: CapturePattern | null
+  coverage: CaptureCoverage | null
+  status: CaptureBundleStatus | null
+  reason: string | null
+  detail: string | null
+  files: RelayCaptureFile[]
+  updated_at: number
 }
 
 export interface RelayStateEvent {
@@ -272,6 +351,8 @@ export interface RelayStateEvent {
   pending: Record<string, unknown> | null
   accepted_plan: Record<string, unknown> | null
   drones: RelayAircraftState[]
+  /** The relay always sends it; fixtures that predate it may omit it. */
+  captures?: RelayCaptureRecord[]
   invalidated_intent_ids?: string[]
   invalidation_reason?: 'graceful_leave_roster_change'
   prior_roster_version?: number
@@ -406,15 +487,61 @@ export interface RelaySafetyActionEvent {
   loss_behavior: 'hold' | 'failsafe'
 }
 
+export interface RelayDetectionEvent {
+  v: 1
+  t: number
+  type: 'detection'
+  event_id: string
+  session: string
+  detection_id: string
+  drone_id: DroneId
+  source_id: string
+  sighting_id: string
+  frame_id: string
+  label: string
+  confidence: number
+  bbox_xyxy: [number, number, number, number]
+  frame_decoded_at_monotonic_s: number
+  evaluation_completed_at_monotonic_s: number
+  observation_count: number
+  attention: 'promoted' | 'suppressed_duplicate'
+  acknowledged: boolean
+}
+
+export interface RelayDetectionAcknowledgementEvent {
+  v: 1
+  t: number
+  type: 'detection_acknowledgement'
+  event_id: string
+  session: string
+  detection_id: string
+  drone_id: DroneId
+  operator_source: 'console'
+}
+
 export type RelayServerEvent =
   | RelayAcknowledgementEvent
   | RelayAuthAcceptedEvent
   | RelayAuthRefusedEvent
+  | RelayDetectionAcknowledgementEvent
+  | RelayDetectionEvent
   | RelayMembershipEvent
   | RelayRefusalEvent
   | RelayStateEvent
   | RelaySafetyActionEvent
   | RelayTelemetryEvent
+  | RelayNodeInformationEvent
+
+/** Validated node reports; aircraft control state still comes from relay state events. */
+export interface RelayNodeInformationEvent {
+  v: 1
+  t: number
+  type: 'capabilities' | 'node_status' | 'capture_readiness'
+  event_id: string
+  session: string
+  drone_id: DroneId
+  connection_epoch: number
+}
 
 export interface RelayAuthFrame {
   v: 1
@@ -714,6 +841,30 @@ function isDroneIds(value: unknown): value is DroneId[] {
   return Array.isArray(value) && value.every(isDroneId) && new Set(value).size === value.length
 }
 
+function isIntentDroneIds(value: unknown): value is DroneId[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_INTENT_DRONE_IDS &&
+    value.every(
+      (item) => Number.isInteger(item) && Number(item) > 0 && Number(item) <= MAX_INTENT_DRONE_ID,
+    ) &&
+    new Set(value).size === value.length
+  )
+}
+
+/** Mirrors trimmed Python `str.isprintable()` and counts Unicode code points. */
+function isCanonicalIntentText(value: unknown, maximumCodePoints: number): value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value !== value.trim() ||
+    Array.from(value).length > maximumCodePoints
+  ) {
+    return false
+  }
+  return Array.from(value).every((character) => character === ' ' || !/[\p{C}\p{Z}]/u.test(character))
+}
+
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string'
 }
@@ -737,11 +888,16 @@ function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled 
   ) {
     return false
   }
-  if (profile !== 'c1_basic_control') return true
-  return (
-    enabled.length === C1_BASIC_CONTROL_INTENTS.length &&
-    C1_BASIC_CONTROL_INTENTS.every((name) => enabled.includes(name))
-  )
+  const exactProfile =
+    profile === 'c1_basic_control'
+      ? C1_BASIC_CONTROL_INTENTS
+      : profile === 'c2_fleet_operations'
+        ? C2_FLEET_OPERATIONS_INTENTS
+        : null
+  if (exactProfile !== null) {
+    return enabled.length === exactProfile.length && exactProfile.every((name) => enabled.includes(name))
+  }
+  return enabled.every((name) => CONFIGURED_DEPLOYMENT_INTENTS.has(name as ConsoleIntentName))
 }
 
 function isNullableDroneId(value: unknown): value is DroneId | null {
@@ -789,7 +945,69 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
     'home_pose' in value &&
     'telemetry' in value &&
     Array.isArray(value.membership_history) &&
+    isNonNegativeInteger(value.membership_history_truncated) &&
     isVideoStreamState(value.video)
+  )
+}
+
+const MEDIA_RETRIEVAL_STATUSES: ReadonlySet<string> = new Set(['pending', 'completed', 'unsupported', 'failed'])
+const CAPTURE_BUNDLE_STATUSES: ReadonlySet<string> = new Set(['completed', 'unsupported', 'failed'])
+const CAPTURE_COVERAGES: ReadonlySet<string> = new Set(['full_equirectangular', 'incomplete_vertical_coverage'])
+
+function isNullableChoice(value: unknown, choices: ReadonlySet<string>): boolean {
+  return value === null || (typeof value === 'string' && choices.has(value))
+}
+
+export function isRelayCaptureFile(value: unknown): value is RelayCaptureFile {
+  if (!isRecord(value)) return false
+  const pose = value.pose
+  const intrinsics = value.intrinsics
+  const checksumIsPending = value.checksum_sha256 === '0'.repeat(64)
+  return (
+    typeof value.capture_id === 'string' &&
+    value.capture_id.length > 0 &&
+    typeof value.file_id === 'string' &&
+    value.file_id.length > 0 &&
+    isNonNegativeInteger(value.timestamp_ms) &&
+    isDroneId(value.drone_id) &&
+    isNonNegativeInteger(value.connection_epoch) &&
+    isRecord(pose) &&
+    ['x', 'y', 'z'].every((axis) => isFiniteNumber(pose[axis])) &&
+    isFiniteNumber(value.actual_yaw_deg) &&
+    isFiniteNumber(value.gimbal_pitch_deg) &&
+    isRecord(intrinsics) &&
+    isDroneId(intrinsics.width_px) &&
+    isDroneId(intrinsics.height_px) &&
+    isFiniteNumber(intrinsics.horizontal_fov_deg) &&
+    typeof intrinsics.projection === 'string' &&
+    typeof value.checksum_sha256 === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.checksum_sha256) &&
+    typeof value.storage_ref === 'string' &&
+    value.storage_ref.length > 0 &&
+    typeof value.retrieval_status === 'string' &&
+    MEDIA_RETRIEVAL_STATUSES.has(value.retrieval_status) &&
+    (value.retrieval_status !== 'pending' || checksumIsPending) &&
+    (value.retrieval_status !== 'completed' || !checksumIsPending)
+  )
+}
+
+export function isRelayCaptureRecord(value: unknown): value is RelayCaptureRecord {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.capture_id === 'string' &&
+    value.capture_id.length > 0 &&
+    isDroneId(value.drone_id) &&
+    isNonNegativeInteger(value.connection_epoch) &&
+    isNullableString(value.room_id) &&
+    (value.pattern === null || CAPTURE_PATTERNS.has(value.pattern as CapturePattern)) &&
+    isNullableChoice(value.coverage, CAPTURE_COVERAGES) &&
+    isNullableChoice(value.status, CAPTURE_BUNDLE_STATUSES) &&
+    isNullableString(value.reason) &&
+    isNullableString(value.detail) &&
+    Array.isArray(value.files) &&
+    value.files.length <= 64 &&
+    value.files.every(isRelayCaptureFile) &&
+    isNonNegativeInteger(value.updated_at)
   )
 }
 
@@ -816,9 +1034,75 @@ function hasBaseEvent(value: Record<string, unknown>): boolean {
   )
 }
 
+const NODE_EVENT_FIELDS = ['v', 't', 'type', 'event_id', 'session', 'drone_id', 'connection_epoch']
+
+/** Mirrors the three informational node frame parsers in relay/contracts.py. */
+function isNodeInformationEvent(value: Record<string, unknown>): boolean {
+  if (!isDroneId(value.drone_id) || !isDroneId(value.connection_epoch)) return false
+  const hasFields = (fields: string[]) => {
+    const expected = [...NODE_EVENT_FIELDS, ...fields]
+    return Object.keys(value).length === expected.length && expected.every((field) => Object.hasOwn(value, field))
+  }
+  const text = (item: unknown): item is string => typeof item === 'string' && item.length > 0 && item.length <= 512
+  const nullableText = (item: unknown) => item === null || text(item)
+  const azimuth = (item: unknown) => isFiniteNumber(item) && item >= 0 && item < 360
+  if (!text(value.event_id) || !text(value.session)) return false
+
+  if (value.type === 'capabilities') {
+    const labels = ['aircraft_model', 'aircraft_firmware', 'rc_firmware', 'phone_model', 'android_version', 'sdk_version']
+    return hasFields([
+      'native_panorama_modes', 'photo_capture', 'gimbal_pitch_min_deg', 'gimbal_pitch_max_deg',
+      'horizontal_fov_deg', 'storage_remaining_bytes', 'media_retrieval', 'measured_hfov_deg', ...labels,
+    ]) &&
+      Array.isArray(value.native_panorama_modes) && value.native_panorama_modes.every(text) &&
+      new Set(value.native_panorama_modes).size === value.native_panorama_modes.length &&
+      typeof value.photo_capture === 'boolean' && typeof value.media_retrieval === 'boolean' &&
+      isFiniteNumber(value.gimbal_pitch_min_deg) && isFiniteNumber(value.gimbal_pitch_max_deg) &&
+      value.gimbal_pitch_min_deg < value.gimbal_pitch_max_deg &&
+      isFiniteNumber(value.horizontal_fov_deg) && value.horizontal_fov_deg > 0 && value.horizontal_fov_deg <= 360 &&
+      isNonNegativeInteger(value.storage_remaining_bytes) && labels.every((field) => text(value[field])) &&
+      (value.measured_hfov_deg === null ||
+        (isFiniteNumber(value.measured_hfov_deg) && value.measured_hfov_deg > 0 && value.measured_hfov_deg < 180))
+  }
+  if (value.type === 'node_status') {
+    return hasFields([
+      'virtual_stick_enabled', 'control_authority', 'authority_change_reason', 'watchdog_state',
+      'video_publish_state', 'phone_battery_percent', 'phone_thermal_state',
+    ]) &&
+      typeof value.virtual_stick_enabled === 'boolean' && typeof value.control_authority === 'boolean' &&
+      (value.authority_change_reason === null ||
+        (text(value.authority_change_reason) && /^[a-z0-9_]+$/.test(value.authority_change_reason))) &&
+      typeof value.watchdog_state === 'string' && ['nominal', 'hold', 'failsafe'].includes(value.watchdog_state) &&
+      typeof value.video_publish_state === 'string' && ['stopped', 'connecting', 'publishing', 'failed'].includes(value.video_publish_state) &&
+      isNonNegativeInteger(value.phone_battery_percent) && value.phone_battery_percent <= 100 &&
+      typeof value.phone_thermal_state === 'string' &&
+      ['none', 'light', 'moderate', 'severe', 'critical', 'emergency', 'shutdown'].includes(value.phone_thermal_state)
+  }
+  if (value.type === 'capture_readiness') {
+    const flags = ['pose_ok', 'clearance_ok', 'camera_ok', 'storage_ok', 'motion_ok', 'image_quality_ok']
+    const delta = value.suggested_delta
+    return hasFields([
+      'room_id', 'capture_id', 'guidance_mode', 'pose_source', 'coverage_missing',
+      'next_heading_deg', 'suggested_delta', ...flags,
+    ]) &&
+      nullableText(value.room_id) && nullableText(value.capture_id) && text(value.pose_source) &&
+      typeof value.guidance_mode === 'string' && ['visual_advisory', 'registered_metric'].includes(value.guidance_mode) &&
+      flags.every((field) => typeof value[field] === 'boolean') &&
+      Array.isArray(value.coverage_missing) && value.coverage_missing.every(azimuth) &&
+      (value.next_heading_deg === null || azimuth(value.next_heading_deg)) &&
+      (delta === null || (isRecord(delta) && Object.keys(delta).length === 2 &&
+        (delta.kind === 'yaw' || delta.kind === 'gimbal') && isFiniteNumber(delta.degrees)))
+  }
+  return false
+}
+
 /** Parses the M1.1 event seam; unknown frames fail closed. */
 export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
   if (!isRecord(value) || !hasBaseEvent(value) || typeof value.type !== 'string') return null
+
+  if (value.type === 'capabilities' || value.type === 'node_status' || value.type === 'capture_readiness') {
+    return isNodeInformationEvent(value) ? value as unknown as RelayNodeInformationEvent : null
+  }
 
   if (value.type === 'state') {
     if (
@@ -836,6 +1120,10 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isNullableRecord(value.accepted_plan) ||
       !Array.isArray(value.drones) ||
       !value.drones.every(isRelayAircraftState) ||
+      (value.captures !== undefined &&
+        (!Array.isArray(value.captures) ||
+          value.captures.length > 64 ||
+          !value.captures.every(isRelayCaptureRecord))) ||
       (value.invalidated_intent_ids !== undefined && !isStringArray(value.invalidated_intent_ids)) ||
       (value.invalidation_reason !== undefined &&
         value.invalidation_reason !== 'graceful_leave_roster_change') ||
@@ -939,6 +1227,47 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
     return value as unknown as RelaySafetyActionEvent
   }
 
+  if (value.type === 'detection') {
+    const observationCount = value.observation_count
+    if (
+      typeof value.detection_id !== 'string' ||
+      value.detection_id.length === 0 ||
+      !isDroneId(value.drone_id) ||
+      !['source_id', 'sighting_id', 'frame_id', 'label'].every(
+        (field) => typeof value[field] === 'string' && value[field].length > 0,
+      ) ||
+      !isFiniteNumber(value.confidence) ||
+      value.confidence <= 0 ||
+      value.confidence > 1 ||
+      !Array.isArray(value.bbox_xyxy) ||
+      value.bbox_xyxy.length !== 4 ||
+      !value.bbox_xyxy.every(isFiniteNumber) ||
+      !isFiniteNumber(value.frame_decoded_at_monotonic_s) ||
+      !isFiniteNumber(value.evaluation_completed_at_monotonic_s) ||
+      value.evaluation_completed_at_monotonic_s < value.frame_decoded_at_monotonic_s ||
+      typeof observationCount !== 'number' ||
+      !Number.isInteger(observationCount) ||
+      observationCount < 1 ||
+      !['promoted', 'suppressed_duplicate'].includes(String(value.attention)) ||
+      typeof value.acknowledged !== 'boolean'
+    ) {
+      return null
+    }
+    return value as unknown as RelayDetectionEvent
+  }
+
+  if (value.type === 'detection_acknowledgement') {
+    if (
+      typeof value.detection_id !== 'string' ||
+      value.detection_id.length === 0 ||
+      !isDroneId(value.drone_id) ||
+      value.operator_source !== 'console'
+    ) {
+      return null
+    }
+    return value as unknown as RelayDetectionAcknowledgementEvent
+  }
+
   if (value.type === 'acknowledgement') {
     if (
       typeof value.intent_id !== 'string' ||
@@ -1005,22 +1334,22 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   }
   if (
     value.v !== 1 ||
-    !isNonNegativeInteger(value.t) ||
+    !Number.isSafeInteger(value.t) ||
+    Number(value.t) < 0 ||
     value.type !== 'intent' ||
-    typeof value.intent_id !== 'string' ||
-    value.intent_id.length === 0 ||
+    !isCanonicalIntentText(value.intent_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) ||
     !(
       value.retry_of === null ||
-      (typeof value.retry_of === 'string' &&
-        value.retry_of.length > 0 &&
+      (isCanonicalIntentText(value.retry_of, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
         value.retry_of !== value.intent_id)
     ) ||
+    !isCanonicalIntentText(value.source, MAX_INTENT_SOURCE_CODE_POINTS) ||
     !INTENT_SOURCES.has(value.source as IntentSource) ||
-    typeof value.session !== 'string' ||
-    value.session.length === 0 ||
+    !isCanonicalIntentText(value.session, MAX_INTENT_SESSION_CODE_POINTS) ||
+    !isCanonicalIntentText(value.name, MAX_INTENT_NAME_CODE_POINTS) ||
     !(CONSOLE_INTENT_NAMES as readonly string[]).includes(String(value.name)) ||
     !isRecord(value.args) ||
-    !isDroneIds(value.selection) ||
+    !isIntentDroneIds(value.selection) ||
     value.mode !== 'indoor' ||
     typeof value.confirm !== 'boolean'
   ) {
@@ -1040,7 +1369,7 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
   const keys = Object.keys(args)
   switch (name) {
     case 'select':
-      return keys.length === 1 && isDroneIds(args.ids) && args.ids.length > 0
+      return keys.length === 1 && isIntentDroneIds(args.ids) && args.ids.length > 0
     case 'translate':
       return keys.length === 2 && isFiniteNumber(args.dx) && isFiniteNumber(args.dy)
     case 'altitude':
@@ -1053,12 +1382,14 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
     case 'capture_room':
       return (
         keys.length === 3 &&
-        typeof args.room_id === 'string' &&
-        args.room_id.length > 0 &&
-        typeof args.capture_id === 'string' &&
-        args.capture_id.length > 0 &&
+        isCanonicalIntentText(args.room_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+        isCanonicalIntentText(args.capture_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
         CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
       )
+    case 'navigate':
+      return keys.length === 1 && isBoundedText(args.zone_id, 128)
+    case 'search':
+      return keys.length === 2 && isBoundedText(args.zone_id, 128) && isBoundedText(args.target_class, 128)
     case 'arm':
     case 'disarm':
     case 'estop':

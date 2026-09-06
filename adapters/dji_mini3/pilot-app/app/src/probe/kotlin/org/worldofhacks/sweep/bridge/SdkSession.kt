@@ -14,7 +14,10 @@ import dji.v5.common.register.DJISDKInitEvent
 import dji.v5.manager.KeyManager
 import dji.v5.manager.SDKManager
 import dji.v5.manager.interfaces.SDKManagerCallback
+import java.io.File
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.camera.CameraExecutor
+import org.worldofhacks.sweep.bridge.camera.DjiCameraPort
 import org.worldofhacks.sweep.bridge.flight.DjiFlightPort
 import org.worldofhacks.sweep.bridge.flight.FlightExecutor
 import org.worldofhacks.sweep.bridge.flight.FlightNode
@@ -26,12 +29,15 @@ import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.ProbeReport
+import org.worldofhacks.sweep.bridge.session.RawEvidenceExport
+import org.worldofhacks.sweep.bridge.session.RawEvidenceSession
 import org.worldofhacks.sweep.bridge.session.ProductConnection
 import org.worldofhacks.sweep.bridge.session.SensorRecordingSession
 import org.worldofhacks.sweep.bridge.session.SensorRelayContext
 import org.worldofhacks.sweep.bridge.session.SessionModel
 import org.worldofhacks.sweep.bridge.session.SessionState
 import org.worldofhacks.sweep.bridge.video.DjiFpv
+import org.worldofhacks.sweep.bridge.video.FlowCaptureProgress
 import org.worldofhacks.sweep.bridge.video.FpvSessionHost
 
 /**
@@ -49,7 +55,8 @@ import org.worldofhacks.sweep.bridge.video.FpvSessionHost
 internal class SdkSession(private val application: Application) :
     AircraftSession,
     FpvSessionHost,
-    SensorRecordingSession {
+    SensorRecordingSession,
+    RawEvidenceSession {
     private val model = SessionModel()
     private val sensorRawLock = Any()
     private var sensorRelayContext: SensorRelayContext? = null
@@ -77,10 +84,25 @@ internal class SdkSession(private val application: Application) :
 
         override fun recordUltrasonicHeightDm(heightDm: Int): SensorRawAppendResult =
             sensorRaw?.recordUltrasonicHeightDm(heightDm) ?: SensorRawAppendResult.NO_IDENTITY
+
+        override fun recordAircraftAttitudeDegrees(
+            yawDeg: Double,
+            pitchDeg: Double,
+            rollDeg: Double,
+        ): SensorRawAppendResult = sensorRaw?.recordAircraftAttitudeDegrees(yawDeg, pitchDeg, rollDeg)
+            ?: SensorRawAppendResult.NO_IDENTITY
+
+        override fun recordGimbalAttitudeDegrees(
+            yawDeg: Double,
+            pitchDeg: Double,
+            rollDeg: Double,
+        ): SensorRawAppendResult = sensorRaw?.recordGimbalAttitudeDegrees(yawDeg, pitchDeg, rollDeg)
+            ?: SensorRawAppendResult.NO_IDENTITY
     }
     private val probe = ProbeAircraft(
         phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
         androidVersion = Build.VERSION.RELEASE ?: "",
+        measuredHfovDeg = BuildConfig.CAMERA_MEASURED_HFOV_DEG.takeIf { it > 0.0 },
         sdkVersion = { runCatching { SDKManager.getInstance().sdkVersion }.getOrNull().orEmpty() },
         log = { name, detail -> model.event(name, detail) },
         record = { key, event, status -> recordKey(key, event, status) },
@@ -175,8 +197,29 @@ internal class SdkSession(private val application: Application) :
         synchronized(sink) { sink.recorder.telemetryKey(key, event, status.supportedAtAttach, status.supportedAtConnect, status.firstValueAtMs) }
     }
 
+    // Phase G: the camera and media path on the DJI camera, gimbal, and media manager. Its
+    // facts feed the capabilities frame through the aircraft snapshot; the relay link binds
+    // its frame sink when it starts. Files land under filesDir/captures/<capture_id>/.
+    private val cameraPort = DjiCameraPort(
+        calibratedPhotoWidthPx = BuildConfig.CAMERA_PHOTO_WIDTH_PX,
+        calibratedPhotoHeightPx = BuildConfig.CAMERA_PHOTO_HEIGHT_PX,
+        calibratedHfovDeg = BuildConfig.CAMERA_MEASURED_HFOV_DEG.takeIf { it > 0.0 },
+    ) { name, detail -> model.event(name, detail) }
+    override val camera: CameraExecutor = CameraExecutor(
+        cameraPort,
+        probe,
+        File(application.filesDir, "captures"),
+        log = { line -> model.event("Camera", line) },
+        onFacts = probe::setCamera,
+    )
+
     // Phase D hook: local FPV, yaw, and codec evidence (org.worldofhacks.sweep.bridge.video).
-    override val fpv: DjiFpv = DjiFpv(application.filesDir, AndroidPhoneStatus(application)) { name, detail -> model.event(name, detail) }
+    override val fpv: DjiFpv = DjiFpv(
+        application.filesDir,
+        AndroidPhoneStatus(application),
+        { name, detail -> model.event(name, detail) },
+        captureProgress = FlowCaptureProgress(camera.progress),
+    )
 
     override val state: StateFlow<SessionState> = model.state
 
@@ -190,7 +233,7 @@ internal class SdkSession(private val application: Application) :
     // takeover signals attach when ProbeAircraft attaches (SDK registered), and the flight
     // controller's failsafe setting is read, never changed, on every product connection.
     private val port = DjiFlightPort { name, detail -> model.event(name, detail) }
-    private val flightExecutor = FlightExecutor(port, probe, fallback = probe, log = { line -> model.event("Flight", line) })
+    private val flightExecutor = FlightExecutor(port, probe, fallback = camera, log = { line -> model.event("Flight", line) })
     override val flight: FlightNode = FlightNode(
         flightExecutor,
         probe,
@@ -200,8 +243,14 @@ internal class SdkSession(private val application: Application) :
     )
 
     init {
-        probe.onAttached = { port.attach(flightExecutor) }
-        probe.onProductConnected = { port.onProductConnected() }
+        probe.onAttached = {
+            port.attach(flightExecutor)
+            cameraPort.attach()
+        }
+        probe.onProductConnected = {
+            port.onProductConnected()
+            cameraPort.productConnected(true)
+        }
     }
 
     private val callback = object : SDKManagerCallback {
@@ -219,6 +268,7 @@ internal class SdkSession(private val application: Application) :
             clearSensorRawIdentity()
             model.productDisconnected(productId)
             probe.productConnected(false)
+            cameraPort.productConnected(false)
             fpv.productConnected(false)
             probe.updateIdentity(model.current.identity)
         }
@@ -327,14 +377,25 @@ internal class SdkSession(private val application: Application) :
     override fun exportProbeReport(): ExportResult = ProbeReport.write(
         directory = application.filesDir,
         state = model.current,
-        environment = ProbeReport.Environment(
-            aircraftVariant = BuildConfig.AIRCRAFT,
-            applicationId = BuildConfig.APPLICATION_ID,
-            appVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-            msdkVersion = SDKManager.getInstance().sdkVersion,
-            phone = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
-            android = "${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} / build ${Build.DISPLAY}",
-        ),
+        environment = probeEnvironment(),
         exportedAtMs = System.currentTimeMillis(),
+    )
+
+    override fun exportRawEvidence(): ExportResult {
+        val exportedAtMs = System.currentTimeMillis()
+        return RawEvidenceExport.write(
+            filesDir = application.filesDir,
+            probeReport = ProbeReport.render(model.current, probeEnvironment(), exportedAtMs),
+            exportedAtMs = exportedAtMs,
+        )
+    }
+
+    private fun probeEnvironment() = ProbeReport.Environment(
+        aircraftVariant = BuildConfig.AIRCRAFT,
+        applicationId = BuildConfig.APPLICATION_ID,
+        appVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+        msdkVersion = SDKManager.getInstance().sdkVersion,
+        phone = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+        android = "${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} / build ${Build.DISPLAY}",
     )
 }

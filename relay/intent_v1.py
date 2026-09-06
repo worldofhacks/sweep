@@ -7,7 +7,7 @@ from typing import Literal
 
 from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
-    C1_IMPLEMENTED_INTENT_NAMES,
+    IMPLEMENTED_INTENT_NAMES,
     CapabilityProfile,
     IntentName,
 )
@@ -56,6 +56,14 @@ class RejectedIntent:
 
 type ValidationResult = AcceptedIntent | RejectedIntent
 
+MAX_INTENT_IDENTIFIER_CHARS = 128
+MAX_INTENT_SESSION_CHARS = 512
+MAX_INTENT_SOURCE_CHARS = 64
+MAX_INTENT_NAME_CHARS = 64
+MAX_INTENT_DRONE_IDS = 6
+MAX_INTENT_DRONE_ID = (1 << 31) - 1
+MAX_INTENT_TIMESTAMP = (1 << 63) - 1
+
 # Operator sources that may authenticate without an aircraft binding and emit
 # Intent v1. Console buttons, the keyboard network stop, and the webcam gesture
 # producer are each bound to their own connection; an intent never moves
@@ -71,12 +79,12 @@ REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam", "language"})
 # registry rather than maintaining another capability list.
 SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
     {
-        "console": C1_IMPLEMENTED_INTENT_NAMES,
+        "console": IMPLEMENTED_INTENT_NAMES,
         "keyboard": frozenset({IntentName.ESTOP}),
         "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
         # This is only the schema ceiling. RelaySession additionally requires a
         # one-shot audited compiler-plan binding for every language intent.
-        "language": C1_IMPLEMENTED_INTENT_NAMES,
+        "language": IMPLEMENTED_INTENT_NAMES,
     }
 )
 _REQUIRED_FIELDS = frozenset(
@@ -176,35 +184,52 @@ def _has_valid_envelope(raw: Mapping[object, object]) -> bool:
         and not isinstance(raw["v"], bool)
         and isinstance(raw["t"], int)
         and not isinstance(raw["t"], bool)
-        and raw["t"] >= 0
+        and 0 <= raw["t"] <= MAX_INTENT_TIMESTAMP
         and raw["type"] == "intent"
-        and isinstance(raw["intent_id"], str)
-        and bool(raw["intent_id"])
+        and _is_bounded_intent_text(raw["intent_id"], MAX_INTENT_IDENTIFIER_CHARS)
         and _is_valid_retry_of(raw.get("retry_of"), raw["intent_id"])
-        and isinstance(raw["source"], str)
-        and bool(raw["source"])
-        and isinstance(raw["session"], str)
-        and bool(raw["session"])
-        and isinstance(raw["name"], str)
-        and bool(raw["name"])
+        and _is_bounded_intent_text(raw["source"], MAX_INTENT_SOURCE_CHARS)
+        and _is_bounded_intent_text(raw["session"], MAX_INTENT_SESSION_CHARS)
+        and _is_bounded_intent_text(raw["name"], MAX_INTENT_NAME_CHARS)
         and isinstance(raw["confirm"], bool)
         and _is_drone_ids(raw["selection"], allow_empty=True)
     )
 
 
 def _is_drone_ids(value: object, *, allow_empty: bool) -> bool:
-    if not isinstance(value, list) or (not value and not allow_empty):
+    if (
+        not isinstance(value, list)
+        or len(value) > MAX_INTENT_DRONE_IDS
+        or (not value and not allow_empty)
+    ):
         return False
     return all(
-        isinstance(item, int) and not isinstance(item, bool) and item > 0 for item in value
+        isinstance(item, int) and not isinstance(item, bool) and 0 < item <= MAX_INTENT_DRONE_ID
+        for item in value
     ) and (len(set(value)) == len(value))
 
 
 def _is_valid_retry_of(value: object, intent_id: object) -> bool:
-    return value is None or (isinstance(value, str) and bool(value) and value != intent_id)
+    return value is None or (
+        _is_bounded_intent_text(value, MAX_INTENT_IDENTIFIER_CHARS) and value != intent_id
+    )
+
+
+def _is_bounded_intent_text(value: object, maximum_chars: int) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= maximum_chars
+        and value == value.strip()
+        and value.isprintable()
+    )
 
 
 def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
+    if name is IntentName.NAVIGATE:
+        return raw["confirm"] is True and bool(raw["selection"])
+    if name is IntentName.SEARCH:
+        return raw["confirm"] is True and bool(raw["selection"])
     if name is IntentName.CAPTURE_ROOM:
         return raw["confirm"] is True and len(raw["selection"]) == 1
     if name is IntentName.SURVEY_AREA:
@@ -219,6 +244,28 @@ def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
 def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise ValueError
+
+    if name is IntentName.NAVIGATE:
+        if (
+            set(value) != {"zone_id"}
+            or not isinstance(value["zone_id"], str)
+            or not 1 <= len(value["zone_id"]) <= 128
+            or value["zone_id"].strip() != value["zone_id"]
+        ):
+            raise ValueError
+        return MappingProxyType({"zone_id": value["zone_id"]})
+
+    if name is IntentName.SEARCH:
+        if set(value) != {"zone_id", "target_class"} or any(
+            not isinstance(value[key], str)
+            or not 1 <= len(value[key]) <= 128
+            or value[key].strip() != value[key]
+            for key in ("zone_id", "target_class")
+        ):
+            raise ValueError
+        return MappingProxyType(
+            {"zone_id": value["zone_id"], "target_class": value["target_class"]}
+        )
 
     if name is IntentName.SELECT:
         if set(value) != {"ids"} or not _is_drone_ids(value["ids"], allow_empty=False):
@@ -260,7 +307,9 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({"delta": value["delta"]})
 
     if name is IntentName.FORMATION_SET:
-        if set(value) != {"name"} or not isinstance(value["name"], str) or not value["name"]:
+        if set(value) != {"name"} or not _is_bounded_intent_text(
+            value["name"], MAX_INTENT_IDENTIFIER_CHARS
+        ):
             raise ValueError
         return MappingProxyType({"name": value["name"]})
 
@@ -291,10 +340,8 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         )
 
     if name in {IntentName.SURVEY_AREA, IntentName.MAP_AREA}:
-        if (
-            set(value) != {"area_id"}
-            or not isinstance(value["area_id"], str)
-            or not value["area_id"]
+        if set(value) != {"area_id"} or not _is_bounded_intent_text(
+            value["area_id"], MAX_INTENT_IDENTIFIER_CHARS
         ):
             raise ValueError
         return MappingProxyType({"area_id": value["area_id"]})
@@ -302,9 +349,9 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
     if name is IntentName.CAPTURE_ROOM:
         if set(value) != {"room_id", "capture_id", "pattern"}:
             raise ValueError
-        if not isinstance(value["room_id"], str) or not value["room_id"]:
+        if not _is_bounded_intent_text(value["room_id"], MAX_INTENT_IDENTIFIER_CHARS):
             raise ValueError
-        if not isinstance(value["capture_id"], str) or not value["capture_id"]:
+        if not _is_bounded_intent_text(value["capture_id"], MAX_INTENT_IDENTIFIER_CHARS):
             raise ValueError
         if value["pattern"] not in ("pano_360", "reconstruct_8"):
             raise ValueError

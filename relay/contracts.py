@@ -6,8 +6,9 @@ only the transport envelopes that carry their outcomes through the relay.
 
 from __future__ import annotations
 
+import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -107,6 +108,18 @@ NODE_FRAME_TYPES = frozenset(
     {"capabilities", "capture_bundle", "media_file", "capture_readiness", "node_status"}
 )
 
+# Both adapter capability claims and camera panorama-mode claims become nested
+# state lists. Keep their signed/canonical representation comfortably below the
+# audit projector's per-aircraft ceiling before either list can mutate state.
+MAX_CAPABILITY_LIST_ITEMS = 64
+MAX_CAPABILITY_ITEM_UTF8_BYTES = 512
+MAX_CAPABILITY_LIST_CANONICAL_BYTES = 8 * 1024
+MAX_CAPTURE_BUNDLE_MEDIA_ITEMS = 8
+MAX_COVERAGE_MISSING_ITEMS = 8
+# Android reports this field as a signed ``Long``. Mirror that exact upper bound
+# before the value reaches retained state or its audit projection.
+MAX_STORAGE_REMAINING_BYTES = (1 << 63) - 1
+
 # Signed command arguments carry integers only (millimetres, millimetres per second,
 # millidegrees, millidegrees per second) so the canonical JSON never depends on a
 # cross-language float representation, the same rule signed membership claims follow.
@@ -134,6 +147,10 @@ COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingP
 _CAPTURE_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
 _CAPTURE_COVERAGES = frozenset({"full_equirectangular", "incomplete_vertical_coverage"})
 _CAMERA_RESULT_STATUSES = frozenset({"completed", "unsupported", "failed"})
+# A media_file reported at capture time, before the node has downloaded the bytes, is
+# ``pending``: its checksum is all zeros until the retrieval record replaces it.
+_MEDIA_RETRIEVAL_STATUSES = _CAMERA_RESULT_STATUSES | {"pending"}
+MEDIA_PENDING_CHECKSUM = "0" * 64
 _ENVELOPE_FIELDS = frozenset({"v", "t", "type", "event_id", "session"})
 
 
@@ -663,7 +680,7 @@ def parse_membership_request(raw: object) -> MembershipRequest:
     signature = _nonempty_string(value["signature"], "signature", "invalid_signature")
 
     if action is MembershipAction.JOIN:
-        adapter_id = _nonempty_string(value["adapter_id"], "adapter_id", "invalid_membership")
+        adapter_id = _bounded_state_text(value["adapter_id"], "adapter_id", "invalid_membership")
         capabilities = _string_list(value["capabilities"], "capabilities", allow_empty=False)
         return MembershipRequest(
             1,
@@ -772,7 +789,7 @@ def parse_telemetry(raw: object) -> TelemetryV1:
         values["vy"],
         values["vz"],
         values["battery"],
-        _nonempty_string(value["state"], "state", "invalid_telemetry"),
+        _bounded_state_text(value["state"], "state", "invalid_telemetry", maximum_utf8_bytes=128),
         values["link"],
         values["pos_quality"],
     )
@@ -902,6 +919,14 @@ def parse_capabilities(raw: object) -> CapabilitiesFrame:
         measured = _finite_number(measured, "measured_hfov_deg", code)
         if not 0 < measured < 180:
             raise ContractError(code, "measured_hfov_deg must be null or between 0 and 180")
+    storage_remaining = _nonnegative_int(
+        value["storage_remaining_bytes"], "storage_remaining_bytes", code
+    )
+    if storage_remaining > MAX_STORAGE_REMAINING_BYTES:
+        raise ContractError(
+            code,
+            f"storage_remaining_bytes must be at most {MAX_STORAGE_REMAINING_BYTES}",
+        )
     return CapabilitiesFrame(
         1,
         value["t"],
@@ -917,14 +942,14 @@ def parse_capabilities(raw: object) -> CapabilitiesFrame:
         pitch_min,
         pitch_max,
         horizontal_fov,
-        _nonnegative_int(value["storage_remaining_bytes"], "storage_remaining_bytes", code),
+        storage_remaining,
         _boolean(value["media_retrieval"], "media_retrieval", code),
-        _nonempty_string(value["aircraft_model"], "aircraft_model", code),
-        _nonempty_string(value["aircraft_firmware"], "aircraft_firmware", code),
-        _nonempty_string(value["rc_firmware"], "rc_firmware", code),
-        _nonempty_string(value["phone_model"], "phone_model", code),
-        _nonempty_string(value["android_version"], "android_version", code),
-        _nonempty_string(value["sdk_version"], "sdk_version", code),
+        _bounded_state_text(value["aircraft_model"], "aircraft_model", code),
+        _bounded_state_text(value["aircraft_firmware"], "aircraft_firmware", code),
+        _bounded_state_text(value["rc_firmware"], "rc_firmware", code),
+        _bounded_state_text(value["phone_model"], "phone_model", code),
+        _bounded_state_text(value["android_version"], "android_version", code),
+        _bounded_state_text(value["sdk_version"], "sdk_version", code),
         measured,
     )
 
@@ -969,12 +994,18 @@ def parse_capture_bundle(raw: object) -> CaptureBundleFrame:
     coverage = _choice(value["coverage"], "coverage", _CAPTURE_COVERAGES, code)
     status = _choice(value["status"], "status", _CAMERA_RESULT_STATUSES, code)
     media_raw = value["media"]
-    if isinstance(media_raw, str) or not isinstance(media_raw, Sequence):
+    if not isinstance(media_raw, list):
         raise ContractError(code, "media must be a list")
+    if len(media_raw) > MAX_CAPTURE_BUNDLE_MEDIA_ITEMS:
+        raise ContractError(
+            code, f"media may contain at most {MAX_CAPTURE_BUNDLE_MEDIA_ITEMS} items"
+        )
     media = tuple(
         _media_record(_mapping(item, code, "media entries must be objects"), code)
         for item in media_raw
     )
+    if len({record.file_id for record in media}) != len(media):
+        raise ContractError(code, "media may not contain duplicate file_id values")
     for record in media:
         if (
             record.capture_id != capture_id
@@ -1028,9 +1059,16 @@ def parse_capture_readiness(raw: object) -> CaptureReadinessFrame:
     _exact_fields(value, fields, code)
     _common_envelope(value, expected_type="capture_readiness", code=code)
     coverage_raw = value["coverage_missing"]
-    if isinstance(coverage_raw, str) or not isinstance(coverage_raw, Sequence):
+    if not isinstance(coverage_raw, list):
         raise ContractError(code, "coverage_missing must be a list")
+    if len(coverage_raw) > MAX_COVERAGE_MISSING_ITEMS:
+        raise ContractError(
+            code,
+            f"coverage_missing may contain at most {MAX_COVERAGE_MISSING_ITEMS} items",
+        )
     coverage_missing = tuple(_azimuth(item, "coverage_missing", code) for item in coverage_raw)
+    if len(set(coverage_missing)) != len(coverage_missing):
+        raise ContractError(code, "coverage_missing may not contain duplicates")
     next_heading = value["next_heading_deg"]
     if next_heading is not None:
         next_heading = _azimuth(next_heading, "next_heading_deg", code)
@@ -1257,6 +1295,25 @@ def _nonempty_string(value: object, field: str, code: str) -> str:
     return value
 
 
+def _bounded_state_text(
+    value: object,
+    field: str,
+    code: str,
+    *,
+    maximum_utf8_bytes: int = MAX_CAPABILITY_ITEM_UTF8_BYTES,
+) -> str:
+    result = _nonempty_string(value, field, code)
+    if result != result.strip() or not result.isprintable():
+        raise ContractError(code, f"{field} must be canonical printable text")
+    try:
+        encoded = result.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ContractError(code, f"{field} must be valid UTF-8 text") from None
+    if len(encoded) > maximum_utf8_bytes:
+        raise ContractError(code, f"{field} may contain at most {maximum_utf8_bytes} UTF-8 bytes")
+    return result
+
+
 def _nullable_string(
     value: object,
     field: str,
@@ -1294,14 +1351,36 @@ def _finite_number(value: object, field: str, code: str) -> float:
 def _string_list(
     value: object, field: str, *, allow_empty: bool, code: str = "invalid_membership"
 ) -> tuple[str, ...]:
-    if isinstance(value, str) or not isinstance(value, Sequence):
+    if not isinstance(value, list):
         raise ContractError(code, f"{field} must be a list")
-    result = tuple(_nonempty_string(item, field, code) for item in value)
+    if len(value) > MAX_CAPABILITY_LIST_ITEMS:
+        raise ContractError(code, f"{field} may contain at most {MAX_CAPABILITY_LIST_ITEMS} items")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item or item != item.strip() or not item.isprintable():
+            raise ContractError(code, f"{field} items must be canonical printable strings")
+        try:
+            encoded = item.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ContractError(code, f"{field} items must be valid UTF-8 strings") from None
+        if len(encoded) > MAX_CAPABILITY_ITEM_UTF8_BYTES:
+            raise ContractError(
+                code,
+                f"{field} items may contain at most {MAX_CAPABILITY_ITEM_UTF8_BYTES} UTF-8 bytes",
+            )
+        result.append(item)
     if not result and not allow_empty:
         raise ContractError(code, f"{field} may not be empty")
     if len(set(result)) != len(result):
         raise ContractError(code, f"{field} may not contain duplicates")
-    return result
+    canonical = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(canonical) > MAX_CAPABILITY_LIST_CANONICAL_BYTES:
+        raise ContractError(
+            code,
+            f"{field} canonical JSON may contain at most "
+            f"{MAX_CAPABILITY_LIST_CANONICAL_BYTES} UTF-8 bytes",
+        )
+    return tuple(result)
 
 
 def _boolean(value: object, field: str, code: str) -> bool:
@@ -1342,7 +1421,9 @@ def _command_arguments(
 ) -> Mapping[str, int | str]:
     spec = COMMAND_ARGUMENT_FIELDS[operation]
     value = _mapping(raw, code, "command args must be an object")
-    if set(value) != set(spec):
+    route_id = operation is CommandOperation.GOTO and "navigation_route_id" in value
+    expected = set(spec) | ({"navigation_route_id"} if route_id else set())
+    if set(value) != expected:
         raise ContractError(code, f"{operation.value} arguments do not match the v1 contract")
     result: dict[str, int | str] = {}
     for field, kind in spec.items():
@@ -1352,6 +1433,17 @@ def _command_arguments(
             result[field] = _positive_int(value[field], field, code)
         else:
             result[field] = _integer(value[field], field, code)
+    if route_id:
+        navigation_route_id = _nonempty_string(
+            value["navigation_route_id"], "navigation_route_id", code
+        )
+        if (
+            len(navigation_route_id) > 128
+            or navigation_route_id != navigation_route_id.strip()
+            or not navigation_route_id.isprintable()
+        ):
+            raise ContractError(code, "navigation_route_id must be a canonical identifier")
+        result["navigation_route_id"] = navigation_route_id
     return MappingProxyType(result)
 
 
@@ -1371,6 +1463,7 @@ _MEDIA_RECORD_FIELDS = frozenset(
         "retrieval_status",
     }
 )
+_PENDING_MEDIA_CHECKSUM = "0" * 64
 
 
 def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
@@ -1389,6 +1482,13 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         or any(character not in "0123456789abcdef" for character in checksum)
     ):
         raise ContractError(code, "checksum_sha256 must be 64 lowercase hex characters")
+    retrieval_status = _choice(
+        value["retrieval_status"], "retrieval_status", _MEDIA_RETRIEVAL_STATUSES, code
+    )
+    if retrieval_status == "pending" and checksum != _PENDING_MEDIA_CHECKSUM:
+        raise ContractError(code, "pending media requires the all-zero checksum sentinel")
+    if retrieval_status == "completed" and checksum == _PENDING_MEDIA_CHECKSUM:
+        raise ContractError(code, "completed media requires a content checksum")
     return MediaFileRecord(
         _nonempty_string(value["capture_id"], "capture_id", code),
         _nonempty_string(value["file_id"], "file_id", code),
@@ -1410,7 +1510,7 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         ),
         checksum,
         _nonempty_string(value["storage_ref"], "storage_ref", code),
-        _choice(value["retrieval_status"], "retrieval_status", _CAMERA_RESULT_STATUSES, code),
+        retrieval_status,
     )
 
 

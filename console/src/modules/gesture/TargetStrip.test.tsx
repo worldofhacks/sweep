@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
 import App from '../../App'
 import type { ControlClients } from '../../control/use-control-console'
-import { C1_BASIC_CONTROL_INTENTS } from '../../relay/contract'
+import { UnavailableRelayClient, WebSocketRelayClient } from '../../relay/client'
+import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1, type RelayStateEvent } from '../../relay/contract'
 import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
 import { createGestureTestRig } from '../../testing/gesture-fixtures'
 
@@ -62,6 +63,94 @@ const quick = () => within(screen.getByRole('group', { name: 'Quick commands' })
 const holdButton = () => quick().getByRole('button', { name: 'Hold' })
 
 describe('Target strip quick commands', () => {
+  test.each(['unchanged selection', 'roster change', 'desired target degraded', 'desired target unselectable'] as const)(
+    'All ready from empty selection handles %s before confirmation through the WebSocket client', async (scenario) => {
+    const rig = createGestureTestRig({})
+    const wall = () => rig.dependencies.clock.wall()
+    const socket = new EventTarget() as EventTarget & { readyState: number; send(payload: string): void; close(): void }
+    const sent: string[] = []
+    const controlFrames = () => sent
+      .map((frame) => JSON.parse(frame))
+      .filter((frame) => frame.type !== 'operator_presence')
+    socket.readyState = 1
+    socket.send = (payload) => { sent.push(payload) }
+    socket.close = () => {}
+    const consoleClient = new WebSocketRelayClient(
+      { baseUrl: 'ws://relay.example.test', sessionId: session, source: 'console', token: 'test-console-token' },
+      { now: wall, createSocket: () => socket as unknown as WebSocket },
+    )
+    render(
+      <App
+        sessionId={session}
+        clients={{
+          console: consoleClient,
+          keyboard: new UnavailableRelayClient('Test has no keyboard connection.', wall),
+          webcam: new UnavailableRelayClient('Test has no webcam connection.', wall),
+        }}
+        intentDependencies={{ now: wall, nextId: () => 'fresh-selection-intent' }}
+        initialModule="gesture"
+        services={{ gesture: rig.dependencies }}
+      />,
+    )
+    const message = (payload: object) => socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(payload) }))
+    const initialState: RelayStateEvent = {
+      v: 1, t: wall(), event_id: 'fresh-state', state_sequence: 1, type: 'state', session, roster_version: 7,
+      armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null, drones: fixtureAircraft(wall(), 4),
+    }
+    act(() => {
+      socket.dispatchEvent(new Event('open'))
+      message({ v: 1, t: wall(), event_id: 'fresh-auth', type: 'auth.accepted', session, source: 'console', drone_id: null })
+      message(initialState)
+    })
+    const target = screen.getByRole('group', { name: 'Target' })
+    expect(target).toHaveTextContent('0 of 4 selected')
+    const user = userEvent.setup()
+    await user.click(within(target).getByRole('button', { name: 'All ready' }))
+    const dock = screen.getByRole('region', { name: 'Pending confirmation' })
+    const draft = JSON.parse(dock.querySelector('pre')!.textContent!)
+    expect(draft).toMatchObject({
+      intent_id: 'fresh-selection-intent', name: 'select', source: 'console',
+      args: { ids: [1, 2, 4] }, selection: [1, 2, 4], confirm: false,
+    })
+    expect(isConsoleIntentV1(draft)).toBe(true)
+    expect(controlFrames().map((frame) => frame.type)).toEqual(['auth'])
+    expect(target).toHaveTextContent('0 of 4 selected')
+
+    // The relay continues publishing its old selection until this proposal is confirmed.
+    for (const stateSequence of [2, 3]) {
+      act(() => message({ ...initialState, event_id: `repeat-state-${stateSequence}`, state_sequence: stateSequence }))
+      expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBe(dock)
+      expect(JSON.parse(dock.querySelector('pre')!.textContent!)).toEqual(draft)
+      expect(controlFrames()).toHaveLength(1)
+    }
+    if (scenario !== 'unchanged selection') {
+      const changedState: RelayStateEvent = {
+        ...initialState, event_id: 'changed-state', state_sequence: 4,
+        ...(scenario === 'roster change'
+          ? { roster_version: 8 }
+          : { drones: initialState.drones.map((drone) => drone.drone_id !== 2 ? drone : {
+            ...drone,
+            ...(scenario === 'desired target degraded' ? { membership: 'degraded' as const } : { selectable: false }),
+          }) }),
+      }
+      act(() => message(changedState))
+      expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+      expect(screen.getByText('Preview invalidated, nothing sent').closest('[role="alert"]')).toHaveTextContent(
+        scenario === 'roster change' ? 'stale_roster' : 'stale_selection',
+      )
+      expect(controlFrames()).toHaveLength(1)
+      return
+    }
+    await user.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
+    expect(controlFrames()).toHaveLength(2)
+    const intent = controlFrames()[1]
+    expect(intent).toEqual({ ...draft, t: wall(), confirm: true })
+    expect(isConsoleIntentV1(intent)).toBe(true)
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+  })
+
   test('lists the four quick commands in the design order, each wired through the control hook', async () => {
     mount()
     await screen.findByText(/Development fixture active/i)

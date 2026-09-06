@@ -10,11 +10,14 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 
+import httpx
 import pytest
 import uvicorn
 
 import relay.autonomy as autonomy_module
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
+from adapters.sim.navigation_demo import navigation_demo_runtime
+from planner.navigation_deployment import NavigationDeployment
 from relay.audit import AuditLogError
 from relay.autonomy import (
     LIFECYCLE_SOURCE,
@@ -78,6 +81,68 @@ def relay_server(tmp_path: Path) -> Iterator[RelayServer]:
             server.force_exit = True
             thread.join(timeout=WAIT_S)
         composition.close()
+
+
+@pytest.fixture
+def navigation_server(tmp_path: Path) -> Iterator[RelayServer]:
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys=KEYS,
+        log_dir=tmp_path,
+        adapter_backend=AdapterBackend.REMOTE,
+        telemetry_freshness_ms=FIXTURE_FRESHNESS_MS,
+    )
+    runtime = navigation_demo_runtime()
+    fixture_safety = replace(
+        safety_config(),
+        max_link_age_ms=FIXTURE_FRESHNESS_MS,
+        max_position_age_ms=FIXTURE_FRESHNESS_MS,
+    )
+    app, composition = create_autonomy_app(
+        settings,
+        AutonomyConfig(
+            planning=planning_config(),
+            safety=fixture_safety,
+            navigation_deployment=NavigationDeployment(
+                runtime, 1, "demo-control", "synthetic", "demo-navigation"
+            ),
+        ),
+    )
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(app, log_level="warning", lifespan="on", timeout_graceful_shutdown=2)
+    )
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+    thread.start()
+    _wait_until(lambda: server.started, what="navigation relay startup")
+    try:
+        yield RelayServer(runtime=app.state.relay_runtime, port=port)
+    finally:
+        server.should_exit = True
+        thread.join(timeout=WAIT_S)
+        if thread.is_alive():
+            server.force_exit = True
+            thread.join(timeout=WAIT_S)
+        composition.close()
+
+
+def _navigation_node(
+    server: RelayServer, drone_id: int, home: tuple[float, float, float]
+) -> FakeNode:
+    return FakeNode(
+        FakeNodeConfig(
+            relay_url=server.url,
+            session=SESSION,
+            drone_id=drone_id,
+            token=KEYS[drone_id].decode(),
+            adapter_id=f"navigation-node-{drone_id}",
+            home=home,
+            telemetry_hz=FIXTURE_TELEMETRY_HZ,
+        )
+    )
 
 
 def _node(server: RelayServer, drone_id: int, **options: object) -> FakeNode:
@@ -200,6 +265,101 @@ class _Fleet:
             and event.get("source") == "adapter"
             and event.get("drone_id") == drone_id
         ]
+
+
+def test_navigation_preview_dispatches_the_frozen_route_to_selected_fake_nodes(
+    navigation_server: RelayServer,
+) -> None:
+    console = ConsoleProbe(navigation_server.url)
+    nodes = [
+        _navigation_node(navigation_server, 1, (0.5, 1.5, 0.0)),
+        _navigation_node(navigation_server, 2, (0.5, 3.5, 0.0)),
+        _navigation_node(navigation_server, 3, (3.5, 3.5, 0.0)),
+    ]
+    console.start()
+    for node in nodes:
+        node.start()
+    http_url = navigation_server.url.replace("ws://", "http://", 1)
+    preview_url = f"{http_url}/session/{SESSION}/navigation/preview"
+    try:
+
+        def drones() -> dict[int, dict[str, object]]:
+            session = navigation_server.runtime.sessions.get(SESSION)
+            if session is None:
+                return {}
+            return {drone["drone_id"]: drone for drone in session.current_state()["drones"]}
+
+        _wait_until(
+            lambda: (
+                set(drones()) == {1, 2, 3}
+                and all(drone["membership"] == "ready" for drone in drones().values())
+            ),
+            what="navigation nodes ready",
+        )
+        arm = _intent("arm", selection=[], args=None, confirm=False)
+        console.send(arm)
+        assert _outcome(console, arm["intent_id"])["status"] == "completed"
+        select_all = _intent("select", selection=[], args={"ids": [1, 2, 3]}, confirm=False)
+        console.send(select_all)
+        assert _outcome(console, select_all["intent_id"])["status"] == "completed"
+        takeoff = _intent("takeoff", selection=[1, 2, 3], args=None, confirm=True)
+        console.send(takeoff)
+        assert _outcome(console, takeoff["intent_id"])["status"] == "completed"
+        _wait_until(
+            lambda: all(drone["telemetry"]["state"] == "hovering" for drone in drones().values()),
+            what="navigation nodes hovering",
+        )
+        select_subset = _intent("select", selection=[], args={"ids": [1, 2]}, confirm=False)
+        console.send(select_subset)
+        assert _outcome(console, select_subset["intent_id"])["status"] == "completed"
+
+        navigation = _intent("navigate", selection=[1, 2], args={"zone_id": "atrium"}, confirm=True)
+        response = httpx.post(
+            preview_url,
+            headers={"Authorization": f"Bearer {CONSOLE_KEY.decode()}"},
+            json={"intent": navigation},
+            timeout=WAIT_S,
+        )
+        assert response.status_code == 200, response.text
+        preview = response.json()
+        assert preview["expires_at_ms"] > preview["t"]
+        assert preview["plan"]["navigation"]["route"]["destination_zone_id"] == "atrium"
+        console.send(navigation)
+        result = _outcome(console, navigation["intent_id"])
+        assert result["status"] == "completed", result
+        _wait_until(
+            lambda: all(
+                drones()[drone_id]["telemetry"]["state"] == "hovering"
+                and drones()[drone_id]["telemetry"]["x"] >= 6.0
+                for drone_id in (1, 2)
+            ),
+            what="selected nodes at the atrium",
+        )
+        assert drones()[3]["telemetry"]["x"] == 3.5
+
+        select_one = _intent("select", selection=[], args={"ids": [1]}, confirm=False)
+        console.send(select_one)
+        assert _outcome(console, select_one["intent_id"])["status"] == "completed"
+        stale_navigation = _intent(
+            "navigate", selection=[1], args={"zone_id": "kitchen"}, confirm=True
+        )
+        stale_preview = httpx.post(
+            preview_url,
+            headers={"Authorization": f"Bearer {CONSOLE_KEY.decode()}"},
+            json={"intent": stale_navigation},
+            timeout=WAIT_S,
+        )
+        assert stale_preview.status_code == 200, stale_preview.text
+        hold = _intent("hold", selection=[1], args=None, confirm=False)
+        console.send(hold)
+        assert _outcome(console, hold["intent_id"])["status"] == "completed"
+        console.send(stale_navigation)
+        stale_result = _outcome(console, stale_navigation["intent_id"])
+        assert (stale_result["type"], stale_result["reason"]) == ("refusal", "invalid_plan")
+    finally:
+        for node in nodes:
+            node.stop()
+        console.stop()
 
 
 def test_m20_workflow_reaches_two_fake_nodes_through_the_composition(
@@ -705,6 +865,7 @@ def _outcome(console: ConsoleProbe, intent_id: str) -> dict[str, object]:
                 event["type"] in {"acknowledgement", "refusal"}
                 and event.get("intent_id") == intent_id
                 and event.get("source") == LIFECYCLE_SOURCE
+                and event.get("status") in {"completed", "failed", "refused", "invalidated"}
             ):
                 return event
         time.sleep(0.02)
@@ -722,3 +883,61 @@ def _wait_until(predicate: Callable[[], bool], *, what: str) -> None:
 
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+def test_capture_room_reconstruct_8_retains_media_and_a_composed_bundle_in_state(
+    relay_server: RelayServer,
+) -> None:
+    fleet = _Fleet(relay_server, {1: {}})
+    fleet.start()
+    try:
+        fleet.airborne()
+        capture_id, capture = fleet.run(
+            "capture_room",
+            selection=[1],
+            args={"room_id": "room-1", "capture_id": "cap-roundtrip", "pattern": "reconstruct_8"},
+            confirm=True,
+        )
+        assert capture["status"] == "completed", capture
+        session = relay_server.runtime.sessions[SESSION]
+        state = session.current_state()
+        (entry,) = [item for item in state["captures"] if item["capture_id"] == "cap-roundtrip"]
+        assert (entry["room_id"], entry["pattern"], entry["coverage"], entry["status"]) == (
+            "room-1",
+            "reconstruct_8",
+            "incomplete_vertical_coverage",
+            "completed",
+        )
+        assert [file["file_id"] for file in entry["files"]] == [
+            f"cap-roundtrip-frame-{number:02d}" for number in range(1, 9)
+        ]
+        assert {file["retrieval_status"] for file in entry["files"]} == {"completed"}
+        assert [file["actual_yaw_deg"] for file in entry["files"]] == [
+            float(heading) for heading in range(0, 360, 45)
+        ]
+        # The console received the closed capture through the state fan-out, never the frames.
+        _wait_until(
+            lambda: any(
+                event["type"] == "state"
+                and any(
+                    item["capture_id"] == "cap-roundtrip" and item["status"] == "completed"
+                    for item in event.get("captures", [])
+                )
+                for event in list(fleet.console.events)
+            ),
+            what="a state event carrying the closed capture",
+        )
+        assert "media_file" not in {event["type"] for event in fleet.console.events}
+        assert "capture_bundle" not in {event["type"] for event in fleet.console.events}
+    finally:
+        fleet.stop()
+
+    operations = [operation for operation, intent in fleet.commands_for(1) if intent == capture_id]
+    assert operations[:2] == ["camera_capabilities", "set_gimbal_pitch"]
+    assert operations[2:] == ["rotate_to", "camera_ready", "capture_photo", "retrieve_media"] * 8
+    records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
+    media = [record for record in records if record["type"] == "media_file"]
+    assert len(media) == 16, "one record at capture time and one at retrieval per frame"
+    bundles = [record for record in records if record["type"] == "capture_bundle"]
+    assert [bundle.get("source") for bundle in bundles] == ["autonomy"]
+    assert bundles[0]["status"] == "completed" and len(bundles[0]["media"]) == 8

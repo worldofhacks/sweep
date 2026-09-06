@@ -4,6 +4,7 @@ import pytest
 
 from planner.models import CommandOperation, FlightState, Plan, Position, Refusal, RefusalReason
 from planner.planner import DeterministicPlanner
+from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
     make_intent,
@@ -234,7 +235,7 @@ def test_translate_orders_leading_aircraft_first_for_sequential_spacing() -> Non
 
 def test_formation_and_spacing_plans_carry_authoritative_projection_updates() -> None:
     snapshot = make_snapshot(4)
-    planner = DeterministicPlanner(planning_config())
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
 
     formation = planner.plan(
         make_intent(
@@ -257,7 +258,7 @@ def test_formation_and_spacing_plans_carry_authoritative_projection_updates() ->
 
 def test_altitude_and_confirmed_sweep_expand_for_six_simulated_aircraft() -> None:
     snapshot = make_snapshot(6)
-    planner = DeterministicPlanner(altitude_config())
+    planner = DeterministicPlanner(altitude_config(), C2_CAPABILITY_PROFILE)
 
     altitude = planner.plan(
         make_intent(IntentName.ALTITUDE, selection=snapshot.selection, args={"delta": 1}),
@@ -283,7 +284,7 @@ def test_requested_sweep_box_is_the_exact_source_of_lane_coordinates() -> None:
     snapshot = make_snapshot(4)
     box = {"min_x": -2.0, "max_x": 2.0, "min_y": -3.0, "max_y": 3.0}
 
-    result = DeterministicPlanner(planning_config()).plan(
+    result = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(
         make_intent(
             IntentName.SWEEP,
             selection=snapshot.selection,
@@ -305,7 +306,9 @@ def test_m15_delta_overflow_is_a_typed_refusal(name: IntentName) -> None:
     snapshot = make_snapshot(2)
     config = altitude_config() if name is IntentName.ALTITUDE else planning_config()
 
-    result = DeterministicPlanner(config).plan(
+    result = DeterministicPlanner(
+        config, C2_CAPABILITY_PROFILE if name is IntentName.SPACING else C1_CAPABILITY_PROFILE
+    ).plan(
         make_intent(name, selection=snapshot.selection, args={"delta": 10**400}),
         snapshot,
     )
@@ -317,7 +320,7 @@ def test_m15_delta_overflow_is_a_typed_refusal(name: IntentName) -> None:
 def test_console_v_formation_name_matches_the_planner_library() -> None:
     snapshot = make_snapshot(4)
 
-    result = DeterministicPlanner(planning_config()).plan(
+    result = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(
         make_intent(
             IntentName.FORMATION_SET,
             selection=snapshot.selection,

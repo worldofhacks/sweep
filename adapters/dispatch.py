@@ -5,8 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from math import isfinite
 from string import hexdigits
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from planner.navigation_runtime import NavigationRuntime
 
 from adapters.protocols import (
     AdapterAcknowledgement,
@@ -46,6 +51,7 @@ from planner.models import (
 from relay.intent_v1 import IntentName
 
 type SnapshotProvider = Callable[[], FleetSnapshot]
+type NavigationCompletionObserver = Callable[[Plan, Command, FleetSnapshot], None]
 type CommandOutcome = (
     CommandAcknowledgement | Refusal | tuple[list[CommandAcknowledgement], list[MediaFile]]
 )
@@ -58,11 +64,16 @@ class AdapterDispatcher:
         flight: SwarmAdapter,
         camera: CameraCapture,
         arbiter: SafetyArbiter,
+        navigation: NavigationRuntime | None = None,
+        on_navigation_command_completed: NavigationCompletionObserver | None = None,
     ) -> None:
         self.flight = flight
         self.camera = camera
         self.arbiter = arbiter
         self.current_altitude_grounding: Callable[[], AltitudeGrounding | None] | None = None
+        self.navigation = navigation
+        self.on_navigation_command_completed = on_navigation_command_completed
+        self._navigation_issued_at: dict[str, int] = {}
         self._command_observer: ContextVar[Callable[[Command], None] | None] = ContextVar(
             f"command_observer_{id(self)}", default=None
         )
@@ -149,6 +160,109 @@ class AdapterDispatcher:
             owner_still_valid=owner_still_valid,
         )
 
+    def _navigation_check(
+        self,
+        plan: Plan,
+        command: Command,
+        snapshot: FleetSnapshot,
+        *,
+        completed: bool = False,
+        pending: bool = False,
+    ) -> Refusal | None:
+        if plan.navigation is None and plan.intent_name not in {
+            IntentName.NAVIGATE,
+            IntentName.SEARCH,
+        }:
+            return None
+        if self.navigation is None or plan.navigation is None:
+            return Refusal(
+                intent_id=plan.intent_id,
+                roster_version=snapshot.roster_version,
+                drone_id=command.drone_id,
+                connection_epoch=command.connection_epoch,
+                reason=RefusalReason.UNSUPPORTED,
+                detail="navigation runtime is unavailable",
+            )
+        issued_at = self._navigation_issued_at.get(command.command_id)
+        if (completed or pending) and (
+            issued_at is None
+            or not 0 <= snapshot.now_ms - issued_at <= (plan.navigation.config.segment_timeout_ms)
+        ):
+            return Refusal(
+                intent_id=plan.intent_id,
+                roster_version=snapshot.roster_version,
+                drone_id=command.drone_id,
+                connection_epoch=command.connection_epoch,
+                reason=RefusalReason.ADAPTER_TIMEOUT,
+                detail="navigation segment completion is missing its dispatch deadline",
+            )
+        return self.navigation.check(
+            plan,
+            command,
+            snapshot,
+            completed=completed,
+            issued_at_ms=issued_at,
+        )
+
+    def expire_navigation(
+        self,
+        plan: Plan,
+        pending: ExecutionResult,
+        snapshot: FleetSnapshot,
+        *,
+        current_snapshot: SnapshotProvider | None = None,
+        owner_still_valid: Callable[[], bool] | None = None,
+    ) -> ExecutionResult | None:
+        """Invalidate an executing navigation command when its deadline expires."""
+        if plan.navigation is None or pending.status is not LifecycleStatus.EXECUTING:
+            return None
+        if owner_still_valid is not None and not owner_still_valid():
+            return None
+        provider = current_snapshot or (lambda: snapshot)
+        current = provider()
+        acknowledgements = pending.acknowledgements
+        if (
+            pending.plan != plan
+            or not acknowledgements
+            or len(acknowledgements) > len(plan.commands)
+            or any(
+                not self._ack_matches_command(ack, command)
+                for ack, command in zip(
+                    acknowledgements, plan.commands[: len(acknowledgements)], strict=True
+                )
+            )
+        ):
+            if owner_still_valid is not None and not owner_still_valid():
+                return None
+            return self._invalidated_resume(
+                plan,
+                current,
+                RefusalReason.INVALID_RESUME,
+                "navigation result has no valid executing command",
+                acknowledgements=acknowledgements,
+            )
+        command = plan.commands[len(acknowledgements) - 1]
+        acknowledgement = acknowledgements[-1]
+        if acknowledgement.status not in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}:
+            return None
+        refusal = self._navigation_check(plan, command, current, pending=True)
+        if refusal is None:
+            return None
+        if owner_still_valid is not None and not owner_still_valid():
+            return None
+        holds = self._hold_affected(
+            plan, {command.drone_id: command}, provider, owner_still_valid=owner_still_valid
+        )
+        if owner_still_valid is not None and not owner_still_valid():
+            return None
+        return self._invalidated_resume(
+            plan,
+            provider(),
+            refusal.reason,
+            refusal.detail,
+            acknowledgements=(*acknowledgements, *holds),
+        )
+
     def _dispatch_checked(
         self,
         plan: Plan,
@@ -228,6 +342,7 @@ class AdapterDispatcher:
         media_files: list[MediaFile] = []
         degraded: set[int] = set()
         failures: list[Refusal] = []
+        deflected_commands: list[Command] = []
         projected = {}
         for completed in prior_affected:
             aircraft = initial.aircraft.get(completed.drone_id)
@@ -248,6 +363,14 @@ class AdapterDispatcher:
         }
 
         for command in plan.commands[start_index:]:
+            if plan.navigation is not None and failures:
+                return self._refused(
+                    plan,
+                    provider(),
+                    failures[0],
+                    acknowledgements=acknowledgements,
+                    degraded=degraded,
+                )
             if command.drone_id in degraded:
                 continue
             if owner_still_valid is not None and not owner_still_valid():
@@ -259,17 +382,32 @@ class AdapterDispatcher:
                     acknowledgements=tuple(acknowledgements),
                 )
             current = provider()
+            effective_command = self.arbiter.filtered_goto_commands(plan, current).get(
+                command.command_id, command
+            )
+            if effective_command != command:
+                deflected_commands.append(effective_command)
             effective_projected = self._effective_projected_positions(
                 projected, evidence_baseline, current
             )
-            refusal = self.arbiter.check_command(
+            raw_refusal = self._navigation_check(plan, command, current)
+            raw_refusal = raw_refusal or self.arbiter.check_command(
                 plan,
                 command,
                 current,
                 projected_positions=effective_projected,
             )
+            if raw_refusal is not None and raw_refusal.reason is not RefusalReason.SPACING:
+                refusal = raw_refusal
+            else:
+                refusal = self.arbiter.check_command(
+                    plan,
+                    effective_command,
+                    current,
+                    projected_positions=effective_projected,
+                )
             if refusal is None:
-                refusal = self._altitude_grounding_refusal(plan, command, current)
+                refusal = self._altitude_grounding_refusal(plan, effective_command, current)
             if refusal is not None:
                 if plan.intent_name is IntentName.CAPTURE_ROOM:
                     affected[command.drone_id] = command
@@ -297,8 +435,23 @@ class AdapterDispatcher:
                     acknowledgements=tuple(acknowledgements),
                 )
             try:
-                with self._intent_scope(command.intent_id, command.roster_version, (command,)):
-                    outcome = self._execute(command, captures, provider)
+                if plan.navigation is not None:
+                    self._navigation_issued_at[command.command_id] = current.now_ms
+                with self._intent_scope(
+                    effective_command.intent_id,
+                    effective_command.roster_version,
+                    (effective_command,),
+                ):
+                    outcome = self._execute(plan, effective_command, captures, provider)
+                if effective_command != command and isinstance(outcome, CommandAcknowledgement):
+                    outcome = replace(
+                        outcome,
+                        detail=(
+                            f"BVC deflected goto to x={effective_command.parameters['x']}, "
+                            f"y={effective_command.parameters['y']}, "
+                            f"z={effective_command.parameters['z']}. {outcome.detail}"
+                        ).rstrip(),
+                    )
             except AdapterTimeout as error:
                 failure = self._failure_for(
                     command,
@@ -428,6 +581,7 @@ class AdapterDispatcher:
                     status=LifecycleStatus.EXECUTING,
                     plan=plan,
                     acknowledgements=tuple(acknowledgements),
+                    deflected_commands=tuple(deflected_commands),
                 )
             if latest.status is not LifecycleStatus.COMPLETED:
                 reason = latest.reason or RefusalReason.ADAPTER_FAILURE
@@ -468,9 +622,31 @@ class AdapterDispatcher:
                     )
                 )
             else:
-                target = self.arbiter.command_position(command, current.aircraft[command.drone_id])
+                completed_snapshot = provider()
+                post_io_refusal = self._navigation_check(
+                    plan, command, completed_snapshot, completed=True
+                )
+                if post_io_refusal is not None:
+                    affected[command.drone_id] = command
+                    acknowledgements.extend(
+                        self._hold_affected(
+                            plan, affected, provider, owner_still_valid=owner_still_valid
+                        )
+                    )
+                    return self._refused(
+                        plan,
+                        provider(),
+                        post_io_refusal,
+                        acknowledgements=acknowledgements,
+                        degraded=degraded,
+                    )
+                if plan.navigation is not None and self.on_navigation_command_completed is not None:
+                    self.on_navigation_command_completed(plan, command, completed_snapshot)
+                target = self.arbiter.command_position(
+                    effective_command, current.aircraft[effective_command.drone_id]
+                )
                 if target is not None:
-                    projected[command.drone_id] = target
+                    projected[effective_command.drone_id] = target
                 if command.operation not in {
                     CommandOperation.HOVER,
                     CommandOperation.LAND,
@@ -526,6 +702,18 @@ class AdapterDispatcher:
             plan=plan,
             acknowledgements=tuple(acknowledgements),
             capture_bundle=bundle,
+            deflected_commands=tuple(deflected_commands),
+            completion_detail=self._bvc_completion_detail(deflected_commands),
+        )
+
+    @staticmethod
+    def _bvc_completion_detail(deflected_commands: Iterable[Command]) -> str | None:
+        command_ids = tuple(command.command_id for command in deflected_commands)
+        if not command_ids:
+            return None
+        return (
+            "BVC reached safe interim setpoints for "
+            f"{', '.join(command_ids)}; requested targets remain outstanding."
         )
 
     def _altitude_grounding_refusal(
@@ -789,6 +977,22 @@ class AdapterDispatcher:
 
         prior_acks = [*pending.acknowledgements[:-1], terminal_ack]
         completed_prefix = plan.commands[: command_index + 1]
+        if terminal_ack.status is LifecycleStatus.COMPLETED:
+            navigation_refusal = self._navigation_check(plan, command, current, completed=True)
+            if navigation_refusal is not None:
+                holds = self._hold_affected(
+                    plan,
+                    {item.drone_id: item for item in completed_prefix},
+                    provider,
+                    owner_still_valid=owner_still_valid,
+                )
+                return self._invalidated_resume(
+                    plan,
+                    current,
+                    navigation_refusal.reason,
+                    navigation_refusal.detail,
+                    acknowledgements=(*prior_acks, *holds),
+                )
         if (
             plan.roster_version != current.roster_version
             and plan.intent_name is not IntentName.ALTITUDE
@@ -825,6 +1029,8 @@ class AdapterDispatcher:
                 status=LifecycleStatus.COMPLETED,
                 plan=plan,
                 acknowledgements=tuple(prior_acks),
+                deflected_commands=pending.deflected_commands,
+                completion_detail=self._bvc_completion_detail(pending.deflected_commands),
             )
         if plan.roster_version != current.roster_version:
             holds = self._hold_affected(
@@ -922,6 +1128,13 @@ class AdapterDispatcher:
                 plan, current, "camera media context cannot be reconstructed for resume"
             )
 
+        if (
+            terminal_ack.status is LifecycleStatus.COMPLETED
+            and plan.navigation is not None
+            and self.on_navigation_command_completed is not None
+        ):
+            self.on_navigation_command_completed(plan, command, current)
+
         if plan.intent_name is IntentName.ALTITUDE:
             projected = {}
             for completed in completed_prefix:
@@ -957,6 +1170,8 @@ class AdapterDispatcher:
                 status=LifecycleStatus.COMPLETED,
                 plan=plan,
                 acknowledgements=tuple(prior_acks),
+                deflected_commands=pending.deflected_commands,
+                completion_detail=self._bvc_completion_detail(pending.deflected_commands),
             )
         resumed = self._dispatch_checked(
             plan,
@@ -976,6 +1191,14 @@ class AdapterDispatcher:
             refusal=resumed.refusal,
             capture_bundle=resumed.capture_bundle,
             degraded_aircraft=resumed.degraded_aircraft,
+            deflected_commands=(*pending.deflected_commands, *resumed.deflected_commands),
+            completion_detail=(
+                self._bvc_completion_detail(
+                    (*pending.deflected_commands, *resumed.deflected_commands)
+                )
+                if resumed.status is LifecycleStatus.COMPLETED
+                else None
+            ),
         )
 
     def _resume_estop(
@@ -1132,11 +1355,22 @@ class AdapterDispatcher:
 
     def _execute(
         self,
+        plan: Plan,
         command: Command,
         captures: dict[str, CaptureResult],
         provider: SnapshotProvider,
     ) -> CommandOutcome:
         operation = command.operation
+        if operation is CommandOperation.GOTO and "navigation_route_id" in command.parameters:
+            authorize = getattr(self.flight, "authorize_navigation", None)
+            if not callable(authorize):
+                return self._command_refusal(
+                    command,
+                    provider(),
+                    RefusalReason.INVALID_PLAN,
+                    "mapped goto requires an approved phone navigation link",
+                )
+            authorize(plan, command, provider())
         if operation is CommandOperation.TAKEOFF:
             raw = self.flight.takeoff([command.drone_id], float(command.parameters["z"]))[0]
             return self.validate_acknowledgement(command, raw, provider())

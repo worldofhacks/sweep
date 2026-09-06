@@ -63,7 +63,7 @@ const guidance: CaptureReadiness = {
   suggested_delta: 'yaw +42°',
 }
 
-describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
+describe('Control › Swarm: the simulator fixture', () => {
   test('arm, select all, takeoff, translate, hold, come home, land all — one intent id per request, confirmed where the rule says', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
@@ -186,49 +186,44 @@ describe('Control › Swarm: the M2.0 workflow on the fixture client', () => {
     expect(clients.console.sent[1]).toMatchObject({ name, selection: name === 'land' ? [1] : [], confirm: true })
   })
 
-  test('the advertised profile disables omitted intents while M1.5 controls remain available', async () => {
+  test('the C2 simulator fixture enables fleet operations', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
     await screen.findByText('1 of 4 selected')
 
     const disarm = fleetGroup().getByRole('button', { name: /^Disarm/ })
-    expect(disarm).toBeDisabled()
-    expect(disarm).toHaveClass('is-unsupported')
-    expect(disarm).toHaveTextContent('unsupported')
-    expect(disarm).toHaveAttribute(
-      'title',
-      'disarm is disabled by relay capability profile c1_basic_control.',
-    )
+    expect(disarm).toBeEnabled()
+    expect(disarm).not.toHaveClass('is-unsupported')
     for (const label of [/^Sweep/, /^Spacing tighter/, /^Spacing wider/, /^Formation next/]) {
       const button = motionGroup().getByRole('button', { name: label })
       expect(button).toBeEnabled()
     }
 
     await user.click(disarm)
-    expect(clients.console.sent).toHaveLength(0)
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    expect(clients.console.sent[0]).toMatchObject({ name: 'disarm', args: {} })
 
     await user.click(motionGroup().getByRole('button', { name: /^Formation next/ }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
-    expect(clients.console.sent[0]).toMatchObject({ name: 'formation_next', args: {} })
+    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+    expect(clients.console.sent[1]).toMatchObject({ name: 'formation_next', args: {} })
 
     await user.click(motionGroup().getByRole('button', { name: /^Sweep/ }))
     expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent('Sweep area')
     await confirmDock(user)
-    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
-    expect(clients.console.sent[1]).toMatchObject({ name: 'sweep', args: {}, confirm: true })
+    await waitFor(() => expect(clients.console.sent).toHaveLength(3))
+    expect(clients.console.sent[2]).toMatchObject({ name: 'sweep', args: {}, confirm: true })
 
     await user.click(screen.getByRole('button', { name: 'circle' }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(3))
-    expect(clients.console.sent[2]).toMatchObject({ name: 'formation_set', args: { name: 'circle' } })
+    await waitFor(() => expect(clients.console.sent).toHaveLength(4))
+    expect(clients.console.sent[3]).toMatchObject({ name: 'formation_set', args: { name: 'circle' } })
     expect(screen.getByRole('button', { name: 'circle' })).toHaveAttribute('aria-pressed', 'true')
     expect(
       screen.getByText('Requested circle. The relay still reports none until execution completes.'),
     ).toBeInTheDocument()
 
     await openPane(user, 'Requests')
-    expect(screen.queryByRole('listitem', { name: /disarm/ })).not.toBeInTheDocument()
-    for (const name of ['formation_next', 'sweep', 'formation_set']) {
+    for (const name of ['disarm', 'formation_next', 'sweep', 'formation_set']) {
       const row = screen.getByRole('listitem', { name: `${name} accepted` })
       expect(within(row).getByLabelText('Lifecycle timestamps')).toHaveTextContent('accepted')
     }

@@ -1,5 +1,7 @@
 from dataclasses import replace
 
+import pytest
+
 from language.test_compiler import _hydrate_relay_from_snapshot
 from planner.controller import AutonomyController, PreparedExecutionRouter
 from planner.models import (
@@ -14,6 +16,7 @@ from planner.models import (
 from planner.planner import DeterministicPlanner
 from relay.audit import SessionAuditLog
 from relay.auth import Principal
+from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from relay.session import RelayLimits, RelaySession
 from tests.autonomy_fixtures import (
@@ -59,6 +62,48 @@ def test_arm_select_takeoff_documented_workflow() -> None:
         FlightState.HOVERING,
         FlightState.HOVERING,
     ]
+
+
+def test_disarm_clears_only_the_session_authorization() -> None:
+    snapshot = make_snapshot(1, selection=(), armed=True)
+    controller, _, _, _, flight, _ = make_stack(snapshot, capability_profile=C2_CAPABILITY_PROFILE)
+
+    result = controller.execute(make_intent(IntentName.DISARM, selection=()), snapshot)
+
+    assert result.status is LifecycleStatus.COMPLETED
+    assert result.plan is not None
+    assert result.plan.commands == ()
+    assert result.plan.armed_update is False
+    assert flight.calls == []
+
+
+@pytest.mark.parametrize(
+    ("snapshot_change", "reason"),
+    [
+        ({"operator_present": False}, RefusalReason.OPERATOR_ABSENT),
+        ({"estop_active": True}, RefusalReason.ESTOP_ACTIVE),
+    ],
+)
+def test_disarm_requires_a_live_operator_and_preserves_aircraft_state(
+    snapshot_change: dict[str, object], reason: RefusalReason
+) -> None:
+    airborne = make_snapshot(1, selection=(1,), armed=True)
+    controller, _, _, _, flight, _ = make_stack(airborne, capability_profile=C2_CAPABILITY_PROFILE)
+
+    completed = controller.execute(make_intent(IntentName.DISARM, selection=(1,)), airborne)
+    refused = controller.execute(
+        make_intent(IntentName.DISARM, selection=(1,)), replace(airborne, **snapshot_change)
+    )
+
+    assert completed.status is LifecycleStatus.COMPLETED
+    assert completed.plan is not None
+    assert completed.plan.commands == ()
+    assert completed.plan.armed_update is False
+    assert flight.aircraft[1].flight_state is FlightState.HOVERING
+    assert refused.status is LifecycleStatus.REFUSED
+    assert refused.refusal is not None
+    assert refused.refusal.reason is reason
+    assert flight.calls == []
 
 
 def test_prepared_plan_dispatches_without_replanning() -> None:

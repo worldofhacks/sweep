@@ -35,7 +35,7 @@ def snapshot(session: RelaySession) -> object:
     )
 
 
-def test_registry_transaction_rolls_back_history_without_copying_it(
+def test_registry_transaction_rolls_back_from_an_independent_bounded_history_snapshot(
     relay_session: RelaySession,
     adapter_principal: Principal,
 ) -> None:
@@ -44,11 +44,7 @@ def test_registry_transaction_rolls_back_history_without_copying_it(
     )
     record = relay_session.registry._aircraft[1]
 
-    class NoCopyHistory(list[dict[str, object]]):
-        def copy(self):
-            raise AssertionError("transaction must not clone total telemetry history")
-
-    history = NoCopyHistory([{"event_id": "existing"}])
+    history = [{"event_id": "existing"}]
     record.history = history
 
     with pytest.raises(RuntimeError, match="rollback"):
@@ -56,8 +52,9 @@ def test_registry_transaction_rolls_back_history_without_copying_it(
             record.history.append({"event_id": "uncommitted"})
             raise RuntimeError("rollback")
 
-    assert relay_session.registry._aircraft[1].history is history
-    assert history == [{"event_id": "existing"}]
+    restored = relay_session.registry._aircraft[1].history
+    assert restored is not history
+    assert restored == [{"event_id": "existing"}]
 
 
 @pytest.mark.parametrize("failure_at", ["begin_operation", "append_batch"])

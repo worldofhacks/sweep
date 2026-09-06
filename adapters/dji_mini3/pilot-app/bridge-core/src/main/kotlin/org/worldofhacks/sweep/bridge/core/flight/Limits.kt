@@ -2,6 +2,10 @@ package org.worldofhacks.sweep.bridge.core.flight
 
 import kotlin.math.abs
 import kotlin.math.hypot
+import org.worldofhacks.sweep.bridge.core.json.Json
+import org.worldofhacks.sweep.bridge.core.json.JsonInt
+import org.worldofhacks.sweep.bridge.core.json.JsonObject
+import org.worldofhacks.sweep.bridge.core.json.JsonString
 
 /**
  * DJI's advanced-mode ranges (`VirtualStickRange` in MSDK 5.18.0): velocity ±23 m/s
@@ -123,4 +127,114 @@ data class FlightConfig(
     /** PRD 5.5: network stop holds, then lands if the stop stays asserted this long. */
     val estopLandAfterMs: Long = 5_000,
     val defaultStickHz: Int = FlightSettings.DEFAULT_STICK_HZ,
+    val navigation: NavigationConfig? = null,
 )
+
+data class NavigationConfig(
+    val navigationConfigId: String,
+    val mapId: String,
+    val geometryId: String,
+    val cameraCalibrationId: String,
+    val bodyExtrinsicsId: String,
+    val poseFreshnessMs: Long,
+    val authorizationLifetimeMs: Long,
+    val lossLandAfterMs: Long,
+    val arrivalHorizontalToleranceM: Double,
+    val arrivalVerticalToleranceM: Double,
+    val maxPositionUncertaintyM: Double,
+) {
+    init {
+        require(
+            listOf(navigationConfigId, mapId, geometryId, cameraCalibrationId, bodyExtrinsicsId)
+                .all { it.isNotBlank() },
+        ) { "navigation identities must be pinned" }
+        require(poseFreshnessMs > 0 && authorizationLifetimeMs > 0 && lossLandAfterMs > 0) {
+            "navigation timing bounds are invalid"
+        }
+        require(
+            listOf(arrivalHorizontalToleranceM, arrivalVerticalToleranceM, maxPositionUncertaintyM)
+                .all { it.isFinite() && it > 0 },
+        ) {
+            "navigation measured limits are invalid"
+        }
+        require(maxPositionUncertaintyM <= minOf(arrivalHorizontalToleranceM, arrivalVerticalToleranceM)) {
+            "navigation uncertainty must fit inside arrival tolerances"
+        }
+    }
+
+    fun isWithinArrival(
+        horizontalDistanceM: Double,
+        verticalDistanceM: Double,
+        positionUncertaintyM: Double,
+    ): Boolean =
+        horizontalDistanceM.isFinite() &&
+            verticalDistanceM.isFinite() &&
+            positionUncertaintyM.isFinite() &&
+            horizontalDistanceM >= 0 &&
+            positionUncertaintyM >= 0 &&
+            positionUncertaintyM <= maxPositionUncertaintyM &&
+            horizontalDistanceM + positionUncertaintyM <= arrivalHorizontalToleranceM &&
+            abs(verticalDistanceM) + positionUncertaintyM <= arrivalVerticalToleranceM
+}
+
+object NavigationConfigJson {
+    const val VERSION = 1
+
+    fun encode(config: NavigationConfig): String = Json.canonical(
+        Json.json(
+            "v" to VERSION,
+            "navigation_config_id" to config.navigationConfigId,
+            "map_id" to config.mapId,
+            "geometry_id" to config.geometryId,
+            "camera_calibration_id" to config.cameraCalibrationId,
+            "body_extrinsics_id" to config.bodyExtrinsicsId,
+            "pose_freshness_ms" to config.poseFreshnessMs,
+            "authorization_lifetime_ms" to config.authorizationLifetimeMs,
+            "loss_land_after_ms" to config.lossLandAfterMs,
+            "arrival_horizontal_tolerance_mm" to millimeters(config.arrivalHorizontalToleranceM),
+            "arrival_vertical_tolerance_mm" to millimeters(config.arrivalVerticalToleranceM),
+            "max_position_uncertainty_mm" to millimeters(config.maxPositionUncertaintyM),
+        ),
+    )
+
+    fun parse(text: String): NavigationConfig {
+        require(text.length in 2..4_096) { "navigation configuration must be between 2 and 4096 characters" }
+        val fields = Json.parse(text) as? JsonObject ?: throw IllegalArgumentException("navigation configuration must be a JSON object")
+        require(fields.keys == REQUIRED_FIELDS) { "navigation configuration fields are invalid" }
+        require(integer(fields, "v") == VERSION.toLong()) { "unsupported navigation configuration version" }
+        return NavigationConfig(
+            navigationConfigId = string(fields, "navigation_config_id"),
+            mapId = string(fields, "map_id"),
+            geometryId = string(fields, "geometry_id"),
+            cameraCalibrationId = string(fields, "camera_calibration_id"),
+            bodyExtrinsicsId = string(fields, "body_extrinsics_id"),
+            poseFreshnessMs = positive(fields, "pose_freshness_ms"),
+            authorizationLifetimeMs = positive(fields, "authorization_lifetime_ms"),
+            lossLandAfterMs = positive(fields, "loss_land_after_ms"),
+            arrivalHorizontalToleranceM = positive(fields, "arrival_horizontal_tolerance_mm") / 1000.0,
+            arrivalVerticalToleranceM = positive(fields, "arrival_vertical_tolerance_mm") / 1000.0,
+            maxPositionUncertaintyM = positive(fields, "max_position_uncertainty_mm") / 1000.0,
+        )
+    }
+
+    private fun string(fields: JsonObject, name: String): String =
+        (fields[name] as? JsonString)?.value ?: throw IllegalArgumentException("$name must be a string")
+
+    private fun integer(fields: JsonObject, name: String): Long =
+        (fields[name] as? JsonInt)?.value ?: throw IllegalArgumentException("$name must be an integer")
+
+    private fun positive(fields: JsonObject, name: String): Long =
+        integer(fields, name).also { require(it > 0) { "$name must be positive" } }
+
+    private fun millimeters(value: Double): Long {
+        val millimeters = value * 1000.0
+        require(millimeters.isFinite() && millimeters == millimeters.toLong().toDouble()) { "navigation distances must be exact millimeters" }
+        return millimeters.toLong()
+    }
+
+    private val REQUIRED_FIELDS = setOf(
+        "v", "navigation_config_id", "map_id", "geometry_id", "camera_calibration_id", "body_extrinsics_id",
+        "pose_freshness_ms", "authorization_lifetime_ms", "loss_land_after_ms", "arrival_horizontal_tolerance_mm",
+        "arrival_vertical_tolerance_mm", "max_position_uncertainty_mm",
+    )
+}

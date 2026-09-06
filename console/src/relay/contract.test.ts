@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest'
 import {
   C1_BASIC_CONTROL_INTENTS,
+  MAX_INTENT_DRONE_ID,
+  MAX_INTENT_DRONE_IDS,
+  MAX_INTENT_IDENTIFIER_CODE_POINTS,
+  MAX_INTENT_SESSION_CODE_POINTS,
   intentFromVoicePlanStep,
   isConsoleIntentV1,
   isVoicePlan,
@@ -8,6 +12,7 @@ import {
   type VoicePlan,
   type VoicePlanStep,
 } from './contract'
+import { REJOIN_NODE_EVENTS } from './rejoin-node-events.test-fixtures'
 
 const session = 'session-contract-test'
 const t = 1_756_700_000_000
@@ -32,11 +37,101 @@ function aircraft(overrides: Record<string, unknown> = {}) {
     rc_safety_operator_present: true,
     telemetry: { state: 'hovering' },
     membership_history: [],
+    membership_history_truncated: 0,
     ...overrides,
   }
 }
 
 describe('M1.1 wire compatibility', () => {
+  test.each(REJOIN_NODE_EVENTS)('accepts the emitted epoch-2 $type report', (event) => {
+    expect(parseRelayServerEvent(event)).toEqual(event)
+  })
+
+  test.each([
+    [0, 'gimbal_pitch_min_deg', 30],
+    [0, 'horizontal_fov_deg', 0],
+    [0, 'horizontal_fov_deg', 361],
+    [0, 'measured_hfov_deg', 180],
+    [0, 'storage_remaining_bytes', -1],
+    [0, 'photo_capture', 'true'],
+    [0, 'native_panorama_modes', ['pano_360', 'pano_360']],
+    [0, 'aircraft_model', ''],
+    [1, 'phone_battery_percent', 101],
+    [1, 'phone_battery_percent', 81.5],
+    [1, 'control_authority', 'true'],
+    [1, 'watchdog_state', 'unknown'],
+    [1, 'watchdog_state', ['nominal']],
+    [1, 'video_publish_state', 'http://adapter.invalid/video'],
+    [1, 'phone_thermal_state', 'unknown'],
+    [1, 'authority_change_reason', 'not a machine code'],
+    [2, 'camera_ok', 1],
+    [2, 'coverage_missing', [360]],
+    [2, 'next_heading_deg', -1],
+    [2, 'pose_source', ''],
+    [2, 'guidance_mode', ['visual_advisory']],
+    [2, 'suggested_delta', { kind: 'translate', degrees: 10 }],
+    [2, 'suggested_delta', { kind: 'yaw', degrees: 10, extra: true }],
+  ])('rejects malformed node report %s field %s', (index, field, value) => {
+    expect(parseRelayServerEvent({ ...REJOIN_NODE_EVENTS[Number(index)], [String(field)]: value })).toBeNull()
+  })
+
+  test.each(REJOIN_NODE_EVENTS)('keeps the $type report envelope closed and epoch-bound', (event) => {
+    const { connection_epoch: epoch, ...missingEpoch } = event
+    expect(epoch).toBe(2)
+    expect(parseRelayServerEvent(missingEpoch)).toBeNull()
+    expect(parseRelayServerEvent({ ...event, connection_epoch: 0 })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, drone_id: -1 })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, event_id: 'x'.repeat(513) })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, session: 'x'.repeat(513) })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, v: 2 })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, type: 'unknown_node_event' })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, url: 'http://adapter.invalid/video' })).toBeNull()
+  })
+
+  test('accepts valid optional camera measurements and capture guidance', () => {
+    expect(parseRelayServerEvent({ ...REJOIN_NODE_EVENTS[0], measured_hfov_deg: 65.5 })).not.toBeNull()
+    expect(parseRelayServerEvent({
+      ...REJOIN_NODE_EVENTS[2], room_id: 'room-1', capture_id: 'capture-1', guidance_mode: 'registered_metric',
+      next_heading_deg: 90, coverage_missing: [0, 90, 180], suggested_delta: { kind: 'yaw', degrees: -15 },
+    })).not.toBeNull()
+  })
+
+  test('accepts a bounded promoted detection and its console acknowledgement', () => {
+    const detection = parseRelayServerEvent({
+      v: 1,
+      t,
+      type: 'detection',
+      event_id: 'detection-1',
+      session,
+      detection_id: 'detection-1',
+      drone_id: 1,
+      source_id: 'drone1',
+      sighting_id: 'sighting-1',
+      frame_id: 'frame-1',
+      label: 'backpack',
+      confidence: 0.91,
+      bbox_xyxy: [4, 4, 24, 24],
+      frame_decoded_at_monotonic_s: 10,
+      evaluation_completed_at_monotonic_s: 10.1,
+      observation_count: 1,
+      attention: 'promoted',
+      acknowledged: false,
+    })
+    const acknowledgement = parseRelayServerEvent({
+      v: 1,
+      t: t + 1,
+      type: 'detection_acknowledgement',
+      event_id: 'detection-ack-1',
+      session,
+      detection_id: 'detection-1',
+      drone_id: 1,
+      operator_source: 'console',
+    })
+
+    expect(detection).toMatchObject({ type: 'detection', attention: 'promoted' })
+    expect(acknowledgement).toMatchObject({ type: 'detection_acknowledgement' })
+  })
+
   test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
     const event = parseRelayServerEvent({
       v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,
@@ -51,6 +146,28 @@ describe('M1.1 wire compatibility', () => {
     } else {
       expect(event).toBeNull()
     }
+  })
+
+  test.each([
+    [0, true],
+    [12, true],
+    [undefined, false],
+    [-1, false],
+    [1.5, false],
+    ['1', false],
+    [true, false],
+  ])('validates the membership history truncation count %s', (truncated, accepted) => {
+    const event = parseRelayServerEvent({
+      v: 1, t: 100, type: 'state', event_id: 'history-truncation-test', session,
+      roster_version: 1, state_sequence: 1, armed: false, estop: false,
+      selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null,
+      drones: [aircraft({ membership_history_truncated: truncated })],
+    })
+
+    expect(event !== null).toBe(accepted)
   })
 
   test('refuses an adapter-supplied media URL', () => {
@@ -224,6 +341,75 @@ describe('M1.1 wire compatibility', () => {
       invalidation_reason: 'graceful_leave_roster_change',
       cleared_control_fields: ['selection', 'pending', 'accepted_plan'],
     })
+  })
+
+  test('accepts the relay captures projection and refuses a malformed record', () => {
+    const file = {
+      capture_id: 'cap-1',
+      file_id: 'cap-1-frame-01',
+      timestamp_ms: 1_756_700_000_001,
+      drone_id: 1,
+      connection_epoch: 2,
+      pose: { x: 1.5, y: -0.25, z: 1.2 },
+      actual_yaw_deg: 45,
+      gimbal_pitch_deg: -15,
+      intrinsics: { width_px: 4000, height_px: 3000, horizontal_fov_deg: 82.1, projection: 'rectilinear' },
+      checksum_sha256: '0'.repeat(64),
+      storage_ref: 'aircraft://camera/12/DJI_0012.JPG',
+      retrieval_status: 'pending',
+    }
+    const base = {
+      v: 1,
+      t: 1_756_700_000_002,
+      type: 'state',
+      event_id: 'state-captures',
+      session,
+      roster_version: 4,
+      armed: true,
+      estop: false,
+      selection: [1],
+      formation: 'line',
+      spacing: 0.8,
+      mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null,
+      accepted_plan: null,
+      drones: [aircraft()],
+    }
+    const open = {
+      capture_id: 'cap-1',
+      drone_id: 1,
+      connection_epoch: 2,
+      room_id: null,
+      pattern: null,
+      coverage: null,
+      status: null,
+      reason: null,
+      detail: null,
+      files: [file],
+      updated_at: 1_756_700_000_001,
+    }
+    const closed = {
+      ...open,
+      room_id: 'room-1',
+      pattern: 'reconstruct_8',
+      coverage: 'incomplete_vertical_coverage',
+      status: 'completed',
+      files: [{ ...file, checksum_sha256: 'a'.repeat(64), retrieval_status: 'completed', storage_ref: 'file:///captures/cap-1/DJI_0012.JPG' }],
+    }
+    const event = parseRelayServerEvent({ ...base, captures: [open, closed] })
+    expect(event).toMatchObject({ type: 'state', captures: [open, closed] })
+    expect(parseRelayServerEvent(base)).not.toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...open, status: 'pending' }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...open, files: [{ ...file, checksum_sha256: 'abc' }] }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...open, files: [{ ...file, checksum_sha256: 'a'.repeat(64) }] }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...open, files: [{ ...file, retrieval_status: 'completed' }] }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...open, files: [{ ...file, retrieval_status: 'queued' }] }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...open, files: Array(65).fill(file) }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: Array(65).fill(open) })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...closed, pattern: 'pano_720' }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: {} })).toBeNull()
   })
 
   test('accepts flat membership transitions and retains signed provenance', () => {
@@ -551,6 +737,91 @@ describe('console Intent v1 mirror', () => {
       isConsoleIntentV1({
         ...base,
         args: { box: { min_x: 1, max_x: -1, min_y: -1, max_y: 1 } },
+      }),
+    ).toBe(false)
+  })
+
+  test('accepts exact Unicode, identifier, integer, and simulator-fleet ceilings', () => {
+    expect(
+      isConsoleIntentV1({
+        v: 1,
+        t: Number.MAX_SAFE_INTEGER,
+        type: 'intent',
+        intent_id: '🚁'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS),
+        retry_of: 'r'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS),
+        source: 'console',
+        session: '🚁'.repeat(MAX_INTENT_SESSION_CODE_POINTS),
+        name: 'select',
+        args: { ids: Array.from({ length: MAX_INTENT_DRONE_IDS }, (_, index) => index + 1) },
+        selection: Array.from({ length: MAX_INTENT_DRONE_IDS }, (_, index) => index + 1),
+        mode: 'indoor',
+        confirm: false,
+      }),
+    ).toBe(true)
+  })
+
+  test.each([
+    { intent_id: 'i'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS + 1) },
+    { retry_of: 'r'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS + 1) },
+    { session: 's'.repeat(MAX_INTENT_SESSION_CODE_POINTS + 1) },
+    { t: Number.MAX_SAFE_INTEGER + 1 },
+    { selection: Array.from({ length: MAX_INTENT_DRONE_IDS + 1 }, (_, index) => index + 1) },
+    { selection: [MAX_INTENT_DRONE_ID + 1] },
+    { args: { ids: Array.from({ length: MAX_INTENT_DRONE_IDS + 1 }, (_, index) => index + 1) } },
+    { intent_id: ' padded' },
+    { intent_id: 'zero\u200bwidth' },
+  ])('rejects Intent v1 producer values outside the relay boundary: %o', (override) => {
+    expect(
+      isConsoleIntentV1({
+        v: 1,
+        t,
+        type: 'intent',
+        intent_id: 'bounded-intent',
+        retry_of: null,
+        source: 'console',
+        session,
+        name: 'select',
+        args: { ids: [1] },
+        selection: [1],
+        mode: 'indoor',
+        confirm: false,
+        ...override,
+      }),
+    ).toBe(false)
+  })
+
+  test('bounds capture identifiers at the shared relay ceiling', () => {
+    const base = {
+      v: 1,
+      t,
+      type: 'intent',
+      intent_id: 'bounded-capture',
+      retry_of: null,
+      source: 'console',
+      session,
+      name: 'capture_room',
+      selection: [1],
+      mode: 'indoor',
+      confirm: true,
+    }
+    expect(
+      isConsoleIntentV1({
+        ...base,
+        args: {
+          room_id: 'r'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS),
+          capture_id: 'c'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS),
+          pattern: 'reconstruct_8',
+        },
+      }),
+    ).toBe(true)
+    expect(
+      isConsoleIntentV1({
+        ...base,
+        args: {
+          room_id: 'r'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS + 1),
+          capture_id: 'capture',
+          pattern: 'reconstruct_8',
+        },
       }),
     ).toBe(false)
   })

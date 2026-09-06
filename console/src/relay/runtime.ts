@@ -1,3 +1,5 @@
+import { HttpNavigationClient, type NavigationClient } from '../navigation/client'
+import { HttpSearchClient, type SearchClient } from '../search/client'
 import { UnavailableRelayClient, WebSocketRelayClient, type RelayClient } from './client'
 import {
   relayMediaConfigurationSource,
@@ -19,6 +21,8 @@ export interface ConsoleRuntime {
   languageClient: RelayClient
   /** Null when no relay bootstrap exists: the Speech module renders language disabled. */
   transcriptClient: TranscriptClient | null
+  navigationClient: NavigationClient | null
+  searchClient: SearchClient | null
   /**
    * The relay's copy of the media bootstrap, read after the same-origin endpoint so a built
    * console can play; null when no relay bootstrap exists.
@@ -51,6 +55,8 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       ),
       transcriptClient: null,
       mediaConfigurationSource: null,
+      navigationClient: null,
+      searchClient: null,
     }
   }
 
@@ -81,6 +87,8 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       token: config.token,
     }),
     transcriptClient: new HttpTranscriptClient({ baseUrl: config.baseUrl, token: config.token }),
+    navigationClient: new HttpNavigationClient(config),
+    searchClient: new HttpSearchClient(config),
     mediaConfigurationSource: relayMediaConfigurationSource(config.baseUrl, config.token),
   }
 }

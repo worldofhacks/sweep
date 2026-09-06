@@ -17,17 +17,17 @@ Run from the repo root: `uv run python -m relay.<module>`.
 The validator makes these schema choices where Appendix A leaves details open:
 
 - Every displayed field except `retry_of` is required, and extra top-level fields are rejected. Initial requests may omit `retry_of` or set it to null.
-- `t` is a non-negative integer timestamp in epoch milliseconds. Freshness checks belong to the relay session path.
-- `session` is an opaque, non-empty string.
-- Drone IDs are unique positive integers. The current `selection` may be empty; `select.args.ids` may not.
+- `t` is a non-negative signed-64-bit integer timestamp in epoch milliseconds. Freshness checks belong to the relay session path.
+- `session` is opaque canonical printable text of at most 512 Unicode code points. `source` and `name` use the same text rule with a 64-code-point ceiling before their exact registries are checked.
+- Drone IDs are unique positive signed-32-bit integers, with at most six per list (the documented simulator ceiling). The current `selection` may be empty; `select.args.ids` may not.
 - Motion values are finite JSON numbers in planner-owned steps. The validator does not convert them to metres or impose mode bounds.
-- `intent_id` is a non-empty stable identifier. A retry gets a new identifier and may link to a different request through `retry_of`. This function validates the reference shape; the relay lifecycle validates same-session failure, deduplication, and terminal-state semantics.
+- `intent_id` is canonical printable text of at most 128 Unicode code points. A retry gets a new identifier and may link to a different request through a `retry_of` value with that same bound. Formation, room, capture, and area identifiers use the same bound. This function validates the reference shape; the relay lifecycle validates same-session failure, deduplication, and terminal-state semantics.
 - `confirm` records the source's confirmation state. `capture_room` requires confirmation and exactly one selected drone; the arbiter enforces the remaining action-specific checks.
 - Rejection precedence is envelope, registered source, intent name, argument shape, scope, mode capability, intent-name capability, then the per-source allowlist.
-- `c1_basic_control` enables `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land`, `land_all`, `estop`, `capture_room`, `altitude`, `formation_next`, `formation_set`, `spacing`, and `sweep`. The outdoor mode values remain schema-reserved and return `unsupported`; `disarm`, `survey_area`, and `map_area` keep their v1 argument shapes and also return `unsupported`.
+- `c1_basic_control` enables `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land`, `land_all`, `estop`, `capture_room`, and `altitude` when its deployment configuration grounds altitude. `c2_fleet_operations` adds `disarm`, `formation_next`, `formation_set`, `spacing`, and `sweep`; it can be selected only for the simulator with `SWEEP_CAPABILITY_RELEASE=c2`. The outdoor mode values remain schema-reserved and return `unsupported`; `survey_area` and `map_area` keep their v1 argument shapes and return `unsupported`. `disarm` clears only the session arm authorization and does not issue a physical aircraft command.
 - `come_home` returns selected drones to their home positions through planner-generated `goto` calls. Confirmed `land` maps the current selection to adapter `land`; `land_all` applies landing fleet-wide.
 
-The current source registry is `console`, `keyboard`, `webcam`, and `language`; the last two are console-hosted producers that authenticate on dedicated connections. Each source may emit only the names in `SOURCE_ALLOWED_NAMES`: `console` every implemented name allowed by the effective capability profile, `keyboard` only `estop` (the Shift+Escape network stop), and `webcam` only `capture_room` and `hold`. `language` has the C1 schema ceiling, but the session additionally requires an exact, live, one-shot compiler binding and the deployment qualification allowlist before admitting any language intent. A profile-disabled name is refused as `unsupported`; a profile-enabled name outside its source's set is refused with `source_not_allowed`, and the detail names the intent and source. The session uses the same reason for a connection that cannot emit intents at all. Registering another source, implementing another Intent v1 name, or widening a source's allowlist changes the shared constants and conformance tests in this module.
+The current source registry is `console`, `keyboard`, `webcam`, and `language`; the last two are console-hosted producers that authenticate on dedicated connections. Each source may emit only the names in `SOURCE_ALLOWED_NAMES`: `console` every implemented name allowed by the effective capability profile, `keyboard` only `estop` (the Shift+Escape network stop), and `webcam` only `capture_room` and `hold`. `language` has the implemented-name schema ceiling, but the session additionally requires an exact, live, one-shot compiler binding and the deployment qualification allowlist before admitting any language intent. A profile-disabled name is refused as `unsupported`; a profile-enabled name outside its source's set is refused with `source_not_allowed`, and the detail names the intent and source. The session uses the same reason for a connection that cannot emit intents at all. Registering another source, implementing another Intent v1 name, or widening a source's allowlist changes the shared constants and conformance tests in this module.
 
 ## Run the relay
 
@@ -52,7 +52,7 @@ Video settings are optional and read from the same environment. `SWEEP_MEDIA_API
 
 ## Voice transcription
 
-`POST /api/sessions/{id}/transcripts` accepts a bearer-authenticated `audio/webm`, `audio/ogg`, `audio/wav`, or `audio/mpeg` body up to 8 MiB and 30 seconds. The browser reports duration in `X-Sweep-Audio-Duration-Ms`; the relay rejects an oversized declaration and independently decodes the audio before provider I/O so a false or missing header cannot bypass the limit. Audio that cannot be decoded, lacks a sample rate, or carries negative, repeated, or non-monotonic frame timestamps is refused. The request carries a bounded `X-Sweep-Correlation-Id`. The relay reads `OPENAI_API_KEY` only on the server and sends valid uploads to OpenAI's `whisper-1` endpoint. Browser code never receives that credential.
+`POST /api/sessions/{id}/transcripts` accepts a bearer-authenticated `audio/webm`, `audio/ogg`, `audio/wav`, or `audio/mpeg` body up to 8 MiB and 30 seconds. The browser reports duration in `X-Sweep-Audio-Duration-Ms`; the relay rejects an oversized declaration and independently decodes the audio before provider I/O so a false or missing header cannot bypass the limit. Audio that cannot be decoded, lacks a sample rate, or carries negative, repeated, or non-monotonic frame timestamps is refused. The request carries a bounded `X-Sweep-Correlation-Id`. The relay selects Deepgram `nova-3` when `DEEPGRAM_API_KEY` is configured, otherwise OpenAI `whisper-1`. Set `SWEEP_TRANSCRIPTION_PROVIDER=deepgram` or `whisper` to select explicitly. Credentials remain in the relay process. A selected provider failure produces the existing typed refusal; switching providers is an operator configuration choice.
 
 Browser uploads are allowed only from the explicit origins in `SWEEP_CONSOLE_ORIGINS`, which defaults to the local Vite development origins. Configure the deployed console origin rather than using a wildcard.
 
@@ -111,7 +111,7 @@ uv sync --locked
 uv run uvicorn relay.app:app --host 127.0.0.1 --port 8000
 ```
 
-`relay.app:app` is the standalone relay: with no planner/arbiter consumer configured it refuses every intent with `downstream_unavailable`. `relay.main` composes the relay with the planner, arbiter, and the adapters `SWEEP_ADAPTER_BACKEND` selects (see "Autonomy composition" below). It additionally reads `SWEEP_PLANNING_JSON` and `SWEEP_SAFETY_JSON`, plus `SWEEP_SIM_CAMERA_JSON` on the `sim` backend, each a JSON object with exactly that config's fields; `.env.example` carries the CI fixture values as demo values. `just relay` reads `.env` and runs it:
+`relay.app:app` is the standalone relay: with no planner/arbiter consumer configured it refuses every intent with `downstream_unavailable`. `relay.main` composes the relay with the planner, arbiter, and the adapters `SWEEP_ADAPTER_BACKEND` selects (see "Autonomy composition" below). It additionally reads `SWEEP_PLANNING_JSON`, `SWEEP_SAFETY_JSON`, and `SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON`, plus `SWEEP_SIM_CAMERA_JSON` on the `sim` backend. Each is a JSON object with exactly that config's fields; `.env.example` carries the CI fixture values as demo values. `just relay` reads `.env` and runs it:
 
 ```bash
 just relay        # uv run --env-file .env python -m relay.main --host 127.0.0.1 --port 8000
@@ -142,7 +142,7 @@ The first successful server event is `auth.accepted`; the browser must not mark 
 
 Membership frames have common fields `v`, `t`, `type: "membership"`, `event_id`, `session`, `drone_id`, `action`, and `signature`. Actions add these exact fields:
 
-- `join`: `adapter_id` and a non-empty unique `capabilities` list. The checkpoint readiness minimum includes the exact `flight` capability; camera patterns may be `pano_360`, `reconstruct_8`, or namespaced as `camera:<pattern>`.
+- `join`: `adapter_id` and a non-empty unique `capabilities` list. The checkpoint readiness minimum includes the exact `flight` capability; camera patterns may be `pano_360`, `reconstruct_8`, or namespaced as `camera:<pattern>`. Capability lists are limited to 64 canonical printable entries, 512 UTF-8 bytes per entry, and 8192 UTF-8 bytes for the canonical JSON list. State-retained identity/profile text is also canonical printable UTF-8 before mutation.
 - `readiness`: `connection_epoch`, `home_pose_confirmed`, `control_authority`, and `rc_safety_operator_present`. When confirmed, home XYZ is captured from the current-epoch telemetry already held by the relay.
 - `graceful_leave`: `connection_epoch`.
 
@@ -185,7 +185,7 @@ State is fanned out at 10 Hz. Its required top-level keys are:
 ```text
 v, t, type="state", event_id, session, roster_version, armed, estop,
 selection, formation, spacing, mode, capability_profile, enabled_intent_names,
-pending, accepted_plan, drones
+pending, accepted_plan, drones, captures
 ```
 
 Each drone has these required keys:
@@ -195,14 +195,18 @@ drone_id, connection_epoch, membership, readiness_reasons, flight_state,
 battery, link, pos_quality, control_authority, last_seen_at, camera_patterns,
 selectable, adapter_id, adapter_capabilities, home_pose,
 rc_safety_operator_present, telemetry, membership_history,
-camera_capabilities, node_status, video
+membership_history_truncated, camera_capabilities, node_status, video
 ```
+
+`membership_history` retains only the newest `SWEEP_STATE_MEMBERSHIP_HISTORY` transitions (default 8, maximum 64) for that aircraft, bounding both relay memory and frame size for the life of a session. `membership_history_truncated` counts the older entries no longer retained in memory or the frame. Every transition remains its own `membership` record in the audit log and the replay endpoint, so the durable transition history is complete.
 
 `flight_state`, battery/link/position aliases, and `last_seen_at` are a normalized console projection and are nullable until current telemetry exists. The nested `telemetry` object is the authoritative Appendix B snapshot; its transport-only event ID, session, and connection epoch are represented by the containing drone/event. `camera_patterns` is derived from the signed capability list and does not assert camera readiness. The relay does not invent storage, camera-ready, active-task, or operator-presence/timing facts absent from Appendix B. The autonomy boundary must enrich those inputs explicitly and fail closed when they are missing.
 
 `camera_capabilities` and `node_status` are the node's latest `capabilities` and `node_status` frames (see the node protocol below) without their transport-only fields, or null until the node has sent one in the current connection epoch; a rejoin clears both. They are informational projections for the console and the command wire. Neither changes membership or `control_authority`: only a signed `readiness` frame does that, so a node that loses authority must report it through readiness as well as `node_status`.
 
 `video` is the per-aircraft stream projection the console's Live module plays from, exactly `{"status", "last_frame_at"}` with `status` one of `live`, `offline`, `unreported` and `last_frame_at` a millisecond timestamp or null (mirrored by `MediaStreamState` in `console/src/relay/contract.ts`, which accepts no other keys). Two sources feed it (`relay/media.py`). The node's current-epoch `node_status.video_publish_state` is its own claim: `publishing` is live, `stopped`, `connecting`, and `failed` are offline, and no frame yet is unreported. When `SWEEP_MEDIA_API_URL` is set, a background task reads MediaMTX's `/v3/paths/get/drone{id}` for ids 1 to 4 every `SWEEP_MEDIA_POLL_INTERVAL_MS` with a `SWEEP_MEDIA_API_TIMEOUT_MS` bound on each request and never inside the session lock or the fan-out; while the last complete read is younger than `SWEEP_MEDIA_STALE_AFTER_MS`, MediaMTX decides `status` (path `online` is live, anything else including a missing path is offline) because it is what the console can actually play. An unreachable, failing, or unconfigured MediaMTX degrades to the node's claim after that window and never upgrades anything to live on its own; a disconnected aircraft's stale claim is offline, or unreported when no frame was ever seen. `last_frame_at` is the newest evidence of frames: the read at which the path's inbound byte count last grew, or the `t` of the node's latest `node_status` that said `publishing`, whichever is later, and it survives a rejoin as history. Nodes resend `node_status` only when it changes, so without the MediaMTX API the age on a live tile counts from the node's claim rather than from a frame.
+
+Top-level `captures` is a bounded live projection: at most 64 captures per relay process and 64 files per capture, oldest activity first, one entry per aircraft, connection epoch, and capture id. Each entry carries `capture_id`, `drone_id`, `connection_epoch`, `room_id`, `pattern`, `coverage`, `status`, `reason`, `detail`, `files`, and `updated_at`. `files` holds the latest node `media_file` per `file_id`, so a `pending` record becomes `completed` with the bytes' SHA-256. The command wire gives the node only `capture_id`, so a node-authored `capture_bundle` is refused: it cannot establish an authoritative room or pattern. Only the dispatcher-composed bundle records room, pattern, coverage, status, reason, and detail (`source: "autonomy"` in the audit). The append-only audit JSONL is the durable full history; this projection is not another persistence store. Entries survive a rejoin under their own epoch; when the projection is full, the oldest closed entry is displaced, while an open entry is never discarded. Nothing here is a readiness or safety fact.
 
 Top-level `armed` is the authoritative session arm authorization, initially false and updated only through `RelaySession.update_control_projection(armed=...)` after the planner/arbiter accepts that control-state change. It is not inferred from aircraft flight-state strings. Join and rejoin leave it unchanged; a new session after process restart begins disarmed. Per-aircraft physical armed/disarmed evidence remains an explicit autonomy enrichment used by graceful-removal safety.
 
@@ -222,6 +226,7 @@ A bridge node (the phone app, or `adapters.dji_mini3.fake_node` before hardware 
 
 ```dotenv
 SWEEP_ADAPTER_BACKEND=sim
+SWEEP_CAPABILITY_RELEASE=c1
 SWEEP_COMMAND_TTL_MS=2000
 SWEEP_COMMAND_DEADLINE_MS=10000
 SWEEP_VIRTUAL_STICK_HZ=10
@@ -229,7 +234,7 @@ SWEEP_NODE_WATCHDOG_HOLD_MS=2000
 SWEEP_NODE_WATCHDOG_FAILSAFE_MS=10000
 ```
 
-`SWEEP_ADAPTER_BACKEND` selects which adapters `relay.bridge.build_adapters` and `build_dispatcher` construct for a session: `sim` (the deterministic simulator, with an explicit `SimCameraConfig`) or `remote` (one `RemoteBridgeAdapter` over the bridge wire, bounded by `SWEEP_COMMAND_TTL_MS`). The relay itself never dispatches; `relay.autonomy`, the composition `relay.main` runs, calls that factory for each accepted intent. `SWEEP_COMMAND_DEADLINE_MS` bounds one command's total wait regardless of non-terminal progress acknowledgements and must be at least the TTL; at the deadline the adapter returns the last non-terminal acknowledgement and the plan reports `executing`. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
+`SWEEP_ADAPTER_BACKEND` selects which adapters `relay.bridge.build_adapters` and `build_dispatcher` construct for a session: `sim` (the deterministic simulator, with an explicit `SimCameraConfig`) or `remote` (one `RemoteBridgeAdapter` over the bridge wire, bounded by `SWEEP_COMMAND_TTL_MS`). `SWEEP_CAPABILITY_RELEASE` defaults to `c1`; `c2` is valid only with `sim` and enables the simulator's C2 formation and sweep exercises. The Mini 3 remote path remains C1. The relay itself never dispatches; `relay.autonomy`, the composition `relay.main` runs, calls that factory for each accepted intent. `SWEEP_COMMAND_DEADLINE_MS` bounds one command's total wait regardless of non-terminal progress acknowledgements and must be at least the TTL; at the deadline the adapter returns the last non-terminal acknowledgement and the plan reports `executing`. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
 
 ### Control heartbeat (relay to one node)
 
@@ -267,11 +272,11 @@ The node answers with the adapter acknowledgement frame above, echoing `intent_i
 
 All node-authored frames carry `drone_id` and `connection_epoch`, rely on the authenticated drone binding like telemetry, and pass the same session, freshness, replay, ordering, and current-epoch checks. They are not signed.
 
-- `capabilities`: the `CameraCapabilities` fields (`native_panorama_modes`, `photo_capture`, `gimbal_pitch_min_deg`, `gimbal_pitch_max_deg`, `horizontal_fov_deg`, `storage_remaining_bytes`, `media_retrieval`) plus the probed hardware profile (`aircraft_model`, `aircraft_firmware`, `rc_firmware`, `phone_model`, `android_version`, `sdk_version`, nullable `measured_hfov_deg`). Fanned out to consoles and projected into the drone's `camera_capabilities`.
+- `capabilities`: the `CameraCapabilities` fields (`native_panorama_modes`, `photo_capture`, `gimbal_pitch_min_deg`, `gimbal_pitch_max_deg`, `horizontal_fov_deg`, `storage_remaining_bytes`, `media_retrieval`) plus the probed hardware profile (`aircraft_model`, `aircraft_firmware`, `rc_firmware`, `phone_model`, `android_version`, `sdk_version`, nullable `measured_hfov_deg`). `native_panorama_modes` uses the same 64-item, 512-byte-per-item, 8192-byte-canonical-list bounds as adapter capability claims. Hardware-profile strings are canonical printable UTF-8 at most 512 bytes each, and `storage_remaining_bytes` is bounded to Android's nonnegative signed-`Long` range. Fanned out to consoles and projected into the drone's `camera_capabilities`.
 - `node_status`: `virtual_stick_enabled`, `control_authority`, nullable snake_case `authority_change_reason`, `watchdog_state` (`nominal`, `hold`, `failsafe`), `video_publish_state` (`stopped`, `connecting`, `publishing`, `failed`), `phone_battery_percent`, and `phone_thermal_state` (`none`, `light`, `moderate`, `severe`, `critical`, `emergency`, `shutdown`). Fanned out and projected into the drone's `node_status`; informational only.
-- `capture_readiness`: nullable `room_id` and `capture_id`, `guidance_mode` (`visual_advisory` or `registered_metric`), `pose_source`, the `pose_ok`, `clearance_ok`, `camera_ok`, `storage_ok`, `motion_ok`, and `image_quality_ok` gates, `coverage_missing` azimuths in degrees, nullable `next_heading_deg`, and nullable `suggested_delta` `{kind: yaw|gimbal, degrees}`. Fanned out unchanged and not projected into state; the session retains the latest frame per aircraft (`RelaySession.capture_readiness`) as the autonomy boundary's camera-readiness evidence.
-- `media_file`: the `MediaFile` fields (`capture_id`, `file_id`, `timestamp_ms`, `drone_id`, `connection_epoch`, `pose`, `actual_yaw_deg`, `gimbal_pitch_deg`, `intrinsics`, 64-character lowercase hex `checksum_sha256`, `storage_ref`, `retrieval_status`). Audited and retained for the command wire, not fanned out. A node sends the `media_file` before the terminal acknowledgement of the capture or retrieval command that produced it.
-- `capture_bundle`: `room_id`, `capture_id`, `pattern`, `coverage`, `status`, nested `media` records, and nullable `reason` and `detail`; a `failed` or `unsupported` bundle requires a machine-readable reason. Audited and retained, not fanned out.
+- `capture_readiness`: nullable `room_id` and `capture_id`, `guidance_mode` (`visual_advisory` or `registered_metric`), `pose_source`, the `pose_ok`, `clearance_ok`, `camera_ok`, `storage_ok`, `motion_ok`, and `image_quality_ok` gates, at most eight unique `coverage_missing` azimuths in degrees, nullable `next_heading_deg`, and nullable `suggested_delta` `{kind: yaw|gimbal, degrees}`. Fanned out unchanged and not projected into state; the session retains the latest frame per aircraft (`RelaySession.capture_readiness`) as the autonomy boundary's camera-readiness evidence.
+- `media_file`: the `MediaFile` fields (`capture_id`, `file_id`, `timestamp_ms`, `drone_id`, `connection_epoch`, `pose`, `actual_yaw_deg`, `gimbal_pitch_deg`, `intrinsics`, 64-character lowercase hex `checksum_sha256`, `storage_ref`, `retrieval_status`). `timestamp_ms`, pose, yaw, gimbal, and intrinsics are immutable shutter evidence across updates for one file. `retrieval_status` is `pending` for the record a node sends at capture time, before the bytes have left the aircraft (its checksum must be sixty-four zeros and `storage_ref` names the aircraft file), and `completed` after `retrieve_media` (its checksum must be nonzero SHA-256 and `storage_ref` names the phone file); a completed record cannot regress, and conflicting same-status records are refused. `failed` and `unsupported` are the other values. A node sends the record before the terminal acknowledgement that produced it. It is audited and added transactionally to the bounded live projection; the frame itself is not fanned out.
+- `capture_bundle`: `room_id`, `capture_id`, `pattern`, `coverage`, `status`, at most eight nested media records with unique file IDs, and nullable `reason` and `detail`; a `failed` or `unsupported` bundle requires a machine-readable reason. The wire shape remains parseable for compatibility, but a node-authored frame is refused because no node command binds room or pattern. The autonomy composition alone creates, audits, closes, and labels the projected bundle, with `source: "autonomy"`; it is not fanned out.
 
 The fake node runs against a live relay with `just fake-node` or `uv run python -m adapters.dji_mini3.fake_node --drone-id 1`; it reads its credential from `--token`, `SWEEP_ADAPTER_KEYS_JSON`, or `SWEEP_RELAY_TOKEN`. `relay/tests/test_bridge_roundtrip.py` starts the relay in-process on the `remote` backend, connects the fake node, and dispatches a safety hold through `build_dispatcher` and the remote adapter end to end.
 
@@ -285,15 +290,33 @@ On `remote`, every planned command becomes a signed `command` frame to the node 
 
 The three lanes give stops priority. `estop` runs at once on its own lane and cancels whatever the other two lanes are executing; `hold` runs at once on a second lane and cancels a running operator motion or camera plan (`takeoff`, `translate`, `come_home`, `capture_room`), but queues behind a running `land_all` or `estop` rather than interrupting a safety plan; everything else runs in arrival order on the third lane. Both stops also cancel queued motion and camera intents. The network stop latches from the intent, never from its plan: the sink sets the session's `estop` inside the operation that accepted the intent, before any dispatch, and marks every later snapshot `estop_active`, so no worker, plan, publish, or session-lookup failure can lose the latch and an operator intent that starts in between is refused rather than sent. Cancellation is atomic with the wire: inside the stop's own intent operation, under the session lock, the sink records the cancelled intent as `invalidated` with reason `preempted_by_estop` or `preempted_by_hold`, so `issue_command` refuses anything that plan tries to send afterwards; the plan's dispatch also checks its flag before every command, before every send, and after every acknowledgement wait, and exits without a best-effort hold because the stop is the safety action. A cancelled plan therefore exits at its next acknowledgement or after at most one command TTL of silence, and every command is bounded in total by `SWEEP_COMMAND_DEADLINE_MS`. `RemoteBridgeAdapter.estop` sends to every aircraft before waiting on any acknowledgement, so a node that stays silent fails only its own result (`adapter_timeout`) while the stop still latches. `relay/tests/test_autonomy_roundtrip.py` runs the M2.0 workflow from console intents through the composition to two fake nodes.
 
+`SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON` selects `{"action":"hold"}` or `{"action":"estop"}`. On each relay fan-out, the composition compares the last accepted operator intent with `operator_timeout_ms`. Once that interval expires, it writes a `safety_action` with reason `operator_presence_expired`, admits one reserved `safety:` stop, and dispatches it without waiting for another client message. A later accepted operator intent starts a new presence interval. `hold` is the example configuration and sends a fleet safety hold to every airborne ready or degraded aircraft.
+
 ## Audit and replay
 
 Each normalized event is one append-only JSONL record shaped as `{"seq": N, "event": {...}}`, with a contiguous per-session sequence. Session names are SHA-256 hashed for filenames under `SWEEP_SESSION_LOG_DIR`. Any attempt to log a token, signature, authorization value, credential, password, or secret is rejected recursively.
 
 Events from one relay operation are committed as a single audit batch. A per-session SQLite database in WAL mode records the pending operation before irreversible work begins and makes its events visible only when the whole operation completes. JSONL remains the public replay mirror with the same per-event record shape. An incomplete operation fences replay across restart.
 
+The database holds fencing metadata, not a second copy of the log: one row per record with its operation, the SHA-256 digest of its exact JSONL line, and the line length. The newest non-empty operation's canonical lines are retained until a successor commits, long enough to rebuild a mirror tail the process did not finish writing; a mirror that is damaged inside older history fails closed instead of being rebuilt. Retained bytes are parsed and checked against their sequence, session, event contract, and canonical JSON encoding before recovery. Comparison and repair stream the existing mirror in bounded chunks rather than loading the complete history into memory. A database written by the earlier writer, which stored every event body, is migrated to digest rows on first reopen and vacuumed.
+
+One canonical audit record is limited to 1 MiB on append and before any persisted length can drive a mirror read or retained-body materialization. `pending` and `accepted_plan` each have a 128 KiB canonical projection limit checked before their control operation starts. Four maximum 128 KiB aircraft projections plus both maximum control projections fit below the record ceiling with the state envelope. Legacy JSONL lines, legacy database bodies, and the legacy pending cursor are read with explicit bounds; malformed signed-64 metadata fails closed as `AuditLogError`.
+
 Control projection updates record their pending operation before changing any field. If copying a later field fails, the session rejects further mutations, state reads, and replay, including when a planner callback catches the original exception.
 
-Live appends compare the mirror's file identity, size, and modification metadata with the last verified append. An unchanged mirror requires no history reads; a changed mirror receives full validation. Reopen and replay always verify the complete history.
+Live appends compare the mirror's file identity, size, and modification metadata with the last verified append. An unchanged mirror requires no history reads; a changed mirror receives full validation. Reopen and replay always verify the complete history against the committed digests.
+
+### Log volume
+
+The console receives every state frame and telemetry frame live. The audit retains every accepted telemetry input so a transient battery, link, pose, velocity, or flight-state value cannot disappear before a safety or autonomy decision is investigated. Every intent, plan, command, acknowledgement, refusal, membership transition, readiness change, estop and safety action is also recorded. A control projection mutation records the exact resulting state even when its material projection matches the previous snapshot. Only redundant state snapshots are sampled:
+
+- A `state` record is written when the projection changes in a way that matters: anything other than `t`, `event_id`, `state_sequence`, the per-aircraft `last_seen_at`, `telemetry`, `battery`, `link` and `pos_quality` aliases, a node report's own timestamp, and `video.last_frame_at`. Membership, readiness reasons, flight state, selection, arming, estop, formation, spacing, plans, node reports, and video status all count. Otherwise a keepalive snapshot is written after `SWEEP_AUDIT_STATE_INTERVAL_MS` (default and maximum 10000) elapses. The configured value must be 1 through 10000 milliseconds. A backward relay-clock step immediately starts a fresh sampling baseline instead of suppressing records until the old timestamp catches up.
+- Every accepted `telemetry` record is written in full; there is no telemetry sampling knob.
+- `SWEEP_STATE_MEMBERSHIP_HISTORY` (default 8, maximum 64) bounds the membership history retained in memory and embedded in each frame, as described above.
+
+With the defaults, redundant periodic state contributes at most one keepalive every ten seconds; the telemetry rate remains the evidence rate. Nested drone projection is an exact, bounded contract, so a future field or oversized collection fails closed until it has an explicit bounded projection.
+
+This storage remains the JSONL replay contract only. It does not write MCAP or establish the ENU/Foxglove acceptance tracked separately in issue #93.
 
 Authenticate HTTP requests with `Authorization: Bearer $SWEEP_RELAY_TOKEN`. `GET /metrics` returns relay/session counters; `GET /runtime-config.json` returns the console's media bootstrap (see "Run the relay"). `GET /session/{id}?after_sequence=N` returns a `replay` envelope whose `events` are the ordered JSONL records after `N`. `intent_record` is log-only and pairs the normalized Intent v1 request with its accepted/refused outcome; membership, telemetry, state, acknowledgement, and refusal records use the same event shapes delivered live. Replay UI remains outside M2.0.
 
@@ -302,3 +325,25 @@ A live session ID is scoped to one relay process lifetime. After restart, any ID
 On first reopen of a legacy JSONL log, the relay removes only a nonempty, unterminated EOF fragment after validating every complete record, then imports that prefix into the transaction database. Later recovery verifies the JSONL mirror against completed database operations. Complete malformed records and divergent mirrors fail closed. A repaired log remains evidence of prior session use even when its first record was torn, so that session ID stays replay-only.
 
 Controller-generated safety stops reserve the `safety:` intent ID prefix. Public requests using that prefix are refused without occupying the intent ledger.
+
+Transcript uploads have a 15-second total body-read deadline, configured with
+`SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS`. The timer starts when the authenticated
+request begins reading its body; trickling chunks does not reset it. Expiry returns
+HTTP 408 with `voice_outcome.reason=upload_timeout` and zero emissions before
+audio decoding, transcription, or compilation. The 8 MiB cap still applies across
+arbitrary transport fragments. This application deadline works with the documented
+ASGI deployment and does not depend on a reverse proxy read timeout.
+
+When a composed relay stops, it writes `<session-sha256>.report.json` beside that session's JSONL log. The report keeps the recorded command, refusal, and telemetry events, summarizes battery samples per drone, and records session and command acknowledgement timing. `relay.session_report` can also build the same report from a saved JSONL fixture or replay records.
+
+The visible authenticated console sends `operator_presence` once per second. The
+relay timestamps and audits these frames on receipt; browser timestamps cannot
+extend the deadline. Closing the console, losing the link, or hiding the tab stops
+refreshing presence. Accepted operator intents also refresh it. A renewed presence
+frame permits a fresh confirmation; it does not restart an interrupted plan.
+
+Deepgram uploads use one request with the command vocabulary as keyterms, following
+the [prerecorded API](https://developers.deepgram.com/reference/speech-to-text/listen-pre-recorded)
+and [keyterm guidance](https://developers.deepgram.com/docs/keyterm). Voice telemetry
+records the selected model; Deepgram cost remains unset until a measured pricing
+configuration is available. Replay keys include the provider model.

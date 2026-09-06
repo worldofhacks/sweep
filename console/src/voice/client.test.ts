@@ -1,5 +1,3 @@
-// Copied from PR #49 (issue-42-push-to-talk, console/src/voice/client.test.ts),
-// extended with the versioned `plan` field.
 import { describe, expect, test, vi } from 'vitest'
 import type { VoicePlan } from '../relay/contract'
 import { HttpTranscriptClient, UnavailableTranscriptClient, isVoiceOutcome } from './client'
@@ -56,6 +54,11 @@ function outcomeWith(plan: unknown, overrides: Record<string, unknown> = {}): Re
 }
 
 describe('voice outcome validator', () => {
+  test('accepts Deepgram outcomes without changing the preview contract', () => {
+    expect(isVoiceOutcome(outcomeWith(compiledPlan(), { source: 'deepgram' }), 'session-1', 'voice-plan')).toBe(true)
+    expect(isVoiceOutcome(outcomeWith(null, { source: 'unknown' }), 'session-1', 'voice-plan')).toBe(false)
+  })
+
   test('accepts the original shape with plan absent or null', () => {
     const legacy: Record<string, unknown> = outcomeWith(null)
     delete legacy.plan

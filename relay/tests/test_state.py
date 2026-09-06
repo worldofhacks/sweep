@@ -106,14 +106,10 @@ def test_all_readiness_gates_must_pass_before_aircraft_is_selectable() -> None:
         "capture_room",
         "come_home",
         "estop",
-        "formation_next",
-        "formation_set",
         "hold",
         "land",
         "land_all",
         "select",
-        "spacing",
-        "sweep",
         "takeoff",
         "translate",
     ]
@@ -418,10 +414,12 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
         "rc_safety_operator_present",
         "telemetry",
         "membership_history",
+        "membership_history_truncated",
         "camera_capabilities",
         "node_status",
         "video",
     }
+    assert drone["membership_history_truncated"] == 0
     assert drone["camera_capabilities"] is None
     assert drone["node_status"] is None
     # The console contract accepts exactly these two keys (contract.ts isVideoStreamState).

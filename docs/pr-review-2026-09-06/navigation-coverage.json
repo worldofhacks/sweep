@@ -1,0 +1,658 @@
+{
+  "scope": "exact heads listed in navigation.json",
+  "review_mode": [
+    "functional/spec",
+    "standards/slop",
+    "callsite and consumer tracing"
+  ],
+  "findings": [
+    {
+      "pr": 207,
+      "head": "50862f4e7dc14bf3cbfe7120de39412c47349471",
+      "severity": "high",
+      "status": "fixed by later integration",
+      "summary": "The voice compiler has a navigation-only profile while the search-enabled relay advertises navigation plus search, causing stale-state refusals for every transcript.",
+      "fix_lineage": [
+        "fa7b73e9e2c2e165fb28b9bf483c2c5d6ae3fcc9",
+        "b15eef4",
+        "2116190"
+      ],
+      "merge_action": "Merge with the #220 relay-capability-profile lineage; do not cherry-pick #207 alone into C2/search."
+    }
+  ],
+  "prs": [
+    {
+      "number": 173,
+      "head": "896817855c0d2732e84714c2efaf2e54add3be4e",
+      "files_reviewed": [
+        "planner/control_provenance.py",
+        "planner/models.py"
+      ],
+      "call_chains": [
+        "ControlProvenance.from_mapping/to_dict -> AircraftState -> NavigationRuntime"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "174"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "ControlProvenance",
+            "ControlProvenance.from_mapping",
+            "ControlProvenance.to_dict"
+          ],
+          "callers": [
+            "AircraftState.from_mapping",
+            "snapshot readers"
+          ],
+          "callees": [
+            "_parse_control_field",
+            "_serialize_control_field"
+          ],
+          "contract": "Optional control provenance survives state JSON round trips without changing legacy snapshots."
+        },
+        {
+          "symbols": [
+            "AircraftState.control_provenance",
+            "Plan.control_provenance"
+          ],
+          "callers": [
+            "navigation runtime snapshot construction",
+            "plan serialization"
+          ],
+          "callees": [
+            "AircraftState.to_dict",
+            "Plan.to_dict"
+          ],
+          "contract": "Planner and relay consumers receive the control source and timestamp that produced a snapshot."
+        }
+      ]
+    },
+    {
+      "number": 174,
+      "head": "1a476245f0a4c9066e9914028ffd6228358ff250",
+      "files_reviewed": [
+        "console/src/modules/gesture/GestureModule.tsx",
+        "console/src/modules/gesture/gesture.css",
+        "docs/CONTROL_LOCALIZATION_PUBLISHER.md",
+        "docs/MAPPED_FORMATIONS.md",
+        "language/transport.py",
+        "perception/README.md",
+        "perception/control_publisher.py",
+        "perception/test_control_publisher.py",
+        "planner/README.md",
+        "planner/mapped_formations.py",
+        "planner/navigation.py",
+        "planner/navigation_artifacts.py",
+        "planner/navigation_contracts.py",
+        "planner/navigation_geometry.py",
+        "planner/navigation_runtime.py",
+        "planner/planner.py",
+        "planner/test_mapped_formations.py",
+        "planner/test_navigation.py",
+        "planner/test_navigation_runtime.py",
+        "relay/README.md",
+        "relay/audit.py",
+        "relay/autonomy.py",
+        "relay/capabilities.py",
+        "relay/intent_v1.py",
+        "relay/tests/test_audit.py",
+        "relay/tests/test_autonomy.py",
+        "relay/tests/test_intent_v1.py"
+      ],
+      "call_chains": [
+        "confirmed navigate intent -> DeterministicPlanner -> NavigationRuntime.prepare -> frozen Plan -> AdapterDispatcher",
+        "control localization -> approved snapshot -> route preparation"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "173",
+        "175"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "NavigationRuntime",
+            "NavigationExecution",
+            "NavigationPlanner.prepare"
+          ],
+          "callers": [
+            "DeterministicPlanner",
+            "relay autonomy composition"
+          ],
+          "callees": [
+            "navigation artifact validation",
+            "route geometry",
+            "Plan construction"
+          ],
+          "contract": "A confirmed navigation intent yields a frozen, pinned route plan or a refusal."
+        },
+        {
+          "symbols": [
+            "NavigationArtifact",
+            "_validate_connectors_against_graph",
+            "_navigation_configuration_sha256"
+          ],
+          "callers": [
+            "NavigationRuntime",
+            "deployment loading"
+          ],
+          "callees": [
+            "graph and connector validators",
+            "SHA-256 digest input"
+          ],
+          "contract": "Map, connector, floor, and geometry inputs are validated and bound into the route identity."
+        },
+        {
+          "symbols": [
+            "level_for_pose",
+            "pose_supported",
+            "vertical_path_clear",
+            "segment_geometry_clear"
+          ],
+          "callers": [
+            "NavigationRuntime route preparation and revalidation"
+          ],
+          "callees": [
+            "motion envelope and geofence geometry"
+          ],
+          "contract": "Every route pose and segment fits configured floor, clearance, and motion limits."
+        },
+        {
+          "symbols": [
+            "ControlPublisher",
+            "AutonomyConfig navigation fields",
+            "_parse_args"
+          ],
+          "callers": [
+            "perception publisher",
+            "relay app configuration",
+            "intent parser"
+          ],
+          "callees": [
+            "approved localization state",
+            "CapabilityProfile"
+          ],
+          "contract": "Only a navigation-enabled relay accepts the structured navigation arguments and receives approved localization."
+        }
+      ]
+    },
+    {
+      "number": 175,
+      "head": "27887f6cf4f6451517d9c4bae5bb2f6e544cd6c0",
+      "files_reviewed": [
+        "planner/navigation_deployment.py",
+        "planner/test_navigation_deployment.py",
+        "docs/NAVIGATION_DEPLOYMENT.md"
+      ],
+      "call_chains": [
+        "deployment JSON -> NavigationDeployment -> NavigationRuntime -> relay composition"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "174",
+        "176"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "NavigationDeployment",
+            "load_navigation_deployment"
+          ],
+          "callers": [
+            "relay configuration loader",
+            "NavigationRuntime"
+          ],
+          "callees": [
+            "_execution",
+            "_arrival_slots",
+            "_remote_evidence",
+            "artifact loader"
+          ],
+          "contract": "Deployment JSON must select an exact artifact and valid execution limits before routes are exposed."
+        },
+        {
+          "symbols": [
+            "_execution",
+            "_arrival_slots",
+            "_remote_evidence"
+          ],
+          "callers": [
+            "load_navigation_deployment"
+          ],
+          "callees": [
+            "typed execution and evidence config constructors"
+          ],
+          "contract": "Unknown or invalid execution, destination-slot, and remote-evidence data is refused during startup."
+        }
+      ]
+    },
+    {
+      "number": 176,
+      "head": "e69a5465a3249669d57e7bfa0ec892e3faef0220",
+      "files_reviewed": [
+        "adapters/dispatch.py",
+        "arbiter/safety.py",
+        "planner/test_navigation_runtime.py"
+      ],
+      "call_chains": [
+        "frozen route -> per-command runtime check -> adapter dispatch/acknowledgement -> hold or completion"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "175",
+        "187"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "AdapterDispatcher navigation dispatch and resume paths"
+          ],
+          "callers": [
+            "AutonomySession",
+            "confirmed plan execution"
+          ],
+          "callees": [
+            "NavigationRuntime revalidation",
+            "adapter GOTO or hold",
+            "route authorization"
+          ],
+          "contract": "A frozen route is checked before and after segments, expires by deadline, and holds or refuses when evidence becomes invalid."
+        },
+        {
+          "symbols": [
+            "SafetyArbiter navigation intent sets and plan validation"
+          ],
+          "callers": [
+            "AdapterDispatcher",
+            "DeterministicPlanner"
+          ],
+          "callees": [
+            "safety configuration and command checks"
+          ],
+          "contract": "Navigation remains a confirmed, armed, selection-targeted operation with a safe hold response."
+        }
+      ]
+    },
+    {
+      "number": 179,
+      "head": "45940dd61e0c1fe670242629f967abbeaf483e9b",
+      "files_reviewed": [
+        "bridge-core flight Limits.kt",
+        "NavigationConfigTest.kt"
+      ],
+      "call_chains": [
+        "NavigationConfig -> FlightController navigation arrival check"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "physical-node configuration"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "NavigationConfig",
+            "NavigationConfig.isWithinArrival"
+          ],
+          "callers": [
+            "Android FlightController navigation completion"
+          ],
+          "callees": [
+            "distance and uncertainty measurements"
+          ],
+          "contract": "Arrival requires both distance plus uncertainty inside tolerance and uncertainty below its independent limit."
+        }
+      ]
+    },
+    {
+      "number": 187,
+      "head": "11f83607d16b81ff22c6c352ed0f397c815608c6",
+      "files_reviewed": [
+        "planner/README.md",
+        "relay/autonomy.py",
+        "relay/bridge.py",
+        "relay/navigation_metadata.py",
+        "relay/tests/test_navigation_binding.py"
+      ],
+      "call_chains": [
+        "catalog endpoint -> preview -> confirmation -> PreparedExecution -> dispatch",
+        "expiry/cancellation -> preview refusal"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "176",
+        "188"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "AutonomySession preview, confirm, catalog, and expiry methods"
+          ],
+          "callers": [
+            "authenticated catalog and preview endpoints",
+            "intent confirmation"
+          ],
+          "callees": [
+            "NavigationRuntime.prepare",
+            "prepared execution storage",
+            "AdapterDispatcher"
+          ],
+          "contract": "Only the exact, current, unexpired preview is consumed by confirmation; changed or missing previews refuse before dispatch."
+        },
+        {
+          "symbols": [
+            "AutonomyComposition navigation setup",
+            "create_autonomy_app",
+            "build_dispatcher",
+            "navigation_metadata"
+          ],
+          "callers": [
+            "relay startup"
+          ],
+          "callees": [
+            "NavigationRuntime",
+            "route catalog serialization",
+            "configured adapters"
+          ],
+          "contract": "Navigation endpoints and execution exist only when a deployment is configured and the profile enables navigation."
+        }
+      ]
+    },
+    {
+      "number": 188,
+      "head": "fc87a2af617a31538b17ae93f370bdf85e2a6fd5",
+      "files_reviewed": [
+        "planner/navigation_artifacts.py",
+        "planner/navigation_deployment.py",
+        "planner/test_navigation_deployment.py"
+      ],
+      "call_chains": [
+        "configured aliases -> artifact identity -> deployment runtime -> catalog/language resolver"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "187",
+        "206"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "NavigationArtifact aliases and identity validation",
+            "_navigation_configuration_sha256"
+          ],
+          "callers": [
+            "artifact parsing",
+            "catalog generation",
+            "preview invalidation"
+          ],
+          "callees": [
+            "alias normalization",
+            "artifact digest"
+          ],
+          "contract": "Aliases are valid artifact data and participate in the pin, so alias changes invalidate older catalogs and previews."
+        },
+        {
+          "symbols": [
+            "load_navigation_deployment",
+            "_execution",
+            "_arrival_slots"
+          ],
+          "callers": [
+            "relay startup"
+          ],
+          "callees": [
+            "artifact alias validation"
+          ],
+          "contract": "Deployment parsing preserves configured aliases while retaining strict field validation."
+        }
+      ]
+    },
+    {
+      "number": 206,
+      "head": "8d2f88619035bddac31abae66eb7e5ce1ee4e459",
+      "files_reviewed": [
+        "language/compiler.py",
+        "language/contracts.py",
+        "language/navigation.py",
+        "language/transport.py",
+        "language/test_navigation_grounding.py"
+      ],
+      "call_chains": [
+        "spoken alias -> NavigationGrounding.resolve -> canonical zone -> validated navigate intent"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "188",
+        "207"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "NavigationGrounding",
+            "navigation_from_record"
+          ],
+          "callers": [
+            "build_grounding_facts",
+            "RelayTranscriptCompiler"
+          ],
+          "callees": [
+            "configured navigation catalog and aliases"
+          ],
+          "contract": "Spoken destinations resolve to canonical configured zones before an intent is accepted."
+        },
+        {
+          "symbols": [
+            "build_grounding_facts",
+            "plan_step_matches",
+            "validate_model_outcome",
+            "_validate_proposed_intent"
+          ],
+          "callers": [
+            "TranscriptCompiler.compile"
+          ],
+          "callees": [
+            "grounding facts",
+            "plan digest",
+            "semantic state folding"
+          ],
+          "contract": "The model can propose only a route grounded in current capability, map, and destination facts."
+        },
+        {
+          "symbols": [
+            "_plan_digest",
+            "ConfirmedPlan serialization"
+          ],
+          "callers": [
+            "preview confirmation and transcript transport"
+          ],
+          "callees": [
+            "canonical navigation arguments"
+          ],
+          "contract": "Canonical destination identity contributes to the plan digest and survives transport."
+        }
+      ]
+    },
+    {
+      "number": 207,
+      "head": "50862f4e7dc14bf3cbfe7120de39412c47349471",
+      "files_reviewed": [
+        "language/contracts.py",
+        "language/relay_compiler.py",
+        "relay/main.py",
+        "relay/tests/test_language_navigation_wiring.py"
+      ],
+      "call_chains": [
+        "relay state -> build_grounding_facts -> RelayTranscriptCompiler -> voice plan"
+      ],
+      "result": "confirmed profile mismatch after search integration",
+      "dependencies": [
+        "206",
+        "220 relay capability profile fix"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "RelayTranscriptCompiler",
+            "build_transcript_service",
+            "_explicit_navigation_matches"
+          ],
+          "callers": [
+            "relay main startup",
+            "voice-plan endpoints"
+          ],
+          "callees": [
+            "build_grounding_facts",
+            "navigation metadata",
+            "TranscriptCompiler"
+          ],
+          "contract": "Relay state, navigation catalog, and the compiler capability profile must describe the same current system."
+        }
+      ]
+    },
+    {
+      "number": 217,
+      "head": "48be395a5dcd2573f90987396d28cf09c6ca90a5",
+      "files_reviewed": [
+        "adapters/dji_mini3/pilot-app/bridge-core/src/test/kotlin/org/worldofhacks/sweep/bridge/core/frames/PythonNavigationContractTest.kt",
+        "relay/app.py",
+        "relay/contracts.py",
+        "relay/navigation_control.py",
+        "relay/session.py",
+        "relay/tests/test_bridge.py",
+        "relay/tests/test_bridge_roundtrip.py",
+        "relay/tests/test_navigation_control.py",
+        "relay/tests/test_session_bridge.py",
+        "tools/write_android_navigation_packets.py"
+      ],
+      "call_chains": [
+        "approved diagnostic pose -> signed route and pose -> session fan-out -> command frame -> Kotlin parser"
+      ],
+      "result": "no confirmed issue; producer imports private test fixtures",
+      "dependencies": [
+        "218",
+        "Android navigation-frame consumer"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "NavigationControl",
+            "RelayRuntime outbound fan-out",
+            "_command_arguments"
+          ],
+          "callers": [
+            "approved route authorization",
+            "websocket node subscriptions"
+          ],
+          "callees": [
+            "signed route, pose, and GOTO frame builders"
+          ],
+          "contract": "A node receives the signed route and pose before the GOTO whose arguments bind their route ID."
+        },
+        {
+          "symbols": [
+            "RelaySession navigation control record",
+            "tools/write_android_navigation_packets.py"
+          ],
+          "callers": [
+            "session audit and CI contract producer"
+          ],
+          "callees": [
+            "NavigationControl",
+            "Kotlin PythonNavigationContractTest"
+          ],
+          "contract": "Sequence and epoch-scoped navigation packets are auditable and consumable by the Android parser."
+        }
+      ]
+    },
+    {
+      "number": 218,
+      "head": "82bd103572ab4f73dfba6998fc009483f1aa8817",
+      "files_reviewed": [
+        "adapters/dji_mini3/remote.py",
+        "adapters/dji_mini3/test_remote.py",
+        "relay/autonomy.py",
+        "relay/bridge.py",
+        "relay/tests/test_navigation_control.py"
+      ],
+      "call_chains": [
+        "AdapterDispatcher.authorize_navigation -> RelayNodeLink -> signed route/pose delivery -> RemoteBridgeAdapter GOTO with route ID -> Kotlin admission"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "217",
+        "Android navigation-frame consumer"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            "RemoteBridgeAdapter.authorize_navigation",
+            "RemoteBridgeAdapter._issue"
+          ],
+          "callers": [
+            "AdapterDispatcher before remote route GOTO"
+          ],
+          "callees": [
+            "NodeLink authorize and deliver",
+            "route-ID command arguments"
+          ],
+          "contract": "Remote dispatch authorizes the exact route and pose before issuing a matching GOTO."
+        },
+        {
+          "symbols": [
+            "RelayNodeLink.authorize_navigation",
+            "RelayNodeLink.deliver",
+            "AutonomySession navigation lifecycle methods"
+          ],
+          "callers": [
+            "RemoteBridgeAdapter",
+            "relay control flow"
+          ],
+          "callees": [
+            "signed navigation frames",
+            "session route state and invalidation"
+          ],
+          "contract": "Route lifecycle changes reach nodes in order and stale route IDs are rejected."
+        }
+      ]
+    },
+    {
+      "number": 219,
+      "head": "ede28e7d6c1a502564fb06a9ebfe13b43eda7bf7",
+      "files_reviewed": [
+        ".github/workflows/ci.yml",
+        ".gitlab-ci.yml"
+      ],
+      "call_chains": [
+        "CI root checkout -> Python packet producer -> PYTHON_NAVIGATION_PACKET_PATH -> bridge-core test"
+      ],
+      "result": "no confirmed issue",
+      "dependencies": [
+        "217"
+      ],
+      "symbol_inventory": [
+        {
+          "symbols": [
+            ".github/workflows/ci.yml bridge-jvm job",
+            ".gitlab-ci.yml bridge-jvm job"
+          ],
+          "callers": [
+            "GitHub Actions",
+            "GitLab CI"
+          ],
+          "callees": [
+            "tools/write_android_navigation_packets.py",
+            "PythonNavigationContractTest"
+          ],
+          "contract": "Each JVM job creates the exact signed Python packet file before the Kotlin producer-consumer test runs."
+        }
+      ]
+    }
+  ],
+  "validation": {
+    "python": "102 passed: planner navigation/runtime/deployment/mapped formations, relay navigation binding/control, language grounding, and relay language wiring",
+    "kotlin": "PythonNavigationContractTest passed with generated packets and JDK 21",
+    "static": "git show --check passed for all reviewed heads",
+    "limitation": "The bridge-node test run was stopped after repeated Gradle invocations competed in the shared checkout."
+  }
+}

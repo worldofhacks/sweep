@@ -12,6 +12,7 @@ from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from relay.auth import StaticCredentialResolver
+from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
 from relay.session import RelayLimits
 
 DEFAULT_CONSOLE_ORIGINS = (
@@ -29,6 +30,31 @@ class AdapterBackend(StrEnum):
     REMOTE = "remote"
 
 
+class CapabilityRelease(StrEnum):
+    C1 = "c1"
+    C2 = "c2"
+
+
+def transcription_provider_from_env(environ: Mapping[str, str] | None = None) -> str:
+    values = os.environ if environ is None else environ
+    provider = values.get("SWEEP_TRANSCRIPTION_PROVIDER") or (
+        "deepgram" if values.get("DEEPGRAM_API_KEY", "").strip() else "whisper"
+    )
+    if provider not in {"deepgram", "whisper"}:
+        raise SettingsError("SWEEP_TRANSCRIPTION_PROVIDER must be deepgram or whisper")
+    return provider
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionRecording:
+    recording_id: str
+    drone_id: int
+    source_id: str
+    mission_id: str
+    image_path: Path
+    image_sha256: str
+
+
 @dataclass(frozen=True, slots=True)
 class RelaySettings:
     relay_token: bytes = field(repr=False)
@@ -40,8 +66,12 @@ class RelaySettings:
     transport_event_max_age_ms: int = 5_000
     future_clock_skew_ms: int = 1_000
     telemetry_freshness_ms: int = 1_000
+    transcript_upload_timeout_ms: int = 15_000
+
+    transcription_provider: str = field(default_factory=transcription_provider_from_env)
     fanout_hz: int = 10
     adapter_backend: AdapterBackend = AdapterBackend.SIM
+    capability_release: CapabilityRelease = CapabilityRelease.C1
     command_ttl_ms: int = 2_000
     command_deadline_ms: int = 10_000
     virtual_stick_hz: int = 10
@@ -59,6 +89,10 @@ class RelaySettings:
     media_webrtc_origin: str | None = None
     media_read_username: str | None = None
     media_read_password: str | None = field(default=None, repr=False)
+    audit_state_interval_ms: int = 10_000
+    state_membership_history: int = 8
+    detection_model_path: Path | None = None
+    detection_recordings: tuple[DetectionRecording, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.relay_token) is not bytes or not 32 <= len(self.relay_token) <= 4_096:
@@ -96,10 +130,25 @@ class RelaySettings:
             )
         object.__setattr__(self, "adapter_keys", MappingProxyType(adapter_keys))
         object.__setattr__(self, "localization_keys", MappingProxyType(localization_keys))
+        if (
+            type(self.transcript_upload_timeout_ms) is not int
+            or self.transcript_upload_timeout_ms <= 0
+        ):
+            raise SettingsError("SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS must be a positive integer")
+
+        if self.transcription_provider not in {"deepgram", "whisper"}:
+            raise SettingsError("SWEEP_TRANSCRIPTION_PROVIDER must be deepgram or whisper")
         if self.fanout_hz != 10:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
             raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
+        if not isinstance(self.capability_release, CapabilityRelease):
+            raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1 or c2")
+        if (
+            self.capability_release is CapabilityRelease.C2
+            and self.adapter_backend is not AdapterBackend.SIM
+        ):
+            raise SettingsError("SWEEP_CAPABILITY_RELEASE=c2 is allowed only with the sim backend")
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
         if self.command_deadline_ms < self.command_ttl_ms:
@@ -109,13 +158,10 @@ class RelaySettings:
             or self.node_watchdog_failsafe_ms <= self.node_watchdog_hold_ms
         ):
             raise SettingsError("node watchdog thresholds must satisfy 0 <= hold < failsafe")
-        RelayLimits(
-            intent_max_age_ms=self.intent_max_age_ms,
-            transport_event_max_age_ms=self.transport_event_max_age_ms,
-            future_clock_skew_ms=self.future_clock_skew_ms,
-            telemetry_freshness_ms=self.telemetry_freshness_ms,
-            command_ttl_ms=self.command_ttl_ms,
-        )
+        try:
+            self.limits()
+        except ValueError as error:
+            raise SettingsError(str(error)) from None
         _validate_origins(self.console_origins)
         if self.media_api_url is not None:
             if not _is_origin(self.media_api_url):
@@ -135,6 +181,16 @@ class RelaySettings:
             )
         if self.media_webrtc_origin is not None and not _is_origin(self.media_webrtc_origin):
             raise SettingsError("SWEEP_MEDIA_WEBRTC_ORIGIN must be an explicit HTTP(S) origin")
+        if self.detection_recordings and self.detection_model_path is None:
+            raise SettingsError("SWEEP_DETECTION_MODEL_PATH is required with recordings")
+        if self.detection_model_path is not None and not self.detection_model_path.is_absolute():
+            raise SettingsError("SWEEP_DETECTION_MODEL_PATH must be an absolute path")
+        if len(self.detection_recordings) > 32:
+            raise SettingsError("detection recordings exceed the 32-recording limit")
+        if len({item.recording_id for item in self.detection_recordings}) != len(
+            self.detection_recordings
+        ):
+            raise SettingsError("detection recording IDs must be unique")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> RelaySettings:
@@ -173,7 +229,13 @@ class RelaySettings:
                 values.get("SWEEP_TELEMETRY_FRESHNESS_MS", "1000"),
                 "SWEEP_TELEMETRY_FRESHNESS_MS",
             ),
+            transcript_upload_timeout_ms=_positive_integer(
+                values.get("SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS", "15000"),
+                "SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS",
+            ),
+            transcription_provider=transcription_provider_from_env(values),
             adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
+            capability_release=_capability_release(values.get("SWEEP_CAPABILITY_RELEASE", "c1")),
             command_ttl_ms=_positive_integer(
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"
             ),
@@ -213,6 +275,18 @@ class RelaySettings:
             media_webrtc_origin=_optional(values.get("SWEEP_MEDIA_WEBRTC_ORIGIN")),
             media_read_username=_optional(values.get("SWEEP_MEDIA_READ_USERNAME")),
             media_read_password=_optional(values.get("SWEEP_MEDIA_READ_PASSWORD")),
+            audit_state_interval_ms=_positive_integer(
+                values.get("SWEEP_AUDIT_STATE_INTERVAL_MS", "10000"),
+                "SWEEP_AUDIT_STATE_INTERVAL_MS",
+            ),
+            state_membership_history=_positive_integer(
+                values.get("SWEEP_STATE_MEMBERSHIP_HISTORY", "8"),
+                "SWEEP_STATE_MEMBERSHIP_HISTORY",
+            ),
+            detection_model_path=_path(values.get("SWEEP_DETECTION_MODEL_PATH")),
+            detection_recordings=_detection_recordings(
+                values.get("SWEEP_DETECTION_RECORDINGS_JSON", "{}")
+            ),
         )
 
     def media_runtime_config(self) -> dict[str, str] | None:
@@ -240,6 +314,8 @@ class RelaySettings:
             future_clock_skew_ms=self.future_clock_skew_ms,
             telemetry_freshness_ms=self.telemetry_freshness_ms,
             command_ttl_ms=self.command_ttl_ms,
+            audit_state_interval_ms=self.audit_state_interval_ms,
+            state_membership_history=self.state_membership_history,
         )
 
     def node_settings(self) -> dict[str, int]:
@@ -250,6 +326,12 @@ class RelaySettings:
             "watchdog_hold_ms": self.node_watchdog_hold_ms,
             "watchdog_failsafe_ms": self.node_watchdog_failsafe_ms,
         }
+
+    @property
+    def capability_profile(self) -> CapabilityProfile:
+        if self.capability_release is CapabilityRelease.C2:
+            return C2_CAPABILITY_PROFILE
+        return C1_CAPABILITY_PROFILE
 
 
 def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
@@ -280,11 +362,68 @@ def _backend(raw: str) -> AdapterBackend:
         raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote") from None
 
 
+def _capability_release(raw: str) -> CapabilityRelease:
+    try:
+        return CapabilityRelease(raw)
+    except ValueError:
+        raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1 or c2") from None
+
+
 def _optional(raw: str | None) -> str | None:
     """An unset or blank variable is absent; the value is otherwise kept verbatim."""
     if raw is None or not raw.strip():
         return None
     return raw
+
+
+def _path(raw: str | None) -> Path | None:
+    value = _optional(raw)
+    return None if value is None else Path(value)
+
+
+def _detection_recordings(raw: str) -> tuple[DetectionRecording, ...]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SettingsError("SWEEP_DETECTION_RECORDINGS_JSON must be valid JSON") from error
+    if not isinstance(value, dict):
+        raise SettingsError("SWEEP_DETECTION_RECORDINGS_JSON must be an object")
+    result: list[DetectionRecording] = []
+    for recording_id, item in value.items():
+        if (
+            not isinstance(recording_id, str)
+            or not recording_id
+            or recording_id != recording_id.strip()
+            or len(recording_id) > 128
+            or not isinstance(item, dict)
+            or set(item) != {"drone_id", "source_id", "mission_id", "image_path", "image_sha256"}
+        ):
+            raise SettingsError("detection recordings have an invalid shape")
+        drone_id = item["drone_id"]
+        source_id = item["source_id"]
+        mission_id = item["mission_id"]
+        image_path = item["image_path"]
+        image_sha256 = item["image_sha256"]
+        if (
+            type(drone_id) is not int
+            or drone_id <= 0
+            or any(
+                not isinstance(part, str) or not part or len(part) > 128
+                for part in (source_id, mission_id)
+            )
+            or not isinstance(image_path, str)
+            or not Path(image_path).is_absolute()
+            or not isinstance(image_sha256, str)
+            or len(image_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in image_sha256)
+        ):
+            raise SettingsError("detection recordings contain invalid values")
+        result.append(
+            DetectionRecording(
+                recording_id, drone_id, source_id, mission_id, Path(image_path), image_sha256
+            )
+        )
+    return tuple(result)
 
 
 def _boolean(raw: str, name: str) -> bool:

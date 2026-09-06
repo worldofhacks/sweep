@@ -1,3 +1,4 @@
+import type { NavigationPreview } from '../navigation/client'
 import type {
   BackendIntentStatus,
   CapturePattern,
@@ -7,6 +8,8 @@ import type {
   IntentSource,
   MembershipAction,
   RelayAircraftState,
+  RelayDetectionEvent,
+  RelayCaptureRecord,
   RelayServerEvent,
 } from '../relay/contract'
 import { followsSelection } from '../relay/contract'
@@ -27,6 +30,7 @@ export interface RelayConnection {
 }
 
 export interface PlanPreview {
+  route?: NavigationPreview
   title: string
   steps: string[]
   rosterVersion: number
@@ -88,6 +92,11 @@ export interface OperatorNotice {
   t: number
 }
 
+export interface DetectionRecord {
+  event: RelayDetectionEvent
+  acknowledged: boolean
+}
+
 export interface ControlState {
   sessionId: string
   connection: RelayConnection
@@ -96,6 +105,8 @@ export interface ControlState {
   languageConnection: RelayConnection
   rosterVersion: number
   aircraft: Record<DroneId, RelayAircraftState>
+  /** The relay's retained captures, as `state.captures` lists them; empty until a state frame carries them. */
+  captures: RelayCaptureRecord[]
   selection: DroneId[]
   /** Formation and spacing the relay reports in its state frame; null until the first frame. */
   formation: string | null
@@ -105,6 +116,7 @@ export interface ControlState {
   enabledIntentNames: ConsoleIntentName[]
   departed: DepartureRecord[]
   requests: RequestRecord[]
+  detections: DetectionRecord[]
   selectedFeedId: DroneId | null
   capturePattern: CapturePattern
   armed: boolean
@@ -161,6 +173,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     },
     rosterVersion: 0,
     aircraft: {},
+    captures: [],
     selection: [],
     formation: null,
     spacing: null,
@@ -168,6 +181,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     enabledIntentNames: [],
     departed: [],
     requests: [],
+    detections: [],
     selectedFeedId: null,
     capturePattern: 'pano_360',
     armed: false,
@@ -366,10 +380,28 @@ function reduceRelayEvent(
     case 'membership':
       return reduceMembershipEvent(stateWithEvent, event)
     case 'telemetry':
-      // The relay atomically follows telemetry with its authoritative state
-      // projection. Retain the event ID for dedupe, but do not build a second
-      // client-side source of aircraft truth here.
+    case 'capabilities':
+    case 'node_status':
+    case 'capture_readiness':
+      // Aircraft control state comes from the relay's authoritative projection.
+      // Retain report IDs for dedupe; these reports cannot grant readiness or
+      // authority or create a second client-side source of aircraft truth.
       return stateWithEvent
+    case 'detection':
+      return {
+        ...stateWithEvent,
+        detections: [{ event, acknowledged: event.acknowledged }, ...stateWithEvent.detections].slice(0, 64),
+        selectedFeedId: event.attention === 'promoted' ? event.drone_id : stateWithEvent.selectedFeedId,
+      }
+    case 'detection_acknowledgement':
+      return {
+        ...stateWithEvent,
+        detections: stateWithEvent.detections.map((record) =>
+          record.event.detection_id === event.detection_id
+            ? { ...record, acknowledged: true }
+            : record,
+        ),
+      }
     case 'safety_action':
       return {
         ...stateWithEvent,
@@ -518,6 +550,7 @@ function reduceStateEvent(
     ...state,
     rosterVersion: event.roster_version,
     aircraft,
+    captures: event.captures ?? state.captures,
     selection,
     formation: event.formation,
     spacing: event.spacing,
@@ -748,6 +781,7 @@ function projectMembershipEvent(
     rc_safety_operator_present: previous?.rc_safety_operator_present ?? false,
     telemetry: previous?.telemetry ?? null,
     membership_history: previous?.membership_history ?? [],
+    membership_history_truncated: previous?.membership_history_truncated ?? 0,
     video: previous?.connection_epoch === event.connection_epoch ? previous.video : undefined,
   }
 }

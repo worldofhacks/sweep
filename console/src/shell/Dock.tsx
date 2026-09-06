@@ -1,3 +1,4 @@
+import { RoutePreview } from '../navigation/RoutePreview'
 import { useEffect, useRef, useState } from 'react'
 import type { RequestRecord } from '../control/state'
 import { formatDroneId } from '../control/state'
@@ -119,6 +120,7 @@ function PendingPlan({
           </button>
         </span>
       </div>
+      {plan?.route && <RoutePreview preview={plan.route} />}
       {plan && plan.steps.length > 0 && (
         <ol className="sh-dock-steps">
           {plan.steps.map((step) => (

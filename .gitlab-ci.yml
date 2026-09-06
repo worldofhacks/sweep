@@ -49,7 +49,10 @@ bridge-jvm:
     paths:
       - .gradle-home/caches
       - .gradle-home/wrapper
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl python3
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - /root/.local/bin/uv sync --locked
   script:
     # Pure-JVM modules only; settings.gradle.kts skips the Android module without an SDK.
-    - cd adapters/dji_mini3/pilot-app
-    - ./gradlew --no-daemon :bridge-core:test :bridge-node:test :bridge-publish:test :bench:test
+    - packet_path="$(mktemp)"; PYTHONPATH="$CI_PROJECT_DIR" PYTHON_NAVIGATION_PACKET_PATH="$packet_path" /root/.local/bin/uv run --no-sync python tools/write_android_navigation_packets.py; cd adapters/dji_mini3/pilot-app; PYTHON_NAVIGATION_PACKET_PATH="$packet_path" ./gradlew --no-daemon :bridge-core:test :bridge-node:test :bridge-publish:test :bench:test

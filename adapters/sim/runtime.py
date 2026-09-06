@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Event, Lock, RLock, Thread
 
 from fastapi import FastAPI, Header, HTTPException
@@ -31,6 +31,7 @@ from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.relay_bridge import AutonomyRelayBridge
 from relay.app import create_app
 from relay.auth import Principal, sign_event
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.session import Clock, EventIdFactory, RelaySession
 from relay.settings import RelaySettings
 
@@ -46,6 +47,7 @@ class SimBridgeFactory:
         watchdog: WatchdogConfig,
         adapter_keys: Mapping[int, bytes],
         auto_start_nodes: bool,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     ) -> None:
         self.initial_snapshot = initial_snapshot
         self.planning = planning
@@ -54,7 +56,7 @@ class SimBridgeFactory:
         self.watchdog = watchdog
         self.adapter_keys = adapter_keys
         self.auto_start_nodes = auto_start_nodes
-        self.capability_profile = planning.effective_capability_profile()
+        self.capability_profile = planning.effective_capability_profile(capability_profile)
         self.bridges: dict[str, AutonomyRelayBridge] = {}
         self.flights: dict[str, SimFlightAdapter] = {}
         self.nodes: dict[str, _SimNodeIngress] = {}
@@ -212,8 +214,19 @@ class _SimNodeIngress:
     def _watchdog_loop(self) -> None:
         while not self._watchdog_stop.wait(0.01):
             now_ms = self.session.clock()
+            with self._ingress_lock:
+                live_nodes = self._active - self._silent
             with self._watchdog_lock:
                 for progress in tuple(self._watchdogs.values()):
+                    if progress.state.drone_id in live_nodes:
+                        progress = _LocalWatchdog(
+                            state=NodeWatchdogState(
+                                progress.state.drone_id,
+                                progress.state.connection_epoch,
+                                now_ms,
+                            )
+                        )
+                        self._watchdogs[progress.state.drone_id] = progress
                     try:
                         action = self.flight.apply_node_watchdog(
                             progress.state,
@@ -412,10 +425,15 @@ def create_m14_sim_app(
 ) -> FastAPI:
     active_settings = settings or RelaySettings.from_env()
     now = (clock or _epoch_ms)()
+    safety = replace(
+        _safety_config(),
+        max_link_age_ms=active_settings.telemetry_freshness_ms,
+        max_position_age_ms=active_settings.telemetry_freshness_ms,
+    )
     factory = SimBridgeFactory(
         initial_snapshot=initial_snapshot or _initial_snapshot(now),
         planning=_planning_config(),
-        safety=_safety_config(),
+        safety=safety,
         camera=_camera_config(now),
         watchdog=WatchdogConfig(
             hold_after_ms=2_000,
@@ -424,6 +442,7 @@ def create_m14_sim_app(
         ),
         adapter_keys=active_settings.adapter_keys,
         auto_start_nodes=auto_start_nodes,
+        capability_profile=active_settings.capability_profile,
     )
     application = create_app(
         active_settings,

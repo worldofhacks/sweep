@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -13,11 +14,19 @@ import pytest
 
 import relay.audit as audit_module
 from planner.models import CommandOperation
-from relay.audit import AuditLogError, SessionAuditLog
+from relay.audit import MAX_AUDIT_RECORD_BYTES, AuditLogError, SessionAuditLog
 from relay.auth import Principal
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import LifecycleStatus
-from relay.intent_v1 import IntentV1
+from relay.intent_v1 import (
+    MAX_INTENT_DRONE_ID,
+    MAX_INTENT_DRONE_IDS,
+    MAX_INTENT_IDENTIFIER_CHARS,
+    MAX_INTENT_NAME_CHARS,
+    MAX_INTENT_SESSION_CHARS,
+    MAX_INTENT_SOURCE_CHARS,
+    IntentV1,
+)
 from relay.session import (
     CapabilityBoundIntentSink,
     IntentSink,
@@ -50,6 +59,8 @@ def _new_session(
     tmp_path: Path,
     clock: MutableClock,
     event_ids: EventIds,
+    *,
+    session_id: str = SESSION,
     **kwargs: object,
 ) -> RelaySession:
     sink = kwargs.get("intent_sink")
@@ -57,8 +68,8 @@ def _new_session(
         profile = cast(CapabilityProfile, kwargs.get("capability_profile", C1_CAPABILITY_PROFILE))
         kwargs["intent_sink"] = CapabilityBoundIntentSink(cast(IntentSink, sink), profile)
     return RelaySession(
-        session_id=SESSION,
-        audit_log=SessionAuditLog(tmp_path, SESSION),
+        session_id=session_id,
+        audit_log=SessionAuditLog(tmp_path, session_id),
         limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
         clock=clock,
         event_ids=event_ids,
@@ -189,6 +200,90 @@ def test_accepted_and_refused_intents_are_ordered_in_replay(
     empty_increment = relay_session.replay(after_sequence=4)
     assert empty_increment["events"] == []
     assert empty_increment["last_sequence"] == 4
+
+
+def test_oversized_intent_fields_are_refused_without_poisoning_audit_or_session(
+    relay_session: RelaySession, console_principal: Principal
+) -> None:
+    changes: tuple[dict[str, object], ...] = (
+        {"intent_id": "i" * (MAX_INTENT_IDENTIFIER_CHARS + 1)},
+        {"retry_of": "r" * (MAX_INTENT_IDENTIFIER_CHARS + 1)},
+        {"session": "s" * (MAX_INTENT_SESSION_CHARS + 1)},
+        {"source": "s" * (MAX_INTENT_SOURCE_CHARS + 1)},
+        {"name": "n" * (MAX_INTENT_NAME_CHARS + 1)},
+        {"selection": list(range(1, MAX_INTENT_DRONE_IDS + 2))},
+        {"selection": [MAX_INTENT_DRONE_ID + 1]},
+        {"name": "select", "args": {"ids": list(range(1, MAX_INTENT_DRONE_IDS + 2))}},
+        {"name": "formation_set", "args": {"name": "x" * (1 << 20)}},
+        {
+            "name": "capture_room",
+            "args": {
+                "room_id": "r" * (MAX_INTENT_IDENTIFIER_CHARS + 1),
+                "capture_id": "capture",
+                "pattern": "pano_360",
+            },
+            "confirm": True,
+        },
+    )
+
+    for index, change in enumerate(changes):
+        raw = intent_payload(intent_id=f"invalid-bounded-{index}")
+        raw.update(change)
+        refused = relay_session.process_frame(raw, console_principal)
+        assert refused[0]["reason"] == "invalid_payload"
+        assert len(refused[0]["detail"]) < 128
+        assert relay_session.current_state()["session"] == SESSION
+
+    replay = relay_session.replay()
+    encoded_replay = str(replay)
+    assert "x" * 1_024 not in encoded_replay
+    with sqlite3.connect(relay_session.audit_log.database_path) as database:
+        assert database.execute(
+            "SELECT COUNT(*) FROM operations WHERE status = 'pending'"
+        ).fetchone() == (0,)
+
+    accepted = relay_session.process_intent(
+        intent_payload(intent_id="usable-after-bounds"), console_principal
+    )
+    assert accepted[0]["status"] == "accepted"
+
+
+def test_exact_maximum_intent_identifiers_remain_well_below_the_audit_record_reserve(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    console_principal: Principal,
+) -> None:
+    maximum_session = "🚁" * MAX_INTENT_SESSION_CHARS
+    session = _new_session(
+        tmp_path,
+        clock,
+        event_ids,
+        session_id=maximum_session,
+        intent_sink=CapabilityBoundIntentSink(lambda _intent, _state: None, C1_CAPABILITY_PROFILE),
+    )
+    raw = intent_payload(
+        intent_id="🚁" * MAX_INTENT_IDENTIFIER_CHARS,
+        session=maximum_session,
+    )
+    raw.update(
+        name="capture_room",
+        args={
+            "room_id": "🚁" * MAX_INTENT_IDENTIFIER_CHARS,
+            "capture_id": "🚁" * MAX_INTENT_IDENTIFIER_CHARS,
+            "pattern": "reconstruct_8",
+        },
+        confirm=True,
+    )
+
+    response = session.process_intent(raw, console_principal)
+
+    assert response[0]["status"] == "accepted"
+    encoded_sizes = [
+        len(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()) + 1
+        for record in session.replay()["events"]
+    ]
+    assert max(encoded_sizes) < MAX_AUDIT_RECORD_BYTES // 16
 
 
 def test_replay_reports_durable_sequence_after_append_close_failure(
@@ -592,7 +687,9 @@ def test_complete_durable_batch_remains_replayable_after_close_failure(
 
     monkeypatch.setattr(os, "close", real_close)
     reopened = SessionAuditLog(relay_session.audit_log.root, SESSION)
-    durable_events = [record["event"] for record in reopened.replay()[-3:]]
+    replay = reopened.replay()
+    assert [record["seq"] for record in replay] == list(range(1, len(replay) + 1))
+    durable_events = [record["event"] for record in replay[-3:]]
     assert [event["type"] for event in durable_events] == ["telemetry", "membership", "state"]
     assert durable_events[0]["event_id"] == "telemetry-recovery"
     with pytest.raises(AuditLogError, match="session is unusable"):
@@ -804,7 +901,7 @@ def test_regressive_membership_timestamp_is_refused(
     assert result[0]["reason"] == "out_of_order_event"
 
 
-def test_telemetry_is_canonical_and_replayed_with_resulting_state(
+def test_telemetry_preserves_raw_evidence_and_audits_material_state_changes(
     relay_session: RelaySession, adapter_principal: Principal
 ) -> None:
     _join(relay_session, adapter_principal)
@@ -818,6 +915,43 @@ def test_telemetry_is_canonical_and_replayed_with_resulting_state(
     assert drone["flight_state"] == "hovering"
     assert drone["telemetry"]["x"] == 1.0
     assert drone["last_seen_at"] == events[0]["t"]
+
+    replay = relay_session.replay()["events"]
+    assert [record["seq"] for record in replay] == list(range(1, len(replay) + 1))
+    persisted = [record["event"] for record in replay]
+    assert [event["type"] for event in persisted] == ["membership", "state", "telemetry", "state"]
+    assert persisted[-2:] == events
+
+    repeated = relay_session.process_telemetry(
+        telemetry_payload(event_id="telemetry-2"), adapter_principal
+    )
+    assert [event["type"] for event in repeated] == ["telemetry", "state"]
+    later = relay_session.replay()["events"]
+    assert [record["event"] for record in later[len(replay) :]] == [repeated[0]]
+
+
+def test_reopened_audit_keeps_latest_telemetry_pose_and_last_seen_evidence(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    clock: MutableClock,
+) -> None:
+    _join(relay_session, adapter_principal)
+    relay_session.process_telemetry(
+        telemetry_payload(event_id="telemetry-earlier"), adapter_principal
+    )
+    clock.advance(1)
+    latest = telemetry_payload(event_id="telemetry-latest", timestamp=clock.value, state="landing")
+    latest.update(x=7.5, y=-3.0, z=1.25, vx=0.2, vy=-0.1, vz=0.0, battery=0.42)
+    relay_session.process_telemetry(latest, adapter_principal)
+
+    reopened = SessionAuditLog(relay_session.audit_log.root, SESSION)
+    replay = reopened.replay()
+    assert [record["seq"] for record in replay] == list(range(1, len(replay) + 1))
+    telemetry = [record["event"] for record in replay if record["event"]["type"] == "telemetry"]
+    assert telemetry[-1] == latest
+    assert telemetry[-1]["t"] == clock.value
+    assert (telemetry[-1]["x"], telemetry[-1]["y"], telemetry[-1]["z"]) == (7.5, -3.0, 1.25)
+    assert telemetry[-1]["state"] == "landing"
 
 
 def test_signed_graceful_leave_defaults_fail_closed_and_accepts_safety_hook(

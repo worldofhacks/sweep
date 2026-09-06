@@ -1,12 +1,31 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
-from planner.models import CommandOperation
+from adapters.protocols import (
+    CameraIntrinsics,
+    CameraResultStatus,
+    CaptureBundle,
+    CaptureCoverage,
+    CapturePattern,
+    MediaFile,
+)
+from planner.models import Command, CommandOperation, ExecutionResult, Plan, Position
 from relay.auth import Principal, verify_event_signature
-from relay.contracts import LifecycleStatus, parse_command
+from relay.captures import CaptureLedgerError
+from relay.contracts import (
+    MAX_CAPTURE_BUNDLE_MEDIA_ITEMS,
+    MAX_COVERAGE_MISSING_ITEMS,
+    MAX_STORAGE_REMAINING_BYTES,
+    LifecycleStatus,
+    parse_command,
+)
+from relay.intent_v1 import AcceptedIntent, IntentName, validate_intent
 from relay.session import RelaySession
 from relay.state import RegistryError
 from relay.tests.conftest import (
@@ -17,8 +36,10 @@ from relay.tests.conftest import (
     capture_readiness_payload,
     intent_payload,
     media_file_payload,
+    media_record,
     membership_payload,
     node_status_payload,
+    profiled_sink,
     telemetry_payload,
 )
 
@@ -67,6 +88,85 @@ def test_capabilities_and_node_status_update_state_and_fan_out(
     assert relay_session.metrics()["node_events"] == 2
 
 
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        [f"capability-{index}" for index in range(65)],
+        [f"{index:02d}" + "😀" * 510 for index in range(44)],
+    ],
+)
+def test_signed_join_capability_refusal_does_not_mutate_or_fence_the_session(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    capabilities: list[str],
+) -> None:
+    refused = relay_session.process_membership(
+        membership_payload(action="join", event_id="join-unbounded", capabilities=capabilities),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_membership"
+    assert relay_session.current_state()["drones"] == []
+    assert relay_session.replay()["events"][-1]["event"] == refused[0]
+    accepted = relay_session.process_membership(
+        membership_payload(action="join", event_id="join-after-refusal"),
+        adapter_principal,
+    )
+    assert accepted[0]["type"] == "membership"
+
+
+@pytest.mark.parametrize(
+    "modes",
+    [
+        [f"mode-{index}" for index in range(65)],
+        [f"{index:02d}" + "😀" * 510 for index in range(44)],
+    ],
+)
+def test_authenticated_capability_refusal_does_not_mutate_or_fence_the_session(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    modes: list[str],
+) -> None:
+    _join(relay_session, adapter_principal)
+
+    refused = relay_session.process_frame(
+        capabilities_payload(event_id="capabilities-unbounded", native_panorama_modes=modes),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capabilities"
+    assert relay_session.current_state()["drones"][0]["camera_capabilities"] is None
+    assert relay_session.replay()["events"][-1]["event"] == refused[0]
+    accepted = relay_session.process_frame(
+        capabilities_payload(event_id="capabilities-after-refusal"), adapter_principal
+    )
+    assert [event["type"] for event in accepted] == ["capabilities", "state"]
+
+
+def test_authenticated_storage_overflow_refusal_does_not_fence_the_session(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+) -> None:
+    _join(relay_session, adapter_principal)
+
+    refused = relay_session.process_frame(
+        capabilities_payload(
+            event_id="capabilities-storage-overflow",
+            storage_remaining_bytes=MAX_STORAGE_REMAINING_BYTES + 1,
+        ),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capabilities"
+    assert relay_session.current_state()["drones"][0]["camera_capabilities"] is None
+    assert relay_session.replay()["events"][-1]["event"] == refused[0]
+    accepted = relay_session.process_frame(
+        capabilities_payload(event_id="capabilities-after-storage-refusal"),
+        adapter_principal,
+    )
+    assert [event["type"] for event in accepted] == ["capabilities", "state"]
+
+
 def test_capture_readiness_is_fanned_out_without_a_state_change(
     relay_session: RelaySession, adapter_principal: Principal
 ) -> None:
@@ -81,24 +181,352 @@ def test_capture_readiness_is_fanned_out_without_a_state_change(
     assert relay_session.replay()["events"][-1]["event"]["type"] == "capture_readiness"
 
 
-def test_media_file_and_capture_bundle_are_audited_and_retained_for_the_wire(
+def test_media_is_projected_and_a_node_bundle_is_refused_without_authoritative_labels(
     relay_session: RelaySession, adapter_principal: Principal
 ) -> None:
     _join(relay_session, adapter_principal)
 
-    media = relay_session.process_frame(media_file_payload(event_id="media-1"), adapter_principal)
+    pending = relay_session.process_frame(
+        media_file_payload(
+            event_id="media-1", retrieval_status="pending", checksum_sha256="0" * 64
+        ),
+        adapter_principal,
+    )
+    retrieved = relay_session.process_frame(
+        media_file_payload(event_id="media-2"),
+        adapter_principal,
+    )
     bundle = relay_session.process_frame(
-        capture_bundle_payload(event_id="bundle-1", timestamp=1_756_700_000_001),
+        capture_bundle_payload(
+            event_id="bundle-1",
+            timestamp=1_756_700_000_002,
+            media=[media_record(timestamp=1_756_700_000_000)],
+        ),
         adapter_principal,
     )
 
-    assert media == []
-    assert bundle == []
+    # Media frames are not fanned out; the state projection carries the capture.
+    assert [event["type"] for event in pending] == ["state"]
+    (open_capture,) = pending[0]["captures"]
+    assert open_capture["status"] is None and open_capture["room_id"] is None
+    assert open_capture["files"][0]["retrieval_status"] == "pending"
+    (after_retrieval,) = retrieved[0]["captures"]
+    assert [file["retrieval_status"] for file in after_retrieval["files"]] == ["completed"]
+    assert bundle[0]["type"] == "refusal"
+    assert bundle[0]["reason"] == "source_not_allowed"
+    assert relay_session.captures() == retrieved[0]["captures"]
     replayed = [record["event"]["type"] for record in relay_session.replay()["events"]]
-    assert replayed[-2:] == ["media_file", "capture_bundle"]
+    assert replayed[-5:] == [
+        "media_file",
+        "state",
+        "media_file",
+        "state",
+        "refusal",
+    ]
     files = relay_session.media_files(1, "capture-1")
     assert [record.file_id for record in files] == ["capture-1-pano-360"]
+    assert files[0].retrieval_status == "completed"
     assert relay_session.media_files(1, "capture-unknown") == ()
+
+
+def test_the_composed_capture_bundle_closes_the_capture_from_the_autonomy_result(
+    relay_session: RelaySession, adapter_principal: Principal, console_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    relay_session.intent_sink = profiled_sink(lambda _intent, _state: None)
+    capture_intent = {
+        **intent_payload(intent_id="intent-capture"),
+        "name": "capture_room",
+        "args": {"room_id": "room-1", "capture_id": "capture-1", "pattern": "reconstruct_8"},
+        "confirm": True,
+    }
+    accepted = relay_session.process_frame(capture_intent, console_principal)
+    assert accepted[0]["status"] == "accepted"
+    relay_session.process_frame(
+        media_file_payload(
+            event_id="media-1",
+            file_id="capture-1-frame-01",
+            retrieval_status="pending",
+            checksum_sha256="0" * 64,
+            intrinsics={
+                "width_px": 4000,
+                "height_px": 3000,
+                "horizontal_fov_deg": 82.1,
+                "projection": "rectilinear",
+            },
+        ),
+        adapter_principal,
+    )
+    record = media_record(
+        timestamp=1_756_700_000_000,
+        file_id="capture-1-frame-01",
+        intrinsics={
+            "width_px": 4000,
+            "height_px": 3000,
+            "horizontal_fov_deg": 82.1,
+            "projection": "rectilinear",
+        },
+    )
+    bundle = CaptureBundle(
+        room_id="room-1",
+        capture_id="capture-1",
+        drone_id=1,
+        connection_epoch=1,
+        pattern=CapturePattern.RECONSTRUCT_8,
+        coverage=CaptureCoverage.INCOMPLETE_VERTICAL,
+        status=CameraResultStatus.COMPLETED,
+        media=(
+            MediaFile(
+                capture_id="capture-1",
+                file_id="capture-1-frame-01",
+                timestamp_ms=1_756_700_000_000,
+                drone_id=1,
+                connection_epoch=1,
+                pose=Position(1.0, 2.0, 1.0),
+                actual_yaw_deg=0.0,
+                gimbal_pitch_deg=0.0,
+                intrinsics=CameraIntrinsics(4000, 3000, 82.1, "rectilinear"),
+                checksum_sha256="a" * 64,
+                storage_ref="file:///captures/capture-1/DJI_0001.JPG",
+                retrieval_status=CameraResultStatus.COMPLETED,
+            ),
+        ),
+    )
+    validated = validate_intent(capture_intent)
+    assert isinstance(validated, AcceptedIntent)
+    intent = validated.intent
+    result = ExecutionResult(
+        intent_id="intent-capture",
+        roster_version=relay_session.registry.roster_version,
+        status=LifecycleStatus.COMPLETED,
+        plan=Plan(
+            plan_id="plan:intent-capture",
+            intent_id="intent-capture",
+            intent_name=IntentName.CAPTURE_ROOM,
+            roster_version=relay_session.registry.roster_version,
+            selection=(1,),
+            confirmed=True,
+            commands=(
+                Command(
+                    command_id="command-capture",
+                    intent_id="intent-capture",
+                    roster_version=relay_session.registry.roster_version,
+                    drone_id=1,
+                    connection_epoch=1,
+                    operation=CommandOperation.CAPTURE_PHOTO,
+                    parameters={
+                        "room_id": "room-1",
+                        "capture_id": "capture-1",
+                        "pattern": "reconstruct_8",
+                    },
+                ),
+            ),
+        ),
+        capture_bundle=bundle,
+    )
+
+    events = relay_session.record_execution_result(intent, result)
+
+    types = [event["type"] for event in events]
+    assert types == ["state", "state", "acknowledgement"], "the bundle is audited, not fanned out"
+    (closed,) = events[0]["captures"]
+    assert (closed["room_id"], closed["pattern"], closed["coverage"], closed["status"]) == (
+        "room-1",
+        "reconstruct_8",
+        "incomplete_vertical_coverage",
+        "completed",
+    )
+    (file,) = closed["files"]
+    assert file["retrieval_status"] == "completed" and file["checksum_sha256"] == "a" * 64
+    assert record["file_id"] == file["file_id"]
+    audited = [record["event"] for record in relay_session.replay()["events"]]
+    assert [event["type"] for event in audited[-4:]] == [
+        "capture_bundle",
+        "state",
+        "state",
+        "acknowledgement",
+    ]
+    assert audited[-4]["source"] == "autonomy" and audited[-4]["status"] == "completed"
+
+
+def test_conflicting_composed_capture_evidence_cannot_complete_the_intent(
+    relay_session: RelaySession, adapter_principal: Principal, console_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    relay_session.intent_sink = profiled_sink(lambda _intent, _state: None)
+    capture_intent = {
+        **intent_payload(intent_id="intent-capture"),
+        "name": "capture_room",
+        "args": {"room_id": "room-1", "capture_id": "capture-1", "pattern": "reconstruct_8"},
+        "confirm": True,
+    }
+    relay_session.process_frame(capture_intent, console_principal)
+    relay_session.process_frame(
+        media_file_payload(
+            event_id="media-1",
+            file_id="capture-1-frame-01",
+            retrieval_status="pending",
+            checksum_sha256="0" * 64,
+        ),
+        adapter_principal,
+    )
+    validated = validate_intent(capture_intent)
+    assert isinstance(validated, AcceptedIntent)
+    result = ExecutionResult(
+        intent_id="intent-capture",
+        roster_version=relay_session.registry.roster_version,
+        status=LifecycleStatus.COMPLETED,
+        plan=Plan(
+            plan_id="plan:intent-capture",
+            intent_id="intent-capture",
+            intent_name=IntentName.CAPTURE_ROOM,
+            roster_version=relay_session.registry.roster_version,
+            selection=(1,),
+            confirmed=True,
+            commands=(
+                Command(
+                    command_id="command-capture",
+                    intent_id="intent-capture",
+                    roster_version=relay_session.registry.roster_version,
+                    drone_id=1,
+                    connection_epoch=1,
+                    operation=CommandOperation.CAPTURE_PHOTO,
+                    parameters={
+                        "room_id": "room-1",
+                        "capture_id": "capture-1",
+                        "pattern": "reconstruct_8",
+                    },
+                ),
+            ),
+        ),
+        capture_bundle=CaptureBundle(
+            room_id="room-1",
+            capture_id="capture-1",
+            drone_id=1,
+            connection_epoch=1,
+            pattern=CapturePattern.RECONSTRUCT_8,
+            coverage=CaptureCoverage.INCOMPLETE_VERTICAL,
+            status=CameraResultStatus.COMPLETED,
+            media=(
+                MediaFile(
+                    capture_id="capture-1",
+                    file_id="capture-1-frame-01",
+                    timestamp_ms=1_756_700_000_001,
+                    drone_id=1,
+                    connection_epoch=1,
+                    pose=Position(1.0, 2.0, 1.0),
+                    actual_yaw_deg=0.0,
+                    gimbal_pitch_deg=0.0,
+                    intrinsics=CameraIntrinsics(4000, 3000, 82.1, "rectilinear"),
+                    checksum_sha256="a" * 64,
+                    storage_ref="file:///captures/capture-1/DJI_0001.JPG",
+                    retrieval_status=CameraResultStatus.COMPLETED,
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(CaptureLedgerError, match="requires an authoritative capture bundle"):
+        relay_session.record_execution_result(
+            validated.intent, replace(result, capture_bundle=None)
+        )
+
+    assert isinstance(result.capture_bundle, CaptureBundle)
+    with pytest.raises(CaptureLedgerError, match="differs from its plan"):
+        relay_session.record_execution_result(
+            validated.intent,
+            replace(
+                result,
+                capture_bundle=replace(result.capture_bundle, room_id="another-room"),
+            ),
+        )
+
+    with pytest.raises(CaptureLedgerError, match="immutable capture evidence"):
+        relay_session.record_execution_result(validated.intent, result)
+
+    (capture,) = relay_session.captures()
+    assert capture["files"][0]["retrieval_status"] == "pending"
+    acknowledgements = [
+        record["event"]
+        for record in relay_session.replay()["events"]
+        if record["event"]["type"] == "acknowledgement"
+    ]
+    assert acknowledgements[-1]["status"] == "accepted"
+
+
+def test_a_refused_media_frame_leaves_the_capture_ledger_untouched(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    relay_session.process_frame(media_file_payload(event_id="media-1"), adapter_principal)
+
+    stale = relay_session.process_frame(
+        media_file_payload(event_id="media-2", connection_epoch=2), adapter_principal
+    )
+
+    assert stale[0]["type"] == "refusal"
+    assert stale[0]["reason"] == "stale_connection_epoch"
+    (capture,) = relay_session.captures()
+    assert [file["file_id"] for file in capture["files"]] == ["capture-1-pano-360"]
+
+
+def test_oversized_authenticated_capture_bundle_is_refused_before_claim_or_media_mutation(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    record = media_record(file_id="large-frame")
+    oversized_media = [record] * 2_500
+    oversized = capture_bundle_payload(event_id="bundle-unbounded", media=oversized_media)
+    assert len(json.dumps(oversized, separators=(",", ":")).encode()) > 1 << 20
+
+    refused = relay_session.process_frame(oversized, adapter_principal)
+
+    assert refused[0]["reason"] == "invalid_capture_bundle"
+    assert relay_session.media_files(1, "capture-1") == ()
+    assert relay_session.current_state()["drones"][0]["drone_id"] == 1
+    with sqlite3.connect(relay_session.audit_log.database_path) as database:
+        assert database.execute(
+            "SELECT COUNT(*) FROM operations WHERE status = 'pending'"
+        ).fetchone() == (0,)
+    retried = relay_session.process_frame(
+        media_file_payload(event_id="bundle-unbounded"), adapter_principal
+    )
+    assert [event["type"] for event in retried] == ["state"]
+    assert len(relay_session.media_files(1, "capture-1")) == 1
+
+
+def test_oversized_or_duplicate_readiness_coverage_is_refused_without_claiming(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    event_id = "readiness-unbounded"
+    refused = relay_session.process_frame(
+        capture_readiness_payload(
+            event_id=event_id,
+            coverage_missing=list(range(MAX_COVERAGE_MISSING_ITEMS + 1)),
+        ),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capture_readiness"
+    assert relay_session.capture_readiness(1) is None
+    assert (
+        relay_session.process_frame(
+            capture_readiness_payload(
+                event_id=event_id,
+                coverage_missing=list(range(MAX_COVERAGE_MISSING_ITEMS)),
+            ),
+            adapter_principal,
+        )[0]["type"]
+        == "capture_readiness"
+    )
+    duplicate = relay_session.process_frame(
+        capture_readiness_payload(event_id="readiness-duplicate", coverage_missing=[45, 45]),
+        adapter_principal,
+    )
+    assert duplicate[0]["reason"] == "invalid_capture_readiness"
+    assert len(relay_session.capture_readiness(1).coverage_missing) == MAX_COVERAGE_MISSING_ITEMS
+    assert MAX_CAPTURE_BUNDLE_MEDIA_ITEMS == MAX_COVERAGE_MISSING_ITEMS == 8
 
 
 def test_node_frames_require_binding_current_epoch_and_fresh_event_ids(
@@ -191,6 +619,30 @@ def test_issue_command_signs_audits_and_sequences_per_epoch(
     assert stale.value.code == "stale_connection_epoch"
     with pytest.raises(ValueError, match="command_id"):
         _issue_hover(relay_session, "command-1")
+
+
+def test_issue_command_preserves_an_authorized_navigation_route_id(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    issued = _issue_hover(
+        relay_session,
+        "navigation-command",
+        operation=CommandOperation.GOTO,
+        args={
+            "x_mm": 1_000,
+            "y_mm": -400,
+            "z_mm": 1_000,
+            "speed_mm_s": 500,
+            "navigation_route_id": "route-1",
+        },
+    )
+
+    command = parse_command(issued)
+    assert command.args["navigation_route_id"] == "route-1"
+    unsigned = dict(issued)
+    signature = unsigned.pop("signature")
+    assert verify_event_signature(unsigned, signature, ADAPTER_KEY)
 
 
 def test_issue_command_registers_autonomy_intents_and_refuses_terminal_ones(
@@ -354,3 +806,47 @@ def test_capture_readiness_is_retained_for_the_current_epoch_only(
     assert relay_session.registry.connection_epoch(1) == 2
     assert relay_session.capture_readiness(1) is None, "a rejoin starts a new epoch"
     assert relay_session.capture_readiness(2) is None
+
+
+def test_capture_projection_refuses_an_aggregate_that_would_exceed_the_audit_budget(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    first_storage_ref = ""
+    accepted = 0
+    refusal = None
+    for index in range(256):
+        storage_ref = f"node://media/{index}-" + "x" * 480
+        events = relay_session.process_frame(
+            media_file_payload(
+                event_id=f"media-large-{index}",
+                capture_id=f"capture-large-{index // 64}",
+                file_id=f"large-{index}",
+                storage_ref=storage_ref,
+            ),
+            adapter_principal,
+        )
+        if events[0]["type"] == "refusal":
+            refusal = events[0]
+            break
+        if index == 0:
+            first_storage_ref = storage_ref
+        accepted += 1
+
+    assert accepted > 64
+    assert refusal is not None
+    assert refusal["reason"] == "capture_limit_exceeded"
+    continued = relay_session.process_frame(
+        media_file_payload(
+            event_id="media-large-repeat",
+            capture_id="capture-large-0",
+            file_id="large-0",
+            storage_ref=first_storage_ref,
+        ),
+        adapter_principal,
+    )
+
+    assert [event["type"] for event in continued] == ["state"]
+    records = [item["event"] for item in relay_session.replay()["events"]]
+    retained = next(item for item in records if item.get("event_id") == "media-large-0")
+    assert retained["storage_ref"] == first_storage_ref

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import queue
 import time
 import uuid
@@ -15,7 +17,16 @@ from planner.models import CommandOperation
 from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.captures import (
+    MAX_CAPTURE_ENTRIES,
+    MAX_MEDIA_FILES_PER_CAPTURE,
+    CaptureEntry,
+    CaptureKey,
+    CaptureLedger,
+    CaptureLedgerError,
+)
 from relay.contracts import (
+    MAX_CAPABILITY_LIST_ITEMS,
     NODE_FRAME_TYPES,
     AdapterAcknowledgement,
     CapabilitiesFrame,
@@ -48,6 +59,7 @@ from relay.control_localization import (
 )
 from relay.control_localization_contracts import session_identifier
 from relay.intent_v1 import (
+    MAX_INTENT_IDENTIFIER_CHARS,
     REGISTERED_SOURCES,
     AcceptedIntent,
     IntentName,
@@ -56,11 +68,21 @@ from relay.intent_v1 import (
     validate_intent,
 )
 from relay.media import MediaEvidenceProvider
-from relay.state import FleetRegistry, MembershipTransition, RegistryError
+from relay.state import (
+    MAX_MEMBERSHIP_HISTORY_LIMIT,
+    MAX_PHYSICAL_AIRCRAFT,
+    FleetRegistry,
+    MembershipTransition,
+    RegistryError,
+)
 
 Clock = Callable[[], int]
 EventIdFactory = Callable[[], str]
 ControlPoseSigningKey = Callable[[int], bytes | None]
+_LOGGER = logging.getLogger(__name__)
+# The composed capture bundle is recorded by the autonomy boundary, not by a node.
+LIFECYCLE_SOURCE_AUTONOMY = "autonomy"
+MAX_AUDIT_STATE_INTERVAL_MS = 10_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +197,8 @@ class RelayLimits:
     future_clock_skew_ms: int
     telemetry_freshness_ms: int
     command_ttl_ms: int = 2_000
+    audit_state_interval_ms: int = 10_000
+    state_membership_history: int = 8
 
     def __post_init__(self) -> None:
         if (
@@ -189,6 +213,22 @@ class RelayLimits:
             raise ValueError("freshness limits must be positive")
         if self.future_clock_skew_ms < 0:
             raise ValueError("future_clock_skew_ms must be non-negative")
+        if (
+            type(self.audit_state_interval_ms) is not int
+            or not 1 <= self.audit_state_interval_ms <= MAX_AUDIT_STATE_INTERVAL_MS
+        ):
+            raise ValueError(
+                "audit_state_interval_ms must be an integer from 1 through "
+                f"{MAX_AUDIT_STATE_INTERVAL_MS}"
+            )
+        if (
+            type(self.state_membership_history) is not int
+            or not 1 <= self.state_membership_history <= MAX_MEMBERSHIP_HISTORY_LIMIT
+        ):
+            raise ValueError(
+                "state_membership_history must be an integer from 1 through "
+                f"{MAX_MEMBERSHIP_HISTORY_LIMIT}"
+            )
 
 
 @dataclass(slots=True)
@@ -229,6 +269,20 @@ class _ResumeWork:
     operation_id: int
     blocked_ids: set[str]
     phased: bool
+
+
+@dataclass(slots=True)
+class _AuditSampling:
+    """What state the audit last recorded; accepted telemetry is never sampled."""
+
+    state_projection: str | None = None
+    state_audited_at: int | None = None
+
+    def copy(self) -> _AuditSampling:
+        return _AuditSampling(
+            state_projection=self.state_projection,
+            state_audited_at=self.state_audited_at,
+        )
 
 
 class RelaySession:
@@ -276,7 +330,9 @@ class RelaySession:
             telemetry_freshness_ms=limits.telemetry_freshness_ms,
             capability_profile=capability_profile,
             media_evidence=media_evidence,
+            membership_history_limit=limits.state_membership_history,
         )
+        self._audit_sampling = _AuditSampling()
         # Values are the last instant when the exact signed event could still pass
         # the transport freshness check. This keeps replay protection bounded for
         # high-rate diagnostic producers without accepting a still-fresh replay.
@@ -286,7 +342,7 @@ class RelaySession:
         self._command_seq: dict[tuple[int, int], int] = {}
         self._issued_commands: dict[str, _IssuedCommand] = {}
         self._command_waiters: dict[str, queue.SimpleQueue[AdapterAcknowledgement]] = {}
-        self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
+        self._captures = CaptureLedger()
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._control_pose: dict[int, ControlPose] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
@@ -302,6 +358,7 @@ class RelaySession:
             "telemetry_events": 0,
             "node_events": 0,
             "commands_issued": 0,
+            "safety_actions": 0,
         }
         self._mutation_usable = True
         self._projection_usable = True
@@ -340,9 +397,27 @@ class RelaySession:
                 raise ValueError("language intent authorizer is already bound")
             self._language_intent_authorizer = authorizer
 
+    def record_operator_events(self, events: list[Mapping[str, object]]) -> None:
+        if not events:
+            return
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            for event in events:
+                if event.get("session") != self.session_id:
+                    raise ValueError("operator event belongs to another session")
+                if event.get("type") not in {
+                    "detection_frame",
+                    "detection",
+                    "detection_acknowledgement",
+                }:
+                    raise ValueError("operator event type is not permitted")
+                self._append_audit(event)
+
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Route one post-authentication frame according to its bound principal."""
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
+        if frame_type == "operator_presence":
+            return self.process_operator_presence(raw, principal)
         if principal.source == "localization" and frame_type == "control_localization":
             return self.process_control_localization(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
@@ -362,6 +437,41 @@ class RelaySession:
                 detail="frame type is not allowed for the authenticated source",
             )
         ]
+
+    def process_operator_presence(
+        self, raw: object, principal: Principal
+    ) -> list[dict[str, object]]:
+        if (
+            principal.source != "console"
+            or not isinstance(raw, Mapping)
+            or set(raw) != {"v", "type"}
+            or type(raw["v"]) is not int
+            or raw["v"] != 1
+        ):
+            return [
+                self.protocol_refusal(
+                    reason="invalid_operator_presence",
+                    detail="presence requires an authenticated console",
+                )
+            ]
+        receive = getattr(self.intent_sink, "record_operator_presence", None)
+        if not callable(receive):
+            return []
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self._append_audit(
+                {
+                    "v": 1,
+                    "t": now,
+                    "type": "operator_presence",
+                    "session": self.session_id,
+                    "event_id": self.event_ids(),
+                    "source": principal.source,
+                }
+            )
+        receive(now)
+        return []
 
     def protocol_refusal(self, *, reason: str, detail: str) -> dict[str, object]:
         with self._lock, self._audit_operation():
@@ -803,7 +913,7 @@ class RelaySession:
                         connection_epoch=self.registry.connection_epoch(principal.drone_id),
                     )
                 ]
-            return self._record_transition_and_state(transition)
+            return self._record_transition_and_state(transition, now=now)
 
     def process_telemetry(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -839,6 +949,10 @@ class RelaySession:
                     )
                 ]
 
+            # Sampling telemetry would lose the inputs behind later safety decisions.
+            state = self._state_event(now)
+            projection = _material_state_projection(state)
+            state_changed = transition is not None or self._state_projection_changed(projection)
             telemetry_event = telemetry.to_event()
             self._append_audit(telemetry_event)
             self._metrics["telemetry_events"] += 1
@@ -848,8 +962,8 @@ class RelaySession:
                 self._append_audit(transition_event)
                 self._metrics["membership_events"] += 1
                 events.append(transition_event)
-            state = self._state_event(now)
-            self._append_audit(state)
+            if state_changed or self._state_keepalive_due(now):
+                self._record_state_audit(state, projection, now)
             events.append(state)
             if transition is not None:
                 events.extend(self._reconcile_membership())
@@ -1087,11 +1201,21 @@ class RelaySession:
                 return None
             return pose
 
-    def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
-        """Accept a node-authored frame; only capabilities and node_status change state.
+    def record_navigation_packet(self, packet: Mapping[str, object]) -> dict[str, object]:
+        drone_id = packet.get("drone_id")
+        epoch = packet.get("connection_epoch")
+        if type(drone_id) is not int or type(epoch) is not int:
+            raise ValueError("navigation packet has no bounded aircraft identity")
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self.registry.check_current(drone_id, epoch)
+            self._append_audit({key: value for key, value in packet.items() if key != "signature"})
+            return dict(packet)
 
-        Media files and capture bundles are audited and retained for the command wire
-        but not fanned out; capture readiness is fanned out unchanged.
+    def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
+        """Audit admitted node reports and return their public projections.
+
+        Media updates emit capture state; node-authored capture bundles are refused.
         """
         now = self.clock()
         with self._lock, self._audit_operation():
@@ -1119,16 +1243,26 @@ class RelaySession:
                 elif isinstance(frame, NodeStatusFrame):
                     self.registry.apply_node_status(frame)
                 elif isinstance(frame, MediaFileFrame):
-                    self._remember_media(frame.file)
-                    self._retain_media(frame.file)
+                    capture_key = (
+                        frame.file.drone_id,
+                        frame.file.connection_epoch,
+                        frame.file.capture_id,
+                    )
+                    self._remember_capture(capture_key)
+                    evicted = self._captures.eviction_candidate(capture_key)
+                    if evicted is not None:
+                        self._remember_capture(evicted)
+                    self._captures.record_media(frame.file, t=frame.t)
                 elif isinstance(frame, CaptureBundleFrame):
-                    for record in frame.media:
-                        self._remember_media(record)
-                        self._retain_media(record)
+                    raise ContractError(
+                        "source_not_allowed",
+                        "a node cannot author capture_bundle because its command carries "
+                        "no authoritative room or pattern; send media_file records only",
+                    )
                 elif isinstance(frame, CaptureReadinessFrame):
                     self._remember_capture_readiness(drone_id)
                     self._capture_readiness[drone_id] = frame
-            except (ContractError, RegistryError) as error:
+            except (ContractError, RegistryError, CaptureLedgerError) as error:
                 return [
                     self._protocol_refusal(
                         reason=error.code,
@@ -1142,12 +1276,14 @@ class RelaySession:
             event = frame.to_event()
             self._append_audit(event)
             self._metrics["node_events"] += 1
-            if isinstance(frame, MediaFileFrame | CaptureBundleFrame):
-                return []
+            if isinstance(frame, MediaFileFrame):
+                state = self._state_event(now)
+                self._append_audit(state)
+                return [state]
             events: list[dict[str, object]] = [event]
             if isinstance(frame, CapabilitiesFrame | NodeStatusFrame):
                 state = self._state_event(now)
-                self._append_audit(state)
+                self._sample_state_audit(state, now)
                 events.append(state)
             return events
 
@@ -1348,30 +1484,136 @@ class RelaySession:
             epoch = self.registry.connection_epoch(drone_id)
             if epoch is None:
                 return ()
-            return tuple(self._media_files.get((drone_id, epoch, capture_id), ()))
+            return self._captures.media_files(drone_id, epoch, capture_id)
 
-    def _retain_media(self, record: MediaFileRecord) -> None:
-        key = (record.drone_id, record.connection_epoch, record.capture_id)
-        records = self._media_files.setdefault(key, [])
-        for index, existing in enumerate(records):
-            if existing.file_id == record.file_id:
-                records[index] = record
-                return
-        records.append(record)
+    def captures(self) -> list[dict[str, object]]:
+        """The retained captures exactly as ``state.captures`` projects them."""
+        with self._lock:
+            return self._captures.projection()
 
-    def _remember_media(self, record: MediaFileRecord) -> None:
-        key = (record.drone_id, record.connection_epoch, record.capture_id)
-        existing = self._media_files.get(key)
-        before = None if existing is None else existing.copy()
+    def _remember_capture(self, key: CaptureKey) -> None:
+        before: CaptureEntry | None = self._captures.snapshot_entry(key)
 
-        def undo_media() -> None:
-            if before is None:
-                self._media_files.pop(key, None)
-            else:
-                self._media_files[key] = before
+        def undo_captures() -> None:
+            self._captures.restore_entry(key, before)
 
         assert self._audit_undo is not None
-        self._audit_undo.append(undo_media)
+        self._audit_undo.append(undo_captures)
+
+    def _record_capture_bundle(self, result: object, now: int) -> dict[str, object] | None:
+        """Retain the bundle the dispatcher composed for a capture_room plan.
+
+        The command wire carries only ``capture_id``, so the node cannot name the room or
+        pattern; the composed bundle is the authoritative closing record. It is audited
+        with the node frame's shape plus ``source: autonomy`` so replay tells it apart.
+        """
+        bundle = getattr(result, "capture_bundle", None)
+        plan = getattr(result, "plan", None)
+        intent_name = getattr(getattr(plan, "intent_name", None), "value", None)
+        result_status = getattr(getattr(result, "status", None), "value", None)
+        if bundle is None:
+            if intent_name == "capture_room" and result_status == "completed":
+                raise CaptureLedgerError(
+                    "capture_bundle_missing",
+                    "a completed capture_room result requires an authoritative capture bundle",
+                )
+            return None
+        to_dict = getattr(bundle, "to_dict", None)
+        if not callable(to_dict):
+            raise CaptureLedgerError(
+                "invalid_capture_bundle", "the composed capture bundle is not serializable"
+            )
+        payload = to_dict()
+        if not isinstance(payload, Mapping):
+            raise CaptureLedgerError(
+                "invalid_capture_bundle", "the composed capture bundle must serialize to an object"
+            )
+        raw = {
+            "v": 1,
+            "t": now,
+            "type": "capture_bundle",
+            "event_id": self.event_ids(),
+            "session": self.session_id,
+            **payload,
+        }
+        if raw.get("detail") == "":
+            raw["detail"] = None
+        try:
+            frame = parse_capture_bundle(raw)
+        except ContractError as error:
+            raise CaptureLedgerError(error.code, error.detail) from None
+        self._validate_capture_bundle_result(result, frame)
+        key = (frame.drone_id, frame.connection_epoch, frame.capture_id)
+        self._remember_capture(key)
+        evicted = self._captures.eviction_candidate(key)
+        if evicted is not None:
+            self._remember_capture(evicted)
+        self._captures.record_bundle(frame, t=now)
+        event = {**frame.to_event(), "source": LIFECYCLE_SOURCE_AUTONOMY}
+        self._append_audit(event)
+        return event
+
+    @staticmethod
+    def _validate_capture_bundle_result(result: object, frame: CaptureBundleFrame) -> None:
+        """Bind dispatcher-composed evidence to the exact accepted capture plan."""
+        plan = getattr(result, "plan", None)
+        intent_name = getattr(getattr(plan, "intent_name", None), "value", None)
+        if intent_name != "capture_room":
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch", "only a capture_room plan may carry a capture bundle"
+            )
+        if getattr(plan, "intent_id", None) != getattr(result, "intent_id", None):
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch", "capture bundle result does not match its plan intent"
+            )
+        metadata: set[tuple[object, ...]] = set()
+        for command in getattr(plan, "commands", ()):
+            operation = getattr(getattr(command, "operation", None), "value", None)
+            if operation not in {"capture_panorama", "capture_photo"}:
+                continue
+            parameters = getattr(command, "parameters", None)
+            if not isinstance(parameters, Mapping):
+                raise CaptureLedgerError(
+                    "capture_bundle_mismatch", "capture command parameters are unavailable"
+                )
+            metadata.add(
+                (
+                    parameters.get("room_id"),
+                    parameters.get("capture_id"),
+                    parameters.get("pattern"),
+                    getattr(command, "drone_id", None),
+                    getattr(command, "connection_epoch", None),
+                )
+            )
+        actual = (
+            frame.room_id,
+            frame.capture_id,
+            frame.pattern,
+            frame.drone_id,
+            frame.connection_epoch,
+        )
+        if metadata != {actual}:
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch",
+                "capture bundle room, capture, pattern, drone, or epoch differs from its plan",
+            )
+        lifecycle_status = getattr(getattr(result, "status", None), "value", None)
+        if lifecycle_status == "completed" and frame.status != "completed":
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch",
+                "a completed capture_room lifecycle requires a completed capture bundle",
+            )
+        refusal = getattr(result, "refusal", None)
+        refusal_reason = getattr(getattr(refusal, "reason", None), "value", None)
+        if (
+            frame.status != "completed"
+            and refusal_reason is not None
+            and frame.reason != refusal_reason
+        ):
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch",
+                "capture bundle reason differs from the terminal intent refusal",
+            )
 
     def _remember_capture_readiness(self, drone_id: int) -> None:
         present = drone_id in self._capture_readiness
@@ -1502,11 +1744,61 @@ class RelaySession:
             self._metrics["acknowledgements"] += 1
             return event
 
+    def record_safety_action(
+        self,
+        *,
+        reason: str,
+        action: str,
+        operator_last_seen_ms: int,
+    ) -> dict[str, object]:
+        """Record a relay safety action before its corresponding stop is dispatched."""
+        if reason != "operator_presence_expired" or action not in {"hold", "estop"}:
+            raise ValueError("invalid relay safety action")
+        if (
+            not isinstance(operator_last_seen_ms, int)
+            or isinstance(operator_last_seen_ms, bool)
+            or operator_last_seen_ms < 0
+        ):
+            raise ValueError("operator_last_seen_ms must be non-negative")
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            event = {
+                "v": 1,
+                "t": now,
+                "type": "safety_action",
+                "event_id": self.event_ids(),
+                "session": self.session_id,
+                "reason": reason,
+                "action": action,
+                "operator_last_seen_ms": operator_last_seen_ms,
+            }
+            self._append_audit(event)
+            self._metrics["safety_actions"] += 1
+            return event
+
     def record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:
         with self._lock:
             if intent.intent_id not in self._intents:
                 raise ValueError("unknown intent_id")
             return self._record_execution_result(intent, result)
+
+    def record_capture_bundle(self, result: object) -> list[dict[str, object]]:
+        """Retain and audit the bundle a terminal capture_room result carries, then project it.
+
+        Returns the state event that lists the closed capture, or nothing when the result
+        carries no bundle. Invalid or conflicting evidence raises instead of allowing the
+        intent lifecycle to report a false completion. The ``capture_bundle`` record itself
+        is audited, not fanned out.
+        """
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            now = self.clock()
+            if self._record_capture_bundle(result, now) is None:
+                return []
+            state = self._state_event(now)
+            self._append_audit(state)
+            return [state]
 
     def _record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:
         raw_status = getattr(getattr(result, "status", None), "value", None)
@@ -1529,6 +1821,10 @@ class RelaySession:
             LifecycleStatus.INVALIDATED,
         }
         if status in terminal:
+            # Validate and retain capture evidence before clearing the accepted plan or
+            # recording a terminal lifecycle. A malformed/conflicting bundle must fail
+            # closed rather than leave a completed intent with no trustworthy evidence.
+            events.extend(self.record_capture_bundle(result))
             completion_pending = getattr(self.intent_sink, "completion_pending", None)
             awaiting_landing = (
                 status in {LifecycleStatus.COMPLETED, LifecycleStatus.INVALIDATED}
@@ -1662,10 +1958,10 @@ class RelaySession:
             )
             if transition is None:
                 return []
-            return self._record_transition_and_state(transition)
+            return self._record_transition_and_state(transition, now=now)
 
     def periodic_events(self) -> list[dict[str, object]]:
-        """Return the 10 Hz projection and log only actual staleness transitions."""
+        """Return the 10 Hz projection; audit it only on change or as a bounded keepalive."""
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
@@ -1679,7 +1975,9 @@ class RelaySession:
                 events.append(event)
             state = self._state_event(now)
             if transitions:
-                self._append_audit(state)
+                self._record_state_audit(state, _material_state_projection(state), now)
+            else:
+                self._sample_state_audit(state, now)
             events.append(state)
             if transitions:
                 events.extend(self._reconcile_membership())
@@ -1712,6 +2010,10 @@ class RelaySession:
         spacing: float | None = None,
     ) -> dict[str, object]:
         """Apply accepted control state; failure after the durable marker disables the session."""
+        if accepted_plan is not _UNSET:
+            accepted_plan = _bounded_control_projection_snapshot(accepted_plan, "accepted_plan")
+        if pending is not _UNSET:
+            pending = _bounded_control_projection_snapshot(pending, "pending")
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
@@ -1734,7 +2036,7 @@ class RelaySession:
             if spacing is not None:
                 self.registry.set_spacing(spacing)
             state = self._state_event(now)
-            self._append_audit(state)
+            self._record_state_audit(state, _material_state_projection(state), now)
             return state
 
     def replay(
@@ -1804,7 +2106,7 @@ class RelaySession:
         raise AssertionError("wire membership parser returned an internal action")
 
     def _record_transition_and_state(
-        self, transition: MembershipTransition
+        self, transition: MembershipTransition, *, now: int
     ) -> list[dict[str, object]]:
         event = transition.to_event(self.session_id)
         state = self._state_event(transition.t)
@@ -1816,7 +2118,7 @@ class RelaySession:
                 cleared_control_fields=list(transition.cleared_control_fields),
             )
         self._append_audit(event)
-        self._append_audit(state)
+        self._record_state_audit(state, _material_state_projection(state), now)
         self._metrics["membership_events"] += 1
         return [event, state, *self._reconcile_membership()]
 
@@ -2267,6 +2569,41 @@ class RelaySession:
             self._audit_operation_id = self.audit_log.begin_operation()
         return buffered
 
+    def _remember_audit_sampling(self) -> None:
+        before = self._audit_sampling.copy()
+
+        def undo_sampling() -> None:
+            self._audit_sampling = before
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_sampling)
+
+    def _state_projection_changed(self, projection: str) -> bool:
+        return projection != self._audit_sampling.state_projection
+
+    def _state_keepalive_due(self, now: int) -> bool:
+        audited_at = self._audit_sampling.state_audited_at
+        return (
+            audited_at is None
+            or now < audited_at
+            or now - audited_at >= self.limits.audit_state_interval_ms
+        )
+
+    def _sample_state_audit(self, state: dict[str, object], now: int) -> bool:
+        """Audit a snapshot only when its material projection changed or a keepalive is due."""
+        projection = _material_state_projection(state)
+        if not (self._state_projection_changed(projection) or self._state_keepalive_due(now)):
+            return False
+        self._record_state_audit(state, projection, now)
+        return True
+
+    def _record_state_audit(self, state: dict[str, object], projection: str, now: int) -> None:
+        """Audit a snapshot unconditionally; decisions always log the state they saw."""
+        self._remember_audit_sampling()
+        self._append_audit(state)
+        self._audit_sampling.state_projection = projection
+        self._audit_sampling.state_audited_at = now
+
     def _commit_audit_batch(self, events: list[dict[str, object]]) -> None:
         if self._audit_operation_id is None:
             raise RuntimeError("audit commit requires a durable operation marker")
@@ -2291,11 +2628,323 @@ class RelaySession:
             raise AuditLogError("relay session is unusable after an audit failure")
 
     def _state_event(self, now: int) -> dict[str, object]:
-        return self.registry.state_event(
+        event = self.registry.state_event(
             session=self.session_id,
             t=now,
             event_id=self.event_ids(),
         )
+        event["captures"] = self._captures.projection()
+        return event
+
+
+_VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
+# These two planner-owned objects share the per-aircraft projection budget. Four
+# maximum aircraft plus both maximum control objects still fit one 1 MiB record.
+MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024
+_MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
+    {
+        "v",
+        "type",
+        "session",
+        "roster_version",
+        "armed",
+        "estop",
+        "selection",
+        "formation",
+        "spacing",
+        "mode",
+        "capability_profile",
+        "enabled_intent_names",
+        "invalidated_intent_ids",
+        "invalidation_reason",
+        "prior_roster_version",
+        "cleared_control_fields",
+    }
+)
+_DRONE_STATE_KEYS = frozenset(
+    {
+        "drone_id",
+        "connection_epoch",
+        "membership",
+        "readiness_reasons",
+        "flight_state",
+        "battery",
+        "link",
+        "pos_quality",
+        "control_authority",
+        "last_seen_at",
+        "camera_patterns",
+        "selectable",
+        "adapter_id",
+        "adapter_capabilities",
+        "home_pose",
+        "rc_safety_operator_present",
+        "telemetry",
+        "membership_history",
+        "membership_history_truncated",
+        "camera_capabilities",
+        "node_status",
+        "video",
+    }
+)
+_VOLATILE_DRONE_KEYS = frozenset({"last_seen_at", "telemetry", "battery", "link", "pos_quality"})
+_MAX_DRONE_PROJECTION_LIST_ITEMS = MAX_CAPABILITY_LIST_ITEMS
+_BOUNDED_DRONE_LIST_FIELDS = frozenset(
+    {"readiness_reasons", "camera_patterns", "adapter_capabilities", "membership_history"}
+)
+_TIMESTAMPED_DRONE_REPORTS = {
+    "camera_capabilities": "t",
+    "node_status": "t",
+    "video": "last_frame_at",
+}
+_DRONE_REPORT_FIELDS = {
+    "camera_capabilities": frozenset(
+        {
+            "v",
+            "t",
+            "type",
+            "drone_id",
+            "native_panorama_modes",
+            "photo_capture",
+            "gimbal_pitch_min_deg",
+            "gimbal_pitch_max_deg",
+            "horizontal_fov_deg",
+            "storage_remaining_bytes",
+            "media_retrieval",
+            "aircraft_model",
+            "aircraft_firmware",
+            "rc_firmware",
+            "phone_model",
+            "android_version",
+            "sdk_version",
+            "measured_hfov_deg",
+        }
+    ),
+    "node_status": frozenset(
+        {
+            "v",
+            "t",
+            "type",
+            "drone_id",
+            "virtual_stick_enabled",
+            "control_authority",
+            "authority_change_reason",
+            "watchdog_state",
+            "video_publish_state",
+            "phone_battery_percent",
+            "phone_thermal_state",
+        }
+    ),
+    "video": frozenset({"status", "last_frame_at"}),
+}
+_MEMBERSHIP_HISTORY_FIELDS = frozenset(
+    {
+        "t",
+        "action",
+        "membership",
+        "connection_epoch",
+        "reason",
+        "flight_state",
+        "battery",
+        "link",
+        "pos_quality",
+    }
+)
+_MAX_MATERIAL_DRONE_PROJECTION_BYTES = 128 * 1024
+_MAX_MATERIAL_CAPTURE_PROJECTION_BYTES = 1024 * 1024
+
+
+def _material_state_projection(state: Mapping[str, object]) -> str:
+    """Exclude volatile fields already retained in source events from snapshot comparison."""
+    # New collections need bounded projections to keep this 10 Hz comparison bounded.
+    unknown = (
+        set(state)
+        - _VOLATILE_STATE_KEYS
+        - _MATERIAL_STATE_PASSTHROUGH_KEYS
+        - _MATERIAL_STATE_FIELD_PROJECTORS.keys()
+    )
+    if unknown:
+        fields = ", ".join(sorted(str(key) for key in unknown))
+        raise AuditLogError(f"state fields need bounded audit projectors: {fields}")
+    projection = {
+        key: value for key, value in state.items() if key in _MATERIAL_STATE_PASSTHROUGH_KEYS
+    }
+    if "drones" not in state:
+        raise AuditLogError("state is missing the required drones projection")
+    for key, projector in _MATERIAL_STATE_FIELD_PROJECTORS.items():
+        if key in state:
+            projection[key] = projector(state[key])
+    try:
+        return json.dumps(
+            projection,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as error:
+        raise AuditLogError(f"material state is not JSON-native: {error}") from None
+
+
+def _material_drones_projection(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or len(value) > MAX_PHYSICAL_AIRCRAFT:
+        raise AuditLogError("state drones require a bounded aircraft list")
+    if not all(isinstance(drone, Mapping) for drone in value):
+        raise AuditLogError("state drones must contain objects")
+    return [_material_drone_projection(drone) for drone in value]
+
+
+def _material_pending_projection(value: object) -> dict[str, object] | None:
+    return _material_control_projection(value, "pending")
+
+
+def _material_accepted_plan_projection(value: object) -> dict[str, object] | None:
+    return _material_control_projection(value, "accepted_plan")
+
+
+def _material_captures_projection(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or len(value) > MAX_CAPTURE_ENTRIES:
+        raise AuditLogError("state captures require a bounded capture list")
+    fields = {
+        "capture_id",
+        "drone_id",
+        "connection_epoch",
+        "room_id",
+        "pattern",
+        "coverage",
+        "status",
+        "reason",
+        "detail",
+        "files",
+        "updated_at",
+    }
+    projected = []
+    for capture in value:
+        if not isinstance(capture, Mapping) or set(capture) != fields:
+            raise AuditLogError("capture fields do not match the bounded projection")
+        files = capture["files"]
+        if not isinstance(files, list) or len(files) > MAX_MEDIA_FILES_PER_CAPTURE:
+            raise AuditLogError("capture files require a bounded media list")
+        entry = {key: item for key, item in capture.items() if key != "updated_at"}
+        try:
+            size = len(json.dumps(entry, allow_nan=False).encode())
+        except (TypeError, ValueError) as error:
+            raise AuditLogError(f"material capture is not JSON-native: {error}") from None
+        if size > _MAX_MATERIAL_CAPTURE_PROJECTION_BYTES:
+            raise AuditLogError("material capture exceeds the bounded audit projection")
+        projected.append(entry)
+    return projected
+
+
+_MATERIAL_STATE_FIELD_PROJECTORS: dict[str, Callable[[object], object]] = {
+    "drones": _material_drones_projection,
+    "captures": _material_captures_projection,
+    "pending": _material_pending_projection,
+    "accepted_plan": _material_accepted_plan_projection,
+}
+
+
+def _material_control_projection(value: object, field: str) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AuditLogError(f"state {field} must be an object or null")
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    except (TypeError, ValueError) as error:
+        raise AuditLogError(f"state {field} is not JSON-native: {error}") from None
+    if len(encoded) > MAX_MATERIAL_CONTROL_PROJECTION_BYTES:
+        raise AuditLogError(f"state {field} exceeds {MAX_MATERIAL_CONTROL_PROJECTION_BYTES} bytes")
+    return value
+
+
+def _bounded_control_projection_snapshot(value: object, field: str) -> object:
+    """Return the exact bounded snapshot that a later control transaction may retain."""
+    if not isinstance(value, dict):
+        return value
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    except (TypeError, ValueError):
+        # Preserve the existing fail-closed transaction behavior for malformed
+        # internal objects; this preflight exists only for the explicit size bound.
+        return value
+    if len(encoded) > MAX_MATERIAL_CONTROL_PROJECTION_BYTES:
+        raise ValueError(
+            f"{field} exceeds the {MAX_MATERIAL_CONTROL_PROJECTION_BYTES}-byte state bound"
+        )
+    decoded = json.loads(encoded)
+    assert isinstance(decoded, dict)
+    return decoded
+
+
+def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
+    missing = _DRONE_STATE_KEYS - set(drone)
+    unknown = set(drone) - _DRONE_STATE_KEYS
+    if missing or unknown:
+        detail = []
+        if missing:
+            detail.append(f"missing {', '.join(sorted(missing))}")
+        if unknown:
+            detail.append(f"unknown {', '.join(sorted(str(key) for key in unknown))}")
+        raise AuditLogError(
+            f"drone state fields need bounded audit projectors: {'; '.join(detail)}"
+        )
+    for list_field in _BOUNDED_DRONE_LIST_FIELDS:
+        value = drone[list_field]
+        if not isinstance(value, list) or len(value) > _MAX_DRONE_PROJECTION_LIST_ITEMS:
+            raise AuditLogError(
+                f"drone state {list_field} must be a list of at most "
+                f"{_MAX_DRONE_PROJECTION_LIST_ITEMS} items"
+            )
+    history = drone["membership_history"]
+    if any(
+        not isinstance(item, Mapping) or set(item) != _MEMBERSHIP_HISTORY_FIELDS for item in history
+    ):
+        raise AuditLogError("drone membership history fields do not match the bounded projection")
+    home_pose = drone["home_pose"]
+    if home_pose is not None and (
+        not isinstance(home_pose, Mapping) or set(home_pose) != {"x", "y", "z"}
+    ):
+        raise AuditLogError("drone home_pose fields do not match the bounded projection")
+    projection = {key: drone[key] for key in _DRONE_STATE_KEYS - _VOLATILE_DRONE_KEYS}
+    for report, timestamp in _TIMESTAMPED_DRONE_REPORTS.items():
+        value = projection.get(report)
+        if value is None and report != "video":
+            continue
+        if not isinstance(value, Mapping) or set(value) != _DRONE_REPORT_FIELDS[report]:
+            raise AuditLogError(f"drone {report} fields do not match the bounded projection")
+        projection[report] = {key: item for key, item in value.items() if key != timestamp}
+    camera = projection.get("camera_capabilities")
+    if camera is not None:
+        assert isinstance(camera, Mapping)
+        modes = camera["native_panorama_modes"]
+        if not isinstance(modes, list) or len(modes) > _MAX_DRONE_PROJECTION_LIST_ITEMS:
+            raise AuditLogError(
+                "drone camera_capabilities.native_panorama_modes must be a bounded list"
+            )
+    try:
+        size = len(
+            json.dumps(
+                projection,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+    except (TypeError, ValueError) as error:
+        raise AuditLogError(f"material drone state is not JSON-native: {error}") from None
+    if size > _MAX_MATERIAL_DRONE_PROJECTION_BYTES:
+        raise AuditLogError("material drone state exceeds the bounded audit projection")
+    return projection
 
 
 def _intent_to_dict(intent: IntentV1) -> dict[str, object]:
@@ -2341,7 +2990,13 @@ def _safe_string_field(raw: object, field: str) -> str | None:
     if not isinstance(raw, Mapping):
         return None
     value = raw.get(field)
-    if not isinstance(value, str) or not value or len(value) > 512:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_INTENT_IDENTIFIER_CHARS
+        or value != value.strip()
+        or not value.isprintable()
+    ):
         return None
     return value
 

@@ -11,9 +11,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import android.content.Context
 import android.content.Intent
+import android.content.ClipData
 import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -29,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,9 +42,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.worldofhacks.sweep.bridge.BridgeNode
 import org.worldofhacks.sweep.bridge.SetupSummary
+import org.worldofhacks.sweep.bridge.camera.CaptureCard
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfigJson
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 import org.worldofhacks.sweep.bridge.flight.FlightCards
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
@@ -53,6 +62,7 @@ import org.worldofhacks.sweep.bridge.publish.ui.PublishRow
 import org.worldofhacks.sweep.bridge.publish.ui.PublishSetupFields
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
+import org.worldofhacks.sweep.bridge.session.RawEvidenceSession
 import org.worldofhacks.sweep.bridge.session.SessionState
 import org.worldofhacks.sweep.bridge.session.SimulationControls
 import org.worldofhacks.sweep.bridge.video.FlightDisplayScreen
@@ -76,7 +86,12 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
     val log by node.log.collectAsStateWithLifecycle()
     val aircraft by session.aircraft.snapshot.collectAsStateWithLifecycle()
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val context = LocalContext.current
+    val rawEvidence = session as? RawEvidenceSession
+    val scope = rememberCoroutineScope()
     var exportMessage by remember { mutableStateOf<String?>(null) }
+    var evidenceExportPath by remember { mutableStateOf<String?>(null) }
+    var evidenceExporting by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         while (true) {
             delay(500)
@@ -116,6 +131,7 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
             item { ReadinessCard(link, node) }
             item { NodeStatusCard(link, aircraft, now) }
             item { FlightCards(session) } // Phase E: flight loop and #85 probe cards
+            item { CaptureCard(session, now) } // Phase G: camera path, files, checksums
             item { CommandsCard(link.commands, now) }
             item { StatusCard(sdk) }
             item { IdentityCard(sdk) }
@@ -131,6 +147,33 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
                         }
                     }) {
                         Text("Export probe report")
+                    }
+                    if (rawEvidence != null) {
+                        Button(
+                            enabled = !evidenceExporting,
+                            onClick = {
+                                evidenceExporting = true
+                                scope.launch {
+                                    val result = try {
+                                        withContext(Dispatchers.IO) { rawEvidence.exportRawEvidence() }
+                                    } finally {
+                                        evidenceExporting = false
+                                    }
+                                    when (result) {
+                                        is ExportResult.Saved -> {
+                                            evidenceExportPath = result.path
+                                            exportMessage = "Saved raw evidence ${result.path}"
+                                        }
+                                        is ExportResult.Failed -> exportMessage = "Raw evidence export failed: ${result.reason}"
+                                    }
+                                }
+                            },
+                        ) { Text(if (evidenceExporting) "Exporting raw evidence…" else "Export raw evidence ZIP") }
+                        evidenceExportPath?.let { path ->
+                            OutlinedButton(onClick = {
+                                exportMessage = shareEvidence(context, path)
+                            }) { Text("Share raw evidence ZIP") }
+                        }
                     }
                     exportMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 }
@@ -216,6 +259,7 @@ private fun SetupCard(
             }
             disabledReason?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             LocalizationDiagnosticsCard(setup, running, aircraft, node)
+            MeasuredNavigationConfigCard(setup, running, aircraft, node)
             BatteryOptimizationRow()
         }
     }
@@ -283,6 +327,59 @@ private fun LocalizationDiagnosticsCard(
         message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 }
+@Composable
+private fun MeasuredNavigationConfigCard(
+    setup: SetupSummary,
+    running: Boolean,
+    aircraft: AircraftSnapshot,
+    node: BridgeNode,
+) {
+    var importedJson by rememberSaveable { mutableStateOf("") }
+    var message by rememberSaveable { mutableStateOf<String?>(null) }
+    val writable = setup.loaded && !running && aircraft.state == FlightStates.LANDED
+    val config = setup.navigationConfig
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Measured navigation configuration", style = MaterialTheme.typography.titleMedium)
+        if (config == null) {
+            Text("Inactive. Import the exact measured deployment JSON to enable signed route execution after reconnecting.")
+        } else {
+            Text("Configured: ${config.navigationConfigId}")
+            Text("Map ${config.mapId} · geometry ${config.geometryId}", style = MaterialTheme.typography.bodySmall)
+            Text("Pose freshness ${config.poseFreshnessMs} ms · route lifetime ${config.authorizationLifetimeMs} ms", style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedTextField(
+            value = importedJson,
+            onValueChange = { importedJson = it.take(4_096) },
+            label = { Text("Paste measured navigation JSON (v1)") },
+            minLines = 4,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = writable && importedJson.isNotBlank(),
+                onClick = {
+                    runCatching { NavigationConfigJson.parse(importedJson) }
+                        .onSuccess {
+                            node.saveNavigationConfig(it)
+                            message = "Measured navigation configuration submitted. Reconnect after it appears above."
+                            importedJson = ""
+                        }
+                        .onFailure { message = "Import rejected: ${it.message ?: "invalid JSON"}" }
+                },
+            ) { Text("Import config") }
+            OutlinedButton(
+                enabled = writable && config != null,
+                onClick = {
+                    node.saveNavigationConfig(null)
+                    message = "Measured navigation configuration clear submitted."
+                },
+            ) { Text("Clear config") }
+        }
+        if (!writable) Text("Disconnect the relay and land before changing navigation configuration.", style = MaterialTheme.typography.bodySmall)
+        message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
 @Composable
 private fun BatteryOptimizationRow() {
     val context = LocalContext.current
@@ -516,4 +613,19 @@ private fun sentence(reason: String): String = when (reason) {
     "adapter_already_connected" -> "Another socket is still bound to this aircraft; the relay releases it when that socket closes."
     "auth_timeout" -> "The relay did not receive the auth frame in time."
     else -> "The relay refused the connection."
+}
+
+private fun shareEvidence(context: Context, path: String): String = runCatching {
+    val file = File(path)
+    check(file.isFile) { "evidence export is unavailable" }
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.evidence", file)
+    val intent = Intent(Intent.ACTION_SEND)
+        .setType("application/zip")
+        .putExtra(Intent.EXTRA_STREAM, uri)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    intent.clipData = ClipData.newRawUri("Sweep raw evidence", uri)
+    context.startActivity(Intent.createChooser(intent, "Share raw evidence"))
+    "Sharing ${file.name}"
+}.getOrElse { error ->
+    "Could not share raw evidence: ${error.message ?: error.javaClass.simpleName}"
 }

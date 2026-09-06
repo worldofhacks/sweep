@@ -490,7 +490,7 @@ def test_timeout_holds_affected_aircraft_and_continues_safe_other_target() -> No
     assert flight.aircraft[surviving_id].pose.x == expected_x
 
 
-def test_timeout_removes_failed_target_projection_before_remaining_spacing_check() -> None:
+def test_timeout_allows_a_bvc_deflected_remaining_target() -> None:
     snapshot = make_snapshot(2)
     first = Command(
         command_id="plan:test:command:0001",
@@ -525,12 +525,13 @@ def test_timeout_removes_failed_target_projection_before_remaining_spacing_check
     result = dispatcher.dispatch(plan, snapshot)
 
     assert result.refusal is not None
-    assert result.refusal.reason is RefusalReason.SPACING
+    assert result.refusal.reason is RefusalReason.ADAPTER_TIMEOUT
     assert [call.operation for call in flight.calls] == [
         CommandOperation.GOTO,
         CommandOperation.HOVER,
+        CommandOperation.GOTO,
     ]
-    assert flight.aircraft[2].pose == Position(2.0, 0.0, 1.0)
+    assert flight.aircraft[2].pose.distance_to(flight.aircraft[1].pose) >= 0.8
 
 
 class MixedEstopFlight(SimFlightAdapter):
@@ -996,7 +997,7 @@ def test_takeoff_rechecks_explicit_ground_state_before_adapter_io() -> None:
     assert camera.calls == []
 
 
-def test_sequential_spacing_preflight_rejects_later_collision_with_zero_io() -> None:
+def test_sequential_spacing_preflight_deflects_later_collision() -> None:
     snapshot = make_snapshot(3)
     commands = tuple(
         Command(
@@ -1023,11 +1024,16 @@ def test_sequential_spacing_preflight_rejects_later_collision_with_zero_io() -> 
 
     result = dispatcher.dispatch(plan, snapshot)
 
-    assert result.status is LifecycleStatus.REFUSED
-    assert result.refusal is not None
-    assert result.refusal.reason is RefusalReason.SPACING
-    assert flight.calls == []
+    assert result.status is LifecycleStatus.COMPLETED
+    assert all(call.operation is CommandOperation.GOTO for call in flight.calls)
     assert camera.calls == []
+    positions = {drone_id: aircraft.pose for drone_id, aircraft in flight.aircraft.items()}
+    assert all(
+        positions[left].distance_to(positions[right]) >= 0.8
+        for left in positions
+        for right in positions
+        if left < right
+    )
 
 
 def test_takeoff_spacing_counts_an_earlier_projected_airborne_peer() -> None:
@@ -1074,7 +1080,8 @@ def test_planned_group_translate_preserves_spacing_during_sequential_io() -> Non
 
     assert result.status is LifecycleStatus.COMPLETED
     assert [call.drone_ids for call in flight.calls] == [(2,), (1,)]
-    assert flight.aircraft[1].pose.x == 0.5
+    assert flight.aircraft[1].pose.x < 0.5
+    assert flight.aircraft[1].pose.y < 0.0
     assert flight.aircraft[2].pose.x == 1.5
 
 
