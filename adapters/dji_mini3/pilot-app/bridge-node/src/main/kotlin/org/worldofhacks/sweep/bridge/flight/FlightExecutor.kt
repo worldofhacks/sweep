@@ -155,7 +155,7 @@ class FlightExecutor(
 
     fun setMapping(mapping: AxisMapping) = post { controller.mapping = mapping }
 
-    fun configureNavigation(config: NavigationConfig?): Job = post { controller.configureNavigation(config) }
+    fun configureNavigation(config: NavigationConfig?): Job = scope.launch { controller.configureNavigation(config) }
 
     fun reportFailsafeSetting(value: String) = post { controller.reportFailsafeSetting(value) }
 
@@ -168,7 +168,9 @@ class FlightExecutor(
     fun benchLand(sink: ReportSink) = post { controller.benchLand(sink) }
 
     /** Runs [block] on the loop thread. */
-    fun post(block: () -> Unit): Job = scope.launch { block() }
+    fun post(block: () -> Unit) {
+        scope.launch { block() }
+    }
 
     override fun close() {
         scope.cancel()
