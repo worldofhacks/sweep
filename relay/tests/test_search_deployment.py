@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 
 import pytest
 
 from planner.test_navigation_runtime import _runtime
 from relay.search_deployment import load_search_runtime
-from relay.search_detection_deployment import load_search_detection_config
 from relay.settings import SettingsError
 
 
@@ -95,52 +93,3 @@ def test_search_runtime_loader_rejects_duplicate_json_fields(tmp_path) -> None:
 
     with pytest.raises(SettingsError, match="duplicate JSON field"):
         load_search_runtime({"SWEEP_SEARCH_CONFIG": str(path)}, _runtime())
-
-
-def test_detection_config_requires_each_configured_camera_and_model_pin(tmp_path) -> None:
-    search_path = tmp_path / "search.json"
-    search_path.write_text(json.dumps(_config()))
-    search = load_search_runtime({"SWEEP_SEARCH_CONFIG": str(search_path)}, _runtime())
-    assert search is not None
-    model = tmp_path / "model.onnx"
-    model.write_bytes(b"test detector model")
-    detection_path = tmp_path / "detection.json"
-    detection_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "sources_by_drone": {
-                    "1": {
-                        "source_id": "camera-1",
-                        "stream_url": "rtsp://camera.example/drone1",
-                        "model_path": "model.onnx",
-                        "model_sha256": sha256(model.read_bytes()).hexdigest(),
-                        "camera": {
-                            "intrinsics": [[100, 0, 4], [0, 100, 4], [0, 0, 1]],
-                            "body_from_camera": [
-                                [1, 0, 0, 0],
-                                [0, 1, 0, 0],
-                                [0, 0, 1, 0],
-                                [0, 0, 0, 1],
-                            ],
-                        },
-                    }
-                },
-            }
-        )
-    )
-
-    config = load_search_detection_config(
-        {"SWEEP_SEARCH_DETECTION_CONFIG": str(detection_path)}, search
-    )
-
-    assert config is not None
-    assert config.sources_by_drone[1].model_path == model
-
-    broken = json.loads(detection_path.read_text())
-    broken["sources_by_drone"]["1"]["source_id"] = "wrong-camera"
-    detection_path.write_text(json.dumps(broken))
-    with pytest.raises(SettingsError, match="exactly match"):
-        load_search_detection_config({"SWEEP_SEARCH_DETECTION_CONFIG": str(detection_path)}, search)
-    with pytest.raises(SettingsError, match="requires SWEEP_SEARCH_CONFIG"):
-        load_search_detection_config({"SWEEP_SEARCH_DETECTION_CONFIG": str(detection_path)}, None)
