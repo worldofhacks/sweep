@@ -76,7 +76,7 @@ describe('Reference module', () => {
     expect(screen.queryByText(/does not report/)).not.toBeInTheDocument()
   })
 
-  test('Mission is the Appendix E tracker; Ledger and Map stay honest empties until the relay feeds them', async () => {
+  test('Mission is the Appendix E tracker, Map is the fleet map, and Ledger stays an honest empty', async () => {
     const user = userEvent.setup()
     renderCatalogConsole({ scenario: 'pending4' })
     await openReferenceTab(user, 'Mission')
@@ -86,6 +86,8 @@ describe('Reference module', () => {
     await openReferenceTab(user, 'Ledger')
     expect(screen.getByText(/does not report a session ledger or replay/)).toBeInTheDocument()
     await openReferenceTab(user, 'Map')
-    expect(screen.getByText(/does not report positions or a room graph/)).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Fleet map' })).toBeInTheDocument()
+    expect(screen.getByText(/No relay bootstrap, so no occupancy map can be read/)).toBeInTheDocument()
+    expect(screen.queryByText(/does not report positions or a room graph/)).not.toBeInTheDocument()
   })
 })

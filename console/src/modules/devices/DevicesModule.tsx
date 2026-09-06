@@ -2,13 +2,16 @@ import { useState } from 'react'
 import './devices.css'
 import type { DepartureRecord } from '../../control/state'
 import { deviceNoun, formatDeviceId, pluralNoun, rosterNoun } from '../../control/state'
-import type { DroneId, RelayAircraftState } from '../../relay/contract'
+import type { DroneId, RelayAircraftState, RelaySensorEvent } from '../../relay/contract'
+import { useSensorStore } from '../../sensor/store'
 import { Pane } from '../../shell/Pane'
 import { authorityWords, membershipTone, sortedAircraft } from '../../shell/derive'
 import { formatAgo, formatPercent, formatTime, humanizeCode } from '../../shell/format'
 import { membershipReasonSentence, readinessSentence, reasonSentence } from '../../shell/sentences'
 import { motionStateWord } from '../control/controls'
 import { useSecondTick } from '../live/use-second-tick'
+import { deviceScan } from '../map/derive-map'
+import { LidarPolar } from '../map/LidarPolar'
 import type { ModuleProps } from '../types'
 import { lastRefusal, nodeConfigurationText, sensorWord } from './derive-devices'
 
@@ -25,7 +28,8 @@ const CLASS_WORD: Record<RelayAircraftState['device_class'], string> = {
  * person types it on the device.
  */
 export function DevicesModule({ controller, now, relayBaseUrl }: ModuleProps) {
-  const { state } = controller
+  const { state, sensors } = controller
+  const snapshot = useSensorStore(sensors)
   const fleet = sortedAircraft(state.aircraft)
   useSecondTick(fleet.some((device) => device.video?.last_frame_at != null || device.sensor?.last_scan_at != null))
   const at = now()
@@ -45,6 +49,7 @@ export function DevicesModule({ controller, now, relayBaseUrl }: ModuleProps) {
                 key={device.drone_id}
                 device={device}
                 now={at}
+                scan={deviceScan(device, snapshot)}
                 refusal={lastRefusal(state, device.drone_id)}
               />
             ))
@@ -77,10 +82,12 @@ export function DevicesModule({ controller, now, relayBaseUrl }: ModuleProps) {
 function DeviceCard({
   device,
   now,
+  scan,
   refusal,
 }: {
   device: RelayAircraftState
   now: number
+  scan: RelaySensorEvent | null
   refusal: { t: number; reasonCode: string; detail: string } | null
 }) {
   const id = formatDeviceId(device)
@@ -116,6 +123,9 @@ function DeviceCard({
         <Row k="sensor" v={sensor.text} tone={sensor.tone} />
         <Row k="last seen" v={device.last_seen_at === null ? 'unreported' : formatAgo(now, device.last_seen_at)} />
       </dl>
+      {device.adapter_capabilities.includes('lidar') && (
+        <LidarPolar device={device} scan={scan} size={104} />
+      )}
       {device.readiness_reasons.length > 0 ? (
         <div className="dv-reasons">
           {device.readiness_reasons.map((code) => (

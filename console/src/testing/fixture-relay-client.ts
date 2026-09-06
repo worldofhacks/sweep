@@ -733,7 +733,7 @@ export function emptyCatalog(): CatalogSnapshot {
     nodes: {},
     services: [],
     metrics: [],
-    config: { groups: [], staged_changes: [], modes: [] },
+    config: { groups: [], staged_changes: [], modes: [], geofence: null },
   }
 }
 
@@ -1068,6 +1068,9 @@ export function designCatalog(now: number, fleetSize: FixtureFleetSize): Catalog
           status: 'unsupported',
         },
       ],
+      // The demo floor the design's thresholds were written for; a relay
+      // endpoint for the arbiter's geofence would replace it.
+      geofence: { ...FIXTURE_ROOM },
     },
   }
 }

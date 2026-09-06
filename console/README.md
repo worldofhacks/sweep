@@ -146,6 +146,40 @@ device. Beside the list is the configuration a node needs to join: the relay URL
 bootstrap (or a note that none was given), the session, and a device id, as a copyable block. The
 device key is never shown; the relay never sends it, and a person enters it on the device.
 
+## Fleet map
+
+`Reference › Map` draws one canvas (`src/modules/map/FleetMap.tsx`) with ordered passes: the
+relay's occupancy raster, the geofence box, each scanning device's short trail, its newest lidar
+returns in that device's colour, and every device that reports a position as a heading triangle
+labelled with its device id. The room frame is x east, y north, in metres; the canvas is y-down,
+so every projection flips y exactly once (`projection.ts`). Dragging pans, the wheel zooms about
+the pointer, the zoom buttons about the centre, and Fit view frames the geofence, or the placed
+fleet when there is none.
+
+The raster comes from `GET /api/sessions/{id}/map` under the relay bootstrap URL read as HTTP,
+behind the relay bearer, the same base and bearer the transcripts endpoint uses
+(`src/relay/map-endpoint.ts`, `src/relay/origin.ts`). It is read once on mount and once a second
+while the pane is mounted, and never after it unmounts. Image row 0 is the grid's maximum y and
+`X-Sweep-Map-Origin-X`/`-Y` name the bottom-left cell corner, so the raster is placed from
+`(origin_x, origin_y + height × resolution)`. Headers that do not describe a grid, a body that
+does not decode, or a refusal draw no raster and say so; 404 is the honest "the relay has no grid
+for this session yet"; without a bootstrap nothing is read at all and `Reset map` is disabled.
+`Reset map` posts to `…/map/reset` and reports what the relay answered.
+
+Positions come from the relay's telemetry projection (`x`, `y`, and an optional `heading_deg`, or
+`yaw_deg` from a node that names it that way), else from the pose of the device's newest scan in
+the current connection epoch. A device that reports neither is named under the map rather than
+placed, and a device with no heading is drawn as a circle rather than a guessed direction. Scans
+and trails come from the sensor store's ring, never from the control reducer. The geofence is read
+from the catalog's configuration snapshot, which the relay does not serve yet, so production draws
+no box and the fixture draws the demo room.
+
+Each scanning device keeps one hue by unit (`--color-scan-1` to `--color-scan-4`, beside
+`--color-stream-*`); the map ground is `--color-map-grid`, the raster frame `--color-map-frame`,
+the geofence `--color-map-geofence`. `LidarPolar` (`src/modules/map/LidarPolar.tsx`) plots the same
+newest scan in the device's own frame with forward up, on every ground-vehicle registry card and
+device card that advertises `lidar`.
+
 ## Control module
 
 `src/modules/control/` is the Control and capture module from the v4 design: Swarm (selection
