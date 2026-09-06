@@ -204,6 +204,8 @@ def _is_valid_retry_of(value: object, intent_id: object) -> bool:
 def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
     if name is IntentName.NAVIGATE:
         return raw["confirm"] is True and bool(raw["selection"])
+    if name is IntentName.SEARCH:
+        return raw["confirm"] is True and bool(raw["selection"])
     if name is IntentName.CAPTURE_ROOM:
         return raw["confirm"] is True and len(raw["selection"]) == 1
     if name is IntentName.SURVEY_AREA:
@@ -228,6 +230,21 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         ):
             raise ValueError
         return MappingProxyType({"zone_id": value["zone_id"]})
+
+    if name is IntentName.SEARCH:
+        if (
+            set(value) != {"zone_id", "target_class"}
+            or any(
+                not isinstance(value[key], str)
+                or not 1 <= len(value[key]) <= 128
+                or value[key].strip() != value[key]
+                for key in ("zone_id", "target_class")
+            )
+        ):
+            raise ValueError
+        return MappingProxyType(
+            {"zone_id": value["zone_id"], "target_class": value["target_class"]}
+        )
 
     if name is IntentName.SELECT:
         if set(value) != {"ids"} or not _is_drone_ids(value["ids"], allow_empty=False):

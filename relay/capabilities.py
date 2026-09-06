@@ -28,6 +28,7 @@ class IntentName(StrEnum):
     SURVEY_AREA = "survey_area"
     MAP_AREA = "map_area"
     NAVIGATE = "navigate"
+    SEARCH = "search"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,10 +84,11 @@ IMPLEMENTED_INTENT_NAMES = frozenset(
         IntentName.SPACING,
         IntentName.SWEEP,
         IntentName.NAVIGATE,
+        IntentName.SEARCH,
     }
 )
 
-C1_IMPLEMENTED_INTENT_NAMES = IMPLEMENTED_INTENT_NAMES - {IntentName.NAVIGATE}
+C1_IMPLEMENTED_INTENT_NAMES = IMPLEMENTED_INTENT_NAMES - {IntentName.NAVIGATE, IntentName.SEARCH}
 
 C1_CAPABILITY_PROFILE = CapabilityProfile(
     name="c1_basic_control",
