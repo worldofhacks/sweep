@@ -260,6 +260,8 @@ class VerifiedLocalizationIngestion:
             raise ValueError("pipeline evidence does not match the configured localizer")
         self.localizer_config = dict(raw["localizer"])
         self.localizer = TagLocalizer(**self.localizer_config)
+        if fuser.map_id != self.localizer.manifest["content_sha256"]:
+            raise ValueError("publisher map identity is not the validated bundle content hash")
         if self.localizer.evidence_kind != "recorded_live":
             raise ValueError("verified ingestion rejects synthetic camera calibration evidence")
         self.body_gimbal_mount = np.asarray(

@@ -10,6 +10,8 @@ The configuration contains `publisher`, `sensor`, and `localizer` sections plus 
 
 `identity` pins the recording run, session, product and drone identities, connection generation and epoch, aircraft and RC firmware, SDK version, recorder configuration digest, decoded pipeline digest, and camera configuration ID. Every raw record must match it exactly. A live run binds its raw epoch to the authenticated relay epoch before accepting evidence.
 
+The publisher map ID must equal the validated map bundle content hash. Geometry remains pinned by the publisher configuration and is copied into every observation.
+
 Each frame, attitude, and telemetry timing artifact names a measured artifact digest, Android boot ID, receipt-to-capture offset, and maximum error. All three artifacts must belong to one boot. The camera section pins the serial, calibration bytes, pipeline digest, dynamic body-to-gimbal and gimbal-to-camera transforms, map-to-NED orientation, tag covariance, and bounds for attitude age, cross-stream skew, and orientation disagreement.
 
 Every transform and covariance has a `measurement` object with a measurement ID, artifact digest, and `measured: true`; its matrix is in the adjacent `matrix` field. The calibration evidence must be labelled `recorded_live`. A synthetic calibration artifact is refused.

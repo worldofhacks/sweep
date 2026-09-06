@@ -17,6 +17,8 @@ def config(tmp_path):
     _, image, camera, body_camera, localizer = scene(tmp_path)
     sensor = recording_config(tmp_path)
     publisher = sensor["publisher"]
+    map_id = json.loads((tmp_path / "bundle" / "manifest.yaml").read_text())["content_sha256"]
+    publisher["drones"][0]["fuser"]["map_id"] = map_id
     calibration_path = tmp_path / "calibration.yaml"
     calibration = json.loads(calibration_path.read_text())
     calibration["evidence_kind"] = "recorded_live"
@@ -215,6 +217,10 @@ def test_missing_or_asynchronous_attitude_and_wrong_pins_fail_closed(tmp_path):
     changed = deepcopy(raw)
     changed["identity"]["pipeline_sha256"] = "d" * 64
     with pytest.raises(ValueError, match="camera evidence"):
+        VerifiedLocalizationIngestion(changed)
+    changed = deepcopy(raw)
+    changed["publisher"]["drones"][0]["fuser"]["map_id"] = "other-map"
+    with pytest.raises(ValueError, match="map identity"):
         VerifiedLocalizationIngestion(changed)
     calibration_path = tmp_path / "calibration.yaml"
     calibration = json.loads(calibration_path.read_text())
