@@ -18,6 +18,7 @@ from planner.navigation import (
     GridLevel,
     MotionConfig,
     NavigationArtifact,
+    NavigationDispatchAcceptance,
     NavigationEvidence,
     NavigationLiveState,
     NavigationPermission,
@@ -949,3 +950,37 @@ def test_revalidation_binds_exported_artifact_contents_beyond_the_supplied_pin()
         refusal = planner.revalidate(plan, changed, live_for(plan), 0, 0, 0.1)
         assert refusal is not None
         assert refusal.code == "artifact_changed"
+
+
+def test_revalidation_accepts_only_a_matching_runtime_acceptance() -> None:
+    planner, map_artifact, plan = planned(drone(1, 0.5, 1.5))
+    acceptance = NavigationDispatchAcceptance(
+        "acceptance-1",
+        plan.map_pin,
+        plan.geometry_pin,
+        plan.navigation_pin,
+        plan.plan_revision,
+    )
+
+    assert (
+        planner.revalidate(plan, map_artifact, live_for(plan), 0, 0, 0.1, acceptance=acceptance)
+        is None
+    )
+
+
+def test_revalidation_refuses_acceptance_for_another_preview() -> None:
+    planner, map_artifact, plan = planned(drone(1, 0.5, 1.5))
+    acceptance = NavigationDispatchAcceptance(
+        "acceptance-1",
+        plan.map_pin,
+        plan.geometry_pin,
+        plan.navigation_pin,
+        plan.plan_revision + 1,
+    )
+
+    refusal = planner.revalidate(
+        plan, map_artifact, live_for(plan), 0, 0, 0.1, acceptance=acceptance
+    )
+
+    assert refusal is not None
+    assert refusal.code == "dispatch_acceptance_invalid"

@@ -599,6 +599,7 @@ RefusalCode = Literal[
     "arrival_conflict",
     "initial_overlap",
     "artifact_not_dispatchable",
+    "dispatch_acceptance_invalid",
     "artifact_changed",
     "roster_changed",
     "selection_changed",
