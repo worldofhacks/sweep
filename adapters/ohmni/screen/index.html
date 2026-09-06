@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sweep robot safety</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:24px;font:22px system-ui;background:#101820;color:#fff}
+main{max-width:860px;margin:auto}h1{font-size:28px;margin:0 0 14px}p{line-height:1.5}
+button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:20px;color:#101820;background:#d9e6ed}
+#stop{display:block;width:100%;min-height:42vh;background:#d91831;color:white;font-weight:850;font-size:72px;margin:24px 0}
+label{display:block;padding:18px 0}input{width:28px;height:28px;vertical-align:middle}small{font-size:16px}
+#facts{white-space:pre-line;color:#d9e6ed}#message{min-height:1.5em;color:#ffb9b9}
+</style>
+<main><h1 id="title">Sweep robot</h1><p id="facts" role="status">Connecting to local safety controls…</p>
+<button id="stop" aria-label="Stop robot and disable wheels">STOP</button>
+<label><input id="spotter" type="checkbox"> Spotter present, with STOP within reach</label>
+<button id="enable">Re-enable and rejoin</button><p id="message" role="alert"></p>
+<small>Single-plane lidar misses objects above and below the scan. Watch the robot and its full path.
+Re-enable grants control; movement still requires a new command from the console.</small></main>
+<script>
+const $=id=>document.getElementById(id);
+async function post(path,body){try{const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Sweep-Local':'1'},body:JSON.stringify(body||{})});if(!response.ok)throw Error('Local action refused');$('message').textContent=path==='/stop'?'STOP applied. Wheels disabled.':'';await refresh()}catch(error){$('message').textContent='STOP could not be confirmed. Keep clear of the robot.'}}
+$('stop').onclick=()=>post('/stop');$('spotter').onchange=()=>post('/spotter',{present:$('spotter').checked});$('enable').onclick=()=>post('/enable');
+async function refresh(){try{const r=await fetch('/status');if(!r.ok)throw Error();const s=await r.json();$('title').textContent='Sweep robot · device '+s.device_id;$('spotter').checked=s.spotter;$('facts').textContent=(s.connected?'Relay connected':'Relay disconnected')+' · wheels '+(s.authority?'enabled':'disabled')+' · '+s.watchdog+'\nLidar: '+(!s.lidar?'not installed':s.calibrated?'calibrated':'calibration required')+' · guard: '+s.guard+'\nVideo: '+s.video+(s.last_refusal?'\nLast refusal: '+s.last_refusal:'')}catch{$('facts').textContent='Local status unavailable — verify the robot is stopped.'}}
+refresh();setInterval(refresh,1000);
+</script></html>

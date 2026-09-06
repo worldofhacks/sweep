@@ -124,7 +124,12 @@ class GroundFleet:
         self.console.start()
         self.node.start()
         _wait_until(
-            lambda: self.drone() is not None and self.drone()["membership"] == "ready",
+            lambda: (
+                self.drone() is not None
+                and self.drone()["membership"] == "ready"
+                and self.drone()["node_status"] is not None
+                and self.drone()["camera_capabilities"] is not None
+            ),
             what="the ground vehicle to reach ready",
         )
 
