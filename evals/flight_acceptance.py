@@ -37,6 +37,16 @@ MAX_RUN_DURATION_S = 3_600.0
 MAX_ABS_TIMESTAMP_S = 1_000_000_000_000.0
 MAX_ABS_COORDINATE_M = 10_000.0
 
+REQUIRED_ROUTE_PHASES = (
+    "launch",
+    "lobby",
+    "corridor",
+    "kitchen_hold_start",
+    "kitchen_hold_complete",
+    "return",
+    "land",
+)
+
 DEPLOYMENT_DIGEST_FIELDS = (
     "map_bundle_sha256",
     "geometry_sha256",
@@ -96,6 +106,16 @@ class StrictModel(BaseModel):
 
 class Checkpoint(StrictModel):
     checkpoint_id: Text
+    phase: Literal[
+        "launch",
+        "lobby",
+        "corridor",
+        "kitchen_hold_start",
+        "kitchen_hold_complete",
+        "return",
+        "land",
+        "transit",
+    ]
     position_map_m: Position
     radius_m: Annotated[Finite, Field(gt=0, le=MAX_CHECKPOINT_RADIUS_M)]
 
@@ -105,7 +125,11 @@ class RouteExpectation(StrictModel):
     route_sha256: Sha256
     minimum_duration_s: Annotated[Finite, Field(gt=0, le=MAX_RUN_DURATION_S)]
     maximum_duration_s: Annotated[Finite, Field(gt=0, le=MAX_RUN_DURATION_S)]
-    checkpoints: Annotated[list[Checkpoint], Field(min_length=3, max_length=64)]
+    minimum_hold_duration_s: Annotated[Finite, Field(gt=0, le=MAX_RUN_DURATION_S)]
+    checkpoints: Annotated[
+        list[Checkpoint],
+        Field(min_length=len(REQUIRED_ROUTE_PHASES), max_length=MAX_ROUTE_CHECKPOINTS),
+    ]
 
 
 class DeploymentExpectation(StrictModel):
@@ -280,6 +304,28 @@ def _validate_manifest(manifest: EvaluationManifest) -> float:
     checkpoint_ids = [checkpoint.checkpoint_id for checkpoint in manifest.route.checkpoints]
     if len(set(checkpoint_ids)) != len(checkpoint_ids):
         raise EvidenceError("route checkpoint IDs must be unique")
+    phases = [checkpoint.phase for checkpoint in manifest.route.checkpoints]
+    required_phases = [phase for phase in phases if phase != "transit"]
+    if (
+        required_phases != list(REQUIRED_ROUTE_PHASES)
+        or phases[0] != "launch"
+        or phases[-1] != "land"
+    ):
+        raise EvidenceError(
+            "route checkpoints must cover launch, lobby, corridor, kitchen hold, "
+            "return, and land in protocol order"
+        )
+    hold_start = manifest.route.checkpoints[phases.index("kitchen_hold_start")]
+    hold_complete = manifest.route.checkpoints[phases.index("kitchen_hold_complete")]
+    if (
+        hold_start.position_map_m != hold_complete.position_map_m
+        or hold_start.radius_m != hold_complete.radius_m
+    ):
+        raise EvidenceError("kitchen hold start and completion must use one pinned hold volume")
+    launch = manifest.route.checkpoints[0]
+    land = manifest.route.checkpoints[-1]
+    if launch.position_map_m != land.position_map_m or launch.radius_m != land.radius_m:
+        raise EvidenceError("land checkpoint must return to the pinned launch zone")
     route_length = sum(
         _distance(left.position_map_m, right.position_map_m, "route checkpoint path")
         for left, right in zip(
@@ -292,8 +338,13 @@ def _validate_manifest(manifest: EvaluationManifest) -> float:
         raise EvidenceError("route checkpoint path must span at least 1 m")
     if manifest.route.maximum_duration_s < manifest.route.minimum_duration_s:
         raise EvidenceError("route maximum duration must be at least its minimum")
-    if manifest.route.minimum_duration_s < route_length / ROUTE_SPEED_LIMIT_M_S:
-        raise EvidenceError("route minimum duration is shorter than its checkpoint path at 0.5 m/s")
+    minimum_route_duration = (
+        route_length / ROUTE_SPEED_LIMIT_M_S + manifest.route.minimum_hold_duration_s
+    )
+    if manifest.route.minimum_duration_s < minimum_route_duration:
+        raise EvidenceError(
+            "route minimum duration is shorter than its checkpoint path and hold at 0.5 m/s"
+        )
     minimum_gap_samples = max(
         1,
         math.ceil(manifest.route.minimum_duration_s / LOCALIZATION_GAP_LIMIT_S) - 1,
@@ -488,6 +539,7 @@ def _checkpoint_report(
         )
         reference = references.get(crossing.reference_id)
         checkpoint_error = None
+        checkpoint_error_upper_bound = None
         within_radius = False
         if (
             checkpoint is not None
@@ -500,14 +552,19 @@ def _checkpoint_report(
                 checkpoint.position_map_m,
                 "checkpoint crossing",
             )
-            within_radius = checkpoint_error <= checkpoint.radius_m
+            checkpoint_error_upper_bound = (
+                checkpoint_error + run.manifest.reference.calibration_bound_m
+            )
+            within_radius = checkpoint_error_upper_bound <= checkpoint.radius_m
         pair = pairs_by_reference.get(crossing.reference_id)
         details.append(
             {
                 "checkpoint_id": crossing.checkpoint_id,
+                "phase": checkpoint.phase if checkpoint is not None else None,
                 "reference_id": crossing.reference_id,
                 "reference_timestamp_s": (reference.timestamp_s if reference is not None else None),
                 "reference_checkpoint_error_m": checkpoint_error,
+                "reference_checkpoint_error_upper_bound_m": checkpoint_error_upper_bound,
                 "within_checkpoint_radius": within_radius,
                 "paired_measurement_available": (
                     pair is not None and pair["position_error_upper_bound_m"] is not None
@@ -523,6 +580,9 @@ def _checkpoint_report(
         later > earlier for earlier, later in zip(timestamps, timestamps[1:], strict=False)
     )
     can_check_segments = ordered and len(details) == len(expected.route.checkpoints)
+    start_matches = can_check_segments and abs(timestamps[0] - run.interval.start_s) <= 1e-9
+    end_matches = can_check_segments and abs(timestamps[-1] - run.interval.end_s) <= 1e-9
+    boundary_matches = start_matches and end_matches
     segment_timing_passed = can_check_segments
     for index, detail in enumerate(details):
         if index == 0 or not can_check_segments:
@@ -530,22 +590,73 @@ def _checkpoint_report(
             detail["minimum_elapsed_from_previous_s"] = None
             continue
         elapsed = timestamps[index] - timestamps[index - 1]
-        minimum_elapsed = (
-            _distance(
-                expected.route.checkpoints[index - 1].position_map_m,
-                expected.route.checkpoints[index].position_map_m,
-                "checkpoint segment",
+        previous_reference = references.get(run.checkpoint_crossings[index - 1].reference_id)
+        current_reference = references.get(run.checkpoint_crossings[index].reference_id)
+        if (
+            previous_reference is None
+            or previous_reference.status != "available"
+            or current_reference is None
+            or current_reference.status != "available"
+        ):
+            minimum_elapsed = None
+            segment_timing_passed = False
+        else:
+            conservative_distance = max(
+                0.0,
+                _distance(
+                    previous_reference.position_map_m,
+                    current_reference.position_map_m,
+                    "checkpoint segment",
+                )
+                - 2 * run.manifest.reference.calibration_bound_m,
             )
-            / ROUTE_SPEED_LIMIT_M_S
-        )
+            minimum_elapsed = conservative_distance / ROUTE_SPEED_LIMIT_M_S
+            segment_timing_passed = segment_timing_passed and elapsed >= minimum_elapsed
         detail["elapsed_from_previous_s"] = elapsed
         detail["minimum_elapsed_from_previous_s"] = minimum_elapsed
-        segment_timing_passed = segment_timing_passed and elapsed >= minimum_elapsed
+    hold_timing_passed = False
+    hold_position_passed = False
+    if can_check_segments:
+        phases = [checkpoint.phase for checkpoint in expected.route.checkpoints]
+        hold_start_index = phases.index("kitchen_hold_start")
+        hold_complete_index = phases.index("kitchen_hold_complete")
+        hold_start_s = timestamps[hold_start_index]
+        hold_complete_s = timestamps[hold_complete_index]
+        hold_elapsed_s = hold_complete_s - hold_start_s
+        hold_timing_passed = hold_elapsed_s >= expected.route.minimum_hold_duration_s
+        hold_checkpoint = expected.route.checkpoints[hold_start_index]
+        hold_references = [
+            reference
+            for reference in run.references
+            if reference.status == "available"
+            and hold_start_s <= reference.timestamp_s <= hold_complete_s
+        ]
+        hold_position_passed = bool(hold_references) and all(
+            _distance(
+                reference.position_map_m,
+                hold_checkpoint.position_map_m,
+                "kitchen hold sample",
+            )
+            + run.manifest.reference.calibration_bound_m
+            <= hold_checkpoint.radius_m
+            for reference in hold_references
+        )
+        details[hold_complete_index]["hold_elapsed_s"] = hold_elapsed_s
+        details[hold_complete_index]["minimum_hold_duration_s"] = (
+            expected.route.minimum_hold_duration_s
+        )
+        details[hold_complete_index]["hold_samples_within_volume"] = hold_position_passed
+    if details:
+        details[0]["matches_run_start"] = start_matches
+        details[-1]["matches_run_end"] = end_matches
     passed = (
         sequence_matches
         and unique_references
         and ordered
+        and boundary_matches
         and segment_timing_passed
+        and hold_timing_passed
+        and hold_position_passed
         and all(
             detail["within_checkpoint_radius"] and detail["paired_measurement_available"]
             for detail in details
@@ -824,6 +935,7 @@ def evaluate(
         | {"checkpoint_path_length_m": route_length},
         "criteria": {
             "required_recording_runs": RUN_COUNT,
+            "required_route_phases": list(REQUIRED_ROUTE_PHASES),
             "route_speed_limit_m_s": ROUTE_SPEED_LIMIT_M_S,
             "position_error_upper_bound_p95_limit_m": POSITION_ERROR_LIMIT_M,
             "localization_update_gap_limit_s": LOCALIZATION_GAP_LIMIT_S,

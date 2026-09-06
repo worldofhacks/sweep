@@ -29,21 +29,49 @@ def _manifest() -> dict:
         "route": {
             "route_id": "approved-lobby-kitchen-return-v1",
             "route_sha256": _digest("route"),
-            "minimum_duration_s": 8.0,
+            "minimum_duration_s": 9.0,
             "maximum_duration_s": 20.0,
+            "minimum_hold_duration_s": 1.0,
             "checkpoints": [
                 {
                     "checkpoint_id": "launch",
+                    "phase": "launch",
                     "position_map_m": [0.0, 0.0, 1.0],
                     "radius_m": 0.1,
                 },
                 {
-                    "checkpoint_id": "kitchen-hold",
+                    "checkpoint_id": "lobby-outbound",
+                    "phase": "lobby",
+                    "position_map_m": [0.5, 0.0, 1.0],
+                    "radius_m": 0.1,
+                },
+                {
+                    "checkpoint_id": "corridor-outbound",
+                    "phase": "corridor",
+                    "position_map_m": [1.0, 0.0, 1.0],
+                    "radius_m": 0.1,
+                },
+                {
+                    "checkpoint_id": "kitchen-hold-start",
+                    "phase": "kitchen_hold_start",
+                    "position_map_m": [2.0, 0.0, 1.0],
+                    "radius_m": 0.1,
+                },
+                {
+                    "checkpoint_id": "kitchen-hold-complete",
+                    "phase": "kitchen_hold_complete",
                     "position_map_m": [2.0, 0.0, 1.0],
                     "radius_m": 0.1,
                 },
                 {
                     "checkpoint_id": "return",
+                    "phase": "return",
+                    "position_map_m": [0.0, 0.0, 1.0],
+                    "radius_m": 0.1,
+                },
+                {
+                    "checkpoint_id": "land",
+                    "phase": "land",
                     "position_map_m": [0.0, 0.0, 1.0],
                     "radius_m": 0.1,
                 },
@@ -81,7 +109,14 @@ def _manifest() -> dict:
 
 
 def _position(step: int) -> list[float]:
-    x = step * 0.2 if step <= 10 else (20 - step) * 0.2
+    if step <= 8:
+        x = step * 0.25
+    elif step <= 10:
+        x = 2.0
+    elif step <= 18:
+        x = (18 - step) * 0.25
+    else:
+        x = 0.0
     return [x, 0.0, 1.0]
 
 
@@ -154,8 +189,12 @@ def _run(index: int, *, measured_error_m: float = 0.1) -> dict:
         ],
         "checkpoint_crossings": [
             {"checkpoint_id": "launch", "reference_id": "reference-0"},
-            {"checkpoint_id": "kitchen-hold", "reference_id": "reference-10"},
-            {"checkpoint_id": "return", "reference_id": "reference-20"},
+            {"checkpoint_id": "lobby-outbound", "reference_id": "reference-2"},
+            {"checkpoint_id": "corridor-outbound", "reference_id": "reference-4"},
+            {"checkpoint_id": "kitchen-hold-start", "reference_id": "reference-8"},
+            {"checkpoint_id": "kitchen-hold-complete", "reference_id": "reference-10"},
+            {"checkpoint_id": "return", "reference_id": "reference-18"},
+            {"checkpoint_id": "land", "reference_id": "reference-20"},
         ],
     }
 
@@ -221,6 +260,7 @@ def test_valid_measurements_are_hash_bound_and_explicitly_software_only():
     assert report["software_measurement_checks_passed"] is True
     assert report["run_count"] == 5
     assert report["evaluation_manifest"]["checkpoint_path_length_m"] == 4.0
+    assert report["criteria"]["required_route_phases"] == list(acceptance.REQUIRED_ROUTE_PHASES)
     assert report["aggregate_position_error_upper_bound_distribution"]["p95_m"] == pytest.approx(
         0.115
     )
@@ -324,7 +364,7 @@ def test_short_or_undersampled_runs_cannot_pass():
 
 def test_route_duration_floor_is_derived_from_checkpoint_distance_and_speed():
     manifest = _manifest()
-    manifest["route"]["minimum_duration_s"] = 7.999
+    manifest["route"]["minimum_duration_s"] = 8.999
 
     with pytest.raises(EvidenceError, match="shorter than its checkpoint path"):
         _evaluate(manifest=manifest)
@@ -347,21 +387,82 @@ def test_checkpoint_labels_cannot_hide_faster_than_allowed_travel():
     run = evidence["runs"][0]
     run["checkpoint_crossings"] = [
         {"checkpoint_id": "launch", "reference_id": "reference-0"},
-        {"checkpoint_id": "kitchen-hold", "reference_id": "reference-1"},
-        {"checkpoint_id": "return", "reference_id": "reference-2"},
+        {"checkpoint_id": "lobby-outbound", "reference_id": "reference-1"},
+        {"checkpoint_id": "corridor-outbound", "reference_id": "reference-2"},
+        {"checkpoint_id": "kitchen-hold-start", "reference_id": "reference-3"},
+        {"checkpoint_id": "kitchen-hold-complete", "reference_id": "reference-5"},
+        {"checkpoint_id": "return", "reference_id": "reference-6"},
+        {"checkpoint_id": "land", "reference_id": "reference-20"},
     ]
-    run["references"][1]["position_map_m"] = [2.0, 0.0, 1.0]
-    run["references"][2]["position_map_m"] = [0.0, 0.0, 1.0]
-    run["estimates"][1]["position_map_m"] = [2.0, 0.1, 1.0]
-    run["estimates"][2]["position_map_m"] = [0.0, 0.1, 1.0]
+    positions = {1: 0.5, 2: 1.0, 3: 2.0, 4: 2.0, 5: 2.0, 6: 0.0}
+    for index, x in positions.items():
+        run["references"][index]["position_map_m"] = [x, 0.0, 1.0]
+        run["estimates"][index]["position_map_m"] = [x, 0.1, 1.0]
 
     report = _evaluate(evidence)
 
-    crossing = report["runs"][0]["checkpoint_crossings"][1]
+    crossing = report["runs"][0]["checkpoint_crossings"][3]
     assert crossing["elapsed_from_previous_s"] == 0.5
-    assert crossing["minimum_elapsed_from_previous_s"] == 4.0
+    assert crossing["minimum_elapsed_from_previous_s"] == pytest.approx(1.96)
     assert report["runs"][0]["checkpoint_coverage_passed"] is False
     assert report["software_measurement_checks_passed"] is False
+
+
+def test_manifest_requires_the_complete_issue_86_route_protocol():
+    manifest = _manifest()
+    manifest["route"]["checkpoints"][1]["phase"] = "transit"
+
+    with pytest.raises(EvidenceError, match="launch, lobby, corridor, kitchen hold"):
+        _evaluate(manifest=manifest)
+
+    manifest = _manifest()
+    manifest["route"]["checkpoints"][-1]["position_map_m"] = [1.0, 0.0, 1.0]
+    with pytest.raises(EvidenceError, match="pinned launch zone"):
+        _evaluate(manifest=manifest)
+
+
+def test_run_boundaries_and_hold_are_measured_not_just_labelled():
+    evidence = _evidence()
+    run = evidence["runs"][0]
+    run["checkpoint_crossings"][4]["reference_id"] = "reference-9"
+
+    report = _evaluate(evidence)
+
+    hold = report["runs"][0]["checkpoint_crossings"][4]
+    assert hold["hold_elapsed_s"] == 0.5
+    assert report["runs"][0]["checkpoint_coverage_passed"] is False
+
+    evidence = _evidence()
+    run = evidence["runs"][0]
+    run["references"][9]["position_map_m"] = [1.5, 0.0, 1.0]
+    run["estimates"][9]["position_map_m"] = [1.5, 0.1, 1.0]
+    report = _evaluate(evidence)
+    assert report["runs"][0]["checkpoint_crossings"][4]["hold_samples_within_volume"] is False
+    assert report["runs"][0]["checkpoint_coverage_passed"] is False
+
+    evidence = _evidence()
+    run = evidence["runs"][0]
+    run["checkpoint_crossings"][0]["reference_id"] = "reference-1"
+    run["references"][1]["position_map_m"] = [0.0, 0.0, 1.0]
+    run["estimates"][1]["position_map_m"] = [0.0, 0.1, 1.0]
+    report = _evaluate(evidence)
+    assert report["runs"][0]["checkpoint_crossings"][0]["matches_run_start"] is False
+    assert report["runs"][0]["checkpoint_coverage_passed"] is False
+
+
+def test_checkpoint_radius_includes_reference_calibration_uncertainty():
+    evidence = _evidence()
+    run = evidence["runs"][0]
+    run["references"][2]["position_map_m"] = [0.595, 0.0, 1.0]
+    run["estimates"][2]["position_map_m"] = [0.595, 0.1, 1.0]
+
+    report = _evaluate(evidence)
+
+    lobby = report["runs"][0]["checkpoint_crossings"][1]
+    assert lobby["reference_checkpoint_error_m"] == pytest.approx(0.095)
+    assert lobby["reference_checkpoint_error_upper_bound_m"] == pytest.approx(0.105)
+    assert lobby["within_checkpoint_radius"] is False
+    assert report["runs"][0]["checkpoint_coverage_passed"] is False
 
 
 def test_reference_and_clock_bounds_are_included_in_the_error_gate():

@@ -45,19 +45,47 @@ characters:
     "route_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "minimum_duration_s": 60.0,
     "maximum_duration_s": 600.0,
+    "minimum_hold_duration_s": 12.0,
     "checkpoints": [
       {
         "checkpoint_id": "launch",
+        "phase": "launch",
         "position_map_m": [0.0, 0.0, 1.2],
         "radius_m": 0.1
       },
       {
-        "checkpoint_id": "kitchen-hold",
+        "checkpoint_id": "lobby-outbound",
+        "phase": "lobby",
+        "position_map_m": [2.0, 0.0, 1.2],
+        "radius_m": 0.1
+      },
+      {
+        "checkpoint_id": "corridor-outbound",
+        "phase": "corridor",
+        "position_map_m": [6.0, 0.0, 1.2],
+        "radius_m": 0.1
+      },
+      {
+        "checkpoint_id": "kitchen-hold-start",
+        "phase": "kitchen_hold_start",
         "position_map_m": [12.0, 0.0, 1.2],
         "radius_m": 0.1
       },
       {
-        "checkpoint_id": "return",
+        "checkpoint_id": "kitchen-hold-complete",
+        "phase": "kitchen_hold_complete",
+        "position_map_m": [12.0, 0.0, 1.2],
+        "radius_m": 0.1
+      },
+      {
+        "checkpoint_id": "lobby-return",
+        "phase": "return",
+        "position_map_m": [2.0, 0.0, 1.2],
+        "radius_m": 0.1
+      },
+      {
+        "checkpoint_id": "land",
+        "phase": "land",
         "position_map_m": [0.0, 0.0, 1.2],
         "radius_m": 0.1
       }
@@ -100,10 +128,14 @@ characters:
 }
 ~~~
 
-The ordered checkpoint path must span at least 1 m. Its minimum duration cannot be
-shorter than that path at the fixed 0.5 m/s route-tube speed limit. The three sample
-minimums cannot be lower than the number needed to cover that minimum duration with
-no interval over 500 ms.
+The non-transit checkpoint phases must be, in order: **launch**, **lobby**,
+**corridor**, **kitchen_hold_start**, **kitchen_hold_complete**, **return**, and
+**land**. Additional reviewed checkpoints use phase **transit** and may appear between
+those phases. Launch is first, land is last and returns to the launch zone, and both
+kitchen-hold checkpoints name the same volume. The ordered path must span at least
+1 m. Its minimum duration cannot be shorter than path length at the fixed 0.5 m/s
+route-tube speed plus **minimum_hold_duration_s**. The three sample minimums cannot be
+lower than the number needed to cover that duration with no interval over 500 ms.
 
 Each evidence run has these exact fields:
 
@@ -111,7 +143,8 @@ Each evidence run has these exact fields:
 - **manifest**, containing **raw_run_evidence_sha256**, the exact route/deployment/
   estimator pins, **session_id**, **clock_id**, and the independently sourced
   reference calibration and clock-alignment bounds
-- **interval** with strictly ordered **start_s** and **end_s**
+- **interval** with strictly ordered **start_s** and **end_s**; the launch and land
+  crossings must match those boundaries
 - **estimates** and **references**
 - **localization_updates**
 - **checkpoint_crossings**, mapping the manifest's exact ordered checkpoint IDs to
@@ -140,9 +173,14 @@ measured Euclidean distance
 ~~~
 
 Every run and the aggregate must have nearest-rank p95 at or below 0.25 m. Every
-recorded status must be available, each reference must pair, each pinned checkpoint
-must be crossed in order within its radius, and checkpoint timing cannot imply travel
-faster than 0.5 m/s. Sample minimums and duration bounds must pass, and neither
+recorded status must be available, each reference must pair, and each pinned
+checkpoint must be crossed in order. The reference calibration bound is included
+when checking a checkpoint radius. Reference samples throughout the pinned hold
+interval must remain in its volume for at least **minimum_hold_duration_s**.
+Checkpoint timing uses the independently measured crossing positions and their
+calibration bounds to reject a claimed segment whose average travel would exceed
+0.5 m/s; the independently retained command stream remains the authority for the
+actual speed-cap drill. Sample minimums and duration bounds must pass, and neither
 available localization updates nor paired references may leave a
 run-boundary-inclusive gap over 500 ms.
 
