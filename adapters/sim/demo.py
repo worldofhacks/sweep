@@ -6,6 +6,8 @@ No .env file is loaded. The bound address is always loopback, and fresh fleet
 credentials are generated for this process. The optional built console
 receives them through its existing same-origin bootstrap endpoint. Session logs
 are retained after shutdown so the demo can be inspected and replayed.
+Each fake node publishes telemetry at 5 Hz (20 fleet frames/s for four nodes).
+The production 10 Hz state fan-out and one-second freshness gates remain unchanged.
 """
 
 from __future__ import annotations
@@ -216,6 +218,7 @@ class FleetDemo:
                 token=self._keys[drone_id],
                 adapter_id=f"isolated-demo-node-{drone_id}",
                 home=(float((drone_id - 1) * 2), 0.0, 0.0),
+                telemetry_hz=5.0,
             )
         )
 
