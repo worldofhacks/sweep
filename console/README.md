@@ -4,7 +4,7 @@ Capability area: Interaction. Milestone: M0 onward.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to shared contracts or safety-critical paths name one change owner and require cross-review.
 
-The operator console: map, gesture readout, ledger, video mosaic, focus pane, attention promotion, health strip, and the language input with plan preview. A static web app; all state comes from the relay over WebSocket.
+The operator console: map, gesture readout, ledger, All devices video wall, per-device focus inspection, attention promotion, health strip, and the language input with plan preview. A static web app; all state comes from the relay over WebSocket.
 
 Stack: Vite, React, TypeScript, pnpm. Webcam hand landmarks come from MediaPipe Tasks.
 

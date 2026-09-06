@@ -6,9 +6,13 @@ checkpoint, not physical flight or ground-motion acceptance.
 
 ## Live wall
 
-`Live → All devices` is the default view. Each reported device gets one tile;
+`Live` opens the single **All devices** wall. Each reported device gets one tile;
 joins add tiles, offline devices remain visible, and a changed connection epoch
-restarts only that device's player. Aircraft and ground views remain available.
+restarts only that device's player. There are no separate aircraft or ground walls.
+A tile's **Focus** button opens that device's inspection view; **Back to All devices**
+returns to the wall. Focus is local to the console and does not send a command.
+Inspection closes the wall's playback sessions; returning opens the currently live
+feeds again.
 The supported registry and media configuration cover four aircraft and four
 ground vehicles. Each deployment still provisions individual publisher keys.
 

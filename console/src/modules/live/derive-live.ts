@@ -1,7 +1,7 @@
-import type { DeviceNoun, RequestRecord } from '../../control/state'
-import { pluralNoun } from '../../control/state'
+import type { RequestRecord } from '../../control/state'
 import type { DroneId, MediaStreamStatus, RelayAircraftState } from '../../relay/contract'
 import type { Tone } from '../../shell/derive'
+import { humanizeCode } from '../../shell/format'
 
 /** Stream words and colours from the Sweep Console v4 design, Live surface. */
 export interface StreamView {
@@ -49,7 +49,12 @@ export interface Word {
 
 export function deriveReadiness(drone: RelayAircraftState): Word {
   return drone.readiness_reasons.length > 0
-    ? { text: drone.readiness_reasons.join(', '), tone: 'danger' }
+    ? {
+        text: drone.readiness_reasons.map((reason) => reason === 'control_authority_missing'
+          ? 'Control not granted'
+          : humanizeCode(reason)).join(', '),
+        tone: 'danger',
+      }
     : drone.pos_quality === 0
       ? { text: 'position quality 0%', tone: 'warn' }
       : { text: 'ready', tone: 'ok' }
@@ -80,39 +85,4 @@ export function deriveCaptureProgress(requests: RequestRecord[], droneId: DroneI
     default:
       return { text, tone: 'ink' }
   }
-}
-
-export type WallSize = 4 | 6
-
-/** The first `count` devices by id; missing slots stay empty, never padded from a fixture. */
-export function mosaicSlots(
-  devices: RelayAircraftState[],
-  count: WallSize,
-): Array<RelayAircraftState | null> {
-  return Array.from({ length: count }, (_, index) => devices[index] ?? null)
-}
-
-export function mosaicNote(count: WallSize, reported: number, noun: DeviceNoun = 'aircraft'): string {
-  const base = `${count} tiles. Focus follows the operator's selection and survives video loss on the focused ${noun}.`
-  if (reported > count) {
-    return `${base} The relay reports ${reported} ${pluralNoun(noun)}; the first ${count} by id are shown.`
-  }
-  if (reported < count) {
-    return `${base} ${reported} of ${count} slots have a reported ${noun}.`
-  }
-  return base
-}
-
-/** The ground vehicle wall: one slot per configured ground path. */
-export const GROUND_WALL_SIZE: WallSize = 4
-
-export function groundNote(reported: number): string {
-  const base = `${GROUND_WALL_SIZE} tiles, one per ground vehicle in unit order; streams are named ground{unit}.`
-  if (reported > GROUND_WALL_SIZE) {
-    return `${base} The relay reports ${reported} robots; the first ${GROUND_WALL_SIZE} by id are shown.`
-  }
-  if (reported < GROUND_WALL_SIZE) {
-    return `${base} ${reported} of ${GROUND_WALL_SIZE} slots have a reported robot.`
-  }
-  return base
 }

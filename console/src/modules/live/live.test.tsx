@@ -34,12 +34,12 @@ function renderLive(clients: ReturnType<typeof fixtureClients>, media?: MediaRun
   )
 }
 
-function livePanes() {
-  return within(screen.getByRole('group', { name: 'Live panes' }))
+async function focusDevice(user: User, id = 'D-01') {
+  await user.click(screen.getByRole('button', { name: `Focus ${id}` }))
 }
 
-async function openPane(user: User, label: 'All devices' | 'Wall of 4' | 'Wall of 6' | 'Ground' | 'Focus feed') {
-  await user.click(livePanes().getByRole('button', { name: label }))
+async function returnToWall(user: User) {
+  await user.click(screen.getByRole('button', { name: 'Back to All devices' }))
 }
 
 async function openModule(user: User, label: string) {
@@ -114,21 +114,23 @@ class LoggedSession implements PlaybackSession {
   }
 }
 
-describe('Live module walls', () => {
-  test('the wall of four shows one tile per reported aircraft with its stream state in words', async () => {
-    const user = userEvent.setup()
+describe('Live module wall', () => {
+  test('All devices is the only wall and shows each reported aircraft with its stream state in words', async () => {
     const clients = fixtureClients()
     renderLive(clients)
     await screen.findByText(/Development fixture active/i)
-    await openPane(user, 'Wall of 4')
 
-    expect(livePanes().getByRole('button', { name: 'Wall of 4' })).toHaveAttribute('aria-pressed', 'true')
-    const wall = within(screen.getByRole('region', { name: 'Wall of 4' }))
+    expect(screen.getByRole('heading', { name: 'All devices', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Live panes' })).not.toBeInTheDocument()
+    for (const name of ['Wall of 4', 'Wall of 6', 'Ground', 'Focus feed']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    const wall = within(screen.getByRole('region', { name: 'All devices' }))
     expect(wall.getAllByRole('article')).toHaveLength(4)
     expect(wall.queryByRole('article', { name: /Slot \d empty/ })).not.toBeInTheDocument()
     expect(
       wall.getByText(
-        "4 tiles. Focus follows the operator's selection and survives video loss on the focused aircraft.",
+        '4 reported devices. New devices appear automatically; offline feeds keep their place.',
       ),
     ).toBeInTheDocument()
 
@@ -148,7 +150,7 @@ describe('Live module walls', () => {
 
     const three = tile('D-03')
     expect(three.getByText('degraded')).toBeInTheDocument()
-    expect(three.getByText('telemetry_stale, camera_not_ready')).toBeInTheDocument()
+    expect(three.getByText('Telemetry stale, Camera not ready')).toBeInTheDocument()
 
     const four = tile('D-04')
     expect(four.getByText('unreported')).toBeInTheDocument()
@@ -158,18 +160,10 @@ describe('Live module walls', () => {
     ).toBeInTheDocument()
   })
 
-  test('the wall of six shows six tiles, and empty slots stay empty for a smaller fleet', async () => {
-    const user = userEvent.setup()
+  test('the wall follows the reported roster size without truncation or empty slots', async () => {
     const six = renderLive(fixtureClients(6))
     await screen.findByText(/Development fixture active/i)
-    await openPane(user, 'Wall of 4')
-    expect(
-      screen.getByText(/The relay reports 6 aircraft; the first 4 by id are shown\./),
-    ).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: /^Focus D-/ })).toHaveLength(4)
-
-    await openPane(user, 'Wall of 6')
-    const wall = within(screen.getByRole('region', { name: 'Wall of 6' }))
+    const wall = within(screen.getByRole('region', { name: 'All devices' }))
     expect(wall.getAllByRole('article')).toHaveLength(6)
     expect(wall.getAllByRole('button', { name: /^Focus D-/ })).toHaveLength(6)
     expect(wall.queryByRole('article', { name: /Slot \d empty/ })).not.toBeInTheDocument()
@@ -179,15 +173,9 @@ describe('Live module walls', () => {
 
     renderLive(fixtureClients(4))
     await screen.findByText(/Development fixture active/i)
-    await openPane(user, 'Wall of 6')
-    const smaller = within(screen.getByRole('region', { name: 'Wall of 6' }))
-    expect(smaller.getAllByRole('article')).toHaveLength(6)
-    expect(smaller.getAllByRole('button', { name: /^Focus D-/ })).toHaveLength(4)
-    expect(smaller.getByRole('article', { name: 'Slot 5 empty' })).toHaveTextContent('no aircraft')
-    expect(smaller.getByRole('article', { name: 'Slot 6 empty' })).toHaveTextContent(
-      'No aircraft reported for this slot.',
-    )
-    expect(smaller.getByText(/4 of 6 slots have a reported aircraft\./)).toBeInTheDocument()
+    const smaller = within(screen.getByRole('region', { name: 'All devices' }))
+    expect(smaller.getAllByRole('article')).toHaveLength(4)
+    expect(smaller.queryByRole('article', { name: /Slot \d empty/ })).not.toBeInTheDocument()
   })
 
   test('tile selection toggles send a real select intent and respect the relay gates', async () => {
@@ -219,8 +207,7 @@ describe('Live module walls', () => {
     expect(tile('D-01').getByRole('button', { name: 'in selection D-01' })).toBeEnabled()
   })
 
-  test('an empty roster renders an honest empty state in every pane', async () => {
-    const user = userEvent.setup()
+  test('an empty roster shows where future cameras will appear without invented tiles', async () => {
     render(
       <App
         sessionId={session}
@@ -233,10 +220,10 @@ describe('Live module walls', () => {
       />,
     )
     const empty = (await screen.findByText('Nothing to show')).closest('[role="status"]')
-    expect(empty).toHaveTextContent('No devices have joined this session, so there is no wall and nothing to focus.')
-    expect(screen.queryByRole('region', { name: 'Wall of 4' })).not.toBeInTheDocument()
-    await openPane(user, 'Focus feed')
-    expect(screen.getByText(/no wall and nothing to focus/)).toBeInTheDocument()
+    expect(empty).toHaveTextContent('No devices have joined this session. Their cameras appear here as they join.')
+    expect(screen.queryByRole('region', { name: 'All devices' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Live panes' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Back to All devices' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: /Focused (aircraft|device)/ })).not.toBeInTheDocument()
   })
 })
@@ -252,7 +239,7 @@ describe('Live module focus', () => {
     const drones = fixtureAircraft(clock())
     drones[0] = { ...drones[0], video: { status: 'offline', last_frame_at: clock() - 3_000 } }
     emitState(clients.console, 'state-focused-video-lost', drones, [1])
-    await openPane(user, 'Focus feed')
+    await focusDevice(user)
     const focused = within(await screen.findByRole('region', { name: 'Focused aircraft D-01' }))
     expect(focused.getByText('drone1')).toBeInTheDocument()
     expect(focused.getByText('No video. The adapter reports the stream offline.')).toBeInTheDocument()
@@ -279,13 +266,16 @@ describe('Live module focus', () => {
     await screen.findByText(/Development fixture active/i)
 
     await user.click(screen.getByRole('button', { name: 'Focus D-04' }))
+    expect(screen.getByRole('region', { name: 'Focused aircraft D-04' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'All devices' })).not.toBeInTheDocument()
+    await returnToWall(user)
     expect(screen.getByRole('button', { name: 'Focus D-04' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Focus D-01' })).toHaveAttribute('aria-pressed', 'false')
 
     await openModule(user, 'Reference')
     await openModule(user, 'Live')
     expect(screen.getByRole('button', { name: 'Focus D-04' })).toHaveAttribute('aria-pressed', 'true')
-    await openPane(user, 'Focus feed')
+    await focusDevice(user, 'D-04')
     const focused = within(screen.getByRole('region', { name: 'Focused aircraft D-04' }))
     expect(focused.getByText('stream status').nextElementSibling).toHaveTextContent('unreported')
     expect(focused.getByText('last frame').nextElementSibling).toHaveTextContent('no frame reported')
@@ -305,7 +295,7 @@ describe('Live module focus', () => {
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
 
     await openModule(user, 'Live')
-    await openPane(user, 'Focus feed')
+    await focusDevice(user)
     const focused = within(screen.getByRole('region', { name: 'Focused aircraft D-01' }))
     expect(focused.getByText('capture progress').nextElementSibling).toHaveTextContent('accepted')
   })
@@ -317,7 +307,7 @@ describe('Live module playback', () => {
     const log = new SessionLog()
     const view = renderLive(clients, log.media)
     await screen.findByRole('region', { name: 'All devices' })
-    expect(livePanes().getByRole('button', { name: 'All devices' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('group', { name: 'Live panes' })).not.toBeInTheDocument()
     const aircraft = fixtureAircraft(clock()).map((device) => ({
       ...device, video: { status: 'live' as const, last_frame_at: clock() },
     }))
@@ -423,7 +413,7 @@ describe('Live module playback', () => {
     expect(tile('D-01').queryByText(/Playback is not configured/)).not.toBeInTheDocument()
     expect(tile('D-02').getByText('No video. The adapter reports the stream offline.')).toBeInTheDocument()
 
-    await openPane(user, 'Focus feed')
+    await focusDevice(user)
     const focused = within(screen.getByRole('region', { name: 'Focused aircraft D-01' }))
     expect(focused.getByLabelText('Live feed D-01')).toBeInTheDocument()
     expect(await focused.findByText('Playback playing')).toBeInTheDocument()
@@ -432,12 +422,11 @@ describe('Live module playback', () => {
     expect(log.started).toEqual(['drone1', 'drone1'])
     expect(focused.queryByText(/Playback is not configured/)).not.toBeInTheDocument()
 
-    await openPane(user, 'Wall of 4')
+    await returnToWall(user)
     await waitFor(() => expect(log.closed).toBe(2))
     expect(log.started).toEqual(['drone1', 'drone1', 'drone1'])
 
-    await user.click(screen.getByRole('button', { name: 'Focus D-02' }))
-    await openPane(user, 'Focus feed')
+    await focusDevice(user, 'D-02')
     const offline = within(screen.getByRole('region', { name: 'Focused aircraft D-02' }))
     expect(offline.queryByLabelText(/Live feed/)).not.toBeInTheDocument()
     expect(offline.getByText('No video. The adapter reports the stream offline.')).toBeInTheDocument()
@@ -445,7 +434,7 @@ describe('Live module playback', () => {
     expect(log.started).toEqual(['drone1', 'drone1', 'drone1'])
   })
 
-  test('four live tiles hold four concurrent sessions that close together when the pane changes', async () => {
+  test('four live tiles hold four concurrent sessions that close when device inspection opens', async () => {
     const clients = fixtureClients()
     const log = new SessionLog()
     const user = userEvent.setup()
@@ -467,7 +456,7 @@ describe('Live module playback', () => {
     expect(log.started).toEqual(['drone1', 'drone2', 'drone3', 'drone4'])
     expect(log.closed).toBe(0)
 
-    await openPane(user, 'Focus feed')
+    await focusDevice(user)
     await waitFor(() => expect(log.closed).toBe(4))
     expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(1)
   })
@@ -519,7 +508,7 @@ describe('Live module playback', () => {
     expect(tile('D-01').getByText('Playback is not configured on this console.')).toBeInTheDocument()
     expect(tile('D-02').queryByText(/Playback is not configured/)).not.toBeInTheDocument()
 
-    await openPane(user, 'Focus feed')
+    await focusDevice(user)
     const focused = within(screen.getByRole('region', { name: 'Focused aircraft D-01' }))
     expect(focused.queryByLabelText(/Live feed/)).not.toBeInTheDocument()
     expect(focused.getByText(/Playback is not configured on this console/)).toBeInTheDocument()
@@ -546,7 +535,7 @@ describe('Live module playback', () => {
     renderLive(clients, media)
     await screen.findByText(/Development fixture active/i)
 
-    await openPane(user, 'Focus feed')
+    await focusDevice(user)
     const focused = within(screen.getByRole('region', { name: 'Focused aircraft D-01' }))
     expect(
       await focused.findByText(
@@ -557,8 +546,8 @@ describe('Live module playback', () => {
   })
 })
 
-describe('Live module ground pane', () => {
-  test('ground vehicles get their own wall of ground tiles playing ground{unit} streams', async () => {
+describe('Live module robot inspection', () => {
+  test('robots share All devices with aircraft and open inspection directly without sending an intent', async () => {
     const clients = {
       console: new FixtureRelayClient(session, clock, 'console', 'mixed'),
       keyboard: new FixtureRelayClient(session, clock, 'keyboard', 'mixed'),
@@ -567,41 +556,29 @@ describe('Live module ground pane', () => {
     const user = userEvent.setup()
     renderLive(clients, log.media)
     await screen.findByText(/Development fixture active/i)
-
-    // The aircraft walls hold aircraft only: the mixed fixture has two.
-    await openPane(user, 'Wall of 4')
-    const wall = within(screen.getByRole('region', { name: 'Wall of 4' }))
-    expect(wall.getAllByRole('button', { name: /^Focus D-/ })).toHaveLength(2)
-    expect(wall.queryByRole('article', { name: /^G-/ })).not.toBeInTheDocument()
-    expect(wall.getByRole('article', { name: 'Slot 3 empty' })).toHaveTextContent('no aircraft')
-    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2', 'drone1']))
-
-    await openPane(user, 'Ground')
-    const ground = within(screen.getByRole('region', { name: 'Ground' }))
-    expect(ground.getAllByRole('article').map((article) => article.getAttribute('aria-label'))).toEqual([
-      'G-01 camera tile',
-      'G-02 camera tile',
-      'G-03 camera tile',
-      'Slot 4 empty',
+    const wall = within(screen.getByRole('region', { name: 'All devices' }))
+    expect(wall.getAllByRole('article').map((article) => article.getAttribute('aria-label'))).toEqual([
+      'D-01 camera tile', 'D-02 camera tile', 'G-01 camera tile', 'G-02 camera tile', 'G-03 camera tile',
     ])
-    expect(ground.getByText(/streams are named ground\{unit\}/)).toBeInTheDocument()
-    expect(ground.getByRole('article', { name: 'Slot 4 empty' })).toHaveTextContent('No robot reported for this slot.')
     expect(tile('G-01').getByLabelText('Live feed G-01')).toBeInTheDocument()
     expect(tile('G-02').getByLabelText('Live feed G-02')).toBeInTheDocument()
     expect(await tile('G-01').findByText('Playback playing')).toBeInTheDocument()
-    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2', 'drone1', 'ground1', 'ground2']))
+    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2']))
     expect(tile('G-03').getByText('unreported')).toBeInTheDocument()
-    expect(tile('G-03').getByText('rc_safety_operator_missing')).toBeInTheDocument()
     expect(tile('G-03').getByRole('button', { name: 'not selectable G-03' })).toHaveAttribute(
-      'title',
-      'Relay reports this robot is not selectable.',
+      'title', 'Relay reports this robot is not selectable.',
     )
 
-    await user.click(tile('G-02').getByRole('button', { name: 'Focus G-02' }))
-    await openPane(user, 'Focus feed')
+    await focusDevice(user, 'G-02')
     const focused = within(screen.getByRole('region', { name: 'Focused robot G-02' }))
     expect(focused.getByText('ground2')).toBeInTheDocument()
     expect(focused.getByLabelText('Live feed G-02')).toBeInTheDocument()
-    expect(focused.getByText(/ground\{unit\}/)).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'All devices' })).not.toBeInTheDocument()
+    await returnToWall(user)
+    expect(screen.getByRole('region', { name: 'All devices' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Focused robot G-02' })).not.toBeInTheDocument()
+    expect(tile('G-02').getByRole('button', { name: 'Focus G-02' })).toHaveAttribute('aria-pressed', 'true')
+    expect(clients.console.sent).toEqual([])
+    expect(clients.keyboard.sent).toEqual([])
   })
 })

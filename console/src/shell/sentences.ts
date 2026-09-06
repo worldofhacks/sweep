@@ -98,7 +98,7 @@ const READINESS_SENTENCES: Sentences = {
     : 'Home pose is not confirmed. Check the robot’s localization and home configuration; a live connection alone does not establish position.',
   control_authority_missing: (noun) =>
     noun === 'robot'
-      ? 'Sweep control is not granted. Review the robot node’s motion permission with the spotter; resolve disabled wheels or an actual local override before granting control.'
+      ? 'The robot has withheld motion control. With the spotter, check the node’s local safety status: disabled wheels, missing or stale LiDAR, nearby obstacles, or a local override can block it. Console Arm does not override that check.'
       : 'Sweep control is not granted. Review Readiness → Control authority on the phone with the RC pilot. Resolve connection loss or actual takeover first. Permission does not mean Virtual Stick is enabled.',
   rc_safety_operator_missing: (noun) =>
     noun === 'robot'

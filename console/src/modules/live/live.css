@@ -15,7 +15,6 @@
 .lv-tile.is-live .lv-visual { background: var(--stripe-live); border-color: var(--color-ok); }
 .lv-tile.is-offline .lv-visual { border-color: var(--color-warn); }
 .lv-tile.is-unreported .lv-visual { border-color: var(--color-ink-2); }
-.lv-tile.is-empty .lv-visual { border-color: var(--color-border-secondary); }
 .lv-bar {
   position: absolute;
   left: 0;
@@ -80,7 +79,8 @@
 .lv-select:disabled { color: var(--color-ink-3); cursor: not-allowed; }
 .lv-select.is-selected:disabled { background: var(--color-ink); color: #ffffff; }
 
-/* Focus feed */
+/* Device inspection */
+.lv-back { margin-bottom: 16px; }
 .lv-column { min-width: 0; }
 .lv-feed {
   position: relative;

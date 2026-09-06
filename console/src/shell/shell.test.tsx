@@ -155,7 +155,7 @@ describe('persistent shell', () => {
     await draftCapture(user)
 
     await openModule(user, 'Live')
-    expect(screen.getByRole('region', { name: 'Wall of 4' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'All devices' })).toBeInTheDocument()
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(within(dock).getByText(/"intent_id": "survives-switch"/)).toBeInTheDocument()
 

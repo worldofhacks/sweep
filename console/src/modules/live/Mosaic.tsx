@@ -1,21 +1,13 @@
-import { deviceNoun, formatDeviceId, type DeviceNoun } from '../../control/state'
+import { deviceNoun, formatDeviceId } from '../../control/state'
 import { LivePlayer } from '../../media/LivePlayer'
 import type { MediaRuntime } from '../../media/runtime'
 import type { DroneId, RelayAircraftState } from '../../relay/contract'
 import { isReady, membershipTone } from '../../shell/derive'
 import { formatPercent } from '../../shell/format'
-import { deriveReadiness, deriveStream, mosaicSlots, type WallSize } from './derive-live'
+import { deriveReadiness, deriveStream } from './derive-live'
 
 export interface MosaicProps {
   devices: RelayAircraftState[]
-  /** Omitted for the live roster: exactly one tile per reported device. */
-  count?: WallSize
-  /** Accessible name of the wall region. */
-  label: string
-  /** The sentence above the wall. */
-  note: string
-  /** The word for an empty slot's missing device. */
-  noun: DeviceNoun
   now: number
   focusedId: DroneId | null
   selection: DroneId[]
@@ -28,17 +20,11 @@ export interface MosaicProps {
 }
 
 /**
- * A wall of tiles: one per reported device, empty slots stay empty. Every
- * tile whose stream the relay reports live hosts its own player, so the Wall
- * of 4 holds four concurrent WHEP sessions; a player is torn down with its
- * tile, on pane change, and the moment the relay stops saying live.
+ * One tile per reported device, keyed by its global ID. A player is torn down
+ * with its tile, on inspection/module navigation, or when its stream goes offline.
  */
 export function Mosaic({
   devices,
-  count,
-  label,
-  note,
-  noun,
   now,
   focusedId,
   selection,
@@ -48,30 +34,28 @@ export function Mosaic({
   onToggleSelection,
   media,
 }: MosaicProps) {
-  const slots = count === undefined ? devices : mosaicSlots(devices, count)
   return (
-    <section className="lv-wall" aria-label={label}>
-      <p className="lv-note">{note}</p>
+    <section className="lv-wall" aria-label="All devices">
+      <p className="lv-note">
+        {devices.length} reported {devices.length === 1 ? 'device' : 'devices'}. New devices appear
+        automatically; offline feeds keep their place.
+      </p>
       <div data-mosaic="1">
-        {slots.map((drone, index) =>
-          drone ? (
-            <Tile
-              key={drone.drone_id}
-              drone={drone}
-              now={now}
-              focused={focusedId === drone.drone_id}
-              selected={selection.includes(drone.drone_id)}
-              lastInSelection={selection.length === 1 && selection[0] === drone.drone_id}
-              selectionEnabled={selectionEnabled}
-              selectionDisabledReason={selectionDisabledReason}
-              onFocus={onFocus}
-              onToggleSelection={onToggleSelection}
-              media={media}
-            />
-          ) : (
-            <EmptySlot key={`slot-${index + 1}`} slot={index + 1} noun={noun} />
-          ),
-        )}
+        {devices.map((drone) => (
+          <Tile
+            key={drone.drone_id}
+            drone={drone}
+            now={now}
+            focused={focusedId === drone.drone_id}
+            selected={selection.includes(drone.drone_id)}
+            lastInSelection={selection.length === 1 && selection[0] === drone.drone_id}
+            selectionEnabled={selectionEnabled}
+            selectionDisabledReason={selectionDisabledReason}
+            onFocus={onFocus}
+            onToggleSelection={onToggleSelection}
+            media={media}
+          />
+        ))}
       </div>
     </section>
   )
@@ -160,26 +144,6 @@ function Tile({
           {selectLabel}
         </button>
       </span>
-    </article>
-  )
-}
-
-function EmptySlot({ slot, noun }: { slot: number; noun: DeviceNoun }) {
-  return (
-    <article className="lv-tile is-empty" aria-label={`Slot ${slot} empty`}>
-      <div className="lv-visual">
-        <div className="lv-bar">
-          <span>slot {slot}</span>
-          <span className="lv-bar-status">
-            <span aria-hidden="true" className="lv-dot" />
-            unreported
-          </span>
-          <span>no {noun}</span>
-        </div>
-      </div>
-      <p className="lv-meta">
-        <span className="tone-muted">No {noun} reported for this slot.</span>
-      </p>
     </article>
   )
 }

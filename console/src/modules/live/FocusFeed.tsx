@@ -42,7 +42,7 @@ export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
               <span>no frame reported</span>
             </div>
             <div className="lv-feed-overlay is-muted">
-              No device is focused. Focus a tile on a wall, or select exactly one device.
+              No device is focused. Return to All devices and focus a tile, or select exactly one device.
             </div>
           </div>
         )}

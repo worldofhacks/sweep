@@ -5,6 +5,8 @@ import { RELAY_BOOTSTRAP_ENDPOINT, relayFromEnvironment } from './src/relay/boot
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), runtimeConfiguration(), relayBootstrap()],
+  // A second process must not silently become a competing operator console.
+  server: { port: 5173, strictPort: true },
 })
 
 /**
