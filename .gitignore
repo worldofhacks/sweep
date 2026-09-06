@@ -36,3 +36,8 @@ local.properties
 *.iml
 captures/
 .cxx/
+
+# Private Ohmni stack process state, runtime artifacts, and per-robot configuration
+.sweep-ohmni/
+adapters/ohmni/artifacts/
+adapters/ohmni/*.tar

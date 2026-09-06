@@ -131,8 +131,8 @@ class Watchdog:
     and fan-out echoes are deliberately not liveness evidence. ``poll`` moves to ``hold``
     once ``hold_ms`` pass without one and to ``failsafe`` at ``failsafe_ms``; a long
     silence jumps straight to failsafe. Activity during hold recovers; failsafe is
-    terminal until the node rejoins and arms again. This mirrors the Android bridge's
-    ``bridge-core`` Watchdog, which is the reference implementation.
+    terminal until the local operator re-enables and the node rejoins. The node runtime
+    retains this latch across connections around the Android bridge's Watchdog states.
     """
 
     def __init__(self, hold_ms: int, failsafe_ms: int, monotonic: Callable[[], float]) -> None:
@@ -328,11 +328,17 @@ class Node:
         self._last_seq = 0
         self._last_heartbeat_seq = 0
         self._last_t = 0
+        self._relay_clock_anchor: tuple[int, float] | None = None
+        self._failsafe_latched = False
+        self._motion_generation = 0
+        self._local_stop_generation = 0
+        self.last_refusal: str | None = None
         self._last_scan_t: int | None = None
         self._last_node_status: dict[str, Any] | None = None
         self._authority_change_reason: str | None = None
         self._outbound: asyncio.Queue[dict[str, Any]] | None = None
         self._stop: asyncio.Event | None = None
+        self._reconnect_requested: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._authenticated = threading.Event()
@@ -361,6 +367,7 @@ class Node:
         """Connect, join, and serve until ``stop()``, reconnecting with backoff."""
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
+        self._reconnect_requested = asyncio.Event()
         watchdog = asyncio.create_task(self._watchdog_loop())
         backoff = self.config.backoff_initial_s
         try:
@@ -442,12 +449,19 @@ class Node:
                 )
             )
         if operation == "hover":
-            self.device.stop()
-            return Execution.completed()
+            return (
+                Execution.completed()
+                if self._stop_device()
+                else Execution.failed("device_failure", "hardware stop not confirmed")
+            )
         if operation == "estop":
-            self.device.stop()
-            self.device.disable()
-            return Execution.completed()
+            self._failsafe_latched = True
+            self._local_stop_generation += 1
+            return (
+                Execution.completed()
+                if self._stop_device(disable=True)
+                else Execution.failed("device_failure", "hardware stop/disable not confirmed")
+            )
         return self._unsupported(operation)
 
     def extra_join_frames(self) -> list[dict[str, Any]]:
@@ -471,7 +485,7 @@ class Node:
             outbound.put_nowait(frame)
 
     def envelope(self, frame_type: str) -> dict[str, Any]:
-        """A frame envelope with a fresh event id and a non-decreasing timestamp."""
+        """A frame envelope with a fresh event id and a strictly increasing timestamp."""
         return protocol.envelope(
             frame_type,
             t=self.now_t(),
@@ -480,9 +494,36 @@ class Node:
         )
 
     def now_t(self) -> int:
-        """The frame clock: wall time, never allowed to go backwards inside one node."""
-        self._last_t = max(self._last_t, self.config.clock_ms())
+        """Strict source ordering with at most 500 ms of synthetic clock lead.
+
+        Android wall clocks drift by seconds. After authentication, use the relay clock
+        advanced by elapsed monotonic time. Exhaustion fails the connection safely;
+        clamping would produce duplicate or regressing timestamps.
+        """
+        now = self.relay_now_ms()
+        candidate = max(self._last_t + 1, now)
+        if candidate > now + 500:
+            raise NodeError("node timestamp floor exceeds the bounded clock lead")
+        self._last_t = candidate
         return self._last_t
+
+    def relay_now_ms(self) -> int:
+        if self._relay_clock_anchor is None:
+            return self.config.clock_ms()
+        timestamp, monotonic = self._relay_clock_anchor
+        return timestamp + int((self.config.monotonic() - monotonic) * 1000)
+
+    def _anchor_clock(self, timestamp: object) -> None:
+        if isinstance(timestamp, int) and not isinstance(timestamp, bool):
+            self._relay_clock_anchor = (timestamp, self.config.monotonic())
+            # Authentication starts a new epoch; state below supplies the relay floor.
+            self._last_t = timestamp
+
+    def _observe_clock(self, frame: dict[str, Any]) -> None:
+        timestamp = frame.get("t")
+        if isinstance(timestamp, int) and not isinstance(timestamp, bool):
+            if timestamp <= self.relay_now_ms() + 250:
+                self._last_t = max(self._last_t, timestamp)
 
     def _envelope_fields(self, frame_type: str) -> dict[str, Any]:
         envelope = self.envelope(frame_type)
@@ -562,11 +603,13 @@ class Node:
                     self._halt = True
                 raise NodeError(f"relay refused authentication: {reason}")
             settings = accepted.get("node")
+            self._anchor_clock(accepted.get("t"))
             if isinstance(settings, dict):
                 self.node_settings = settings
                 self._apply_node_settings(settings)
             initial = json.loads(await socket.recv())
             if isinstance(initial, dict) and initial.get("type") == "state":
+                self._observe_clock(initial)
                 self._roster_version = int(initial["roster_version"])
             self._outbound = asyncio.Queue()
             self.emit(self._join_frame())
@@ -577,6 +620,7 @@ class Node:
                 asyncio.create_task(self._telemetry_loop()),
                 asyncio.create_task(self._sensor_loop()),
                 asyncio.create_task(self._stop.wait()),  # type: ignore[union-attr]
+                asyncio.create_task(self._reconnect_requested.wait()),  # type: ignore[union-attr]
             ]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in tasks:
@@ -586,6 +630,9 @@ class Node:
             if self._stop.is_set():
                 await self._leave(socket)
                 return
+            if self._reconnect_requested is not None and self._reconnect_requested.is_set():
+                self._reconnect_requested.clear()
+                raise NodeError("local operator requested a fresh connection epoch")
             for task in done:
                 error = task.exception()
                 if error is not None:
@@ -620,6 +667,7 @@ class Node:
                 continue
             if not isinstance(frame, dict):
                 continue
+            self._observe_clock(frame)
             frame_type = frame.get("type")
             if frame_type == "command":
                 self._handle_command(frame)
@@ -645,6 +693,7 @@ class Node:
                 _LOGGER.warning(
                     "relay refused a node frame: %s (%s)", frame.get("reason"), frame.get("detail")
                 )
+                self.last_refusal = str(frame.get("reason"))
 
     async def _telemetry_loop(self) -> None:
         interval = 1.0 / self.config.telemetry_hz
@@ -733,8 +782,11 @@ class Node:
         self._last_scan_t = None
         self._last_node_status = None
         self._authority_change_reason = None
-        self._watchdog.arm()
-        control_authority = bool(self.device.enable())
+        if self._failsafe_latched:
+            control_authority = False
+        else:
+            self._watchdog.arm()
+            control_authority = bool(self.device.enable())
         # Telemetry first: the relay captures the home pose from it when readiness
         # confirms one.
         self.emit(self.telemetry_frame())
@@ -770,6 +822,54 @@ class Node:
             return
         loop.call_soon_threadsafe(self._reclaim_readiness)
 
+    def _stop_device(self, *, disable: bool = False) -> bool:
+        """A failed STOP must never skip the independent disable attempt."""
+        succeeded = True
+        for operation in (
+            (self.device.stop, self.device.disable) if disable else (self.device.stop,)
+        ):
+            try:
+                operation()
+            except Exception:
+                succeeded = False
+                _LOGGER.exception("hardware %s is unconfirmed", operation.__name__)
+        return succeeded
+
+    def local_stop(self) -> bool:
+        """Hardware stop is synchronous; wire updates are built on the event loop."""
+        self._failsafe_latched = True
+        self._local_stop_generation += 1
+        self._motion_generation += 1
+        succeeded = self._stop_device(disable=True)
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._local_stop_update)
+        return succeeded
+
+    def _local_stop_update(self) -> None:
+        self._failsafe_latched = True
+        self._motion_generation += 1
+        transition = self._watchdog.trip_failsafe()
+        if transition is not None:
+            self._apply_watchdog(transition)
+        self._reclaim_readiness()
+        self._emit_node_status_if_changed()
+
+    def request_reenable(self) -> None:
+        """A local operator may request re-enable; fresh authority requires a new join."""
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._request_reenable, self._local_stop_generation)
+
+    def _request_reenable(self, stop_generation: int | None = None) -> None:
+        if stop_generation is not None and stop_generation != self._local_stop_generation:
+            return
+        if not self._safety_operator_present or self._connection_epoch is None:
+            return
+        self._failsafe_latched = False
+        if self._reconnect_requested is not None:
+            self._reconnect_requested.set()
+
     def _reclaim_readiness(self) -> None:
         epoch = self._connection_epoch
         if epoch is None:
@@ -796,6 +896,10 @@ class Node:
         if not heartbeat.verifies(self._key):
             _LOGGER.warning("dropping a control_heartbeat whose signature did not verify")
             return
+        age = self.relay_now_ms() - heartbeat.t
+        if age > self._watchdog.hold_ms or age < -500:
+            _LOGGER.warning("dropping a control heartbeat outside the current lease window")
+            return
         if heartbeat.seq <= self._last_heartbeat_seq:
             _LOGGER.warning("dropping a replayed control_heartbeat sequence %s", heartbeat.seq)
             return
@@ -804,18 +908,25 @@ class Node:
 
     def _apply_watchdog(self, transition: WatchdogTransition) -> None:
         if transition.to_state == WATCHDOG_HOLD:
+            self._motion_generation += 1
             self._authority_change_reason = protocol.WATCHDOG_HOLD
-            self.device.stop()
+            self._stop_device()
+            if self._connection_epoch is None:
+                failsafe = self._watchdog.trip_failsafe()
+                if failsafe is not None:
+                    self._apply_watchdog(failsafe)
             _LOGGER.warning(
                 "watchdog hold after %s ms without an authorized control heartbeat; holding",
                 transition.elapsed_ms,
             )
         elif transition.to_state == WATCHDOG_FAILSAFE:
+            self._motion_generation += 1
+            self._failsafe_latched = True
             self._authority_change_reason = protocol.WATCHDOG_FAILSAFE
-            self.device.disable()
+            self._stop_device(disable=True)
             _LOGGER.error(
                 "watchdog failsafe after %s ms without an authorized control heartbeat; "
-                "the device is disabled until it rejoins",
+                "the device is disabled until local re-enable and rejoin",
                 transition.elapsed_ms,
             )
         elif transition.to_state == ARMED:
@@ -851,7 +962,7 @@ class Node:
             connection_epoch=self._connection_epoch,
             roster_version=self._roster_version,
             last_seq=self._last_seq,
-            now_ms=self.config.clock_ms(),
+            now_ms=self.relay_now_ms(),
         )
         if not admission.admitted:
             if admission.acknowledge:
@@ -869,15 +980,21 @@ class Node:
                 )
             return
         self._last_seq = command.seq
-        # Failsafe refuses; a hold does not. The next lease may arrive at any moment and
-        # the device has already stopped, so a held node still runs what the relay sends.
-        if self._watchdog.state == WATCHDOG_FAILSAFE:
+        # Stop operations remain available under every watchdog state.
+        if command.operation not in {"hover", "estop"} and (
+            self._failsafe_latched or self._watchdog.state in {WATCHDOG_FAILSAFE, WATCHDOG_HOLD}
+        ):
+            reason = (
+                protocol.WATCHDOG_FAILSAFE
+                if self._failsafe_latched or self._watchdog.state == WATCHDOG_FAILSAFE
+                else protocol.WATCHDOG_HOLD
+            )
             self.emit(
                 self._acknowledgement(
                     command,
                     protocol.FAILED,
-                    protocol.WATCHDOG_FAILSAFE,
-                    "watchdog is in failsafe after relay silence; it re-arms on the next join",
+                    reason,
+                    "control lease unavailable; local re-enable is required after failsafe",
                 )
             )
             return
@@ -894,11 +1011,28 @@ class Node:
                 )
                 return
         self.emit(self._acknowledgement(command, protocol.ACCEPTED))
-        task = asyncio.ensure_future(self._run_command(command))
+        self._motion_generation += 1
+        if command.operation in {"hover", "estop"}:
+            # Safety operations execute before yielding to another inbound command.
+            # Otherwise an adjacent goto can supersede an estop that is only queued.
+            self.emit(self._acknowledgement(command, protocol.EXECUTING))
+            execution = self.start_operation(command)
+            self.emit(
+                self._acknowledgement(
+                    command,
+                    execution.status or protocol.COMPLETED,
+                    execution.reason,
+                    execution.detail,
+                )
+            )
+            return
+        task = asyncio.ensure_future(self._run_command(command, self._motion_generation))
         self._commands.add(task)
         task.add_done_callback(self._commands.discard)
 
-    async def _run_command(self, command: protocol.Command) -> None:
+    async def _run_command(self, command: protocol.Command, generation: int | None = None) -> None:
+        if generation is None:
+            generation = self._motion_generation
         if command.operation not in self.supported_operations():
             unsupported = self._unsupported(command.operation)
             self.emit(
@@ -911,6 +1045,16 @@ class Node:
         delay = self.completion_delay_s(command)
         if delay > 0:
             await asyncio.sleep(delay)
+        if generation != self._motion_generation:
+            self.emit(
+                self._acknowledgement(
+                    command,
+                    protocol.FAILED,
+                    "motion_superseded",
+                    "a newer command or stop replaced this command",
+                )
+            )
+            return
         try:
             execution = self.start_operation(command)
         except Exception as error:  # a device fault is a failed command, not a dead node
@@ -927,11 +1071,28 @@ class Node:
                 )
             )
             return
-        await self._await_motion(command, execution.motion_id)
+        await self._await_motion(command, execution.motion_id, generation)
 
-    async def _await_motion(self, command: protocol.Command, motion_id: str) -> None:
+    async def _await_motion(
+        self, command: protocol.Command, motion_id: str, generation: int | None = None
+    ) -> None:
         deadline = self.config.monotonic() + self._command_ttl_ms / 1000
         while True:
+            if generation is not None and generation != self._motion_generation:
+                reason = (
+                    "motion_failed"
+                    if self._watchdog.state in {WATCHDOG_HOLD, WATCHDOG_FAILSAFE}
+                    else "motion_superseded"
+                )
+                self.emit(
+                    self._acknowledgement(
+                        command,
+                        protocol.FAILED,
+                        reason,
+                        "a newer command or stop replaced this motion",
+                    )
+                )
+                return
             done = self.device.motion_done(motion_id)
             if done is True:
                 self.emit(self._acknowledgement(command, protocol.COMPLETED))
@@ -947,7 +1108,7 @@ class Node:
                 )
                 return
             if self.config.monotonic() >= deadline:
-                self.device.stop()
+                self._stop_device()
                 self.emit(
                     self._acknowledgement(
                         command,
@@ -1004,6 +1165,10 @@ class Node:
                 )
 
     def _on_link_lost(self) -> None:
+        self._motion_generation += 1
+        for task in self._commands:
+            task.cancel()
+        self._stop_device()
         self._connection_epoch = None
         self._outbound = None
         self._last_node_status = None
@@ -1022,10 +1187,9 @@ class Node:
         self._commands.clear()
 
     def _shutdown_device(self) -> None:
-        try:
-            self.device.stop()
-        except Exception:  # a clean stop must not mask why the node is stopping
-            _LOGGER.exception("the device raised while stopping")
+        self._failsafe_latched = True
+        self._motion_generation += 1
+        self._stop_device(disable=True)
         close = getattr(self.device, "close", None)
         if callable(close):
             try:
