@@ -12,6 +12,8 @@ from planner.models import (
     AltitudeGrounding,
     Command,
     CommandOperation,
+    DeviceClass,
+    DriveState,
     FleetSnapshot,
     FlightState,
     Geofence,
@@ -23,7 +25,11 @@ from planner.models import (
     Refusal,
     RefusalReason,
 )
-from planner.planner import SELECTION_TARGETED_INTENTS
+from planner.planner import (
+    AIRCRAFT_ONLY_INTENTS,
+    GROUND_VEHICLE_OPERATIONS,
+    SELECTION_TARGETED_INTENTS,
+)
 from relay.intent_v1 import IntentName, IntentV1
 
 _CONFIRMED_INTENTS: Final = frozenset(
@@ -84,6 +90,15 @@ _PHYSICALLY_ARMED_OPERATIONS: Final = frozenset(
     {CommandOperation.GOTO, CommandOperation.ROTATE_TO, *_CAMERA_OPERATIONS}
 )
 _STABLE_MOTION_STATES: Final = frozenset({FlightState.AIRBORNE, FlightState.HOVERING})
+_GROUND_ARM_STATES: Final = frozenset({DriveState.DOCKED, DriveState.IDLE, DriveState.STOPPED})
+_ARM_DETAIL: Final = {
+    DeviceClass.AIRCRAFT: "arm requires a landed and disarmed aircraft",
+    DeviceClass.GROUND_VEHICLE: "arm requires a docked, idle, or stopped ground vehicle",
+}
+_MOTION_DETAIL: Final = {
+    DeviceClass.AIRCRAFT: "an airborne aircraft",
+    DeviceClass.GROUND_VEHICLE: "an undocked ground vehicle",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +122,7 @@ class SafetyConfig:
     max_capture_gimbal_error_deg: float
     positioning_loss_hold_ms: int
     motion_conflict_window_ms: int
+    ground_max_speed_m_s: float = 0.5
 
     def __post_init__(self) -> None:
         if not isinstance(self.geofence, Geofence):
@@ -114,6 +130,7 @@ class SafetyConfig:
         positive = {
             "ceiling_m": self.ceiling_m,
             "min_spacing_m": self.min_spacing_m,
+            "ground_max_speed_m_s": self.ground_max_speed_m_s,
         }
         for name, value in positive.items():
             if (
@@ -174,6 +191,10 @@ class SafetyArbiter:
                 RefusalReason.STALE_SELECTION,
                 "intent selection differs from authoritative state",
             )
+
+        class_refusal = self._check_device_class(intent, snapshot)
+        if class_refusal is not None:
+            return class_refusal
 
         if intent.name in _CONFIRMED_INTENTS and not intent.confirm:
             return self._intent_refusal(
@@ -283,6 +304,42 @@ class SafetyArbiter:
                 if capture_refusal is not None:
                     return capture_refusal
 
+        return None
+
+    def _check_device_class(self, intent: IntentV1, snapshot: FleetSnapshot) -> Refusal | None:
+        """Refuse an intent whose targets cannot execute it because of their device class.
+
+        The planner refuses the same intents; the arbiter repeats the gate so the typed
+        refusal survives a planner or capability-profile change, and so it is decided
+        before any flight-state gate reports a ground vehicle as an unflyable aircraft.
+        """
+        if intent.name in AIRCRAFT_ONLY_INTENTS:
+            for drone_id in sorted(snapshot.selection):
+                aircraft = snapshot.aircraft.get(drone_id)
+                if aircraft is not None and aircraft.device_class is not DeviceClass.AIRCRAFT:
+                    return self._intent_refusal(
+                        intent,
+                        snapshot,
+                        RefusalReason.UNSUPPORTED_FOR_DEVICE_CLASS,
+                        f"{intent.name.value} is not supported for device class "
+                        f"{aircraft.device_class.value}",
+                        drone_id,
+                    )
+            return None
+        if (
+            intent.name is IntentName.LAND_ALL
+            and snapshot.aircraft
+            and not any(
+                aircraft.device_class is DeviceClass.AIRCRAFT
+                for aircraft in snapshot.aircraft.values()
+            )
+        ):
+            return self._intent_refusal(
+                intent,
+                snapshot,
+                RefusalReason.UNSUPPORTED_FOR_DEVICE_CLASS,
+                f"land_all is not supported for device class {DeviceClass.GROUND_VEHICLE.value}",
+            )
         return None
 
     def _check_sweep_box(self, intent: IntentV1, snapshot: FleetSnapshot) -> Refusal | None:
@@ -501,15 +558,12 @@ class SafetyArbiter:
             )
             if membership_refusal is not None:
                 return membership_refusal
-            if plan.intent_name is IntentName.ARM and (
-                aircraft.flight_state not in {FlightState.DISARMED, FlightState.LANDED}
-                or aircraft.armed
-            ):
+            if plan.intent_name is IntentName.ARM and not self._arm_ready(aircraft):
                 return self._refusal_for(
                     plan.intent_id,
                     snapshot,
                     RefusalReason.INVALID_STATE,
-                    "arm requires a landed and disarmed aircraft",
+                    _ARM_DETAIL[aircraft.device_class],
                     aircraft=aircraft,
                 )
             authority_refusal = self._check_authority(plan.intent_id, snapshot, aircraft)
@@ -579,6 +633,20 @@ class SafetyArbiter:
                 "command connection epoch does not match the current aircraft epoch",
                 epoch=aircraft.connection_epoch,
             )
+        if (
+            aircraft.device_class is DeviceClass.GROUND_VEHICLE
+            and command.operation not in GROUND_VEHICLE_OPERATIONS
+        ):
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.UNSUPPORTED_FOR_DEVICE_CLASS,
+                f"{command.operation.value} is not supported for device class "
+                f"{aircraft.device_class.value}",
+            )
+        speed_refusal = self._check_speed(command, snapshot, aircraft)
+        if speed_refusal is not None:
+            return speed_refusal
         if plan.intent_name is IntentName.CAPTURE_ROOM:
             pose_refusal = self._check_capture_pose_lock(plan, command, snapshot, aircraft)
             if pose_refusal is not None:
@@ -669,14 +737,14 @@ class SafetyArbiter:
                 )
                 if vertical_refusal is not None:
                     return vertical_refusal
-            if not self.config.geofence.contains(target):
+            if not self._within_geofence(aircraft, target):
                 return self._command_refusal(
                     command,
                     snapshot,
                     RefusalReason.GEOFENCE,
                     "planned target is outside the configured geofence",
                 )
-            if target.z > self.config.ceiling_m:
+            if self._exceeds_ceiling(aircraft, target):
                 return self._command_refusal(
                     command,
                     snapshot,
@@ -688,6 +756,7 @@ class SafetyArbiter:
                 snapshot,
                 target,
                 projected_positions or {},
+                device_class=aircraft.device_class,
             )
             if spacing_refusal is not None:
                 return spacing_refusal
@@ -768,6 +837,7 @@ class SafetyArbiter:
         for other_id, other in sorted(snapshot.aircraft.items()):
             if (
                 other_id == aircraft.drone_id
+                or other.device_class is not aircraft.device_class
                 or other.membership is not MembershipState.READY
                 or not other.airborne
             ):
@@ -1463,7 +1533,7 @@ class SafetyArbiter:
                     drone_id
                     for drone_id, aircraft in sorted(snapshot.aircraft.items())
                     if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
-                    and aircraft.airborne
+                    and aircraft.mobile
                 )
             if plan.hold_scope is HoldScope.TARGETED_SAFETY:
                 return required_hold_targets or ()
@@ -1472,7 +1542,8 @@ class SafetyArbiter:
             still_airborne = {
                 drone_id
                 for drone_id, aircraft in sorted(snapshot.aircraft.items())
-                if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+                if aircraft.device_class is DeviceClass.AIRCRAFT
+                and aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
                 and aircraft.airborne
             }
             proven_landed = {
@@ -1651,19 +1722,12 @@ class SafetyArbiter:
         self, intent: IntentV1, snapshot: FleetSnapshot, aircraft: AircraftState
     ) -> Refusal | None:
         if intent.name is IntentName.ARM:
-            if (
-                aircraft.flight_state
-                not in {
-                    FlightState.DISARMED,
-                    FlightState.LANDED,
-                }
-                or aircraft.armed
-            ):
+            if not self._arm_ready(aircraft):
                 return self._intent_refusal(
                     intent,
                     snapshot,
                     RefusalReason.INVALID_STATE,
-                    "arm requires a landed and disarmed aircraft",
+                    _ARM_DETAIL[aircraft.device_class],
                     aircraft.drone_id,
                 )
         elif intent.name is IntentName.TAKEOFF:
@@ -1679,31 +1743,27 @@ class SafetyArbiter:
                     "takeoff requires armed state on a landed aircraft",
                     aircraft.drone_id,
                 )
-        elif (
-            intent.name
-            in {
-                IntentName.TRANSLATE,
-                IntentName.ALTITUDE,
-                IntentName.FORMATION_NEXT,
-                IntentName.FORMATION_SET,
-                IntentName.COME_HOME,
-                IntentName.SWEEP,
-            }
-            and aircraft.flight_state not in _STABLE_MOTION_STATES
-        ):
+        elif intent.name in {
+            IntentName.TRANSLATE,
+            IntentName.ALTITUDE,
+            IntentName.FORMATION_NEXT,
+            IntentName.FORMATION_SET,
+            IntentName.COME_HOME,
+            IntentName.SWEEP,
+        } and not self._motion_ready(aircraft):
             return self._intent_refusal(
                 intent,
                 snapshot,
                 RefusalReason.INVALID_STATE,
-                f"{intent.name.value} requires an airborne aircraft",
+                f"{intent.name.value} requires {_MOTION_DETAIL[aircraft.device_class]}",
                 aircraft.drone_id,
             )
-        elif intent.name is IntentName.HOLD and not aircraft.airborne:
+        elif intent.name is IntentName.HOLD and not aircraft.mobile:
             return self._intent_refusal(
                 intent,
                 snapshot,
                 RefusalReason.INVALID_STATE,
-                "hold requires an airborne aircraft",
+                f"hold requires {_MOTION_DETAIL[aircraft.device_class]}",
                 aircraft.drone_id,
             )
         elif intent.name in {IntentName.LAND, IntentName.LAND_ALL} and not aircraft.airborne:
@@ -1743,22 +1803,22 @@ class SafetyArbiter:
                     RefusalReason.INVALID_STATE,
                     "takeoff command requires an armed, landed aircraft",
                 )
-        elif (
-            operation in {CommandOperation.GOTO, CommandOperation.ROTATE_TO}
-            and aircraft.flight_state not in _STABLE_MOTION_STATES
-        ):
+        elif operation in {
+            CommandOperation.GOTO,
+            CommandOperation.ROTATE_TO,
+        } and not self._motion_ready(aircraft):
             return self._command_refusal(
                 command,
                 snapshot,
                 RefusalReason.INVALID_STATE,
-                f"{operation.value} requires an airborne aircraft",
+                f"{operation.value} requires {_MOTION_DETAIL[aircraft.device_class]}",
             )
-        elif operation is CommandOperation.HOVER and not aircraft.airborne:
+        elif operation is CommandOperation.HOVER and not aircraft.mobile:
             return self._command_refusal(
                 command,
                 snapshot,
                 RefusalReason.INVALID_STATE,
-                "hover requires an airborne aircraft",
+                f"hover requires {_MOTION_DETAIL[aircraft.device_class]}",
             )
         elif operation is CommandOperation.LAND and not aircraft.airborne:
             return self._command_refusal(
@@ -1952,9 +2012,13 @@ class SafetyArbiter:
             )
         low, high = sorted((start.z, target.z))
         for other_id, other in sorted(snapshot.aircraft.items()):
-            if other_id == aircraft.drone_id or other.membership is not MembershipState.READY:
+            if (
+                other_id == aircraft.drone_id
+                or other.device_class is not aircraft.device_class
+                or other.membership is not MembershipState.READY
+            ):
                 continue
-            if not other.airborne:
+            if not other.mobile:
                 continue
             telemetry_refusal = self._check_telemetry(
                 command.intent_id, snapshot, other, require_position=True, command=command
@@ -1978,12 +2042,20 @@ class SafetyArbiter:
         snapshot: FleetSnapshot,
         target: Position,
         projected_positions: dict[int, Position],
+        *,
+        device_class: DeviceClass,
     ) -> Refusal | None:
+        """Keep every device clear of the others in its own class.
+
+        Cross-class spacing is not checked: an aircraft's clearance from a ground vehicle
+        is a vertical question this issue does not answer, and the arbiter refuses only
+        what it can decide from the frame it has.
+        """
         for other_id, other in sorted(snapshot.aircraft.items()):
-            if other_id == command.drone_id:
+            if other_id == command.drone_id or other.device_class is not device_class:
                 continue
             if other.membership is not MembershipState.READY or (
-                not other.airborne and other_id not in projected_positions
+                not other.mobile and other_id not in projected_positions
             ):
                 continue
             other_target = projected_positions.get(other_id, other.pose)
@@ -1995,6 +2067,61 @@ class SafetyArbiter:
                     f"planned target violates spacing from aircraft {other_id}",
                 )
         return None
+
+    def _within_geofence(self, aircraft: AircraftState, target: Position) -> bool:
+        """Contain every device in x and y; only an aircraft is contained in z."""
+        geofence = self.config.geofence
+        if aircraft.device_class is DeviceClass.GROUND_VEHICLE:
+            return (
+                geofence.min_x <= target.x <= geofence.max_x
+                and geofence.min_y <= target.y <= geofence.max_y
+            )
+        return geofence.contains(target)
+
+    def _exceeds_ceiling(self, aircraft: AircraftState, target: Position) -> bool:
+        """A ground vehicle drives on the floor plane, so the ceiling does not bound it."""
+        if aircraft.device_class is DeviceClass.GROUND_VEHICLE:
+            return False
+        return target.z > self.config.ceiling_m
+
+    def _check_speed(
+        self,
+        command: Command,
+        snapshot: FleetSnapshot,
+        aircraft: AircraftState,
+    ) -> Refusal | None:
+        """Cap a ground vehicle's commanded drive speed; the node caps it again itself."""
+        if (
+            aircraft.device_class is not DeviceClass.GROUND_VEHICLE
+            or command.operation is not CommandOperation.GOTO
+        ):
+            return None
+        speed = command.parameters.get("speed")
+        if _finite_number(speed) and speed > self.config.ground_max_speed_m_s:
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.SPEED_LIMIT,
+                "planned drive speed exceeds the configured ground vehicle maximum",
+            )
+        return None
+
+    @staticmethod
+    def _arm_ready(aircraft: AircraftState) -> bool:
+        """A device that can accept session arm authorization from its current state."""
+        if aircraft.device_class is DeviceClass.GROUND_VEHICLE:
+            return aircraft.drive_state in _GROUND_ARM_STATES
+        return (
+            aircraft.flight_state in {FlightState.DISARMED, FlightState.LANDED}
+            and not aircraft.armed
+        )
+
+    @staticmethod
+    def _motion_ready(aircraft: AircraftState) -> bool:
+        """A device in a state that can accept a motion command right now."""
+        if aircraft.device_class is DeviceClass.GROUND_VEHICLE:
+            return aircraft.mobile
+        return aircraft.flight_state in _STABLE_MOTION_STATES
 
     def projected_positions(self, plan: Plan, snapshot: FleetSnapshot) -> dict[int, Position]:
         projected: dict[int, Position] = {}
