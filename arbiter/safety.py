@@ -33,6 +33,7 @@ _CONFIRMED_INTENTS: Final = frozenset(
         IntentName.LAND_ALL,
         IntentName.CAPTURE_ROOM,
         IntentName.SWEEP,
+        IntentName.NAVIGATE,
     }
 )
 _SAFE_WHILE_STOPPED: Final = frozenset(
@@ -54,6 +55,7 @@ _ARMED_INTENTS: Final = frozenset(
         IntentName.FORMATION_SET,
         IntentName.COME_HOME,
         IntentName.SWEEP,
+        IntentName.NAVIGATE,
         IntentName.CAPTURE_ROOM,
     }
 )
@@ -846,6 +848,7 @@ class SafetyArbiter:
             IntentName.FORMATION_SET: frozenset({CommandOperation.GOTO}),
             IntentName.SPACING: frozenset(),
             IntentName.SWEEP: frozenset({CommandOperation.GOTO}),
+            IntentName.NAVIGATE: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
             IntentName.HOLD: frozenset({CommandOperation.HOVER}),
             IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
             IntentName.LAND: frozenset({CommandOperation.LAND}),
@@ -1047,6 +1050,11 @@ class SafetyArbiter:
                     plan,
                     snapshot,
                     "altitude requires one ordered goto/hover pair per selected aircraft",
+                )
+        if plan.intent_name is IntentName.NAVIGATE:
+            if plan.navigation is None or not plan.navigation.matches_commands(plan):
+                return self._invalid_plan_refusal(
+                    plan, snapshot, "navigation commands differ from the frozen route"
                 )
         if plan.intent_name in {
             IntentName.TAKEOFF,
