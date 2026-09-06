@@ -70,6 +70,7 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
 
     from perception.object_detection import (
         DEFAULT_TARGET_LABELS,
+        DetectionCandidate,
         ProcessedFrameEvent,
     )
     from perception.search_events import FramePoseEvidence
@@ -88,7 +89,7 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
         detector_config_sha256 = "a" * 64
 
         def detect(self, _frame):
-            return ()
+            return (DetectionCandidate("backpack", 24, 0.9, (1, 1, 3, 3)),)
 
     runtime = _search_runtime()
     snapshot = _snapshot()
@@ -144,3 +145,31 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
     )
     assert not accepted.accepted
     assert accepted.reason == "task_not_active" or accepted.reason == "duplicate_frame"
+
+    payload = runtime.status_payload("search-runtime")
+    candidate = payload["candidates"][0]
+    task_payload = payload["tasks"][0]
+    assert candidate["label"] == "backpack"
+    assert candidate["confidence"] == 0.9
+    assert candidate["bbox_xyxy"] == (1, 1, 3, 3)
+    assert candidate["position"] is None
+    assert task_payload["cells"]
+    assert task_payload["covered_cell_ids"]
+
+    from perception.search_localization import SearchLocalization
+
+    runtime.localize_sighting(
+        "search-runtime",
+        candidate["sighting_id"],
+        SearchLocalization(task.cells[0].pose, 5),
+    )
+    assert runtime.acknowledge_finding("search-runtime", candidate["sighting_id"])
+    updated = runtime.status_payload("search-runtime")["candidates"][0]
+    assert updated["acknowledged"]
+    assert updated["position"] == {
+        "x_m": task.cells[0].pose.x_m,
+        "y_m": task.cells[0].pose.y_m,
+        "z_m": task.cells[0].pose.z_m,
+        "zone_id": preview.search.zone.zone_id,
+        "floor_id": task.cells[0].pose.floor_id,
+    }

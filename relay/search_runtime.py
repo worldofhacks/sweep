@@ -266,7 +266,8 @@ class SearchRuntime:
                     "x_m": localization.pose.x_m,
                     "y_m": localization.pose.y_m,
                     "z_m": localization.pose.z_m,
-                    "zone_id": localization.pose.floor_id,
+                    "zone_id": mission.preview.search.zone.zone_id,
+                    "floor_id": localization.pose.floor_id,
                 }
             candidates.append(
                 {
