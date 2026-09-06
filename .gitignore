@@ -26,6 +26,7 @@ node_modules/
 
 # Media
 recordings/
+output/playwright/
 
 # Android and Gradle (adapters/dji_mini3/pilot-app)
 .gradle/

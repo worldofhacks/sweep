@@ -323,9 +323,12 @@ function reduceRelayEvent(
     case 'membership':
       return reduceMembershipEvent(stateWithEvent, event)
     case 'telemetry':
-      // The relay atomically follows telemetry with its authoritative state
-      // projection. Retain the event ID for dedupe, but do not build a second
-      // client-side source of aircraft truth here.
+    case 'capabilities':
+    case 'node_status':
+    case 'capture_readiness':
+      // Aircraft control state comes from the relay's authoritative projection.
+      // Retain report IDs for dedupe; these reports cannot grant readiness or
+      // authority or create a second client-side source of aircraft truth.
       return stateWithEvent
     case 'safety_action':
       return {
@@ -567,12 +570,33 @@ function reduceStateEvent(
     'stale_roster',
     `Fleet roster changed to version ${event.roster_version}. Build and confirm a new preview.`,
   )
-  // Intents that address the whole roster (land_all) keep their preview while
-  // the operator's selection moves; only a roster change invalidates them.
+  // SELECT proposes new membership, so its named targets may not belong to the
+  // current selection yet. Validate those targets directly on every snapshot.
+  const staleProposedSelectionRequests = next.requests
+    .filter(
+      (request) =>
+        request.status === 'pending_confirmation' &&
+        request.intent.name === 'select' &&
+        'ids' in request.intent.args &&
+        request.intent.args.ids.some(
+          (id) => aircraft[id]?.membership !== 'ready' || !aircraft[id]?.selectable,
+        ),
+    )
+    .map((request) => request.intent.intent_id)
+  next = invalidateRequests(
+    next,
+    staleProposedSelectionRequests,
+    event.t,
+    'stale_selection',
+    'An aircraft in the proposed selection is no longer ready or selectable.',
+  )
+  // SELECT carries the proposed selection; it must survive snapshots of the old
+  // selection until confirmed. Roster-wide intents also keep independent targets.
   const changedSelectionRequests = next.requests
     .filter(
       (request) =>
         request.status === 'pending_confirmation' &&
+        request.intent.name !== 'select' &&
         followsSelection(request.intent.name) &&
         !sameDroneSet(request.intent.selection, selection),
     )
