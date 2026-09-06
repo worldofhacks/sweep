@@ -6,7 +6,7 @@ import pytest
 
 from planner.models import CommandOperation
 from relay.auth import Principal, verify_event_signature
-from relay.contracts import LifecycleStatus, parse_command
+from relay.contracts import MAX_STORAGE_REMAINING_BYTES, LifecycleStatus, parse_command
 from relay.session import RelaySession
 from relay.state import RegistryError
 from relay.tests.conftest import (
@@ -65,6 +65,85 @@ def test_capabilities_and_node_status_update_state_and_fan_out(
     replayed = [record["event"]["type"] for record in relay_session.replay()["events"]]
     assert replayed[-4:] == ["capabilities", "state", "node_status", "state"]
     assert relay_session.metrics()["node_events"] == 2
+
+
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        [f"capability-{index}" for index in range(65)],
+        [f"{index:02d}" + "😀" * 510 for index in range(44)],
+    ],
+)
+def test_signed_join_capability_refusal_does_not_mutate_or_fence_the_session(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    capabilities: list[str],
+) -> None:
+    refused = relay_session.process_membership(
+        membership_payload(action="join", event_id="join-unbounded", capabilities=capabilities),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_membership"
+    assert relay_session.current_state()["drones"] == []
+    assert relay_session.replay()["events"][-1]["event"] == refused[0]
+    accepted = relay_session.process_membership(
+        membership_payload(action="join", event_id="join-after-refusal"),
+        adapter_principal,
+    )
+    assert accepted[0]["type"] == "membership"
+
+
+@pytest.mark.parametrize(
+    "modes",
+    [
+        [f"mode-{index}" for index in range(65)],
+        [f"{index:02d}" + "😀" * 510 for index in range(44)],
+    ],
+)
+def test_authenticated_capability_refusal_does_not_mutate_or_fence_the_session(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    modes: list[str],
+) -> None:
+    _join(relay_session, adapter_principal)
+
+    refused = relay_session.process_frame(
+        capabilities_payload(event_id="capabilities-unbounded", native_panorama_modes=modes),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capabilities"
+    assert relay_session.current_state()["drones"][0]["camera_capabilities"] is None
+    assert relay_session.replay()["events"][-1]["event"] == refused[0]
+    accepted = relay_session.process_frame(
+        capabilities_payload(event_id="capabilities-after-refusal"), adapter_principal
+    )
+    assert [event["type"] for event in accepted] == ["capabilities", "state"]
+
+
+def test_authenticated_storage_overflow_refusal_does_not_fence_the_session(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+) -> None:
+    _join(relay_session, adapter_principal)
+
+    refused = relay_session.process_frame(
+        capabilities_payload(
+            event_id="capabilities-storage-overflow",
+            storage_remaining_bytes=MAX_STORAGE_REMAINING_BYTES + 1,
+        ),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capabilities"
+    assert relay_session.current_state()["drones"][0]["camera_capabilities"] is None
+    assert relay_session.replay()["events"][-1]["event"] == refused[0]
+    accepted = relay_session.process_frame(
+        capabilities_payload(event_id="capabilities-after-storage-refusal"),
+        adapter_principal,
+    )
+    assert [event["type"] for event in accepted] == ["capabilities", "state"]
 
 
 def test_capture_readiness_is_fanned_out_without_a_state_change(

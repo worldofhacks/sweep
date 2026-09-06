@@ -6,6 +6,7 @@ only the transport envelopes that carry their outcomes through the relay.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -106,6 +107,16 @@ WIRE_MEMBERSHIP_ACTIONS = frozenset(
 NODE_FRAME_TYPES = frozenset(
     {"capabilities", "capture_bundle", "media_file", "capture_readiness", "node_status"}
 )
+
+# Both adapter capability claims and camera panorama-mode claims become nested
+# state lists. Keep their signed/canonical representation comfortably below the
+# audit projector's per-aircraft ceiling before either list can mutate state.
+MAX_CAPABILITY_LIST_ITEMS = 64
+MAX_CAPABILITY_ITEM_UTF8_BYTES = 512
+MAX_CAPABILITY_LIST_CANONICAL_BYTES = 8 * 1024
+# Android reports this field as a signed ``Long``. Mirror that exact upper bound
+# before the value reaches retained state or its audit projection.
+MAX_STORAGE_REMAINING_BYTES = (1 << 63) - 1
 
 # Signed command arguments carry integers only (millimetres, millimetres per second,
 # millidegrees, millidegrees per second) so the canonical JSON never depends on a
@@ -663,7 +674,7 @@ def parse_membership_request(raw: object) -> MembershipRequest:
     signature = _nonempty_string(value["signature"], "signature", "invalid_signature")
 
     if action is MembershipAction.JOIN:
-        adapter_id = _nonempty_string(value["adapter_id"], "adapter_id", "invalid_membership")
+        adapter_id = _bounded_state_text(value["adapter_id"], "adapter_id", "invalid_membership")
         capabilities = _string_list(value["capabilities"], "capabilities", allow_empty=False)
         return MembershipRequest(
             1,
@@ -772,7 +783,7 @@ def parse_telemetry(raw: object) -> TelemetryV1:
         values["vy"],
         values["vz"],
         values["battery"],
-        _nonempty_string(value["state"], "state", "invalid_telemetry"),
+        _bounded_state_text(value["state"], "state", "invalid_telemetry", maximum_utf8_bytes=128),
         values["link"],
         values["pos_quality"],
     )
@@ -902,6 +913,14 @@ def parse_capabilities(raw: object) -> CapabilitiesFrame:
         measured = _finite_number(measured, "measured_hfov_deg", code)
         if not 0 < measured < 180:
             raise ContractError(code, "measured_hfov_deg must be null or between 0 and 180")
+    storage_remaining = _nonnegative_int(
+        value["storage_remaining_bytes"], "storage_remaining_bytes", code
+    )
+    if storage_remaining > MAX_STORAGE_REMAINING_BYTES:
+        raise ContractError(
+            code,
+            f"storage_remaining_bytes must be at most {MAX_STORAGE_REMAINING_BYTES}",
+        )
     return CapabilitiesFrame(
         1,
         value["t"],
@@ -917,14 +936,14 @@ def parse_capabilities(raw: object) -> CapabilitiesFrame:
         pitch_min,
         pitch_max,
         horizontal_fov,
-        _nonnegative_int(value["storage_remaining_bytes"], "storage_remaining_bytes", code),
+        storage_remaining,
         _boolean(value["media_retrieval"], "media_retrieval", code),
-        _nonempty_string(value["aircraft_model"], "aircraft_model", code),
-        _nonempty_string(value["aircraft_firmware"], "aircraft_firmware", code),
-        _nonempty_string(value["rc_firmware"], "rc_firmware", code),
-        _nonempty_string(value["phone_model"], "phone_model", code),
-        _nonempty_string(value["android_version"], "android_version", code),
-        _nonempty_string(value["sdk_version"], "sdk_version", code),
+        _bounded_state_text(value["aircraft_model"], "aircraft_model", code),
+        _bounded_state_text(value["aircraft_firmware"], "aircraft_firmware", code),
+        _bounded_state_text(value["rc_firmware"], "rc_firmware", code),
+        _bounded_state_text(value["phone_model"], "phone_model", code),
+        _bounded_state_text(value["android_version"], "android_version", code),
+        _bounded_state_text(value["sdk_version"], "sdk_version", code),
         measured,
     )
 
@@ -1257,6 +1276,25 @@ def _nonempty_string(value: object, field: str, code: str) -> str:
     return value
 
 
+def _bounded_state_text(
+    value: object,
+    field: str,
+    code: str,
+    *,
+    maximum_utf8_bytes: int = MAX_CAPABILITY_ITEM_UTF8_BYTES,
+) -> str:
+    result = _nonempty_string(value, field, code)
+    if result != result.strip() or not result.isprintable():
+        raise ContractError(code, f"{field} must be canonical printable text")
+    try:
+        encoded = result.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ContractError(code, f"{field} must be valid UTF-8 text") from None
+    if len(encoded) > maximum_utf8_bytes:
+        raise ContractError(code, f"{field} may contain at most {maximum_utf8_bytes} UTF-8 bytes")
+    return result
+
+
 def _nullable_string(
     value: object,
     field: str,
@@ -1294,14 +1332,36 @@ def _finite_number(value: object, field: str, code: str) -> float:
 def _string_list(
     value: object, field: str, *, allow_empty: bool, code: str = "invalid_membership"
 ) -> tuple[str, ...]:
-    if isinstance(value, str) or not isinstance(value, Sequence):
+    if not isinstance(value, list):
         raise ContractError(code, f"{field} must be a list")
-    result = tuple(_nonempty_string(item, field, code) for item in value)
+    if len(value) > MAX_CAPABILITY_LIST_ITEMS:
+        raise ContractError(code, f"{field} may contain at most {MAX_CAPABILITY_LIST_ITEMS} items")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item or item != item.strip() or not item.isprintable():
+            raise ContractError(code, f"{field} items must be canonical printable strings")
+        try:
+            encoded = item.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ContractError(code, f"{field} items must be valid UTF-8 strings") from None
+        if len(encoded) > MAX_CAPABILITY_ITEM_UTF8_BYTES:
+            raise ContractError(
+                code,
+                f"{field} items may contain at most {MAX_CAPABILITY_ITEM_UTF8_BYTES} UTF-8 bytes",
+            )
+        result.append(item)
     if not result and not allow_empty:
         raise ContractError(code, f"{field} may not be empty")
     if len(set(result)) != len(result):
         raise ContractError(code, f"{field} may not contain duplicates")
-    return result
+    canonical = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(canonical) > MAX_CAPABILITY_LIST_CANONICAL_BYTES:
+        raise ContractError(
+            code,
+            f"{field} canonical JSON may contain at most "
+            f"{MAX_CAPABILITY_LIST_CANONICAL_BYTES} UTF-8 bytes",
+        )
+    return tuple(result)
 
 
 def _boolean(value: object, field: str, code: str) -> bool:

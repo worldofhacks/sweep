@@ -252,3 +252,40 @@ def test_invalid_media_configuration_fails(overrides: dict[str, str]) -> None:
 
     with pytest.raises(SettingsError):
         RelaySettings.from_env(environment)
+
+
+def test_audit_sampling_settings_default_and_come_from_the_environment() -> None:
+    defaults = RelaySettings.from_env({"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode()})
+    configured = RelaySettings.from_env(
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_AUDIT_STATE_INTERVAL_MS": "5000",
+            "SWEEP_STATE_MEMBERSHIP_HISTORY": "3",
+        }
+    )
+
+    assert (
+        defaults.audit_state_interval_ms,
+        defaults.state_membership_history,
+    ) == (10_000, 8)
+    assert defaults.limits().audit_state_interval_ms == 10_000
+    assert defaults.limits().state_membership_history == 8
+    assert configured.limits().audit_state_interval_ms == 5_000
+    assert configured.limits().state_membership_history == 3
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SWEEP_AUDIT_STATE_INTERVAL_MS", "0"),
+        ("SWEEP_AUDIT_STATE_INTERVAL_MS", "10001"),
+        ("SWEEP_STATE_MEMBERSHIP_HISTORY", "0"),
+        ("SWEEP_STATE_MEMBERSHIP_HISTORY", "65"),
+        ("SWEEP_STATE_MEMBERSHIP_HISTORY", "eight"),
+    ],
+)
+def test_invalid_audit_sampling_configuration_fails(name: str, value: str) -> None:
+    environment = {"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(), name: value}
+
+    with pytest.raises(SettingsError):
+        RelaySettings.from_env(environment)

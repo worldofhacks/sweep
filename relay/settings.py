@@ -59,6 +59,8 @@ class RelaySettings:
     media_webrtc_origin: str | None = None
     media_read_username: str | None = None
     media_read_password: str | None = field(default=None, repr=False)
+    audit_state_interval_ms: int = 10_000
+    state_membership_history: int = 8
 
     def __post_init__(self) -> None:
         if type(self.relay_token) is not bytes or not 32 <= len(self.relay_token) <= 4_096:
@@ -109,13 +111,10 @@ class RelaySettings:
             or self.node_watchdog_failsafe_ms <= self.node_watchdog_hold_ms
         ):
             raise SettingsError("node watchdog thresholds must satisfy 0 <= hold < failsafe")
-        RelayLimits(
-            intent_max_age_ms=self.intent_max_age_ms,
-            transport_event_max_age_ms=self.transport_event_max_age_ms,
-            future_clock_skew_ms=self.future_clock_skew_ms,
-            telemetry_freshness_ms=self.telemetry_freshness_ms,
-            command_ttl_ms=self.command_ttl_ms,
-        )
+        try:
+            self.limits()
+        except ValueError as error:
+            raise SettingsError(str(error)) from None
         _validate_origins(self.console_origins)
         if self.media_api_url is not None:
             if not _is_origin(self.media_api_url):
@@ -213,6 +212,14 @@ class RelaySettings:
             media_webrtc_origin=_optional(values.get("SWEEP_MEDIA_WEBRTC_ORIGIN")),
             media_read_username=_optional(values.get("SWEEP_MEDIA_READ_USERNAME")),
             media_read_password=_optional(values.get("SWEEP_MEDIA_READ_PASSWORD")),
+            audit_state_interval_ms=_positive_integer(
+                values.get("SWEEP_AUDIT_STATE_INTERVAL_MS", "10000"),
+                "SWEEP_AUDIT_STATE_INTERVAL_MS",
+            ),
+            state_membership_history=_positive_integer(
+                values.get("SWEEP_STATE_MEMBERSHIP_HISTORY", "8"),
+                "SWEEP_STATE_MEMBERSHIP_HISTORY",
+            ),
         )
 
     def media_runtime_config(self) -> dict[str, str] | None:
@@ -240,6 +247,8 @@ class RelaySettings:
             future_clock_skew_ms=self.future_clock_skew_ms,
             telemetry_freshness_ms=self.telemetry_freshness_ms,
             command_ttl_ms=self.command_ttl_ms,
+            audit_state_interval_ms=self.audit_state_interval_ms,
+            state_membership_history=self.state_membership_history,
         )
 
     def node_settings(self) -> dict[str, int]:

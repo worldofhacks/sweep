@@ -5,6 +5,10 @@ import pytest
 from planner.models import CommandOperation
 from relay.auth import sign_event, verify_event_signature
 from relay.contracts import (
+    MAX_CAPABILITY_ITEM_UTF8_BYTES,
+    MAX_CAPABILITY_LIST_CANONICAL_BYTES,
+    MAX_CAPABILITY_LIST_ITEMS,
+    MAX_STORAGE_REMAINING_BYTES,
     ContractError,
     DeltaKind,
     GuidanceMode,
@@ -147,6 +151,68 @@ def test_capabilities_frame_rejects_an_inverted_gimbal_range() -> None:
 
     with pytest.raises(ContractError, match="gimbal") as error:
         parse_capabilities(raw)
+    assert error.value.code == "invalid_capabilities"
+
+
+def test_capabilities_frame_bounds_storage_to_the_android_long_contract() -> None:
+    frame = parse_capabilities(
+        capabilities_payload(
+            event_id="capabilities-storage-max",
+            storage_remaining_bytes=MAX_STORAGE_REMAINING_BYTES,
+        )
+    )
+    assert frame.storage_remaining_bytes == MAX_STORAGE_REMAINING_BYTES
+
+    raw = capabilities_payload(
+        event_id="capabilities-storage-overflow",
+        storage_remaining_bytes=MAX_STORAGE_REMAINING_BYTES + 1,
+    )
+    with pytest.raises(ContractError, match="storage_remaining_bytes must be at most") as error:
+        parse_capabilities(raw)
+    assert error.value.code == "invalid_capabilities"
+
+
+@pytest.mark.parametrize(
+    "modes",
+    [
+        [f"mode-{index}" for index in range(MAX_CAPABILITY_LIST_ITEMS)],
+        ["😀" * (MAX_CAPABILITY_ITEM_UTF8_BYTES // 4)],
+        [f"{index:02d}" + "x" * 122 for index in range(63)] + ["last-" + "x" * 182],
+    ],
+)
+def test_capabilities_frame_accepts_exact_mode_list_utf8_and_aggregate_edges(
+    modes: list[str],
+) -> None:
+    frame = parse_capabilities(
+        capabilities_payload(event_id="capabilities-bounded", native_panorama_modes=modes)
+    )
+
+    assert frame.native_panorama_modes == tuple(modes)
+
+
+@pytest.mark.parametrize(
+    ("modes", "detail"),
+    [
+        (
+            [f"mode-{index}" for index in range(MAX_CAPABILITY_LIST_ITEMS + 1)],
+            f"at most {MAX_CAPABILITY_LIST_ITEMS} items",
+        ),
+        (
+            [f"{index:02d}" + "😀" * 510 for index in range(44)],
+            f"at most {MAX_CAPABILITY_ITEM_UTF8_BYTES} UTF-8 bytes",
+        ),
+        (
+            [f"{index:02d}" + "x" * 122 for index in range(63)] + ["last-" + "x" * 183],
+            f"at most {MAX_CAPABILITY_LIST_CANONICAL_BYTES} UTF-8 bytes",
+        ),
+    ],
+)
+def test_capabilities_frame_rejects_oversized_mode_claims(modes: list[str], detail: str) -> None:
+    raw = capabilities_payload(event_id="capabilities-unbounded", native_panorama_modes=modes)
+
+    with pytest.raises(ContractError, match=detail) as error:
+        parse_capabilities(raw)
+
     assert error.value.code == "invalid_capabilities"
 
 
