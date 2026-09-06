@@ -1,0 +1,20 @@
+services:
+  mediamtx:
+    # media/recording.py supplies the host identity so production and CI create
+    # operator-owned evidence instead of root-owned bind-mount content.
+    user: "${SWEEP_RECORDING_UID:?run through media/recording.py}:${SWEEP_RECORDING_GID:?run through media/recording.py}"
+    labels:
+      org.worldofhacks.sweep.recording-owner: "${SWEEP_RECORDING_OWNER:?run through media/recording.py}"
+    environment:
+      MTX_PATHDEFAULTS_RECORD: "true"
+      MTX_PATHDEFAULTS_RECORDPATH: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+      MTX_PATHDEFAULTS_RECORDFORMAT: fmp4
+      MTX_PATHDEFAULTS_RECORDPARTDURATION: 1s
+      MTX_PATHDEFAULTS_RECORDSEGMENTDURATION: 1m
+      MTX_PATHDEFAULTS_RECORDDELETEAFTER: 24h
+    volumes:
+      - type: bind
+        source: "${SWEEP_RECORDING_RUN_DIR:?run through media/recording.py}"
+        target: /recordings
+        bind:
+          create_host_path: false
