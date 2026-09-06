@@ -89,14 +89,10 @@ export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'capture_room',
   'come_home',
   'estop',
-  'formation_next',
-  'formation_set',
   'hold',
   'land',
   'land_all',
   'select',
-  'spacing',
-  'sweep',
   'takeoff',
   'translate',
 ]
@@ -104,6 +100,10 @@ export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
 export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
   ...C1_BASIC_CONTROL_INTENTS,
   'disarm',
+  'formation_next',
+  'formation_set',
+  'spacing',
+  'sweep',
 ]
 
 const CONFIGURED_DEPLOYMENT_INTENTS = new Set<ConsoleIntentName>([
