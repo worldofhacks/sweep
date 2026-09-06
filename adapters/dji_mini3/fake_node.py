@@ -106,6 +106,7 @@ class FakeNode:
         self._frame_counts: dict[str, int] = {}
         self._media: dict[str, dict[str, object]] = {}
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
+        self._telemetry_pending = False
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -199,6 +200,8 @@ class FakeNode:
         assert self._outbound is not None
         while True:
             frame = await self._outbound.get()
+            if frame["type"] == "telemetry":
+                self._telemetry_pending = False
             await socket.send(json.dumps(frame))  # type: ignore[attr-defined]
 
     async def _receive_loop(self, socket: object) -> None:
@@ -232,7 +235,7 @@ class FakeNode:
         while True:
             await asyncio.sleep(interval)
             if self._connection_epoch is not None:
-                self._enqueue(self._telemetry_frame())
+                self._enqueue_telemetry()
 
     def _handle_membership(self, frame: dict[str, object]) -> None:
         epoch = frame.get("connection_epoch")
@@ -243,7 +246,7 @@ class FakeNode:
             return
         self._connection_epoch = epoch
         self._last_seq = 0
-        self._enqueue(self._telemetry_frame())
+        self._enqueue_telemetry()
         self._enqueue(
             self._signed_membership(
                 "readiness",
@@ -289,7 +292,7 @@ class FakeNode:
     def _finish_command(self, frame: CommandFrame) -> None:
         status, reason, detail = self._execute(frame)
         if status == "completed" and self._connection_epoch is not None:
-            self._enqueue(self._telemetry_frame())
+            self._enqueue_telemetry()
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
 
     def _admission_refusal(
@@ -388,6 +391,13 @@ class FakeNode:
     def _enqueue(self, frame: dict[str, object]) -> None:
         assert self._outbound is not None
         self._outbound.put_nowait(frame)
+
+    def _enqueue_telemetry(self) -> None:
+        if self._telemetry_pending:
+            return
+        assert self._outbound is not None
+        self._telemetry_pending = True
+        self._outbound.put_nowait(self._telemetry_frame())
 
     def _next_t(self) -> int:
         self._last_t = max(self._last_t, _epoch_ms())

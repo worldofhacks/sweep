@@ -79,7 +79,8 @@ try {
   await page.getByRole('button', { name: 'Network stop', exact: true }).waitFor()
   await module('Control')
   await controlPane('Fleet')
-  for (const id of [1, 2, 3, 4]) await registry(id).locator('.ct-registry-membership').filter({ hasText: /^ready$/ }).waitFor()
+  await Promise.all([1, 2, 3, 4].map((id) => registry(id).locator('.ct-registry-membership').filter({ hasText: /^ready$/ }).waitFor()))
+  await waitForFreshFleet()
   evidence.checks.push('four ready aircraft visible in console')
 
   if (language) {
@@ -224,6 +225,28 @@ async function pendingIntent() { await dock().waitFor(); return JSON.parse(await
 async function module(name) { await page.getByRole('navigation', { name: 'Modules' }).getByRole('button', { name, exact: true }).click() }
 async function controlPane(name) { await page.getByRole('group', { name: 'Control panes' }).getByRole('button', { name, exact: true }).click() }
 async function status() { return (await fetch(`${baseUrl}/demo/status`)).json() }
+async function waitForFreshFleet() {
+  let identity = null
+  let stableSamples = 0
+  await waitUntil(async () => {
+    const fleet = await status()
+    const current = fleet.drones
+    const fresh = current.length === 4 && current.every((drone) => (
+      drone.membership === 'ready'
+      && drone.telemetry
+      && Date.now() - drone.telemetry.t >= 0
+      && Date.now() - drone.telemetry.t < 500
+    ))
+    const nextIdentity = fresh && `${fleet.roster_version}:${current.map((drone) => `${drone.drone_id}/${drone.connection_epoch}`).join(',')}`
+    if (!nextIdentity || nextIdentity !== identity) {
+      identity = nextIdentity
+      stableSamples = 0
+      return false
+    }
+    stableSamples += 1
+    return stableSamples >= 2
+  }, 'four concurrently fresh ready aircraft with a stable roster')
+}
 async function events() { return auditReader.readEvents() }
 function createAuditReader(logDirectory, expectedSession) {
   const records = [], allEvents = []
