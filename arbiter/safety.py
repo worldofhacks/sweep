@@ -37,6 +37,8 @@ _CONFIRMED_INTENTS: Final = frozenset(
         IntentName.SEARCH,
     }
 )
+CONFIRMATION_REQUIRED_INTENTS: Final = _CONFIRMED_INTENTS
+"""Public view of the intents the arbiter refuses without operator confirmation."""
 _SAFE_WHILE_STOPPED: Final = frozenset(
     {IntentName.ESTOP, IntentName.HOLD, IntentName.LAND, IntentName.LAND_ALL}
 )

@@ -56,7 +56,7 @@ from planner.models import (
 from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
 from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
-from relay.app import RelayRuntime, create_app
+from relay.app import RelayRuntime, TranscriptServiceFactory, create_app
 from relay.bridge import RelayNodeLink, build_dispatcher
 from relay.capabilities import CapabilityProfile
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
@@ -137,6 +137,23 @@ class AutonomyConfig:
     navigation_deployment: NavigationDeployment | None = None
     search_runtime: SearchRuntime | None = None
     search_detection: SearchDetectionConfig | None = None
+
+    def effective_capability_profile(self) -> CapabilityProfile:
+        base_profile = self.planning.effective_capability_profile()
+        profile = (
+            base_profile
+            if self.navigation_deployment is None
+            else CapabilityProfile(
+                f"{base_profile.name}.navigation",
+                base_profile.enabled_intent_names | {IntentName.NAVIGATE},
+            )
+        )
+        if self.search_runtime is not None and self.navigation_deployment is not None:
+            profile = CapabilityProfile(
+                f"{profile.name}.search",
+                profile.enabled_intent_names | {IntentName.SEARCH},
+            )
+        return profile
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
@@ -1100,20 +1117,7 @@ class AutonomyComposition:
         detection_camera_provider_factory: CameraProviderFactory | None = None,
     ) -> None:
         self.config = config
-        base_profile = config.planning.effective_capability_profile()
-        self.capability_profile = (
-            base_profile
-            if config.navigation_deployment is None
-            else CapabilityProfile(
-                f"{base_profile.name}.navigation",
-                base_profile.enabled_intent_names | {IntentName.NAVIGATE},
-            )
-        )
-        if config.search_runtime is not None and config.navigation_deployment is not None:
-            self.capability_profile = CapabilityProfile(
-                f"{self.capability_profile.name}.search",
-                self.capability_profile.enabled_intent_names | {IntentName.SEARCH},
-            )
+        self.capability_profile = config.effective_capability_profile()
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -1208,6 +1212,7 @@ def create_autonomy_app(
     detection_detector_factory: DetectorFactory | None = None,
     detection_pose_provider_factory: PoseProviderFactory | None = None,
     detection_camera_provider_factory: CameraProviderFactory | None = None,
+    transcript_service_factory: TranscriptServiceFactory | None = None,
 ) -> tuple[FastAPI, AutonomyComposition]:
     """Build the relay app with the planner and arbiter consuming every accepted intent."""
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
@@ -1234,6 +1239,7 @@ def create_autonomy_app(
         control_localization_factory=control_localization_factory,
         startup_callback=composition.start,
         shutdown_callback=composition.close,
+        transcript_service_factory=transcript_service_factory,
     )
 
     @app.get("/session/{session_id}/navigation/catalog")

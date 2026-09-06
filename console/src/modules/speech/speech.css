@@ -133,6 +133,29 @@
 .sp-fails .is-key { font-family: var(--font-mono); color: var(--color-warn); }
 .sp-fails .is-value { color: var(--color-ink-2); }
 
+/* Relay-compiled plan preview */
+.sp-plan-steps { margin: 10px 0 0; padding: 0; list-style: none; }
+.sp-plan-step { padding: 8px 0; border-top: 1px solid var(--color-rule-inner); }
+.sp-plan-step.is-next { background: var(--color-ground); }
+.sp-plan-step-head { margin: 0; display: flex; flex-wrap: wrap; gap: 3px 10px; align-items: baseline; font-family: var(--font-mono); font-size: var(--text-12-5); }
+.sp-plan-step-head .is-index { color: var(--color-ink-3); }
+.sp-plan-step-head .is-name { font-size: var(--text-16); font-weight: var(--weight-600); }
+.sp-plan-step-head .is-targets { color: var(--color-ink-2); }
+.sp-plan-step-head .is-args { min-width: 0; overflow-wrap: anywhere; color: var(--color-ink-2); }
+.sp-plan-step-head .is-confirm { color: var(--color-warn); }
+.sp-plan-step-head .is-send { color: var(--color-ink-3); }
+.sp-plan-step-status { margin: 4px 0 0; font-size: var(--text-12-5); }
+.sp-plan-step-status.is-completed { color: var(--color-ok); }
+.sp-plan-step-status.is-halted { color: var(--color-danger); }
+.sp-plan-step-status.is-waiting { color: var(--color-ink-3); }
+.sp-plan-notes { margin: 4px 0 0; padding-left: 18px; font-size: var(--text-12); color: var(--color-ink-3); }
+.sp-plan-notes li { margin: 1px 0; }
+.sp-plan-options { margin: 8px 0 0; padding-left: 18px; font-size: var(--text-13-5); }
+.sp-plan-options li { font-family: var(--font-mono); }
+.sp-plan-expiry { margin: 6px 0 0; font-family: var(--font-mono); font-size: var(--text-12); color: var(--color-ink-3); }
+.sp-plan-expiry.is-urgent { color: var(--color-warn); }
+.sp-plan-expiry.is-expired { color: var(--color-danger); }
+
 /* Pipeline */
 .sp-step { display: flex; gap: 14px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--color-rule-inner); }
 .sp-step-mark {

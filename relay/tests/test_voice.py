@@ -433,6 +433,7 @@ def test_transcript_endpoint_is_authenticated_session_bound_and_key_safe(tmp_pat
         "reason": None,
         "transcript": "hold the selected aircraft",
         "emissions": [],
+        "plan": None,
     }
     assert CONSOLE_KEY.decode() not in accepted.text
 

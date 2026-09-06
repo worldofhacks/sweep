@@ -31,9 +31,10 @@ export interface PlanPreview {
   steps: string[]
   rosterVersion: number
   /**
-   * Wall-clock deadline for confirming this preview. Set only when the relay
-   * reports a confirmation window; nothing sets it today, so the dock shows
-   * no countdown.
+   * Console-clock deadline for confirming this preview. Set when the draft is a
+   * step of a relay-compiled plan, which carries the plan's expiry: the dock
+   * counts it down, disables Confirm at zero, and confirmRequest invalidates a
+   * late confirmation with confirmation_window_expired instead of sending.
    */
   expiresAt?: number
 }

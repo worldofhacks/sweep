@@ -35,10 +35,10 @@ def load_cases() -> list[dict[str, object]]:
 def test_utterance_corpus_has_complete_compatible_cases() -> None:
     cases = load_cases()
 
-    assert len(cases) == 50
+    assert len(cases) == 53
     assert len({case["id"] for case in cases}) == len(cases)
     assert {case["category"] for case in cases} >= REFUSAL_CATEGORIES
-    assert sum(case["live_demo"] is True for case in cases) == 20
+    assert sum(case["live_demo"] is True for case in cases) == 23
 
     planned = {
         intent["name"]
