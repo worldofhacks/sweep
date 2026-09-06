@@ -11,6 +11,7 @@ export interface MosaicProps {
   count: WallSize
   now: number
   focusedId: DroneId | null
+  attentionId: DroneId | null
   selection: DroneId[]
   selectionEnabled?: boolean
   selectionDisabledReason?: string | null
@@ -31,6 +32,7 @@ export function Mosaic({
   count,
   now,
   focusedId,
+  attentionId,
   selection,
   selectionEnabled = true,
   selectionDisabledReason = null,
@@ -50,6 +52,7 @@ export function Mosaic({
               drone={drone}
               now={now}
               focused={focusedId === drone.drone_id}
+              attention={attentionId === drone.drone_id}
               selected={selection.includes(drone.drone_id)}
               lastInSelection={selection.length === 1 && selection[0] === drone.drone_id}
               selectionEnabled={selectionEnabled}
@@ -71,6 +74,7 @@ function Tile({
   drone,
   now,
   focused,
+  attention,
   selected,
   lastInSelection,
   selectionEnabled,
@@ -82,6 +86,7 @@ function Tile({
   drone: RelayAircraftState
   now: number
   focused: boolean
+  attention: boolean
   selected: boolean
   lastInSelection: boolean
   selectionEnabled: boolean
@@ -104,7 +109,7 @@ function Tile({
       ? 'Relay reports this aircraft is not selectable.'
       : undefined)
   return (
-    <article className={`lv-tile is-${stream.status}`} aria-label={`${id} camera tile`}>
+    <article className={`lv-tile is-${stream.status}${attention ? ' has-attention' : ''}`} aria-label={`${id} camera tile`}>
       <div className="lv-visual">
         {plays && <LivePlayer key={drone.drone_id} droneId={drone.drone_id} media={media} />}
         <div className="lv-bar">
@@ -116,6 +121,7 @@ function Tile({
           <span>{stream.lastFrame}</span>
         </div>
         {stream.degraded && <div className="lv-overlay">{stream.degradedWord}</div>}
+        {attention && <div className="lv-attention" role="status">Detection needs review</div>}
         {stream.status === 'live' && media === undefined && (
           <div className="lv-overlay is-muted">Playback is not configured on this console.</div>
         )}

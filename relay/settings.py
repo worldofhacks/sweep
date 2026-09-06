@@ -46,6 +46,16 @@ def transcription_provider_from_env(environ: Mapping[str, str] | None = None) ->
 
 
 @dataclass(frozen=True, slots=True)
+class DetectionRecording:
+    recording_id: str
+    drone_id: int
+    source_id: str
+    mission_id: str
+    image_path: Path
+    image_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class RelaySettings:
     relay_token: bytes = field(repr=False)
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
@@ -81,6 +91,8 @@ class RelaySettings:
     media_read_password: str | None = field(default=None, repr=False)
     audit_state_interval_ms: int = 10_000
     state_membership_history: int = 8
+    detection_model_path: Path | None = None
+    detection_recordings: tuple[DetectionRecording, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.relay_token) is not bytes or not 32 <= len(self.relay_token) <= 4_096:
@@ -169,6 +181,16 @@ class RelaySettings:
             )
         if self.media_webrtc_origin is not None and not _is_origin(self.media_webrtc_origin):
             raise SettingsError("SWEEP_MEDIA_WEBRTC_ORIGIN must be an explicit HTTP(S) origin")
+        if self.detection_recordings and self.detection_model_path is None:
+            raise SettingsError("SWEEP_DETECTION_MODEL_PATH is required with recordings")
+        if self.detection_model_path is not None and not self.detection_model_path.is_absolute():
+            raise SettingsError("SWEEP_DETECTION_MODEL_PATH must be an absolute path")
+        if len(self.detection_recordings) > 32:
+            raise SettingsError("detection recordings exceed the 32-recording limit")
+        if len({item.recording_id for item in self.detection_recordings}) != len(
+            self.detection_recordings
+        ):
+            raise SettingsError("detection recording IDs must be unique")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> RelaySettings:
@@ -260,6 +282,9 @@ class RelaySettings:
             state_membership_history=_positive_integer(
                 values.get("SWEEP_STATE_MEMBERSHIP_HISTORY", "8"),
                 "SWEEP_STATE_MEMBERSHIP_HISTORY",
+            detection_model_path=_path(values.get("SWEEP_DETECTION_MODEL_PATH")),
+            detection_recordings=_detection_recordings(
+                values.get("SWEEP_DETECTION_RECORDINGS_JSON", "{}")
             ),
         )
 
@@ -348,6 +373,56 @@ def _optional(raw: str | None) -> str | None:
     if raw is None or not raw.strip():
         return None
     return raw
+
+
+def _path(raw: str | None) -> Path | None:
+    value = _optional(raw)
+    return None if value is None else Path(value)
+
+
+def _detection_recordings(raw: str) -> tuple[DetectionRecording, ...]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SettingsError("SWEEP_DETECTION_RECORDINGS_JSON must be valid JSON") from error
+    if not isinstance(value, dict):
+        raise SettingsError("SWEEP_DETECTION_RECORDINGS_JSON must be an object")
+    result: list[DetectionRecording] = []
+    for recording_id, item in value.items():
+        if (
+            not isinstance(recording_id, str)
+            or not recording_id
+            or recording_id != recording_id.strip()
+            or len(recording_id) > 128
+            or not isinstance(item, dict)
+            or set(item) != {"drone_id", "source_id", "mission_id", "image_path", "image_sha256"}
+        ):
+            raise SettingsError("detection recordings have an invalid shape")
+        drone_id = item["drone_id"]
+        source_id = item["source_id"]
+        mission_id = item["mission_id"]
+        image_path = item["image_path"]
+        image_sha256 = item["image_sha256"]
+        if (
+            type(drone_id) is not int
+            or drone_id <= 0
+            or any(
+                not isinstance(part, str) or not part or len(part) > 128
+                for part in (source_id, mission_id)
+            )
+            or not isinstance(image_path, str)
+            or not Path(image_path).is_absolute()
+            or not isinstance(image_sha256, str)
+            or len(image_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in image_sha256)
+        ):
+            raise SettingsError("detection recordings contain invalid values")
+        result.append(
+            DetectionRecording(
+                recording_id, drone_id, source_id, mission_id, Path(image_path), image_sha256
+            )
+        )
+    return tuple(result)
 
 
 def _boolean(raw: str, name: str) -> bool:

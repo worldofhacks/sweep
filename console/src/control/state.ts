@@ -379,6 +379,21 @@ function reduceRelayEvent(
       // Retain report IDs for dedupe; these reports cannot grant readiness or
       // authority or create a second client-side source of aircraft truth.
       return stateWithEvent
+    case 'detection':
+      return {
+        ...stateWithEvent,
+        detections: [{ event, acknowledged: event.acknowledged }, ...stateWithEvent.detections].slice(0, 64),
+        selectedFeedId: event.attention === 'promoted' ? event.drone_id : stateWithEvent.selectedFeedId,
+      }
+    case 'detection_acknowledgement':
+      return {
+        ...stateWithEvent,
+        detections: stateWithEvent.detections.map((record) =>
+          record.event.detection_id === event.detection_id
+            ? { ...record, acknowledged: true }
+            : record,
+        ),
+      }
     case 'safety_action':
       return {
         ...stateWithEvent,

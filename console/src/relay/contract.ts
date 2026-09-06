@@ -498,7 +498,7 @@ export interface RelayDetectionEvent {
   evaluation_completed_at_monotonic_s: number
   observation_count: number
   attention: 'promoted' | 'suppressed_duplicate'
-  acknowledged: false
+  acknowledged: boolean
 }
 
 export interface RelayDetectionAcknowledgementEvent {
@@ -1197,9 +1197,10 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
   }
 
   if (value.type === 'detection') {
+    const observationCount = value.observation_count
     if (
       typeof value.detection_id !== 'string' ||
-      value.detection_id !== value.event_id ||
+      value.detection_id.length === 0 ||
       !isDroneId(value.drone_id) ||
       !['source_id', 'sighting_id', 'frame_id', 'label'].every(
         (field) => typeof value[field] === 'string' && value[field].length > 0,
@@ -1213,10 +1214,11 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isFiniteNumber(value.frame_decoded_at_monotonic_s) ||
       !isFiniteNumber(value.evaluation_completed_at_monotonic_s) ||
       value.evaluation_completed_at_monotonic_s < value.frame_decoded_at_monotonic_s ||
-      !Number.isInteger(value.observation_count) ||
-      value.observation_count < 1 ||
+      typeof observationCount !== 'number' ||
+      !Number.isInteger(observationCount) ||
+      observationCount < 1 ||
       !['promoted', 'suppressed_duplicate'].includes(String(value.attention)) ||
-      value.acknowledged !== false
+      typeof value.acknowledged !== 'boolean'
     ) {
       return null
     }
