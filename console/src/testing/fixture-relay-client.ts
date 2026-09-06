@@ -12,8 +12,10 @@ import type {
   DroneId,
   IntentV1,
   RelayAircraftState,
+  RelaySensorEvent,
   RelayServerEvent,
   IntentSource,
+  SensorPose,
 } from '../relay/contract'
 import { C1_BASIC_CONTROL_INTENTS, isSupportedIntent } from '../relay/contract'
 
@@ -22,15 +24,18 @@ export type FixtureFleetSize = 4 | 6
 /**
  * Named fixture scenarios. `control` is the original four- or six-drone
  * contract fixture; `pending4`, `six6`, and `down` are the Sweep Console v4
- * design scenarios as relay data only. Nothing here reaches production state.
+ * design scenarios as relay data only; `mixed` is two aircraft beside three
+ * ground vehicles with synthetic lidar scans. Nothing here reaches production
+ * state.
  */
-export type FixtureScenarioName = 'control' | 'pending4' | 'six6' | 'down'
+export type FixtureScenarioName = 'control' | 'pending4' | 'six6' | 'down' | 'mixed'
 
 export const FIXTURE_SCENARIO_NAMES: readonly FixtureScenarioName[] = [
   'control',
   'pending4',
   'six6',
   'down',
+  'mixed',
 ]
 
 export function isFixtureScenarioName(value: string): value is FixtureScenarioName {
@@ -67,6 +72,8 @@ export interface FixtureScenario {
   pending: Record<string, unknown> | null
   /** Captures, building, jobs, node details, services, metrics, configuration. */
   catalog: (now: number) => CatalogSnapshot
+  /** Sensor frames emitted once after the first state frame; none for aircraft-only scenarios. */
+  scans?: (now: number) => Array<Omit<RelaySensorEvent, 'v' | 'event_id' | 'session'>>
 }
 
 const CONNECTED: FixtureLink = {
@@ -137,6 +144,11 @@ export class FixtureRelayClient implements RelayClient {
       })
     }
     this.emitState(this.now())
+    if (this.source === 'console') {
+      for (const scan of this.scenario.scans?.(this.now()) ?? []) {
+        this.emitServer({ ...scan, v: 1, event_id: this.nextEventId(), session: this.sessionId })
+      }
+    }
   }
 
   stop(): void {}
@@ -318,6 +330,148 @@ export function fixtureScenario(name: FixtureScenarioName): FixtureScenario {
         catalog: (now) => designCatalog(now, 4),
       }
     }
+    case 'mixed':
+      return {
+        name,
+        rosterVersion: 14,
+        formation: 'line',
+        spacing: 1.2,
+        console: CONNECTED,
+        keyboard: CONNECTED,
+        fleet: mixedFleet,
+        departures: [],
+        pending: null,
+        catalog: (now) => designCatalog(now, 4),
+        scans: mixedScans,
+      }
+  }
+}
+
+/** The demo floor: a room the ground vehicles' synthetic scans are cast against, in metres. */
+export const FIXTURE_ROOM = { min_x: -3, max_x: 3, min_y: -2, max_y: 2 } as const
+
+/** Ground vehicles in the mixed scenario: id, unit, pose, and whether the lidar kit is fitted. */
+const MIXED_GROUND: ReadonlyArray<{ id: DroneId; unit: number; pose: SensorPose; lidar: boolean }> = [
+  { id: 11, unit: 1, pose: { x: -1.2, y: -0.4, yaw_deg: 90 }, lidar: true },
+  { id: 12, unit: 2, pose: { x: 0.6, y: 0.8, yaw_deg: 20 }, lidar: true },
+  { id: 13, unit: 3, pose: { x: 1.8, y: -1.1, yaw_deg: 270 }, lidar: false },
+]
+
+/**
+ * Two aircraft beside three ground vehicles: G-01 idle and ready with lidar,
+ * G-02 moving with lidar, G-03 docked without the kit and waiting for its
+ * spotter. Ground vehicles report z 0 and the drive vocabulary in `state`.
+ */
+function mixedFleet(now: number): RelayAircraftState[] {
+  const ground = (
+    entry: (typeof MIXED_GROUND)[number],
+    overrides: Partial<RelayAircraftState>,
+  ): RelayAircraftState =>
+    designDrone(now, entry.id, {
+      device_class: 'ground_vehicle',
+      unit: entry.unit,
+      adapter_id: `ohmni-${String(entry.unit).padStart(2, '0')}`,
+      adapter_capabilities: [
+        'class:ground_vehicle',
+        'ground_drive',
+        'camera',
+        'neck',
+        'speech',
+        'lights',
+        'screen',
+        ...(entry.lidar ? ['lidar'] : []),
+      ],
+      camera_patterns: [],
+      home_pose: { x: entry.pose.x, y: entry.pose.y, z: 0 },
+      telemetry: { x: entry.pose.x, y: entry.pose.y, z: 0, yaw_deg: entry.pose.yaw_deg },
+      sensor: entry.lidar ? { kind: 'lidar_scan', last_scan_at: now - 200 } : undefined,
+      ...overrides,
+    })
+  return [
+    designDrone(now, 1, { battery: 0.78, link: 0.92, pos_quality: 0.88 }),
+    designDrone(now, 2, {
+      battery: 0.64,
+      link: 0.81,
+      pos_quality: 0.73,
+      flight_state: 'landed',
+      video: { status: 'offline', last_frame_at: now - 38_000 },
+    }),
+    ground(MIXED_GROUND[0], {
+      flight_state: 'idle',
+      battery: 0.71,
+      link: 0.87,
+      pos_quality: 0.6,
+      video: { status: 'live', last_frame_at: now - 300 },
+    }),
+    ground(MIXED_GROUND[1], {
+      flight_state: 'moving',
+      battery: 0.55,
+      link: 0.79,
+      pos_quality: 0.6,
+      video: { status: 'live', last_frame_at: now - 250 },
+    }),
+    ground(MIXED_GROUND[2], {
+      flight_state: 'docked',
+      membership: 'degraded',
+      readiness_reasons: ['rc_safety_operator_missing'],
+      rc_safety_operator_present: false,
+      selectable: false,
+      battery: 0.98,
+      link: 0.9,
+      pos_quality: 0.6,
+      video: { status: 'unreported', last_frame_at: null },
+    }),
+  ]
+}
+
+/** Three scans per lidar-fitted ground vehicle, a small step apart so trails have length. */
+function mixedScans(now: number): Array<Omit<RelaySensorEvent, 'v' | 'event_id' | 'session'>> {
+  return MIXED_GROUND.filter((entry) => entry.lidar).flatMap((entry) =>
+    [2, 1, 0].map((step) => ({
+      t: now - 200 - step * 200,
+      type: 'sensor' as const,
+      drone_id: entry.id,
+      connection_epoch: 1,
+      ...syntheticRoomScan(
+        { ...entry.pose, x: entry.pose.x - step * 0.05 },
+        FIXTURE_ROOM,
+      ),
+    })),
+  )
+}
+
+/**
+ * A 1° lidar scan of a rectangular room from a pose inside it: each ray runs
+ * from the pose along the device's heading plus the bin angle until it meets
+ * a wall. Ranges beyond `range_max_m` read 0 (no return), as the frame rules
+ * require.
+ */
+export function syntheticRoomScan(
+  pose: SensorPose,
+  room: { min_x: number; max_x: number; min_y: number; max_y: number },
+  rangeMaxM = 12,
+): Pick<
+  RelaySensorEvent,
+  'kind' | 'pose' | 'angle_min_deg' | 'angle_increment_deg' | 'range_min_m' | 'range_max_m' | 'ranges_cm'
+> {
+  const ranges: number[] = []
+  for (let bin = 0; bin < 360; bin += 1) {
+    const angle = ((pose.yaw_deg + bin) * Math.PI) / 180
+    const dx = Math.cos(angle)
+    const dy = Math.sin(angle)
+    const tx = dx > 1e-9 ? (room.max_x - pose.x) / dx : dx < -1e-9 ? (room.min_x - pose.x) / dx : Infinity
+    const ty = dy > 1e-9 ? (room.max_y - pose.y) / dy : dy < -1e-9 ? (room.min_y - pose.y) / dy : Infinity
+    const distance = Math.min(tx, ty)
+    ranges.push(distance > rangeMaxM || !Number.isFinite(distance) ? 0 : Math.round(distance * 100))
+  }
+  return {
+    kind: 'lidar_scan',
+    pose,
+    angle_min_deg: 0,
+    angle_increment_deg: 1,
+    range_min_m: 0.15,
+    range_max_m: rangeMaxM,
+    ranges_cm: ranges,
   }
 }
 
@@ -932,6 +1086,8 @@ function departedFive(rosterVersion: number): FixtureDeparture {
 function designDrone(now: number, id: DroneId, overrides: Partial<RelayAircraftState> = {}): RelayAircraftState {
   return {
     drone_id: id,
+    device_class: 'aircraft',
+    unit: id,
     connection_epoch: 1,
     membership: 'ready',
     readiness_reasons: [],
@@ -1047,6 +1203,8 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
   const fleet: RelayAircraftState[] = [
     {
       drone_id: 1,
+      device_class: 'aircraft',
+      unit: 1,
       connection_epoch: 3,
       membership: 'ready',
       readiness_reasons: [],
@@ -1069,6 +1227,8 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
     },
     {
       drone_id: 2,
+      device_class: 'aircraft',
+      unit: 2,
       connection_epoch: 1,
       membership: 'ready',
       readiness_reasons: [],
@@ -1091,6 +1251,8 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
     },
     {
       drone_id: 3,
+      device_class: 'aircraft',
+      unit: 3,
       connection_epoch: 2,
       membership: 'degraded',
       readiness_reasons: ['telemetry_stale', 'camera_not_ready'],
@@ -1113,6 +1275,8 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
     },
     {
       drone_id: 4,
+      device_class: 'aircraft',
+      unit: 4,
       connection_epoch: 1,
       membership: 'ready',
       readiness_reasons: [],
@@ -1138,6 +1302,8 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
     ...fleet,
     {
       drone_id: 5,
+      device_class: 'aircraft',
+      unit: 5,
       connection_epoch: 1,
       membership: 'ready',
       readiness_reasons: [],
@@ -1160,6 +1326,8 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
     },
     {
       drone_id: 6,
+      device_class: 'aircraft',
+      unit: 6,
       connection_epoch: 1,
       membership: 'ready',
       readiness_reasons: [],

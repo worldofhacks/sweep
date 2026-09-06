@@ -1,6 +1,7 @@
 import { FleetContext } from './FleetContext'
 import { CapturesModule } from './captures/CapturesModule'
 import { ControlModule } from './control/ControlModule'
+import { DevicesModule } from './devices/DevicesModule'
 import { GestureModule } from './gesture/GestureModule'
 import { LiveModule } from './live/LiveModule'
 import { ReferenceModule } from './reference/ReferenceModule'
@@ -8,7 +9,7 @@ import { SpeechModule } from './speech/SpeechModule'
 import { WorldsModule } from './worlds/WorldsModule'
 import type { ModuleDefinition, ModuleId } from './types'
 
-/** Navigation order from the design: Control, Live, Gesture, Speech, Captures, Worlds, Reference. */
+/** Navigation order: Control, Live, Gesture, Speech, Captures, Worlds, Devices, Reference. */
 export const MODULES: readonly ModuleDefinition[] = [
   {
     id: 'control',
@@ -38,7 +39,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     id: 'speech',
     label: 'Speech',
     title: 'Speech to intents',
-    note: 'An utterance compiles to intents, the arbiter validates, you confirm. Never a command straight to an aircraft.',
+    note: 'An utterance compiles to intents, the arbiter validates, you confirm. Never a command straight to a device.',
     component: SpeechModule,
     context: FleetContext,
   },
@@ -46,7 +47,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     id: 'captures',
     label: 'Captures',
     title: 'Capture library',
-    note: 'Captured media by room, capture, aircraft and time.',
+    note: 'Captured media by room, capture, device and time.',
     component: CapturesModule,
     context: FleetContext,
   },
@@ -56,6 +57,14 @@ export const MODULES: readonly ModuleDefinition[] = [
     title: 'World Builder',
     note: 'Rooms, bundles, and generation jobs. A generated world is never a safety record.',
     component: WorldsModule,
+    context: FleetContext,
+  },
+  {
+    id: 'devices',
+    label: 'Devices',
+    title: 'Devices',
+    note: 'Every device the relay reports, its class and feeds, and the configuration a node needs to join.',
+    component: DevicesModule,
     context: FleetContext,
   },
   {
