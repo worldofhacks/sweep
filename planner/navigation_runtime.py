@@ -13,12 +13,14 @@ from planner.models import (
     Refusal,
     RefusalReason,
 )
+from planner.navigation_acceptance import NavigationDispatchAcceptance
 from planner.navigation import (
     DronePose,
     MotionConfig,
     NavigationArtifact,
     NavigationPermission,
     NavigationPlan,
+    NavigationLiveState,
     NavigationPlanner,
     NavigationRefusal,
     NavigationRequest,
@@ -154,10 +156,12 @@ class NavigationRuntime:
         artifact: Callable[[], NavigationArtifact],
         config: NavigationExecutionConfig,
         permission: NavigationPermission,
+        dispatch_acceptance: Callable[[NavigationPlan, NavigationArtifact], NavigationDispatchAcceptance | None] | None = None,
     ) -> None:
         self.artifact = artifact
         self.config = config
         self.permission = permission
+        self.dispatch_acceptance = dispatch_acceptance
         self.planner = NavigationPlanner()
         self.control_pins: Mapping[int, object] | None = None
         self.maximum_aircraft: int | None = None
@@ -170,6 +174,7 @@ class NavigationRuntime:
                 NavigationRequest(
                     destination_zone_id=intent.args["zone_id"],
                     roster_version=snapshot.roster_version,
+                    plan_revision=intent.t,
                     selected=selected,
                     all_positions=positions,
                     motion=self.config.motion,
@@ -242,6 +247,7 @@ class NavigationRuntime:
             return self._refusal(plan.intent_id, snapshot, "destination permission changed")
         try:
             artifact = self.artifact()
+            acceptance = self.dispatch_acceptance(route_plan, artifact) if self.dispatch_acceptance else None
             positions = self._positions(snapshot)
             if (artifact.map_pin, artifact.geometry_pin) != (
                 route_plan.map_pin,
@@ -300,10 +306,15 @@ class NavigationRuntime:
                 refusal = self.planner.revalidate(
                     route_plan,
                     artifact,
-                    positions,
+                    NavigationLiveState(
+                        route_plan.roster_version, route_plan.plan_revision,
+                        tuple(drone.drone_id for drone in route_plan.selected), positions,
+                        route_plan.config, route_plan.permission,
+                    ),
                     route_index,
                     cursor,
                     self.config.position_tolerance_m,
+                    acceptance=acceptance,
                 )
                 if refusal is not None:
                     raise ValueError(f"{refusal.code}: {refusal.detail}")

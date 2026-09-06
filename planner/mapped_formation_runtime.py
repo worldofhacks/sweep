@@ -138,6 +138,7 @@ class MappedFormationRuntime:
             request = MappedFormationRequest(
                 formation.shape,
                 snapshot.roster_version,
+                intent.t,
                 selected,
                 positions,
                 frozenset(

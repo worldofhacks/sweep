@@ -103,7 +103,8 @@ not assert map acceptance, body attitude accuracy or permission to move.
 
 ## Translation replay
 
-`perception.position_replay.PositionReplay` provides a position-only linear
+`perception.position_replay.PositionReplay` is the legacy finite-recording model. It
+provides a position-only linear
 Kalman filter with isotropic process variance in square meters per second and
 position-fix variance in square meters. Velocity controls must already be in the
 building map frame, in meters per second. The implementation makes no assumption
@@ -130,6 +131,12 @@ conversion and a calibrated live noise model remain open. It has no automatic
 connection to the image CLI; callers must pass only accepted body-position fixes
 with an appropriate measured variance.
 
+Its velocity values are held controls rather than noisy state measurements, so it
+is not the numerical primitive for new online fusion. The private
+`perception._kalman_replay` core owns online constant-velocity measurement replay;
+policy-bearing consumers must reach it through `ControlLocalization` or an
+observation-only wrapper such as `WebcamFilter`.
+
 ## Required physical and runtime work
 
 The printed-tag scan supplies surveyed poses and check measurements for #80/#81.
@@ -137,9 +144,11 @@ The printed-tag scan supplies surveyed poses and check measurements for #80/#81.
 and latency artifact. Recorded frames can be exported to this laptop/server tool;
 it does not require a console video panel.
 
-The remaining #84 acceptance includes real gimbal/body extrinsics and timestamp
-synchronization, measured recorded-frame accuracy, the hand-carried route with
-no unhandled fix gap over 500 ms, the per-drone runtime filter, and relay/arbiter
-integration. Wrong-map refusal to arm, stale-localization hold, sustained-red
-landing and covered-tag drills must exercise that actual control path in sim and
-on the bench. They remain open after these offline tools merge.
+`ControlLocalization` now supplies an unintegrated per-drone fusion and local
+eligibility boundary. The remaining #84 acceptance still includes real
+gimbal/body extrinsics and timestamp synchronization, measured recorded-frame
+accuracy, the hand-carried route with no unhandled fix gap over 500 ms, and
+relay/arbiter integration. Wrong/unpinned-map refusal to arm, stale-localization
+HOLD then in-place LAND, and covered-tag drills must exercise that actual signed
+control path in sim and on the bench. They remain open after these components
+merge.

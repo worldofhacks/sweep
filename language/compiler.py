@@ -22,7 +22,6 @@ from language.contracts import (
     rehydrate_plan_intents,
     validate_model_outcome,
 )
-from language.navigation import NavigationGrounding
 from language.telemetry import TraceSink, get_default_trace_sink
 from language.transport import (
     PINNED_COMPILER_MODEL,
@@ -214,7 +213,6 @@ class TranscriptCompiler:
         capability_version: str,
         rooms: tuple[str, ...] = (),
         translation: object = None,
-        navigation: NavigationGrounding | None = None,
         altitude: object = None,
         capability_profile: CapabilityProfile | None = None,
         qualified_voice_intents: tuple[str, ...] = (),
@@ -235,7 +233,6 @@ class TranscriptCompiler:
                 capability_version=capability_version,
                 rooms=rooms,
                 translation=translation,
-                navigation=navigation,
                 altitude=altitude,
                 capability_profile=capability_profile,
                 qualified_voice_intents=qualified_voice_intents,
@@ -435,7 +432,6 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        navigation: NavigationGrounding | None = None,
         now_ms: int,
         intent_id: str,
         router: PreparedExecutionRouter,
@@ -446,7 +442,6 @@ class ConfirmedPlan:
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
-                navigation=navigation,
                 completed_at_ms=self._pending_completion["t"],
             ):
                 self.acknowledge(
@@ -454,14 +449,12 @@ class ConfirmedPlan:
                     relay_state,
                     capability_version=capability_version,
                     rooms=rooms,
-                    navigation=navigation,
                     now_ms=now_ms,
                 )
             facts, proposal, intent = self._confirmation_candidate(
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
-                navigation=navigation,
                 now_ms=now_ms,
                 intent_id=intent_id,
             )
@@ -493,7 +486,6 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        navigation: NavigationGrounding | None = None,
         now_ms: int,
         intent_id: str,
         emit: Callable[[IntentV1], object],
@@ -507,7 +499,6 @@ class ConfirmedPlan:
                 relay_state,
                 capability_version=capability_version,
                 rooms=rooms,
-                navigation=navigation,
                 now_ms=now_ms,
                 intent_id=intent_id,
                 emit=emit,
@@ -520,7 +511,6 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        navigation: NavigationGrounding | None = None,
         now_ms: int,
         intent_id: str,
         emit: Callable[[IntentV1], object],
@@ -530,7 +520,6 @@ class ConfirmedPlan:
             relay_state,
             capability_version=capability_version,
             rooms=rooms,
-            navigation=navigation,
             now_ms=now_ms,
             intent_id=intent_id,
         )
@@ -568,7 +557,7 @@ class ConfirmedPlan:
                 self._terminal = True
                 raise ConfirmationError("confirmation requires its issued planner result and sink")
             execution_plan = prepared.execution.plan
-        elif proposal.name.value in {"translate", "altitude", "come_home", "navigate"}:
+        elif proposal.name.value in {"translate", "altitude", "come_home"}:
             self._terminal = True
             raise ConfirmationError("motion confirmation requires the previewed planner result")
         try:
@@ -651,7 +640,6 @@ class ConfirmedPlan:
                         state,
                         capability_version=capability_version,
                         rooms=rooms,
-                        navigation=navigation,
                         now_ms=state["t"],
                     )
                     break
@@ -684,7 +672,6 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        navigation: NavigationGrounding | None = None,
         now_ms: int,
     ) -> None:
         with self._lock:
@@ -694,7 +681,6 @@ class ConfirmedPlan:
                     relay_state,
                     capability_version=capability_version,
                     rooms=rooms,
-                    navigation=navigation,
                     now_ms=now_ms,
                 )
             except ConfirmationError:
@@ -708,7 +694,6 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        navigation: NavigationGrounding | None = None,
         now_ms: int,
     ) -> None:
         if self._terminal:
@@ -793,7 +778,6 @@ class ConfirmedPlan:
                 altitude=_altitude_grounding(self._compiled.facts),
                 capability_profile=self._compiled.facts.capability_profile,
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
-                navigation=navigation,
             )
         except ValueError:
             raise ConfirmationError("relay outcome state is invalid") from None
@@ -860,7 +844,6 @@ class ConfirmedPlan:
             relay_state,
             capability_version=capability_version,
             rooms=rooms,
-            navigation=navigation,
             completed_at_ms=outcome["t"],
         ):
             self._pending_completion = dict(outcome)
@@ -870,7 +853,6 @@ class ConfirmedPlan:
             "translate",
             "altitude",
             "come_home",
-            "navigate",
         }
         if facts.state_time_ms < self._awaiting_emitted_at_ms or (
             requires_post_dispatch_position and facts.state_time_ms == self._awaiting_emitted_at_ms
@@ -936,7 +918,6 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        navigation: NavigationGrounding | None = None,
         completed_at_ms: int,
     ) -> bool:
         emitted = self._compiled.intents[self._next - 1]
@@ -945,7 +926,6 @@ class ConfirmedPlan:
             "translate",
             "altitude",
             "come_home",
-            "navigate",
             "land",
             "land_all",
             "hold",
@@ -959,7 +939,6 @@ class ConfirmedPlan:
             altitude=_altitude_grounding(self._compiled.facts),
             capability_profile=self._compiled.facts.capability_profile,
             qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
-            navigation=navigation,
         )
         targets = (
             {command.drone_id for command in self._awaiting_plan.commands}
@@ -970,7 +949,7 @@ class ConfirmedPlan:
             _drone_position_time(facts, drone_id) is None
             or _drone_position_time(facts, drone_id) < completed_at_ms
             or (
-                emitted.name.value in {"hold", "land", "navigate"}
+                emitted.name.value in {"hold", "land"}
                 and _drone_position_time(facts, drone_id) == completed_at_ms
             )
             or _drone_position_time(facts, drone_id) <= self._awaiting_emitted_at_ms
@@ -1054,24 +1033,6 @@ class ConfirmedPlan:
                 ):
                     self._terminal = True
                     raise ConfirmationError("actual planner home target was not previewed")
-        elif intent.name.value == "navigate":
-            if (
-                facts.navigation is None
-                or plan.navigation is None
-                or plan.navigation.route.destination_zone_id != intent.args["zone_id"]
-                or (
-                    plan.navigation.route.map_pin.content_sha256,
-                    plan.navigation.route.map_pin.version,
-                )
-                != facts.navigation.map_pin
-                or (
-                    plan.navigation.route.geometry_pin.content_sha256,
-                    plan.navigation.route.geometry_pin.version,
-                )
-                != facts.navigation.geometry_pin
-            ):
-                self._terminal = True
-                raise ConfirmationError("actual planner route differs from the navigation preview")
 
     def _confirmation_candidate(
         self,
@@ -1079,7 +1040,6 @@ class ConfirmedPlan:
         *,
         capability_version: str,
         rooms: tuple[str, ...],
-        navigation: NavigationGrounding | None = None,
         now_ms: int,
         intent_id: str,
     ) -> tuple[GroundingFacts, ProposedIntent, IntentV1]:
@@ -1100,7 +1060,6 @@ class ConfirmedPlan:
                 altitude=_altitude_grounding(self._compiled.facts),
                 capability_profile=self._compiled.facts.capability_profile,
                 qualified_voice_intents=self._compiled.facts.qualified_voice_intents,
-                navigation=navigation,
             )
         except ValueError:
             raise ConfirmationError("current state is invalid") from None

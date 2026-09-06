@@ -26,7 +26,7 @@ def config(bundle: Path, geometry: Path) -> dict[str, object]:
                 "floor_id": "level_1",
                 "navigation_allowed": True,
                 "aliases": ["atrium"],
-                "arrival_slots": [{"id": "a", "x_m": 1.5, "y_m": 1.5, "z_m": 1.6, "radius_m": 0.5}],
+                "arrival_slots": [{"id": "a", "x_m": 2.25, "y_m": 1.85, "z_m": 1.8, "radius_m": 0.1, "half_height_m": 0.1}],
             }
         ],
         "permission_zone_ids": ["atrium"],

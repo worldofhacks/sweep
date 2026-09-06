@@ -1,9 +1,16 @@
-"""Offline position Kalman replay using explicit map-frame velocity controls."""
+"""Legacy offline replay using map-frame velocity as a held control input.
+
+This finite-recording model is intentionally separate from the private online
+measurement replay used by ``ControlLocalization`` and ``WebcamFilter``. New online
+localization consumers must use a policy wrapper around that shared core instead.
+"""
 
 import numpy as np
 
 
 class PositionReplay:
+    """Reproduce finite legacy recordings; never establish flight authority."""
+
     def __init__(self, start_time, position, variance=1.0, process_variance_per_s=0.01):
         values = np.array([start_time, variance, process_variance_per_s], dtype=float)
         self.initial = np.asarray(position, dtype=float)

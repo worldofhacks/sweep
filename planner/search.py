@@ -72,6 +72,7 @@ class SearchRequest:
     zone: SearchArea
     target_class: str
     roster_version: int
+    plan_revision: int
     selected: tuple[SearchDrone, ...]
     all_positions: tuple[DronePose, ...]
     map_pin: ArtifactPin
@@ -88,6 +89,9 @@ class SearchRequest:
             isinstance(self.roster_version, bool)
             or not isinstance(self.roster_version, int)
             or self.roster_version < 0
+            or isinstance(self.plan_revision, bool)
+            or not isinstance(self.plan_revision, int)
+            or self.plan_revision < 0
         ):
             raise ValueError("roster_version must be an integer")
         _identifier(self.config_id, "config_id")
@@ -131,6 +135,7 @@ class SearchPreview:
     map_pin: ArtifactPin
     geometry_pin: ArtifactPin
     roster_version: int
+    plan_revision: int
     config_id: str
     camera: CameraPolicy
     confirmation_id: str
@@ -155,6 +160,7 @@ class SearchPreview:
                 "geometry_sha256": self.geometry_pin.content_sha256,
             },
             "roster_version": self.roster_version,
+            "plan_revision": self.plan_revision,
             "config_id": self.config_id,
             "confirmation_id": self.confirmation_id,
             "camera": self.camera.payload(),
@@ -208,7 +214,7 @@ class SearchPlanner:
         zone = next((item for item in artifact.zones if item.zone_id == request.zone.zone_id), None)
         if zone is None:
             return SearchRefusal("zone_unknown", "search zone is absent from navigation map")
-        if not zone.navigation_allowed or zone.zone_id not in request.permission.permitted_zone_ids:
+        if not zone.owner_approved or zone.zone_id not in request.permission.permitted_zone_ids:
             return SearchRefusal("zone_excluded", "search zone is not permitted for navigation")
         if zone.floor_id != request.zone.floor_id:
             return SearchRefusal(
@@ -292,6 +298,7 @@ class SearchPlanner:
             artifact.map_pin,
             artifact.geometry_pin,
             request.roster_version,
+            request.plan_revision,
             request.config_id,
             request.camera,
             request.confirmation_id,
@@ -314,11 +321,15 @@ class SearchPlanner:
             zone.zone_id,
             destination,
             request.motion.swept_radius_m,
+            request.motion.swept_half_height_m,
         )
         overlay_zone = Zone(
             zone.zone_id,
             zone.floor_id,
-            zone.navigation_allowed,
+            zone.owner_approved,
+            zone.polygon_xy,
+            zone.z_min_m,
+            zone.z_max_m,
             (slot,),
             zone.aliases,
         )
@@ -332,6 +343,7 @@ class SearchPlanner:
             NavigationRequest(
                 zone.zone_id,
                 request.roster_version,
+                request.plan_revision,
                 (drone,),
                 positions,
                 request.motion,

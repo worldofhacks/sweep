@@ -12,7 +12,6 @@ from perception.detection_contracts import (
     SightingEvent,
     _finite_nonnegative,
     _finite_positive,
-    _identity_token,
     _iou,
     _probability,
     _sha256_digest,
@@ -171,9 +170,8 @@ class SightingAggregator:
             self._next_id += 1
             sighting = _Aggregate(
                 sighting_id=(
-                    f"sighting:{_identity_token(identity.mission_id)}:"
-                    f"{_identity_token(identity.source_id)}:"
-                    f"{_identity_token(identity.worker_run_id)}:{self._next_id}"
+                    f"sighting:{identity.mission_id}:{identity.source_id}:"
+                    f"{identity.worker_run_id}:{self._next_id}"
                 ),
                 identity=identity,
                 first_timestamp_s=frame_decoded_at_monotonic_s,
