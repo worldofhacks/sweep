@@ -22,6 +22,7 @@ import org.worldofhacks.sweep.bridge.core.json.JsonNull
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonString
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
 import org.worldofhacks.sweep.bridge.core.signing.Signing
 import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
 
@@ -47,14 +48,16 @@ class RelayLinkTest {
         stub: StubRelay,
         token: String = String(key, Charsets.UTF_8),
         localizationPins: LocalizationPins? = null,
+        navigation: NavigationConfig? = null,
     ) = NodeConfig(
         relayUrl = stub.url,
         session = stub.session,
         droneId = 1,
         token = token,
         adapterId = "test-node-1",
-        capabilities = listOf("flight", "pano_360", "reconstruct_8"),
+        capabilities = listOf("flight", "pano_360", "reconstruct_8") + if (navigation == null) emptyList() else listOf("localized_navigation"),
         localizationPins = localizationPins,
+        navigation = navigation,
     )
 
     private fun link(
@@ -583,6 +586,22 @@ class RelayLinkTest {
                     link.state.value.controlPose?.status == org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.LAND
                 }
                 assertNull(link.state.value.lastRelayActivityMs, "LAND remains diagnostic-only")
+            }
+        }
+    }
+
+    @Test
+    fun `signed route authorization and pose enter the separate navigation state`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val navigation = NavigationConfig(true, "navigation-a", "map-a", "geometry-a", "camera-a", "body-a")
+            RelayLink(config(stub, navigation = navigation), FakeAircraft(connected = true), FakeAircraft(connected = true), phone, timing = timing, log = { logs += it }).use { link ->
+                link.start()
+                await("joined") { link.state.value.joined }
+                stub.sendNavigationAuthorization()
+                await("route authorization") { link.state.value.navigationAuthorization?.routeId == "route-1" }
+                stub.sendNavigationPose()
+                await("navigation pose") { link.state.value.navigationPose?.status?.name == "READY" }
+                assertNull(link.state.value.controlPose, "diagnostic control_pose remains separate")
             }
         }
     }

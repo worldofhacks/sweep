@@ -214,6 +214,30 @@ class StubRelay(
         return event
     }
 
+    fun sendNavigationAuthorization(timestamp: Long = relayNow(), commandId: String = "command-1", routeId: String = "route-1"): JsonObject {
+        val unsigned = Json.value(linkedMapOf(
+            "v" to 1, "type" to "navigation_route_authorization", "t" to timestamp, "expires_at_ms" to timestamp + 1_000,
+            "event_id" to eventId(), "session" to session, "drone_id" to droneId, "connection_epoch" to epoch.get(), "command_id" to commandId, "route_id" to routeId, "seq" to 1,
+            "navigation_config_id" to "navigation-a", "map_id" to "map-a", "geometry_id" to "geometry-a", "camera_calibration_id" to "camera-a", "body_extrinsics_id" to "body-a",
+            "start_x_mm" to 0, "start_y_mm" to 0, "start_z_mm" to 1_000, "target_x_mm" to 1_000, "target_y_mm" to 0, "target_z_mm" to 1_000,
+            "max_speed_mm_s" to 300, "horizontal_tolerance_mm" to 100, "vertical_tolerance_mm" to 100, "max_position_uncertainty_mm" to 50, "tube_radius_mm" to 200, "flight_approved" to true,
+        )) as JsonObject
+        val event = unsigned.with("signature", JsonString(Signing.sign(unsigned, key)))
+        broadcast(event)
+        return event
+    }
+
+    fun sendNavigationPose(timestamp: Long = relayNow(), commandId: String = "command-1", routeId: String = "route-1"): JsonObject {
+        val unsigned = Json.value(linkedMapOf(
+            "v" to 1, "type" to "navigation_pose", "t" to timestamp, "event_id" to eventId(), "session" to session, "drone_id" to droneId, "connection_epoch" to epoch.get(),
+            "command_id" to commandId, "route_id" to routeId, "seq" to 1, "navigation_config_id" to "navigation-a", "map_id" to "map-a", "geometry_id" to "geometry-a", "camera_calibration_id" to "camera-a", "body_extrinsics_id" to "body-a",
+            "pose_time_ms" to timestamp, "fix_time_ms" to timestamp, "x_mm" to 0, "y_mm" to 0, "z_mm" to 1_000, "position_uncertainty_mm" to 20, "status" to "ready", "flight_approved" to true,
+        )) as JsonObject
+        val event = unsigned.with("signature", JsonString(Signing.sign(unsigned, key)))
+        broadcast(event)
+        return event
+    }
+
     fun dropConnections() {
         sockets.forEach { it.close(1001, "relay going away") }
     }
