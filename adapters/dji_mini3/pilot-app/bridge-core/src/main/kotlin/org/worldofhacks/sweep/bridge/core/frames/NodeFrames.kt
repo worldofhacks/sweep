@@ -71,6 +71,20 @@ data class HardwareProfile(
     val sdkVersion: String,
     val measuredHfovDeg: Double?,
 ) {
+    init {
+        listOf(
+            "aircraft_model" to aircraftModel,
+            "aircraft_firmware" to aircraftFirmware,
+            "rc_firmware" to rcFirmware,
+            "phone_model" to phoneModel,
+            "android_version" to androidVersion,
+            "sdk_version" to sdkVersion,
+        ).forEach { (field, value) -> Fields.requireBoundedStateText(value, field) }
+        require(measuredHfovDeg == null || measuredHfovDeg.isFinite() && measuredHfovDeg > 0 && measuredHfovDeg < 180) {
+            "measured_hfov_deg must be null or between 0 and 180"
+        }
+    }
+
     companion object {
         const val UNREPORTED = "unreported"
     }
@@ -85,7 +99,18 @@ data class CameraProbe(
     val horizontalFovDeg: Double = 82.1,
     val storageRemainingBytes: Long = 0,
     val mediaRetrieval: Boolean = false,
-)
+) {
+    init {
+        Fields.validatedStringListSnapshot(nativePanoramaModes, "native_panorama_modes", allowEmpty = true)
+        require(gimbalPitchMinDeg.isFinite() && gimbalPitchMaxDeg.isFinite() && gimbalPitchMinDeg < gimbalPitchMaxDeg) {
+            "gimbal pitch range must be finite and ordered"
+        }
+        require(horizontalFovDeg.isFinite() && horizontalFovDeg > 0 && horizontalFovDeg <= 360) {
+            "horizontal_fov_deg must be between 0 and 360"
+        }
+        require(storageRemainingBytes >= 0) { "storage_remaining_bytes must be non-negative" }
+    }
+}
 
 data class CapabilitiesFrame(
     val t: Long,
@@ -96,29 +121,36 @@ data class CapabilitiesFrame(
     val camera: CameraProbe,
     val hardware: HardwareProfile,
 ) {
-    fun toEvent(): JsonObject = Json.json(
-        "v" to Fields.PROTOCOL_VERSION,
-        "t" to t,
-        "type" to TYPE,
-        "event_id" to eventId,
-        "session" to session,
-        "drone_id" to droneId,
-        "connection_epoch" to connectionEpoch,
-        "native_panorama_modes" to camera.nativePanoramaModes,
-        "photo_capture" to camera.photoCapture,
-        "gimbal_pitch_min_deg" to camera.gimbalPitchMinDeg,
-        "gimbal_pitch_max_deg" to camera.gimbalPitchMaxDeg,
-        "horizontal_fov_deg" to camera.horizontalFovDeg,
-        "storage_remaining_bytes" to camera.storageRemainingBytes,
-        "media_retrieval" to camera.mediaRetrieval,
-        "aircraft_model" to hardware.aircraftModel,
-        "aircraft_firmware" to hardware.aircraftFirmware,
-        "rc_firmware" to hardware.rcFirmware,
-        "phone_model" to hardware.phoneModel,
-        "android_version" to hardware.androidVersion,
-        "sdk_version" to hardware.sdkVersion,
-        "measured_hfov_deg" to hardware.measuredHfovDeg,
-    )
+    fun toEvent(): JsonObject {
+        val panoramaModeSnapshot = Fields.validatedStringListSnapshot(
+            camera.nativePanoramaModes,
+            "native_panorama_modes",
+            allowEmpty = true,
+        )
+        return Json.json(
+            "v" to Fields.PROTOCOL_VERSION,
+            "t" to t,
+            "type" to TYPE,
+            "event_id" to eventId,
+            "session" to session,
+            "drone_id" to droneId,
+            "connection_epoch" to connectionEpoch,
+            "native_panorama_modes" to panoramaModeSnapshot,
+            "photo_capture" to camera.photoCapture,
+            "gimbal_pitch_min_deg" to camera.gimbalPitchMinDeg,
+            "gimbal_pitch_max_deg" to camera.gimbalPitchMaxDeg,
+            "horizontal_fov_deg" to camera.horizontalFovDeg,
+            "storage_remaining_bytes" to camera.storageRemainingBytes,
+            "media_retrieval" to camera.mediaRetrieval,
+            "aircraft_model" to hardware.aircraftModel,
+            "aircraft_firmware" to hardware.aircraftFirmware,
+            "rc_firmware" to hardware.rcFirmware,
+            "phone_model" to hardware.phoneModel,
+            "android_version" to hardware.androidVersion,
+            "sdk_version" to hardware.sdkVersion,
+            "measured_hfov_deg" to hardware.measuredHfovDeg,
+        )
+    }
 
     companion object {
         const val TYPE = "capabilities"
@@ -174,12 +206,12 @@ data class CapabilitiesFrame(
                     mediaRetrieval = Fields.boolean(json["media_retrieval"], "media_retrieval", CODE),
                 ),
                 hardware = HardwareProfile(
-                    aircraftModel = Fields.nonEmptyString(json["aircraft_model"], "aircraft_model", CODE),
-                    aircraftFirmware = Fields.nonEmptyString(json["aircraft_firmware"], "aircraft_firmware", CODE),
-                    rcFirmware = Fields.nonEmptyString(json["rc_firmware"], "rc_firmware", CODE),
-                    phoneModel = Fields.nonEmptyString(json["phone_model"], "phone_model", CODE),
-                    androidVersion = Fields.nonEmptyString(json["android_version"], "android_version", CODE),
-                    sdkVersion = Fields.nonEmptyString(json["sdk_version"], "sdk_version", CODE),
+                    aircraftModel = Fields.boundedStateText(json["aircraft_model"], "aircraft_model", CODE),
+                    aircraftFirmware = Fields.boundedStateText(json["aircraft_firmware"], "aircraft_firmware", CODE),
+                    rcFirmware = Fields.boundedStateText(json["rc_firmware"], "rc_firmware", CODE),
+                    phoneModel = Fields.boundedStateText(json["phone_model"], "phone_model", CODE),
+                    androidVersion = Fields.boundedStateText(json["android_version"], "android_version", CODE),
+                    sdkVersion = Fields.boundedStateText(json["sdk_version"], "sdk_version", CODE),
                     measuredHfovDeg = measured,
                 ),
             )
@@ -221,39 +253,34 @@ data class CaptureReadinessFrame(
     val suggestedDelta: SuggestedDelta?,
 ) {
     init {
-        require(coverageMissing.size <= MAX_COVERAGE_MISSING_ITEMS) {
-            "coverage_missing may contain at most $MAX_COVERAGE_MISSING_ITEMS items"
-        }
-        require(coverageMissing.all { it.isFinite() && it >= 0.0 && it < 360.0 }) {
-            "coverage_missing headings must be finite azimuths"
-        }
-        require(coverageMissing.map(::normalizedHeading).toSet().size == coverageMissing.size) {
-            "coverage_missing may not contain duplicates"
-        }
+        validatedCoverageSnapshot(coverageMissing)
     }
 
-    fun toEvent(): JsonObject = Json.json(
-        "v" to Fields.PROTOCOL_VERSION,
-        "t" to t,
-        "type" to TYPE,
-        "event_id" to eventId,
-        "session" to session,
-        "drone_id" to droneId,
-        "connection_epoch" to connectionEpoch,
-        "room_id" to roomId,
-        "capture_id" to captureId,
-        "guidance_mode" to guidanceMode.wire,
-        "pose_source" to poseSource,
-        "pose_ok" to poseOk,
-        "clearance_ok" to clearanceOk,
-        "camera_ok" to cameraOk,
-        "storage_ok" to storageOk,
-        "motion_ok" to motionOk,
-        "image_quality_ok" to imageQualityOk,
-        "coverage_missing" to coverageMissing,
-        "next_heading_deg" to nextHeadingDeg,
-        "suggested_delta" to suggestedDelta?.toJson(),
-    )
+    fun toEvent(): JsonObject {
+        val coverageSnapshot = validatedCoverageSnapshot(coverageMissing)
+        return Json.json(
+            "v" to Fields.PROTOCOL_VERSION,
+            "t" to t,
+            "type" to TYPE,
+            "event_id" to eventId,
+            "session" to session,
+            "drone_id" to droneId,
+            "connection_epoch" to connectionEpoch,
+            "room_id" to roomId,
+            "capture_id" to captureId,
+            "guidance_mode" to guidanceMode.wire,
+            "pose_source" to poseSource,
+            "pose_ok" to poseOk,
+            "clearance_ok" to clearanceOk,
+            "camera_ok" to cameraOk,
+            "storage_ok" to storageOk,
+            "motion_ok" to motionOk,
+            "image_quality_ok" to imageQualityOk,
+            "coverage_missing" to coverageSnapshot,
+            "next_heading_deg" to nextHeadingDeg,
+            "suggested_delta" to suggestedDelta?.toJson(),
+        )
+    }
 
     companion object {
         const val TYPE = "capture_readiness"
@@ -315,6 +342,21 @@ data class CaptureReadinessFrame(
         }
 
         private fun normalizedHeading(value: Double): Double = if (value == 0.0) 0.0 else value
+
+        private fun validatedCoverageSnapshot(value: List<Double>): List<Double> {
+            val snapshot = Fields.boundedListSnapshot(
+                value,
+                MAX_COVERAGE_MISSING_ITEMS,
+                "coverage_missing",
+            )
+            require(snapshot.all { it.isFinite() && it >= 0.0 && it < 360.0 }) {
+                "coverage_missing headings must be finite azimuths"
+            }
+            require(snapshot.map(::normalizedHeading).toSet().size == snapshot.size) {
+                "coverage_missing may not contain duplicates"
+            }
+            return snapshot
+        }
     }
 }
 

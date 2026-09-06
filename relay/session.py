@@ -18,6 +18,7 @@ from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import (
     MAX_CAPABILITY_LIST_ITEMS,
+    MAX_CAPTURE_BUNDLE_MEDIA_ITEMS,
     NODE_FRAME_TYPES,
     AdapterAcknowledgement,
     CapabilitiesFrame,
@@ -142,6 +143,7 @@ _COMMAND_RETENTION_MIN_MS = 60_000
 _COMMAND_RETENTION_MULTIPLIER = 30
 _TRANSPORT_REPLAY_LEDGER_MAX = 8_192
 _TRANSPORT_REPLAY_PRUNE_AT = 4_096
+_MEDIA_CAPTURE_KEY_MAX = 256
 
 
 def _declared_sink_capability_profile(sink: IntentSink) -> CapabilityProfile | None:
@@ -1162,6 +1164,7 @@ class RelaySession:
                     raise ContractError(
                         "session_mismatch", "node frame session does not match the WebSocket path"
                     )
+                self._check_media_retention_capacity(frame)
                 self._claim_transport_event(frame.event_id, frame.t, principal, now)
                 self.registry.check_current(drone_id, connection_epoch)
                 if isinstance(frame, CapabilitiesFrame):
@@ -1172,8 +1175,9 @@ class RelaySession:
                     self._remember_media(frame.file)
                     self._retain_media(frame.file)
                 elif isinstance(frame, CaptureBundleFrame):
+                    if frame.media:
+                        self._remember_media(frame.media[0])
                     for record in frame.media:
-                        self._remember_media(record)
                         self._retain_media(record)
                 elif isinstance(frame, CaptureReadinessFrame):
                     self._remember_capture_readiness(drone_id)
@@ -1408,6 +1412,33 @@ class RelaySession:
                 records[index] = record
                 return
         records.append(record)
+
+    def _check_media_retention_capacity(self, frame: NodeFrame) -> None:
+        """Reject a whole media frame before claiming it if retained state would overflow."""
+        if isinstance(frame, MediaFileFrame):
+            records = (frame.file,)
+            code = "invalid_media_file"
+        elif isinstance(frame, CaptureBundleFrame):
+            records = frame.media
+            code = "invalid_capture_bundle"
+        else:
+            return
+        if not records:
+            return
+        key = (records[0].drone_id, records[0].connection_epoch, records[0].capture_id)
+        existing = self._media_files.get(key)
+        if existing is None and len(self._media_files) >= _MEDIA_CAPTURE_KEY_MAX:
+            raise ContractError(
+                code,
+                f"session may retain media for at most {_MEDIA_CAPTURE_KEY_MAX} captures",
+            )
+        file_ids = {record.file_id for record in existing or ()}
+        file_ids.update(record.file_id for record in records)
+        if len(file_ids) > MAX_CAPTURE_BUNDLE_MEDIA_ITEMS:
+            raise ContractError(
+                code,
+                f"capture may retain at most {MAX_CAPTURE_BUNDLE_MEDIA_ITEMS} unique media files",
+            )
 
     def _remember_media(self, record: MediaFileRecord) -> None:
         key = (record.drone_id, record.connection_epoch, record.capture_id)

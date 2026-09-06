@@ -857,6 +857,13 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
   if (!isRecord(value) || !hasBaseEvent(value) || typeof value.type !== 'string') return null
 
   if (value.type === 'state') {
+    const drones = Array.isArray(value.drones)
+      ? value.drones.map((drone) =>
+          isRecord(drone) && !Object.hasOwn(drone, 'membership_history_truncated')
+            ? { ...drone, membership_history_truncated: 0 }
+            : drone,
+        )
+      : value.drones
     if (
       !isNonNegativeInteger(value.roster_version) ||
       (value.state_sequence !== undefined &&
@@ -870,8 +877,8 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isCapabilityAdvertisement(value.capability_profile, value.enabled_intent_names) ||
       !isNullableRecord(value.pending) ||
       !isNullableRecord(value.accepted_plan) ||
-      !Array.isArray(value.drones) ||
-      !value.drones.every(isRelayAircraftState) ||
+      !Array.isArray(drones) ||
+      !drones.every(isRelayAircraftState) ||
       (value.invalidated_intent_ids !== undefined && !isStringArray(value.invalidated_intent_ids)) ||
       (value.invalidation_reason !== undefined &&
         value.invalidation_reason !== 'graceful_leave_roster_change') ||
@@ -885,7 +892,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
     ) {
       return null
     }
-    return value as unknown as RelayStateEvent
+    return { ...value, drones } as unknown as RelayStateEvent
   }
 
   if (value.type === 'membership') {

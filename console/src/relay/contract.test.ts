@@ -80,6 +80,25 @@ describe('M1.1 wire compatibility', () => {
     expect(event !== null).toBe(accepted)
   })
 
+  test('normalizes the missing truncation count on persisted pre-change state', () => {
+    const historicalAircraft = { ...aircraft() } as Record<string, unknown>
+    delete historicalAircraft.membership_history_truncated
+
+    const event = parseRelayServerEvent({
+      v: 1, t: 100, type: 'state', event_id: 'historical-state', session,
+      roster_version: 1, state_sequence: 1, armed: false, estop: false,
+      selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null, drones: [historicalAircraft],
+    })
+
+    expect(event).not.toBeNull()
+    expect(event?.type).toBe('state')
+    if (event?.type !== 'state') throw new Error('expected a state event')
+    expect(event.drones[0].membership_history_truncated).toBe(0)
+  })
+
   test('refuses an adapter-supplied media URL', () => {
     expect(
       parseRelayServerEvent({

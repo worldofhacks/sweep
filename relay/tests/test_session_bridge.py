@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from planner.models import CommandOperation
+from relay.audit import AuditLogError
 from relay.auth import Principal, verify_event_signature
 from relay.contracts import (
     MAX_CAPTURE_BUNDLE_MEDIA_ITEMS,
@@ -187,6 +188,166 @@ def test_media_file_and_capture_bundle_are_audited_and_retained_for_the_wire(
     files = relay_session.media_files(1, "capture-1")
     assert [record.file_id for record in files] == ["capture-1-pano-360"]
     assert relay_session.media_files(1, "capture-unknown") == ()
+
+
+def test_repeated_capture_bundles_enforce_one_cumulative_media_ceiling_before_claim(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    for batch in range(2):
+        media = [
+            media_record(file_id=f"capture-1-frame-{index}")
+            for index in range(batch * 4, (batch + 1) * 4)
+        ]
+        assert (
+            relay_session.process_frame(
+                capture_bundle_payload(
+                    event_id=f"bundle-batch-{batch}", pattern="reconstruct_8", media=media
+                ),
+                adapter_principal,
+            )
+            == []
+        )
+
+    overflow_event_id = "bundle-cumulative-overflow"
+    refused = relay_session.process_frame(
+        capture_bundle_payload(
+            event_id=overflow_event_id,
+            pattern="reconstruct_8",
+            media=[media_record(file_id="capture-1-frame-8")],
+        ),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capture_bundle"
+    assert len(relay_session.media_files(1, "capture-1")) == MAX_CAPTURE_BUNDLE_MEDIA_ITEMS
+    # Capacity validation precedes event claiming, so a bounded correction may reuse the ID.
+    assert (
+        relay_session.process_frame(
+            capture_bundle_payload(
+                event_id=overflow_event_id,
+                pattern="reconstruct_8",
+                media=[media_record(file_id="capture-1-frame-7")],
+            ),
+            adapter_principal,
+        )
+        == []
+    )
+
+
+def test_repeated_media_file_frames_enforce_the_same_cumulative_ceiling_before_claim(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    for index in range(MAX_CAPTURE_BUNDLE_MEDIA_ITEMS):
+        assert (
+            relay_session.process_frame(
+                media_file_payload(
+                    event_id=f"media-frame-{index}", file_id=f"capture-1-frame-{index}"
+                ),
+                adapter_principal,
+            )
+            == []
+        )
+
+    overflow_event_id = "media-cumulative-overflow"
+    refused = relay_session.process_frame(
+        media_file_payload(event_id=overflow_event_id, file_id="capture-1-frame-8"),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_media_file"
+    assert len(relay_session.media_files(1, "capture-1")) == MAX_CAPTURE_BUNDLE_MEDIA_ITEMS
+    assert (
+        relay_session.process_frame(
+            media_file_payload(event_id=overflow_event_id, file_id="capture-1-frame-7"),
+            adapter_principal,
+        )
+        == []
+    )
+
+
+def test_retained_media_capture_keys_are_session_bounded_before_event_claim(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("relay.session._MEDIA_CAPTURE_KEY_MAX", 2)
+    _join(relay_session, adapter_principal)
+    for index in range(2):
+        assert (
+            relay_session.process_frame(
+                media_file_payload(
+                    event_id=f"capture-key-{index}",
+                    capture_id=f"capture-{index}",
+                    file_id=f"capture-{index}-file",
+                ),
+                adapter_principal,
+            )
+            == []
+        )
+
+    event_id = "capture-key-overflow"
+    refused = relay_session.process_frame(
+        media_file_payload(event_id=event_id, capture_id="capture-2", file_id="capture-2-file"),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_media_file"
+    assert relay_session.media_files(1, "capture-2") == ()
+    assert (
+        relay_session.process_frame(
+            media_file_payload(
+                event_id=event_id, capture_id="capture-0", file_id="capture-0-replacement"
+            ),
+            adapter_principal,
+        )
+        == []
+    )
+
+
+def test_multi_record_media_mutation_rolls_back_exactly_when_audit_append_fails(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _join(relay_session, adapter_principal)
+    initial_media = [
+        media_record(file_id="capture-1-frame-0"),
+        media_record(file_id="capture-1-frame-1"),
+    ]
+    assert (
+        relay_session.process_frame(
+            capture_bundle_payload(
+                event_id="bundle-before-audit-failure",
+                pattern="reconstruct_8",
+                media=initial_media,
+            ),
+            adapter_principal,
+        )
+        == []
+    )
+    before = relay_session.media_files(1, "capture-1")
+
+    def disk_full(*args: object, **kwargs: object) -> None:
+        raise AuditLogError("disk full")
+
+    monkeypatch.setattr(relay_session.audit_log, "append_batch", disk_full)
+    changed_media = [
+        media_record(file_id="capture-1-frame-0", checksum_sha256="1" * 64),
+        media_record(file_id="capture-1-frame-2"),
+    ]
+    with pytest.raises(AuditLogError, match="disk full"):
+        relay_session.process_frame(
+            capture_bundle_payload(
+                event_id="bundle-audit-failure",
+                pattern="reconstruct_8",
+                media=changed_media,
+            ),
+            adapter_principal,
+        )
+
+    assert relay_session.media_files(1, "capture-1") == before
 
 
 def test_oversized_authenticated_capture_bundle_is_refused_before_claim_or_media_mutation(
