@@ -14,6 +14,7 @@ import numpy as np
 
 from perception.object_detection import LiveDetectionWorker, ProcessedFrameEvent, YoloXOnnxDetector
 from perception.search_events import CoverageTask, FramePoseEvidence
+from perception.search_localization import SearchCameraModel
 from perception.webcam_stream import WebcamStream
 from planner.navigation import Pose
 from relay.search_runtime import SearchRuntime
@@ -107,6 +108,10 @@ StreamFactory = Callable[[str], _Stream]
 DetectorFactory = Callable[[DetectionSourceConfig], object]
 FramePoseProvider = Callable[[ProcessedFrameEvent], FramePoseEvidence | None]
 PoseProviderFactory = Callable[[RelaySession, int, CoverageTask], FramePoseProvider]
+CameraForFrame = Callable[[ProcessedFrameEvent], tuple[int, SearchCameraModel] | None]
+CameraProviderFactory = Callable[
+    [RelaySession, DetectionSourceConfig, CoverageTask], CameraForFrame
+]
 
 
 class SearchDetectionFactory:
@@ -120,6 +125,7 @@ class SearchDetectionFactory:
         stream_factory: StreamFactory = WebcamStream,
         detector_factory: DetectorFactory | None = None,
         pose_provider_factory: PoseProviderFactory | None = None,
+        camera_provider_factory: CameraProviderFactory | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not callable(stream_factory) or not callable(monotonic_clock):
@@ -131,6 +137,7 @@ class SearchDetectionFactory:
             _default_detector_factory if detector_factory is None else detector_factory
         )
         self._pose_provider_factory = pose_provider_factory
+        self._camera_provider_factory = camera_provider_factory
         self._monotonic_clock = monotonic_clock
         self._lock = RLock()
         self._started = False
@@ -179,6 +186,11 @@ class SearchDetectionFactory:
                     if self._pose_provider_factory is None
                     else self._pose_provider_factory(session, drone_id, task)
                 )
+                camera_for_frame = (
+                    None
+                    if self._camera_provider_factory is None
+                    else self._camera_provider_factory(session, source, task)
+                )
                 worker = self.search.detection_worker(
                     intent_id,
                     drone_id,
@@ -186,6 +198,7 @@ class SearchDetectionFactory:
                     detector,
                     pose_provider,
                     now_s=self._monotonic_clock,
+                    camera_for_frame=camera_for_frame,
                 )
                 stream.start()
                 worker.start()
