@@ -356,6 +356,7 @@ class RelaySession:
             "telemetry_events": 0,
             "node_events": 0,
             "commands_issued": 0,
+            "safety_actions": 0,
         }
         self._mutation_usable = True
         self._projection_usable = True
@@ -397,6 +398,8 @@ class RelaySession:
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Route one post-authentication frame according to its bound principal."""
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
+        if frame_type == "operator_presence":
+            return self.process_operator_presence(raw, principal)
         if principal.source == "localization" and frame_type == "control_localization":
             return self.process_control_localization(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
@@ -416,6 +419,41 @@ class RelaySession:
                 detail="frame type is not allowed for the authenticated source",
             )
         ]
+
+    def process_operator_presence(
+        self, raw: object, principal: Principal
+    ) -> list[dict[str, object]]:
+        if (
+            principal.source != "console"
+            or not isinstance(raw, Mapping)
+            or set(raw) != {"v", "type"}
+            or type(raw["v"]) is not int
+            or raw["v"] != 1
+        ):
+            return [
+                self.protocol_refusal(
+                    reason="invalid_operator_presence",
+                    detail="presence requires an authenticated console",
+                )
+            ]
+        receive = getattr(self.intent_sink, "record_operator_presence", None)
+        if not callable(receive):
+            return []
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self._append_audit(
+                {
+                    "v": 1,
+                    "t": now,
+                    "type": "operator_presence",
+                    "session": self.session_id,
+                    "event_id": self.event_ids(),
+                    "source": principal.source,
+                }
+            )
+        receive(now)
+        return []
 
     def protocol_refusal(self, *, reason: str, detail: str) -> dict[str, object]:
         with self._lock, self._audit_operation():
@@ -1688,6 +1726,39 @@ class RelaySession:
             self._append_audit(event)
             self._metrics["accepted_intents"] += 1
             self._metrics["acknowledgements"] += 1
+            return event
+
+    def record_safety_action(
+        self,
+        *,
+        reason: str,
+        action: str,
+        operator_last_seen_ms: int,
+    ) -> dict[str, object]:
+        """Record a relay safety action before its corresponding stop is dispatched."""
+        if reason != "operator_presence_expired" or action not in {"hold", "estop"}:
+            raise ValueError("invalid relay safety action")
+        if (
+            not isinstance(operator_last_seen_ms, int)
+            or isinstance(operator_last_seen_ms, bool)
+            or operator_last_seen_ms < 0
+        ):
+            raise ValueError("operator_last_seen_ms must be non-negative")
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            event = {
+                "v": 1,
+                "t": now,
+                "type": "safety_action",
+                "event_id": self.event_ids(),
+                "session": self.session_id,
+                "reason": reason,
+                "action": action,
+                "operator_last_seen_ms": operator_last_seen_ms,
+            }
+            self._append_audit(event)
+            self._metrics["safety_actions"] += 1
             return event
 
     def record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:

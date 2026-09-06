@@ -27,6 +27,7 @@ from relay.control_frames import sign_localization_frame
 from relay.control_localization import ControlLocalizationWire, to_wire_payload
 from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.session import RelaySession
+from relay.session_report import report_path
 from relay.settings import AdapterBackend, CapabilityRelease, RelaySettings, SettingsError
 from relay.tests.conftest import (
     ADAPTER_KEY,
@@ -312,6 +313,8 @@ def test_autonomy_composition_threads_one_ungrounded_profile(
         ("SWEEP_PLANNING_JSON", "{not json", "valid JSON"),
         ("SWEEP_PLANNING_JSON", "[]", "JSON object"),
         ("SWEEP_SIM_CAMERA_JSON", '{"panorama_width_px": 4096}', "keys must be exactly"),
+        ("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", "", "required"),
+        ("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", '{"action":"land_all"}', "hold or estop"),
         ("SWEEP_SAFETY_JSON", "__unordered_geofence__", "geofence"),
         ("SWEEP_SAFETY_JSON", "__zero_spacing__", "min_spacing_m"),
         ("SWEEP_PLANNING_JSON", "__headings_object__", "JSON array"),
@@ -631,6 +634,59 @@ def test_sim_backend_runs_the_checkpoint_intents_in_process_without_wire_command
     )
 
 
+def test_operator_presence_watchdog_dispatches_one_hold_without_a_new_command(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=5))
+    app, composition = create_autonomy_app(
+        _settings(tmp_path), config, clock=clock, event_ids=event_ids
+    )
+    try:
+        with TestClient(app) as client:
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            with (
+                client.websocket_connect(f"/ws/{SESSION}") as console,
+                client.websocket_connect(f"/ws/{SESSION}") as adapter,
+            ):
+                _authenticate(console, source="console")
+                _authenticate(adapter, source="adapter")
+                adapter.send_json(membership_payload(action="join", event_id="join-1"))
+                adapter.send_json(telemetry_payload(event_id="telemetry-1", state="hovering"))
+                adapter.send_json(membership_payload(action="readiness", event_id="ready-1"))
+                _receive_until(
+                    console,
+                    lambda event: (
+                        event["type"] == "state" and event["drones"][0]["membership"] == "ready"
+                    ),
+                )
+                console.send_json(
+                    _intent("select", intent_id="select-1", selection=[], args={"ids": [1]})
+                )
+                assert _autonomy_outcome(console, "select-1")["status"] == "completed"
+
+                clock.advance(6)
+                first = runtime.periodic_events(session)
+                action = next(event for event in first if event["type"] == "safety_action")
+                admitted = next(
+                    event
+                    for event in first
+                    if event["type"] == "acknowledgement" and event["status"] == "accepted"
+                )
+                terminal = _autonomy_outcome(console, admitted["intent_id"])
+                repeated = runtime.periodic_events(session)
+    finally:
+        composition.close()
+
+    assert action["reason"] == "operator_presence_expired"
+    assert action["action"] == "hold"
+    assert terminal["status"] == "completed"
+    assert not any(event["type"] == "safety_action" for event in repeated)
+    report = json.loads(report_path(tmp_path, SESSION).read_text())
+    assert report["session"] == SESSION
+    assert len(report["telemetry"]) == 1
+
+
 def test_graceful_leave_is_authorized_only_for_a_landed_disarmed_aircraft(
     tmp_path: Path, clock: MutableClock, event_ids: EventIds
 ) -> None:
@@ -705,3 +761,35 @@ def test_localization_config_rejects_duplicate_fields(field: str) -> None:
     raw = raw.replace(marker, f'"{field}": null, {marker}', 1)
     with pytest.raises(SettingsError, match="unique fields"):
         AutonomyConfig.from_env(_env_example() | {"SWEEP_CONTROL_LOCALIZATION_JSON": raw})
+
+
+def test_presence_watchdog_preserves_existing_deployment_configuration() -> None:
+    environment = _env_example()
+    environment.pop("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", None)
+    assert AutonomyConfig.from_env(environment).presence_watchdog.action == "hold"
+
+
+def test_authenticated_presence_refreshes_deadline_without_emitting_a_command(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=100))
+    app, composition = create_autonomy_app(_settings(tmp_path), config, clock=clock)
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+            adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+            frame = {"v": 1, "type": "operator_presence"}
+            assert session.process_frame(frame, console) == []
+            clock.advance(99)
+            assert not any(e["type"] == "safety_action" for e in runtime.periodic_events(session))
+            assert session.process_frame(frame, console) == []
+            clock.advance(99)
+            assert not any(e["type"] == "safety_action" for e in runtime.periodic_events(session))
+            forbidden = session.process_frame(frame, adapter)
+            assert forbidden[0]["reason"] == "invalid_operator_presence"
+            clock.advance(2)
+            assert any(e["type"] == "safety_action" for e in runtime.periodic_events(session))
+    finally:
+        composition.close()

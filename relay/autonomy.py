@@ -68,7 +68,7 @@ from relay.control_localization import (
     ControlLocalizationPins,
     ControlLocalizationProjector,
 )
-from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
+from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, Mode, validate_intent
 from relay.navigation_control import NavigationControl, NavigationControlConfig
 from relay.search_deployment import load_search_runtime
 from relay.search_detection import (
@@ -82,6 +82,7 @@ from relay.search_detection import (
 from relay.search_detection_deployment import load_search_detection_config
 from relay.search_runtime import SearchRuntime
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
+from relay.session_report import write_session_report
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 
 LIFECYCLE_SOURCE = "autonomy"
@@ -136,6 +137,10 @@ class AutonomyConfig:
     safety: SafetyConfig
     sim_camera: SimCameraConfig | None = None
     control_localization_projector: ControlLocalizationProjector | None = None
+    presence_watchdog: PresenceWatchdogConfig = field(
+        default_factory=lambda: PresenceWatchdogConfig()
+    )
+
     navigation_deployment: NavigationDeployment | None = None
     search_runtime: SearchRuntime | None = None
     search_detection: SearchDetectionConfig | None = None
@@ -194,7 +199,23 @@ class AutonomyConfig:
             navigation_deployment=navigation,
             search_runtime=search,
             search_detection=load_search_detection_config(values, search),
+            presence_watchdog=_config_from_json(
+                PresenceWatchdogConfig,
+                values.get("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", '{"action":"hold"}'),
+                "SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON",
+            ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class PresenceWatchdogConfig:
+    """The safety action to dispatch after operator presence expires."""
+
+    action: str = "hold"
+
+    def __post_init__(self) -> None:
+        if self.action not in {"hold", "estop"}:
+            raise ValueError("action must be hold or estop")
 
 
 def relay_snapshot(
@@ -405,6 +426,7 @@ class _Job:
     cancelled_by: str | None = None
     finished: bool = False
     prepared: PreparedExecution | None = None
+    watchdog_action: str | None = None
 
     def check(self) -> None:
         if self.cancelled_by is not None:
@@ -520,6 +542,8 @@ class AutonomySession:
         )
         self._lock = threading.Lock()
         self._operator_last_seen_ms: int | None = None
+        self._presence_expiry_seen_ms: int | None = None
+        self._presence_action_serial = 0
         self._stop_requested = False
         self._normal = _Lane("normal", self._lock)
         self._hold = _Lane("hold", self._lock)
@@ -556,6 +580,7 @@ class AutonomySession:
         with self._lock:
             previous = self._operator_last_seen_ms
             self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
+            self._presence_expiry_seen_ms = None
         runtime = self._composition.runtime_if_bound()
         job = _Job(
             intent,
@@ -713,6 +738,9 @@ class AutonomySession:
         return self.navigation_control.approved_snapshot(snapshot, session)
 
     def periodic_events(self, state: dict[str, object]) -> list[dict[str, object]]:
+        return self._presence_events(state) + self._navigation_events(state)
+
+    def _navigation_events(self, state: Mapping[str, object]) -> list[dict[str, object]]:
         if self.navigation_control is None:
             return []
         now_ms = state.get("t")
@@ -724,6 +752,65 @@ class AutonomySession:
             session.record_navigation_packet(packet)
             for packet in self.navigation_control.periodic_poses(session, now_ms)
         ]
+
+    def record_operator_presence(self, now_ms: int) -> None:
+        with self._lock:
+            previous = self._operator_last_seen_ms
+            self._operator_last_seen_ms = now_ms if previous is None else max(previous, now_ms)
+            self._presence_expiry_seen_ms = None
+
+    def _presence_events(self, _relay_event: Mapping[str, object]) -> list[dict[str, object]]:
+        """Dispatch one configured stop when the last accepted operator action expires."""
+        runtime = self._composition.runtime_if_bound()
+        if runtime is None:
+            return []
+        session = runtime.sessions.get(self.session_id)
+        if session is None:
+            return []
+        state = session.current_state()
+        now = state.get("t")
+        if not isinstance(now, int) or isinstance(now, bool):
+            return []
+        with self._lock:
+            last_seen = self._operator_last_seen_ms
+            expired = (
+                last_seen is not None
+                and now - last_seen > self.arbiter.config.operator_timeout_ms
+                and self._presence_expiry_seen_ms != last_seen
+            )
+            if not expired:
+                return []
+            self._presence_action_serial += 1
+            action = self._composition.config.presence_watchdog.action
+            intent = IntentV1(
+                v=1,
+                t=now,
+                type="intent",
+                intent_id=(f"safety:operator-presence:{last_seen}:{self._presence_action_serial}"),
+                retry_of=None,
+                source="safety",
+                session=self.session_id,
+                name=IntentName(action),
+                args={},
+                selection=(),
+                mode=Mode.INDOOR,
+                confirm=True,
+            )
+        action_event = session.record_safety_action(
+            reason="operator_presence_expired",
+            action=action,
+            operator_last_seen_ms=last_seen,
+        )
+        accepted = session.admit_safety_stop(intent)
+        job = _Job(intent, session, watchdog_action=action)
+        lane = self._route(job)
+        with lane.ready:
+            lane.pending.append(job)
+            lane.ready.notify()
+        with self._lock:
+            if self._operator_last_seen_ms == last_seen:
+                self._presence_expiry_seen_ms = last_seen
+        return [action_event, accepted, *job.publications]
 
     def close(self, timeout_s: float) -> None:
         for lane in self._lanes:
@@ -917,7 +1004,13 @@ class AutonomySession:
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
             )
-            if intent.name is IntentName.SEARCH and self._composition.search_runtime is not None:
+            if job.watchdog_action == "hold":
+                plan = self.planner.emergency_hold_plan(
+                    intent_id=intent.intent_id,
+                    snapshot=snapshot,
+                )
+                result = dispatcher.dispatch(plan, snapshot, current_snapshot=current)
+            elif intent.name is IntentName.SEARCH and self._composition.search_runtime is not None:
                 search = self._composition.search_runtime
                 if factory := self._composition.detection_factory:
                     if not factory.start_mission(intent.intent_id, session):
@@ -1273,6 +1366,20 @@ class AutonomyComposition:
             sessions = tuple(self._sessions.values())
         for session in sessions:
             session.close(timeout_s)
+        runtime = self.runtime_if_bound()
+        if runtime is None:
+            return
+        for relay_session in tuple(runtime.sessions.values()):
+            try:
+                write_session_report(
+                    relay_session.audit_log.root,
+                    relay_session.session_id,
+                    relay_session.audit_log.replay(),
+                )
+            except Exception:
+                _LOGGER.exception(
+                    "could not write session report session=%s", relay_session.session_id
+                )
 
 
 def create_autonomy_app(
