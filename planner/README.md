@@ -83,11 +83,17 @@ requires explicit deployment configuration plus the existing live acceptance gat
 
 ## Known-map navigation previews
 
-`NavigationPlanner` produces deterministic, inspectable route previews. It does not
-add a dispatch capability. Every `NavigationArtifact` and `NavigationPlan` is
-non-dispatchable by construction, and otherwise-successful revalidation returns
-`artifact_not_dispatchable`. Runtime execution remains future work and requires a
-separate accepted-geometry, capability, controller, and adapter contract.
+`NavigationPlanner` produces deterministic, inspectable route previews. A configured
+`NavigationRuntime` can execute a frozen preview when the runtime supplies a matching
+dispatch acceptance. Navigation remains outside the default capability profile. The
+file-backed deployment loader, configuration format, and simulator or remote gates are
+in [Navigation deployment](../docs/NAVIGATION_DEPLOYMENT.md).
+
+A route is revalidated before each segment and after its completion. The dispatcher
+rejects changed map, geometry, semantic artifact content, roster, selection, motion,
+permission, connection epoch, position freshness, position quality, or route shape.
+Remote deployments require surveyed geometry, matching evidence, and a phone-navigation
+adapter that accepts the route identity before a mapped `goto` reaches the flight adapter.
 
 `NavigationArtifact.from_geometry_directory()` starts with an independently accepted
 and content-pinned map bundle. It admits only the exact version-1 geometry-report
@@ -124,7 +130,16 @@ slot for every selected aircraft. Revalidation freezes and compares map, geometr
 overlay, roster, selection, plan revision, connection epochs, motion allowances, and
 permission before checking drift and the remaining 3-D route.
 
-Later formation, sweep, `map_area`, and route-dispatch behavior remains
-future scope and must earn a capability before planning.
+`planner.mapped_formations` builds non-dispatchable line, column, wedge, and diamond
+previews for two or four aircraft. Formation permission is independent of arrival
+permission, every target slot must fit an explicitly approved formation volume, and
+the canonical navigation planner searches all feasible slot assignments before choosing
+the minimum-cost deterministic result. No kitchen fallback or formation permission is
+inferred from a navigation destination.
 
-PRD: sections 5.3 and 5.4 (modes: indoor constrained is the capstone mode).
+These are software-planning foundations for issues #87, #88, #143, and #144. They emit
+no command and cannot authorize flight. Public `map_area`, search, route dispatch, and
+live formation execution remain gated on their separate capability, evidence,
+confirmation, relay, arbiter, adapter, and physical-acceptance requirements.
+
+Current scope: `docs/mvp-plan.md` M3A–M3D and live issues #87, #88, and #143–#145.

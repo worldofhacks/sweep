@@ -6,7 +6,7 @@ import io
 import json
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -170,6 +170,25 @@ class NavigationArtifact:
                 for grid in self.grids
             ):
                 raise ValueError("arrival slot has no free validated altitude band")
+        object.__setattr__(
+            self,
+            "navigation_pin",
+            ArtifactPin(
+                self.navigation_pin.version,
+                _navigation_configuration_sha256(
+                    self.map_pin,
+                    self.geometry_pin,
+                    self.grid_clearance_m,
+                    self.geofence_polygon_xy,
+                    self.geofence_z_min_m,
+                    self.geofence_z_max_m,
+                    self.grids,
+                    self.zones,
+                    self.connectors,
+                    {zone.zone_id: zone.aliases for zone in self.zones},
+                ),
+            ),
+        )
 
     @property
     def semantic_sha256(self) -> str:
@@ -256,6 +275,7 @@ class NavigationArtifact:
         accepted_map_versions: dict[str, str],
         arrival_slots: tuple[ArrivalSlot, ...] = (),
         connectors: tuple[Connector, ...] = (),
+        zone_aliases: Mapping[str, tuple[str, ...]] | None = None,
     ) -> NavigationArtifact:
         """Load an accepted map plus pinned offline geometry as a non-dispatchable preview."""
         if not isinstance(accepted_map_versions, dict) or any(
@@ -276,6 +296,17 @@ class NavigationArtifact:
             isinstance(connector, Connector) for connector in connectors
         ):
             raise ValueError("connectors must be an immutable tuple of Connector values")
+        if zone_aliases is not None and (
+            not isinstance(zone_aliases, Mapping)
+            or any(
+                not isinstance(zone_id, str)
+                or not isinstance(aliases, tuple)
+                or any(not isinstance(alias, str) for alias in aliases)
+                for zone_id, aliases in zone_aliases.items()
+            )
+        ):
+            raise ValueError("zone aliases must be a mapping of immutable text tuples")
+        aliases_by_zone = {} if zone_aliases is None else dict(zone_aliases)
         try:
             validated = validate_bundle(bundle, accepted_map_versions)
             with _directory_descriptor(Path(geometry_directory)) as directory_descriptor:
@@ -302,6 +333,8 @@ class NavigationArtifact:
             known_zone_ids = {item["id"] for item in zones_document["zones"]}
             if set(slot_groups) - known_zone_ids:
                 raise ValueError("arrival slots reference a zone outside the accepted map")
+            if set(aliases_by_zone) - known_zone_ids:
+                raise ValueError("zone aliases reference a zone outside the accepted map")
             zones = tuple(
                 Zone(
                     item["id"],
@@ -311,15 +344,27 @@ class NavigationArtifact:
                     item["z_min"],
                     item["z_max"],
                     tuple(sorted(slot_groups.get(item["id"], ()), key=lambda slot: slot.slot_id)),
+                    aliases_by_zone.get(item["id"], ()),
                 )
                 for item in sorted(zones_document["zones"], key=lambda item: item["id"])
             )
             _validate_connectors_against_graph(connectors, zones_document["room_graph"])
+            geofence = zones_document["geofence"]
             navigation_pin = ArtifactPin(
                 "preview",
-                _navigation_configuration_sha256(map_pin, geometry_pin, arrival_slots, connectors),
+                _navigation_configuration_sha256(
+                    map_pin,
+                    geometry_pin,
+                    report["hazard_margin_m"],
+                    tuple(tuple(point) for point in geofence["polygon"]),
+                    geofence["z_min"],
+                    geofence["z_max"],
+                    grids,
+                    zones,
+                    connectors,
+                    aliases_by_zone,
+                ),
             )
-            geofence = zones_document["geofence"]
             return cls(
                 map_pin,
                 geometry_pin,
@@ -575,32 +620,75 @@ def _validate_connectors_against_graph(connectors: tuple[Connector, ...], graph:
 def _navigation_configuration_sha256(
     map_pin: ArtifactPin,
     geometry_pin: ArtifactPin,
-    arrival_slots: tuple[ArrivalSlot, ...],
+    grid_clearance_m: float,
+    geofence_polygon_xy: tuple[tuple[float, float], ...],
+    geofence_z_min_m: float,
+    geofence_z_max_m: float,
+    grids: tuple[GridLevel, ...],
+    zones: tuple[Zone, ...],
     connectors: tuple[Connector, ...],
+    zone_aliases: Mapping[str, tuple[str, ...]],
 ) -> str:
-    """Pin the exact preview-only arrival and connector overlay deterministically."""
+    """Bind every public navigation-artifact value that can affect a route."""
     if not isinstance(map_pin, ArtifactPin) or not isinstance(geometry_pin, ArtifactPin):
         raise ValueError("configuration pins must use ArtifactPin")
-    if not isinstance(arrival_slots, tuple) or not all(
-        isinstance(slot, ArrivalSlot) for slot in arrival_slots
-    ):
-        raise ValueError("arrival slots must be an immutable tuple of ArrivalSlot values")
+    if not isinstance(grids, tuple) or not all(isinstance(grid, GridLevel) for grid in grids):
+        raise ValueError("configuration grids must be an immutable tuple of GridLevel values")
+    if not isinstance(zones, tuple) or not all(isinstance(zone, Zone) for zone in zones):
+        raise ValueError("configuration zones must be an immutable tuple of Zone values")
     if not isinstance(connectors, tuple) or not all(
         isinstance(connector, Connector) for connector in connectors
     ):
         raise ValueError("connectors must be an immutable tuple of Connector values")
+    if not isinstance(zone_aliases, Mapping) or any(
+        not isinstance(zone_id, str)
+        or not isinstance(aliases, tuple)
+        or any(not isinstance(alias, str) for alias in aliases)
+        for zone_id, aliases in zone_aliases.items()
+    ):
+        raise ValueError("zone aliases must be a mapping of immutable text tuples")
     payload = {
         "map_pin": [map_pin.version, map_pin.content_sha256],
         "geometry_pin": [geometry_pin.version, geometry_pin.content_sha256],
-        "arrival_slots": [
+        "grid_clearance_m": grid_clearance_m,
+        "geofence": {
+            "polygon_xy": geofence_polygon_xy,
+            "z_min_m": geofence_z_min_m,
+            "z_max_m": geofence_z_max_m,
+        },
+        "grids": [
             {
-                "slot_id": slot.slot_id,
-                "zone_id": slot.zone_id,
-                "pose": [*slot.pose.xyz, slot.pose.floor_id],
-                "radius_m": slot.radius_m,
-                "half_height_m": slot.half_height_m,
+                "floor_id": grid.floor_id,
+                "z_m": grid.z_m,
+                "origin_xy_m": grid.origin_xy_m,
+                "cell_m": grid.cell_m,
+                "width": grid.width,
+                "height": grid.height,
+                "blocked_cells": sorted(grid.blocked_cells),
             }
-            for slot in sorted(arrival_slots, key=lambda item: item.slot_id)
+            for grid in sorted(grids, key=lambda item: (item.floor_id, item.z_m))
+        ],
+        "zones": [
+            {
+                "zone_id": zone.zone_id,
+                "floor_id": zone.floor_id,
+                "owner_approved": zone.owner_approved,
+                "polygon_xy": zone.polygon_xy,
+                "z_min_m": zone.z_min_m,
+                "z_max_m": zone.z_max_m,
+                "aliases": sorted(zone.aliases),
+                "arrival_slots": [
+                    {
+                        "slot_id": slot.slot_id,
+                        "zone_id": slot.zone_id,
+                        "pose": [*slot.pose.xyz, slot.pose.floor_id],
+                        "radius_m": slot.radius_m,
+                        "half_height_m": slot.half_height_m,
+                    }
+                    for slot in sorted(zone.arrival_slots, key=lambda item: item.slot_id)
+                ],
+            }
+            for zone in sorted(zones, key=lambda item: item.zone_id)
         ],
         "connectors": [
             {
@@ -612,6 +700,10 @@ def _navigation_configuration_sha256(
                 "enabled": connector.enabled,
             }
             for connector in sorted(connectors, key=lambda item: item.connector_id)
+        ],
+        "zone_aliases": [
+            {"zone_id": zone_id, "aliases": list(aliases)}
+            for zone_id, aliases in sorted(zone_aliases.items())
         ],
     }
     return sha256(
