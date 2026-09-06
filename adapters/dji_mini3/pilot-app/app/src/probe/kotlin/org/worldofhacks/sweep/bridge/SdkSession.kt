@@ -45,12 +45,29 @@ import org.worldofhacks.sweep.bridge.video.FpvSessionHost
  */
 class SdkSession(private val application: Application) : AircraftSession, FpvSessionHost {
     private val model = SessionModel()
+    private val sensorRawLock = Any()
+    private var sensorRawFullReported = false
+    private val sensorRaw: SensorRawSink? by lazy {
+        SensorRawSink.open(application.filesDir).also { sink ->
+            model.event("Sensor raw log", sink?.file?.absolutePath ?: "could not open sensor raw log")
+        }
+    }
     private val probe = ProbeAircraft(
         phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
         androidVersion = Build.VERSION.RELEASE ?: "",
         sdkVersion = { runCatching { SDKManager.getInstance().sdkVersion }.getOrNull().orEmpty() },
         log = { name, detail -> model.event(name, detail) },
         record = { key, event, status -> recordKey(key, event, status) },
+        recordRaw = { kind, fields ->
+            if (sensorRaw?.append(kind, fields) == false) {
+                synchronized(sensorRawLock) {
+                    if (!sensorRawFullReported) {
+                        sensorRawFullReported = true
+                        model.event("Sensor raw log", "recording stopped at the 16 MiB file limit")
+                    }
+                }
+            }
+        },
     )
 
     /**
