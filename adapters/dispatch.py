@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from math import isfinite
 from string import hexdigits
 
@@ -259,17 +260,29 @@ class AdapterDispatcher:
                     acknowledgements=tuple(acknowledgements),
                 )
             current = provider()
+            effective_command = self.arbiter.filtered_goto_commands(plan, current).get(
+                command.command_id, command
+            )
             effective_projected = self._effective_projected_positions(
                 projected, evidence_baseline, current
             )
-            refusal = self.arbiter.check_command(
+            raw_refusal = self.arbiter.check_command(
                 plan,
                 command,
                 current,
                 projected_positions=effective_projected,
             )
+            if raw_refusal is not None and raw_refusal.reason is not RefusalReason.SPACING:
+                refusal = raw_refusal
+            else:
+                refusal = self.arbiter.check_command(
+                    plan,
+                    effective_command,
+                    current,
+                    projected_positions=effective_projected,
+                )
             if refusal is None:
-                refusal = self._altitude_grounding_refusal(plan, command, current)
+                refusal = self._altitude_grounding_refusal(plan, effective_command, current)
             if refusal is not None:
                 if plan.intent_name is IntentName.CAPTURE_ROOM:
                     affected[command.drone_id] = command
@@ -297,8 +310,21 @@ class AdapterDispatcher:
                     acknowledgements=tuple(acknowledgements),
                 )
             try:
-                with self._intent_scope(command.intent_id, command.roster_version, (command,)):
-                    outcome = self._execute(command, captures, provider)
+                with self._intent_scope(
+                    effective_command.intent_id,
+                    effective_command.roster_version,
+                    (effective_command,),
+                ):
+                    outcome = self._execute(effective_command, captures, provider)
+                if effective_command != command and isinstance(outcome, CommandAcknowledgement):
+                    outcome = replace(
+                        outcome,
+                        detail=(
+                            f"BVC deflected goto to x={effective_command.parameters['x']}, "
+                            f"y={effective_command.parameters['y']}, "
+                            f"z={effective_command.parameters['z']}. {outcome.detail}"
+                        ).rstrip(),
+                    )
             except AdapterTimeout as error:
                 failure = self._failure_for(
                     command,
@@ -468,9 +494,11 @@ class AdapterDispatcher:
                     )
                 )
             else:
-                target = self.arbiter.command_position(command, current.aircraft[command.drone_id])
+                target = self.arbiter.command_position(
+                    effective_command, current.aircraft[effective_command.drone_id]
+                )
                 if target is not None:
-                    projected[command.drone_id] = target
+                    projected[effective_command.drone_id] = target
                 if command.operation not in {
                     CommandOperation.HOVER,
                     CommandOperation.LAND,

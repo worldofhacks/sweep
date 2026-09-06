@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 from typing import Final
 
+from arbiter.bvc import BvcConfig, filter_velocities
 from planner.models import (
     AircraftState,
     AltitudeGrounding,
@@ -380,21 +381,31 @@ class SafetyArbiter:
             # Simulate deterministic sequential occupancy. Preloading every final
             # target would hide transient collisions with aircraft that have not
             # moved yet and could permit partial I/O before a later refusal.
+            filtered_commands = self.filtered_goto_commands(plan, snapshot)
             projected: dict[int, Position] = {}
             for command in plan.commands:
-                refusal = self.check_command(
+                effective_command = filtered_commands.get(command.command_id, command)
+                raw_refusal = self.check_command(
                     plan,
                     command,
                     snapshot,
                     projected_positions=projected,
                 )
+                if raw_refusal is not None and raw_refusal.reason is not RefusalReason.SPACING:
+                    return raw_refusal
+                refusal = self.check_command(
+                    plan,
+                    effective_command,
+                    snapshot,
+                    projected_positions=projected,
+                )
                 if refusal is not None:
                     return refusal
-                aircraft = snapshot.aircraft.get(command.drone_id)
+                aircraft = snapshot.aircraft.get(effective_command.drone_id)
                 if aircraft is not None:
-                    target = self.command_position(command, aircraft)
+                    target = self.command_position(effective_command, aircraft)
                     if target is not None:
-                        projected[command.drone_id] = target
+                        projected[effective_command.drone_id] = target
         except (KeyError, OverflowError, TypeError, ValueError):
             return Refusal(
                 intent_id=plan.intent_id,
@@ -472,6 +483,100 @@ class SafetyArbiter:
                 detail=f"{plan.intent_name.value} plan is not confirmed",
             )
         return None
+
+    def filtered_goto_commands(self, plan: Plan, snapshot: FleetSnapshot) -> dict[str, Command]:
+        """Return BVC-projected GOTO setpoints while preserving the signed command identity."""
+        if plan.intent_name is IntentName.ALTITUDE:
+            return {}
+        gotos = tuple(
+            command for command in plan.commands if command.operation is CommandOperation.GOTO
+        )
+        if not gotos or len({command.drone_id for command in gotos}) != len(gotos):
+            return {}
+        positions = {
+            drone_id: aircraft.pose
+            for drone_id, aircraft in snapshot.aircraft.items()
+            if aircraft.membership is MembershipState.READY and aircraft.airborne
+        }
+        if not positions:
+            return {}
+        targets: dict[int, Position] = {}
+        for command in gotos:
+            if command.drone_id not in positions:
+                return {}
+            try:
+                targets[command.drone_id] = Position.from_mapping(command.parameters)
+            except (KeyError, TypeError, ValueError):
+                return {}
+        moving_without_velocity = any(
+            aircraft.flight_state is FlightState.AIRBORNE
+            for aircraft in snapshot.aircraft.values()
+            if aircraft.membership is MembershipState.READY and aircraft.airborne
+        )
+        if moving_without_velocity:
+            return {
+                command.command_id: replace(
+                    command,
+                    parameters={
+                        **command.parameters,
+                        "x": positions[command.drone_id].x,
+                        "y": positions[command.drone_id].y,
+                        "z": positions[command.drone_id].z,
+                    },
+                )
+                for command in gotos
+            }
+        if not self._bvc_needed(positions, targets):
+            return {}
+        config = BvcConfig(
+            min_spacing_m=self.config.min_spacing_m,
+            horizon_s=1.0,
+            geofence=self.config.geofence,
+            ceiling_m=self.config.ceiling_m,
+        )
+        filtered: dict[str, Command] = {}
+        for command in gotos:
+            try:
+                target = targets[command.drone_id]
+                speed = float(command.parameters["speed"])
+            except (KeyError, OverflowError, TypeError, ValueError):
+                continue
+            if not isfinite(speed) or speed <= 0:
+                continue
+            origin = positions[command.drone_id]
+            velocities = {drone_id: Position(0.0, 0.0, 0.0) for drone_id in positions}
+            velocities[command.drone_id] = Position(
+                (target.x - origin.x) / config.horizon_s,
+                (target.y - origin.y) / config.horizon_s,
+                (target.z - origin.z) / config.horizon_s,
+            )
+            velocity = filter_velocities(positions, velocities, config)[command.drone_id]
+            filtered[command.command_id] = replace(
+                command,
+                parameters={
+                    **command.parameters,
+                    "x": origin.x + velocity.x * config.horizon_s,
+                    "y": origin.y + velocity.y * config.horizon_s,
+                    "z": origin.z + velocity.z * config.horizon_s,
+                    "speed": speed,
+                },
+            )
+        return filtered
+
+    def _bvc_needed(
+        self, positions: Mapping[int, Position], targets: Mapping[int, Position]
+    ) -> bool:
+        ids = tuple(sorted(positions))
+        for index, drone_id in enumerate(ids):
+            for other_id in ids[index + 1 :]:
+                if _segment_distance_squared(
+                    positions[drone_id],
+                    targets.get(drone_id, positions[drone_id]),
+                    positions[other_id],
+                    targets.get(other_id, positions[other_id]),
+                ) < self.config.min_spacing_m**2:
+                    return True
+        return False
 
     def _check_zero_command_safety(self, plan: Plan, snapshot: FleetSnapshot) -> Refusal | None:
         if plan.intent_name not in {IntentName.ARM, IntentName.SELECT}:
@@ -2101,6 +2206,76 @@ def _finite_fraction(value: object) -> bool:
         and isfinite(value)
         and 0 <= value <= 1
     )
+
+
+def _position_difference(left: Position, right: Position) -> Position:
+    return Position(left.x - right.x, left.y - right.y, left.z - right.z)
+
+
+def _position_dot(left: Position, right: Position) -> float:
+    return left.x * right.x + left.y * right.y + left.z * right.z
+
+
+def _segment_distance_squared(
+    first_start: Position,
+    first_end: Position,
+    second_start: Position,
+    second_end: Position,
+) -> float:
+    first_direction = _position_difference(first_end, first_start)
+    second_direction = _position_difference(second_end, second_start)
+    between_starts = _position_difference(first_start, second_start)
+    first_length_squared = _position_dot(first_direction, first_direction)
+    second_length_squared = _position_dot(second_direction, second_direction)
+    cross = _position_dot(first_direction, second_direction)
+    first_offset = _position_dot(first_direction, between_starts)
+    second_offset = _position_dot(second_direction, between_starts)
+    determinant = first_length_squared * second_length_squared - cross * cross
+    candidates = [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)]
+    if second_length_squared:
+        candidates.extend(
+            (
+                (0.0, _clamp_unit(second_offset / second_length_squared)),
+                (1.0, _clamp_unit((second_offset + cross) / second_length_squared)),
+            )
+        )
+    if first_length_squared:
+        candidates.extend(
+            (
+                (_clamp_unit(-first_offset / first_length_squared), 0.0),
+                (_clamp_unit((cross - first_offset) / first_length_squared), 1.0),
+            )
+        )
+    if determinant:
+        candidates.append(
+            (
+                (cross * second_offset - second_length_squared * first_offset) / determinant,
+                (first_length_squared * second_offset - cross * first_offset) / determinant,
+            )
+        )
+    return min(
+        _position_dot(separation, separation)
+        for first_progress, second_progress in candidates
+        if 0.0 <= first_progress <= 1.0 and 0.0 <= second_progress <= 1.0
+        for separation in (
+            _position_difference(
+                _position_at(first_start, first_direction, first_progress),
+                _position_at(second_start, second_direction, second_progress),
+            ),
+        )
+    )
+
+
+def _position_at(start: Position, direction: Position, progress: float) -> Position:
+    return Position(
+        start.x + direction.x * progress,
+        start.y + direction.y * progress,
+        start.z + direction.z * progress,
+    )
+
+
+def _clamp_unit(value: float) -> float:
+    return max(0.0, min(1.0, value))
 
 
 def _finite_nonnegative(value: object) -> bool:
