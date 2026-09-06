@@ -8,6 +8,7 @@ import {
   type VoicePlan,
   type VoicePlanStep,
 } from './contract'
+import { REJOIN_NODE_EVENTS } from './rejoin-node-events.test-fixtures'
 
 const session = 'session-contract-test'
 const t = 1_756_700_000_000
@@ -38,6 +39,59 @@ function aircraft(overrides: Record<string, unknown> = {}) {
 }
 
 describe('M1.1 wire compatibility', () => {
+  test.each(REJOIN_NODE_EVENTS)('accepts the emitted epoch-2 $type report', (event) => {
+    expect(parseRelayServerEvent(event)).toEqual(event)
+  })
+
+  test.each([
+    [0, 'gimbal_pitch_min_deg', 30],
+    [0, 'horizontal_fov_deg', 0],
+    [0, 'horizontal_fov_deg', 361],
+    [0, 'measured_hfov_deg', 180],
+    [0, 'storage_remaining_bytes', -1],
+    [0, 'photo_capture', 'true'],
+    [0, 'native_panorama_modes', ['pano_360', 'pano_360']],
+    [0, 'aircraft_model', ''],
+    [1, 'phone_battery_percent', 101],
+    [1, 'phone_battery_percent', 81.5],
+    [1, 'control_authority', 'true'],
+    [1, 'watchdog_state', 'unknown'],
+    [1, 'watchdog_state', ['nominal']],
+    [1, 'video_publish_state', 'http://adapter.invalid/video'],
+    [1, 'phone_thermal_state', 'unknown'],
+    [1, 'authority_change_reason', 'not a machine code'],
+    [2, 'camera_ok', 1],
+    [2, 'coverage_missing', [360]],
+    [2, 'next_heading_deg', -1],
+    [2, 'pose_source', ''],
+    [2, 'guidance_mode', ['visual_advisory']],
+    [2, 'suggested_delta', { kind: 'translate', degrees: 10 }],
+    [2, 'suggested_delta', { kind: 'yaw', degrees: 10, extra: true }],
+  ])('rejects malformed node report %s field %s', (index, field, value) => {
+    expect(parseRelayServerEvent({ ...REJOIN_NODE_EVENTS[Number(index)], [String(field)]: value })).toBeNull()
+  })
+
+  test.each(REJOIN_NODE_EVENTS)('keeps the $type report envelope closed and epoch-bound', (event) => {
+    const { connection_epoch: epoch, ...missingEpoch } = event
+    expect(epoch).toBe(2)
+    expect(parseRelayServerEvent(missingEpoch)).toBeNull()
+    expect(parseRelayServerEvent({ ...event, connection_epoch: 0 })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, drone_id: -1 })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, event_id: 'x'.repeat(513) })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, session: 'x'.repeat(513) })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, v: 2 })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, type: 'unknown_node_event' })).toBeNull()
+    expect(parseRelayServerEvent({ ...event, url: 'http://adapter.invalid/video' })).toBeNull()
+  })
+
+  test('accepts valid optional camera measurements and capture guidance', () => {
+    expect(parseRelayServerEvent({ ...REJOIN_NODE_EVENTS[0], measured_hfov_deg: 65.5 })).not.toBeNull()
+    expect(parseRelayServerEvent({
+      ...REJOIN_NODE_EVENTS[2], room_id: 'room-1', capture_id: 'capture-1', guidance_mode: 'registered_metric',
+      next_heading_deg: 90, coverage_missing: [0, 90, 180], suggested_delta: { kind: 'yaw', degrees: -15 },
+    })).not.toBeNull()
+  })
+
   test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
     const event = parseRelayServerEvent({
       v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,

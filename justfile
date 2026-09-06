@@ -38,6 +38,15 @@ fmt:
 console:
     cd console && pnpm dev
 
+# Build and serve an isolated four-node demo; Ctrl-C stops only this demo
+fleet-demo count="4" port="8766":
+    cd console && pnpm build
+    uv run python -m adapters.sim.demo --count {{count}} --port {{port}} --console-dist console/dist
+
+# Record scripted gesture/typed-input browser evidence through four signed fake nodes
+fleet-browser:
+    cd console && pnpm test:fleet-browser
+
 # Start MediaMTX in the foreground (Ctrl-C stops it)
 media:
     docker compose up mediamtx

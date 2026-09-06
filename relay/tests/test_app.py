@@ -1717,3 +1717,72 @@ def test_state_video_follows_mediamtx_while_it_answers_and_the_node_claim_after(
                 assert still_offline["last_frame_at"] == clock() + 1
 
     assert monitors and media_client.closed is True
+
+
+def test_live_replay_waits_for_audit_commit_and_returns_contiguous_snapshot(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    append_started = Event()
+    release_append = Event()
+    replay_entered = Event()
+    replay_returned = Event()
+    real_append_batch = SessionAuditLog.append_batch
+    real_replay = RelaySession.replay
+
+    def pause_append(
+        audit_log: SessionAuditLog,
+        events: object,
+        *,
+        operation_id: int | None = None,
+    ) -> list[dict[str, object]]:
+        append_started.set()
+        assert release_append.wait(timeout=2)
+        return real_append_batch(audit_log, events, operation_id=operation_id)
+
+    def mark_replay(session: RelaySession, *, after_sequence: int = 0) -> dict[str, object]:
+        replay_entered.set()
+        return real_replay(session, after_sequence=after_sequence)
+
+    monkeypatch.setattr(SessionAuditLog, "append_batch", pause_append)
+    monkeypatch.setattr(RelaySession, "replay", mark_replay)
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as executor:
+        session = app.state.relay_runtime.session(SESSION)
+        append = executor.submit(session.update_control_projection, selection=())
+        assert append_started.wait(timeout=2)
+
+        def request_replay() -> object:
+            response = client.get(f"/session/{SESSION}?after_sequence=0", headers=headers)
+            replay_returned.set()
+            return response
+
+        replay = executor.submit(request_replay)
+        assert replay_entered.wait(timeout=2)
+        assert not replay_returned.wait(timeout=0.1)
+        release_append.set()
+
+        append.result(timeout=2)
+        response = replay.result(timeout=2)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [record["seq"] for record in body["events"]] == list(range(1, body["last_sequence"] + 1))
+
+
+def test_replay_reports_unrecoverable_audit_history_as_unavailable(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    SessionAuditLog(app_settings.log_dir, SESSION).begin_operation()
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client:
+        response = client.get(f"/session/{SESSION}", headers=headers)
+
+    assert response.status_code == 503
+    assert "incomplete operation" in response.json()["detail"]

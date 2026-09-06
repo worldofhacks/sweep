@@ -489,6 +489,18 @@ export type RelayServerEvent =
   | RelayStateEvent
   | RelaySafetyActionEvent
   | RelayTelemetryEvent
+  | RelayNodeInformationEvent
+
+/** Validated node reports; aircraft control state still comes from relay state events. */
+export interface RelayNodeInformationEvent {
+  v: 1
+  t: number
+  type: 'capabilities' | 'node_status' | 'capture_readiness'
+  event_id: string
+  session: string
+  drone_id: DroneId
+  connection_epoch: number
+}
 
 export interface RelayAuthFrame {
   v: 1
@@ -957,9 +969,75 @@ function hasBaseEvent(value: Record<string, unknown>): boolean {
   )
 }
 
+const NODE_EVENT_FIELDS = ['v', 't', 'type', 'event_id', 'session', 'drone_id', 'connection_epoch']
+
+/** Mirrors the three informational node frame parsers in relay/contracts.py. */
+function isNodeInformationEvent(value: Record<string, unknown>): boolean {
+  if (!isDroneId(value.drone_id) || !isDroneId(value.connection_epoch)) return false
+  const hasFields = (fields: string[]) => {
+    const expected = [...NODE_EVENT_FIELDS, ...fields]
+    return Object.keys(value).length === expected.length && expected.every((field) => Object.hasOwn(value, field))
+  }
+  const text = (item: unknown): item is string => typeof item === 'string' && item.length > 0 && item.length <= 512
+  const nullableText = (item: unknown) => item === null || text(item)
+  const azimuth = (item: unknown) => isFiniteNumber(item) && item >= 0 && item < 360
+  if (!text(value.event_id) || !text(value.session)) return false
+
+  if (value.type === 'capabilities') {
+    const labels = ['aircraft_model', 'aircraft_firmware', 'rc_firmware', 'phone_model', 'android_version', 'sdk_version']
+    return hasFields([
+      'native_panorama_modes', 'photo_capture', 'gimbal_pitch_min_deg', 'gimbal_pitch_max_deg',
+      'horizontal_fov_deg', 'storage_remaining_bytes', 'media_retrieval', 'measured_hfov_deg', ...labels,
+    ]) &&
+      Array.isArray(value.native_panorama_modes) && value.native_panorama_modes.every(text) &&
+      new Set(value.native_panorama_modes).size === value.native_panorama_modes.length &&
+      typeof value.photo_capture === 'boolean' && typeof value.media_retrieval === 'boolean' &&
+      isFiniteNumber(value.gimbal_pitch_min_deg) && isFiniteNumber(value.gimbal_pitch_max_deg) &&
+      value.gimbal_pitch_min_deg < value.gimbal_pitch_max_deg &&
+      isFiniteNumber(value.horizontal_fov_deg) && value.horizontal_fov_deg > 0 && value.horizontal_fov_deg <= 360 &&
+      isNonNegativeInteger(value.storage_remaining_bytes) && labels.every((field) => text(value[field])) &&
+      (value.measured_hfov_deg === null ||
+        (isFiniteNumber(value.measured_hfov_deg) && value.measured_hfov_deg > 0 && value.measured_hfov_deg < 180))
+  }
+  if (value.type === 'node_status') {
+    return hasFields([
+      'virtual_stick_enabled', 'control_authority', 'authority_change_reason', 'watchdog_state',
+      'video_publish_state', 'phone_battery_percent', 'phone_thermal_state',
+    ]) &&
+      typeof value.virtual_stick_enabled === 'boolean' && typeof value.control_authority === 'boolean' &&
+      (value.authority_change_reason === null ||
+        (text(value.authority_change_reason) && /^[a-z0-9_]+$/.test(value.authority_change_reason))) &&
+      typeof value.watchdog_state === 'string' && ['nominal', 'hold', 'failsafe'].includes(value.watchdog_state) &&
+      typeof value.video_publish_state === 'string' && ['stopped', 'connecting', 'publishing', 'failed'].includes(value.video_publish_state) &&
+      isNonNegativeInteger(value.phone_battery_percent) && value.phone_battery_percent <= 100 &&
+      typeof value.phone_thermal_state === 'string' &&
+      ['none', 'light', 'moderate', 'severe', 'critical', 'emergency', 'shutdown'].includes(value.phone_thermal_state)
+  }
+  if (value.type === 'capture_readiness') {
+    const flags = ['pose_ok', 'clearance_ok', 'camera_ok', 'storage_ok', 'motion_ok', 'image_quality_ok']
+    const delta = value.suggested_delta
+    return hasFields([
+      'room_id', 'capture_id', 'guidance_mode', 'pose_source', 'coverage_missing',
+      'next_heading_deg', 'suggested_delta', ...flags,
+    ]) &&
+      nullableText(value.room_id) && nullableText(value.capture_id) && text(value.pose_source) &&
+      typeof value.guidance_mode === 'string' && ['visual_advisory', 'registered_metric'].includes(value.guidance_mode) &&
+      flags.every((field) => typeof value[field] === 'boolean') &&
+      Array.isArray(value.coverage_missing) && value.coverage_missing.every(azimuth) &&
+      (value.next_heading_deg === null || azimuth(value.next_heading_deg)) &&
+      (delta === null || (isRecord(delta) && Object.keys(delta).length === 2 &&
+        (delta.kind === 'yaw' || delta.kind === 'gimbal') && isFiniteNumber(delta.degrees)))
+  }
+  return false
+}
+
 /** Parses the M1.1 event seam; unknown frames fail closed. */
 export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
   if (!isRecord(value) || !hasBaseEvent(value) || typeof value.type !== 'string') return null
+
+  if (value.type === 'capabilities' || value.type === 'node_status' || value.type === 'capture_readiness') {
+    return isNodeInformationEvent(value) ? value as unknown as RelayNodeInformationEvent : null
+  }
 
   if (value.type === 'state') {
     if (
