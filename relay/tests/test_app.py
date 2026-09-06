@@ -1066,28 +1066,33 @@ def test_same_session_recovery_does_not_block_websocket_event_loop(
     async def exercise() -> tuple[float, int]:
         ticks = 0
         unrelated_finished = asyncio.Event()
+        ticker_progress = asyncio.Event()
         asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=20))
 
         async def ticker() -> None:
             nonlocal ticks
             while not unrelated_finished.is_set():
                 ticks += 1
+                if ticks == 5:
+                    ticker_progress.set()
                 await asyncio.sleep(0.01)
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             replay_future = executor.submit(runtime.replay, SESSION)
             assert await asyncio.to_thread(constructor_started.wait, 2)
-            timer = Timer(0.3, resume_constructor.set)
+            timer = Timer(1.5, resume_constructor.set)
             timer.start()
             ticker_task = asyncio.create_task(ticker())
             waiters = [
                 asyncio.create_task(route.endpoint(AuthenticatingWebSocket(), SESSION))
                 for _ in range(20)
             ]
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(ticker_progress.wait(), timeout=1)
             started = time.monotonic()
             await route.endpoint(AuthenticatingWebSocket(), "session-b")
             elapsed = time.monotonic() - started
+            assert not resume_constructor.is_set()
+            assert not replay_future.done()
             unrelated_finished.set()
             await ticker_task
             resume_constructor.set()
