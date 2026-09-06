@@ -74,6 +74,38 @@ def _command(
     return intent_id, _outcome(websocket, intent_id)
 
 
+def _wait_for_telemetry(
+    websocket: object, expected: dict[int, dict[str, object]], *, freshness_ms: int
+) -> None:
+    """Dependent commands wait for observed aircraft state, separately from ACKs."""
+    deadline = time.monotonic() + 10
+    last_state = None
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            event = json.loads(websocket.recv(timeout=remaining))  # type: ignore[attr-defined]
+        except TimeoutError:
+            break
+        if event.get("type") != "state":
+            continue
+        last_state = event
+        drones = {drone["drone_id"]: drone for drone in event["drones"]}
+        now_ms = time.time_ns() // 1_000_000
+        if all(
+            drone_id in drones
+            and drones[drone_id]["membership"] == "ready"
+            and drones[drone_id]["telemetry"] is not None
+            and 0 <= now_ms - drones[drone_id]["telemetry"]["t"] <= freshness_ms
+            and all(
+                drones[drone_id]["telemetry"].get(key) == value for key, value in values.items()
+            )
+            for drone_id, values in expected.items()
+        ):
+            return
+    raise AssertionError(
+        f"expected fresh telemetry {expected}; last state: {json.dumps(last_state)}"
+    )
+
+
 def test_four_node_demo_dispatches_selection_and_fleet_stops_over_signed_wire(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -103,12 +135,26 @@ def test_four_node_demo_dispatches_selection_and_fleet_stops_over_signed_wire(
                 ("land_all", [], {}, True, [1, 2, 3, 4]),
                 ("estop", [], {}, False, [1, 2, 3, 4]),
             ]
+            telemetry_after = {
+                "takeoff": {drone_id: {"state": "hovering", "z": 1.0} for drone_id in range(1, 5)},
+                "translate": {
+                    drone_id: {"state": "hovering", "x": x}
+                    for drone_id, x in ((1, 0.5), (2, 2.0), (3, 4.5), (4, 6.0))
+                },
+                "land_all": {drone_id: {"state": "landed", "z": 0.0} for drone_id in range(1, 5)},
+            }
             for name, selection, args, confirm, expected_ids in commands:
                 intent_id, outcome = _command(
                     demo, websocket, name, selection, args=args, confirm=confirm
                 )
-                assert outcome["status"] == "completed", outcome
+                assert outcome["status"] == "completed", f"{name}: {json.dumps(outcome)}"
                 completed.append((intent_id, expected_ids))
+                if name in telemetry_after:
+                    _wait_for_telemetry(
+                        websocket,
+                        telemetry_after[name],
+                        freshness_ms=demo.runtime.settings.telemetry_freshness_ms,
+                    )
         port = demo.port
         thread = demo._thread
         assert demo.token not in json.dumps(demo.status())
