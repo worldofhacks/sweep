@@ -1397,7 +1397,7 @@ def test_segment_validation_rejects_corruption_after_a_decodable_first_gop(
     _make_media(
         path,
         "testsrc2=size=640x360:rate=30",
-        "-t 5 -c:v libx264 -pix_fmt yuv420p -g 30",
+        "-t 5 -c:v libx264 -pix_fmt yuv420p -g 30 -movflags +faststart",
     )
     payload = bytearray(path.read_bytes())
     marker = payload.find(b"mdat")
@@ -1409,9 +1409,15 @@ def test_segment_validation_rejects_corruption_after_a_decodable_first_gop(
         box_size = int.from_bytes(payload[marker + 4 : marker + 12], "big")
         data_start = marker + 12
     box_end = box_start + box_size
-    overwrite_start = data_start + (box_end - data_start) // 2
-    payload[overwrite_start:box_end] = bytes(box_end - overwrite_start)
-    path.write_bytes(payload)
+    # Keep the front-loaded ``moov`` metadata and the first GOP readable, but
+    # truncate a later packet.  Zero-filled H.264 payload is intentionally
+    # conceal-able by some FFmpeg releases (notably Ubuntu's FFmpeg 6), so it is
+    # not a portable corruption oracle.  A declared sample that extends beyond
+    # EOF is malformed on every supported decoder and still proves that the
+    # validator reads beyond the first decodable frame.
+    truncate_at = data_start + (box_end - data_start) // 2
+    assert truncate_at < box_end == len(payload)
+    path.write_bytes(payload[:truncate_at])
 
     with pytest.raises(recording.RecordingError, match="command failed .*ffmpeg"):
         recording._segments(tmp_path)
