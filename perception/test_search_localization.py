@@ -1,0 +1,36 @@
+from perception.detection_contracts import DetectionCandidate
+from perception.search_localization import (
+    FiveFrameLocalizer,
+    SearchCameraModel,
+    project_bottom_center,
+)
+from planner.navigation import Zone
+
+
+def _zone():
+    return Zone("atrium", "level-1", True, ((0, 0), (4, 0), (4, 4), (0, 4), (0, 0)), 0, 3, ())
+
+
+def test_bottom_center_ray_projects_then_reports_the_five_frame_median_zone():
+    model = SearchCameraModel(
+        ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+        ((1, 0, 0, 1), (0, 1, 0, 1), (0, 0, -1, 2), (0, 0, 0, 1)),
+    )
+    candidate = DetectionCandidate("backpack", 24, 0.9, (0, 0, 2, 1))
+    pose = project_bottom_center(candidate, 2, model, (_zone(),))
+    assert pose is not None
+    assert pose.x_m == 3 and pose.y_m == 3 and pose.z_m == 0
+    localizer = FiveFrameLocalizer((_zone(),))
+    assert [localizer.observe(pose) for _ in range(4)] == [None] * 4
+    result = localizer.observe(pose)
+    assert result is not None
+    assert result.samples == 5 and result.pose.floor_id == "level-1"
+
+
+def test_projection_and_zone_filter_refuse_unapproved_space():
+    model = SearchCameraModel(
+        ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+        ((1, 0, 0, 10), (0, 1, 0, 10), (0, 0, -1, 2), (0, 0, 0, 1)),
+    )
+    candidate = DetectionCandidate("backpack", 24, 0.9, (0, 0, 2, 1))
+    assert project_bottom_center(candidate, 2, model, (_zone(),)) is None
