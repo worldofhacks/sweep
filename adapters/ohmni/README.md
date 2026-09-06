@@ -152,10 +152,20 @@ ACK/telemetry/sensor JSONL during the supervised tests.
 
 `tools/bringup.sh [nodes|stop]` is the durable stack launcher. It requires private
 `SWEEP_RELAY_ENV_FILE` and `SWEEP_ROBOTS_FILE` (JSON rows containing `serial`, `env_file`).
+The relay environment must explicitly set `SWEEP_RELAY_ORIGIN` for the browser to its
+intended WebSocket origin on port **8010**, and every robot environment must set
+`SWEEP_RELAY_URL` on that same port. Missing or wrong-port values fail before any process
+or robot changes; the console's unrelated default on port 8000 is never used. Keep the
+LAN hostname in these private files; validation errors do not print endpoint values.
 No robot addresses, keys, launch positions or spotter claims are invented. Default start
 creates a fresh session and starts relay :8010, console :5174, repository MediaMTX, and
 already-installed robot nodes. `nodes` restarts only those nodes; `stop` stops them and
-only host process groups recorded by this launcher. Logs/PIDs live in ignored
+only host process groups whose recorded PID, PGID, process start time and command marker
+still match. Old or incomplete ownership records fail closed, and the launcher does not
+adopt legacy processes. Host `ps` and `lsof` must be available. Occupied host ports abort
+startup; a launched process exiting or a listener belonging to another group also aborts
+before the saved session or robot configurations change. `nodes` additionally checks that
+both recorded services still own their listeners. Logs/PIDs live in ignored
 `.sweep-ohmni/` with mode 700. Port 8000 and unrelated sessions are never stopped.
 
 Outstanding S3 evidence must be recorded before calling the physical system verified:
