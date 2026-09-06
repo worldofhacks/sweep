@@ -12,6 +12,18 @@ spacing against every ready airborne aircraft (selected or not), return battery 
 critical battery, link and positioning quality/freshness, operator activity, network and
 physical-RC authority, active task, camera readiness, and capture storage.
 
+Predicted unsafe `GOTO` trajectories pass through a Buffered Voronoi Cell projection
+before adapter dispatch. The filter follows [Zhou et al., 2017](https://doi.org/10.1109/LRA.2017.2656241)
+and the [Crazyflie firmware implementation](https://github.com/bitcraze/crazyflie-firmware/blob/master/src/modules/src/collision_avoidance.c):
+it projects every requested velocity into the buffered cells of all ready airborne
+aircraft, the geofence, and the altitude ceiling. The existing GOTO wire command
+carries the projected position to the Android Virtual Stick controller. A deflected
+command records its actual setpoint in the acknowledgement detail. An airborne peer
+without velocity evidence produces a zero-displacement setpoint.
+Completion acknowledges that projected setpoint, not the original destination; the
+navigation controller must use the next authoritative telemetry sample to replan if the
+original destination remains outstanding.
+
 `SafetyConfig` has no deployment defaults. Every threshold—including battery reserve
 and critical fractions, battery cost per metre, link/position freshness, operator
 timeout, capture storage, motion-conflict window, and position-loss dwell—must come
