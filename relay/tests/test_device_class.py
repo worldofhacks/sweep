@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from language.contracts import build_grounding_facts
 from planner.models import DeviceClass, DriveState, FlightState
 from relay.app import RelayRuntime
 from relay.audit import AuditLogError, SessionAuditLog
@@ -524,6 +525,12 @@ def test_a_mixed_session_projects_both_classes_into_one_planner_snapshot(
     docked = relay_snapshot(session.current_state(), operator_last_seen_ms=None)
     assert docked.aircraft[GROUND_ID].armed is False
     assert docked.aircraft[GROUND_ID].mobile is False
+
+    facts = build_grounding_facts(state, capability_version="device-class-v1")
+    assert {int(drone["drone_id"]): drone["flight_state"] for drone in facts.drones} == {
+        1: "landed",
+        GROUND_ID: "moving",
+    }, "the same projection grounds the language compiler, which refuses an unknown state"
 
 
 def test_a_device_state_outside_its_class_vocabulary_is_excluded(

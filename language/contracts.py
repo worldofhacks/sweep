@@ -11,7 +11,13 @@ from types import MappingProxyType
 from typing import Literal
 from unicodedata import category, normalize
 
-from planner.models import AltitudeGrounding, TranslationGrounding, TranslationPolicy
+from planner.models import (
+    AltitudeGrounding,
+    DeviceClass,
+    DriveState,
+    TranslationGrounding,
+    TranslationPolicy,
+)
 from relay.capabilities import CapabilityProfile
 from relay.intent_v1 import AcceptedIntent, IntentName, Mode, validate_intent
 
@@ -23,6 +29,19 @@ _MEMBERSHIPS = frozenset({"registered", "ready", "leaving", "disconnected", "deg
 _FLIGHT_STATES = frozenset(
     {"disarmed", "landed", "armed", "taking_off", "airborne", "hovering", "landing", "emergency"}
 )
+_DRIVE_STATES = frozenset(state.value for state in DriveState)
+_TELEMETRY_STATES_BY_CLASS = {
+    DeviceClass.AIRCRAFT: _FLIGHT_STATES,
+    DeviceClass.GROUND_VEHICLE: _DRIVE_STATES,
+}
+"""The telemetry ``state`` vocabulary each device class reports.
+
+Mirrors ``relay.autonomy._TELEMETRY_STATES_BY_CLASS``: the relay projects one
+``flight_state`` field for every class, carrying a ``DriveState`` for a ground
+vehicle, so grounding facts read it in the vocabulary of the device's own class and
+refuse anything else. The two vocabularies are disjoint, so a state value alone
+names the class it came from.
+"""
 _SELECTION_TARGETED = frozenset(
     {
         IntentName.TAKEOFF,
@@ -456,9 +475,16 @@ def build_grounding_facts(
         flight_state = raw.get("flight_state")
         patterns = raw.get("camera_patterns")
         heading = translation_headings.get(drone_id)
+        raw_class = raw.get("device_class")
+        if raw_class is not None and (
+            not isinstance(raw_class, str) or raw_class not in _TELEMETRY_STATES_BY_CLASS
+        ):
+            raise ValueError("device class must use the supported vocabulary")
+        device_class = DeviceClass.AIRCRAFT if raw_class is None else DeviceClass(raw_class)
         if membership not in _MEMBERSHIPS or not isinstance(selectable, bool):
             raise ValueError("drone membership and selectable fields are required")
-        if flight_state is not None and flight_state not in _FLIGHT_STATES:
+        class_states = _TELEMETRY_STATES_BY_CLASS[device_class]
+        if flight_state is not None and flight_state not in class_states:
             raise ValueError("flight state must use the supported vocabulary")
         if not _camera_pattern_list(patterns):
             raise ValueError("camera patterns must use the supported pattern vocabulary")
