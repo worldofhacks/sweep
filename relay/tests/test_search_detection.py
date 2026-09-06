@@ -170,9 +170,44 @@ def test_production_detection_factory_updates_search_without_adapter_calls() -> 
             {"drone_id": 1, "state": "running", "failure_reason": None}
         ]
         assert dispatcher.calls == []
+        factory.finish_mission(intent.intent_id)
+        assert factory._workers == {}
+        assert factory.status(intent.intent_id) == [
+            {"drone_id": 1, "state": "idle", "failure_reason": None}
+        ]
+        assert stream.closed
     finally:
         factory.close()
     assert stream.closed
+
+
+def test_detection_factory_stops_a_search_when_a_required_source_is_missing() -> None:
+    search = _search()
+    intent = make_intent(
+        IntentName.SEARCH,
+        selection=(1,),
+        args={"zone_id": "atrium", "target_class": "backpack"},
+        confirm=True,
+        intent_id="missing-detection-source",
+    )
+    assert isinstance(search.prepare(intent, _snapshot()), SearchMissionPreview)
+    source = DetectionSourceConfig(
+        2,
+        "camera-2",
+        "rtsp://camera.example/drone2",
+        Path("model.onnx"),
+        "a" * 64,
+        _camera(),
+    )
+    factory = SearchDetectionFactory(SearchDetectionConfig({2: source}), search)
+
+    factory.start()
+
+    assert factory.start_mission(intent.intent_id, SimpleNamespace()) is False
+    assert factory._workers == {}
+    assert factory.status(intent.intent_id) == [
+        {"drone_id": 1, "state": "failed", "failure_reason": "source_not_configured"}
+    ]
 
 
 def test_detection_factory_follows_the_composed_app_lifespan(tmp_path) -> None:
