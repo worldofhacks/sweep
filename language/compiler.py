@@ -1342,7 +1342,7 @@ def _snapshot_matches_facts(
         heading = drone["heading_deg"]
         if (
             aircraft.membership.value != drone["membership"]
-            or aircraft.flight_state.value != drone["flight_state"]
+            or aircraft.telemetry_state != drone["flight_state"]
             or position != (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
             or position_time_ms != aircraft.position_last_seen_ms
             or (heading is not None and aircraft.heading_deg != heading)
