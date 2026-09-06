@@ -27,7 +27,7 @@ from relay.autonomy import AutonomyConfig, create_autonomy_app
 from relay.capabilities import CapabilityProfile, IntentName
 from relay.navigation_metadata import navigation_metadata
 from relay.settings import RelaySettings, SettingsError
-from relay.voice import TranscriptionTransport, TranscriptService
+from relay.voice import TranscriptionTransport, TranscriptService, configured_transcription
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,19 +40,10 @@ def build_transcript_service(
     transport: ModelTransport | None = None,
     transcription: TranscriptionTransport | None = None,
 ) -> TranscriptService:
-    """Compose the voice endpoint's service for this relay process.
-
-    ``OPENAI_API_KEY`` enables Whisper transcription; without it every upload is a
-    typed ``transcription_unavailable`` refusal. ``ANTHROPIC_API_KEY`` enables the
-    pinned plan compiler; without it the endpoint keeps returning the transcript with
-    the typed ``compiler_unavailable`` refusal and the console labels its local
-    fallback. Both keys are read here, in the relay process, and never leave it.
-    """
+    """Bind the selected speech provider and grounded compiler to this relay process."""
     values = os.environ if environ is None else environ
-    if not values.get("OPENAI_API_KEY") and transcription is None:
-        _LOGGER.warning(
-            "OPENAI_API_KEY is not set: voice uploads will be refused transcription_unavailable"
-        )
+    if transcription is None:
+        transcription = configured_transcription(values)
     if transport is None:
         api_key = values.get("ANTHROPIC_API_KEY")
         if not api_key:

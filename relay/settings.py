@@ -35,6 +35,16 @@ class CapabilityRelease(StrEnum):
     C2 = "c2"
 
 
+def transcription_provider_from_env(environ: Mapping[str, str] | None = None) -> str:
+    values = os.environ if environ is None else environ
+    provider = values.get("SWEEP_TRANSCRIPTION_PROVIDER") or (
+        "deepgram" if values.get("DEEPGRAM_API_KEY", "").strip() else "whisper"
+    )
+    if provider not in {"deepgram", "whisper"}:
+        raise SettingsError("SWEEP_TRANSCRIPTION_PROVIDER must be deepgram or whisper")
+    return provider
+
+
 @dataclass(frozen=True, slots=True)
 class RelaySettings:
     relay_token: bytes = field(repr=False)
@@ -47,6 +57,8 @@ class RelaySettings:
     future_clock_skew_ms: int = 1_000
     telemetry_freshness_ms: int = 1_000
     transcript_upload_timeout_ms: int = 15_000
+
+    transcription_provider: str = field(default_factory=transcription_provider_from_env)
     fanout_hz: int = 10
     adapter_backend: AdapterBackend = AdapterBackend.SIM
     capability_release: CapabilityRelease = CapabilityRelease.C1
@@ -111,6 +123,9 @@ class RelaySettings:
             or self.transcript_upload_timeout_ms <= 0
         ):
             raise SettingsError("SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS must be a positive integer")
+
+        if self.transcription_provider not in {"deepgram", "whisper"}:
+            raise SettingsError("SWEEP_TRANSCRIPTION_PROVIDER must be deepgram or whisper")
         if self.fanout_hz != 10:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
@@ -196,6 +211,7 @@ class RelaySettings:
                 values.get("SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS", "15000"),
                 "SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS",
             ),
+            transcription_provider=transcription_provider_from_env(values),
             adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
             capability_release=_capability_release(values.get("SWEEP_CAPABILITY_RELEASE", "c1")),
             command_ttl_ms=_positive_integer(

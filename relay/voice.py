@@ -19,9 +19,30 @@ import httpx
 from arbiter.safety import CONFIRMATION_REQUIRED_INTENTS
 from relay.capabilities import IMPLEMENTED_INTENT_NAMES, CapabilityProfile
 from relay.intent_v1 import AcceptedIntent, validate_intent
+from relay.settings import transcription_provider_from_env
 from relay.voice_telemetry import VoiceTraceSink, get_default_voice_trace_sink
 
 WHISPER_MODEL = "whisper-1"
+DEEPGRAM_MODEL = "nova-3"
+COMMAND_KEYTERMS = (
+    "arm",
+    "disarm",
+    "estop",
+    "come home",
+    "translate",
+    "hold",
+    "land",
+    "take off",
+    "drone one",
+    "drone two",
+    "drone three",
+    "drone four",
+    "lobby",
+    "kitchen",
+    "living room",
+    "bedroom",
+    "capture room",
+)
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
 MAX_AUDIO_DURATION_MS = 30_000
 MAX_TRANSCRIPT_CHARS = 4_000
@@ -94,12 +115,15 @@ class UnavailableTranscriptCompiler:
 
 
 class OpenAIWhisperTransport:
+    provider = "whisper"
+    model = WHISPER_MODEL
+
     def __init__(self, *, api_key: str | None = None, timeout_s: float = 20.0) -> None:
         self._api_key = api_key
         self._timeout_s = timeout_s
 
     def transcribe(self, upload: AudioUpload) -> str:
-        api_key = self._api_key or os.environ.get("OPENAI_API_KEY")
+        api_key = self._api_key if self._api_key is not None else os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise TranscriptionError("OPENAI_API_KEY is not configured")
         for attempt in range(MAX_TRANSCRIPTION_ATTEMPTS):
@@ -140,8 +164,59 @@ class OpenAIWhisperTransport:
         raise AssertionError("bounded transcription attempts must return or raise")
 
 
+class DeepgramTransport:
+    provider = "deepgram"
+    model = DEEPGRAM_MODEL
+
+    def __init__(self, *, api_key: str | None = None, timeout_s: float = 20.0) -> None:
+        self._api_key = api_key
+        self._timeout_s = timeout_s
+
+    def transcribe(self, upload: AudioUpload) -> str:
+        api_key = self._api_key if self._api_key is not None else os.environ.get("DEEPGRAM_API_KEY")
+        if not api_key:
+            raise TranscriptionError("DEEPGRAM_API_KEY is not configured")
+        try:
+            response = httpx.post(
+                "https://api.deepgram.com/v1/listen",
+                headers={"Authorization": f"Token {api_key}", "Content-Type": upload.content_type},
+                params=[
+                    ("model", DEEPGRAM_MODEL),
+                    ("language", "en"),
+                    ("smart_format", "true"),
+                    *(("keyterm", term) for term in COMMAND_KEYTERMS),
+                ],
+                content=upload.body,
+                timeout=self._timeout_s,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise TranscriptionError("transcription provider request failed") from error
+        try:
+            text = response.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
+        except (TypeError, ValueError, KeyError, IndexError) as error:
+            raise TranscriptionError("transcription provider response is malformed") from error
+        return _validated_transcript(text)
+
+
+def configured_transcription(
+    environ: Mapping[str, str] | None = None, *, provider: str | None = None
+) -> TranscriptionTransport:
+    values = os.environ if environ is None else environ
+    selected = transcription_provider_from_env(values) if provider is None else provider
+    if selected == "deepgram":
+        return DeepgramTransport(api_key=values.get("DEEPGRAM_API_KEY", ""))
+    if selected == "whisper":
+        return OpenAIWhisperTransport(api_key=values.get("OPENAI_API_KEY", ""))
+    raise ValueError("unknown transcription provider")
+
+
 class ReplayTranscriptionTransport:
-    def __init__(self, cassette_path: Path) -> None:
+    def __init__(self, cassette_path: Path, *, provider: str = "whisper") -> None:
+        if provider not in {"whisper", "deepgram"}:
+            raise ValueError("unknown transcription provider")
+        self.provider = provider
+        self.model = DEEPGRAM_MODEL if provider == "deepgram" else WHISPER_MODEL
         try:
             cassette = json.loads(cassette_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -154,15 +229,19 @@ class ReplayTranscriptionTransport:
         self._entries = entries
 
     def transcribe(self, upload: AudioUpload) -> str:
-        entry = self._entries.get(transcription_request_key(upload))
+        entry = self._entries.get(transcription_request_key(upload, model=self.model))
         if not isinstance(entry, Mapping) or set(entry) != {"text"}:
-            raise TranscriptionError(f"replay miss for {transcription_request_key(upload)}")
+            raise TranscriptionError(
+                f"replay miss for {transcription_request_key(upload, model=self.model)}"
+            )
         return _validated_transcript(entry.get("text"))
 
 
 class RecordingTranscriptionTransport:
     def __init__(self, transport: TranscriptionTransport, cassette_path: Path) -> None:
         self._transport = transport
+        self.provider = getattr(transport, "provider", "whisper")
+        self.model = getattr(transport, "model", WHISPER_MODEL)
         self._cassette_path = cassette_path
 
     def transcribe(self, upload: AudioUpload) -> str:
@@ -170,7 +249,7 @@ class RecordingTranscriptionTransport:
         cassette = self._load()
         entries = cassette["entries"]
         assert isinstance(entries, dict)
-        entries[transcription_request_key(upload)] = {"text": transcript}
+        entries[transcription_request_key(upload, model=self.model)] = {"text": transcript}
         self._cassette_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._cassette_path.with_suffix(self._cassette_path.suffix + ".tmp")
         temporary.write_text(
@@ -279,7 +358,7 @@ class VoicePlan:
 @dataclass(frozen=True, slots=True)
 class VoiceOutcome:
     status: Literal["transcribed", "refused"]
-    source: Literal["whisper", "template"]
+    source: Literal["whisper", "deepgram", "template"]
     reason: str | None
     transcript: str | None
     emissions: tuple[()] = ()
@@ -585,7 +664,9 @@ class TranscriptService:
         tracer: VoiceTraceSink | None = None,
         duration_probe: Callable[[AudioUpload], int] | None = None,
     ) -> None:
-        self._transcription = transcription or OpenAIWhisperTransport()
+        self._transcription = transcription or configured_transcription()
+        self._provider = getattr(self._transcription, "provider", "whisper")
+        self._model = getattr(self._transcription, "model", WHISPER_MODEL)
         self._compiler = compiler or UnavailableTranscriptCompiler()
         self._tracer = tracer or get_default_voice_trace_sink()
         self._duration_probe = duration_probe or probe_audio_duration_ms
@@ -628,13 +709,13 @@ class TranscriptService:
             capability_version = compiler_capability_version(grounded_state)
         except ValueError:
             return VoiceOutcome("refused", "template", "invalid_relay_state", None)
-        cost_usd = _whisper_cost(measured_duration_ms)
+        cost_usd = _whisper_cost(measured_duration_ms) if self._provider == "whisper" else None
         self._record(
             {
                 "event": "voice_started",
                 "correlation_id": correlation_id,
                 "session_id": session_id,
-                "model": WHISPER_MODEL,
+                "model": self._model,
                 "content_type": normalized_type,
                 "bytes": len(body),
                 "audio_duration_ms": measured_duration_ms,
@@ -716,7 +797,7 @@ class TranscriptService:
                 cost_usd=cost_usd,
             )
         return self._complete(
-            VoiceOutcome("transcribed", "whisper", None, transcript, (), plan),
+            VoiceOutcome("transcribed", self._provider, None, transcript, (), plan),
             correlation_id=correlation_id,
             session_id=session_id,
             cost_usd=cost_usd,
@@ -875,17 +956,20 @@ def compiler_capability_version(relay_state: Mapping[str, object]) -> str:
     return "relay-capabilities-" + hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def transcription_request_key(upload: AudioUpload) -> str:
-    canonical = json.dumps(
-        {
-            "model": WHISPER_MODEL,
-            "schema": "voice-transcription-v1",
-            "content_type": upload.content_type,
-            "audio_sha256": hashlib.sha256(upload.body).hexdigest(),
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+def transcription_request_key(upload: AudioUpload, *, model: str = WHISPER_MODEL) -> str:
+    request = {
+        "model": model,
+        "schema": "voice-transcription-v1",
+        "content_type": upload.content_type,
+        "audio_sha256": hashlib.sha256(upload.body).hexdigest(),
+    }
+    if model == DEEPGRAM_MODEL:
+        request["options"] = {
+            "language": "en",
+            "smart_format": True,
+            "keyterms": list(COMMAND_KEYTERMS),
+        }
+    canonical = json.dumps(request, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 

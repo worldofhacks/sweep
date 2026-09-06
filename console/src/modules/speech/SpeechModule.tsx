@@ -40,7 +40,7 @@ const LANGUAGE_DISABLED =
   'The relay has no transcription endpoint on this console. Type the utterance instead; nothing is emitted from an empty transcript.'
 const unavailableTranscriptClient = new UnavailableTranscriptClient(LANGUAGE_DISABLED)
 
-type TranscriptOrigin = 'typed' | 'whisper' | 'template'
+type TranscriptOrigin = 'typed' | VoiceOutcome['source']
 
 interface SeenVoice {
   outcome: VoiceOutcome | null
