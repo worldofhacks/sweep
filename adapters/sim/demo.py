@@ -34,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
 from adapters.sim.navigation_demo import navigation_demo_runtime
+from adapters.sim.search_demo import search_demo
 from arbiter.safety import SafetyConfig
 from planner.models import Geofence
 from planner.navigation_deployment import NavigationDeployment
@@ -60,6 +61,7 @@ class DemoConfig:
     console_dist: Path | None = None
     console_origins: tuple[str, ...] = ()
     navigation_demo: bool = False
+    search_demo: bool = False
 
     def __post_init__(self) -> None:
         if type(self.count) is not int or not 1 <= self.count <= 4:
@@ -146,8 +148,13 @@ class FleetDemo:
     ) -> None:
         self.config = config or DemoConfig()
         self.autonomy_config = autonomy_config or demo_autonomy_config(
-            navigation_demo=self.config.navigation_demo
+            navigation_demo=self.config.navigation_demo or self.config.search_demo
         )
+        self.search = search_demo(self.autonomy_config) if self.config.search_demo else None
+        if self.search is not None:
+            self.autonomy_config = self.search.config
+        self._frames_stopped = threading.Event()
+        self._frames_thread: threading.Thread | None = None
         self._configure_app = configure_app
         self.log_dir = self.config.log_dir or Path(tempfile.mkdtemp(prefix="sweep-fleet-demo-"))
         self.token = secrets.token_urlsafe(32)
@@ -192,6 +199,18 @@ class FleetDemo:
                 transcript_service_factory=lambda _: TranscriptService(
                     transcription=_UnavailableDemoTranscription(), tracer=NoOpVoiceTraceSink()
                 ),
+                detection_stream_factory=None
+                if self.search is None
+                else self.search.stream_factory,
+                detection_detector_factory=None
+                if self.search is None
+                else self.search.detector_factory,
+                detection_pose_provider_factory=None
+                if self.search is None
+                else self.search.pose_provider_factory,
+                detection_camera_provider_factory=None
+                if self.search is None
+                else self.search.camera_provider_factory,
             )
             self._add_routes()
             if self._configure_app is not None:
@@ -226,6 +245,9 @@ class FleetDemo:
                 ),
                 "all demo aircraft ready",
             )
+            if self.search is not None:
+                self._frames_thread = threading.Thread(target=self._publish_frames, daemon=True)
+                self._frames_thread.start()
         except BaseException:
             self.stop()
             raise
@@ -240,11 +262,15 @@ class FleetDemo:
                 adapter_id=f"isolated-demo-node-{drone_id}",
                 home=self._home(drone_id),
                 telemetry_hz=5.0,
+                slow_operations=frozenset({"goto", "hover"})
+                if self.search is not None
+                else frozenset(),
+                slow_ack_delay_s=0.6 if self.search is not None else 0.0,
             )
         )
 
     def _home(self, drone_id: int) -> tuple[float, float, float]:
-        if self.config.navigation_demo:
+        if self.config.navigation_demo or self.config.search_demo:
             return ((0.5, 1.5, 0.0), (0.5, 3.5, 0.0), (3.5, 3.5, 0.0), (5.5, 3.5, 0.0))[
                 drone_id - 1
             ]
@@ -332,6 +358,9 @@ class FleetDemo:
         if self._closed:
             return
         self._closed = True
+        self._frames_stopped.set()
+        if self._frames_thread is not None:
+            self._frames_thread.join(timeout=_WAIT_S)
         with self._node_lock:
             for node in self.nodes.values():
                 node.stop()
@@ -345,6 +374,11 @@ class FleetDemo:
             self.composition.close()
         if self._listener is not None:
             self._listener.close()
+
+    def _publish_frames(self) -> None:
+        assert self.search is not None
+        while not self._frames_stopped.wait(0.04):
+            self.search.publish_frame()
 
 
 def _wait_until(predicate: Callable[[], bool], description: str) -> None:
@@ -365,6 +399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--console-dist", type=Path)
     parser.add_argument("--console-origin", action="append", default=[])
     parser.add_argument("--navigation-demo", action="store_true")
+    parser.add_argument("--search-demo", action="store_true")
     args = parser.parse_args(argv)
     try:
         config = DemoConfig(
@@ -375,6 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             console_dist=args.console_dist,
             console_origins=tuple(args.console_origin),
             navigation_demo=args.navigation_demo,
+            search_demo=args.search_demo,
         )
     except ValueError as error:
         parser.error(str(error))
