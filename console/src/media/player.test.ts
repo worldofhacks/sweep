@@ -8,7 +8,7 @@ import { createPlaybackDescriptor } from './playback'
 import { WhepPlaybackSession, type MediaPlaybackState } from './player'
 
 const descriptor = createPlaybackDescriptor({
-  droneId: 1,
+  device: { device_class: 'aircraft', unit: 1 },
   webrtcOrigin: 'http://localhost:8889',
   readerUsername: 'reader',
   readerPassword: 'secret',
