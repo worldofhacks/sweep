@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import time
 import uuid
@@ -16,6 +17,7 @@ from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAudit
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import (
+    MAX_CAPABILITY_LIST_ITEMS,
     NODE_FRAME_TYPES,
     AdapterAcknowledgement,
     CapabilitiesFrame,
@@ -48,6 +50,7 @@ from relay.control_localization import (
 )
 from relay.control_localization_contracts import session_identifier
 from relay.intent_v1 import (
+    MAX_INTENT_IDENTIFIER_CHARS,
     REGISTERED_SOURCES,
     AcceptedIntent,
     IntentName,
@@ -56,11 +59,18 @@ from relay.intent_v1 import (
     validate_intent,
 )
 from relay.media import MediaEvidenceProvider
-from relay.state import FleetRegistry, MembershipTransition, RegistryError
+from relay.state import (
+    MAX_MEMBERSHIP_HISTORY_LIMIT,
+    MAX_PHYSICAL_AIRCRAFT,
+    FleetRegistry,
+    MembershipTransition,
+    RegistryError,
+)
 
 Clock = Callable[[], int]
 EventIdFactory = Callable[[], str]
 ControlPoseSigningKey = Callable[[int], bytes | None]
+MAX_AUDIT_STATE_INTERVAL_MS = 10_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +185,8 @@ class RelayLimits:
     future_clock_skew_ms: int
     telemetry_freshness_ms: int
     command_ttl_ms: int = 2_000
+    audit_state_interval_ms: int = 10_000
+    state_membership_history: int = 8
 
     def __post_init__(self) -> None:
         if (
@@ -189,6 +201,22 @@ class RelayLimits:
             raise ValueError("freshness limits must be positive")
         if self.future_clock_skew_ms < 0:
             raise ValueError("future_clock_skew_ms must be non-negative")
+        if (
+            type(self.audit_state_interval_ms) is not int
+            or not 1 <= self.audit_state_interval_ms <= MAX_AUDIT_STATE_INTERVAL_MS
+        ):
+            raise ValueError(
+                "audit_state_interval_ms must be an integer from 1 through "
+                f"{MAX_AUDIT_STATE_INTERVAL_MS}"
+            )
+        if (
+            type(self.state_membership_history) is not int
+            or not 1 <= self.state_membership_history <= MAX_MEMBERSHIP_HISTORY_LIMIT
+        ):
+            raise ValueError(
+                "state_membership_history must be an integer from 1 through "
+                f"{MAX_MEMBERSHIP_HISTORY_LIMIT}"
+            )
 
 
 @dataclass(slots=True)
@@ -229,6 +257,20 @@ class _ResumeWork:
     operation_id: int
     blocked_ids: set[str]
     phased: bool
+
+
+@dataclass(slots=True)
+class _AuditSampling:
+    """What state the audit last recorded; accepted telemetry is never sampled."""
+
+    state_projection: str | None = None
+    state_audited_at: int | None = None
+
+    def copy(self) -> _AuditSampling:
+        return _AuditSampling(
+            state_projection=self.state_projection,
+            state_audited_at=self.state_audited_at,
+        )
 
 
 class RelaySession:
@@ -276,7 +318,9 @@ class RelaySession:
             telemetry_freshness_ms=limits.telemetry_freshness_ms,
             capability_profile=capability_profile,
             media_evidence=media_evidence,
+            membership_history_limit=limits.state_membership_history,
         )
+        self._audit_sampling = _AuditSampling()
         # Values are the last instant when the exact signed event could still pass
         # the transport freshness check. This keeps replay protection bounded for
         # high-rate diagnostic producers without accepting a still-fresh replay.
@@ -803,7 +847,7 @@ class RelaySession:
                         connection_epoch=self.registry.connection_epoch(principal.drone_id),
                     )
                 ]
-            return self._record_transition_and_state(transition)
+            return self._record_transition_and_state(transition, now=now)
 
     def process_telemetry(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -839,6 +883,12 @@ class RelaySession:
                     )
                 ]
 
+            # Retain every accepted source frame. Sampling these inputs makes a
+            # later control-state record insufficient to reconstruct the evidence
+            # a safety or autonomy decision could have observed.
+            state = self._state_event(now)
+            projection = _material_state_projection(state)
+            state_changed = transition is not None or self._state_projection_changed(projection)
             telemetry_event = telemetry.to_event()
             self._append_audit(telemetry_event)
             self._metrics["telemetry_events"] += 1
@@ -848,8 +898,8 @@ class RelaySession:
                 self._append_audit(transition_event)
                 self._metrics["membership_events"] += 1
                 events.append(transition_event)
-            state = self._state_event(now)
-            self._append_audit(state)
+            if state_changed or self._state_keepalive_due(now):
+                self._record_state_audit(state, projection, now)
             events.append(state)
             if transition is not None:
                 events.extend(self._reconcile_membership())
@@ -1147,7 +1197,7 @@ class RelaySession:
             events: list[dict[str, object]] = [event]
             if isinstance(frame, CapabilitiesFrame | NodeStatusFrame):
                 state = self._state_event(now)
-                self._append_audit(state)
+                self._sample_state_audit(state, now)
                 events.append(state)
             return events
 
@@ -1662,10 +1712,10 @@ class RelaySession:
             )
             if transition is None:
                 return []
-            return self._record_transition_and_state(transition)
+            return self._record_transition_and_state(transition, now=now)
 
     def periodic_events(self) -> list[dict[str, object]]:
-        """Return the 10 Hz projection and log only actual staleness transitions."""
+        """Return the 10 Hz projection; audit it only on change or as a bounded keepalive."""
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
@@ -1679,7 +1729,9 @@ class RelaySession:
                 events.append(event)
             state = self._state_event(now)
             if transitions:
-                self._append_audit(state)
+                self._record_state_audit(state, _material_state_projection(state), now)
+            else:
+                self._sample_state_audit(state, now)
             events.append(state)
             if transitions:
                 events.extend(self._reconcile_membership())
@@ -1712,6 +1764,10 @@ class RelaySession:
         spacing: float | None = None,
     ) -> dict[str, object]:
         """Apply accepted control state; failure after the durable marker disables the session."""
+        if accepted_plan is not _UNSET:
+            accepted_plan = _bounded_control_projection_snapshot(accepted_plan, "accepted_plan")
+        if pending is not _UNSET:
+            pending = _bounded_control_projection_snapshot(pending, "pending")
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
@@ -1734,7 +1790,7 @@ class RelaySession:
             if spacing is not None:
                 self.registry.set_spacing(spacing)
             state = self._state_event(now)
-            self._append_audit(state)
+            self._record_state_audit(state, _material_state_projection(state), now)
             return state
 
     def replay(
@@ -1804,7 +1860,7 @@ class RelaySession:
         raise AssertionError("wire membership parser returned an internal action")
 
     def _record_transition_and_state(
-        self, transition: MembershipTransition
+        self, transition: MembershipTransition, *, now: int
     ) -> list[dict[str, object]]:
         event = transition.to_event(self.session_id)
         state = self._state_event(transition.t)
@@ -1816,7 +1872,7 @@ class RelaySession:
                 cleared_control_fields=list(transition.cleared_control_fields),
             )
         self._append_audit(event)
-        self._append_audit(state)
+        self._record_state_audit(state, _material_state_projection(state), now)
         self._metrics["membership_events"] += 1
         return [event, state, *self._reconcile_membership()]
 
@@ -2267,6 +2323,41 @@ class RelaySession:
             self._audit_operation_id = self.audit_log.begin_operation()
         return buffered
 
+    def _remember_audit_sampling(self) -> None:
+        before = self._audit_sampling.copy()
+
+        def undo_sampling() -> None:
+            self._audit_sampling = before
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_sampling)
+
+    def _state_projection_changed(self, projection: str) -> bool:
+        return projection != self._audit_sampling.state_projection
+
+    def _state_keepalive_due(self, now: int) -> bool:
+        audited_at = self._audit_sampling.state_audited_at
+        return (
+            audited_at is None
+            or now < audited_at
+            or now - audited_at >= self.limits.audit_state_interval_ms
+        )
+
+    def _sample_state_audit(self, state: dict[str, object], now: int) -> bool:
+        """Audit a snapshot only when its material projection changed or a keepalive is due."""
+        projection = _material_state_projection(state)
+        if not (self._state_projection_changed(projection) or self._state_keepalive_due(now)):
+            return False
+        self._record_state_audit(state, projection, now)
+        return True
+
+    def _record_state_audit(self, state: dict[str, object], projection: str, now: int) -> None:
+        """Audit a snapshot unconditionally; decisions always log the state they saw."""
+        self._remember_audit_sampling()
+        self._append_audit(state)
+        self._audit_sampling.state_projection = projection
+        self._audit_sampling.state_audited_at = now
+
     def _commit_audit_batch(self, events: list[dict[str, object]]) -> None:
         if self._audit_operation_id is None:
             raise RuntimeError("audit commit requires a durable operation marker")
@@ -2296,6 +2387,289 @@ class RelaySession:
             t=now,
             event_id=self.event_ids(),
         )
+
+
+_VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
+# These two planner-owned objects share the per-aircraft projection budget. Four
+# maximum aircraft plus both maximum control objects still fit one 1 MiB record.
+MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024
+_MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
+    {
+        "v",
+        "type",
+        "session",
+        "roster_version",
+        "armed",
+        "estop",
+        "selection",
+        "formation",
+        "spacing",
+        "mode",
+        "capability_profile",
+        "enabled_intent_names",
+        "invalidated_intent_ids",
+        "invalidation_reason",
+        "prior_roster_version",
+        "cleared_control_fields",
+    }
+)
+_DRONE_STATE_KEYS = frozenset(
+    {
+        "drone_id",
+        "connection_epoch",
+        "membership",
+        "readiness_reasons",
+        "flight_state",
+        "battery",
+        "link",
+        "pos_quality",
+        "control_authority",
+        "last_seen_at",
+        "camera_patterns",
+        "selectable",
+        "adapter_id",
+        "adapter_capabilities",
+        "home_pose",
+        "rc_safety_operator_present",
+        "telemetry",
+        "membership_history",
+        "membership_history_truncated",
+        "camera_capabilities",
+        "node_status",
+        "video",
+    }
+)
+_VOLATILE_DRONE_KEYS = frozenset({"last_seen_at", "telemetry", "battery", "link", "pos_quality"})
+_MAX_DRONE_PROJECTION_LIST_ITEMS = MAX_CAPABILITY_LIST_ITEMS
+_BOUNDED_DRONE_LIST_FIELDS = frozenset(
+    {"readiness_reasons", "camera_patterns", "adapter_capabilities", "membership_history"}
+)
+_TIMESTAMPED_DRONE_REPORTS = {
+    "camera_capabilities": "t",
+    "node_status": "t",
+    "video": "last_frame_at",
+}
+_DRONE_REPORT_FIELDS = {
+    "camera_capabilities": frozenset(
+        {
+            "v",
+            "t",
+            "type",
+            "drone_id",
+            "native_panorama_modes",
+            "photo_capture",
+            "gimbal_pitch_min_deg",
+            "gimbal_pitch_max_deg",
+            "horizontal_fov_deg",
+            "storage_remaining_bytes",
+            "media_retrieval",
+            "aircraft_model",
+            "aircraft_firmware",
+            "rc_firmware",
+            "phone_model",
+            "android_version",
+            "sdk_version",
+            "measured_hfov_deg",
+        }
+    ),
+    "node_status": frozenset(
+        {
+            "v",
+            "t",
+            "type",
+            "drone_id",
+            "virtual_stick_enabled",
+            "control_authority",
+            "authority_change_reason",
+            "watchdog_state",
+            "video_publish_state",
+            "phone_battery_percent",
+            "phone_thermal_state",
+        }
+    ),
+    "video": frozenset({"status", "last_frame_at"}),
+}
+_MEMBERSHIP_HISTORY_FIELDS = frozenset(
+    {
+        "t",
+        "action",
+        "membership",
+        "connection_epoch",
+        "reason",
+        "flight_state",
+        "battery",
+        "link",
+        "pos_quality",
+    }
+)
+_MAX_MATERIAL_DRONE_PROJECTION_BYTES = 128 * 1024
+
+
+def _material_state_projection(state: Mapping[str, object]) -> str:
+    """Canonical JSON of the state fields whose change warrants another audit record.
+
+    Timestamps, sequence numbers and per-aircraft telemetry values move on every
+    frame and are carried by the retained telemetry records instead; membership,
+    readiness, flight state, control fields, plans and node reports are material.
+    A node report that repeats its previous content under a new timestamp is not.
+    """
+    # State is generated internally, but every new top-level field still needs an
+    # explicit projection decision. In particular, future collections such as
+    # captures must add their own bounded projector rather than silently turning
+    # this 10 Hz comparison into an ever-growing deep serialization.
+    unknown = (
+        set(state)
+        - _VOLATILE_STATE_KEYS
+        - _MATERIAL_STATE_PASSTHROUGH_KEYS
+        - _MATERIAL_STATE_FIELD_PROJECTORS.keys()
+    )
+    if unknown:
+        fields = ", ".join(sorted(str(key) for key in unknown))
+        raise AuditLogError(f"state fields need bounded audit projectors: {fields}")
+    projection = {
+        key: value for key, value in state.items() if key in _MATERIAL_STATE_PASSTHROUGH_KEYS
+    }
+    if "drones" not in state:
+        raise AuditLogError("state is missing the required drones projection")
+    for key, projector in _MATERIAL_STATE_FIELD_PROJECTORS.items():
+        if key in state:
+            projection[key] = projector(state[key])
+    try:
+        return json.dumps(
+            projection,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as error:
+        raise AuditLogError(f"material state is not JSON-native: {error}") from None
+
+
+def _material_drones_projection(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or len(value) > MAX_PHYSICAL_AIRCRAFT:
+        raise AuditLogError("state drones require a bounded aircraft list")
+    if not all(isinstance(drone, Mapping) for drone in value):
+        raise AuditLogError("state drones must contain objects")
+    return [_material_drone_projection(drone) for drone in value]
+
+
+def _material_pending_projection(value: object) -> dict[str, object] | None:
+    return _material_control_projection(value, "pending")
+
+
+def _material_accepted_plan_projection(value: object) -> dict[str, object] | None:
+    return _material_control_projection(value, "accepted_plan")
+
+
+_MATERIAL_STATE_FIELD_PROJECTORS: dict[str, Callable[[object], object]] = {
+    "drones": _material_drones_projection,
+    "pending": _material_pending_projection,
+    "accepted_plan": _material_accepted_plan_projection,
+}
+
+
+def _material_control_projection(value: object, field: str) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AuditLogError(f"state {field} must be an object or null")
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    except (TypeError, ValueError) as error:
+        raise AuditLogError(f"state {field} is not JSON-native: {error}") from None
+    if len(encoded) > MAX_MATERIAL_CONTROL_PROJECTION_BYTES:
+        raise AuditLogError(f"state {field} exceeds {MAX_MATERIAL_CONTROL_PROJECTION_BYTES} bytes")
+    return value
+
+
+def _bounded_control_projection_snapshot(value: object, field: str) -> object:
+    """Return the exact bounded snapshot that a later control transaction may retain."""
+    if not isinstance(value, dict):
+        return value
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    except (TypeError, ValueError):
+        # Preserve the existing fail-closed transaction behavior for malformed
+        # internal objects; this preflight exists only for the explicit size bound.
+        return value
+    if len(encoded) > MAX_MATERIAL_CONTROL_PROJECTION_BYTES:
+        raise ValueError(
+            f"{field} exceeds the {MAX_MATERIAL_CONTROL_PROJECTION_BYTES}-byte state bound"
+        )
+    decoded = json.loads(encoded)
+    assert isinstance(decoded, dict)
+    return decoded
+
+
+def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
+    missing = _DRONE_STATE_KEYS - set(drone)
+    unknown = set(drone) - _DRONE_STATE_KEYS
+    if missing or unknown:
+        detail = []
+        if missing:
+            detail.append(f"missing {', '.join(sorted(missing))}")
+        if unknown:
+            detail.append(f"unknown {', '.join(sorted(str(key) for key in unknown))}")
+        raise AuditLogError(
+            f"drone state fields need bounded audit projectors: {'; '.join(detail)}"
+        )
+    for list_field in _BOUNDED_DRONE_LIST_FIELDS:
+        value = drone[list_field]
+        if not isinstance(value, list) or len(value) > _MAX_DRONE_PROJECTION_LIST_ITEMS:
+            raise AuditLogError(
+                f"drone state {list_field} must be a list of at most "
+                f"{_MAX_DRONE_PROJECTION_LIST_ITEMS} items"
+            )
+    history = drone["membership_history"]
+    if any(
+        not isinstance(item, Mapping) or set(item) != _MEMBERSHIP_HISTORY_FIELDS for item in history
+    ):
+        raise AuditLogError("drone membership history fields do not match the bounded projection")
+    home_pose = drone["home_pose"]
+    if home_pose is not None and (
+        not isinstance(home_pose, Mapping) or set(home_pose) != {"x", "y", "z"}
+    ):
+        raise AuditLogError("drone home_pose fields do not match the bounded projection")
+    projection = {key: drone[key] for key in _DRONE_STATE_KEYS - _VOLATILE_DRONE_KEYS}
+    for report, timestamp in _TIMESTAMPED_DRONE_REPORTS.items():
+        value = projection.get(report)
+        if value is None and report != "video":
+            continue
+        if not isinstance(value, Mapping) or set(value) != _DRONE_REPORT_FIELDS[report]:
+            raise AuditLogError(f"drone {report} fields do not match the bounded projection")
+        projection[report] = {key: item for key, item in value.items() if key != timestamp}
+    camera = projection.get("camera_capabilities")
+    if camera is not None:
+        assert isinstance(camera, Mapping)
+        modes = camera["native_panorama_modes"]
+        if not isinstance(modes, list) or len(modes) > _MAX_DRONE_PROJECTION_LIST_ITEMS:
+            raise AuditLogError(
+                "drone camera_capabilities.native_panorama_modes must be a bounded list"
+            )
+    try:
+        size = len(
+            json.dumps(
+                projection,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+    except (TypeError, ValueError) as error:
+        raise AuditLogError(f"material drone state is not JSON-native: {error}") from None
+    if size > _MAX_MATERIAL_DRONE_PROJECTION_BYTES:
+        raise AuditLogError("material drone state exceeds the bounded audit projection")
+    return projection
 
 
 def _intent_to_dict(intent: IntentV1) -> dict[str, object]:
@@ -2341,7 +2715,13 @@ def _safe_string_field(raw: object, field: str) -> str | None:
     if not isinstance(raw, Mapping):
         return None
     value = raw.get(field)
-    if not isinstance(value, str) or not value or len(value) > 512:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_INTENT_IDENTIFIER_CHARS
+        or value != value.strip()
+        or not value.isprintable()
+    ):
         return None
     return value
 

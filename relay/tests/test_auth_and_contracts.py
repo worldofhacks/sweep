@@ -10,6 +10,9 @@ from relay.auth import (
     verify_event_signature,
 )
 from relay.contracts import (
+    MAX_CAPABILITY_ITEM_UTF8_BYTES,
+    MAX_CAPABILITY_LIST_CANONICAL_BYTES,
+    MAX_CAPABILITY_LIST_ITEMS,
     ContractError,
     LifecycleStatus,
     acknowledgement_event,
@@ -128,6 +131,54 @@ def test_membership_signature_detects_tampering() -> None:
     assert not verify_event_signature(
         request.unsigned_event(), request.signature.upper(), ADAPTER_KEY
     )
+
+
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        [f"capability-{index}" for index in range(MAX_CAPABILITY_LIST_ITEMS)],
+        ["😀" * (MAX_CAPABILITY_ITEM_UTF8_BYTES // 4)],
+        [f"{index:02d}" + "x" * 122 for index in range(63)] + ["last-" + "x" * 182],
+    ],
+)
+def test_join_capability_bounds_accept_the_exact_item_utf8_and_aggregate_edges(
+    capabilities: list[str],
+) -> None:
+    request = parse_membership_request(
+        membership_payload(action="join", event_id="join-bounded", capabilities=capabilities)
+    )
+
+    assert request.capabilities == tuple(capabilities)
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "detail"),
+    [
+        (
+            [f"capability-{index}" for index in range(MAX_CAPABILITY_LIST_ITEMS + 1)],
+            f"at most {MAX_CAPABILITY_LIST_ITEMS} items",
+        ),
+        (
+            [f"{index:02d}" + "😀" * 510 for index in range(44)],
+            f"at most {MAX_CAPABILITY_ITEM_UTF8_BYTES} UTF-8 bytes",
+        ),
+        (
+            [f"{index:02d}" + "x" * 122 for index in range(63)] + ["last-" + "x" * 183],
+            f"at most {MAX_CAPABILITY_LIST_CANONICAL_BYTES} UTF-8 bytes",
+        ),
+        ([" flight"], "canonical printable"),
+        (["flight\u0000"], "canonical printable"),
+    ],
+)
+def test_join_capability_bounds_reject_oversized_or_noncanonical_claims(
+    capabilities: list[str], detail: str
+) -> None:
+    raw = membership_payload(action="join", event_id="join-unbounded", capabilities=capabilities)
+
+    with pytest.raises(ContractError, match=detail) as error:
+        parse_membership_request(raw)
+
+    assert error.value.code == "invalid_membership"
 
 
 def test_membership_signatures_are_stable_for_key_order() -> None:

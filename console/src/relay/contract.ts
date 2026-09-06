@@ -11,6 +11,16 @@ export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard' | 'webcam' | 'language'
 export type FormationName = 'line' | 'column' | 'circle' | 'grid' | 'V'
 
+// Intent producer ceilings mirrored from relay/intent_v1.py. JavaScript numbers
+// use their exact integer ceiling; the relay additionally accepts signed-Long
+// timestamps from non-JavaScript peers.
+export const MAX_INTENT_IDENTIFIER_CODE_POINTS = 128
+export const MAX_INTENT_SESSION_CODE_POINTS = 512
+export const MAX_INTENT_SOURCE_CODE_POINTS = 64
+export const MAX_INTENT_NAME_CODE_POINTS = 64
+export const MAX_INTENT_DRONE_IDS = 6
+export const MAX_INTENT_DRONE_ID = 2_147_483_647
+
 /**
  * Every intent name this console can build. Mirrors relay/intent_v1.py
  * IntentName minus survey_area and map_area, which the brief marks as later.
@@ -250,6 +260,7 @@ export interface RelayAircraftState {
   home_pose: unknown
   telemetry: unknown
   membership_history: unknown[]
+  membership_history_truncated: number
   video?: MediaStreamState
 }
 
@@ -714,6 +725,30 @@ function isDroneIds(value: unknown): value is DroneId[] {
   return Array.isArray(value) && value.every(isDroneId) && new Set(value).size === value.length
 }
 
+function isIntentDroneIds(value: unknown): value is DroneId[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_INTENT_DRONE_IDS &&
+    value.every(
+      (item) => Number.isInteger(item) && Number(item) > 0 && Number(item) <= MAX_INTENT_DRONE_ID,
+    ) &&
+    new Set(value).size === value.length
+  )
+}
+
+/** Mirrors trimmed Python `str.isprintable()` and counts Unicode code points. */
+function isCanonicalIntentText(value: unknown, maximumCodePoints: number): value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value !== value.trim() ||
+    Array.from(value).length > maximumCodePoints
+  ) {
+    return false
+  }
+  return Array.from(value).every((character) => character === ' ' || !/[\p{C}\p{Z}]/u.test(character))
+}
+
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string'
 }
@@ -789,6 +824,7 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
     'home_pose' in value &&
     'telemetry' in value &&
     Array.isArray(value.membership_history) &&
+    isNonNegativeInteger(value.membership_history_truncated) &&
     isVideoStreamState(value.video)
   )
 }
@@ -1005,22 +1041,22 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   }
   if (
     value.v !== 1 ||
-    !isNonNegativeInteger(value.t) ||
+    !Number.isSafeInteger(value.t) ||
+    Number(value.t) < 0 ||
     value.type !== 'intent' ||
-    typeof value.intent_id !== 'string' ||
-    value.intent_id.length === 0 ||
+    !isCanonicalIntentText(value.intent_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) ||
     !(
       value.retry_of === null ||
-      (typeof value.retry_of === 'string' &&
-        value.retry_of.length > 0 &&
+      (isCanonicalIntentText(value.retry_of, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
         value.retry_of !== value.intent_id)
     ) ||
+    !isCanonicalIntentText(value.source, MAX_INTENT_SOURCE_CODE_POINTS) ||
     !INTENT_SOURCES.has(value.source as IntentSource) ||
-    typeof value.session !== 'string' ||
-    value.session.length === 0 ||
+    !isCanonicalIntentText(value.session, MAX_INTENT_SESSION_CODE_POINTS) ||
+    !isCanonicalIntentText(value.name, MAX_INTENT_NAME_CODE_POINTS) ||
     !(CONSOLE_INTENT_NAMES as readonly string[]).includes(String(value.name)) ||
     !isRecord(value.args) ||
-    !isDroneIds(value.selection) ||
+    !isIntentDroneIds(value.selection) ||
     value.mode !== 'indoor' ||
     typeof value.confirm !== 'boolean'
   ) {
@@ -1040,7 +1076,7 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
   const keys = Object.keys(args)
   switch (name) {
     case 'select':
-      return keys.length === 1 && isDroneIds(args.ids) && args.ids.length > 0
+      return keys.length === 1 && isIntentDroneIds(args.ids) && args.ids.length > 0
     case 'translate':
       return keys.length === 2 && isFiniteNumber(args.dx) && isFiniteNumber(args.dy)
     case 'altitude':
@@ -1053,10 +1089,8 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
     case 'capture_room':
       return (
         keys.length === 3 &&
-        typeof args.room_id === 'string' &&
-        args.room_id.length > 0 &&
-        typeof args.capture_id === 'string' &&
-        args.capture_id.length > 0 &&
+        isCanonicalIntentText(args.room_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+        isCanonicalIntentText(args.capture_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
         CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
       )
     case 'arm':

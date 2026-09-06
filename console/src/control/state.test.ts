@@ -36,6 +36,7 @@ function drone(overrides: Partial<RelayAircraftState> = {}): RelayAircraftState 
     rc_safety_operator_present: true,
     telemetry: { state: 'hovering' },
     membership_history: [],
+    membership_history_truncated: 0,
     ...overrides,
   }
 }
@@ -122,6 +123,54 @@ describe('control reducer fleet lifecycle', () => {
     expect(state.spacing).toBe(1.5)
     expect(state.capabilityProfile).toBe('c1_basic_control')
     expect(state.enabledIntentNames).toEqual(C1_BASIC_CONTROL_INTENTS)
+  })
+
+  test('defaults and preserves the relay membership-history truncation count', () => {
+    const join: RelayServerEvent = {
+      v: 1,
+      t: t + 1,
+      type: 'membership',
+      event_id: 'join-without-state',
+      session,
+      roster_version: 1,
+      action: 'join',
+      drone_id: 1,
+      connection_epoch: 1,
+      membership: 'registered',
+      readiness_reasons: ['readiness_not_declared'],
+      adapter_id: 'adapter-1',
+      capabilities: ['flight'],
+      provenance: 'adapter_signature',
+      reason: null,
+    }
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: join,
+    })
+    expect(state.aircraft[1].membership_history_truncated).toBe(0)
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: stateEvent(
+        'state-with-truncated-history',
+        1,
+        [drone({ membership_history_truncated: 7 })],
+        [1],
+      ),
+    })
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: {
+        ...join,
+        t: t + 2,
+        event_id: 'readiness-after-truncation',
+        roster_version: 2,
+        action: 'readiness',
+        membership: 'ready',
+        readiness_reasons: [],
+      },
+    })
+    expect(state.aircraft[1].membership_history_truncated).toBe(7)
   })
 
   test('a roster-wide land_all preview survives selection changes but not roster changes', () => {

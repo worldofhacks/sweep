@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import os
@@ -13,7 +14,7 @@ from threading import Event
 
 import pytest
 
-from relay.audit import AuditLogError, SessionAuditLog
+from relay.audit import MAX_AUDIT_RECORD_BYTES, AuditLogError, SessionAuditLog
 
 
 def _event(event_id: str, event_type: str = "state") -> dict[str, object]:
@@ -24,6 +25,43 @@ def _event(event_id: str, event_type: str = "state") -> dict[str, object]:
         "event_id": event_id,
         "session": "session-1",
     }
+
+
+def _exact_size_event(size: int) -> dict[str, object]:
+    event = _event("boundary")
+    event["payload"] = ""
+    empty_size = len(SessionAuditLog._encode_record({"seq": 1, "event": event}))
+    assert size >= empty_size
+    event["payload"] = "x" * (size - empty_size)
+    return event
+
+
+class _BoundedReadMirror:
+    def __init__(self, stream: object, sizes: list[int]) -> None:
+        self._stream = stream
+        self._sizes = sizes
+
+    def read(self, size: int = -1) -> bytes:
+        self._sizes.append(size)
+        assert 0 <= size <= MAX_AUDIT_RECORD_BYTES
+        return self._stream.read(size)  # type: ignore[no-any-return, union-attr]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._stream, name)
+
+
+def _guard_mirror_reads(monkeypatch: pytest.MonkeyPatch, path: Path) -> list[int]:
+    real_open = builtins.open
+    sizes: list[int] = []
+
+    def guarded_open(file: object, *args: object, **kwargs: object) -> object:
+        stream = real_open(file, *args, **kwargs)
+        if Path(file) == path and args and args[0] == "rb":  # type: ignore[arg-type]
+            return _BoundedReadMirror(stream, sizes)
+        return stream
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
+    return sizes
 
 
 def test_append_replay_and_reopen_preserve_contiguous_order(tmp_path: Path) -> None:
@@ -52,6 +90,25 @@ def test_operation_batch_preserves_one_jsonl_record_per_event(tmp_path: Path) ->
     assert [record["seq"] for record in records] == [1, 2]
     assert len(log.path.read_text(encoding="utf-8").splitlines()) == 2
     assert SessionAuditLog(tmp_path, "session-1").replay() == records
+
+
+def test_exact_maximum_record_round_trips_and_oversize_is_rejected_before_operation(
+    tmp_path: Path,
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    boundary = _exact_size_event(MAX_AUDIT_RECORD_BYTES)
+
+    record = log.append(boundary)
+
+    assert log.path.stat().st_size == MAX_AUDIT_RECORD_BYTES
+    assert SessionAuditLog(tmp_path, "session-1").replay() == [record]
+    committed = log.path.read_bytes()
+    oversized = dict(boundary)
+    oversized["payload"] = str(oversized["payload"]) + "x"
+    with pytest.raises(AuditLogError, match="encoded audit record exceeds"):
+        log.append(oversized)
+    assert log.path.read_bytes() == committed
+    assert log.append(_event("after-oversize"))["seq"] == 2
 
 
 def test_replay_deadline_includes_waiting_to_acquire_the_audit_lock(
@@ -205,7 +262,8 @@ def test_live_append_does_not_read_or_reencode_existing_history(
         return encode_record(record)
 
     with monkeypatch.context() as live:
-        live.setattr(log, "_database_records", reject_history_read)
+        live.setattr(log, "_database_rows", reject_history_read)
+        live.setattr(log, "_committed_records", reject_history_read)
         live.setattr(Path, "read_bytes", reject_history_read)
         live.setattr(log, "_encode_record", record_encoding)
         records = []
@@ -244,6 +302,52 @@ def test_live_append_detects_mirror_changes_before_committing_new_records(
 
     with sqlite3.connect(log.database_path) as database:
         assert database.execute("SELECT COUNT(*) FROM records").fetchone() == (1,)
+
+
+def test_rejected_standalone_append_preserves_the_previous_recovery_source(
+    tmp_path: Path,
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    first = log.append(_event("event-1"))
+    expected = log.path.read_bytes()
+    log.path.write_bytes(expected[:-5])
+
+    with pytest.raises(AuditLogError):
+        log.append(_event("event-2"))
+    with pytest.raises(AuditLogError, match="unusable"):
+        log.append(_event("later"))
+    with sqlite3.connect(log.database_path) as database:
+        assert database.execute(
+            "SELECT COUNT(*) FROM operations WHERE status = 'pending'"
+        ).fetchone() == (0,)
+        assert database.execute(
+            "SELECT line IS NOT NULL FROM records WHERE seq = 1"
+        ).fetchone() == (1,)
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+    assert reopened.replay() == [first]
+    assert reopened.path.read_bytes() == expected
+    assert reopened.append(_event("event-2"))["seq"] == 2
+
+
+def test_rejected_outer_operation_repairs_prior_tail_but_remains_fenced(
+    tmp_path: Path,
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    expected = log.path.read_bytes()
+    operation_id = log.begin_operation()
+    log.path.write_bytes(expected[:-5])
+
+    with pytest.raises(AuditLogError):
+        log.append_batch([_event("event-2")], operation_id=operation_id)
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+    assert reopened.path.read_bytes() == expected
+    with pytest.raises(AuditLogError, match="incomplete operation"):
+        reopened.replay()
+    with pytest.raises(AuditLogError, match="unusable"):
+        reopened.append(_event("later"))
 
 
 def test_initial_database_and_jsonl_creation_sync_the_log_directory(
@@ -311,6 +415,27 @@ def test_committed_database_recovers_missing_or_torn_jsonl_mirror(tmp_path: Path
 
     log.path.write_bytes(expected[:-5])
     assert SessionAuditLog(tmp_path, "session-1").replay() == [record]
+    assert log.path.read_bytes() == expected
+
+
+@pytest.mark.parametrize("damage", ["clean", "torn"])
+def test_database_reopen_compares_and_repairs_without_path_read_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    records = log.append_batch(_event(f"event-{index}") for index in range(1, 501))
+    expected = log.path.read_bytes()
+    if damage == "torn":
+        log.path.write_bytes(expected[:-17])
+
+    def reject_whole_file_read(*_args: object, **_kwargs: object) -> bytes:
+        pytest.fail("database-backed recovery read the whole mirror")
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr(Path, "read_bytes", reject_whole_file_read)
+        reopened = SessionAuditLog(tmp_path, "session-1")
+        assert reopened.replay() == records
+
     assert log.path.read_bytes() == expected
 
 
@@ -395,6 +520,48 @@ def test_legacy_decoder_resource_limits_are_audit_errors_without_mutation(
 
     assert seed.path.read_bytes() == encoded
     assert not seed.database_path.exists()
+
+
+def test_oversized_legacy_jsonl_line_is_rejected_by_a_bounded_read(
+    tmp_path: Path,
+) -> None:
+    seed = SessionAuditLog(tmp_path, "session-1")
+    oversized = b"x" * (MAX_AUDIT_RECORD_BYTES + 1) + b"\n"
+    seed.path.write_bytes(oversized)
+
+    with pytest.raises(AuditLogError, match="audit record exceeds"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert seed.path.stat().st_size == len(oversized)
+    assert not seed.database_path.exists()
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    ["-1\n", f"{(1 << 63) - 1}\n", "9" * 100 + "\n"],
+    ids=["negative", "signed-long-max", "oversized-metadata"],
+)
+def test_invalid_legacy_pending_cursor_is_read_with_a_tiny_bound(
+    tmp_path: Path, cursor: str
+) -> None:
+    seed = SessionAuditLog(tmp_path, "session-1")
+    seed.pending_path.write_text(cursor, encoding="ascii")
+
+    with pytest.raises(AuditLogError):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert seed.pending_path.read_text(encoding="ascii") == cursor
+
+
+def test_zero_legacy_pending_cursor_remains_a_valid_empty_recovery(tmp_path: Path) -> None:
+    seed = SessionAuditLog(tmp_path, "session-1")
+    seed.pending_path.write_text("0\n", encoding="ascii")
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+
+    assert reopened.replay() == []
+    assert reopened.path.read_bytes() == b""
+    assert not reopened.pending_path.exists()
 
 
 def test_corrupt_or_reordered_log_fails_closed(tmp_path: Path) -> None:
@@ -686,3 +853,394 @@ def test_fstat_failure_closes_the_open_descriptor(
     monkeypatch.setattr(os, "fstat", real_fstat)
     with pytest.raises(OSError, match="Bad file descriptor"):
         os.fstat(descriptors[0])
+
+
+def _seed_legacy_database(tmp_path: Path, records: list[dict[str, object]]) -> tuple[Path, Path]:
+    """Write what the previous writer left behind: every event body in SQLite plus the mirror."""
+    digest = hashlib.sha256(b"session-1").hexdigest()
+    mirror = tmp_path / f"{digest}.jsonl"
+    database_path = tmp_path / f"{digest}.sqlite3"
+    mirror.write_bytes(
+        b"".join(
+            (json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n").encode()
+            for record in records
+        )
+    )
+    with sqlite3.connect(database_path) as database:
+        database.execute("PRAGMA journal_mode=WAL")
+        database.execute(
+            "CREATE TABLE operations (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "status TEXT NOT NULL CHECK(status IN ('pending', 'complete')))"
+        )
+        database.execute(
+            "CREATE TABLE records (seq INTEGER PRIMARY KEY, operation_id INTEGER NOT NULL, "
+            "event_json TEXT NOT NULL, FOREIGN KEY(operation_id) REFERENCES operations(id))"
+        )
+        for record in records:
+            cursor = database.execute("INSERT INTO operations(status) VALUES ('complete')")
+            database.execute(
+                "INSERT INTO records(seq, operation_id, event_json) VALUES (?, ?, ?)",
+                (
+                    record["seq"],
+                    cursor.lastrowid,
+                    json.dumps(record["event"], separators=(",", ":"), sort_keys=True),
+                ),
+            )
+        database.commit()
+    return mirror, database_path
+
+
+def _record_rows(database_path: Path) -> list[tuple[object, ...]]:
+    with sqlite3.connect(database_path) as database:
+        return database.execute(
+            "SELECT seq, operation_id, digest, length, line FROM records ORDER BY seq"
+        ).fetchall()
+
+
+def test_oversized_legacy_database_body_is_not_materialized_for_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mirror, database_path = _seed_legacy_database(
+        tmp_path, [{"seq": 1, "event": _event("event-1")}]
+    )
+    with sqlite3.connect(database_path) as database:
+        database.execute(
+            "UPDATE records SET event_json = CAST(zeroblob(?) AS TEXT) WHERE seq = 1",
+            (MAX_AUDIT_RECORD_BYTES + 1,),
+        )
+        database.commit()
+    read_sizes = _guard_mirror_reads(monkeypatch, mirror)
+
+    with pytest.raises(AuditLogError, match="invalid legacy audit record metadata"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert read_sizes == []
+
+
+def test_exact_maximum_legacy_record_still_migrates(tmp_path: Path) -> None:
+    record = {"seq": 1, "event": _exact_size_event(MAX_AUDIT_RECORD_BYTES)}
+    mirror, _database_path = _seed_legacy_database(tmp_path, [record])
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+
+    assert reopened.replay() == [record]
+    assert mirror.stat().st_size == MAX_AUDIT_RECORD_BYTES
+
+
+def test_database_stores_digests_and_retains_only_the_latest_operation_lines(
+    tmp_path: Path,
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append_batch([_event("event-1", "membership"), _event("event-2", "state")])
+    log.append(_event("event-3", "telemetry"))
+    lines = log.path.read_bytes().splitlines(keepends=True)
+
+    rows = _record_rows(log.database_path)
+
+    assert [(seq, digest, length) for seq, _, digest, length, _ in rows] == [
+        (index, hashlib.sha256(line).digest(), len(line)) for index, line in enumerate(lines, 1)
+    ]
+    assert [line for *_, line in rows] == [None, None, lines[2]]
+    assert [operation for _, operation, *_ in rows] == [1, 1, 2]
+    with sqlite3.connect(log.database_path) as database:
+        columns = {row[1] for row in database.execute("PRAGMA table_info(records)")}
+    assert "event_json" not in columns
+    assert SessionAuditLog(tmp_path, "session-1").replay() == log.replay()
+
+
+@pytest.mark.parametrize(
+    "corrupt_length",
+    [-1, 0, MAX_AUDIT_RECORD_BYTES + 1, (1 << 63) - 1, 1.5, "not-an-integer"],
+    ids=["negative", "zero", "over-record", "signed-long-max", "float", "text"],
+)
+def test_corrupt_record_length_fails_before_any_sized_mirror_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corrupt_length: object,
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    with sqlite3.connect(log.database_path) as database:
+        database.execute("UPDATE records SET length = ? WHERE seq = 1", (corrupt_length,))
+        database.commit()
+    read_sizes = _guard_mirror_reads(monkeypatch, log.path)
+
+    with pytest.raises(AuditLogError, match="invalid audit record metadata"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert read_sizes == []
+
+
+def test_oversized_retained_blob_is_not_materialized_or_used_for_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    with sqlite3.connect(log.database_path) as database:
+        database.execute(
+            "UPDATE records SET line = zeroblob(?) WHERE seq = 1",
+            (MAX_AUDIT_RECORD_BYTES + 1,),
+        )
+        database.commit()
+    read_sizes = _guard_mirror_reads(monkeypatch, log.path)
+
+    with pytest.raises(AuditLogError, match="invalid audit record metadata"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert read_sizes == []
+
+
+@pytest.mark.parametrize("column", ["digest", "length"], ids=["digest", "length"])
+def test_oversized_blob_metadata_is_not_materialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, column: str
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    with sqlite3.connect(log.database_path) as database:
+        database.execute(
+            f"UPDATE records SET {column} = zeroblob(?) WHERE seq = 1",
+            (MAX_AUDIT_RECORD_BYTES + 1,),
+        )
+        database.commit()
+    read_sizes = _guard_mirror_reads(monkeypatch, log.path)
+
+    with pytest.raises(AuditLogError, match="invalid audit record metadata"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert read_sizes == []
+
+
+def test_oversized_operation_status_is_not_materialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    with sqlite3.connect(log.database_path) as database:
+        database.execute("PRAGMA ignore_check_constraints = ON")
+        database.execute(
+            "UPDATE operations SET status = CAST(zeroblob(?) AS TEXT) WHERE id = 1",
+            (MAX_AUDIT_RECORD_BYTES + 1,),
+        )
+        database.commit()
+    read_sizes = _guard_mirror_reads(monkeypatch, log.path)
+
+    with pytest.raises(AuditLogError, match="invalid audit operation"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert read_sizes == []
+
+
+@pytest.mark.parametrize("operation_id", [-1, 0, (1 << 63) - 1])
+def test_invalid_or_unbound_record_operation_ids_fail_closed(
+    tmp_path: Path, operation_id: int
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    with sqlite3.connect(log.database_path) as database:
+        database.execute("UPDATE records SET operation_id = ? WHERE seq = 1", (operation_id,))
+        database.commit()
+
+    with pytest.raises(AuditLogError, match="invalid audit operation"):
+        SessionAuditLog(tmp_path, "session-1")
+
+
+@pytest.mark.parametrize("sequence", [-1, 0, (1 << 63) - 1])
+def test_invalid_or_noncontiguous_signed_64_bit_sequences_fail_closed(
+    tmp_path: Path, sequence: int
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    with sqlite3.connect(log.database_path) as database:
+        database.execute("UPDATE records SET seq = ? WHERE seq = 1", (sequence,))
+        database.commit()
+
+    with pytest.raises(AuditLogError, match="non-contiguous audit database"):
+        SessionAuditLog(tmp_path, "session-1")
+
+
+def test_pending_operation_lookup_has_a_partial_status_index(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+
+    with sqlite3.connect(log.database_path) as database:
+        indexes = {row[1] for row in database.execute("PRAGMA index_list(operations)")}
+
+    assert "operations_pending" in indexes
+
+
+def test_exhausted_signed_64_bit_sequence_is_an_audit_error_before_operation(
+    tmp_path: Path,
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log._next_sequence = 1 << 63
+
+    with pytest.raises(AuditLogError, match="sequence exceeds SQLite"):
+        log.append(_event("event-1"))
+
+    assert not log.database_path.exists()
+    assert not log.path.exists()
+
+
+@pytest.mark.parametrize("operation_id", [True, 0, -1, 1 << 63])
+def test_external_operation_id_is_bounded_before_sqlite_binding(
+    tmp_path: Path, operation_id: object
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+
+    with pytest.raises(AuditLogError, match="positive signed 64-bit"):
+        log.append_batch([_event("event-1")], operation_id=operation_id)  # type: ignore[arg-type]
+    with pytest.raises(AuditLogError, match="positive signed 64-bit"):
+        log.abandon_operation(operation_id)  # type: ignore[arg-type]
+
+    assert not log.database_path.exists()
+    assert not log.path.exists()
+    assert log.append(_event("valid"))["seq"] == 1
+
+
+def test_database_growth_is_bounded_by_record_metadata(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    for index in range(200):
+        event = _event(f"event-{index}")
+        event["payload"] = "x" * 4_000
+        log.append(event)
+    mirror_size = log.path.stat().st_size
+
+    with sqlite3.connect(log.database_path) as database:
+        database.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        retained = database.execute("SELECT COUNT(*) FROM records WHERE line IS NOT NULL")
+        retained_count = retained.fetchone()[0]
+        page_size = database.execute("PRAGMA page_size").fetchone()[0]
+        page_count = database.execute("PRAGMA page_count").fetchone()[0]
+
+    assert mirror_size > 800_000
+    assert retained_count == 1
+    assert page_count * page_size < mirror_size / 4
+
+
+def test_torn_mirror_is_rebuilt_only_from_retained_operation_lines(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    log.append(_event("event-2"))
+    full = log.path.read_bytes()
+    first_end = full.index(b"\n") + 1
+
+    log.path.write_bytes(full[:-5])
+    assert [record["seq"] for record in SessionAuditLog(tmp_path, "session-1").replay()] == [1, 2]
+    assert log.path.read_bytes() == full
+
+    log.path.write_bytes(full[: first_end - 3])
+    with pytest.raises(AuditLogError, match="mirror differs from committed audit"):
+        SessionAuditLog(tmp_path, "session-1")
+    assert log.path.read_bytes() == full[: first_end - 3]
+
+    log.path.unlink()
+    with pytest.raises(AuditLogError, match="audit mirror is missing"):
+        SessionAuditLog(tmp_path, "session-1")
+
+
+def test_corrupt_retained_line_cannot_repair_or_extend_the_mirror(tmp_path: Path) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    mirror = log.path.read_bytes()
+    with sqlite3.connect(log.database_path) as database:
+        retained = database.execute("SELECT line FROM records WHERE seq = 1").fetchone()[0]
+        assert isinstance(retained, bytes)
+        database.execute(
+            "UPDATE records SET line = ? WHERE seq = 1",
+            (retained.replace(b"event-1", b"event-x"),),
+        )
+        database.commit()
+
+    with pytest.raises(AuditLogError, match="invalid retained audit line"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert log.path.read_bytes() == mirror
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["malformed", "wrong_sequence", "wrong_session", "missing_event_id", "noncanonical"],
+)
+def test_semantically_invalid_retained_line_cannot_be_used_for_recovery(
+    tmp_path: Path, corruption: str
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    record = {"seq": 1, "event": _event("event-1")}
+    if corruption == "malformed":
+        retained = b"{not-json}\n"
+    else:
+        if corruption == "wrong_sequence":
+            record["seq"] = 2
+        elif corruption == "wrong_session":
+            record["event"]["session"] = "other-session"
+        elif corruption == "missing_event_id":
+            record["event"].pop("event_id")
+        if corruption == "noncanonical":
+            retained = (json.dumps(record, indent=2, sort_keys=False) + "\n").encode()
+        else:
+            retained = SessionAuditLog._encode_record(record)
+    with sqlite3.connect(log.database_path) as database:
+        database.execute(
+            "UPDATE records SET digest = ?, length = ?, line = ? WHERE seq = 1",
+            (hashlib.sha256(retained).digest(), len(retained), retained),
+        )
+        database.commit()
+    log.path.unlink()
+
+    with pytest.raises(AuditLogError, match="retained audit line"):
+        SessionAuditLog(tmp_path, "session-1")
+
+    assert not log.path.exists()
+
+
+@pytest.mark.parametrize("mirror_state", ["complete", "torn", "missing"])
+def test_legacy_event_body_database_is_migrated_to_digest_rows(
+    tmp_path: Path, mirror_state: str
+) -> None:
+    records: list[dict[str, object]] = [
+        {"seq": index, "event": _event(f"event-{index}")} for index in (1, 2, 3)
+    ]
+    mirror, database_path = _seed_legacy_database(tmp_path, records)
+    expected = mirror.read_bytes()
+    if mirror_state == "torn":
+        mirror.write_bytes(expected[:-7])
+    elif mirror_state == "missing":
+        mirror.unlink()
+    lines = expected.splitlines(keepends=True)
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+
+    assert reopened.replay() == records
+    assert mirror.read_bytes() == expected
+    rows = _record_rows(database_path)
+    assert [(seq, digest, length) for seq, _, digest, length, _ in rows] == [
+        (index, hashlib.sha256(line).digest(), len(line)) for index, line in enumerate(lines, 1)
+    ]
+    assert [line for *_, line in rows] == [None, None, lines[2]]
+    with sqlite3.connect(database_path) as database:
+        columns = {row[1] for row in database.execute("PRAGMA table_info(records)")}
+        operations = database.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
+    assert "event_json" not in columns
+    assert operations == 3
+    fourth = SessionAuditLog(tmp_path, "session-1").append(_event("event-4"))
+    assert fourth["seq"] == 4
+    assert [line is None for *_, line in _record_rows(database_path)] == [True, True, True, False]
+
+
+def test_legacy_migration_keeps_a_pending_operation_fenced(tmp_path: Path) -> None:
+    mirror, database_path = _seed_legacy_database(
+        tmp_path, [{"seq": 1, "event": _event("event-1")}]
+    )
+    with sqlite3.connect(database_path) as database:
+        database.execute("INSERT INTO operations(status) VALUES ('pending')")
+        database.commit()
+    mirror.write_bytes(mirror.read_bytes() + b'{"seq":2,"event":{"partial')
+
+    reopened = SessionAuditLog(tmp_path, "session-1")
+
+    assert mirror.read_bytes().count(b"\n") == 1
+    with pytest.raises(AuditLogError, match="incomplete operation"):
+        reopened.replay()
+    with pytest.raises(AuditLogError, match="incomplete operation"):
+        SessionAuditLog(tmp_path, "session-1").replay()

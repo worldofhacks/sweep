@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from planner.models import CommandOperation
 from relay.auth import Principal, verify_event_signature
-from relay.contracts import LifecycleStatus, parse_command
+from relay.contracts import (
+    MAX_CAPTURE_BUNDLE_MEDIA_ITEMS,
+    MAX_COVERAGE_MISSING_ITEMS,
+    MAX_STORAGE_REMAINING_BYTES,
+    LifecycleStatus,
+    parse_command,
+)
 from relay.session import RelaySession
 from relay.state import RegistryError
 from relay.tests.conftest import (
@@ -17,6 +25,7 @@ from relay.tests.conftest import (
     capture_readiness_payload,
     intent_payload,
     media_file_payload,
+    media_record,
     membership_payload,
     node_status_payload,
     telemetry_payload,
@@ -67,6 +76,85 @@ def test_capabilities_and_node_status_update_state_and_fan_out(
     assert relay_session.metrics()["node_events"] == 2
 
 
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        [f"capability-{index}" for index in range(65)],
+        [f"{index:02d}" + "😀" * 510 for index in range(44)],
+    ],
+)
+def test_signed_join_capability_refusal_does_not_mutate_or_fence_the_session(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    capabilities: list[str],
+) -> None:
+    refused = relay_session.process_membership(
+        membership_payload(action="join", event_id="join-unbounded", capabilities=capabilities),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_membership"
+    assert relay_session.current_state()["drones"] == []
+    assert relay_session.replay()["events"][-1]["event"] == refused[0]
+    accepted = relay_session.process_membership(
+        membership_payload(action="join", event_id="join-after-refusal"),
+        adapter_principal,
+    )
+    assert accepted[0]["type"] == "membership"
+
+
+@pytest.mark.parametrize(
+    "modes",
+    [
+        [f"mode-{index}" for index in range(65)],
+        [f"{index:02d}" + "😀" * 510 for index in range(44)],
+    ],
+)
+def test_authenticated_capability_refusal_does_not_mutate_or_fence_the_session(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    modes: list[str],
+) -> None:
+    _join(relay_session, adapter_principal)
+
+    refused = relay_session.process_frame(
+        capabilities_payload(event_id="capabilities-unbounded", native_panorama_modes=modes),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capabilities"
+    assert relay_session.current_state()["drones"][0]["camera_capabilities"] is None
+    assert relay_session.replay()["events"][-1]["event"] == refused[0]
+    accepted = relay_session.process_frame(
+        capabilities_payload(event_id="capabilities-after-refusal"), adapter_principal
+    )
+    assert [event["type"] for event in accepted] == ["capabilities", "state"]
+
+
+def test_authenticated_storage_overflow_refusal_does_not_fence_the_session(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+) -> None:
+    _join(relay_session, adapter_principal)
+
+    refused = relay_session.process_frame(
+        capabilities_payload(
+            event_id="capabilities-storage-overflow",
+            storage_remaining_bytes=MAX_STORAGE_REMAINING_BYTES + 1,
+        ),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capabilities"
+    assert relay_session.current_state()["drones"][0]["camera_capabilities"] is None
+    assert relay_session.replay()["events"][-1]["event"] == refused[0]
+    accepted = relay_session.process_frame(
+        capabilities_payload(event_id="capabilities-after-storage-refusal"),
+        adapter_principal,
+    )
+    assert [event["type"] for event in accepted] == ["capabilities", "state"]
+
+
 def test_capture_readiness_is_fanned_out_without_a_state_change(
     relay_session: RelaySession, adapter_principal: Principal
 ) -> None:
@@ -99,6 +187,69 @@ def test_media_file_and_capture_bundle_are_audited_and_retained_for_the_wire(
     files = relay_session.media_files(1, "capture-1")
     assert [record.file_id for record in files] == ["capture-1-pano-360"]
     assert relay_session.media_files(1, "capture-unknown") == ()
+
+
+def test_oversized_authenticated_capture_bundle_is_refused_before_claim_or_media_mutation(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    record = media_record(file_id="large-frame")
+    oversized_media = [record] * 2_500
+    oversized = capture_bundle_payload(event_id="bundle-unbounded", media=oversized_media)
+    assert len(json.dumps(oversized, separators=(",", ":")).encode()) > 1 << 20
+
+    refused = relay_session.process_frame(oversized, adapter_principal)
+
+    assert refused[0]["reason"] == "invalid_capture_bundle"
+    assert relay_session.media_files(1, "capture-1") == ()
+    assert relay_session.current_state()["drones"][0]["drone_id"] == 1
+    with sqlite3.connect(relay_session.audit_log.database_path) as database:
+        assert database.execute(
+            "SELECT COUNT(*) FROM operations WHERE status = 'pending'"
+        ).fetchone() == (0,)
+    # Parsing precedes transport claiming, so the same event identity remains
+    # available to a valid bounded retry on this authenticated connection.
+    assert (
+        relay_session.process_frame(
+            capture_bundle_payload(event_id="bundle-unbounded"), adapter_principal
+        )
+        == []
+    )
+    assert len(relay_session.media_files(1, "capture-1")) == 1
+
+
+def test_oversized_or_duplicate_readiness_coverage_is_refused_without_claiming(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    event_id = "readiness-unbounded"
+    refused = relay_session.process_frame(
+        capture_readiness_payload(
+            event_id=event_id,
+            coverage_missing=list(range(MAX_COVERAGE_MISSING_ITEMS + 1)),
+        ),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capture_readiness"
+    assert relay_session.capture_readiness(1) is None
+    assert (
+        relay_session.process_frame(
+            capture_readiness_payload(
+                event_id=event_id,
+                coverage_missing=list(range(MAX_COVERAGE_MISSING_ITEMS)),
+            ),
+            adapter_principal,
+        )[0]["type"]
+        == "capture_readiness"
+    )
+    duplicate = relay_session.process_frame(
+        capture_readiness_payload(event_id="readiness-duplicate", coverage_missing=[45, 45]),
+        adapter_principal,
+    )
+    assert duplicate[0]["reason"] == "invalid_capture_readiness"
+    assert len(relay_session.capture_readiness(1).coverage_missing) == MAX_COVERAGE_MISSING_ITEMS
+    assert MAX_CAPTURE_BUNDLE_MEDIA_ITEMS == MAX_COVERAGE_MISSING_ITEMS == 8
 
 
 def test_node_frames_require_binding_current_epoch_and_fresh_event_ids(

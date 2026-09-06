@@ -503,6 +503,36 @@ class FramesTest {
     }
 
     @Test
+    fun `capture readiness bounds unique missing coverage at reconstruct eight`() {
+        val headings = List(CaptureReadinessFrame.MAX_COVERAGE_MISSING_ITEMS) { it * 45.0 }
+        val exact = JsonObject(
+            wire("capture_readiness").fields + ("coverage_missing" to Json.value(headings)),
+        )
+        assertEquals(headings, CaptureReadinessFrame.parse(exact).coverageMissing)
+
+        val oversized = List(CaptureReadinessFrame.MAX_COVERAGE_MISSING_ITEMS + 1) { it * 40.0 }
+        assertThrows(ContractError::class.java) {
+            CaptureReadinessFrame.parse(
+                JsonObject(
+                    wire("capture_readiness").fields +
+                        ("coverage_missing" to Json.value(oversized)),
+                ),
+            )
+        }
+        assertThrows(ContractError::class.java) {
+            CaptureReadinessFrame.parse(
+                JsonObject(
+                    wire("capture_readiness").fields +
+                        ("coverage_missing" to Json.value(listOf(0.0, -0.0))),
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CaptureReadinessFrame.parse(exact).copy(coverageMissing = oversized)
+        }
+    }
+
+    @Test
     fun `node status encodes and parses`() {
         val status = NodeStatusFrame(
             t = 7000,

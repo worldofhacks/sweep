@@ -220,6 +220,18 @@ data class CaptureReadinessFrame(
     val nextHeadingDeg: Double?,
     val suggestedDelta: SuggestedDelta?,
 ) {
+    init {
+        require(coverageMissing.size <= MAX_COVERAGE_MISSING_ITEMS) {
+            "coverage_missing may contain at most $MAX_COVERAGE_MISSING_ITEMS items"
+        }
+        require(coverageMissing.all { it.isFinite() && it >= 0.0 && it < 360.0 }) {
+            "coverage_missing headings must be finite azimuths"
+        }
+        require(coverageMissing.map(::normalizedHeading).toSet().size == coverageMissing.size) {
+            "coverage_missing may not contain duplicates"
+        }
+    }
+
     fun toEvent(): JsonObject = Json.json(
         "v" to Fields.PROTOCOL_VERSION,
         "t" to t,
@@ -245,6 +257,7 @@ data class CaptureReadinessFrame(
 
     companion object {
         const val TYPE = "capture_readiness"
+        const val MAX_COVERAGE_MISSING_ITEMS = 8
         private const val CODE = "invalid_capture_readiness"
         private val FIELDS = setOf(
             "v", "t", "type", "event_id", "session", "drone_id", "connection_epoch", "room_id", "capture_id",
@@ -259,6 +272,16 @@ data class CaptureReadinessFrame(
                 ?: throw ContractError(CODE, "guidance_mode must be visual_advisory or registered_metric")
             val coverage = json["coverage_missing"] as? JsonArray
                 ?: throw ContractError(CODE, "coverage_missing must be a list")
+            if (coverage.items.size > MAX_COVERAGE_MISSING_ITEMS) {
+                throw ContractError(
+                    CODE,
+                    "coverage_missing may contain at most $MAX_COVERAGE_MISSING_ITEMS items",
+                )
+            }
+            val coverageMissing = coverage.items.map { Fields.azimuth(it, "coverage_missing", CODE) }
+            if (coverageMissing.map(::normalizedHeading).toSet().size != coverageMissing.size) {
+                throw ContractError(CODE, "coverage_missing may not contain duplicates")
+            }
             val heading = json["next_heading_deg"]
             val delta = json["suggested_delta"]
             return CaptureReadinessFrame(
@@ -277,7 +300,7 @@ data class CaptureReadinessFrame(
                 storageOk = Fields.boolean(json["storage_ok"], "storage_ok", CODE),
                 motionOk = Fields.boolean(json["motion_ok"], "motion_ok", CODE),
                 imageQualityOk = Fields.boolean(json["image_quality_ok"], "image_quality_ok", CODE),
-                coverageMissing = coverage.items.map { Fields.azimuth(it, "coverage_missing", CODE) },
+                coverageMissing = coverageMissing,
                 nextHeadingDeg = if (heading == null || heading == JsonNull) {
                     null
                 } else {
@@ -290,6 +313,8 @@ data class CaptureReadinessFrame(
                 },
             )
         }
+
+        private fun normalizedHeading(value: Double): Double = if (value == 0.0) 0.0 else value
     }
 }
 
