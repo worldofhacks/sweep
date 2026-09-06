@@ -206,7 +206,7 @@ class DetectionIngress:
             if pose is None or not self._valid_pose(pose, state, pin, identity, event, now_ms):
                 return DetectionIngressResult(False, "trusted_pose_unavailable")
             observation = self._runtime.observe_processed_frame(
-                pin.intent_id, event, pose.frame_evidence()
+                pin.intent_id, event, pose.frame_evidence(), now_s=now_ms / 1_000
             )
             return DetectionIngressResult(observation.accepted, observation.reason, observation)
         self._sighting(raw, identity, now_ms)
