@@ -177,7 +177,9 @@ def test_coverage_binds_a_source_to_its_first_worker_run_after_receipt_eviction(
     pose = FramePoseEvidence(first.identity, 3, Pose(1, 1, 0, "floor-1"), 10.0, 10.01)
     assert ledger.observe_processed(first, pose, 10.02).accepted
 
-    second = replace(first, identity=replace(first.identity, worker_run_id="run-2", frame_sequence=1))
+    second = replace(
+        first, identity=replace(first.identity, worker_run_id="run-2", frame_sequence=1)
+    )
     second_pose = replace(pose, identity=second.identity)
     rejected = ledger.observe_processed(second, second_pose, 10.02)
 
