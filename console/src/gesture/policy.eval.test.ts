@@ -1,8 +1,8 @@
 /**
  * Replays recorded webcam sessions through the gesture policy with the default
  * pairs. `webcam-session-1` is the operator's own session (see the header
- * comment in the fixture): Closed_Fist, Thumb_Down, Thumb_Up, and Open_Palm
- * held three times each with a neutral hand between holds. Each frame goes
+ * comment in the fixture): Closed_Fist held six times and Thumb_Down, Thumb_Up,
+ * and Open_Palm three times each, with a neutral hand between holds. Each frame goes
  * through `observeHand` and `stepGesturePolicy` exactly as the live loop feeds
  * them, so the replay is the policy's behaviour on that session.
  *
@@ -32,20 +32,29 @@ import {
 /** The single threshold every pair carried before the per-pose tuning. */
 const OLD_FIXED_MIN_SCORE = 0.8
 
+interface PerformedPose {
+  gesture: GestureCategory
+  /** Separate holds of this pose in the recording, each with a neutral hand before the next. */
+  holds: number
+}
+
 interface Recording {
   file: string
   jsonl: string
-  /** Poses the operator performed, each held this many times with neutral between. */
-  performed: readonly GestureCategory[]
-  holdsPerPose: number
+  /** Poses the operator performed; every other category must never be accepted. */
+  performed: readonly PerformedPose[]
 }
 
 const RECORDINGS: readonly Recording[] = [
   {
     file: 'webcam-session-1.jsonl',
     jsonl: webcamSession1,
-    performed: ['Closed_Fist', 'Thumb_Down', 'Thumb_Up', 'Open_Palm'],
-    holdsPerPose: 3,
+    performed: [
+      { gesture: 'Closed_Fist', holds: 6 },
+      { gesture: 'Thumb_Down', holds: 3 },
+      { gesture: 'Thumb_Up', holds: 3 },
+      { gesture: 'Open_Palm', holds: 3 },
+    ],
   },
 ]
 
@@ -122,7 +131,8 @@ const OLD_CONFIG: GesturePolicyConfig = {
   pairs: DEFAULT_GESTURE_PAIRS.map((pair) => ({ ...pair, minScore: OLD_FIXED_MIN_SCORE })),
 }
 
-for (const { file, jsonl, performed, holdsPerPose } of RECORDINGS) {
+for (const { file, jsonl, performed } of RECORDINGS) {
+  const performedGestures = performed.map((pose) => pose.gesture)
   const recording = parseGestureRecording(jsonl)
   const tuned = replay(recording, DEFAULT_GESTURE_POLICY_CONFIG)
   const tunedCounts = countByGesture(tuned)
@@ -147,13 +157,15 @@ for (const { file, jsonl, performed, holdsPerPose } of RECORDINGS) {
       }
     })
 
-    for (const gesture of performed) {
+    for (const { gesture, holds } of performed) {
       const pair = pairFor(gesture)
       const scores = scoresFor(recording, gesture)
       const acceptedCount = tunedCounts[gesture] ?? 0
       const distribution = `n=${scores.length}, median ${median(scores).toFixed(2)}, ${share(scores, pair.minScore)}% at or above minScore ${pair.minScore.toFixed(2)}, ${share(scores, OLD_FIXED_MIN_SCORE)}% at or above ${OLD_FIXED_MIN_SCORE.toFixed(2)}`
-      test(`${gesture} accepted ${acceptedCount} times in replay (${distribution}; ${holdsPerPose} holds recorded)`, () => {
-        expect(acceptedCount).toBeGreaterThanOrEqual(holdsPerPose)
+      test(`${gesture} accepted ${acceptedCount} times in replay (${distribution}; ${holds} holds recorded)`, () => {
+        // At least every hold, and no more: a second acceptance inside one hold would be a regression.
+        expect(acceptedCount).toBeGreaterThanOrEqual(holds)
+        expect(acceptedCount).toBe(holds)
       })
     }
 
@@ -165,12 +177,12 @@ for (const { file, jsonl, performed, holdsPerPose } of RECORDINGS) {
       }
       const recordedPairs = new Set(recording.header.pairs.map((pair) => pair.gesture))
       for (const gesture of GESTURE_CATEGORIES) {
-        if (performed.includes(gesture)) continue
+        if (performedGestures.includes(gesture)) continue
         expect(tunedCounts[gesture] ?? 0).toBe(0)
       }
       for (const gesture of Object.keys(tunedCounts)) {
         expect(recordedPairs.has(gesture)).toBe(true)
-        expect(performed).toContain(gesture)
+        expect(performedGestures).toContain(gesture)
       }
     })
 

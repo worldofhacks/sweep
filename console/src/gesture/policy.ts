@@ -115,8 +115,9 @@ export const NEVER_GESTURE_EMITTABLE: readonly string[] = Object.freeze([
 /**
  * Per-pose score thresholds. The four tuned numbers come from the recorded
  * webcam session `src/testing/gesture-recordings/webcam-session-1.jsonl`
- * (1499 recognizer frames over 50 s; the operator held Closed_Fist,
- * Thumb_Down, Thumb_Up, and Open_Palm three times each, every label correct):
+ * (1499 recognizer frames over 50 s; the operator held Closed_Fist six times
+ * and Thumb_Down, Thumb_Up, and Open_Palm three times each, every label
+ * correct):
  *
  * | Pose        | n   | median | ≥ 0.80 | ≥ 0.60 | threshold |
  * |-------------|-----|--------|--------|--------|-----------|
