@@ -40,6 +40,7 @@ HEALTH_STATUS = {0: "good", 1: "warning", 2: "error"}
 
 DEFAULT_MOTOR_PWM = 660
 MAX_MOTOR_PWM = 1023
+MAX_POINTS_PER_REVOLUTION = 8192
 
 
 class ProtocolError(ValueError):
@@ -239,9 +240,13 @@ class RevolutionCollector:
     are discarded, so every returned revolution starts at its own first point.
     """
 
-    def __init__(self):
+    def __init__(self, max_points=MAX_POINTS_PER_REVOLUTION):
+        if max_points <= 0:
+            raise ValueError("max_points must be positive")
+        self.max_points = max_points
         self._current = []
         self._started = False
+        self.dropped = 0
 
     def feed(self, measurements):
         """Return the revolutions completed by these measurements, in order."""
@@ -253,7 +258,12 @@ class RevolutionCollector:
                 self._current = [point]
                 self._started = True
             elif self._started:
-                self._current.append(point)
+                if len(self._current) >= self.max_points:
+                    self._current = []
+                    self._started = False
+                    self.dropped += 1
+                else:
+                    self._current.append(point)
         return done
 
 

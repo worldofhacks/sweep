@@ -117,7 +117,9 @@ start pose taped (a 6 m by 6 m floor for the 5 m square the issue asks for).
    Record every reply line verbatim: the charge and docked fields, the `scan_lidar_device`
    output (this is the lidar-kit answer), and whether `apos` says anything about wheel
    position. A command that prints `no reply` within the timeout is silent, not failed;
-   `--timeout 2` waits longer.
+   `--timeout 2` waits longer. Timeouts must be finite and no greater than 5 s. Commands and
+   replies have fixed byte, line, unterminated-line, and total-time caps; a peer that exceeds
+   one is disconnected.
 5. Drive over the bot shell. The robot must be undocked with the taped start pose under its
    centre.
 
@@ -135,6 +137,13 @@ start pose taped (a 6 m by 6 m floor for the 5 m square the issue asks for).
    tape-measured closure error between the start pose and the end pose. To learn the
    `manual_move` unit, run one bounded pulse and measure the distance:
    `python3 botshell.py pulse 200 200 500`.
+
+   The square probe refuses values outside its spike envelope: 1 to 4 legs, a side no longer
+   than 5 m, speed 1 to 20, settle no longer than 10 s, leg wait no longer than 60 s, turn
+   wait no longer than 30 s, and at most 180 s of planned waits in total. All durations and
+   polling/socket timeouts must be finite and positive.
+   Pulse speed and duration caps are immutable. Evidence paths are create-new: choose a new
+   `--log` filename for every run rather than appending to prior evidence.
 6. Lidar, on robots whose `scan_lidar_device` reply shows a device:
 
    ```
@@ -151,6 +160,12 @@ start pose taped (a 6 m by 6 m floor for the 5 m square the issue asks for).
    `ranges_m` (0.0 for no return), and `qualities`. If the info request times out, check that
    `lidar_release` answered and that nothing else holds the port
    (`ls -l /proc/*/fd 2>/dev/null | grep tty` inside the container).
+
+   Any GET_HEALTH result other than `good` stops the probe before it energizes the motor or
+   requests a scan. Reset or service the lidar before retrying. Scan time must be finite,
+   positive, and no longer than 300 s. Configuration reads, one-shot response descriptors,
+   points per revolution, and JSONL output are bounded; `--record` creates a new file and
+   refuses an existing path or more than 128 MiB.
 7. Camera. Hold the camera open first: start a call to the robot from the Ohmni web app, or
    load a standalone WebAPI page that calls `getUserMedia`; record which. Then, inside the
    container:
@@ -170,6 +185,14 @@ start pose taped (a 6 m by 6 m floor for the 5 m square the issue asks for).
    `docker-ohmnirun` image that ships `ffmpeg`. The other camera path, `getUserMedia` plus
    WHIP from the standalone page, is measured the same way from the console's live tile;
    record which path wins and why.
+
+   The frame assembler admits only tightly packed grayscale frames with positive dimensions
+   no larger than 4096 by 4096 and a maximum frame buffer of 16 MiB. Invalid HAL headers are
+   counted as malformed and never allocate a frame buffer. Capture time is finite and capped
+   at 300 s; warmup is capped at 30 s. `--out` creates a new file, refuses an existing path,
+   and stops at 512 MiB. The probe only replaces a filesystem entry when it is a socket and
+   only removes the exact socket it bound. Printed ffmpeg commands redact RTSP userinfo and
+   query strings.
 8. Wi-Fi. From the laptop, `ping -c 60 <robot_ip>` while the publish run is up; on the robot,
    `adb shell dumpsys wifi | grep -i rssi`. Record loss and RSSI.
 9. Leave the robot stopped: `python3 botshell.py stop`, `python3 botshell.py raw sleep`, then
@@ -200,6 +223,11 @@ container at the same time to get odometry for that path. The second publishes a
 5 m square), and prints the odometry closure error at the end. Compare it with the tape
 measurement of the same square. Record both closure errors and the delay from the first
 `Twist` to visible motion (a phone video of the wheels with the terminal in frame is enough).
+The ROS drive refuses to start without odometry received in the previous second and stops if
+that freshness is lost in motion. Its hard spike bounds are a 5 m side, 0.25 m/s linear speed,
+0.75 rad/s turn rate, 60 s per leg, 15 s per turn, and 180 s for the complete square. A plain
+logging run requires a finite `--seconds` value no greater than 300, and every `--out` path is
+created exclusively rather than appended.
 
 From a laptop with a ROS install on the same LAN the same script runs with
 `ROS_MASTER_URI=http://<robot_ip>:11311` and `ROS_IP=<laptop_ip>`; the custom `tbcore_status`

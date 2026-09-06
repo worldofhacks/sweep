@@ -9,8 +9,8 @@ Order of operations: ask the telebot app to release the port (``lidar_release`` 
 shell), open the port with the standard-library ``termios`` (raw, 115200 8N1), then STOP,
 RESET (wait 2 s and print the boot banner), GET_INFO, GET_HEALTH, SET_MOTOR_PWM, SCAN. Each
 full revolution prints its point count, valid count, nearest and farthest range, and the
-revolution rate; ``--record`` appends one JSON object per revolution. On any exit the probe
-sends STOP and motor PWM 0. The port comes from ``--port``, else ``serialport`` in
+revolution rate; ``--record`` creates a JSONL file with one object per revolution. On any
+exit the probe sends STOP and motor PWM 0. The port comes from ``--port``, else ``serialport`` in
 ``/app/telebot_config.json``, else the USB expansion hub default. No pyserial needed.
 """
 
@@ -36,18 +36,50 @@ TELEBOT_CONFIG = "/app/telebot_config.json"
 RESET_WAIT_S = 2.0
 SPINUP_WAIT_S = 0.5
 IDLE_WARN_S = 3.0
+MAX_CONFIG_BYTES = 65536
+MAX_DRAIN_BYTES = 65536
+MAX_SCAN_SECONDS = 300.0
+MAX_RECORD_BYTES = 128 * 1024 * 1024
+SINGLE_RESPONSE_LENGTHS = {rp.TYPE_INFO: rp.INFO_LEN, rp.TYPE_HEALTH: rp.HEALTH_LEN}
 
 
 class ProbeError(Exception):
     """The lidar did not answer the way the protocol says it should."""
 
 
+def require_good_health(health):
+    """Refuse to energize the motor unless GET_HEALTH explicitly reports good."""
+    if health.get("status") != 0:
+        raise ProbeError(
+            "lidar health is {status} (error {code}); refusing to start motor or scan".format(
+                status=health.get("status_text", "unknown"),
+                code=health.get("error_code", "unknown"),
+            )
+        )
+
+
+def _finite(value):
+    return not (value != value or value in (float("inf"), float("-inf")))
+
+
+def validate_args(args):
+    """Refuse unbounded scan runs and invalid serial or bot-shell parameters."""
+    if not _finite(args.seconds) or not 0 < args.seconds <= MAX_SCAN_SECONDS:
+        raise ValueError(f"seconds must be within 0..{MAX_SCAN_SECONDS:g}")
+    botshell.validate_timeout(args.timeout)
+    if not 1 <= args.pwm <= rp.MAX_MOTOR_PWM:
+        raise ValueError(f"motor pwm must be within 1..{rp.MAX_MOTOR_PWM}")
+
+
 def configured_port(config_path):
     """The ``serialport`` value from the telebot config, or ``None`` when unset or unreadable."""
     try:
-        with open(config_path) as handle:
-            config = json.load(handle)
-    except (OSError, ValueError):
+        with open(config_path, "rb") as handle:
+            raw = handle.read(MAX_CONFIG_BYTES + 1)
+        if len(raw) > MAX_CONFIG_BYTES:
+            return None
+        config = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError):
         return None
     if not isinstance(config, dict):
         return None
@@ -154,14 +186,17 @@ class SerialPort:
         return bytes(buf)
 
     def drain(self, seconds):
-        """Read and return whatever arrives during ``seconds``."""
+        """Drain for ``seconds``, retaining at most ``MAX_DRAIN_BYTES``."""
         buf = bytearray()
         deadline = time.monotonic() + seconds
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            buf.extend(self.read(4096, remaining))
+            chunk = self.read(4096, remaining)
+            room = MAX_DRAIN_BYTES - len(buf)
+            if room > 0:
+                buf.extend(chunk[:room])
         return bytes(buf)
 
 
@@ -197,6 +232,12 @@ def single_response(port, request, expected_type, timeout=1.0):
     descriptor = read_descriptor(port, timeout, expected_type)
     if descriptor.send_mode != rp.SEND_MODE_SINGLE:
         raise ProbeError(f"expected a single response, got {descriptor!r}")
+    expected_length = SINGLE_RESPONSE_LENGTHS.get(expected_type)
+    if expected_length is None or descriptor.data_length != expected_length:
+        raise ProbeError(
+            f"unexpected payload length {descriptor.data_length} for type 0x{expected_type:02x}; "
+            f"expected {expected_length}"
+        )
     payload = port.read_exact(descriptor.data_length, timeout)
     if len(payload) < descriptor.data_length:
         raise ProbeError(
@@ -216,17 +257,38 @@ def release_port(sock_path, timeout):
     botshell.print_reply(reply)
 
 
+class ScanRecorder:
+    """Exclusive, byte-bounded JSONL scan evidence file."""
+
+    def __init__(self, path):
+        self.handle = open(path, "x")
+        self.bytes = 0
+
+    def write(self, record):
+        line = json.dumps(record) + "\n"
+        line_bytes = len(line.encode("utf-8"))
+        if self.bytes + line_bytes > MAX_RECORD_BYTES:
+            raise ProbeError(f"recording exceeds {MAX_RECORD_BYTES} bytes")
+        self.handle.write(line)
+        self.handle.flush()
+        self.bytes += line_bytes
+
+    def close(self):
+        self.handle.close()
+
+
 def scan_loop(port, seconds, recorder):
     parser = rp.ScanParser()
     collector = rp.RevolutionCollector()
-    deadline = None if seconds <= 0 else time.monotonic() + seconds
+    deadline = time.monotonic() + seconds
     last_rev = None
     last_data = time.monotonic()
     warned_idle = False
     revolutions = 0
     points = 0
-    rates = []
-    while deadline is None or time.monotonic() < deadline:
+    rate_sum = 0.0
+    rate_count = 0
+    while time.monotonic() < deadline:
         data = port.read(4096, 0.2)
         if not data:
             if not warned_idle and time.monotonic() - last_data > IDLE_WARN_S:
@@ -244,24 +306,27 @@ def scan_loop(port, seconds, recorder):
             revolutions += 1
             points += summary["points"]
             if rate is not None:
-                rates.append(rate)
+                rate_sum += rate
+                rate_count += 1
             rate_text = "n/a" if rate is None else f"{rate:.2f} rev/s"
             print(
                 f"rev {revolutions}: {summary['points']} points, {summary['valid']} valid, "
                 f"min {summary['min_m']} m, max {summary['max_m']} m, {rate_text}"
             )
             if recorder is not None:
-                recorder.write(json.dumps(rp.revolution_record(now_wall, revolution)) + "\n")
-                recorder.flush()
-    mean_text = "n/a" if not rates else "{:.2f} rev/s".format(sum(rates) / len(rates))  # noqa: UP032
+                recorder.write(rp.revolution_record(now_wall, revolution))
+    mean_text = (
+        "n/a" if rate_count == 0 else "{:.2f} rev/s".format(rate_sum / rate_count)  # noqa: UP032
+    )
     print(
         f"done: {revolutions} revolutions, {points} points, mean {mean_text}, "
-        f"{parser.resyncs} resyncs"
+        f"{parser.resyncs} resyncs, {collector.dropped} oversized revolutions dropped"
     )
     return revolutions
 
 
 def run(args):
+    validate_args(args)
     if args.port:
         port_path, source = args.port, "--port"
     else:
@@ -271,11 +336,12 @@ def run(args):
         else:
             port_path, source = DEFAULT_PORT, "default"
     print(f"serial port: {port_path} (from {source})")
-    if not args.no_release:
-        release_port(args.sock, args.timeout)
-    port = SerialPort(port_path).open()
-    recorder = open(args.record, "a") if args.record else None
+    recorder = ScanRecorder(args.record) if args.record else None
+    port = None
     try:
+        if not args.no_release:
+            release_port(args.sock, args.timeout)
+        port = SerialPort(port_path).open()
         port.set_dtr(False)
         port.write(rp.stop_request())
         time.sleep(0.05)
@@ -290,9 +356,8 @@ def run(args):
         print(f"info: {json.dumps(info)}")
         health = rp.parse_health(single_response(port, rp.get_health_request(), rp.TYPE_HEALTH))
         print(f"health: {json.dumps(health)}")
-        if health["status"] == 2:
-            print("health reports an error; a RESET is the documented recovery", file=sys.stderr)
-        print(f"motor pwm {args.pwm}; scanning for {args.seconds or 'unbounded'} s")
+        require_good_health(health)
+        print(f"motor pwm {args.pwm}; scanning for {args.seconds} s")
         port.write(rp.set_motor_pwm_request(args.pwm))
         time.sleep(SPINUP_WAIT_S)
         port.write(rp.scan_request())
@@ -303,15 +368,16 @@ def run(args):
             print(f"recorded {revolutions} revolutions to {args.record}")
         return 0 if revolutions else 1
     finally:
-        try:
-            port.write(rp.stop_request())
-            time.sleep(0.05)
-            port.write(rp.set_motor_pwm_request(0))
-            port.set_dtr(True)
-            print("lidar stopped, motor pwm 0")
-        except (OSError, ProbeError) as exc:
-            print(f"warning: could not stop the lidar cleanly: {exc}", file=sys.stderr)
-        port.close()
+        if port is not None:
+            try:
+                port.write(rp.stop_request())
+                time.sleep(0.05)
+                port.write(rp.set_motor_pwm_request(0))
+                port.set_dtr(True)
+                print("lidar stopped, motor pwm 0")
+            except (OSError, ProbeError) as exc:
+                print(f"warning: could not stop the lidar cleanly: {exc}", file=sys.stderr)
+            port.close()
         if recorder is not None:
             recorder.close()
 
@@ -320,10 +386,12 @@ def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--port", help=f"serial device (default: config, else {DEFAULT_PORT})")
     parser.add_argument("--config", default=TELEBOT_CONFIG, help="telebot config with serialport")
-    parser.add_argument("--seconds", type=float, default=10.0, help="scan time; 0 runs until ^C")
-    parser.add_argument("--record", help="append one JSON object per revolution to this file")
     parser.add_argument(
-        "--pwm", type=int, default=rp.DEFAULT_MOTOR_PWM, help="motor pwm 0..1023 (default 660)"
+        "--seconds", type=float, default=10.0, help="scan time in seconds (max 300)"
+    )
+    parser.add_argument("--record", help="create a new JSONL file with one object per revolution")
+    parser.add_argument(
+        "--pwm", type=int, default=rp.DEFAULT_MOTOR_PWM, help="motor pwm 1..1023 (default 660)"
     )
     parser.add_argument("--no-release", action="store_true", help="skip lidar_release")
     parser.add_argument("--sock", default=botshell.DEFAULT_SOCK, help="bot shell socket")
@@ -335,6 +403,12 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         return run(args)
+    except ValueError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    except FileExistsError as exc:
+        print(f"refused: record file already exists: {exc.filename}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         print("interrupted")
         return 130

@@ -18,6 +18,9 @@ MSG_FRAME_END = 2
 CONTROL_MIN = 12
 CONTROL_MAX = 64
 FRAME_START_LEN = 28
+MAX_FRAME_WIDTH = 4096
+MAX_FRAME_HEIGHT = 4096
+MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 _MSGTYPE = struct.Struct("<I")
 _FRAME_START = struct.Struct("<IIII")
@@ -86,6 +89,17 @@ def encode_frame_end():
     return MAGIC + _MSGTYPE.pack(MSG_FRAME_END)
 
 
+def valid_frame_header(header):
+    """Only admit bounded, tightly packed grayscale frames from the local HAL."""
+    if not 0 < header.width <= MAX_FRAME_WIDTH:
+        return False
+    if not 0 < header.height <= MAX_FRAME_HEIGHT:
+        return False
+    if not 0 < header.size <= MAX_FRAME_BYTES:
+        return False
+    return header.size == header.width * header.height
+
+
 class FrameAssembler:
     """Reassembles frames from the datagram sequence the HAL sends.
 
@@ -118,22 +132,27 @@ class FrameAssembler:
         if control is not None:
             self.dropped += 1
             self._buf = None
+            self.header = None
             self._start(control)
             return None
-        self._buf.extend(datagram)
+        remaining = self.header.size - len(self._buf)
+        self._buf.extend(memoryview(datagram)[:remaining])
         if len(self._buf) < self.header.size:
             return None
-        data = bytes(self._buf[: self.header.size])
+        data = bytes(self._buf)
+        header = self.header
         self._buf = None
+        self.header = None
         self.frames += 1
-        return Frame(self.header, data)
+        return Frame(header, data)
 
     def _start(self, control):
         msgtype, header = control
         if msgtype != MSG_FRAME_START:
             return
-        if header is None:
+        if header is None or not valid_frame_header(header):
             self.malformed += 1
+            self.header = None
             return
         self.header = header
         self._buf = bytearray()

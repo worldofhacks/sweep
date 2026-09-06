@@ -146,3 +146,20 @@ def test_collector_discards_points_before_the_first_scan_start():
     (revolution,) = collector.feed([second])
     assert revolution == [first]
     assert rp.summarize_revolution([]) == {"points": 0, "valid": 0, "min_m": None, "max_m": None}
+
+
+def test_collector_drops_a_revolution_without_another_start_before_its_cap():
+    collector = rp.RevolutionCollector(max_points=3)
+    start = rp.parse_measurement(rp.encode_measurement(True, 1, 0.0, 100))
+    point = rp.parse_measurement(rp.encode_measurement(False, 1, 10.0, 100))
+    assert collector.feed([start, point, point, point]) == []
+    assert collector.dropped == 1
+    assert collector.feed([point]) == []
+    assert collector.feed([start, point]) == []
+    (revolution,) = collector.feed([start])
+    assert revolution == [start, point]
+
+
+def test_collector_requires_a_positive_point_cap():
+    with pytest.raises(ValueError):
+        rp.RevolutionCollector(max_points=0)

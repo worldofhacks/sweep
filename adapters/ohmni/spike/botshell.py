@@ -14,7 +14,7 @@ byte. Runs on the container's Python 3.6 with the standard library only.
 
 ``pulse`` sends ``manual_move l r``, waits, and always sends ``manual_move 0 0``, because
 ``manual_move`` does not stop by itself. Speeds above 800 and pulses above 2000 ms are
-refused unless ``--i-know`` is given; the unit of ``manual_move`` speeds is not documented.
+always refused; the unit of ``manual_move`` speeds is not documented.
 """
 
 import argparse
@@ -24,6 +24,12 @@ import time
 
 DEFAULT_SOCK = "/app/bot_shell.sock"
 DEFAULT_TIMEOUT = 0.5
+MAX_TIMEOUT_S = 5.0
+MAX_COMMAND_BYTES = 1024
+MAX_PENDING_BYTES = 8192
+MAX_REPLY_BYTES = 65536
+MAX_REPLY_LINES = 256
+MAX_REPLY_DURATION_S = 10.0
 PULSE_MAX_MS = 2000
 PULSE_MAX_SPEED = 800
 STOP_COMMAND = "manual_move 0 0"
@@ -31,6 +37,15 @@ STOP_COMMAND = "manual_move 0 0"
 
 class BotShellError(Exception):
     """The bot shell socket is unavailable or a command could not be delivered."""
+
+
+def validate_timeout(timeout):
+    """Return a finite positive idle timeout inside the probe's hard cap."""
+    if timeout != timeout or timeout in (float("inf"), float("-inf")):
+        raise ValueError("timeout must be finite")
+    if not 0 < timeout <= MAX_TIMEOUT_S:
+        raise ValueError(f"timeout must be within 0..{MAX_TIMEOUT_S:g} s")
+    return timeout
 
 
 class Reply:
@@ -58,12 +73,13 @@ class BotShell:
 
     def __init__(self, path=DEFAULT_SOCK, timeout=DEFAULT_TIMEOUT):
         self.path = path
-        self.timeout = timeout
+        self.timeout = validate_timeout(timeout)
         self._sock = None
         self._pending = b""
 
     def connect(self):
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
         try:
             sock.connect(self.path)
         except OSError as exc:
@@ -78,6 +94,7 @@ class BotShell:
                 self._sock.close()
             finally:
                 self._sock = None
+                self._pending = b""
 
     def __enter__(self):
         if self._sock is None:
@@ -95,14 +112,18 @@ class BotShell:
     def send(self, command):
         """Send one command line; returns the wall-clock send time (``time.time``)."""
         line = command.strip()
-        if not line or "\n" in line:
+        if not line or "\n" in line or "\r" in line:
             raise ValueError("a bot shell command is one non-empty line")
+        encoded = line.encode("utf-8")
+        if len(encoded) > MAX_COMMAND_BYTES:
+            raise ValueError(f"command exceeds {MAX_COMMAND_BYTES} UTF-8 bytes")
         if self._sock is None:
             raise BotShellError("not connected")
         sent_at = time.time()
         try:
-            self._sock.sendall((line + "\n").encode("utf-8"))
+            self._sock.sendall(encoded + b"\n")
         except OSError as exc:
+            self.close()
             raise BotShellError(f"send failed: {exc}") from exc
         return sent_at
 
@@ -123,9 +144,9 @@ class BotShell:
         """``manual_move 0 0``: the only way to stop a ``manual_move``."""
         return self.command(STOP_COMMAND, timeout=timeout)
 
-    def pulse(self, left, right, duration_ms, i_know=False):
+    def pulse(self, left, right, duration_ms):
         """Drive ``manual_move left right`` for ``duration_ms``, then always stop."""
-        check_pulse(left, right, duration_ms, i_know)
+        check_pulse(left, right, duration_ms)
         replies = []
         try:
             replies.append(self.command(f"manual_move {left} {right}", timeout=0.05))
@@ -137,38 +158,60 @@ class BotShell:
     def _read(self, idle_timeout):
         if self._sock is None:
             raise BotShellError("not connected")
+        idle_timeout = validate_timeout(idle_timeout)
         lines = []
         first_byte = None
-        self._sock.settimeout(idle_timeout)
+        received = 0
+        deadline = time.monotonic() + MAX_REPLY_DURATION_S
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                raise BotShellError(f"reply exceeded {MAX_REPLY_DURATION_S:g} s")
+            self._sock.settimeout(min(idle_timeout, remaining))
             try:
                 chunk = self._sock.recv(4096)
             except socket.timeout:  # noqa: UP041 (not an alias of TimeoutError before 3.10)
+                if time.monotonic() >= deadline:
+                    self.close()
+                    raise BotShellError(f"reply exceeded {MAX_REPLY_DURATION_S:g} s") from None
                 break
             except OSError as exc:
+                self.close()
                 raise BotShellError(f"recv failed: {exc}") from exc
             if not chunk:
                 self.close()
                 break
             if first_byte is None:
                 first_byte = time.monotonic()
+            received += len(chunk)
+            if received > MAX_REPLY_BYTES:
+                self.close()
+                raise BotShellError(f"reply exceeds {MAX_REPLY_BYTES} bytes")
             self._pending += chunk
             while b"\n" in self._pending:
                 line, _, self._pending = self._pending.partition(b"\n")
                 lines.append(line.decode("utf-8", "replace").rstrip("\r"))
+                if len(lines) > MAX_REPLY_LINES:
+                    self.close()
+                    raise BotShellError(f"reply exceeds {MAX_REPLY_LINES} lines")
+            if len(self._pending) > MAX_PENDING_BYTES:
+                self.close()
+                raise BotShellError(f"unterminated reply exceeds {MAX_PENDING_BYTES} bytes")
         return lines, first_byte
 
 
-def check_pulse(left, right, duration_ms, i_know=False):
-    """Refuse pulses outside the spike caps unless the operator opts out."""
+def check_pulse(left, right, duration_ms):
+    """Refuse pulses outside the immutable hardware-spike caps."""
+    values = (left, right, duration_ms)
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
+        raise ValueError("pulse speeds and duration must be integers")
     if duration_ms <= 0:
         raise ValueError("pulse duration must be positive")
-    if i_know:
-        return
     if duration_ms > PULSE_MAX_MS:
-        raise ValueError(f"pulse of {duration_ms} ms exceeds {PULSE_MAX_MS} ms; pass --i-know")
+        raise ValueError(f"pulse of {duration_ms} ms exceeds {PULSE_MAX_MS} ms")
     if max(abs(left), abs(right)) > PULSE_MAX_SPEED:
-        raise ValueError(f"speed above {PULSE_MAX_SPEED} refused; pass --i-know")
+        raise ValueError(f"speed above {PULSE_MAX_SPEED} refused")
 
 
 def print_reply(reply, stream=None):
@@ -208,7 +251,6 @@ def build_parser():
     pulse.add_argument("left", type=int)
     pulse.add_argument("right", type=int)
     pulse.add_argument("ms", type=int)
-    pulse.add_argument("--i-know", action="store_true", help="lift the speed and time caps")
     return parser
 
 
@@ -225,7 +267,7 @@ def main(argv=None):
             elif args.cmd == "stop":
                 print_reply(shell.stop())
             elif args.cmd == "pulse":
-                for reply in shell.pulse(args.left, args.right, args.ms, args.i_know):
+                for reply in shell.pulse(args.left, args.right, args.ms):
                     print_reply(reply)
     except ValueError as exc:
         print(f"refused: {exc}", file=sys.stderr)

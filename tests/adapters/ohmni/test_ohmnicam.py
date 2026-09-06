@@ -72,3 +72,36 @@ def test_short_frame_start_is_counted_as_malformed():
     assert assembler.feed(b"OHMNICAM\x01\x00\x00\x00") is None
     assert assembler.malformed == 1
     assert not assembler.filling
+
+
+def test_frame_start_rejects_unbounded_or_inconsistent_headers():
+    invalid = (
+        (0, 480, 0),
+        (640, 0, 0),
+        (oc.MAX_FRAME_WIDTH + 1, 1, oc.MAX_FRAME_WIDTH + 1),
+        (1, oc.MAX_FRAME_HEIGHT + 1, oc.MAX_FRAME_HEIGHT + 1),
+        (640, 480, 640 * 480 - 1),
+        (4096, 4096, oc.MAX_FRAME_BYTES + 1),
+    )
+    assembler = oc.FrameAssembler()
+    for width, height, size in invalid:
+        assert assembler.feed(oc.encode_frame_start(width, height, 0, size)) is None
+        assert not assembler.filling
+    assert assembler.malformed == len(invalid)
+
+
+def test_valid_frame_header_has_strict_dimension_and_byte_caps():
+    assert oc.valid_frame_header(oc.FrameHeader(640, 480, 99, 640 * 480))
+    assert oc.valid_frame_header(
+        oc.FrameHeader(oc.MAX_FRAME_WIDTH, oc.MAX_FRAME_HEIGHT, 0, oc.MAX_FRAME_BYTES)
+    )
+    assert not oc.valid_frame_header(oc.FrameHeader(1, 1, 0, 0))
+    assert not oc.valid_frame_header(oc.FrameHeader(1, 1, 0, oc.MAX_FRAME_BYTES + 1))
+
+
+def test_oversized_datagram_never_grows_reassembly_past_frame_size():
+    assembler = oc.FrameAssembler()
+    assembler.feed(oc.encode_frame_start(2, 2, 0, 4))
+    frame = assembler.feed(b"x" * 10_000)
+    assert frame.data == b"x" * 4
+    assert not assembler.filling

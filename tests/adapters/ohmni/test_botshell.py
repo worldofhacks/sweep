@@ -146,15 +146,97 @@ def test_pulse_always_sends_stop(fake_shell, monkeypatch):
     assert server.received == ["manual_move 300 -300", "manual_move 0 0"]
 
 
-def test_pulse_caps_and_override():
+def test_pulse_caps_cannot_be_overridden():
     with pytest.raises(ValueError):
         botshell.check_pulse(900, 0, 100)
     with pytest.raises(ValueError):
         botshell.check_pulse(0, 0, 3000)
     with pytest.raises(ValueError):
-        botshell.check_pulse(0, 0, 0, i_know=True)
-    botshell.check_pulse(900, -900, 3000, i_know=True)
+        botshell.check_pulse(0, 0, 0)
+    with pytest.raises(SystemExit):
+        botshell.build_parser().parse_args(["pulse", "900", "900", "3000", "--i-know"])
     botshell.check_pulse(800, 800, 2000)
+
+
+@pytest.mark.parametrize("value", [1.5, float("nan"), float("inf"), True])
+def test_pulse_rejects_non_integer_values_that_could_bypass_caps(value):
+    with pytest.raises(ValueError, match="must be integers"):
+        botshell.check_pulse(value, 0, 100)
+    with pytest.raises(ValueError, match="must be integers"):
+        botshell.check_pulse(0, 0, value)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), 5.1])
+def test_timeout_must_be_finite_positive_and_bounded(timeout):
+    with pytest.raises(ValueError):
+        botshell.BotShell(timeout=timeout)
+
+
+def test_send_bounds_utf8_bytes_and_rejects_carriage_return():
+    shell = botshell.BotShell()
+    with pytest.raises(ValueError, match="UTF-8 bytes"):
+        shell.send("é" * (botshell.MAX_COMMAND_BYTES // 2 + 1))
+    with pytest.raises(ValueError, match="one non-empty line"):
+        shell.send("battery\rother")
+
+
+class ChunkSocket:
+    def __init__(self, chunks):
+        self.chunks = iter(chunks)
+        self.closed = False
+
+    def settimeout(self, timeout):
+        pass
+
+    def recv(self, size):
+        return next(self.chunks)
+
+    def close(self):
+        self.closed = True
+
+
+def shell_with_chunks(chunks):
+    shell = botshell.BotShell(timeout=0.1)
+    shell._sock = ChunkSocket(chunks)
+    return shell
+
+
+def test_unterminated_reply_is_bounded_and_connection_is_dropped():
+    shell = shell_with_chunks([b"x" * 4096, b"x" * 4096, b"x"])
+    with pytest.raises(botshell.BotShellError, match="unterminated reply"):
+        shell.read_lines()
+    assert not shell.connected
+
+
+def test_total_reply_bytes_are_bounded():
+    chunk = (b"x" * 4095) + b"\n"
+    shell = shell_with_chunks([chunk] * (botshell.MAX_REPLY_BYTES // len(chunk) + 1))
+    with pytest.raises(botshell.BotShellError, match="reply exceeds .* bytes"):
+        shell.read_lines()
+    assert not shell.connected
+
+
+def test_reply_line_count_is_bounded():
+    shell = shell_with_chunks([b"x\n" * (botshell.MAX_REPLY_LINES + 1)])
+    with pytest.raises(botshell.BotShellError, match="reply exceeds .* lines"):
+        shell.read_lines()
+    assert not shell.connected
+
+
+def test_continuous_trickle_cannot_extend_reply_forever(monkeypatch):
+    now = [0.0]
+
+    class TrickleSocket(ChunkSocket):
+        def recv(self, size):
+            now[0] += botshell.MAX_REPLY_DURATION_S / 2.0
+            return b"x"
+
+    shell = botshell.BotShell(timeout=5.0)
+    shell._sock = TrickleSocket([])
+    monkeypatch.setattr(botshell.time, "monotonic", lambda: now[0])
+    with pytest.raises(botshell.BotShellError, match="reply exceeded .* s"):
+        shell.read_lines()
+    assert not shell.connected
 
 
 def test_send_rejects_multiline_and_empty(fake_shell):
