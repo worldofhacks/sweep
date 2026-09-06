@@ -17,6 +17,7 @@ import av
 import httpx
 
 from arbiter.safety import CONFIRMATION_REQUIRED_INTENTS
+from relay.capabilities import IMPLEMENTED_INTENT_NAMES, CapabilityProfile
 from relay.intent_v1 import AcceptedIntent, validate_intent
 from relay.voice_telemetry import VoiceTraceSink, get_default_voice_trace_sink
 
@@ -537,7 +538,10 @@ def _validate_voice_plan_step(step: VoicePlanStep, index: int) -> None:
         "mode": step.mode,
         "confirm": True,
     }
-    validated = validate_intent(candidate)
+    validated = validate_intent(
+        candidate,
+        capability_profile=CapabilityProfile("voice_schema", IMPLEMENTED_INTENT_NAMES),
+    )
     if not isinstance(validated, AcceptedIntent):
         raise ValueError("voice plan step is not a canonical Intent v1 proposal")
     if step.confirm_required != (validated.intent.name in CONFIRMATION_REQUIRED_INTENTS):

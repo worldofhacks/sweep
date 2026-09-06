@@ -83,11 +83,17 @@ requires explicit deployment configuration plus the existing live acceptance gat
 
 ## Known-map navigation previews
 
-`NavigationPlanner` produces deterministic, inspectable route previews. It does not
-add a dispatch capability. Every `NavigationArtifact` and `NavigationPlan` is
-non-dispatchable by construction, and otherwise-successful revalidation returns
-`artifact_not_dispatchable`. Runtime execution remains future work and requires a
-separate accepted-geometry, capability, controller, and adapter contract.
+`NavigationPlanner` produces deterministic, inspectable route previews. A configured
+`NavigationRuntime` can execute a frozen preview when the runtime supplies a matching
+dispatch acceptance. Navigation remains outside the default capability profile. The
+file-backed deployment loader, configuration format, and simulator or remote gates are
+in [Navigation deployment](../docs/NAVIGATION_DEPLOYMENT.md).
+
+A route is revalidated before each segment and after its completion. The dispatcher
+rejects changed map, geometry, semantic artifact content, roster, selection, motion,
+permission, connection epoch, position freshness, position quality, or route shape.
+Remote deployments require surveyed geometry, matching evidence, and a phone-navigation
+adapter that accepts the route identity before a mapped `goto` reaches the flight adapter.
 
 `NavigationArtifact.from_geometry_directory()` starts with an independently accepted
 and content-pinned map bundle. It admits only the exact version-1 geometry-report

@@ -33,6 +33,8 @@ _CONFIRMED_INTENTS: Final = frozenset(
         IntentName.LAND_ALL,
         IntentName.CAPTURE_ROOM,
         IntentName.SWEEP,
+        IntentName.NAVIGATE,
+        IntentName.SEARCH,
     }
 )
 CONFIRMATION_REQUIRED_INTENTS: Final = _CONFIRMED_INTENTS
@@ -56,6 +58,8 @@ _ARMED_INTENTS: Final = frozenset(
         IntentName.FORMATION_SET,
         IntentName.COME_HOME,
         IntentName.SWEEP,
+        IntentName.NAVIGATE,
+        IntentName.SEARCH,
         IntentName.CAPTURE_ROOM,
     }
 )
@@ -207,6 +211,7 @@ class SafetyArbiter:
         if not target_ids and intent.name not in {
             IntentName.SELECT,
             IntentName.ARM,
+            IntentName.DISARM,
             IntentName.ESTOP,
         }:
             return self._intent_refusal(
@@ -474,7 +479,7 @@ class SafetyArbiter:
         return None
 
     def _check_zero_command_safety(self, plan: Plan, snapshot: FleetSnapshot) -> Refusal | None:
-        if plan.intent_name not in {IntentName.ARM, IntentName.SELECT}:
+        if plan.intent_name not in {IntentName.ARM, IntentName.DISARM, IntentName.SELECT}:
             return None
         if snapshot.estop_active:
             return self._refusal_for(
@@ -840,6 +845,7 @@ class SafetyArbiter:
             )
         expected_operations = {
             IntentName.ARM: frozenset(),
+            IntentName.DISARM: frozenset(),
             IntentName.SELECT: frozenset(),
             IntentName.TAKEOFF: frozenset({CommandOperation.TAKEOFF}),
             IntentName.TRANSLATE: frozenset({CommandOperation.GOTO}),
@@ -848,6 +854,8 @@ class SafetyArbiter:
             IntentName.FORMATION_SET: frozenset({CommandOperation.GOTO}),
             IntentName.SPACING: frozenset(),
             IntentName.SWEEP: frozenset({CommandOperation.GOTO}),
+            IntentName.NAVIGATE: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
+            IntentName.SEARCH: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
             IntentName.HOLD: frozenset({CommandOperation.HOVER}),
             IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
             IntentName.LAND: frozenset({CommandOperation.LAND}),
@@ -1049,6 +1057,11 @@ class SafetyArbiter:
                     plan,
                     snapshot,
                     "altitude requires one ordered goto/hover pair per selected aircraft",
+                )
+        if plan.intent_name in {IntentName.NAVIGATE, IntentName.SEARCH}:
+            if plan.navigation is None or not plan.navigation.matches_commands(plan):
+                return self._invalid_plan_refusal(
+                    plan, snapshot, "navigation commands differ from the frozen route"
                 )
         if plan.intent_name in {
             IntentName.TAKEOFF,
@@ -1373,6 +1386,14 @@ class SafetyArbiter:
         if plan.intent_name is IntentName.ARM:
             valid = (
                 plan.armed_update is True
+                and plan.selection_update is None
+                and plan.estop_update is None
+                and plan.formation_update is None
+                and plan.spacing_update is None
+            )
+        elif plan.intent_name is IntentName.DISARM:
+            valid = (
+                plan.armed_update is False
                 and plan.selection_update is None
                 and plan.estop_update is None
                 and plan.formation_update is None

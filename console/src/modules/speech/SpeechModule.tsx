@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react'
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 import './speech.css'
 import { formatDroneId, isTerminalRequest, type ControlState, type RequestRecord } from '../../control/state'
 import type { DroneId, VoicePlan, VoicePlanStep } from '../../relay/contract'
@@ -53,6 +53,7 @@ interface RelayPlanState {
   plan: VoicePlan
   /** Intent IDs of the steps staged so far, in step order. */
   staged: string[]
+  stagingStepIndex: number | null
   stageNote: string | null
 }
 
@@ -116,6 +117,12 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
   const [speech, setSpeech] = useState<SpeechState>(INITIAL)
   const context = compileContext(state, roomId)
   const relay = speech.relayPlan
+  const activeRelayPlan = useRef<VoicePlan | null>(null)
+  const stagingSequence = useRef(0)
+  useLayoutEffect(() => {
+    activeRelayPlan.current = relay?.plan ?? null
+    stagingSequence.current += 1
+  }, [relay?.plan])
   const relayView = relay === null ? null : deriveRelayPlan(relay, state.requests)
   useTicker(voice.isRecording || (relayView !== null && relayView.deadline !== null && !relayView.finished))
 
@@ -196,30 +203,44 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
     }))
   }
 
-  /**
-   * Stages the next relay-compiled step through the same control flow as the
-   * buttons: takeoff, land, land_all, capture_room and sweep are parked for
-   * confirmation; hold, select and every other name are parked as a preview the
-   * operator sends from the dock. The step's targets must still be the
-   * authoritative selection; nothing is sent here. The step inherits the plan's
-   * deadline, so the dock counts it down and refuses a late confirmation.
-   */
   const stageStep = () => {
     if (relay === null || nextStep === null || stageBlocked !== null) return
     if (relayView?.deadline === null || relayView?.deadline === undefined) return
-    const intent = prepareVoicePlanStep(relay.plan, nextStep, relayView.deadline)
-    setSpeech((previous) => {
-      if (previous.relayPlan === null) return previous
-      return {
-        ...previous,
-        relayPlan: intent
-          ? { ...previous.relayPlan, staged: [...previous.relayPlan.staged, intent.intent_id], stageNote: null }
-          : {
-              ...previous.relayPlan,
-              stageNote: 'The control flow refused to stage this step; nothing was emitted.',
-            },
-      }
-    })
+    const sequence = ++stagingSequence.current
+    const isCurrent = () => stagingSequence.current === sequence && activeRelayPlan.current === relay.plan
+    setSpeech((previous) =>
+      previous.relayPlan?.plan !== relay.plan
+        ? previous
+        : { ...previous, relayPlan: { ...previous.relayPlan, stagingStepIndex: nextStep.index, stageNote: null } },
+    )
+    void prepareVoicePlanStep(relay.plan, nextStep, relayView.deadline, isCurrent)
+      .then((intent) => {
+        if (!isCurrent()) return
+        setSpeech((previous) => {
+          if (previous.relayPlan?.plan !== relay.plan) return previous
+          return {
+            ...previous,
+            relayPlan: intent
+              ? { ...previous.relayPlan, staged: [...previous.relayPlan.staged, intent.intent_id], stagingStepIndex: null, stageNote: null }
+              : { ...previous.relayPlan, stagingStepIndex: null, stageNote: 'The control flow refused to stage this step; nothing was emitted.' },
+          }
+        })
+      })
+      .catch((error: unknown) => {
+        if (!isCurrent()) return
+        setSpeech((previous) =>
+          previous.relayPlan?.plan !== relay.plan
+            ? previous
+            : {
+                ...previous,
+                relayPlan: {
+                  ...previous.relayPlan,
+                  stagingStepIndex: null,
+                  stageNote: error instanceof Error ? error.message : 'The route preview failed. Nothing was emitted.',
+                },
+              },
+        )
+      })
   }
 
   const startRecording = () => {
@@ -501,6 +522,9 @@ function stageBlockedReason(
   roomId: string,
   now: number,
 ): string | null {
+  if (relay.stagingStepIndex !== null) {
+    return 'Preparing the route preview. Nothing is sent until you confirm it in the dock.'
+  }
   if (pending) return 'A plan preview is already pending; confirm or cancel it before staging the next step.'
   if (relay.plan.session !== state.sessionId) {
     return 'The console session changed after compilation; say it again in the current session.'
@@ -744,7 +768,7 @@ function absorbVoice(
         origin: outcome.source,
         compiled: null,
         relayCompilerReason: null,
-        relayPlan: { plan: outcome.plan, staged: [], stageNote: null },
+        relayPlan: { plan: outcome.plan, staged: [], stagingStepIndex: null, stageNote: null },
         sttError: null,
         draftNote: null,
       }

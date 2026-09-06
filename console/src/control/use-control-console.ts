@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useReducer, type Dispatch } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, type Dispatch } from 'react'
+import type { NavigationClient, NavigationPreview } from '../navigation/client'
 import type { RelayClient } from '../relay/client'
+import type { SearchClient } from '../search/client'
 import type {
   CapturePattern,
   ConsoleIntentName,
@@ -52,6 +54,8 @@ export interface UseControlConsoleOptions {
   sessionId: string
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
+  navigation?: NavigationClient
+  search?: SearchClient
 }
 
 /** One control press: an intent name, its args, and the aircraft it addresses. */
@@ -65,6 +69,8 @@ export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> 
 export function useControlConsole({
   sessionId,
   clients,
+  navigation,
+  search,
   intentDependencies = browserIntentDependencies,
 }: UseControlConsoleOptions) {
   const [state, dispatch] = useReducer(
@@ -72,6 +78,12 @@ export function useControlConsole({
     sessionId,
     (id) => createInitialControlState(id, intentDependencies.now()),
   )
+  const latestState = useRef(state)
+  const previewSequence = useRef(0)
+
+  useEffect(() => {
+    latestState.current = state
+  }, [state])
 
   useEffect(() => {
     if (state.sessionId !== sessionId) {
@@ -191,7 +203,9 @@ export function useControlConsole({
       intent: IntentV1,
       expiresAt?: number,
       voiceBinding?: NonNullable<RequestRecord['plan']>['voiceBinding'],
+      route?: NavigationPreview,
     ): IntentV1 => {
+      previewSequence.current += 1
       const t = intentDependencies.now()
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
@@ -203,7 +217,10 @@ export function useControlConsole({
         type: 'request_pending_confirmation',
         intentId: intent.intent_id,
         t,
-        plan: buildPlanPreview(intent, state.rosterVersion, expiresAt, voiceBinding),
+        plan: {
+          ...buildPlanPreview(intent, state.rosterVersion, expiresAt, voiceBinding),
+          ...(route === undefined ? {} : { route }),
+        },
       })
       return intent
     },
@@ -244,6 +261,8 @@ export function useControlConsole({
 
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
+      if (request.name === 'navigate' || request.name === 'search') return null
+      previewSequence.current += 1
       if (!isIntentEnabled(state, request.name)) return null
       const intent = createIntent(
         {
@@ -261,6 +280,115 @@ export function useControlConsole({
     [intentDependencies, stageIntent, state],
   )
 
+  const prepareNavigation = useCallback(
+    async (zoneId: string, deadline?: number, isCurrent: () => boolean = () => true): Promise<IntentV1> => {
+      const current = latestState.current
+      if (!isCurrent() || (deadline !== undefined && intentDependencies.now() >= deadline)) {
+        throw new Error('The route preview is no longer current. Preview it again.')
+      }
+      if (
+        !navigation ||
+        !isIntentEnabled(current, 'navigate') ||
+        current.connection.status !== 'connected' ||
+        current.selection.length === 0 ||
+        !selectionReady(current, current.selection)
+      ) {
+        throw new Error('Select ready aircraft and connect to a relay with navigation configured.')
+      }
+      const sequence = ++previewSequence.current
+      const draft = createIntent(
+        {
+          name: 'navigate',
+          args: { zone_id: zoneId },
+          selection: current.selection,
+          source: 'console',
+          session: current.sessionId,
+        },
+        intentDependencies,
+      )
+      const startedAt = intentDependencies.now()
+      const preview = await navigation.preview(draft)
+      const latest = latestState.current
+      const expiresAt = Math.min(
+        deadline ?? Infinity,
+        startedAt + preview.expires_at_ms - preview.t,
+      )
+      if (
+        !isCurrent() ||
+        sequence !== previewSequence.current ||
+        latest.sessionId !== current.sessionId ||
+        latest.rosterVersion !== current.rosterVersion ||
+        latest.connection !== current.connection ||
+        JSON.stringify(latest.selection) !== JSON.stringify(current.selection) ||
+        !isIntentEnabled(latest, 'navigate') ||
+        !selectionReady(latest, current.selection) ||
+        preview.plan.roster_version !== current.rosterVersion ||
+        intentDependencies.now() >= expiresAt
+      ) {
+        throw new Error('The fleet changed while preparing the route. Preview it again.')
+      }
+      return stageForConfirmation(draft, expiresAt, undefined, preview)
+    },
+    [intentDependencies, navigation, stageForConfirmation],
+  )
+
+  const prepareSearch = useCallback(
+    async (
+      zoneId: string,
+      targetClass: string,
+      deadline?: number,
+      isCurrent: () => boolean = () => true,
+    ): Promise<IntentV1> => {
+      const current = latestState.current
+      if (!isCurrent() || (deadline !== undefined && intentDependencies.now() >= deadline)) {
+        throw new Error('The search preview is no longer current. Preview it again.')
+      }
+      if (
+        !search ||
+        !isIntentEnabled(current, 'search') ||
+        current.connection.status !== 'connected' ||
+        current.selection.length === 0 ||
+        !selectionReady(current, current.selection)
+      ) {
+        throw new Error('Select ready aircraft and connect to a relay with search configured.')
+      }
+      const sequence = ++previewSequence.current
+      const draft = createIntent(
+        {
+          name: 'search',
+          args: { zone_id: zoneId, target_class: targetClass },
+          selection: current.selection,
+          source: 'console',
+          session: current.sessionId,
+        },
+        intentDependencies,
+      )
+      const startedAt = intentDependencies.now()
+      const preview = await search.preview(draft)
+      const latest = latestState.current
+      const expiresAt = Math.min(
+        deadline ?? Infinity,
+        startedAt + preview.expires_at_ms - preview.t,
+      )
+      if (
+        !isCurrent() ||
+        sequence !== previewSequence.current ||
+        latest.sessionId !== current.sessionId ||
+        latest.rosterVersion !== current.rosterVersion ||
+        latest.connection !== current.connection ||
+        JSON.stringify(latest.selection) !== JSON.stringify(current.selection) ||
+        !isIntentEnabled(latest, 'search') ||
+        !selectionReady(latest, current.selection) ||
+        preview.plan.roster_version !== current.rosterVersion ||
+        intentDependencies.now() >= expiresAt
+      ) {
+        throw new Error('The fleet changed while preparing the search. Preview it again.')
+      }
+      return stageForConfirmation(draft, expiresAt, undefined, preview)
+    },
+    [intentDependencies, search, stageForConfirmation],
+  )
+
   /**
    * A select intent addresses the aircraft it names: `selection` carries the
    * desired ids, the same as `args.ids`, so selecting from an empty selection
@@ -268,6 +396,7 @@ export function useControlConsole({
    */
   const sendSelection = useCallback(
     (desired: DroneId[]) => {
+      previewSequence.current += 1
       if (!isIntentEnabled(state, 'select') || desired.length === 0) return
       const intent = createIntent(
         {
@@ -434,7 +563,12 @@ export function useControlConsole({
 
   /** Stage the exact relay-minted language draft; no name-specific rewrite is allowed. */
   const prepareVoicePlanStep = useCallback(
-    (plan: VoicePlan, step: VoicePlanStep, expiresAt: number): IntentV1 | null => {
+    async (
+      plan: VoicePlan,
+      step: VoicePlanStep,
+      expiresAt: number,
+      isCurrent: () => boolean = () => true,
+    ): Promise<IntentV1 | null> => {
       if (
         plan.kind !== 'plan' ||
         plan.plan_digest === null ||
@@ -443,14 +577,15 @@ export function useControlConsole({
         state.languageConnection.status !== 'connected' ||
         expiresAt !== plan.expires_at_ms ||
         intentDependencies.now() >= expiresAt ||
-        !isIntentEnabled(state, step.name)
+        !isIntentEnabled(state, step.name) ||
+        !isCurrent()
       ) {
         return null
       }
       const draft = intentFromVoicePlanStep(plan, step, intentDependencies.now())
       if (draft === null) return null
       const intentCanonical = canonicalVoiceIntent(draft)
-      return stageForConfirmation(draft, expiresAt, {
+      const voiceBinding = {
         planDigest: plan.plan_digest,
         correlationId: plan.correlation_id,
         stateEventId: plan.state_event_id,
@@ -459,9 +594,34 @@ export function useControlConsole({
         intentId: step.intent_id,
         intentCanonical,
         stateCanonical: canonicalLanguageState(state),
-      })
+      }
+      if (draft.name !== 'navigate') return stageForConfirmation(draft, expiresAt, voiceBinding)
+      if (!navigation) return null
+
+      const sequence = ++previewSequence.current
+      const startedAt = intentDependencies.now()
+      const preview = await navigation.preview(draft)
+      const latest = latestState.current
+      const routeExpiresAt = startedAt + preview.expires_at_ms - preview.t
+      const stagedExpiresAt = Math.min(expiresAt, routeExpiresAt)
+      if (
+        !isCurrent() ||
+        sequence !== previewSequence.current ||
+        latest.sessionId !== state.sessionId ||
+        latest.sessionId !== plan.session ||
+        latest.connection !== state.connection ||
+        latest.languageConnection !== state.languageConnection ||
+        latest.languageConnection.status !== 'connected' ||
+        latest.rosterVersion !== plan.roster_version ||
+        canonicalLanguageState(latest) !== voiceBinding.stateCanonical ||
+        preview.plan.roster_version !== plan.roster_version ||
+        intentDependencies.now() >= stagedExpiresAt
+      ) {
+        return null
+      }
+      return stageForConfirmation(draft, stagedExpiresAt, voiceBinding, preview)
     },
-    [intentDependencies, stageForConfirmation, state],
+    [intentDependencies, navigation, stageForConfirmation, state],
   )
 
   /** Drafts a hold that must be previewed and confirmed before it is sent. */
@@ -575,6 +735,7 @@ export function useControlConsole({
 
   const cancelRequest = useCallback(
     (intentId: string) => {
+      previewSequence.current += 1
       dispatch({ type: 'request_cancelled', intentId, t: intentDependencies.now() })
     },
     [intentDependencies],
@@ -686,6 +847,8 @@ export function useControlConsole({
     selectAircraft,
     selectAllReady,
     prepareCapture,
+    prepareNavigation,
+    prepareSearch,
     prepareHold,
     prepareIntent,
     prepareSelect,
@@ -735,6 +898,10 @@ function canonicalLanguageState(state: ControlState): string {
         flightAvailable: drone.adapter_capabilities.includes('flight'),
       })),
   })
+}
+
+function selectionReady(state: ControlState, ids: readonly DroneId[]): boolean {
+  return ids.every((id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable)
 }
 
 function canonicalJson(value: unknown): unknown {

@@ -502,6 +502,7 @@ class NavigationPlan:
     arrival_slots: tuple[ArrivalSlot, ...]
     routes: tuple[DroneRoute, ...]
     execution_order: tuple[int, ...]
+    artifact_sha256: str
     dispatch_eligible: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -512,6 +513,7 @@ class NavigationPlan:
             raise ValueError("plan pins must use ArtifactPin")
         if not isinstance(self.evidence, NavigationEvidence):
             raise ValueError("plan evidence must use NavigationEvidence")
+        sha256_digest(self.artifact_sha256, "plan artifact_sha256")
         if not isinstance(self.config, MotionConfig) or not isinstance(
             self.permission, NavigationPermission
         ):
@@ -598,6 +600,7 @@ RefusalCode = Literal[
     "arrival_conflict",
     "initial_overlap",
     "artifact_not_dispatchable",
+    "dispatch_acceptance_invalid",
     "artifact_changed",
     "roster_changed",
     "selection_changed",

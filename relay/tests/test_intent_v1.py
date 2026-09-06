@@ -1,6 +1,11 @@
 import pytest
 
-from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES
+from relay.capabilities import (
+    C1_IMPLEMENTED_INTENT_NAMES,
+    C2_CAPABILITY_PROFILE,
+    IMPLEMENTED_INTENT_NAMES,
+    CapabilityProfile,
+)
 from relay.intent_v1 import (
     REGISTERED_SOURCES,
     SOURCE_ALLOWED_NAMES,
@@ -135,7 +140,7 @@ def test_m15_sim_intents_are_accepted_on_the_indoor_contract(
 ) -> None:
     console_select_payload.update(name=name, args=args, selection=[1, 2], confirm=confirm)
 
-    result = validate_intent(console_select_payload)
+    result = validate_intent(console_select_payload, capability_profile=C2_CAPABILITY_PROFILE)
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.name.value == name
@@ -150,6 +155,28 @@ def test_sweep_requires_confirmation_before_planning(
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+def test_search_requires_confirmed_selected_aircraft_and_an_enabled_profile(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(
+        name="search",
+        args={"zone_id": "atrium", "target_class": "backpack"},
+        selection=[1],
+        confirm=True,
+    )
+
+    disabled = validate_intent(console_select_payload)
+    enabled = validate_intent(
+        console_select_payload,
+        capability_profile=CapabilityProfile("search-enabled", frozenset({IntentName.SEARCH})),
+    )
+
+    assert isinstance(disabled, RejectedIntent)
+    assert disabled.reason is RejectionReason.UNSUPPORTED
+    assert isinstance(enabled, AcceptedIntent)
+    assert enabled.intent.args == {"zone_id": "atrium", "target_class": "backpack"}
 
 
 @pytest.mark.parametrize(
@@ -546,8 +573,8 @@ def _c1_payload(source: str, name: IntentName) -> dict[str, object]:
 
 def test_source_allowlist_covers_every_registered_source() -> None:
     assert set(SOURCE_ALLOWED_NAMES) == REGISTERED_SOURCES
-    assert all(names <= C1_IMPLEMENTED_INTENT_NAMES for names in SOURCE_ALLOWED_NAMES.values())
-    assert SOURCE_ALLOWED_NAMES["console"] is C1_IMPLEMENTED_INTENT_NAMES
+    assert all(names <= IMPLEMENTED_INTENT_NAMES for names in SOURCE_ALLOWED_NAMES.values())
+    assert SOURCE_ALLOWED_NAMES["console"] is IMPLEMENTED_INTENT_NAMES
     assert SOURCE_ALLOWED_NAMES["keyboard"] == {IntentName.ESTOP}
     assert SOURCE_ALLOWED_NAMES["webcam"] == {IntentName.CAPTURE_ROOM, IntentName.HOLD}
 

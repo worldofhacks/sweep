@@ -4,6 +4,7 @@ import { describe, expect, test, vi } from 'vitest'
 import App from '../../App'
 import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
 import { C1_BASIC_CONTROL_INTENTS, type VoicePlan, type VoicePlanStep } from '../../relay/contract'
+import type { NavigationClient, NavigationPreview } from '../../navigation/client'
 import type { TranscriptClient, TranscriptRequest, VoiceOutcome } from '../../voice/client'
 import type { RecorderFactory } from '../../voice/use-push-to-talk'
 import type { VoiceDependencies } from '../types'
@@ -101,7 +102,11 @@ function outcome(overrides: Partial<VoiceOutcome>): VoiceOutcome {
   }
 }
 
-function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Promise<MediaStream> } = {}) {
+function mount(options: {
+  transcript?: TranscriptClient
+  navigation?: NavigationClient
+  requestAudio?: () => Promise<MediaStream>
+} = {}) {
   let current = T0
   const now = () => current
   let sequence = 0
@@ -126,7 +131,7 @@ function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Pr
       clients={clients}
       intentDependencies={{ now, nextId: () => `speech-intent-${++sequence}` }}
       initialModule="speech"
-      services={{ transcript: options.transcript, voice }}
+      services={{ transcript: options.transcript, navigation: options.navigation, voice }}
     />
   )
   const view = render(element())
@@ -143,6 +148,39 @@ function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Pr
       current += ms
     },
   }
+}
+
+function navigationPreview(intent: { intent_id: string; selection: number[] }): NavigationPreview {
+  return {
+    session,
+    intent_id: intent.intent_id,
+    t: T0,
+    expires_at_ms: T0 + 15_000,
+    plan: {
+      roster_version: 7,
+      selection: intent.selection,
+      navigation: {
+        route: {
+          destination_zone_id: 'lobby',
+          execution_order: intent.selection,
+          routes: intent.selection.map((drone_id) => ({
+            drone: { drone_id },
+            arrival_slot: { slot_id: `lobby-${drone_id}` },
+            waypoints: [{ x_m: 0, y_m: 0, z_m: 1 }, { x_m: 3, y_m: 2, z_m: 1 }],
+          })),
+        },
+      },
+    },
+  }
+}
+
+function enableNavigation(client: FixtureRelayClient) {
+  client.emitServer({
+    ...authoritativeState([1], T0, 99),
+    event_id: 'navigation-enabled',
+    capability_profile: 'c1_basic_control.navigation',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'navigate'],
+  })
 }
 
 const listenButton = () => screen.getByRole('button', { name: /Hold to talk|Listening|Language disabled|Transcribing/ })
@@ -486,6 +524,47 @@ describe('Speech module', () => {
     const tabs = within(screen.getByRole('group', { name: 'Speech panes' }))
     await u.click(tabs.getByRole('button', { name: 'Compiler pipeline' }))
     expect(screen.getByText('plan · relay compiler')).toBeInTheDocument()
+  })
+
+  test('a spoken navigation step freezes a route without changing its bound language draft', async () => {
+    const transcript = new QueuedTranscriptClient()
+    transcript.answer(
+      outcome({
+        transcript: 'Navigate to the lobby.',
+        plan: relayPlan({
+          transcript: 'Navigate to the lobby.',
+          steps: [step(0, 'navigate', [1], { zone_id: 'lobby' })],
+        }),
+      }),
+    )
+    const preview = vi.fn(async (intent) => navigationPreview(intent))
+    const navigation: NavigationClient = { catalog: vi.fn(), preview }
+    const { clients } = mount({ transcript, navigation })
+    await screen.findByText(/Development fixture active/i)
+    act(() => enableNavigation(clients.console))
+
+    await record()
+    await user().click(await screen.findByRole('button', { name: 'Stage step 1: navigate' }))
+    const dock = await screen.findByRole('region', { name: 'Pending confirmation' })
+    expect(preview).toHaveBeenCalledOnce()
+    expect(preview.mock.calls[0][0]).toMatchObject({
+      intent_id: 'voice-0-navigate',
+      source: 'language',
+      name: 'navigate',
+      args: { zone_id: 'lobby' },
+    })
+    expect(dock).toHaveTextContent('Navigate to destination')
+    expect(dock).toHaveTextContent('source language')
+
+    await user().click(within(dock).getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.language.sent).toHaveLength(1))
+    expect(clients.language.sent[0]).toMatchObject({
+      intent_id: 'voice-0-navigate',
+      source: 'language',
+      name: 'navigate',
+      args: { zone_id: 'lobby' },
+      confirm: true,
+    })
   })
 
   test('a relay-compiled step that is refused halts the plan, and an expired plan cannot be staged', async () => {

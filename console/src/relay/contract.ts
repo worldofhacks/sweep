@@ -32,6 +32,8 @@ export type ConsoleIntentName =
   | 'come_home'
   | 'sweep'
   | 'capture_room'
+  | 'navigate'
+  | 'search'
 
 export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'arm',
@@ -50,6 +52,8 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'come_home',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ]
 
 /**
@@ -59,6 +63,7 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
  */
 export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'arm',
+  'disarm',
   'select',
   'takeoff',
   'translate',
@@ -73,6 +78,8 @@ export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Console
   'formation_set',
   'spacing',
   'sweep',
+  'navigate',
+  'search',
 ])
 
 /** The exact profile emitted by the current C1 relay. */
@@ -94,6 +101,17 @@ export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'translate',
 ]
 
+export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
+  ...C1_BASIC_CONTROL_INTENTS,
+  'disarm',
+]
+
+const CONFIGURED_DEPLOYMENT_INTENTS = new Set<ConsoleIntentName>([
+  ...C1_BASIC_CONTROL_INTENTS,
+  'navigate',
+  'search',
+])
+
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
   return SUPPORTED_INTENTS.has(name)
 }
@@ -109,6 +127,8 @@ export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<
   'land_all',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ])
 
 export function requiresConfirmation(name: ConsoleIntentName): boolean {
@@ -135,6 +155,8 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   come_home: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
+  navigate: 'selected',
+  search: 'selected',
 }
 
 export function selectionRule(name: ConsoleIntentName): SelectionRule {
@@ -186,6 +208,13 @@ export interface CaptureRoomArgs {
   capture_id: string
   pattern: CapturePattern
 }
+export interface NavigateArgs {
+  zone_id: string
+}
+export interface SearchArgs {
+  zone_id: string
+  target_class: string
+}
 
 /** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
 export interface IntentArgsByName {
@@ -205,6 +234,8 @@ export interface IntentArgsByName {
   come_home: EmptyArgs
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
+  navigate: NavigateArgs
+  search: SearchArgs
 }
 
 export type IntentArgs = IntentArgsByName[ConsoleIntentName]
@@ -737,11 +768,16 @@ function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled 
   ) {
     return false
   }
-  if (profile !== 'c1_basic_control') return true
-  return (
-    enabled.length === C1_BASIC_CONTROL_INTENTS.length &&
-    C1_BASIC_CONTROL_INTENTS.every((name) => enabled.includes(name))
-  )
+  const exactProfile =
+    profile === 'c1_basic_control'
+      ? C1_BASIC_CONTROL_INTENTS
+      : profile === 'c2_fleet_operations'
+        ? C2_FLEET_OPERATIONS_INTENTS
+        : null
+  if (exactProfile !== null) {
+    return enabled.length === exactProfile.length && exactProfile.every((name) => enabled.includes(name))
+  }
+  return enabled.every((name) => CONFIGURED_DEPLOYMENT_INTENTS.has(name as ConsoleIntentName))
 }
 
 function isNullableDroneId(value: unknown): value is DroneId | null {
@@ -1059,6 +1095,10 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
         args.capture_id.length > 0 &&
         CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
       )
+    case 'navigate':
+      return keys.length === 1 && isBoundedText(args.zone_id, 128)
+    case 'search':
+      return keys.length === 2 && isBoundedText(args.zone_id, 128) && isBoundedText(args.target_class, 128)
     case 'arm':
     case 'disarm':
     case 'estop':

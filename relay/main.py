@@ -18,12 +18,14 @@ from collections.abc import Callable, Mapping, Sequence
 
 import uvicorn
 
+from language.navigation import NavigationGrounding, navigation_from_record
 from language.relay_compiler import RelayTranscriptCompiler
 from language.transport import AnthropicTransport, ModelTransport
 from planner.models import TranslationPolicy
 from relay.app import RelayRuntime
 from relay.autonomy import AutonomyConfig, create_autonomy_app
 from relay.capabilities import CapabilityProfile, IntentName
+from relay.navigation_metadata import navigation_metadata
 from relay.settings import RelaySettings, SettingsError
 from relay.voice import TranscriptionTransport, TranscriptService
 
@@ -60,13 +62,23 @@ def build_transcript_service(
             )
             return TranscriptService(transcription=transcription)
         transport = AnthropicTransport(api_key=api_key)
-    capability_profile = config.planning.effective_capability_profile()
+    capability_profile = config.effective_capability_profile(runtime.settings.capability_profile)
     qualified_voice_intents = _qualified_voice_intents(values, capability_profile)
     if not qualified_voice_intents:
         _LOGGER.warning(
             "no speech/intent pairs are qualified: proposed plans will be refused "
             "capability_unavailable"
         )
+
+    def navigation(_relay_state: Mapping[str, object]) -> NavigationGrounding | None:
+        deployment = config.navigation_deployment
+        if deployment is None:
+            return None
+        metadata = navigation_metadata(deployment.runtime)
+        return navigation_from_record(
+            {**metadata, **capability_profile.state_value()}, capability_profile
+        )
+
     compiler = RelayTranscriptCompiler(
         sessions=runtime.sessions.get,
         transport=transport,
@@ -74,6 +86,7 @@ def build_transcript_service(
             frame=config.planning.translation_frame,
             step_m=config.planning.translation_step_m,
         ),
+        navigation=navigation,
         capability_profile=capability_profile,
         qualified_voice_intents=qualified_voice_intents,
     )

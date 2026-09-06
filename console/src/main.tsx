@@ -40,6 +40,8 @@ async function resolveRuntime() {
       transcriptClient: null,
       // The fixture has no relay, so only a same-origin media endpoint can enable playback.
       mediaConfigurationSource: null,
+      navigationClient: null,
+      searchClient: null,
       catalogClient: new FixtureCatalogClient(fixtureScenario, () => Date.now()),
     }
   }
