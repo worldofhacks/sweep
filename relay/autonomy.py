@@ -22,6 +22,7 @@ the intent operation.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -31,7 +32,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import get_origin, get_type_hints
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Request
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink
@@ -44,11 +45,14 @@ from planner.models import (
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
+    Plan,
+    PreparedExecution,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
     RelaySnapshotEnrichment,
 )
+from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
 from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
 from relay.app import RelayRuntime, create_app
@@ -62,7 +66,7 @@ from relay.control_localization import (
     ControlLocalizationPins,
     ControlLocalizationProjector,
 )
-from relay.intent_v1 import IntentName, IntentV1
+from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 
@@ -76,6 +80,7 @@ HOLD_PREEMPTS = frozenset(
         IntentName.ALTITUDE,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
+        IntentName.NAVIGATE,
     }
 )
 """Operator motion and camera plans a hold cancels; a running safety plan finishes first."""
@@ -116,6 +121,7 @@ class AutonomyConfig:
     safety: SafetyConfig
     sim_camera: SimCameraConfig | None = None
     control_localization_projector: ControlLocalizationProjector | None = None
+    navigation_deployment: NavigationDeployment | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
@@ -123,6 +129,12 @@ class AutonomyConfig:
         values = os.environ if environ is None else environ
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
         localization_raw = values.get("SWEEP_CONTROL_LOCALIZATION_JSON", "")
+        adapter_backend = values.get("SWEEP_ADAPTER_BACKEND", "sim")
+        if adapter_backend not in {"sim", "remote"}:
+            raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
+        navigation = load_navigation_deployment(
+            values, backend="remote" if adapter_backend == "remote" else "synthetic"
+        )
         return cls(
             planning=_config_from_json(
                 PlanningConfig, values.get("SWEEP_PLANNING_JSON", ""), "SWEEP_PLANNING_JSON"
@@ -142,6 +154,7 @@ class AutonomyConfig:
                     localization_raw, "SWEEP_CONTROL_LOCALIZATION_JSON"
                 )
             ),
+            navigation_deployment=navigation,
         )
 
 
@@ -340,6 +353,8 @@ class _Job:
     publications: list[dict[str, object]] = field(default_factory=list)
     cancelled_by: str | None = None
     finished: bool = False
+    prepared: PreparedExecution | None = None
+    refusal_detail: str | None = None
 
     def check(self) -> None:
         if self.cancelled_by is not None:
@@ -432,6 +447,7 @@ class AutonomySession:
         self.planner = DeterministicPlanner(
             composition.config.planning,
             self.capability_profile,
+            navigation=composition.navigation_runtime,
         )
         self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
@@ -442,6 +458,7 @@ class AutonomySession:
         self._estop = _Lane("estop", self._lock)
         self._lanes = (self._normal, self._hold, self._estop)
         self._awaiting: dict[str, _AwaitingExecution] = {}
+        self._navigation_previews: dict[str, tuple[int, PreparedExecution]] = {}
         self._workers = [
             threading.Thread(
                 target=self._run,
@@ -461,6 +478,23 @@ class AutonomySession:
             self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
         runtime = self._composition.runtime_if_bound()
         job = _Job(intent, None if runtime is None else runtime.sessions.get(self.session_id))
+        if intent.name is IntentName.NAVIGATE:
+            now_ms = _state.get("t")
+            with self._lock:
+                preview = self._navigation_previews.pop(intent.intent_id, None)
+            if (
+                not isinstance(now_ms, int)
+                or isinstance(now_ms, bool)
+                or preview is None
+                or preview[0] < now_ms
+                or not self._same_navigation_preview(preview[1].intent, intent)
+            ):
+                job.refusal_detail = "navigation requires a current matching server preview"
+            else:
+                job.prepared = replace(preview[1], intent=intent)
+        elif intent.name in {IntentName.HOLD, IntentName.ESTOP, IntentName.SELECT}:
+            with self._lock:
+                self._navigation_previews.clear()
         try:
             lane = self._route(job)
         except Exception:
@@ -473,6 +507,87 @@ class AutonomySession:
 
     def __call__(self, intent: IntentV1, state: dict[str, object]) -> None:
         self.submit(intent, state)
+
+    def preview_navigation(self, intent: IntentV1, state: Mapping[str, object]) -> Plan | Refusal:
+        if intent.name is not IntentName.NAVIGATE or self._composition.navigation_runtime is None:
+            return Refusal(
+                intent.intent_id,
+                0,
+                None,
+                None,
+                RefusalReason.UNSUPPORTED,
+                "navigation deployment is unavailable",
+            )
+        with self._lock:
+            previous = self._operator_last_seen_ms
+            self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
+            if intent.intent_id in self._navigation_previews:
+                return Refusal(
+                    intent.intent_id,
+                    0,
+                    None,
+                    None,
+                    RefusalReason.INVALID_PLAN,
+                    "preview ID is already in use; create a new request",
+                )
+        snapshot = self.snapshot(state)
+        preview_intent = replace(intent, confirm=True)
+        refusal = self.arbiter.check_intent(preview_intent, snapshot)
+        if refusal is not None:
+            return refusal
+        planned = self.planner.plan(preview_intent, snapshot)
+        if isinstance(planned, Refusal):
+            return planned
+        if planned.navigation is None:
+            return Refusal(
+                intent.intent_id,
+                snapshot.roster_version,
+                None,
+                None,
+                RefusalReason.UNSUPPORTED,
+                "navigation runtime did not produce a route",
+            )
+        refusal = self.arbiter.check_plan(planned, snapshot)
+        if refusal is not None:
+            return refusal
+        prepared = PreparedExecution(intent, planned, snapshot)
+        expires_at_ms = snapshot.now_ms + 15_000
+        with self._lock:
+            self._navigation_previews = {
+                key: value
+                for key, value in self._navigation_previews.items()
+                if value[0] >= snapshot.now_ms
+            }
+            if len(self._navigation_previews) >= 32:
+                self._navigation_previews.pop(next(iter(self._navigation_previews)))
+            self._navigation_previews[intent.intent_id] = (expires_at_ms, prepared)
+        return planned
+
+    @staticmethod
+    def _same_navigation_preview(preview: IntentV1, confirmation: IntentV1) -> bool:
+        return replace(preview, t=confirmation.t, confirm=confirmation.confirm) == confirmation
+
+    def reconcile_membership(self, session: RelaySession) -> tuple[dict[str, object], ...]:
+        if session.session_id == self.session_id:
+            with self._lock:
+                self._navigation_previews.clear()
+        return ()
+
+    def navigation_preview_expiry(self, intent_id: str) -> int | None:
+        with self._lock:
+            preview = self._navigation_previews.get(intent_id)
+            return None if preview is None else preview[0]
+
+    def navigation_catalog(self) -> dict[str, object] | None:
+        runtime = self._composition.navigation_runtime
+        if runtime is None:
+            return None
+        from relay.navigation_metadata import navigation_metadata
+
+        try:
+            return navigation_metadata(runtime)
+        except (OSError, ValueError):
+            return None
 
     def authorize_leave(
         self, drone_id: int, connection_epoch: int, state: dict[str, object]
@@ -638,6 +753,25 @@ class AutonomySession:
         if job.cancelled_by is not None:
             return  # cancelled while queued; the stop recorded its invalidation
 
+        if job.refusal_detail is not None:
+            result = ExecutionResult(
+                intent_id=intent.intent_id,
+                roster_version=session.registry.roster_version,
+                status=LifecycleStatus.REFUSED,
+                refusal=Refusal(
+                    intent_id=intent.intent_id,
+                    roster_version=session.registry.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.INVALID_PLAN,
+                    detail=job.refusal_detail,
+                ),
+            )
+            with self._lock:
+                job.finished = True
+            self._report(runtime, session, job, result)
+            return
+
         def current() -> FleetSnapshot:
             job.check()
             return self.snapshot(
@@ -656,11 +790,16 @@ class AutonomySession:
                 arbiter=self.arbiter,
                 sim_camera_config=self._composition.config.sim_camera,
                 link_wrapper=gate,
+                navigation=self._composition.navigation_runtime,
             )
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
             )
-            result = controller.execute(intent, snapshot, current_snapshot=current)
+            result = (
+                controller.execute(intent, snapshot, current_snapshot=current)
+                if job.prepared is None
+                else controller.dispatch_prepared(job.prepared, current_snapshot=current)
+            )
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -871,7 +1010,15 @@ class AutonomyComposition:
 
     def __init__(self, config: AutonomyConfig) -> None:
         self.config = config
-        self.capability_profile: CapabilityProfile = config.planning.effective_capability_profile()
+        base_profile = config.planning.effective_capability_profile()
+        self.capability_profile = (
+            base_profile
+            if config.navigation_deployment is None
+            else CapabilityProfile(
+                f"{base_profile.name}.navigation",
+                base_profile.enabled_intent_names | {IntentName.NAVIGATE},
+            )
+        )
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -899,6 +1046,11 @@ class AutonomyComposition:
 
     def runtime_if_bound(self) -> RelayRuntime | None:
         return self._runtime_source()
+
+    @property
+    def navigation_runtime(self):
+        deployment = self.config.navigation_deployment
+        return None if deployment is None else deployment.runtime
 
     def intent_sink_factory(self, session: RelaySession) -> IntentSink:
         return self.session(session.session_id)
@@ -946,6 +1098,79 @@ def create_autonomy_app(
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_factory=control_localization_factory,
     )
+
+    @app.get("/session/{session_id}/navigation/catalog")
+    async def navigation_catalog(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        runtime: RelayRuntime = request.app.state.relay_runtime
+        token = (
+            authorization.removeprefix("Bearer ").encode()
+            if authorization and authorization.startswith("Bearer ")
+            else None
+        )
+        expected = runtime.credential_resolver.resolve("console", None)
+        if token is None or expected is None or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=401, detail="console authentication is required")
+        await runtime.activate_session(session_id)
+        catalog = composition.session(session_id).navigation_catalog()
+        if catalog is None:
+            raise HTTPException(status_code=409, detail="navigation catalog is unavailable")
+        return {
+            "v": 1,
+            "t": runtime.clock(),
+            "type": "navigation_catalog",
+            "session": session_id,
+            "catalog": catalog,
+        }
+
+    @app.post("/session/{session_id}/navigation/preview")
+    async def navigation_preview(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        runtime: RelayRuntime = request.app.state.relay_runtime
+        token = (
+            authorization.removeprefix("Bearer ").encode()
+            if authorization and authorization.startswith("Bearer ")
+            else None
+        )
+        expected = runtime.credential_resolver.resolve("console", None)
+        if token is None or expected is None or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=401, detail="console authentication is required")
+        try:
+            payload = await request.json()
+            candidate = payload["intent"] if isinstance(payload, Mapping) else None
+        except (ValueError, KeyError):
+            candidate = None
+        validated = validate_intent(candidate, capability_profile=composition.capability_profile)
+        if not isinstance(validated, AcceptedIntent) or validated.intent.source != "console":
+            raise HTTPException(
+                status_code=422, detail="a configured console navigation intent is required"
+            )
+        session = await runtime.activate_session(session_id)
+        owner = composition.session(session_id)
+        result = owner.preview_navigation(validated.intent, session.current_state())
+        if isinstance(result, Refusal):
+            raise HTTPException(status_code=409, detail=result.detail)
+        expires_at_ms = owner.navigation_preview_expiry(validated.intent.intent_id)
+        catalog = owner.navigation_catalog()
+        if expires_at_ms is None or catalog is None:
+            raise HTTPException(status_code=409, detail="navigation preview is unavailable")
+        return {
+            "v": 1,
+            "t": runtime.clock(),
+            "type": "navigation_preview",
+            "session": session_id,
+            "intent_id": validated.intent.intent_id,
+            "expires_at_ms": expires_at_ms,
+            "plan": result.to_dict(),
+            "rooms": catalog["zones"],
+        }
+
     composition.bind(app)
     return app, composition
 
