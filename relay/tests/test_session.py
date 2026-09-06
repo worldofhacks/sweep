@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -13,11 +14,19 @@ import pytest
 
 import relay.audit as audit_module
 from planner.models import CommandOperation
-from relay.audit import AuditLogError, SessionAuditLog
+from relay.audit import MAX_AUDIT_RECORD_BYTES, AuditLogError, SessionAuditLog
 from relay.auth import Principal
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import LifecycleStatus
-from relay.intent_v1 import IntentV1
+from relay.intent_v1 import (
+    MAX_INTENT_DRONE_ID,
+    MAX_INTENT_DRONE_IDS,
+    MAX_INTENT_IDENTIFIER_CHARS,
+    MAX_INTENT_NAME_CHARS,
+    MAX_INTENT_SESSION_CHARS,
+    MAX_INTENT_SOURCE_CHARS,
+    IntentV1,
+)
 from relay.session import (
     CapabilityBoundIntentSink,
     IntentSink,
@@ -50,6 +59,8 @@ def _new_session(
     tmp_path: Path,
     clock: MutableClock,
     event_ids: EventIds,
+    *,
+    session_id: str = SESSION,
     **kwargs: object,
 ) -> RelaySession:
     sink = kwargs.get("intent_sink")
@@ -57,8 +68,8 @@ def _new_session(
         profile = cast(CapabilityProfile, kwargs.get("capability_profile", C1_CAPABILITY_PROFILE))
         kwargs["intent_sink"] = CapabilityBoundIntentSink(cast(IntentSink, sink), profile)
     return RelaySession(
-        session_id=SESSION,
-        audit_log=SessionAuditLog(tmp_path, SESSION),
+        session_id=session_id,
+        audit_log=SessionAuditLog(tmp_path, session_id),
         limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
         clock=clock,
         event_ids=event_ids,
@@ -189,6 +200,90 @@ def test_accepted_and_refused_intents_are_ordered_in_replay(
     empty_increment = relay_session.replay(after_sequence=4)
     assert empty_increment["events"] == []
     assert empty_increment["last_sequence"] == 4
+
+
+def test_oversized_intent_fields_are_refused_without_poisoning_audit_or_session(
+    relay_session: RelaySession, console_principal: Principal
+) -> None:
+    changes: tuple[dict[str, object], ...] = (
+        {"intent_id": "i" * (MAX_INTENT_IDENTIFIER_CHARS + 1)},
+        {"retry_of": "r" * (MAX_INTENT_IDENTIFIER_CHARS + 1)},
+        {"session": "s" * (MAX_INTENT_SESSION_CHARS + 1)},
+        {"source": "s" * (MAX_INTENT_SOURCE_CHARS + 1)},
+        {"name": "n" * (MAX_INTENT_NAME_CHARS + 1)},
+        {"selection": list(range(1, MAX_INTENT_DRONE_IDS + 2))},
+        {"selection": [MAX_INTENT_DRONE_ID + 1]},
+        {"name": "select", "args": {"ids": list(range(1, MAX_INTENT_DRONE_IDS + 2))}},
+        {"name": "formation_set", "args": {"name": "x" * (1 << 20)}},
+        {
+            "name": "capture_room",
+            "args": {
+                "room_id": "r" * (MAX_INTENT_IDENTIFIER_CHARS + 1),
+                "capture_id": "capture",
+                "pattern": "pano_360",
+            },
+            "confirm": True,
+        },
+    )
+
+    for index, change in enumerate(changes):
+        raw = intent_payload(intent_id=f"invalid-bounded-{index}")
+        raw.update(change)
+        refused = relay_session.process_frame(raw, console_principal)
+        assert refused[0]["reason"] == "invalid_payload"
+        assert len(refused[0]["detail"]) < 128
+        assert relay_session.current_state()["session"] == SESSION
+
+    replay = relay_session.replay()
+    encoded_replay = str(replay)
+    assert "x" * 1_024 not in encoded_replay
+    with sqlite3.connect(relay_session.audit_log.database_path) as database:
+        assert database.execute(
+            "SELECT COUNT(*) FROM operations WHERE status = 'pending'"
+        ).fetchone() == (0,)
+
+    accepted = relay_session.process_intent(
+        intent_payload(intent_id="usable-after-bounds"), console_principal
+    )
+    assert accepted[0]["status"] == "accepted"
+
+
+def test_exact_maximum_intent_identifiers_remain_well_below_the_audit_record_reserve(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    console_principal: Principal,
+) -> None:
+    maximum_session = "🚁" * MAX_INTENT_SESSION_CHARS
+    session = _new_session(
+        tmp_path,
+        clock,
+        event_ids,
+        session_id=maximum_session,
+        intent_sink=CapabilityBoundIntentSink(lambda _intent, _state: None, C1_CAPABILITY_PROFILE),
+    )
+    raw = intent_payload(
+        intent_id="🚁" * MAX_INTENT_IDENTIFIER_CHARS,
+        session=maximum_session,
+    )
+    raw.update(
+        name="capture_room",
+        args={
+            "room_id": "🚁" * MAX_INTENT_IDENTIFIER_CHARS,
+            "capture_id": "🚁" * MAX_INTENT_IDENTIFIER_CHARS,
+            "pattern": "reconstruct_8",
+        },
+        confirm=True,
+    )
+
+    response = session.process_intent(raw, console_principal)
+
+    assert response[0]["status"] == "accepted"
+    encoded_sizes = [
+        len(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()) + 1
+        for record in session.replay()["events"]
+    ]
+    assert max(encoded_sizes) < MAX_AUDIT_RECORD_BYTES // 16
 
 
 def test_replay_reports_durable_sequence_after_append_close_failure(

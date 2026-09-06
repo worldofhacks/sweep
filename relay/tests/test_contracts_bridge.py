@@ -9,6 +9,7 @@ from relay.contracts import (
     MAX_CAPABILITY_LIST_CANONICAL_BYTES,
     MAX_CAPABILITY_LIST_ITEMS,
     MAX_CAPTURE_BUNDLE_MEDIA_ITEMS,
+    MAX_COVERAGE_MISSING_ITEMS,
     MAX_STORAGE_REMAINING_BYTES,
     ContractError,
     DeltaKind,
@@ -32,6 +33,7 @@ from relay.tests.conftest import (
     capture_readiness_payload,
     command_payload,
     media_file_payload,
+    media_record,
     node_status_payload,
 )
 
@@ -284,29 +286,46 @@ def test_capture_bundle_frame_nests_media_records() -> None:
     assert frame.to_event() == raw
 
 
-def test_capture_bundle_bounds_nested_media_records() -> None:
-    file = media_file_payload(event_id="media-template")
-    record = {
-        key: value
-        for key, value in file.items()
-        if key not in {"v", "t", "type", "event_id", "session"}
-    }
+def test_capture_bundle_accepts_the_exact_reconstruct_eight_media_ceiling() -> None:
+    media = [
+        media_record(file_id=f"capture-1-frame-{index}", actual_yaw_deg=index * 45)
+        for index in range(MAX_CAPTURE_BUNDLE_MEDIA_ITEMS)
+    ]
     raw = capture_bundle_payload(
-        event_id="bundle-max-media",
-        media=[
-            {**record, "file_id": f"capture-1-{index}"}
-            for index in range(MAX_CAPTURE_BUNDLE_MEDIA_ITEMS)
-        ],
+        event_id="bundle-reconstruct-8",
+        pattern="reconstruct_8",
+        coverage="incomplete_vertical_coverage",
+        media=media,
     )
 
-    assert len(parse_capture_bundle(raw).media) == MAX_CAPTURE_BUNDLE_MEDIA_ITEMS
+    frame = parse_capture_bundle(raw)
 
-    raw["media"].append({**record, "file_id": "capture-1-over"})  # type: ignore[index]
-    with pytest.raises(
-        ContractError, match=f"at most {MAX_CAPTURE_BUNDLE_MEDIA_ITEMS} entries"
-    ) as error:
-        parse_capture_bundle(raw)
+    assert len(frame.media) == MAX_CAPTURE_BUNDLE_MEDIA_ITEMS
+    assert frame.to_event() == raw
+
+
+def test_capture_bundle_rejects_more_than_the_capture_protocol_media_ceiling() -> None:
+    media = [
+        media_record(file_id=f"capture-1-frame-{index}")
+        for index in range(MAX_CAPTURE_BUNDLE_MEDIA_ITEMS + 1)
+    ]
+
+    with pytest.raises(ContractError, match=f"at most {MAX_CAPTURE_BUNDLE_MEDIA_ITEMS}") as error:
+        parse_capture_bundle(capture_bundle_payload(event_id="bundle-too-many", media=media))
+
     assert error.value.code == "invalid_capture_bundle"
+
+
+def test_capture_bundle_rejects_duplicate_media_identity() -> None:
+    with pytest.raises(ContractError, match="duplicate file_id"):
+        parse_capture_bundle(
+            capture_bundle_payload(
+                event_id="bundle-duplicate-media",
+                media=[media_record(file_id="duplicate")] * 2,
+                status="failed",
+                reason="capture_failed",
+            )
+        )
 
 
 def test_capture_bundle_failure_requires_a_machine_readable_reason() -> None:
@@ -344,6 +363,29 @@ def test_capture_readiness_frame_keeps_guidance_mode_and_delta() -> None:
         coverage_missing=[],
     )
     assert parse_capture_readiness(unassigned).suggested_delta is None
+
+
+def test_capture_readiness_bounds_unique_missing_headings_to_reconstruct_eight() -> None:
+    headings = [index * 45 for index in range(MAX_COVERAGE_MISSING_ITEMS)]
+
+    frame = parse_capture_readiness(
+        capture_readiness_payload(event_id="readiness-max-coverage", coverage_missing=headings)
+    )
+    assert frame.coverage_missing == tuple(float(value) for value in headings)
+
+    with pytest.raises(ContractError, match=f"at most {MAX_COVERAGE_MISSING_ITEMS}"):
+        parse_capture_readiness(
+            capture_readiness_payload(
+                event_id="readiness-too-many-headings",
+                coverage_missing=[index * 40 for index in range(MAX_COVERAGE_MISSING_ITEMS + 1)],
+            )
+        )
+    with pytest.raises(ContractError, match="may not contain duplicates"):
+        parse_capture_readiness(
+            capture_readiness_payload(
+                event_id="readiness-duplicate-heading", coverage_missing=[0.0, -0.0]
+            )
+        )
 
 
 @pytest.mark.parametrize(

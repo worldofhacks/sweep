@@ -59,6 +59,7 @@ from relay.control_localization import (
 )
 from relay.control_localization_contracts import session_identifier
 from relay.intent_v1 import (
+    MAX_INTENT_IDENTIFIER_CHARS,
     REGISTERED_SOURCES,
     AcceptedIntent,
     IntentName,
@@ -2991,7 +2992,13 @@ def _safe_string_field(raw: object, field: str) -> str | None:
     if not isinstance(raw, Mapping):
         return None
     value = raw.get(field)
-    if not isinstance(value, str) or not value or len(value) > 512:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_INTENT_IDENTIFIER_CHARS
+        or value != value.strip()
+        or not value.isprintable()
+    ):
         return None
     return value
 

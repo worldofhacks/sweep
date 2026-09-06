@@ -207,6 +207,7 @@ data class CaptureBundleFrame(
         require(status == CaptureStatus.COMPLETED || reason != null) { "failed or unsupported bundle requires a reason" }
         require(reason == null || Fields.isMachineCode(reason)) { "bundle reason must be snake_case" }
         require(media.size <= MAX_MEDIA_RECORDS) { "capture bundle media is limited to $MAX_MEDIA_RECORDS records" }
+        require(media.map { it.fileId }.toSet().size == media.size) { "media may not contain duplicate file_id values" }
         require(media.all { it.captureId == captureId && it.droneId == droneId && it.connectionEpoch == connectionEpoch }) {
             "media record does not belong to this bundle"
         }
@@ -235,7 +236,7 @@ data class CaptureBundleFrame(
         private const val CODE = "invalid_capture_bundle"
         val PATTERNS = setOf("pano_360", "reconstruct_8")
         val COVERAGES = setOf("full_equirectangular", "incomplete_vertical_coverage")
-        const val MAX_MEDIA_RECORDS = 64
+        const val MAX_MEDIA_RECORDS = 8
         private val FIELDS = setOf(
             "v", "t", "type", "event_id", "session", "room_id", "capture_id", "drone_id", "connection_epoch",
             "pattern", "coverage", "status", "media", "reason", "detail",
@@ -258,6 +259,9 @@ data class CaptureBundleFrame(
             val droneId = Fields.positiveInt32(json["drone_id"], "drone_id", CODE)
             val epoch = Fields.positiveInt32(json["connection_epoch"], "connection_epoch", CODE)
             val media = mediaRaw.items.map { MediaFileRecord.parse(Fields.obj(it, "media", CODE), CODE) }
+            if (media.map { it.fileId }.toSet().size != media.size) {
+                throw ContractError(CODE, "media may not contain duplicate file_id values")
+            }
             if (media.any { it.captureId != captureId || it.droneId != droneId || it.connectionEpoch != epoch }) {
                 throw ContractError(CODE, "media record does not belong to this bundle")
             }

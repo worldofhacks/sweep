@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -16,7 +18,13 @@ from adapters.protocols import (
 from planner.models import Command, CommandOperation, ExecutionResult, Plan, Position
 from relay.auth import Principal, verify_event_signature
 from relay.captures import CaptureLedgerError
-from relay.contracts import MAX_STORAGE_REMAINING_BYTES, LifecycleStatus, parse_command
+from relay.contracts import (
+    MAX_CAPTURE_BUNDLE_MEDIA_ITEMS,
+    MAX_COVERAGE_MISSING_ITEMS,
+    MAX_STORAGE_REMAINING_BYTES,
+    LifecycleStatus,
+    parse_command,
+)
 from relay.intent_v1 import AcceptedIntent, IntentName, validate_intent
 from relay.session import RelaySession
 from relay.state import RegistryError
@@ -460,6 +468,65 @@ def test_a_refused_media_frame_leaves_the_capture_ledger_untouched(
     assert stale[0]["reason"] == "stale_connection_epoch"
     (capture,) = relay_session.captures()
     assert [file["file_id"] for file in capture["files"]] == ["capture-1-pano-360"]
+
+
+def test_oversized_authenticated_capture_bundle_is_refused_before_claim_or_media_mutation(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    record = media_record(file_id="large-frame")
+    oversized_media = [record] * 2_500
+    oversized = capture_bundle_payload(event_id="bundle-unbounded", media=oversized_media)
+    assert len(json.dumps(oversized, separators=(",", ":")).encode()) > 1 << 20
+
+    refused = relay_session.process_frame(oversized, adapter_principal)
+
+    assert refused[0]["reason"] == "invalid_capture_bundle"
+    assert relay_session.media_files(1, "capture-1") == ()
+    assert relay_session.current_state()["drones"][0]["drone_id"] == 1
+    with sqlite3.connect(relay_session.audit_log.database_path) as database:
+        assert database.execute(
+            "SELECT COUNT(*) FROM operations WHERE status = 'pending'"
+        ).fetchone() == (0,)
+    retried = relay_session.process_frame(
+        media_file_payload(event_id="bundle-unbounded"), adapter_principal
+    )
+    assert [event["type"] for event in retried] == ["state"]
+    assert len(relay_session.media_files(1, "capture-1")) == 1
+
+
+def test_oversized_or_duplicate_readiness_coverage_is_refused_without_claiming(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    event_id = "readiness-unbounded"
+    refused = relay_session.process_frame(
+        capture_readiness_payload(
+            event_id=event_id,
+            coverage_missing=list(range(MAX_COVERAGE_MISSING_ITEMS + 1)),
+        ),
+        adapter_principal,
+    )
+
+    assert refused[0]["reason"] == "invalid_capture_readiness"
+    assert relay_session.capture_readiness(1) is None
+    assert (
+        relay_session.process_frame(
+            capture_readiness_payload(
+                event_id=event_id,
+                coverage_missing=list(range(MAX_COVERAGE_MISSING_ITEMS)),
+            ),
+            adapter_principal,
+        )[0]["type"]
+        == "capture_readiness"
+    )
+    duplicate = relay_session.process_frame(
+        capture_readiness_payload(event_id="readiness-duplicate", coverage_missing=[45, 45]),
+        adapter_principal,
+    )
+    assert duplicate[0]["reason"] == "invalid_capture_readiness"
+    assert len(relay_session.capture_readiness(1).coverage_missing) == MAX_COVERAGE_MISSING_ITEMS
+    assert MAX_CAPTURE_BUNDLE_MEDIA_ITEMS == MAX_COVERAGE_MISSING_ITEMS == 8
 
 
 def test_node_frames_require_binding_current_epoch_and_fresh_event_ids(

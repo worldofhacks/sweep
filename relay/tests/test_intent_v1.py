@@ -7,6 +7,13 @@ from relay.capabilities import (
     CapabilityProfile,
 )
 from relay.intent_v1 import (
+    MAX_INTENT_DRONE_ID,
+    MAX_INTENT_DRONE_IDS,
+    MAX_INTENT_IDENTIFIER_CHARS,
+    MAX_INTENT_NAME_CHARS,
+    MAX_INTENT_SESSION_CHARS,
+    MAX_INTENT_SOURCE_CHARS,
+    MAX_INTENT_TIMESTAMP,
     REGISTERED_SOURCES,
     SOURCE_ALLOWED_NAMES,
     AcceptedIntent,
@@ -256,6 +263,185 @@ def test_intent_id_and_retry_of_pass_through(
     assert isinstance(result, AcceptedIntent)
     assert result.intent.intent_id == "01J7FQ9M6A7Z3T2R8C4N5K1P0B"
     assert result.intent.retry_of == "01J7FQ9M6A7Z3T2R8C4N5K1P0A"
+
+
+def test_intent_envelope_accepts_exact_text_integer_and_fleet_boundaries(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(
+        t=MAX_INTENT_TIMESTAMP,
+        intent_id="🚁" * MAX_INTENT_IDENTIFIER_CHARS,
+        retry_of="r" * MAX_INTENT_IDENTIFIER_CHARS,
+        session="🚁" * MAX_INTENT_SESSION_CHARS,
+        args={"ids": list(range(1, MAX_INTENT_DRONE_IDS + 1))},
+        selection=list(range(1, MAX_INTENT_DRONE_IDS + 1)),
+    )
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, AcceptedIntent)
+    assert result.intent.t == MAX_INTENT_TIMESTAMP
+    assert len(result.intent.selection) == MAX_INTENT_DRONE_IDS
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("t", MAX_INTENT_TIMESTAMP + 1),
+        ("intent_id", "i" * (MAX_INTENT_IDENTIFIER_CHARS + 1)),
+        ("retry_of", "r" * (MAX_INTENT_IDENTIFIER_CHARS + 1)),
+        ("session", "s" * (MAX_INTENT_SESSION_CHARS + 1)),
+        ("source", "s" * (MAX_INTENT_SOURCE_CHARS + 1)),
+        ("name", "n" * (MAX_INTENT_NAME_CHARS + 1)),
+        ("selection", list(range(1, MAX_INTENT_DRONE_IDS + 2))),
+        ("selection", [MAX_INTENT_DRONE_ID + 1]),
+    ],
+)
+def test_intent_envelope_rejects_values_above_each_public_bound(
+    console_select_payload: dict[str, object], field: str, value: object
+) -> None:
+    console_select_payload[field] = value
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+def test_source_and_name_exact_text_ceilings_reach_semantic_validation(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload["source"] = "s" * MAX_INTENT_SOURCE_CHARS
+    source_result = validate_intent(console_select_payload)
+    assert isinstance(source_result, RejectedIntent)
+    assert source_result.reason is RejectionReason.UNKNOWN_SOURCE
+
+    console_select_payload["source"] = "console"
+    console_select_payload["name"] = "n" * MAX_INTENT_NAME_CHARS
+    name_result = validate_intent(console_select_payload)
+    assert isinstance(name_result, RejectedIntent)
+    assert name_result.reason is RejectionReason.UNKNOWN_INTENT
+
+
+@pytest.mark.parametrize("value", [" padded", "padded ", "zero\u200bwidth", "line\nbreak"])
+def test_intent_text_fields_require_canonical_printable_values(
+    console_select_payload: dict[str, object], value: str
+) -> None:
+    console_select_payload["intent_id"] = value
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+def test_select_ids_apply_the_same_fleet_and_int32_boundaries(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload["args"] = {"ids": list(range(1, MAX_INTENT_DRONE_IDS + 2))}
+    assert isinstance(validate_intent(console_select_payload), RejectedIntent)
+
+    console_select_payload["args"] = {"ids": [MAX_INTENT_DRONE_ID + 1]}
+    assert isinstance(validate_intent(console_select_payload), RejectedIntent)
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "selection", "confirm", "exact_reason"),
+    [
+        (
+            "formation_set",
+            {"name": "f" * MAX_INTENT_IDENTIFIER_CHARS},
+            [1],
+            False,
+            None,
+        ),
+        (
+            "capture_room",
+            {
+                "room_id": "r" * MAX_INTENT_IDENTIFIER_CHARS,
+                "capture_id": "c" * MAX_INTENT_IDENTIFIER_CHARS,
+                "pattern": "pano_360",
+            },
+            [1],
+            True,
+            None,
+        ),
+        (
+            "survey_area",
+            {"area_id": "a" * MAX_INTENT_IDENTIFIER_CHARS},
+            [1],
+            True,
+            RejectionReason.UNSUPPORTED,
+        ),
+        (
+            "map_area",
+            {"area_id": "a" * MAX_INTENT_IDENTIFIER_CHARS},
+            [1],
+            True,
+            RejectionReason.UNSUPPORTED,
+        ),
+    ],
+)
+def test_intent_argument_identifiers_accept_the_exact_shared_ceiling(
+    console_select_payload: dict[str, object],
+    name: str,
+    args: dict[str, object],
+    selection: list[int],
+    confirm: bool,
+    exact_reason: RejectionReason | None,
+) -> None:
+    console_select_payload.update(name=name, args=args, selection=selection, confirm=confirm)
+
+    result = validate_intent(console_select_payload, capability_profile=C2_CAPABILITY_PROFILE)
+
+    if exact_reason is None:
+        assert isinstance(result, AcceptedIntent)
+    else:
+        assert isinstance(result, RejectedIntent)
+        assert result.reason is exact_reason
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "selection", "confirm"),
+    [
+        ("formation_set", {"name": "f" * (MAX_INTENT_IDENTIFIER_CHARS + 1)}, [1], False),
+        (
+            "capture_room",
+            {
+                "room_id": "r" * (MAX_INTENT_IDENTIFIER_CHARS + 1),
+                "capture_id": "capture",
+                "pattern": "pano_360",
+            },
+            [1],
+            True,
+        ),
+        (
+            "capture_room",
+            {
+                "room_id": "room",
+                "capture_id": "c" * (MAX_INTENT_IDENTIFIER_CHARS + 1),
+                "pattern": "pano_360",
+            },
+            [1],
+            True,
+        ),
+        ("survey_area", {"area_id": "a" * (MAX_INTENT_IDENTIFIER_CHARS + 1)}, [1], True),
+        ("map_area", {"area_id": "a" * (MAX_INTENT_IDENTIFIER_CHARS + 1)}, [1], True),
+    ],
+)
+def test_intent_argument_identifiers_reject_values_above_the_shared_ceiling(
+    console_select_payload: dict[str, object],
+    name: str,
+    args: dict[str, object],
+    selection: list[int],
+    confirm: bool,
+) -> None:
+    console_select_payload.update(name=name, args=args, selection=selection, confirm=confirm)
+
+    result = validate_intent(console_select_payload)
+
+    assert isinstance(result, RejectedIntent)
+    assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
 @pytest.mark.parametrize(

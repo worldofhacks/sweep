@@ -503,6 +503,36 @@ class FramesTest {
     }
 
     @Test
+    fun `capture readiness bounds unique missing coverage at reconstruct eight`() {
+        val headings = List(CaptureReadinessFrame.MAX_COVERAGE_MISSING_ITEMS) { it * 45.0 }
+        val exact = JsonObject(
+            wire("capture_readiness").fields + ("coverage_missing" to Json.value(headings)),
+        )
+        assertEquals(headings, CaptureReadinessFrame.parse(exact).coverageMissing)
+
+        val oversized = List(CaptureReadinessFrame.MAX_COVERAGE_MISSING_ITEMS + 1) { it * 40.0 }
+        assertThrows(ContractError::class.java) {
+            CaptureReadinessFrame.parse(
+                JsonObject(
+                    wire("capture_readiness").fields +
+                        ("coverage_missing" to Json.value(oversized)),
+                ),
+            )
+        }
+        assertThrows(ContractError::class.java) {
+            CaptureReadinessFrame.parse(
+                JsonObject(
+                    wire("capture_readiness").fields +
+                        ("coverage_missing" to Json.value(listOf(0.0, -0.0))),
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CaptureReadinessFrame.parse(exact).copy(coverageMissing = oversized)
+        }
+    }
+
+    @Test
     fun `media file encodes and parses with the pending capture-time status`() {
         val record = MediaFileRecord(
             captureId = "cap-0042",
@@ -539,6 +569,21 @@ class FramesTest {
                         ("checksum_sha256" to Json.value("a".repeat(64))),
                 ),
             )
+        }
+    }
+
+    @Test
+    fun `capture bundle accepts eight unique frames and refuses duplicate or ninth frames`() {
+        val bundle = CaptureBundleFrame.parse(wire("capture_bundle"))
+        val frames = List(8) { bundle.media.single().copy(fileId = "frame-$it") }
+        val exact = bundle.copy(media = frames)
+        assertEquals(exact, CaptureBundleFrame.parse(exact.toEvent()))
+        assertThrows(IllegalArgumentException::class.java) { bundle.copy(media = frames + frames.first()) }
+        assertThrows(IllegalArgumentException::class.java) { bundle.copy(media = listOf(frames.first(), frames.first())) }
+        for (invalid in listOf(frames + frames.first(), listOf(frames.first(), frames.first()))) {
+            assertThrows(ContractError::class.java) {
+                CaptureBundleFrame.parse(JsonObject(exact.toEvent().fields + ("media" to Json.value(invalid.map { it.toJson() }))))
+            }
         }
     }
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -114,9 +114,8 @@ NODE_FRAME_TYPES = frozenset(
 MAX_CAPABILITY_LIST_ITEMS = 64
 MAX_CAPABILITY_ITEM_UTF8_BYTES = 512
 MAX_CAPABILITY_LIST_CANONICAL_BYTES = 8 * 1024
-# A capture bundle is persisted as one audit event and retained by the live
-# capture projection, so it cannot contain more media records than that projection.
-MAX_CAPTURE_BUNDLE_MEDIA_ITEMS = 64
+MAX_CAPTURE_BUNDLE_MEDIA_ITEMS = 8
+MAX_COVERAGE_MISSING_ITEMS = 8
 # Android reports this field as a signed ``Long``. Mirror that exact upper bound
 # before the value reaches retained state or its audit projection.
 MAX_STORAGE_REMAINING_BYTES = (1 << 63) - 1
@@ -999,13 +998,14 @@ def parse_capture_bundle(raw: object) -> CaptureBundleFrame:
         raise ContractError(code, "media must be a list")
     if len(media_raw) > MAX_CAPTURE_BUNDLE_MEDIA_ITEMS:
         raise ContractError(
-            code,
-            f"media may contain at most {MAX_CAPTURE_BUNDLE_MEDIA_ITEMS} entries",
+            code, f"media may contain at most {MAX_CAPTURE_BUNDLE_MEDIA_ITEMS} items"
         )
     media = tuple(
         _media_record(_mapping(item, code, "media entries must be objects"), code)
         for item in media_raw
     )
+    if len({record.file_id for record in media}) != len(media):
+        raise ContractError(code, "media may not contain duplicate file_id values")
     for record in media:
         if (
             record.capture_id != capture_id
@@ -1059,9 +1059,16 @@ def parse_capture_readiness(raw: object) -> CaptureReadinessFrame:
     _exact_fields(value, fields, code)
     _common_envelope(value, expected_type="capture_readiness", code=code)
     coverage_raw = value["coverage_missing"]
-    if isinstance(coverage_raw, str) or not isinstance(coverage_raw, Sequence):
+    if not isinstance(coverage_raw, list):
         raise ContractError(code, "coverage_missing must be a list")
+    if len(coverage_raw) > MAX_COVERAGE_MISSING_ITEMS:
+        raise ContractError(
+            code,
+            f"coverage_missing may contain at most {MAX_COVERAGE_MISSING_ITEMS} items",
+        )
     coverage_missing = tuple(_azimuth(item, "coverage_missing", code) for item in coverage_raw)
+    if len(set(coverage_missing)) != len(coverage_missing):
+        raise ContractError(code, "coverage_missing may not contain duplicates")
     next_heading = value["next_heading_deg"]
     if next_heading is not None:
         next_heading = _azimuth(next_heading, "next_heading_deg", code)

@@ -28,7 +28,7 @@ Exact PR numbers and reviewed heads are listed in `coverage.json`. A symbol grou
 
 The reconciliation corrected strict voice binding and language-preview identity, receipt-clock expiry, console expiry and session races, periodic presence and navigation ordering, capture audit budget, search behavior after pending cancellation and worker failure, Deepgram parser handling, and BVC actual-setpoint metadata, and the #235 attention-state interface and acknowledgement contract.
 
-#224, #225, #228, and #233 are closed without merge. Their audit evidence remains available and closure is not recorded as integration.
+#183, #184, #194, #195, #196, #198, #199, #201, #202, #203, #205, #206, #224, #225, #228, #233 are closed without merge. Their audit evidence remains available and closure is not recorded as a merge.
 
 ## Validation
 
@@ -42,10 +42,12 @@ Each slice ledger contains its focused commands and results. Some focused suites
 
 #234 remains a draft pending measured camera calibration, capture-time alignment, a producer for decoded frames and capture-aligned attitudes, and walked-camera/covered-tag checks. The raw Android exporter preserves diagnostic timing and axis conventions. It cannot establish those measurements by itself.
 
-The integration branch contains the reviewed code from the concurrently closed #224, #225, #228, and #233. Confirm their intended disposition before choosing the final merge scope. No shared branch merge or deployment was performed by this review.
+The integration branch retains reviewed code from the closed PRs listed above. Its final merge scope needs to account for those closures. No shared branch merge or deployment was performed by this review.
 
 ## Final CI reconciliation
 
 The fleet browser CI audit showed a simulated node becoming stale during startup, then recovering between arm acceptance and application. The fake node now coalesces queued periodic telemetry while preserving fresh command and membership telemetry. The browser waits for fresh telemetry from all four ready nodes with a stable roster before arming. A regression test verifies that takeoff completion follows its fresh hovering telemetry even when an older landed sample is queued. The focused Python tests and all 16 fleet browser checks passed; the full combined CI run is pending.
 
 The revised recording helper passed 18 tests using real Docker, FFmpeg, and ffprobe. Its project/container identity locks and active-service refusal protect MediaMTX across separate recording roots. The remaining review fix is published in PR #237.
+
+The final #181 revision `4d0d61e` adds canonical intent bounds and eight-item capture limits. Its independent source review passed 240 Python and 472 console tests. Integration aligns Android capture-bundle construction/parsing with eight unique frame IDs and retains the stricter capture-ownership and C2 capability boundaries. The focused integration Python suite passed 238 tests.

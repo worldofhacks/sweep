@@ -26,7 +26,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "Compatible fixture and C2 behavior retained.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 173,
@@ -73,7 +75,9 @@
         "ControlProvenance.from_mapping/to_dict -> AircraftState -> NavigationRuntime"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 174,
@@ -155,7 +159,9 @@
         "control localization -> approved snapshot -> route preparation"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 175,
@@ -202,7 +208,9 @@
         "deployment JSON -> NavigationDeployment -> NavigationRuntime -> relay composition"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 176,
@@ -246,7 +254,9 @@
         "frozen route -> per-command runtime check -> adapter dispatch/acknowledgement -> hold or completion"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 177,
@@ -270,7 +280,9 @@
         "ProbeAircraft camera facts -> CameraExecutor shutter admission -> CaptureCard/SessionScreen"
       ],
       "review_result": "pass",
-      "evidence_source": "phone_media-coverage.json"
+      "evidence_source": "phone_media-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 179,
@@ -299,7 +311,9 @@
         "NavigationConfig -> FlightController navigation arrival check"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 180,
@@ -319,13 +333,15 @@
         "relay-signed JSON -> NavigationRouteAuthorization.parse/NavigationPose.parse -> verifies -> RelayLink admission"
       ],
       "review_result": "pass",
-      "evidence_source": "phone_media-coverage.json"
+      "evidence_source": "phone_media-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 181,
       "title": "fix(relay): retain telemetry while bounding redundant state audits",
       "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
-      "head": "8b78204e9c0091d6557ecf0709bcb2d6530769cb",
+      "head": "4d0d61e28c689828d75130f0aa7eb35e6f2241b1",
       "head_ref": "fix/relay-audit-volume",
       "slice": "docs_evidence",
       "coverage_kind": "symbol_group",
@@ -338,20 +354,26 @@
         "bounded persisted record cursor and signed SQLite metadata validation",
         "control projection canonical byte preflight",
         "parse_capture_bundle media count bound",
-        "CaptureLedger._commit aggregate canonical projection bound"
+        "CaptureLedger._commit aggregate canonical projection bound",
+        "Intent v1 and console canonical field and selection bounds",
+        "capture readiness eight-heading uniqueness on Python and Kotlin",
+        "Android capture-bundle serializer/parser composed eight-frame uniqueness"
       ],
       "call_chains_checked": [
         "relay mutation -> material state projection -> SessionAuditLog.append_batch -> SQLite digest records -> JSONL mirror",
         "reopen -> database row validation -> mirror comparison/recovery -> replay"
       ],
-      "review_result": "Revised audit metadata and record bounds reviewed; capture media count bound fixed in 8b78204. Aggregate capture projection bound fixed in integration 2139105.",
+      "review_result": "Latest input bounds reviewed independently; 240 focused source tests and 472 source console tests pass. Integration preserves composed capture ownership and C2 capability separation, and aligns Android capture-bundle parsing/construction with the new eight-unique-frame Python contract. Integration focused suite passes 238 tests.",
       "evidence_source": "docs_evidence-coverage.json",
       "original_head": "2a098388ced7a1124bb493288eda7fe00203222e",
       "reviewed_heads": [
         "2a098388ced7a1124bb493288eda7fe00203222e",
         "521bb2916a7374e6c9ec854eaa61d05ed2de3ba8",
-        "8b78204e9c0091d6557ecf0709bcb2d6530769cb"
-      ]
+        "8b78204e9c0091d6557ecf0709bcb2d6530769cb",
+        "4d0d61e28c689828d75130f0aa7eb35e6f2241b1"
+      ],
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 183,
@@ -376,7 +398,9 @@
         "LiveDetectionWorker emits ProcessedFrameEvent and SightingEvent; SearchRuntime.observe_processed_frame and observe_sighting call CoverageLedger; SearchPlanner creates its tasks."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 184,
@@ -400,7 +424,9 @@
         "SearchRuntime.prepare builds SearchRequest and calls SearchPlanner.plan; SearchPreview feeds the runtime ledger and coverage route."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 185,
@@ -420,7 +446,9 @@
         "RelayLink authenticated input -> navigation state -> admitNavigationGoto -> command execution"
       ],
       "review_result": "pass",
-      "evidence_source": "phone_media-coverage.json"
+      "evidence_source": "phone_media-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 186,
@@ -441,7 +469,9 @@
         "FlightExecutor input -> FlightController.updateNavigation -> navigationCheck -> streamSticks -> FlightPort"
       ],
       "review_result": "pass",
-      "evidence_source": "phone_media-coverage.json"
+      "evidence_source": "phone_media-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 187,
@@ -490,7 +520,9 @@
         "expiry/cancellation -> preview refusal"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 188,
@@ -536,7 +568,9 @@
         "configured aliases -> artifact identity -> deployment runtime -> catalog/language resolver"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 190,
@@ -556,7 +590,9 @@
         "BridgeSetupStore import -> BridgeNode setup -> RelayLink pins -> FlightExecutor configuration -> FlightController admission"
       ],
       "review_result": "pass",
-      "evidence_source": "phone_media-coverage.json"
+      "evidence_source": "phone_media-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 193,
@@ -574,7 +610,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "Reworked to preserve the language source and relay-minted ID.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 194,
@@ -592,7 +630,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "Integrated with pre-request deadline and stale-result guards.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 195,
@@ -612,7 +652,9 @@
         "AutonomySession.preview_search calls prepare; prepared mission is later bound to the confirming websocket intent."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 196,
@@ -629,7 +671,9 @@
         "Dispatcher completion observer activates a task; workers then deliver coverage; execute marks unfinished tasks incomplete."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 198,
@@ -650,7 +694,9 @@
         "SearchRuntime.detection_worker supplies accepted frame pose and camera model to FiveFrameLocalizer then stores SearchLocalization."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 199,
@@ -668,7 +714,9 @@
         "Detector candidate and localizer state are serialized by status_payload and exposed by search status and acknowledgement endpoints."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 200,
@@ -687,7 +735,9 @@
         "validate_intent gates HTTP and websocket inputs before AutonomySession.submit and SearchRuntime.prepare."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 201,
@@ -702,7 +752,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "No console diff.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 202,
@@ -721,7 +773,9 @@
         "SEARCH Plan reaches AdapterDispatcher navigation checks, then completion callback updates task state before processed frames are admitted."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 203,
@@ -740,7 +794,9 @@
         "Accepted processed frame caches pose and camera; following sighting enters a per-ID localizer and status includes frame provenance."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 204,
@@ -758,7 +814,9 @@
         "signed telemetry -> live subscriber publication and durable telemetry audit -> reopened session replay"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "docs_evidence-coverage.json"
+      "evidence_source": "docs_evidence-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 205,
@@ -779,7 +837,9 @@
         "AutonomyConfig.from_env loads navigation first, then strict search configuration with matching artifact pin and owner-approved zones."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 206,
@@ -839,7 +899,9 @@
         "spoken alias -> NavigationGrounding.resolve -> canonical zone -> validated navigate intent"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 207,
@@ -872,7 +934,9 @@
         "relay state -> build_grounding_facts -> RelayTranscriptCompiler -> voice plan"
       ],
       "review_result": "confirmed profile mismatch after search integration",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 208,
@@ -891,7 +955,9 @@
         "HTTP preview writes frozen mission; websocket submission checks full fingerprint and TTL; stop/select/membership revoke unstarted missions."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 209,
@@ -910,7 +976,9 @@
         "App lifespan starts composition, AutonomySession starts required workers before route dispatch, worker callbacks enter SearchRuntime, status reports workers."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 210,
@@ -930,7 +998,9 @@
         "Test factories supply deterministic frames, measured pose, and calibrated camera model to the production SearchDetectionFactory."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 211,
@@ -949,7 +1019,9 @@
         "HTTP preview to websocket confirmation to fake-node acknowledgement drives relay resume and status polling."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 212,
@@ -967,7 +1039,9 @@
         "Worker callbacks, status reads and acknowledgement share SearchRuntime state under RLock; capacity removes terminal work only."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 213,
@@ -985,7 +1059,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "Browser proof only.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 214,
@@ -1000,7 +1076,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "No console diff.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 215,
@@ -1015,7 +1093,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "No console diff.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 216,
@@ -1030,7 +1110,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "No console diff.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 217,
@@ -1075,7 +1157,9 @@
         "approved diagnostic pose -> signed route and pose -> session fan-out -> command frame -> Kotlin parser"
       ],
       "review_result": "no confirmed issue; producer imports private test fixtures",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 218,
@@ -1121,7 +1205,9 @@
         "AdapterDispatcher.authorize_navigation -> RelayNodeLink -> signed route/pose delivery -> RemoteBridgeAdapter GOTO with route ID -> Kotlin admission"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 219,
@@ -1152,7 +1238,9 @@
         "CI root checkout -> Python packet producer -> PYTHON_NAVIGATION_PACKET_PATH -> bridge-core test"
       ],
       "review_result": "no confirmed issue",
-      "evidence_source": "navigation-coverage.json"
+      "evidence_source": "navigation-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 220,
@@ -1172,7 +1260,9 @@
         "Configured profile feeds both autonomy intent validation and transcript compiler; enabled SEARCH is present only when navigation and search runtime deploy together."
       ],
       "review_result": "reviewed; see search-report.md",
-      "evidence_source": "search-coverage.json"
+      "evidence_source": "search-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 221,
@@ -1190,7 +1280,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "Browser proof depends on the merged configured search runtime.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 222,
@@ -1208,7 +1300,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "C2-specific disarm is accepted only under the exact C2 advertisement.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 223,
@@ -1226,7 +1320,9 @@
       ],
       "call_chains_checked": [],
       "review_result": "Configured navigation/search must remain profile-gated; reconciled.",
-      "evidence_source": "console_demo-coverage.json"
+      "evidence_source": "console_demo-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 224,
@@ -1244,7 +1340,9 @@
         "implementation/test boundary -> cited PR -> software rehearsal claim -> separately stated physical gate"
       ],
       "review_result": "no confirmed issue; historical totals not rerun",
-      "evidence_source": "docs_evidence-coverage.json"
+      "evidence_source": "docs_evidence-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 225,
@@ -1262,7 +1360,9 @@
         "README command -> justfile recipe or console package script"
       ],
       "review_result": "no confirmed issue; changed local Markdown links resolve",
-      "evidence_source": "docs_evidence-coverage.json"
+      "evidence_source": "docs_evidence-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 226,
@@ -1284,7 +1384,9 @@
         "manifest and raw evidence -> typed samples -> pairing/gap/percentile checks -> integrity checks -> atomic report"
       ],
       "review_result": "no confirmed issue; evaluator test suite passed",
-      "evidence_source": "docs_evidence-coverage.json"
+      "evidence_source": "docs_evidence-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 227,
@@ -1307,7 +1409,9 @@
         "SessionScreen export -> RawEvidenceExport.write -> ZIP provenance manifest"
       ],
       "review_result": "pass; raw timing and raw SDK gimbal axes remain diagnostic",
-      "evidence_source": "phone_media-coverage.json"
+      "evidence_source": "phone_media-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 228,
@@ -1328,7 +1432,9 @@
         "Android JSONL -> SensorRecordAdapter._common/_phone -> record_if_selected -> ControlPublisher.enqueue -> fuser refusal of unverified observations"
       ],
       "review_result": "pass; no ready pose path",
-      "evidence_source": "phone_media-coverage.json"
+      "evidence_source": "phone_media-coverage.json",
+      "github_state_at_handoff": "closed",
+      "merged_at_handoff": null
     },
     {
       "number": 229,
@@ -1356,13 +1462,15 @@
         "19c7132d6d790acf5717e86fd51ad2d98d1638cb",
         "01963c8a696023255748b9eeca01ea0c9a279219"
       ],
-      "review_fix_head": "979e5a44ecfe3941ec286c790cfce491d9d7272e"
+      "review_fix_head": "979e5a44ecfe3941ec286c790cfce491d9d7272e",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null
     },
     {
       "number": 230,
       "title": "Bound transcript uploads with a total body-read deadline",
       "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
-      "head": "115e60259764617f1e2fc7e1935331b4b11eaef1",
+      "head": "224645ffcca2dfcd16bbead4933fa075e6575c20",
       "head_ref": "feat/transcript-body-deadline",
       "slice": "docs_evidence",
       "coverage_kind": "symbol_group",
@@ -1374,8 +1482,11 @@
       "call_chains_checked": [
         "authenticated request -> streamed bounded read -> timeout response or transcript service"
       ],
-      "review_result": "no confirmed issue",
-      "evidence_source": "docs_evidence-coverage.json"
+      "review_result": "no confirmed issue Final delta224645f adds the upload deadline to the environment contract test; reviewed and already integrated.",
+      "evidence_source": "docs_evidence-coverage.json",
+      "github_state_at_handoff": "open",
+      "merged_at_handoff": null,
+      "original_head": "115e60259764617f1e2fc7e1935331b4b11eaef1"
     }
   ],
   "followups_and_pending_work": [
@@ -1552,5 +1663,23 @@
       ],
       "result": "18 focused Python tests and 16 fleet browser checks pass; full combined CI pending"
     }
-  }
+  },
+  "closed_without_merge_at_handoff": [
+    183,
+    184,
+    194,
+    195,
+    196,
+    198,
+    199,
+    201,
+    202,
+    203,
+    205,
+    206,
+    224,
+    225,
+    228,
+    233
+  ]
 }
