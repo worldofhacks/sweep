@@ -705,6 +705,7 @@ def _outcome(console: ConsoleProbe, intent_id: str) -> dict[str, object]:
                 event["type"] in {"acknowledgement", "refusal"}
                 and event.get("intent_id") == intent_id
                 and event.get("source") == LIFECYCLE_SOURCE
+                and event.get("status") in {"completed", "failed", "refused", "invalidated"}
             ):
                 return event
         time.sleep(0.02)
