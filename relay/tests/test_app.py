@@ -244,6 +244,77 @@ def test_control_heartbeat_gate_suppresses_the_node_lease(
     asyncio.run(exercise())
 
 
+def test_control_heartbeat_gate_is_checked_inside_the_session_operation(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+) -> None:
+    class GatedSink:
+        capability_profile = C1_CAPABILITY_PROFILE
+
+        def __init__(self) -> None:
+            self.allowed = True
+
+        def __call__(self, _intent, _state) -> None:
+            return None
+
+        def control_heartbeats_allowed(self) -> bool:
+            return self.allowed
+
+    async def exercise() -> None:
+        gate = GatedSink()
+        runtime = RelayRuntime(
+            app_settings,
+            clock=clock,
+            event_ids=event_ids,
+            intent_sink_factory=lambda _session: gate,
+        )
+        session = runtime.session(SESSION)
+        adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        subscription = await runtime.subscribe(SESSION, adapter)
+        session.process_membership(
+            membership_payload(action="join", event_id="racing-heartbeat-join"), adapter
+        )
+
+        async with runtime._session_operation(SESSION):
+            publication = asyncio.create_task(runtime._publish_control_heartbeats(SESSION, session))
+            await asyncio.sleep(0)
+            gate.allowed = False
+        await publication
+
+        assert subscription.queue.empty()
+
+    asyncio.run(exercise())
+
+
+def test_runtime_shutdown_does_not_treat_cancelled_fanout_work_as_complete(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+) -> None:
+    started = Event()
+    release = Event()
+
+    async def exercise() -> bool:
+        runtime = RelayRuntime(app_settings, clock=clock, event_ids=event_ids)
+
+        async def in_flight_fanout() -> None:
+            await asyncio.to_thread(lambda: (started.set(), release.wait()))
+
+        task = asyncio.create_task(in_flight_fanout())
+        runtime._fanout_session_tasks[SESSION] = task
+        assert await asyncio.to_thread(started.wait, 1)
+        complete = await runtime.stop(deadline=time.monotonic() + 0.05)
+        release.set()
+        await asyncio.sleep(0)
+        return complete
+
+    try:
+        assert asyncio.run(exercise()) is False
+    finally:
+        release.set()
+
+
 def test_first_frame_authentication_precedes_state_and_intent_results(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:

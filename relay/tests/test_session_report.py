@@ -10,7 +10,7 @@ import pytest
 from planner.models import CommandOperation
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.contracts import LifecycleStatus, acknowledgement_event, command_event, refusal_event
-from relay.session_report import report_path, write_session_report
+from relay.session_report import MAX_REPORT_RECORDS, report_path, write_session_report
 from relay.tests.conftest import SESSION, telemetry_payload
 
 
@@ -119,6 +119,7 @@ def test_report_uses_exact_audit_snapshot_with_provenance_and_timing(tmp_path: P
             "connection_epoch": 1,
             "issued_at": 1_030,
             "first_acknowledged_at": 1_040,
+            "ack_timestamp_precedes_issuance": False,
             "terminal_at": 1_060,
             "terminal_status": "completed",
             "terminal_latency_ms": 30,
@@ -161,6 +162,70 @@ def test_report_reads_real_relay_audit(
     assert report["telemetry_summary"]["1"]["samples"] == 1
 
 
+def test_report_accepts_repeated_executing_progress_acknowledgements(tmp_path: Path) -> None:
+    audit = SessionAuditLog(tmp_path, SESSION)
+    command = command_event(
+        t=1_000,
+        event_id="command-event-1",
+        session=SESSION,
+        command_id="command-1",
+        intent_id="intent-1",
+        roster_version=1,
+        drone_id=1,
+        connection_epoch=1,
+        seq=1,
+        issued_at=1_000,
+        ttl_ms=5_000,
+        operation=CommandOperation.HOVER,
+        args={},
+    )
+    acknowledgements = [
+        acknowledgement_event(
+            t=timestamp,
+            event_id=event_id,
+            session=SESSION,
+            intent_id="intent-1",
+            command_id="command-1",
+            status=status,
+            roster_version=1,
+            source="adapter",
+            drone_id=1,
+            connection_epoch=1,
+            detail=detail,
+        )
+        for timestamp, event_id, status, detail in (
+            (1_010, "ack-accepted", LifecycleStatus.ACCEPTED, None),
+            (1_020, "ack-executing-1", LifecycleStatus.EXECUTING, "hovering: 1 second"),
+            (1_030, "ack-executing-2", LifecycleStatus.EXECUTING, "hovering: 2 seconds"),
+            (1_040, "ack-completed", LifecycleStatus.COMPLETED, None),
+        )
+    ]
+    audit.append_batch([command, *acknowledgements])
+
+    output = write_session_report(
+        audit,
+        generated_at_ms=2_000,
+        complete=True,
+        completion_reason="orderly_shutdown",
+    )
+
+    report = json.loads(output.read_text())
+    assert report["timing"]["command_acknowledgements"] == [
+        {
+            "command_id": "command-1",
+            "intent_id": "intent-1",
+            "drone_id": 1,
+            "connection_epoch": 1,
+            "issued_at": 1_000,
+            "first_acknowledged_at": 1_010,
+            "ack_timestamp_precedes_issuance": False,
+            "terminal_at": 1_040,
+            "terminal_status": "completed",
+            "terminal_latency_ms": 40,
+        }
+    ]
+
+
 def test_incomplete_shutdown_is_explicit(tmp_path: Path) -> None:
     audit = SessionAuditLog(tmp_path, SESSION)
     audit.append(_event("presence-1", 1_000))
@@ -173,6 +238,10 @@ def test_incomplete_shutdown_is_explicit(tmp_path: Path) -> None:
     )
 
     assert json.loads(output.read_text())["completion"]["status"] == "incomplete"
+
+
+def test_report_record_bound_covers_the_six_aircraft_acceptance_session() -> None:
+    assert MAX_REPORT_RECORDS > 6 * 10 * 15 * 60
 
 
 def test_report_accepts_presence_evidence_through_the_six_aircraft_sim_ceiling(
@@ -235,16 +304,7 @@ def test_report_rejects_presence_evidence_above_the_simulator_ceiling(tmp_path: 
         )
 
 
-@pytest.mark.parametrize(
-    "mutation,match",
-    [
-        ({"connection_epoch": 2}, "identity does not match"),
-        ({"t": 1_000}, "timestamp precedes"),
-    ],
-)
-def test_report_rejects_mispaired_or_negative_latency_acknowledgements(
-    tmp_path: Path, mutation: dict[str, object], match: str
-) -> None:
+def test_report_rejects_a_mispaired_acknowledgement(tmp_path: Path) -> None:
     audit = SessionAuditLog(tmp_path, SESSION)
     command = command_event(
         t=2_000,
@@ -273,16 +333,51 @@ def test_report_rejects_mispaired_or_negative_latency_acknowledgements(
         drone_id=1,
         connection_epoch=1,
     )
-    acknowledgement.update(mutation)
+    acknowledgement["connection_epoch"] = 2
     audit.append_batch([command, acknowledgement])
 
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ValueError, match="identity does not match"):
         write_session_report(
             audit,
             generated_at_ms=3_000,
             complete=True,
             completion_reason="orderly_shutdown",
         )
+
+
+def test_report_flags_an_accepted_adapter_clock_inversion(
+    relay_session, adapter_principal, clock
+) -> None:
+    from relay.tests.conftest import acknowledgement_payload
+    from relay.tests.test_session_bridge import _issue_hover, _join
+
+    _join(relay_session, adapter_principal)
+    clock.advance(100)
+    command = _issue_hover(relay_session, "clock-inversion")
+    acknowledgement = relay_session.process_acknowledgement(
+        acknowledgement_payload(
+            timestamp=clock() - 5,
+            event_id="clock-inversion-ack",
+            command_id="clock-inversion",
+            status="completed",
+        ),
+        adapter_principal,
+    )
+    assert acknowledgement[0]["status"] == "completed"
+
+    output = write_session_report(
+        relay_session.audit_log,
+        generated_at_ms=clock(),
+        complete=True,
+        completion_reason="orderly_shutdown",
+    )
+    timing = json.loads(output.read_text())["timing"]["command_acknowledgements"][0]
+
+    assert timing["issued_at"] == command["issued_at"]
+    assert timing["first_acknowledged_at"] == clock() - 5
+    assert timing["terminal_at"] == clock() - 5
+    assert timing["ack_timestamp_precedes_issuance"] is True
+    assert timing["terminal_latency_ms"] is None
 
 
 def test_report_rejects_structural_drift_and_duplicate_event_identity(tmp_path: Path) -> None:

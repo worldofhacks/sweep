@@ -242,6 +242,7 @@ class SafetyArbiter:
                 snapshot,
                 aircraft,
                 safe_action=intent.name in _SAFE_WHILE_STOPPED,
+                allow_registered=intent.name is IntentName.ESTOP,
             )
             if membership_refusal is not None:
                 return membership_refusal
@@ -1589,7 +1590,12 @@ class SafetyArbiter:
                 return tuple(
                     drone_id
                     for drone_id, aircraft in sorted(snapshot.aircraft.items())
-                    if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+                    if aircraft.membership
+                    in {
+                        MembershipState.REGISTERED,
+                        MembershipState.READY,
+                        MembershipState.DEGRADED,
+                    }
                     and aircraft.airborne
                 )
             if plan.hold_scope is HoldScope.TARGETED_SAFETY:

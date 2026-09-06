@@ -575,6 +575,47 @@ def test_terminal_acknowledgement_after_timeout_resumes_the_original_plan(
     assert fleet.node_acks(translate_id, 1) == ["accepted", "executing", "completed"]
 
 
+def test_late_ack_can_advance_to_another_executing_command_and_resume_again(
+    relay_server: RelayServer,
+) -> None:
+    delay_s = relay_server.runtime.settings.command_ttl_ms / 1000 + 0.4
+    fleet = _Fleet(
+        relay_server,
+        {
+            1: {"slow_operations": ("goto",), "slow_ack_delay_s": delay_s},
+            2: {"slow_operations": ("goto",), "slow_ack_delay_s": delay_s},
+        },
+    )
+    fleet.start()
+    try:
+        takeoff_id = fleet.airborne()
+        translate_id = fleet.send("translate", selection=[1, 2], args={"dx": 1, "dy": 0})
+        completed = fleet.console.wait_for(
+            "acknowledgement",
+            intent_id=translate_id,
+            source=LIFECYCLE_SOURCE,
+            status="completed",
+        )
+    finally:
+        fleet.stop()
+
+    lifecycle = [
+        event["status"]
+        for event in fleet.console.events
+        if event.get("type") == "acknowledgement"
+        and event.get("intent_id") == translate_id
+        and event.get("source") == LIFECYCLE_SOURCE
+    ]
+    assert completed["status"] == "completed"
+    assert lifecycle == ["executing", "executing", "completed"]
+    for drone_id in (1, 2):
+        assert fleet.commands_for(drone_id) == [
+            ("takeoff", takeoff_id),
+            ("goto", translate_id),
+        ]
+        assert fleet.node_acks(translate_id, drone_id) == ["accepted", "executing", "completed"]
+
+
 def test_node_disconnect_mid_plan_refuses_the_rest_as_stale_roster(
     relay_server: RelayServer,
 ) -> None:

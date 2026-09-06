@@ -574,6 +574,55 @@ def test_estop_latches_with_no_eligible_aircraft_and_performs_no_adapter_io() ->
     assert camera.calls == []
 
 
+def test_estop_reaches_ready_and_registered_aircraft() -> None:
+    snapshot = replace_aircraft(
+        make_snapshot(2, selection=(1,)), 2, membership=MembershipState.REGISTERED
+    )
+    controller, _, _, _, flight, _ = make_stack(snapshot)
+
+    result = controller.execute(make_intent(IntentName.ESTOP, selection=()), snapshot)
+
+    assert result.status is LifecycleStatus.COMPLETED
+    assert len(result.acknowledgements) == 2
+    assert [(call.operation, call.drone_ids) for call in flight.calls] == [
+        (CommandOperation.ESTOP, (1, 2))
+    ]
+
+
+def test_emergency_hold_plan_accepts_a_registered_airborne_target() -> None:
+    snapshot = replace_aircraft(
+        make_snapshot(2, selection=(1,)), 2, membership=MembershipState.REGISTERED
+    )
+    _, planner, arbiter, dispatcher, flight, _ = make_stack(snapshot)
+    plan = planner.emergency_hold_plan(intent_id="registered-hold", snapshot=snapshot)
+
+    assert arbiter.check_plan(plan, snapshot) is None
+    assert all(arbiter.check_command(plan, command, snapshot) is None for command in plan.commands)
+
+    result = dispatcher.dispatch(plan, snapshot)
+
+    assert result.status is LifecycleStatus.COMPLETED
+    assert [(call.operation, call.drone_ids) for call in flight.calls] == [
+        (CommandOperation.HOVER, (1,)),
+        (CommandOperation.HOVER, (2,)),
+    ]
+
+
+def test_position_loss_hold_accepts_a_registered_airborne_target() -> None:
+    snapshot = replace_aircraft(
+        make_snapshot(2, selection=(1,)), 2, membership=MembershipState.REGISTERED
+    )
+    _, planner, arbiter, _, _, _ = make_stack(snapshot)
+
+    plan = planner.fleet_position_loss_plan(
+        intent_id="registered-position-loss", snapshot=snapshot, land=False
+    )
+
+    assert [command.drone_id for command in plan.commands] == [1, 2]
+    assert arbiter.check_plan(plan, snapshot) is None
+    assert all(arbiter.check_command(plan, command, snapshot) is None for command in plan.commands)
+
+
 @pytest.mark.parametrize(
     ("name", "confirm", "expected_operation"),
     [

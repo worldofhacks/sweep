@@ -172,7 +172,10 @@ async def _settle_shutdown_tasks(
     done, pending = await asyncio.wait(tasks, timeout=remaining)
     complete = not pending
     for task in done:
-        if not task.cancelled() and task.exception() is not None:
+        if task.cancelled():
+            if not cancel_first:
+                complete = False
+        elif task.exception() is not None:
             complete = False
     for task in pending:
         task.cancel()
@@ -391,7 +394,7 @@ class RelayRuntime:
             ):
                 complete = False
         fanout = tuple(self._fanout_session_tasks.values())
-        if not await _settle_shutdown_tasks(fanout, deadline=deadline, cancel_first=True):
+        if not await _settle_shutdown_tasks(fanout, deadline=deadline):
             complete = False
         with self._activation_tasks_lock:
             activations = tuple(self._activation_tasks.values())
@@ -787,14 +790,6 @@ class RelayRuntime:
         to the audit log or broadcast to consoles.  The node accepts one only when
         its signature and current session/drone/epoch/roster identity all match.
         """
-        heartbeat_gate = getattr(session.intent_sink, "control_heartbeats_allowed", None)
-        if callable(heartbeat_gate):
-            try:
-                if not heartbeat_gate():
-                    return
-            except Exception:
-                _LOGGER.exception("control heartbeat gate failed closed session=%s", session_id)
-                return
         now = time.monotonic()
         # Default to 1 Hz, but keep at least two lease opportunities inside a
         # shorter configured hold window (the fan-out loop remains the upper rate).
@@ -806,6 +801,14 @@ class RelayRuntime:
         # That keeps the joined identity and the bound socket at one linearization
         # point, so an authenticated replacement cannot inherit the prior lease.
         async with self._session_operation(session_id):
+            heartbeat_gate = getattr(session.intent_sink, "control_heartbeats_allowed", None)
+            if callable(heartbeat_gate):
+                try:
+                    if not heartbeat_gate():
+                        return
+                except Exception:
+                    _LOGGER.exception("control heartbeat gate failed closed session=%s", session_id)
+                    return
             async with self._connection_lock:
                 subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
                 for subscription in subscriptions:

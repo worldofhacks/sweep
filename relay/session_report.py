@@ -15,7 +15,10 @@ from relay.audit import AuditLogError, SessionAuditLog
 from relay.contracts import ContractError, parse_command, parse_telemetry
 from relay.state import MAX_SIMULATED_AIRCRAFT
 
-MAX_REPORT_RECORDS = 50_000
+# Six aircraft at the relay's 10 Hz evidence rate produce 54,000 telemetry
+# records in a 15-minute acceptance run; retain bounded headroom for state,
+# command, refusal, and safety evidence while the byte limits remain authoritative.
+MAX_REPORT_RECORDS = 65_536
 MAX_REPORT_SOURCE_BYTES = 32 * 1024 * 1024
 MAX_REPORT_OUTPUT_BYTES = 32 * 1024 * 1024
 _MAX_JSON_DEPTH = 12
@@ -417,7 +420,9 @@ def _command_timings(
         related = by_command.get(command_id, [])
         terminal: dict[str, object] | None = None
         last_rank = -1
+        last_acknowledged_at: int | None = None
         seen_statuses: set[str] = set()
+        ack_timestamp_precedes_issuance = False
         for sequence, acknowledgement in related:
             _check_deadline(deadline)
             if sequence <= command_sequences[command_id]:
@@ -428,11 +433,18 @@ def _command_timings(
             ):
                 raise ValueError("command acknowledgement identity does not match its command")
             acknowledged_at = int(acknowledgement["t"])
-            if acknowledged_at < issued_at:
-                raise ValueError("command acknowledgement timestamp precedes issuance")
+            if last_acknowledged_at is not None and acknowledged_at < last_acknowledged_at:
+                raise ValueError("command acknowledgement timestamp is out of order")
+            last_acknowledged_at = acknowledged_at
+            ack_timestamp_precedes_issuance |= acknowledged_at < issued_at
             status = str(acknowledgement["status"])
             rank = 0 if status == "accepted" else 1 if status == "executing" else 2
-            if status in seen_statuses or rank < last_rank or terminal is not None:
+            repeated_progress = status == "executing" and status in seen_statuses
+            if (
+                terminal is not None
+                or rank < last_rank
+                or (status in seen_statuses and not repeated_progress)
+            ):
                 raise ValueError("command acknowledgement lifecycle is out of order")
             seen_statuses.add(status)
             last_rank = rank
@@ -440,6 +452,9 @@ def _command_timings(
                 terminal = acknowledgement
         first_at = None if not related else int(related[0][1]["t"])
         terminal_at = None if terminal is None else int(terminal["t"])
+        terminal_latency = (
+            None if terminal_at is None or terminal_at < issued_at else terminal_at - issued_at
+        )
         timings.append(
             {
                 "command_id": command_id,
@@ -448,9 +463,10 @@ def _command_timings(
                 "connection_epoch": command["connection_epoch"],
                 "issued_at": issued_at,
                 "first_acknowledged_at": first_at,
+                "ack_timestamp_precedes_issuance": ack_timestamp_precedes_issuance,
                 "terminal_at": terminal_at,
                 "terminal_status": None if terminal is None else terminal["status"],
-                "terminal_latency_ms": None if terminal_at is None else terminal_at - issued_at,
+                "terminal_latency_ms": terminal_latency,
             }
         )
     return timings

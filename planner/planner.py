@@ -631,7 +631,16 @@ class DeterministicPlanner:
         targets = tuple(
             drone_id
             for drone_id, aircraft in sorted(snapshot.aircraft.items())
-            if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+            if aircraft.membership
+            in (
+                {MembershipState.READY, MembershipState.DEGRADED}
+                if land
+                else {
+                    MembershipState.REGISTERED,
+                    MembershipState.READY,
+                    MembershipState.DEGRADED,
+                }
+            )
             and aircraft.airborne
         )
         operation = CommandOperation.LAND if land else CommandOperation.HOVER

@@ -786,6 +786,11 @@ class AutonomySession:
             with lane.ready:
                 if lane.closed:
                     raise RuntimeError("autonomy session is closed")
+                # The periodic batch owns these already-recorded state and
+                # preemption events. Transfer them before the worker can wake so
+                # ``_execute`` cannot publish the same event IDs a second time.
+                watchdog_publications = tuple(job.publications)
+                job.publications.clear()
                 lane.pending.append(job)
                 lane.ready.notify()
         except BaseException:
@@ -795,7 +800,7 @@ class AutonomySession:
             *([] if retired_event is None else [retired_event]),
             action_event,
             accepted,
-            *job.publications,
+            *watchdog_publications,
         ]
 
     def _defer_watchdog_retry(self, job: _Job, now_monotonic_ms: int) -> None:
@@ -1213,6 +1218,20 @@ class AutonomySession:
 
     def commit_resume(self, token: _ResumeToken, result: ExecutionResult) -> RelayExecution | None:
         """Commit a still-owned late result and retain ownership if another command waits."""
+        if not self._owns_resume(token):
+            return None
+        # ``snapshot`` reads presence state under ``self._lock``. Capture it before
+        # entering the commit critical section so a multi-command plan whose next
+        # command is still executing cannot recursively acquire this non-reentrant
+        # lock. Ownership is revalidated below before the snapshot is installed.
+        resumed_snapshot = (
+            self.snapshot(
+                token.owner.session.current_state(),
+                capture_readiness=token.owner.session.capture_readiness,
+            )
+            if result.status is LifecycleStatus.EXECUTING
+            else None
+        )
         with self._lock:
             if (
                 self._awaiting.get(token.intent_id) is not token.owner
@@ -1222,10 +1241,8 @@ class AutonomySession:
             owner = token.owner
             owner.pending = result
             if result.status is LifecycleStatus.EXECUTING:
-                owner.snapshot = self.snapshot(
-                    owner.session.current_state(),
-                    capture_readiness=owner.session.capture_readiness,
-                )
+                assert resumed_snapshot is not None
+                owner.snapshot = resumed_snapshot
             else:
                 self._awaiting.pop(token.intent_id, None)
                 owner.job.finished = True

@@ -854,6 +854,71 @@ def test_operator_presence_watchdog_uses_receipt_time_and_confirms_one_hold(
     ]
 
 
+def test_presence_watchdog_fans_each_estop_publication_out_once(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    async def exercise() -> tuple[list[dict[str, object]], str]:
+        monotonic_clock = MutableClock(10_000)
+        config = replace(
+            _config(),
+            safety=replace(safety_config(), operator_timeout_ms=3_000),
+            presence_watchdog=PresenceWatchdogConfig(action="estop"),
+        )
+        composition = AutonomyComposition(config, monotonic_clock=monotonic_clock)
+        runtime = RelayRuntime(
+            _settings(tmp_path),
+            clock=clock,
+            monotonic_clock=monotonic_clock,
+            event_ids=event_ids,
+            intent_sink_factory=composition.intent_sink_factory,
+            capability_profile=composition.capability_profile,
+        )
+        composition.bind(runtime)
+        runtime.loop = asyncio.get_running_loop()
+        session = runtime.session(SESSION)
+        adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+        console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+        subscription = await runtime.subscribe(SESSION, console)
+        session.process_membership(membership_payload(action="join", event_id="join-1"), adapter)
+        session.process_telemetry(
+            telemetry_payload(event_id="telemetry-1", state="hovering"), adapter
+        )
+        session.process_membership(
+            membership_payload(action="readiness", event_id="ready-1"), adapter
+        )
+        session.process_frame(
+            {"v": 1, "type": "operator_presence", "activity": "interaction"}, console
+        )
+        monotonic_clock.advance(3_000)
+
+        try:
+            initial = await runtime.process_and_publish(
+                SESSION, lambda: runtime.periodic_events(session)
+            )
+            latched = next(
+                event
+                for event in initial
+                if event["type"] == "state" and event.get("estop") is True
+            )
+            seen: list[dict[str, object]] = []
+            while not any(
+                event.get("type") == "safety_action" and event.get("status") == "confirmed"
+                for event in seen
+            ):
+                delivery = await asyncio.wait_for(subscription.queue.get(), timeout=2)
+                seen.append(delivery.event)
+            return seen, str(latched["event_id"])
+        finally:
+            await runtime.stop(deadline=time.monotonic() + 2)
+            composition.close()
+
+    events, latched_event_id = asyncio.run(exercise())
+    delivered_ids = [str(event["event_id"]) for event in events]
+
+    assert delivered_ids.count(latched_event_id) == 1
+    assert len(delivered_ids) == len(set(delivered_ids))
+
+
 def test_presence_safety_audit_supports_the_six_aircraft_sim_ceiling(
     relay_session: RelaySession,
 ) -> None:
