@@ -99,6 +99,8 @@ _MOTION_DETAIL: Final = {
     DeviceClass.AIRCRAFT: "an airborne aircraft",
     DeviceClass.GROUND_VEHICLE: "an undocked ground vehicle",
 }
+_GROUND_FLOOR_Z_M: Final = 0.0
+"""The only height a ground vehicle may be commanded to; the planner plans the same value."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,7 +236,7 @@ class SafetyArbiter:
                 intent,
                 snapshot,
                 RefusalReason.INVALID_SELECTION,
-                "intent has no eligible aircraft targets",
+                "intent has no eligible device targets",
             )
 
         for drone_id in target_ids:
@@ -2069,12 +2071,19 @@ class SafetyArbiter:
         return None
 
     def _within_geofence(self, aircraft: AircraftState, target: Position) -> bool:
-        """Contain every device in x and y; only an aircraft is contained in z."""
+        """Contain every device in x and y, and in z by the bound its own class has.
+
+        An aircraft is contained by the geofence's z range. A ground vehicle drives on
+        the floor plane, so its target must be on that plane: the arbiter re-derives the
+        one z fact it can decide for a wheeled device rather than trusting the planner
+        to have planned it, and the geofence's z range does not apply to it.
+        """
         geofence = self.config.geofence
         if aircraft.device_class is DeviceClass.GROUND_VEHICLE:
             return (
                 geofence.min_x <= target.x <= geofence.max_x
                 and geofence.min_y <= target.y <= geofence.max_y
+                and target.z == _GROUND_FLOOR_Z_M
             )
         return geofence.contains(target)
 

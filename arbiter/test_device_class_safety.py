@@ -154,27 +154,37 @@ def test_a_ground_vehicle_accepts_only_its_four_operations(
         )
 
 
-def test_the_ceiling_bounds_an_aircraft_and_not_a_ground_vehicle() -> None:
+def test_the_ceiling_bounds_an_aircraft_and_the_floor_plane_bounds_a_ground_vehicle() -> None:
+    """The ceiling is an aircraft gate; a robot's z bound is the floor, on either side of it."""
     snapshot = make_mixed_snapshot(ground_ids=(GROUND_ID,))
-    above_ceiling = safety_config().ceiling_m + 0.5
+    ceiling = safety_config().ceiling_m
 
-    aircraft = _goto(snapshot, 1, x=0.0, y=0.0, z=above_ceiling, speed=0.5)
-    ground = _goto(snapshot, GROUND_ID, x=0.0, y=6.0, z=above_ceiling)
+    aircraft = _goto(snapshot, 1, x=0.0, y=0.0, z=ceiling + 0.5, speed=0.5)
+    under_the_ceiling = _goto(snapshot, 1, x=0.0, y=0.0, z=ceiling - 0.1, speed=0.5)
+    ground_above = _goto(snapshot, GROUND_ID, x=0.0, y=6.0, z=ceiling + 0.5)
+    ground_under = _goto(snapshot, GROUND_ID, x=0.0, y=6.0, z=ceiling - 0.1)
+    on_the_floor = _goto(snapshot, GROUND_ID, x=0.0, y=6.0, z=0.0)
 
     assert aircraft is not None and aircraft.reason is RefusalReason.CEILING
-    assert ground is None, "a ground vehicle drives on the floor; z does not bound it"
+    assert under_the_ceiling is None
+    assert ground_above is not None and ground_above.reason is RefusalReason.GEOFENCE
+    assert ground_under is not None and ground_under.reason is RefusalReason.GEOFENCE
+    assert on_the_floor is None
 
 
-def test_the_geofence_bounds_a_ground_vehicle_in_x_and_y_only() -> None:
+def test_the_geofence_bounds_a_ground_vehicle_in_x_and_y_and_pins_it_to_the_floor() -> None:
+    """The geofence's z range is an aircraft bound; a ground vehicle's z bound is the floor."""
     snapshot = make_mixed_snapshot(aircraft_ids=(), ground_ids=(GROUND_ID,))
     geofence = safety_config().geofence
 
     outside = _goto(snapshot, GROUND_ID, x=geofence.max_x + 1.0, y=6.0, z=0.0)
     below = _goto(snapshot, GROUND_ID, x=0.0, y=6.0, z=geofence.min_z - 1.0)
+    above = _goto(snapshot, GROUND_ID, x=0.0, y=6.0, z=0.5)
     inside = _goto(snapshot, GROUND_ID, x=1.0, y=6.0, z=0.0)
 
     assert outside is not None and outside.reason is RefusalReason.GEOFENCE
-    assert below is None, "the z bound is an aircraft bound"
+    assert below is not None and below.reason is RefusalReason.GEOFENCE
+    assert above is not None and above.reason is RefusalReason.GEOFENCE
     assert inside is None
 
 

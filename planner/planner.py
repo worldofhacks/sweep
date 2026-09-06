@@ -70,6 +70,11 @@ GROUND_VEHICLE_OPERATIONS = frozenset(
 )
 """The adapter operations a ground node accepts; this issue adds no new operation."""
 _GROUND_FLOOR_Z_M = 0.0
+_DEVICE_NOUN = {
+    DeviceClass.AIRCRAFT: "aircraft",
+    DeviceClass.GROUND_VEHICLE: "ground vehicle",
+}
+"""The noun a refusal detail uses for one device, so an operator reads its own class."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,11 +313,12 @@ class DeterministicPlanner:
                 else:
                     heading = snapshot.aircraft[drone_id].heading_deg
                     if heading is None:
+                        noun = _DEVICE_NOUN[snapshot.aircraft[drone_id].device_class]
                         return _refusal(
                             intent,
                             snapshot,
                             RefusalReason.INVALID_STATE,
-                            f"aircraft {drone_id} has no current heading",
+                            f"{noun} {drone_id} has no current heading",
                             drone_id,
                         )
                     angle = radians(heading)
@@ -518,7 +524,7 @@ class DeterministicPlanner:
                         intent,
                         snapshot,
                         RefusalReason.HOME_POSE_MISSING,
-                        f"aircraft {drone_id} has no home pose",
+                        f"{_DEVICE_NOUN[aircraft.device_class]} {drone_id} has no home pose",
                         drone_id,
                     )
                 builder.add(

@@ -47,8 +47,10 @@ RC-N1 and safety operator remain the independent pause, RTH, landing, and takeov
 path.
 
 Device classes change which gates apply, never whether one is checked. The geofence
-bounds every device in x and y; only an aircraft is bounded in z, and the ceiling does
-not apply to a ground vehicle on the floor plane. Spacing is checked within a class:
+bounds every device in x and y; an aircraft is bounded in z by the geofence and the
+ceiling, while a ground vehicle's z bound is the floor plane itself, so a wheeled
+target at any other height is refused `geofence` rather than left unchecked. Spacing
+is checked within a class:
 aircraft against aircraft, ground vehicle against ground vehicle, because clearance
 between the two is a vertical question this issue does not answer. The gates that ask
 whether a device is airborne read `mobile` for a ground vehicle, so `hold`, `goto`,
@@ -59,6 +61,12 @@ vehicle accepts only `goto`, `rotate_to`, `hover`, and `estop`; every other oper
 is refused `unsupported_for_device_class`, as are the aircraft-only intents targeted at
 one. Battery, link, telemetry freshness, position quality, operator, authority, and
 membership gates are unchanged and apply to both classes.
+
+Precedence is deliberate: the class gate runs before the confirmation gate and before
+the latched-stop gate, so `land` aimed at a robot reports `unsupported_for_device_class`
+rather than `confirmation_required` or `estop_active`. The class of a device is the one
+fact an operator cannot change by confirming the intent or clearing the stop, so it is
+the reason worth reporting first. Every one of those paths refuses either way.
 
 Rule: no model in the safety path. Target: every safety rule has a test that tries to
 break it.
