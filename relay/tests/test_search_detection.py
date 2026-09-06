@@ -210,6 +210,50 @@ def test_detection_factory_stops_a_search_when_a_required_source_is_missing() ->
     ]
 
 
+def test_detection_factory_reports_a_worker_failure_without_status_polling() -> None:
+    class FailingStream(_Frames):
+        def read(self, _timeout: float):
+            raise RuntimeError("camera disconnected")
+
+    search = _search()
+    intent = make_intent(
+        IntentName.SEARCH,
+        selection=(1,),
+        args={"zone_id": "atrium", "target_class": "backpack"},
+        confirm=True,
+        intent_id="late-detection-failure",
+    )
+    assert isinstance(search.prepare(intent, _snapshot()), SearchMissionPreview)
+    source = DetectionSourceConfig(
+        1,
+        "camera-1",
+        "rtsp://camera.example/drone1",
+        Path("model.onnx"),
+        "a" * 64,
+        _camera(),
+    )
+    observed: list[str] = []
+    factory = SearchDetectionFactory(
+        SearchDetectionConfig({1: source}),
+        search,
+        stream_factory=lambda _url: FailingStream(),
+        detector_factory=lambda _source: _Detector(),
+    )
+    factory.start()
+    try:
+        assert factory.start_mission(intent.intent_id, SimpleNamespace(), observed.append)
+        deadline = time.monotonic() + 1
+        while not observed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert observed == ["detection_worker_poll_failed"]
+        assert factory.status(intent.intent_id) == [
+            {"drone_id": 1, "state": "failed", "failure_reason": "poll_failed"}
+        ]
+    finally:
+        factory.finish_mission(intent.intent_id)
+        factory.close()
+
+
 def test_detection_factory_follows_the_composed_app_lifespan(tmp_path) -> None:
     search = _search()
     source = DetectionSourceConfig(

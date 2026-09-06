@@ -282,6 +282,7 @@ class RelaySettings:
             state_membership_history=_positive_integer(
                 values.get("SWEEP_STATE_MEMBERSHIP_HISTORY", "8"),
                 "SWEEP_STATE_MEMBERSHIP_HISTORY",
+            ),
             detection_model_path=_path(values.get("SWEEP_DETECTION_MODEL_PATH")),
             detection_recordings=_detection_recordings(
                 values.get("SWEEP_DETECTION_RECORDINGS_JSON", "{}")

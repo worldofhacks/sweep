@@ -1317,7 +1317,7 @@ def create_app(
         try:
             _validate_session_id(session_id)
             payload = await asyncio.wait_for(
-                _bounded_request_body(request, MAX_DETECTION_REQUEST_BYTES),
+                _bounded_request_body(request, maximum_bytes=MAX_DETECTION_REQUEST_BYTES),
                 timeout=_DETECTION_REQUEST_TIMEOUT_SECONDS,
             )
             body = json.loads(payload.decode())

@@ -1027,7 +1027,13 @@ class AutonomySession:
             elif intent.name is IntentName.SEARCH and self._composition.search_runtime is not None:
                 search = self._composition.search_runtime
                 if factory := self._composition.detection_factory:
-                    if not factory.start_mission(intent.intent_id, session):
+                    if not factory.start_mission(
+                        intent.intent_id,
+                        session,
+                        on_failure=lambda reason: self._fail_search_detection(
+                            intent.intent_id, session, reason
+                        ),
+                    ):
                         search.hold(intent.intent_id, "detection_worker_start_failed")
                         result = ExecutionResult(
                             intent_id=intent.intent_id,
@@ -1241,6 +1247,49 @@ class AutonomySession:
                 return []
             if result.status in _TERMINAL and self.navigation_control is not None:
                 self.navigation_control.invalidate(result.intent_id)
+            return events
+
+        self._publish(runtime, operation)
+
+    def _fail_search_detection(self, intent_id: str, session: RelaySession, reason: str) -> None:
+        runtime = self._composition.runtime_if_bound()
+        search = self._composition.search_runtime
+        if runtime is None or search is None:
+            return
+        with self._lock:
+            owner = self._awaiting.get(intent_id)
+            if owner is None or owner.session is not session or owner.job.cancelled_by is not None:
+                return
+            result = ExecutionResult(
+                intent_id=intent_id,
+                roster_version=owner.snapshot.roster_version,
+                status=LifecycleStatus.FAILED,
+                plan=owner.pending.plan,
+                refusal=Refusal(
+                    intent_id=intent_id,
+                    roster_version=owner.snapshot.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.ADAPTER_FAILURE,
+                    detail=reason,
+                    status=LifecycleStatus.FAILED,
+                ),
+            )
+
+        def operation() -> list[dict[str, object]]:
+            with self._lock:
+                current = self._awaiting.get(intent_id)
+                if current is not owner or owner.job.cancelled_by is not None:
+                    return []
+                events = apply_result(session, owner.job.intent, result)
+                owner.job.cancelled_by = reason
+                owner.job.finished = True
+                self._awaiting.pop(intent_id, None)
+            search.complete_execution(intent_id, result)
+            if self.navigation_control is not None:
+                self.navigation_control.invalidate(intent_id)
+            if factory := self._composition.detection_factory:
+                factory.finish_mission(intent_id)
             return events
 
         self._publish(runtime, operation)

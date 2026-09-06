@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock, Thread, current_thread
 from types import MappingProxyType
 from typing import Protocol
 
@@ -112,6 +112,7 @@ CameraForFrame = Callable[[ProcessedFrameEvent], tuple[int, SearchCameraModel] |
 CameraProviderFactory = Callable[
     [RelaySession, DetectionSourceConfig, CoverageTask], CameraForFrame
 ]
+MissionFailureHandler = Callable[[str], None]
 
 
 class SearchDetectionFactory:
@@ -144,6 +145,7 @@ class SearchDetectionFactory:
         self._closed = False
         self._workers: dict[tuple[str, int], tuple[_Stream, LiveDetectionWorker]] = {}
         self._failures: dict[tuple[str, int], str] = {}
+        self._monitors: dict[str, tuple[Event, Thread]] = {}
 
     def start(self) -> None:
         with self._lock:
@@ -151,7 +153,12 @@ class SearchDetectionFactory:
                 raise RuntimeError("search detection factory is closed")
             self._started = True
 
-    def start_mission(self, intent_id: str, session: RelaySession) -> bool:
+    def start_mission(
+        self,
+        intent_id: str,
+        session: RelaySession,
+        on_failure: MissionFailureHandler | None = None,
+    ) -> bool:
         with self._lock:
             if not self._started or self._closed:
                 return False
@@ -224,7 +231,11 @@ class SearchDetectionFactory:
                 self._record_failure(intent_id, drone_id, "factory_closed")
                 self.finish_mission(intent_id)
                 return False
-        return len(started) == len(drone_ids)
+        if len(started) != len(drone_ids):
+            return False
+        if on_failure is not None:
+            self._start_monitor(intent_id, on_failure)
+        return True
 
     def status(self, intent_id: str) -> list[dict[str, object]]:
         with self._lock:
@@ -251,11 +262,16 @@ class SearchDetectionFactory:
 
     def finish_mission(self, intent_id: str) -> None:
         with self._lock:
+            monitor = self._monitors.pop(intent_id, None)
+            if monitor is not None:
+                monitor[0].set()
             workers = [
                 (key, worker) for key, worker in self._workers.items() if key[0] == intent_id
             ]
             for key, _ in workers:
                 self._workers.pop(key, None)
+        if monitor is not None and monitor[1] is not current_thread():
+            monitor[1].join(0.2)
         for key, (stream, worker) in workers:
             worker.close()
             stream.close()
@@ -268,11 +284,48 @@ class SearchDetectionFactory:
             if self._closed:
                 return
             self._closed = True
+            monitors = tuple(self._monitors.values())
+            self._monitors.clear()
+            for stop, _ in monitors:
+                stop.set()
             workers = tuple(self._workers.values())
             self._workers.clear()
+        for _, monitor in monitors:
+            if monitor is not current_thread():
+                monitor.join(0.2)
         for stream, worker in workers:
             worker.close()
             stream.close()
+
+    def _start_monitor(self, intent_id: str, on_failure: MissionFailureHandler) -> None:
+        stop = Event()
+        monitor = Thread(
+            target=self._watch_mission,
+            args=(intent_id, stop, on_failure),
+            name=f"search-detection-{intent_id}",
+            daemon=True,
+        )
+        with self._lock:
+            if self._closed or intent_id in self._monitors:
+                return
+            self._monitors[intent_id] = (stop, monitor)
+        monitor.start()
+
+    def _watch_mission(
+        self, intent_id: str, stop: Event, on_failure: MissionFailureHandler
+    ) -> None:
+        while not stop.wait(0.02):
+            with self._lock:
+                workers = tuple(
+                    (drone_id, worker)
+                    for (worker_intent_id, drone_id), (_, worker) in self._workers.items()
+                    if worker_intent_id == intent_id
+                )
+            for drone_id, worker in workers:
+                if (reason := worker.failure_reason) is not None:
+                    self._record_failure(intent_id, drone_id, reason)
+                    on_failure(f"detection_worker_{reason}")
+                    return
 
     def _pose_provider(
         self, session: RelaySession, drone_id: int, connection_epoch: int, floor_id: str
