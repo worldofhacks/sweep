@@ -1,5 +1,12 @@
 # Mixed aircraft and ground fleet integration
 
+**Delivery status: preserved integration branch, not shipped or installed.**
+PR #255 was closed while the issue tracker was being aligned around the shared
+observation contract and approved-map dependency chain. The original contract below
+records the handoff design; it is not evidence that this entire implementation is an
+accepted production architecture. See [delivery priorities](delivery-priorities.md)
+for the compatibility decisions that must be resolved before focused changes land.
+
 This work implements the owner's September 6, 2026 mixed-fleet request, using the
 [preserved contract](contract-spec.md) and [MVP plan F.2](../mvp-plan.md). The current
 [issue #239](https://github.com/worldofhacks/sweep/issues/239) describes a narrower,
