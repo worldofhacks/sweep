@@ -74,15 +74,6 @@ def _command(
     return intent_id, _outcome(websocket, intent_id)
 
 
-def _commands(demo: FleetDemo, intent_id: str) -> list[dict[str, object]]:
-    return [
-        record["event"]
-        for record in demo.runtime.replay(demo.config.session)["events"]
-        if record["event"].get("type") == "command"
-        and record["event"].get("intent_id") == intent_id
-    ]
-
-
 def test_four_node_demo_dispatches_selection_and_fleet_stops_over_signed_wire(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -91,6 +82,7 @@ def test_four_node_demo_dispatches_selection_and_fleet_stops_over_signed_wire(
 
     monkeypatch.setattr(RelaySettings, "from_env", unexpected_environment)
     monkeypatch.setattr(AutonomyConfig, "from_env", unexpected_environment)
+    completed: list[tuple[str, list[int]]] = []
     with FleetDemo(DemoConfig(log_dir=tmp_path)) as demo:
         assert set(demo.drones()) == {1, 2, 3, 4}
         assert {drone["telemetry"]["x"] for drone in demo.drones().values()} == {0, 2, 4, 6}
@@ -115,17 +107,27 @@ def test_four_node_demo_dispatches_selection_and_fleet_stops_over_signed_wire(
                     demo, websocket, name, selection, args=args, confirm=confirm
                 )
                 assert outcome["status"] == "completed", outcome
-                issued = _commands(demo, intent_id)
-                assert [command["drone_id"] for command in issued] == expected_ids
-                assert all(command["connection_epoch"] == 1 for command in issued)
-                assert all("signature" not in command for command in issued)
+                completed.append((intent_id, expected_ids))
         port = demo.port
         thread = demo._thread
         assert demo.token not in json.dumps(demo.status())
     assert thread is not None and not thread.is_alive()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         assert probe.connect_ex(("127.0.0.1", port)) != 0
-    assert list(tmp_path.glob("*.jsonl")), "the evidence log should survive demo shutdown"
+    logs = list(tmp_path.glob("*.jsonl"))
+    assert len(logs) == 1, "the evidence log should survive demo shutdown"
+    # Verify retained evidence after shutdown: replay validates the whole audit
+    # under its write lock and must not compete with live telemetry in this test.
+    events = [json.loads(line)["event"] for line in logs[0].read_text().splitlines()]
+    for intent_id, expected_ids in completed:
+        issued = [
+            event
+            for event in events
+            if event.get("type") == "command" and event.get("intent_id") == intent_id
+        ]
+        assert [command["drone_id"] for command in issued] == expected_ids
+        assert all(command["connection_epoch"] == 1 for command in issued)
+        assert all("signature" not in command for command in issued)
 
 
 def test_demo_bootstrap_and_loss_rejoin_are_isolated_and_authenticated(tmp_path: Path) -> None:
