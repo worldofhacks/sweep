@@ -108,6 +108,7 @@ class _Mission:
     candidates: dict[str, tuple[SearchCandidateEvent, SearchLocalization | None]] | None = None
     acknowledged_findings: set[str] | None = None
     candidate_frames: dict[str, SightingEvent] | None = None
+    intent_fingerprint: tuple[object, ...] = ()
 
 
 class SearchRuntime:
@@ -174,6 +175,7 @@ class SearchRuntime:
             candidates={},
             candidate_frames={},
             acknowledged_findings=set(),
+            intent_fingerprint=self._intent_fingerprint(intent),
         )
         return preview
 
@@ -184,6 +186,13 @@ class SearchRuntime:
 
     def has_mission(self, intent_id: str) -> bool:
         return intent_id in self._missions
+
+    def accepts_intent(self, intent: IntentV1) -> bool:
+        mission = self._missions.get(intent.intent_id)
+        return (
+            mission is not None
+            and mission.intent_fingerprint == self._intent_fingerprint(intent)
+        )
 
     def execute(
         self,
@@ -593,4 +602,16 @@ class SearchRuntime:
     def _refusal(intent_id: str, snapshot: FleetSnapshot, detail: str) -> Refusal:
         return Refusal(
             intent_id, snapshot.roster_version, None, None, RefusalReason.INVALID_PLAN, detail
+        )
+
+    @staticmethod
+    def _intent_fingerprint(intent: IntentV1) -> tuple[object, ...]:
+        return (
+            intent.session,
+            intent.source,
+            intent.name,
+            intent.confirm,
+            tuple(sorted(intent.selection)),
+            intent.args.get("zone_id"),
+            intent.args.get("target_class"),
         )

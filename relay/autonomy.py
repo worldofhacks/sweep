@@ -67,10 +67,7 @@ from relay.control_localization import (
     ControlLocalizationProjector,
 )
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
-<<<<<<< HEAD
 from relay.search_deployment import load_search_runtime
-=======
->>>>>>> e9f8723 (feat(relay): bind configured search previews)
 from relay.search_runtime import SearchRuntime
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
@@ -485,8 +482,8 @@ class AutonomySession:
         """``IntentSink``: record operator activity and route the intent without blocking."""
         if intent.name is IntentName.SEARCH:
             search = self._composition.search_runtime
-            if search is None or not search.has_mission(intent.intent_id):
-                _LOGGER.warning("search intent %s has no frozen preview", intent.intent_id)
+            if search is None or not search.accepts_intent(intent):
+                _LOGGER.warning("search intent %s has no matching frozen preview", intent.intent_id)
                 return
         with self._lock:
             previous = self._operator_last_seen_ms
@@ -819,7 +816,7 @@ class AutonomySession:
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
             )
-if intent.name is IntentName.SEARCH and self._composition.search_runtime is not None:
+            if intent.name is IntentName.SEARCH and self._composition.search_runtime is not None:
                 result = self._composition.search_runtime.execute(
                     intent.intent_id, dispatcher, snapshot, current_snapshot=current
                 )
