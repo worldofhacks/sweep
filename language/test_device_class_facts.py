@@ -139,6 +139,23 @@ def test_a_device_without_a_class_is_grounded_as_an_aircraft() -> None:
     assert facts.drones[0]["flight_state"] == "hovering"
 
 
+def test_a_mixed_sessions_facts_survive_the_persisted_record_round_trip() -> None:
+    """A confirmed plan is rehydrated from its record, which carries the state and no class.
+
+    The two vocabularies are disjoint, so the persisted state names the class it came
+    from and the record keeps its exact fields.
+    """
+    facts = _facts(_mixed_relay_state())
+
+    record = facts.record_dict()
+    restored = type(facts).from_record(record)
+
+    assert restored == facts
+    assert restored.state_digest == facts.state_digest
+    assert set(record["drones"][0]) == set(record["drones"][1]), "the record shape is unchanged"
+    assert "device_class" not in record["drones"][1]
+
+
 def test_a_mixed_session_reaches_the_model_instead_of_refusing_as_stale_state() -> None:
     """A ground vehicle in the roster must not refuse every transcript in the session.
 

@@ -298,6 +298,7 @@ class GroundingFacts:
                     "drone_id": drone["drone_id"],
                     "membership": drone["membership"],
                     "selectable": drone["selectable"],
+                    "device_class": _class_of_telemetry_state(drone["flight_state"]),
                     "flight_state": drone["flight_state"],
                     "camera_patterns": drone["camera_patterns"],
                     "adapter_capabilities": ["flight"] if drone["flight_available"] else [],
@@ -1353,6 +1354,18 @@ def _telemetry_time(value: object) -> int | None:
     if not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp < 0:
         raise ValueError("drone telemetry requires a non-negative timestamp")
     return timestamp
+
+
+def _class_of_telemetry_state(flight_state: object) -> str:
+    """Name the class a persisted telemetry state came from.
+
+    A grounding record carries the state a device reported, not its class, and the two
+    class vocabularies are disjoint, so the state names the class. An unreported state
+    rehydrates as an aircraft and is validated as one, exactly as it was built.
+    """
+    if isinstance(flight_state, str) and flight_state in _DRIVE_STATES:
+        return DeviceClass.GROUND_VEHICLE.value
+    return DeviceClass.AIRCRAFT.value
 
 
 def _model_drone(drone: Mapping[str, object]) -> dict[str, object]:
