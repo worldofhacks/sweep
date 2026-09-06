@@ -226,6 +226,7 @@ function pairFields(pair: GesturePair): { gesture: string; action: string } {
 }
 
 function describeAction(pair: GesturePair): string {
+  if (pair.action.kind === 'draft' && pair.action.name === 'body_pulse') return `draft:body_pulse:${pair.action.direction}`
   return pair.action.kind === 'draft' ? `draft:${pair.action.name}` : pair.action.kind
 }
 

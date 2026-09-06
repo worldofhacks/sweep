@@ -114,6 +114,7 @@ class HoldScope(StrEnum):
 class CommandOperation(StrEnum):
     TAKEOFF = "takeoff"
     GOTO = "goto"
+    BODY_PULSE = "body_pulse"
     ROTATE_TO = "rotate_to"
     HOVER = "hover"
     LAND = "land"
@@ -258,6 +259,7 @@ class AircraftState:
     heading_deg: float | None = None
     active_task_id: str | None = None
     position_loss_since_ms: int | None = None
+    capabilities: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if (
@@ -311,6 +313,10 @@ class AircraftState:
             not isinstance(self.active_task_id, str) or not self.active_task_id
         ):
             raise ValueError("active_task_id must be null or a non-empty string")
+        if not isinstance(self.capabilities, frozenset) or any(
+            not isinstance(item, str) or not item for item in self.capabilities
+        ):
+            raise ValueError("capabilities must be an immutable set of nonempty strings")
         if self.position_loss_since_ms is not None and not _is_nonnegative_int(
             self.position_loss_since_ms
         ):
@@ -357,6 +363,7 @@ class AircraftState:
             storage_remaining_bytes=_nonnegative_int(raw, "storage_remaining_bytes"),
             camera_ready=_boolean(raw, "camera_ready"),
             heading_deg=_optional_heading(raw.get("heading_deg")),
+            capabilities=frozenset(raw.get("capabilities", ())),
             active_task_id=_optional_string(raw.get("active_task_id")),
             position_loss_since_ms=_optional_nonnegative_int(raw.get("position_loss_since_ms")),
         )
@@ -381,6 +388,7 @@ class AircraftState:
             "storage_remaining_bytes": self.storage_remaining_bytes,
             "camera_ready": self.camera_ready,
             "heading_deg": self.heading_deg,
+            "capabilities": sorted(self.capabilities),
             "active_task_id": self.active_task_id,
             "position_loss_since_ms": self.position_loss_since_ms,
         }
@@ -576,6 +584,7 @@ class FleetSnapshot:
                     physical_rc_available=safety.physical_rc_available,
                     storage_remaining_bytes=safety.storage_remaining_bytes,
                     camera_ready=safety.camera_ready,
+                    capabilities=frozenset(item.get("adapter_capabilities", ())),
                     heading_deg=_optional_heading(
                         item.get("heading_deg")
                         if item.get("heading_deg") is not None

@@ -73,6 +73,7 @@ HOLD_PREEMPTS = frozenset(
     {
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.BODY_PULSE,
         IntentName.ALTITUDE,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,

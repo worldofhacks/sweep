@@ -2,6 +2,7 @@ import type { IntentV1 } from '../relay/contract'
 import { formatDroneId, type PlanPreview } from './state'
 
 const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
+  arm: 'Arm session',
   capture_room: 'Capture room',
   takeoff: 'Takeoff',
   land: 'Land',
@@ -11,12 +12,23 @@ const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
 
 /** Plan-card title from the design; other intents show their name. */
 export function planTitle(intent: IntentV1): string {
+  if (intent.name === 'body_pulse' && 'forward_mm_s' in intent.args) {
+    return `${intent.args.forward_mm_s > 0 ? 'Forward' : 'Backward'} ${intent.args.duration_ms / 1000} seconds`
+  }
   return PLAN_TITLES[intent.name] ?? intent.name
 }
 
 /** Ordered plain-language steps from the design's planSteps. */
 export function planSteps(intent: IntentV1): string[] {
   const ids = intent.selection.map(formatDroneId).join(', ')
+  if (intent.name === 'arm') return ['Enable commands for this session. This does not start any aircraft motors.', 'Takeoff is a separate selected-aircraft command and requires another confirmation.']
+  if (intent.name === 'body_pulse' && 'forward_mm_s' in intent.args) {
+    return [
+      `Send only to ${ids}, using each aircraft’s body frame.`,
+      `Move ${intent.args.forward_mm_s > 0 ? 'forward' : 'backward'} at ${Math.abs(intent.args.forward_mm_s)} mm/s for ${intent.args.duration_ms} ms.`,
+      'The aircraft adapter ends the pulse locally and commands zero velocity. The duration is not a distance guarantee.',
+    ]
+  }
   if (intent.name === 'capture_room' && 'pattern' in intent.args) {
     const args = intent.args
     return [

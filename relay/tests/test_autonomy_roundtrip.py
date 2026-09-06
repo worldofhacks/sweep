@@ -722,3 +722,54 @@ def _wait_until(predicate: Callable[[], bool], *, what: str) -> None:
 
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+@pytest.mark.parametrize("stop", ["hold", "estop"])
+def test_stop_preempts_body_pulse_and_delayed_callback_cannot_resume_motion(
+    relay_server: RelayServer,
+    stop: str,
+) -> None:
+    fleet = _Fleet(
+        relay_server,
+        {
+            1: {"slow_operations": ("body_pulse",), "slow_ack_delay_s": STALL_S},
+            2: {},
+        },
+    )
+    fleet.start()
+    try:
+        takeoff_id = fleet.airborne()
+        pulse_id = fleet.send(
+            "body_pulse",
+            selection=[1, 2],
+            confirm=True,
+            args={"forward_mm_s": 250, "duration_ms": 500},
+        )
+        fleet.console.wait_for(
+            "acknowledgement", intent_id=pulse_id, source="adapter", drone_id=1, status="executing"
+        )
+        stop_id, stopped = fleet.run(stop, selection=[] if stop == "estop" else [1, 2])
+        pulse = _outcome(fleet.console, pulse_id)
+        # Wait for the deliberately delayed command callback, not just the stop ACK.
+        fleet.console.wait_for(
+            "acknowledgement",
+            intent_id=pulse_id,
+            source="adapter",
+            drone_id=1,
+            status="invalidated",
+        )
+        assert fleet.telemetry(1, "y") == 0.0
+        assert stopped["status"] == "completed", stopped
+        assert (pulse["status"], pulse["reason"]) == (
+            "invalidated",
+            PREEMPTED_BY_ESTOP if stop == "estop" else PREEMPTED_BY_HOLD,
+        )
+        operation = "estop" if stop == "estop" else "hover"
+        assert fleet.commands_for(1) == [
+            ("takeoff", takeoff_id),
+            ("body_pulse", pulse_id),
+            (operation, stop_id),
+        ]
+        assert fleet.commands_for(2) == [("takeoff", takeoff_id), (operation, stop_id)]
+    finally:
+        fleet.stop()

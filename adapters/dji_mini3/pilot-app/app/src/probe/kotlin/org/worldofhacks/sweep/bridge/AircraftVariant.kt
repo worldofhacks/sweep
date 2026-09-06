@@ -15,7 +15,7 @@ import org.worldofhacks.sweep.bridge.session.AircraftSession
  */
 object AircraftVariant {
     /** Camera patterns are claimed only once the Phase G probe proves them on this hardware. */
-    val capabilities: List<String> = listOf("flight")
+    val capabilities: List<String> = listOf("flight", "body_pulse_v1")
 
     fun installSdk(application: Application) {
         Helper.install(application)

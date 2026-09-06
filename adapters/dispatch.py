@@ -1149,6 +1149,13 @@ class AdapterDispatcher:
                 float(command.parameters["speed"]),
             )
             return self.validate_acknowledgement(command, raw, provider())
+        if operation is CommandOperation.BODY_PULSE:
+            raw = self.flight.body_pulse(
+                command.drone_id,
+                command.parameters["forward_mm_s"],
+                command.parameters["duration_ms"],
+            )
+            return self.validate_acknowledgement(command, raw, provider())
         if operation is CommandOperation.ROTATE_TO:
             raw = self.flight.rotate_to(
                 command.drone_id,

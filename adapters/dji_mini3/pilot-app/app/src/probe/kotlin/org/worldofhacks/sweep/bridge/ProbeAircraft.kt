@@ -229,7 +229,7 @@ internal class ProbeAircraft(
                 report.executing("capabilities frame sent by the link")
                 report.completed("probed camera capabilities reported")
             }
-            is CommandArgs.Takeoff, is CommandArgs.Goto, is CommandArgs.RotateTo, CommandArgs.Hover, CommandArgs.Land, CommandArgs.Estop ->
+            is CommandArgs.Takeoff, is CommandArgs.Goto, is CommandArgs.BodyPulse, is CommandArgs.RotateTo, CommandArgs.Hover, CommandArgs.Land, CommandArgs.Estop ->
                 report.failed("control_loop_unavailable", "flight commands are routed to the Virtual Stick loop; this executor never drives motion")
             else -> report.failed("unsupported", "the camera and media path lands with Phase G")
         }

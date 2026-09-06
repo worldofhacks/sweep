@@ -149,6 +149,7 @@ def command_args() -> dict[str, dict[str, object]]:
     return {
         "takeoff": {"z_mm": 1200},
         "goto": {"x_mm": 1000, "y_mm": 2500, "z_mm": 1200, "speed_mm_s": 500},
+        "body_pulse": {"forward_mm_s": 250, "duration_ms": 500},
         "rotate_to": {"yaw_mdeg": 90000, "speed_mdeg_s": 30000},
         "hover": {},
         "land": {},

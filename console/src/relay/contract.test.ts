@@ -42,6 +42,34 @@ function aircraft(overrides: Record<string, unknown> = {}) {
 }
 
 describe('M1.1 wire compatibility', () => {
+  test('accepts bounded confirmed body pulses and refuses malformed or unconfirmed wire envelopes', () => {
+    const pulse = { v: 1, t, type: 'intent', intent_id: 'bounded-pulse', retry_of: null, source: 'webcam', session,
+      name: 'body_pulse', args: { forward_mm_s: 250, duration_ms: 500 }, selection: [1, 2], mode: 'indoor', confirm: true }
+    expect(isConsoleIntentV1(pulse)).toBe(true)
+    expect(isConsoleIntentV1({ ...pulse, args: { forward_mm_s: -250, duration_ms: 100 } })).toBe(true)
+    for (const args of [
+      { forward_mm_s: 0, duration_ms: 500 }, { forward_mm_s: 251, duration_ms: 500 },
+      { forward_mm_s: -251, duration_ms: 500 }, { forward_mm_s: 250, duration_ms: 501 },
+      { forward_mm_s: 250, duration_ms: 99 }, { forward_mm_s: 0.25, duration_ms: 500 },
+      { forward_mm_s: true, duration_ms: 500 }, { forward_mm_s: 250, duration_ms: '500' },
+      { forward_mm_s: 250, duration_ms: 500, dx: 1 },
+    ]) expect(isConsoleIntentV1({ ...pulse, args })).toBe(false)
+    expect(isConsoleIntentV1({ ...pulse, confirm: false })).toBe(false)
+    expect(isConsoleIntentV1({ ...pulse, selection: [] })).toBe(false)
+    expect(isConsoleIntentV1({ ...pulse, name: 'arm', args: {}, selection: [], confirm: false })).toBe(false)
+  })
+
+  test('reads both the original C1 profile and C1 with optional body_pulse support', () => {
+    const state = { v: 1, t, type: 'state', event_id: 'pulse-profile', session,
+      roster_version: 1, armed: false, estop: false, selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null, drones: [aircraft({ adapter_capabilities: ['flight', 'body_pulse_v1'] })] }
+    expect(parseRelayServerEvent(state)).not.toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse'] })).not.toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: ['body_pulse'] })).toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse', 'unknown'] })).toBeNull()
+  })
+
   test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
     const event = parseRelayServerEvent({
       v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,

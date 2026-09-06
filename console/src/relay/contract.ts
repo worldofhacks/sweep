@@ -35,6 +35,7 @@ export type ConsoleIntentName =
   | 'land_all'
   | 'hold'
   | 'translate'
+  | 'body_pulse'
   | 'altitude'
   | 'formation_next'
   | 'formation_set'
@@ -53,6 +54,7 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'land_all',
   'hold',
   'translate',
+  'body_pulse',
   'altitude',
   'formation_next',
   'formation_set',
@@ -72,6 +74,7 @@ export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Console
   'select',
   'takeoff',
   'translate',
+  'body_pulse',
   'hold',
   'come_home',
   'land',
@@ -85,7 +88,7 @@ export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Console
   'sweep',
 ])
 
-/** The exact profile emitted by the current C1 relay. */
+/** Original C1 names; current relays may additionally advertise body_pulse. */
 export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'arm',
   'altitude',
@@ -110,10 +113,11 @@ export function isSupportedIntent(name: ConsoleIntentName): boolean {
 
 /**
  * Console policy from the design brief: these intents never leave the console
- * without the operator confirming the exact envelope. The relay itself only
- * enforces confirmation for capture_room.
+ * without the operator confirming the exact envelope. The relay additionally
+ * requires every webcam flight action, including session enable, to be confirmed.
  */
 export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  'body_pulse',
   'takeoff',
   'land',
   'land_all',
@@ -138,6 +142,7 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   land_all: 'all',
   hold: 'selected',
   translate: 'selected',
+  body_pulse: 'selected',
   altitude: 'selected',
   formation_next: 'selected',
   formation_set: 'selected',
@@ -181,6 +186,12 @@ export interface TranslateArgs {
 export interface DeltaArgs {
   delta: number
 }
+export interface BodyPulseArgs {
+  /** Signed speed in the aircraft body frame: positive forward, negative backward. */
+  forward_mm_s: number
+  /** Adapter-enforced duration, 100–500 ms. */
+  duration_ms: number
+}
 export interface FormationSetArgs {
   name: FormationName
 }
@@ -208,6 +219,7 @@ export interface IntentArgsByName {
   land_all: EmptyArgs
   hold: EmptyArgs
   translate: TranslateArgs
+  body_pulse: BodyPulseArgs
   altitude: DeltaArgs
   formation_next: EmptyArgs
   formation_set: FormationSetArgs
@@ -404,6 +416,62 @@ export interface RelayTelemetryEvent {
   pos_quality: number
 }
 
+/** Public, signature-free node events normalized by relay/contracts.py. */
+interface RelayNodeEventEnvelope {
+  v: 1
+  t: number
+  event_id: string
+  session: string
+  drone_id: DroneId
+  connection_epoch: number
+}
+
+export interface RelayCapabilitiesEvent extends RelayNodeEventEnvelope {
+  type: 'capabilities'
+  native_panorama_modes: string[]
+  photo_capture: boolean
+  gimbal_pitch_min_deg: number
+  gimbal_pitch_max_deg: number
+  horizontal_fov_deg: number
+  storage_remaining_bytes: number
+  media_retrieval: boolean
+  aircraft_model: string
+  aircraft_firmware: string
+  rc_firmware: string
+  phone_model: string
+  android_version: string
+  sdk_version: string
+  measured_hfov_deg: number | null
+}
+
+export interface RelayNodeStatusEvent extends RelayNodeEventEnvelope {
+  type: 'node_status'
+  virtual_stick_enabled: boolean
+  control_authority: boolean
+  authority_change_reason: string | null
+  watchdog_state: 'nominal' | 'hold' | 'failsafe'
+  video_publish_state: 'stopped' | 'connecting' | 'publishing' | 'failed'
+  phone_battery_percent: number
+  phone_thermal_state: 'none' | 'light' | 'moderate' | 'severe' | 'critical' | 'emergency' | 'shutdown'
+}
+
+export interface RelayCaptureReadinessEvent extends RelayNodeEventEnvelope {
+  type: 'capture_readiness'
+  room_id: string | null
+  capture_id: string | null
+  guidance_mode: 'visual_advisory' | 'registered_metric'
+  pose_source: string
+  pose_ok: boolean
+  clearance_ok: boolean
+  camera_ok: boolean
+  storage_ok: boolean
+  motion_ok: boolean
+  image_quality_ok: boolean
+  coverage_missing: number[]
+  next_heading_deg: number | null
+  suggested_delta: { kind: 'yaw' | 'gimbal'; degrees: number } | null
+}
+
 export interface RelaySafetyActionEvent {
   v: 1
   t: number
@@ -426,6 +494,9 @@ export type RelayServerEvent =
   | RelayStateEvent
   | RelaySafetyActionEvent
   | RelayTelemetryEvent
+  | RelayCapabilitiesEvent
+  | RelayNodeStatusEvent
+  | RelayCaptureReadinessEvent
 
 export interface RelayAuthFrame {
   v: 1
@@ -774,7 +845,7 @@ function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled 
   }
   if (profile !== 'c1_basic_control') return true
   return (
-    enabled.length === C1_BASIC_CONTROL_INTENTS.length &&
+    enabled.every((name) => name === 'body_pulse' || C1_BASIC_CONTROL_INTENTS.includes(name as ConsoleIntentName)) &&
     C1_BASIC_CONTROL_INTENTS.every((name) => enabled.includes(name))
   )
 }
@@ -852,9 +923,82 @@ function hasBaseEvent(value: Record<string, unknown>): boolean {
   )
 }
 
+const PUBLIC_NODE_ENVELOPE_FIELDS = ['v', 't', 'type', 'event_id', 'session', 'drone_id', 'connection_epoch']
+
+function hasPublicNodeEnvelope(value: Record<string, unknown>, fields: readonly string[]): boolean {
+  return hasExactFields(value, [...PUBLIC_NODE_ENVELOPE_FIELDS, ...fields]) &&
+    Number.isSafeInteger(value.t) && Number(value.t) >= 0 &&
+    Number.isSafeInteger(value.drone_id) && Number(value.drone_id) > 0 &&
+    Number.isSafeInteger(value.connection_epoch) && Number(value.connection_epoch) > 0 &&
+    isBoundedNodeText(value.event_id) && isBoundedNodeText(value.session)
+}
+
+function isBoundedNodeText(value: unknown): value is string {
+  return typeof value === 'string' && Array.from(value).length > 0 && Array.from(value).length <= 512
+}
+
+function isCanonicalNodeText(value: unknown): value is string {
+  return isCanonicalIntentText(value, 512) && new TextEncoder().encode(value).length <= 512
+}
+
+function isNullableNodeText(value: unknown): value is string | null {
+  return value === null || isBoundedNodeText(value)
+}
+
+function isAzimuth(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0 && value < 360
+}
+
+function isPublicCapabilitiesEvent(value: Record<string, unknown>): boolean {
+  const texts = ['aircraft_model', 'aircraft_firmware', 'rc_firmware', 'phone_model', 'android_version', 'sdk_version']
+  const modes = value.native_panorama_modes
+  return hasPublicNodeEnvelope(value, [
+    'native_panorama_modes', 'photo_capture', 'gimbal_pitch_min_deg', 'gimbal_pitch_max_deg',
+    'horizontal_fov_deg', 'storage_remaining_bytes', 'media_retrieval', ...texts, 'measured_hfov_deg',
+  ]) && Array.isArray(modes) && modes.length <= 64 && modes.every(isCanonicalNodeText) &&
+    new Set(modes).size === modes.length && new TextEncoder().encode(JSON.stringify(modes)).length <= 8192 &&
+    typeof value.photo_capture === 'boolean' && typeof value.media_retrieval === 'boolean' &&
+    isFiniteNumber(value.gimbal_pitch_min_deg) && isFiniteNumber(value.gimbal_pitch_max_deg) &&
+    value.gimbal_pitch_min_deg < value.gimbal_pitch_max_deg &&
+    isFiniteNumber(value.horizontal_fov_deg) && value.horizontal_fov_deg > 0 && value.horizontal_fov_deg <= 360 &&
+    Number.isSafeInteger(value.storage_remaining_bytes) && Number(value.storage_remaining_bytes) >= 0 &&
+    texts.every((field) => isCanonicalNodeText(value[field])) &&
+    (value.measured_hfov_deg === null || (isFiniteNumber(value.measured_hfov_deg) && value.measured_hfov_deg > 0 && value.measured_hfov_deg < 180))
+}
+
+function isPublicNodeStatusEvent(value: Record<string, unknown>): boolean {
+  return hasPublicNodeEnvelope(value, ['virtual_stick_enabled', 'control_authority', 'authority_change_reason',
+    'watchdog_state', 'video_publish_state', 'phone_battery_percent', 'phone_thermal_state']) &&
+    typeof value.virtual_stick_enabled === 'boolean' && typeof value.control_authority === 'boolean' &&
+    (value.authority_change_reason === null || (isBoundedNodeText(value.authority_change_reason) && /^[a-z0-9_]+$/.test(value.authority_change_reason))) &&
+    (value.watchdog_state === 'nominal' || value.watchdog_state === 'hold' || value.watchdog_state === 'failsafe') &&
+    (value.video_publish_state === 'stopped' || value.video_publish_state === 'connecting' || value.video_publish_state === 'publishing' || value.video_publish_state === 'failed') &&
+    Number.isInteger(value.phone_battery_percent) && Number(value.phone_battery_percent) >= 0 && Number(value.phone_battery_percent) <= 100 &&
+    typeof value.phone_thermal_state === 'string' && ['none', 'light', 'moderate', 'severe', 'critical', 'emergency', 'shutdown'].includes(value.phone_thermal_state)
+}
+
+function isPublicCaptureReadinessEvent(value: Record<string, unknown>): boolean {
+  const booleans = ['pose_ok', 'clearance_ok', 'camera_ok', 'storage_ok', 'motion_ok', 'image_quality_ok']
+  const delta = value.suggested_delta
+  return hasPublicNodeEnvelope(value, ['room_id', 'capture_id', 'guidance_mode', 'pose_source', ...booleans,
+    'coverage_missing', 'next_heading_deg', 'suggested_delta']) &&
+    isNullableNodeText(value.room_id) && isNullableNodeText(value.capture_id) &&
+    (value.guidance_mode === 'visual_advisory' || value.guidance_mode === 'registered_metric') && isBoundedNodeText(value.pose_source) &&
+    booleans.every((field) => typeof value[field] === 'boolean') &&
+    Array.isArray(value.coverage_missing) && value.coverage_missing.length <= 8 && value.coverage_missing.every(isAzimuth) &&
+    new Set(value.coverage_missing).size === value.coverage_missing.length &&
+    (value.next_heading_deg === null || isAzimuth(value.next_heading_deg)) &&
+    (delta === null || (isRecord(delta) && hasExactFields(delta, ['kind', 'degrees']) &&
+      (delta.kind === 'yaw' || delta.kind === 'gimbal') && isFiniteNumber(delta.degrees)))
+}
+
 /** Parses the M1.1 event seam; unknown frames fail closed. */
 export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
   if (!isRecord(value) || !hasBaseEvent(value) || typeof value.type !== 'string') return null
+
+  if (value.type === 'capabilities') return isPublicCapabilitiesEvent(value) ? value as unknown as RelayCapabilitiesEvent : null
+  if (value.type === 'node_status') return isPublicNodeStatusEvent(value) ? value as unknown as RelayNodeStatusEvent : null
+  if (value.type === 'capture_readiness') return isPublicCaptureReadinessEvent(value) ? value as unknown as RelayCaptureReadinessEvent : null
 
   if (value.type === 'state') {
     const drones = Array.isArray(value.drones)
@@ -1073,6 +1217,7 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   const selection = value.selection as DroneId[]
   if (!hasValidArgs(name, value.args)) return false
   if (requiresConfirmation(name) && !value.confirm) return false
+  if (value.source === 'webcam' && name === 'arm' && !value.confirm) return false
   return hasValidSelection(name, selection)
 }
 
@@ -1082,6 +1227,11 @@ const FORMATION_NAMES = new Set<FormationName>(['line', 'column', 'circle', 'gri
 function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): boolean {
   const keys = Object.keys(args)
   switch (name) {
+    case 'body_pulse':
+      return keys.length === 2 && Number.isSafeInteger(args.forward_mm_s) &&
+        Number(args.forward_mm_s) !== 0 && Math.abs(Number(args.forward_mm_s)) <= 250 &&
+        Number.isSafeInteger(args.duration_ms) && Number(args.duration_ms) >= 100 &&
+        Number(args.duration_ms) <= 500
     case 'select':
       return keys.length === 1 && isIntentDroneIds(args.ids) && args.ids.length > 0
     case 'translate':

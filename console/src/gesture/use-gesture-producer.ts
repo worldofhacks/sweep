@@ -8,14 +8,18 @@
  * webcam-bound relay client. Tracking is off until the operator enables it.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { formatDroneId, type ControlState, type RequestRecord } from '../control/state'
+import { capabilityBlockedReason, formatDroneId, type ControlState, type RequestRecord } from '../control/state'
+import type { IntentRequest } from '../control/use-control-console'
 import type { IntentV1 } from '../relay/contract'
 import { createCameraController, type CameraController, type CameraState } from './camera'
 import {
   DEFAULT_GESTURE_POLICY_CONFIG,
+  FLIGHT_GESTURE_POLICY_CONFIG,
   createGesturePolicyState,
   stepGesturePolicy,
   type GesturePair,
+  type GestureCategory,
+  type GestureProfile,
   type GesturePhase,
   type GesturePolicyConfig,
   type GesturePolicyOutcome,
@@ -29,6 +33,7 @@ import {
   type RecognizerStatus,
 } from './recognizer'
 import { createSessionRecorder, type SessionRecorder } from './recorder'
+import { flightActionBlockedReason, flightIntentRequest } from './flight'
 
 /** The slice of useControlConsole the producer drives. */
 export interface GestureControlBindings {
@@ -36,6 +41,7 @@ export interface GestureControlBindings {
   pendingRequest: RequestRecord | null
   prepareCapture(roomId: string, source: 'webcam'): IntentV1 | null
   prepareHold(source: 'webcam'): IntentV1 | null
+  prepareIntent(request: IntentRequest, source: 'webcam'): IntentV1 | null
   confirmRequest(intentId: string): IntentV1 | null
   cancelRequest(intentId: string): void
 }
@@ -134,6 +140,7 @@ export interface GestureProducerView {
   lastAction: GestureActionRecord | null
   /** Why an accepted gesture would emit nothing right now, or null when it could act. */
   emissionBlockedReason: string | null
+  pairBlockedReasons: Partial<Record<GestureCategory, string | null>>
   recording: { size: number; dropped: number }
 }
 
@@ -141,6 +148,8 @@ export interface UseGestureProducerOptions {
   control: GestureControlBindings
   roomId: string
   dependencies?: GestureProducerDependencies
+  /** Fixed for this mounted tracking session; changing profile remounts it disabled. */
+  profile?: GestureProfile
 }
 
 const NOTABLE_KINDS = new Set<GesturePolicyOutcome['kind']>([
@@ -151,8 +160,11 @@ const NOTABLE_KINDS = new Set<GesturePolicyOutcome['kind']>([
   'unmapped',
 ])
 
-export function useGestureProducer({ control, roomId, dependencies }: UseGestureProducerOptions) {
-  const [deps] = useState(() => dependencies ?? createBrowserGestureDependencies())
+export function useGestureProducer({ control, roomId, dependencies, profile = 'capture' }: UseGestureProducerOptions) {
+  const [deps] = useState(() => {
+    const base = dependencies ?? createBrowserGestureDependencies()
+    return profile === 'flight' ? { ...base, policy: FLIGHT_GESTURE_POLICY_CONFIG } : base
+  })
   const [recorder] = useState<SessionRecorder>(() =>
     createSessionRecorder({
       sessionId: control.state.sessionId,
@@ -253,7 +265,9 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
         const intent =
           pair.action.name === 'capture_room'
             ? bindings.prepareCapture(roomIdRef.current, 'webcam')
-            : bindings.prepareHold('webcam')
+            : pair.action.name === 'hold'
+              ? bindings.prepareHold('webcam')
+              : bindings.prepareIntent(flightIntentRequest(pair.action, bindings.state.selection), 'webcam')
         const detail = intent
           ? `${pair.gesture} drafted ${intent.name} for preview; nothing sent.`
           : `${pair.gesture} could not draft ${pair.action.name}; the control flow refused it.`
@@ -494,6 +508,7 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
     lastAction,
     emissionBlockedReason:
       status.status === 'tracking' ? emissionBlockedReason(control, null, roomId) : status.detail ?? 'Tracking is not active.',
+    pairBlockedReasons: Object.fromEntries(deps.policy.pairs.map((pair) => [pair.gesture, emissionBlockedReason(control, pair, roomId)])),
     recording,
   }
 
@@ -541,8 +556,8 @@ function deriveStatus(
 }
 
 /**
- * Why an accepted gesture would emit nothing. With `pair` null, answers for any
- * draft; with a pair, answers for that pair's action. The console connection
+ * Why an accepted gesture would emit nothing. With `pair` null, answers only
+ * for common readiness; with a pair, answers for that action. The console connection
  * feeds the roster and selection a draft is built from, so it is checked before
  * the webcam source that would carry the intent: a stale roster must never be
  * drafted against while the console channel is down.
@@ -559,8 +574,8 @@ export function emissionBlockedReason(
   if (state.webcamConnection.status !== 'connected') {
     return 'The webcam relay source is not connected; no gesture intent can be sent.'
   }
-  const action = pair?.action ?? { kind: 'draft' as const, name: 'capture_room' as const }
-  if (action.kind === 'confirm' || action.kind === 'cancel') {
+  const action = pair?.action
+  if (action?.kind === 'confirm' || action?.kind === 'cancel') {
     if (!pendingRequest) return `No plan preview is pending; there is nothing to ${action.kind}.`
     if (pendingRequest.intent.source !== 'webcam') {
       return `The pending preview was drafted by ${pendingRequest.intent.source}; gestures only ${action.kind} gesture-drafted previews.`
@@ -575,6 +590,10 @@ export function emissionBlockedReason(
     (id) => state.aircraft[id]?.membership !== 'ready' || !state.aircraft[id]?.selectable,
   )
   if (notReady !== undefined) return `${formatDroneId(notReady)} is not ready or selectable.`
+  if (!action) return null
+  if (action.name !== 'capture_room' && action.name !== 'hold') return flightActionBlockedReason(state, pendingRequest, action)
+  const capability = capabilityBlockedReason(state, action.name)
+  if (capability) return capability
   if (action.name === 'hold') return null
   if (!roomId.trim()) return 'Enter a room identifier.'
   if (state.selection.length !== 1) return 'Select exactly one ready aircraft for capture_room.'

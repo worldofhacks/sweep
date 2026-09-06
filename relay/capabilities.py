@@ -18,6 +18,7 @@ class IntentName(StrEnum):
     LAND_ALL = "land_all"
     HOLD = "hold"
     TRANSLATE = "translate"
+    BODY_PULSE = "body_pulse"
     ALTITUDE = "altitude"
     FORMATION_NEXT = "formation_next"
     FORMATION_SET = "formation_set"
@@ -70,6 +71,7 @@ C1_IMPLEMENTED_INTENT_NAMES = frozenset(
         IntentName.SELECT,
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.BODY_PULSE,
         IntentName.HOLD,
         IntentName.COME_HOME,
         IntentName.LAND,

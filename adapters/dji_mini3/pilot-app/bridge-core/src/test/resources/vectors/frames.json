@@ -136,6 +136,10 @@
     }
   },
   "command_args": {
+    "body_pulse": {
+      "duration_ms": 500,
+      "forward_mm_s": 250
+    },
     "camera_capabilities": {},
     "camera_ready": {},
     "capture_panorama": {

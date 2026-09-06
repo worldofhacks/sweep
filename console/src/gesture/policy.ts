@@ -13,9 +13,8 @@
  * | Thumb_Up    | 400 ms   | ≥ 0.8 | confirm the pending preview               |
  * | Thumb_Down  | 400 ms   | ≥ 0.8 | cancel the pending preview                |
  *
- * `estop`, `arm`, `takeoff`, and free-flight motion are never gesture-emittable;
- * they stay on the console controls and the physical RC. See
- * NEVER_GESTURE_EMITTABLE and validateGesturePairs.
+ * Capture/HOLD remains the default. The explicitly selected Flight profile
+ * maps five bounded flight drafts plus confirm/cancel; every draft is previewed.
  */
 import type { ConsoleIntentName } from '../relay/contract'
 
@@ -40,10 +39,18 @@ export const GESTURE_CATEGORIES: readonly GestureCategory[] = [
   'ILoveYou',
 ]
 
-export type GestureEmittableName = Extract<ConsoleIntentName, 'capture_room' | 'hold'>
+export type GestureProfile = 'capture' | 'flight'
+export type GestureEmittableName = Extract<ConsoleIntentName, 'capture_room' | 'hold' | 'arm' | 'takeoff' | 'land' | 'body_pulse'>
+export type FlightDraftAction =
+  | { kind: 'draft'; name: 'arm' }
+  | { kind: 'draft'; name: 'takeoff' }
+  | { kind: 'draft'; name: 'land' }
+  | { kind: 'draft'; name: 'body_pulse'; direction: 'forward' | 'backward' }
 
 export type GestureAction =
-  | { kind: 'draft'; name: GestureEmittableName }
+  | { kind: 'draft'; name: 'capture_room' }
+  | { kind: 'draft'; name: 'hold' }
+  | FlightDraftAction
   | { kind: 'confirm' }
   | { kind: 'cancel' }
 
@@ -60,20 +67,19 @@ export interface GesturePair {
 export const GESTURE_EMITTABLE_NAMES: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'capture_room',
   'hold',
+  'arm',
+  'takeoff',
+  'land',
+  'body_pulse',
 ])
 
 /**
- * Names that no gesture pair may ever target. The network stop, arming,
- * takeoff, and every free-flight motion stay on the console controls and the
- * physical RC. This list is checked against every pair set, including the
- * default, and is shown in the panel.
+ * Names that neither profile may target. Flight only adds session enable,
+ * takeoff, selected landing and an adapter-timed, bounded body pulse.
  */
 export const NEVER_GESTURE_EMITTABLE: readonly string[] = Object.freeze([
   'estop',
-  'arm',
   'disarm',
-  'takeoff',
-  'land',
   'land_all',
   'translate',
   'altitude',
@@ -132,6 +138,20 @@ export const DEFAULT_GESTURE_POLICY_CONFIG: GesturePolicyConfig = Object.freeze(
   maxFrameGapMs: DEFAULT_MAX_FRAME_GAP_MS,
 })
 
+export const FLIGHT_GESTURE_PAIRS: readonly GesturePair[] = Object.freeze([
+  { gesture: 'Open_Palm', action: { kind: 'draft', name: 'arm' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  { gesture: 'Pointing_Up', action: { kind: 'draft', name: 'takeoff' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  { gesture: 'Victory', action: { kind: 'draft', name: 'body_pulse', direction: 'forward' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  { gesture: 'Closed_Fist', action: { kind: 'draft', name: 'body_pulse', direction: 'backward' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  { gesture: 'ILoveYou', action: { kind: 'draft', name: 'land' }, minScore: DEFAULT_MIN_SCORE, dwellMs: DRAFT_DWELL_MS },
+  ...DEFAULT_GESTURE_PAIRS.filter((pair) => pair.action.kind !== 'draft'),
+])
+
+export const FLIGHT_GESTURE_POLICY_CONFIG: GesturePolicyConfig = Object.freeze({
+  ...DEFAULT_GESTURE_POLICY_CONFIG,
+  pairs: FLIGHT_GESTURE_PAIRS,
+})
+
 /** Returns every reason a pair set is unacceptable; empty means acceptable. */
 export function validateGesturePairs(pairs: readonly GesturePair[]): string[] {
   const problems: string[] = []
@@ -146,6 +166,9 @@ export function validateGesturePairs(pairs: readonly GesturePair[]): string[] {
         problems.push(`${name} is never gesture-emittable.`)
       } else if (!GESTURE_EMITTABLE_NAMES.has(pair.action.name)) {
         problems.push(`${name} is not on the gesture-emittable allowlist.`)
+      }
+      if (pair.action.name === 'body_pulse' && !['forward', 'backward'].includes(pair.action.direction)) {
+        problems.push('body_pulse needs an explicit forward or backward direction.')
       }
     }
     if (!(pair.minScore > 0 && pair.minScore <= 1)) {
@@ -163,7 +186,7 @@ export function isGestureEmittable(name: string): name is GestureEmittableName {
 }
 
 {
-  const problems = validateGesturePairs(DEFAULT_GESTURE_PAIRS)
+  const problems = [...validateGesturePairs(DEFAULT_GESTURE_PAIRS), ...validateGesturePairs(FLIGHT_GESTURE_PAIRS)]
   if (problems.length > 0) {
     throw new Error(`Default gesture pairs are invalid: ${problems.join(' ')}`)
   }
@@ -298,6 +321,7 @@ function idle(t: number): GesturePolicyState {
 }
 
 export function describeGestureAction(action: GestureAction): string {
+  if (action.kind === 'draft' && action.name === 'body_pulse') return `draft ${action.direction} 0.5 seconds`
   if (action.kind === 'draft') return `draft ${action.name}`
   return action.kind === 'confirm' ? 'confirm pending preview' : 'cancel pending preview'
 }

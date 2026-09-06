@@ -25,6 +25,7 @@ const deps = { now: () => t, nextId: () => 'intent-1' }
 
 /** The exact args each control sends, per the relay's _parse_args. */
 const ENVELOPES: Record<ConsoleIntentName, { args: IntentArgs; selection: number[] }> = {
+  body_pulse: { args: { forward_mm_s: 250, duration_ms: 500 }, selection: [1, 2] },
   arm: { args: {}, selection: [1] },
   disarm: { args: {}, selection: [1] },
   estop: { args: {}, selection: [] },

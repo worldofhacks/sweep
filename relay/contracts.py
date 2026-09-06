@@ -15,6 +15,7 @@ from types import MappingProxyType
 from typing import Literal
 
 from planner.models import CommandOperation
+from relay.body_pulse import valid_body_pulse_args
 
 
 class ContractError(ValueError):
@@ -134,6 +135,9 @@ COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingP
         ),
         CommandOperation.ROTATE_TO: MappingProxyType(
             {"yaw_mdeg": "integer", "speed_mdeg_s": "positive"}
+        ),
+        CommandOperation.BODY_PULSE: MappingProxyType(
+            {"forward_mm_s": "integer", "duration_ms": "integer"}
         ),
         CommandOperation.HOVER: MappingProxyType({}),
         CommandOperation.LAND: MappingProxyType({}),
@@ -1418,6 +1422,8 @@ def _azimuth(value: object, field: str, code: str) -> float:
 def _command_arguments(
     operation: CommandOperation, raw: object, code: str
 ) -> Mapping[str, int | str]:
+    if operation is CommandOperation.BODY_PULSE and not valid_body_pulse_args(raw):
+        raise ContractError(code, "body_pulse arguments exceed the bounded integer contract")
     spec = COMMAND_ARGUMENT_FIELDS[operation]
     value = _mapping(raw, code, "command args must be an object")
     if set(value) != set(spec):

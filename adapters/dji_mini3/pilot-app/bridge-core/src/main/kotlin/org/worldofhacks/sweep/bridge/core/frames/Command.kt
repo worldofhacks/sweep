@@ -9,6 +9,7 @@ import org.worldofhacks.sweep.bridge.core.signing.Signing
 enum class CommandOperation(val wire: String) {
     TAKEOFF("takeoff"),
     GOTO("goto"),
+    BODY_PULSE("body_pulse"),
     ROTATE_TO("rotate_to"),
     HOVER("hover"),
     LAND("land"),
@@ -29,7 +30,7 @@ enum class CommandOperation(val wire: String) {
  * Typed `args` per operation, exactly as `relay.contracts.COMMAND_ARGUMENT_FIELDS` fixes
  * them: integers and IDs only. Millimetres, millimetres per second, millidegrees, and
  * millidegrees per second keep the signed canonical JSON free of floats, the same rule
- * signed membership claims follow. Speeds are positive.
+ * signed membership claims follow. Body-pulse speed is signed; other speeds are positive.
  */
 sealed interface CommandArgs {
     val operation: CommandOperation
@@ -44,6 +45,24 @@ sealed interface CommandArgs {
     data class Goto(val xMm: Long, val yMm: Long, val zMm: Long, val speedMmS: Long) : CommandArgs {
         override val operation get() = CommandOperation.GOTO
         override fun toJson() = Json.json("x_mm" to xMm, "y_mm" to yMm, "z_mm" to zMm, "speed_mm_s" to speedMmS)
+    }
+
+    /** Bounded nose-forward/back velocity, never a position target or a raw stick frame. */
+    data class BodyPulse(val forwardMmS: Long, val durationMs: Long) : CommandArgs {
+        init {
+            require(forwardMmS != 0L && forwardMmS in -MAX_SPEED_MM_S..MAX_SPEED_MM_S) { "body_pulse speed must be nonzero and within +/-250 mm/s" }
+            require(durationMs in MIN_DURATION_MS..MAX_DURATION_MS) { "body_pulse duration must be 100 through 500 ms" }
+        }
+
+        override val operation get() = CommandOperation.BODY_PULSE
+        override fun toJson() = Json.json("forward_mm_s" to forwardMmS, "duration_ms" to durationMs)
+
+        companion object {
+            const val CAPABILITY = "body_pulse_v1"
+            const val MAX_SPEED_MM_S = 250L
+            const val MIN_DURATION_MS = 100L
+            const val MAX_DURATION_MS = 500L
+        }
     }
 
     data class RotateTo(val yawMdeg: Long, val speedMdegS: Long) : CommandArgs {
@@ -103,6 +122,7 @@ sealed interface CommandArgs {
             val expected = when (operation) {
                 CommandOperation.TAKEOFF -> setOf("z_mm")
                 CommandOperation.GOTO -> setOf("x_mm", "y_mm", "z_mm", "speed_mm_s")
+                CommandOperation.BODY_PULSE -> setOf("forward_mm_s", "duration_ms")
                 CommandOperation.ROTATE_TO -> setOf("yaw_mdeg", "speed_mdeg_s")
                 CommandOperation.SET_GIMBAL_PITCH -> setOf("pitch_mdeg")
                 CommandOperation.CAPTURE_PANORAMA, CommandOperation.CAPTURE_PHOTO -> setOf("capture_id")
@@ -120,6 +140,16 @@ sealed interface CommandArgs {
             return when (operation) {
                 CommandOperation.TAKEOFF -> Takeoff(integer("z_mm"))
                 CommandOperation.GOTO -> Goto(integer("x_mm"), integer("y_mm"), integer("z_mm"), positive("speed_mm_s"))
+                CommandOperation.BODY_PULSE -> {
+                    val forward = integer("forward_mm_s")
+                    val duration = integer("duration_ms")
+                    if (forward == 0L || forward !in -BodyPulse.MAX_SPEED_MM_S..BodyPulse.MAX_SPEED_MM_S ||
+                        duration !in BodyPulse.MIN_DURATION_MS..BodyPulse.MAX_DURATION_MS
+                    ) {
+                        throw ContractError(CODE, "body_pulse needs nonzero speed within +/-250 mm/s and duration 100 through 500 ms")
+                    }
+                    BodyPulse(forward, duration)
+                }
                 CommandOperation.ROTATE_TO -> RotateTo(integer("yaw_mdeg"), positive("speed_mdeg_s"))
                 CommandOperation.HOVER -> Hover
                 CommandOperation.LAND -> Land

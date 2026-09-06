@@ -25,6 +25,7 @@ import org.worldofhacks.sweep.bridge.core.frames.AuthAccepted
 import org.worldofhacks.sweep.bridge.core.frames.AuthFrame
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
 import org.worldofhacks.sweep.bridge.core.frames.CapabilitiesFrame
+import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandOperation
 import org.worldofhacks.sweep.bridge.core.frames.ContractError
@@ -767,6 +768,12 @@ class RelayLink(
                 }
             }
             is AdmissionResult.Admitted -> {
+                if (command.operation == CommandOperation.BODY_PULSE && CommandArgs.BodyPulse.CAPABILITY !in config.capabilities) {
+                    val detail = "this node does not advertise ${CommandArgs.BodyPulse.CAPABILITY}"
+                    sendAck(command, LifecycleStatus.FAILED, "unsupported", detail)
+                    record(command, "failed", "unsupported", detail)
+                    return
+                }
                 val dog = watchdog
                 if (dog != null && dog.state == WatchdogState.FAILSAFE) {
                     val detail = "watchdog is in failsafe after relay silence; it re-arms on the next join"
@@ -1008,7 +1015,7 @@ class RelayLink(
         const val CONTROL_POSE_EVENT_MAX_AGE_MS = 1_000L
         const val CONTROL_POSE_READY_FRESHNESS_MS = 500L
         const val MAX_CONTROL_POSE_EVENTS = 256
-        val MOTION_OPERATIONS = setOf(CommandOperation.TAKEOFF, CommandOperation.GOTO, CommandOperation.ROTATE_TO)
+        val MOTION_OPERATIONS = setOf(CommandOperation.TAKEOFF, CommandOperation.GOTO, CommandOperation.BODY_PULSE, CommandOperation.ROTATE_TO)
         val HALT_REASONS = setOf("session_closed", "authentication_failed", "invalid_auth", "unknown_source")
     }
 }

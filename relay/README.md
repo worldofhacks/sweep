@@ -24,10 +24,33 @@ The validator makes these schema choices where Appendix A leaves details open:
 - `intent_id` is canonical printable text of at most 128 Unicode code points. A retry gets a new identifier and may link to a different request through a `retry_of` value with that same bound. Formation, room, capture, and area identifiers use the same bound. This function validates the reference shape; the relay lifecycle validates same-session failure, deduplication, and terminal-state semantics.
 - `confirm` records the source's confirmation state. `capture_room` requires confirmation and exactly one selected drone; the arbiter enforces the remaining action-specific checks.
 - Rejection precedence is envelope, registered source, intent name, argument shape, scope, mode capability, intent-name capability, then the per-source allowlist.
-- `c1_basic_control` enables `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land`, `land_all`, `estop`, `capture_room`, `altitude`, `formation_next`, `formation_set`, `spacing`, and `sweep`. The outdoor mode values remain schema-reserved and return `unsupported`; `disarm`, `survey_area`, and `map_area` keep their v1 argument shapes and also return `unsupported`.
+- `c1_basic_control` enables `arm`, `select`, `takeoff`, `translate`, `body_pulse`, `hold`, `come_home`, `land`, `land_all`, `estop`, `capture_room`, `altitude`, `formation_next`, `formation_set`, `spacing`, and `sweep`. The outdoor mode values remain schema-reserved and return `unsupported`; `disarm`, `survey_area`, and `map_area` keep their v1 argument shapes and also return `unsupported`.
 - `come_home` returns selected drones to their home positions through planner-generated `goto` calls. Confirmed `land` maps the current selection to adapter `land`; `land_all` applies landing fleet-wide.
 
-The current source registry is `console`, `keyboard`, `webcam`, and `language`; the last two are console-hosted producers that authenticate on dedicated connections. Each source may emit only the names in `SOURCE_ALLOWED_NAMES`: `console` every implemented name allowed by the effective capability profile, `keyboard` only `estop` (the Shift+Escape network stop), and `webcam` only `capture_room` and `hold`. `language` has the C1 schema ceiling, but the session additionally requires an exact, live, one-shot compiler binding and the deployment qualification allowlist before admitting any language intent. A profile-disabled name is refused as `unsupported`; a profile-enabled name outside its source's set is refused with `source_not_allowed`, and the detail names the intent and source. The session uses the same reason for a connection that cannot emit intents at all. Registering another source, implementing another Intent v1 name, or widening a source's allowlist changes the shared constants and conformance tests in this module.
+The current source registry is `console`, `keyboard`, `webcam`, and `language`; the last two are console-hosted producers that authenticate on dedicated connections. Each source may emit only the names in `SOURCE_ALLOWED_NAMES`: `console` every implemented name allowed by the effective capability profile, `keyboard` only `estop` (the Shift+Escape network stop), and `webcam` only `capture_room`, `hold`, `arm`, `takeoff`, `body_pulse`, and selected `land`. Webcam `arm`, `takeoff`, `body_pulse`, and `land` require explicit console confirmation. `language` has the C1 schema ceiling, but the session additionally requires an exact, live, one-shot compiler binding and the deployment qualification allowlist before admitting any language intent. A profile-disabled name is refused as `unsupported`; a profile-enabled name outside its source's set is refused with `source_not_allowed`, and the detail names the intent and source. The session uses the same reason for a connection that cannot emit intents at all. Registering another source, implementing another Intent v1 name, or widening a source's allowlist changes the shared constants and conformance tests in this module.
+
+### Bounded body pulse
+
+Confirmed `body_pulse` has exactly `{forward_mm_s, duration_ms}`: signed integer
+speed, nonzero and at most 250 mm/s in magnitude, and integer duration from 100 to
+500 ms. Positive means each selected aircraft's nose-forward direction; negative
+means backwards. This is a timed velocity request, independent of world heading.
+It maps to the same signed node operation and arguments; the Android flight
+controller owns timing and neutralization. The Python kinematic fixtures model
+displacement only and do not establish hardware timing evidence.
+
+Every selected aircraft must advertise `body_pulse_v1` in its current membership
+epoch. Normal session arm, physical arm, control authority, RC operator, hovering
+state, telemetry freshness and position quality checks still apply. The
+arbiter reserves the full possible horizontal displacement envelope against the
+configured geofence and every other airborne aircraft, reserving both envelopes
+when both are selected. Other airborne aircraft must be hovering without an unrelated active task. With a 250 mm/s, 500 ms pulse, the software envelope includes one worst supported 200 ms controller tick,
+adding 0.175 m per moving aircraft to configured minimum spacing. Neutralization
+is requested at the first controller tick after the signed duration; this is not
+a hard realtime physical stopping guarantee. The configured safety margins still need
+measured positioning uncertainty and stopping behavior; body direction does not
+remove the fleet positioning prerequisite. HOLD and ESTOP preempt an active pulse.
+This addition does not qualify the natural-language voice channel for body pulses.
 
 ## Run the relay
 
