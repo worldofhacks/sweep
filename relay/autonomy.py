@@ -614,6 +614,12 @@ class AutonomySession:
         except (OSError, ValueError):
             return None
 
+    def reconcile_membership(self, session: RelaySession) -> tuple[dict[str, object], ...]:
+        if session.session_id == self.session_id:
+            if search := self._composition.search_runtime:
+                search.revoke_unstarted_previews(session.session_id)
+        return ()
+
     def authorize_leave(
         self, drone_id: int, connection_epoch: int, state: dict[str, object]
     ) -> bool:
