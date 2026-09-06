@@ -119,7 +119,7 @@ export function deriveRcLine(state: ControlState): RcLine {
     .map((id) => {
       const drone = state.aircraft[id]
       if (!drone) return `${formatDroneId(id)} unreported`
-      const authority = drone.control_authority ? 'Sweep' : 'RC takeover'
+      const authority = drone.control_authority ? 'Sweep' : 'Sweep control not granted'
       const rc = drone.rc_safety_operator_present ? 'present' : 'absent'
       return `${formatDroneId(id)} ${authority} · RC operator ${rc}`
     })
@@ -205,8 +205,9 @@ export function deriveInvalidation(
   }
 }
 
-export function membershipTone(membership: RelayAircraftState['membership']): Tone {
-  if (membership === 'ready') return 'ok'
+export function membershipTone(membership: RelayAircraftState['membership'], positionQuality?: number | null): Tone {
+  // Membership alone does not establish position quality or motion admission.
+  if (membership === 'ready') return positionQuality === 0 ? 'warn' : 'ok'
   if (membership === 'degraded' || membership === 'leaving') return 'warn'
   if (membership === 'disconnected') return 'danger'
   return 'ink'

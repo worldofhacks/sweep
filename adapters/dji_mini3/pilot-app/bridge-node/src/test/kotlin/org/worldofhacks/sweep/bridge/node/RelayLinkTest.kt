@@ -435,6 +435,47 @@ class RelayLinkTest {
     }
 
     @Test
+    fun `rapid pilot changes preserve each declaration before the first join`() {
+        StubRelay(key).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            RelayLink(config(stub), aircraft, aircraft, phone, timing = timing, log = { logs += it }).use { link ->
+                link.updateReadiness { it.copy(homePoseConfirmed = true) }
+                link.updateReadiness { it.copy(controlAuthority = true) }
+                link.updateReadiness { it.copy(rcSafetyOperatorPresent = true) }
+                link.start()
+                val frame = stub.awaitFrame("membership") { it.str("action") == "readiness" }
+                assertTrue(frame.bool("home_pose_confirmed"))
+                assertTrue(frame.bool("control_authority"))
+                assertTrue(frame.bool("rc_safety_operator_present"))
+                assertTrue(Signing.verify(frame.without("signature"), frame.str("signature"), key))
+            }
+        }
+    }
+
+    @Test
+    fun `rapid joined pilot changes preserve peers and an authority revocation`() {
+        StubRelay(key).use { stub ->
+            link(stub, FakeAircraft(connected = true), readiness = ReadinessInput()).use { link ->
+                stub.awaitFrame("membership") { it.str("action") == "readiness" }
+                // No relay round trips or UI render between these separate pilot changes.
+                link.updateReadiness { it.copy(homePoseConfirmed = true) }
+                link.updateReadiness { it.copy(controlAuthority = true) }
+                link.updateReadiness { it.copy(rcSafetyOperatorPresent = true) }
+                link.updateReadiness { it.copy(controlAuthority = false) }
+                val frames = stub.awaitFrames("membership", 5) { it.str("action") == "readiness" }
+                val expected = ReadinessInput(homePoseConfirmed = true, rcSafetyOperatorPresent = true)
+                assertEquals(expected, link.state.value.readiness)
+                val last = frames.last()
+                assertTrue(last.bool("home_pose_confirmed"))
+                assertFalse(last.bool("control_authority"))
+                assertTrue(last.bool("rc_safety_operator_present"))
+                assertTrue(Signing.verify(last.without("signature"), last.str("signature"), key))
+                await("authority revocation reported") { link.state.value.authorityChangeReason == "not_granted" }
+            }
+        }
+    }
+
+    @Test
     fun `pilot toggles resend readiness with the authority reason`() {
         StubRelay(key).use { stub ->
             val aircraft = FakeAircraft(connected = true)

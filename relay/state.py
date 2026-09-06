@@ -109,9 +109,25 @@ class FleetRegistry:
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         media_evidence: MediaEvidenceProvider | None = None,
         membership_history_limit: int = DEFAULT_MEMBERSHIP_HISTORY_LIMIT,
+        min_home_position_quality: float = 0.0,
+        max_home_position_age_ms: int | None = None,
+        future_clock_skew_ms: int = 0,
     ) -> None:
         if telemetry_freshness_ms <= 0:
             raise ValueError("telemetry_freshness_ms must be positive")
+        if type(future_clock_skew_ms) is not int or future_clock_skew_ms < 0:
+            raise ValueError("future_clock_skew_ms must be a nonnegative integer")
+        if max_home_position_age_ms is not None and (
+            type(max_home_position_age_ms) is not int or max_home_position_age_ms <= 0
+        ):
+            raise ValueError("max_home_position_age_ms must be a positive integer")
+        if (
+            isinstance(min_home_position_quality, bool)
+            or not isinstance(min_home_position_quality, int | float)
+            or not isfinite(min_home_position_quality)
+            or not 0 <= min_home_position_quality <= 1
+        ):
+            raise ValueError("min_home_position_quality must be a finite fraction")
         if (
             isinstance(membership_history_limit, bool)
             or not isinstance(membership_history_limit, int)
@@ -122,6 +138,16 @@ class FleetRegistry:
                 f"{MAX_MEMBERSHIP_HISTORY_LIMIT}"
             )
         self.telemetry_freshness_ms = telemetry_freshness_ms
+        # Standalone transport requires positive position evidence. Autonomy also
+        # supplies its existing configured flight-position threshold here.
+        self.min_home_position_quality = min_home_position_quality
+        self.max_home_position_age_ms = min(
+            telemetry_freshness_ms,
+            telemetry_freshness_ms
+            if max_home_position_age_ms is None
+            else max_home_position_age_ms,
+        )
+        self.future_clock_skew_ms = future_clock_skew_ms
         self.capability_profile = capability_profile
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
@@ -258,13 +284,16 @@ class FleetRegistry:
                 provenance="adapter_signature",
             )
 
-    def apply_readiness(self, request: MembershipRequest) -> MembershipTransition:
+    def apply_readiness(
+        self, request: MembershipRequest, *, now_ms: int | None = None
+    ) -> MembershipTransition:
         if request.action is not MembershipAction.READINESS:
             raise ValueError("apply_readiness requires a readiness request")
         assert request.connection_epoch is not None
         assert request.home_pose_confirmed is not None
         assert request.control_authority is not None
         assert request.rc_safety_operator_present is not None
+        now = request.t if now_ms is None else now_ms
         with self._lock:
             record = self._require_current(request.drone_id, request.connection_epoch)
             if record.membership in {Membership.DISCONNECTED, Membership.LEAVING}:
@@ -276,32 +305,20 @@ class FleetRegistry:
             record.home_pose_confirmed = request.home_pose_confirmed
             record.control_authority = request.control_authority
             record.rc_safety_operator_present = request.rc_safety_operator_present
-            if (
-                request.home_pose_confirmed
-                and record.home_pose is None
-                and self._has_current_telemetry(record)
-            ):
-                assert record.telemetry is not None
-                record.home_pose = {
-                    "x": record.telemetry.x,
-                    "y": record.telemetry.y,
-                    "z": record.telemetry.z,
-                }
-            elif not request.home_pose_confirmed and self._is_grounded(record):
-                record.home_pose = None
-            reasons = self._readiness_reasons(record, request.t)
+            self._apply_home_declaration(record, now)
+            reasons = self._readiness_reasons(record, now)
             record.membership = Membership.READY if not reasons else Membership.DEGRADED
-            record.updated_at = request.t
+            record.updated_at = now
             self._roster_version += 1
             self._remember(
                 record,
-                t=request.t,
+                t=now,
                 action=MembershipAction.READINESS,
                 reason=None if not reasons else "readiness_gate_failed",
             )
             return self._transition(
                 record,
-                t=request.t,
+                t=now,
                 event_id=request.event_id,
                 action=MembershipAction.READINESS,
                 reason=None if not reasons else "readiness_gate_failed",
@@ -356,8 +373,13 @@ class FleetRegistry:
             )
 
     def apply_telemetry(
-        self, telemetry: TelemetryV1, *, transition_event_id: str
+        self,
+        telemetry: TelemetryV1,
+        *,
+        transition_event_id: str,
+        now_ms: int | None = None,
     ) -> MembershipTransition | None:
+        now = telemetry.t if now_ms is None else now_ms
         with self._lock:
             record = self._require_current(telemetry.drone, telemetry.connection_epoch)
             if record.membership in {Membership.DISCONNECTED, Membership.LEAVING}:
@@ -375,7 +397,8 @@ class FleetRegistry:
             record.updated_at = telemetry.t
             if not record.readiness_declared:
                 return None
-            reasons = self._readiness_reasons(record, telemetry.t)
+            self._apply_home_declaration(record, now)
+            reasons = self._readiness_reasons(record, now)
             record.membership = Membership.READY if not reasons else Membership.DEGRADED
             if record.membership is prior_membership:
                 return None
@@ -386,10 +409,10 @@ class FleetRegistry:
                 else MembershipAction.TELEMETRY_STALE
             )
             reason = "telemetry_recovered" if not reasons else "readiness_gate_failed"
-            self._remember(record, t=telemetry.t, action=action, reason=reason)
+            self._remember(record, t=now, action=action, reason=reason)
             return self._transition(
                 record,
-                t=telemetry.t,
+                t=now,
                 event_id=transition_event_id,
                 action=action,
                 reason=reason,
@@ -592,6 +615,32 @@ class FleetRegistry:
         if not record.rc_safety_operator_present:
             reasons.append("rc_safety_operator_missing")
         return tuple(reasons)
+
+    def _apply_home_declaration(self, record: _AircraftRecord, now_ms: int) -> None:
+        """Apply this epoch's explicit home declaration only with fresh ground evidence."""
+        if not record.readiness_declared or not self._has_fresh_ground_telemetry(record, now_ms):
+            return
+        if not record.home_pose_confirmed:
+            record.home_pose = None
+            return
+        telemetry = record.telemetry
+        if (
+            record.home_pose is not None
+            or telemetry is None
+            or telemetry.pos_quality <= 0
+            or telemetry.pos_quality < self.min_home_position_quality
+        ):
+            return
+        record.home_pose = {"x": telemetry.x, "y": telemetry.y, "z": telemetry.z}
+
+    def _has_fresh_ground_telemetry(self, record: _AircraftRecord, now_ms: int) -> bool:
+        return (
+            self._is_grounded(record)
+            and record.telemetry is not None
+            and -self.future_clock_skew_ms
+            <= now_ms - record.telemetry.t
+            <= self.max_home_position_age_ms
+        )
 
     @staticmethod
     def _has_current_telemetry(record: _AircraftRecord) -> bool:

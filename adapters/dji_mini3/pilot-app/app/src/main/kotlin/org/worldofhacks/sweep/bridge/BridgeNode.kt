@@ -81,7 +81,13 @@ class BridgeNode(private val application: Application, val session: AircraftSess
     /** Saves the Setup fields (a null token keeps the stored one) and optionally (re)connects. */
     fun saveSetup(relayUrl: String, session: String, droneId: Int, token: String?, connect: Boolean) {
         scope.launch(Dispatchers.IO) {
+            val previous = store.load()
             store.save(relayUrl, session, droneId, token)
+            val saved = store.load()
+            if (previous?.hasSameRelayIdentity(saved) != true) {
+                setReadiness(ReadinessInput())
+                logLine("relay identity changed; confirm readiness again for the saved setup")
+            }
             _setup.value = store.summary()
             logLine("setup saved: relay $relayUrl, session $session, drone $droneId" + if (token.isNullOrEmpty()) "" else ", token replaced")
             if (connect) {
@@ -165,12 +171,14 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                 relayLink = link
                 mirror = scope.launch {
                     link.state.collect { state ->
-                        _link.value = state.copy(relayNetwork = _relayNetwork.value)
                         val epoch = state.connectionEpoch
                         synchronized(lock) {
                             // A cancelled collector may already be inside this block. Fence it
-                            // to its owning link so it cannot restore a stale recording epoch.
+                            // to its owning link so it cannot restore stale UI or recording state.
                             if (relayLink === link) {
+                                // A relay-loop update may predate the latest pilot input. Keep
+                                // the process owner's atomic declarations authoritative for UI.
+                                _link.value = state.copy(readiness = readiness, relayNetwork = _relayNetwork.value)
                                 sensorRecording?.updateSensorRelayContext(
                                     if (state.authenticated && state.joined && epoch != null && epoch > 0) {
                                         SensorRelayContext(setup.session, setup.droneId, epoch)
@@ -236,10 +244,16 @@ class BridgeNode(private val application: Application, val session: AircraftSess
     private fun isLoopback(host: String): Boolean =
         host == "127.0.0.1" || host.equals("localhost", ignoreCase = true) || host == "::1"
 
-    fun setReadiness(input: ReadinessInput) {
-        readiness = input
-        val link = synchronized(lock) { relayLink }
-        if (link == null) _link.update { it.copy(readiness = input) } else link.setReadiness(input)
+    fun setReadiness(input: ReadinessInput) = updateReadiness { input }
+
+    /** Applies each pilot change to the latest declarations, never a rendered UI snapshot. */
+    fun updateReadiness(transform: (ReadinessInput) -> ReadinessInput) {
+        synchronized(lock) {
+            val input = transform(readiness)
+            readiness = input
+            _link.update { it.copy(readiness = input) }
+            relayLink?.setReadiness(input)
+        }
     }
 
     private fun logLine(line: String) {

@@ -61,6 +61,47 @@ the previous session; choose a new session and update both phones before
 reconnecting. Local credentials and session evidence belong under the ignored
 `.sweep/` directory or outside the repository.
 
+## Complete and recover readiness
+
+After setup is saved, **Readiness** appears near the top of the phone screen.
+For each aircraft:
+
+1. Verify that the relay, aircraft and RC all show connected. Live telemetry
+   alone does not grant control or confirm that a person is at the RC.
+2. Keep the aircraft landed at its intended home. Wait for usable aircraft
+   positioning, then enable **Home pose confirmed**. The relay captures home
+   only from current-epoch, fresh, grounded telemetry meeting the deployed
+   position-quality minimum. If confirmation reaches the relay before eligible
+   telemetry, home remains pending and is captured when an eligible sample
+   arrives. Keep the aircraft at home while waiting.
+3. The person holding that aircraft's RC enables **RC safety operator present**
+   when ready to observe and take manual control. Clear it when they leave.
+4. Enable **Control authority** to allow Sweep commands. This is the pilot's
+   grant, not a motor-start command or proof that Virtual Stick is enabled.
+   If an RC takeover is latched, resolve it and explicitly use **Re-arm control
+   authority** before granting control again.
+5. Check the relay's answer and the console's readiness details before selecting
+   the aircraft. A positive position-quality value is not by itself proof that
+   all flight limits pass; the arbiter still applies its configured limits.
+
+Relay credentials persist across app restarts; flight declarations do not.
+Changing the saved relay identity or credential clears them. Reconnecting the
+same running app retains its current declarations, while the relay requires
+new signed readiness for the new connection epoch. Recheck the actual operator
+and aircraft setup after reconnecting.
+
+An existing home remains fixed through flight and relay reconnects. If the
+phone app restarted or the coordinate origin changed, wait for fresh grounded
+telemetry at home, turn **Home pose confirmed** off, then on to recapture it.
+Never rebase home while airborne.
+
+The current probe obtains horizontal position from aircraft GPS. With no valid
+fix it reports zero position quality; the three readiness inputs cannot repair
+that. Each phone currently chooses its own first-fix origin. Before flying two
+aircraft together, provide measured positions in one common fleet frame so
+geofence and separation checks describe their actual locations. The diagnostic
+localization stream is not yet a flight-position source.
+
 ## Select and command
 
 Begin with D-01 selected in **Control → Fleet** or the **Gesture** target strip.

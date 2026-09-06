@@ -54,17 +54,19 @@ export const REASONS: Record<string, string> = {
 }
 
 export const READINESS: Record<string, string> = {
-  identity_unverified: "The adapter's identity has not been verified for this session.",
-  adapter_capabilities_missing: 'The adapter has not advertised its capabilities.',
-  flight_capability_missing: 'The adapter does not advertise flight control.',
-  telemetry_missing: 'No telemetry has arrived for this aircraft.',
-  telemetry_stale: 'Telemetry stopped inside the freshness window.',
-  home_pose_missing: 'No home pose is recorded for this aircraft.',
-  control_authority_missing: 'Sweep does not hold control authority.',
-  rc_safety_operator_missing: 'No RC safety operator is reported present.',
-  disconnected: 'The adapter connection is down.',
-  leaving: 'The aircraft is completing a graceful leave.',
+  identity_unverified: "The adapter's identity has not been verified. Check the bridge phone's session and node setup, then reconnect.",
+  adapter_capabilities_missing: 'The adapter has not advertised its capabilities. Check that the bridge phone is connected to the aircraft and relay.',
+  flight_capability_missing: 'The adapter does not advertise flight control. Check the bridge adapter and aircraft connection before continuing.',
+  telemetry_missing: 'No telemetry has arrived. Check the aircraft, RC and bridge phone connections; wait for live telemetry.',
+  telemetry_stale: "Telemetry stopped inside the freshness window. Check the bridge phone's LAN and aircraft connections; wait for fresh telemetry.",
+  home_pose_missing: 'Home pose is not confirmed. While landed, establish real positioning, then check Readiness → Home pose confirmed on the bridge phone. Fresh positioning must meet the relay’s quality limit.',
+  control_authority_missing: 'Sweep control is not granted. Review Readiness → Control authority on the phone with the RC pilot. Resolve connection loss or actual takeover first. Permission does not mean Virtual Stick is enabled.',
+  rc_safety_operator_missing: 'Confirm Readiness → RC safety operator present on the bridge phone only with a person at the physical RC; a connection alone is insufficient.',
+  disconnected: "Adapter connection lost. Check the bridge phone's LAN and relay connection, then reconnect.",
+  leaving: 'The aircraft is completing a graceful leave. Wait for it to finish, then rejoin if needed.',
 }
+
+export const ZERO_POSITION_QUALITY_HELP = 'Position quality is 0%. Live telemetry does not establish valid positioning. Check aircraft positioning; the relay’s quality limit still applies.'
 
 export const MEMBERSHIP_REASON: Record<string, string> = {
   authenticated_join: 'The adapter authenticated and joined the roster.',

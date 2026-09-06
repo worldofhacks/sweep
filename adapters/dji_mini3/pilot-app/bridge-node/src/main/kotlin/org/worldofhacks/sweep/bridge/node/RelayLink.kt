@@ -189,9 +189,12 @@ class RelayLink(
     }
 
     /** The pilot's three toggles; a change while joined resends the signed readiness. */
-    fun setReadiness(input: ReadinessInput) = post {
-        readiness = input
-        update { it.copy(readiness = input) }
+    fun setReadiness(input: ReadinessInput) = updateReadiness { input }
+
+    /** Serializes changes against the current input so rapid toggles cannot overwrite peers. */
+    fun updateReadiness(transform: (ReadinessInput) -> ReadinessInput) = post {
+        readiness = transform(readiness)
+        update { it.copy(readiness = readiness) }
         if (_state.value.joined) {
             sendReadiness()
             sendNodeStatusIfChanged(force = true)

@@ -166,6 +166,8 @@ class RelayRuntime:
         control_localization_factory: ControlLocalizationFactory | None = None,
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         media_monitor: MediaMonitor | None = None,
+        min_home_position_quality: float = 0.0,
+        max_home_position_age_ms: int | None = None,
     ) -> None:
         self.settings = settings
         self.media_monitor = media_monitor
@@ -183,6 +185,8 @@ class RelayRuntime:
         self.leave_authorizer_factory = leave_authorizer_factory
         self.authoritative_rooms_factory = authoritative_rooms_factory
         self.control_localization_factory = control_localization_factory
+        self.min_home_position_quality = min_home_position_quality
+        self.max_home_position_age_ms = max_home_position_age_ms
         self.control_pose_signing_key = (
             settings.adapter_keys.get
             if control_pose_signing_key is None
@@ -239,6 +243,8 @@ class RelayRuntime:
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
+                    min_home_position_quality=self.min_home_position_quality,
+                    max_home_position_age_ms=self.max_home_position_age_ms,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -903,6 +909,8 @@ def create_app(
     transcript_service_factory: TranscriptServiceFactory | None = None,
     shutdown_callback: ShutdownCallback | None = None,
     media_monitor_factory: MediaMonitorFactory | None = None,
+    min_home_position_quality: float = 0.0,
+    max_home_position_age_ms: int | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -923,6 +931,8 @@ def create_app(
             control_localization_factory=control_localization_factory,
             control_pose_signing_key=control_pose_signing_key,
             media_monitor=build_monitor(active_settings, active_clock),
+            min_home_position_quality=min_home_position_quality,
+            max_home_position_age_ms=max_home_position_age_ms,
         )
         application.state.relay_runtime = runtime
         application.state.transcript_service = (

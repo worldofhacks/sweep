@@ -162,6 +162,17 @@ On the phone:
   up; Connect or a replug recovers without an epoch change.
 - Commands: every command this epoch with its outcome and reason.
 
+Readiness declarations are process-local pilot input. App process restarts begin with all
+three off, even when encrypted relay setup is restored. Saving a different relay URL,
+session, drone ID, or token clears the declarations; they cannot transfer to that identity.
+Saving unchanged setup, a transient relay reconnect (including a new connection epoch),
+and stopping/starting the link within the same process retain pilot input. Each reconnect
+resends it in a signed frame for the current epoch, and the relay checks readiness again.
+Aircraft/RC connectivity and an SDK takeover latch independently restrict effective control
+authority. A connected RC does not establish that a human safety operator is present, and
+the authority toggle permits requesting SDK control rather than proving Virtual Stick is
+currently enabled. Clearing a takeover latch still requires the separate pilot re-arm.
+
 In the relay's audit JSONL (`SWEEP_SESSION_LOG_DIR/<sha256 of the session id>.jsonl`):
 `membership` with `action: "join"` and `connection_epoch: 1`, `telemetry` at 10 Hz,
 `membership` with `action: "readiness"` and `membership: "ready"`, `capabilities` with the

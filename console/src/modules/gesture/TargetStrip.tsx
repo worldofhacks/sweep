@@ -8,7 +8,9 @@ import {
 import { isSupportedIntent, selectionRule } from '../../relay/contract'
 import { isReady, sortedAircraft } from '../../shell/derive'
 import { formatPercent, humanizeCode } from '../../shell/format'
+import { readinessNotes } from '../../shell/readiness'
 import { rosterIds } from '../control/controls'
+import { ReadinessHelp } from '../ReadinessHelp'
 import type { ModuleProps } from '../types'
 
 type Controller = ModuleProps['controller']
@@ -120,6 +122,8 @@ export function TargetStrip({ controller }: { controller: Controller }) {
   const fleet = sortedAircraft(state.aircraft)
   const ready = fleet.filter(isReady).map((drone) => drone.drone_id)
   const blockers = fleet.filter((drone) => !isReady(drone))
+  const needsHelp = fleet.filter((drone) => readinessNotes(drone).length > 0)
+  const noPosition = fleet.filter((drone) => drone.pos_quality === 0)
   const canSelect = isIntentEnabled(state, 'select')
   const allReadySelected = ready.length > 0 && ready.every((id) => state.selection.includes(id))
   const allReadyDisabled = !canSelect || ready.length === 0 || allReadySelected || pendingRequest !== null
@@ -142,7 +146,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
             ? lastSelected
               ? 'Intent v1 requires at least one aircraft in a select request.'
               : undefined
-            : humanizeCode(drone.readiness_reasons[0] ?? drone.membership)
+            : readinessNotes(drone).map(({ text }) => text).join(' ') || humanizeCode(drone.membership)
           const classes = ['tg-chip']
           if (on) classes.push('is-selected')
           if (!can) classes.push('is-blocked')
@@ -197,6 +201,25 @@ export function TargetStrip({ controller }: { controller: Controller }) {
             .join(' · ')}{' '}
           — these cannot be selected or commanded.
         </span>
+      )}
+      {noPosition.length > 0 && (
+        <span className="tg-strip-blockers">
+          <span className="tone-warn">
+            {noPosition.map((drone) => formatDroneId(drone.drone_id)).join(', ')} position quality 0%.
+            {' '}Live telemetry does not establish valid positioning. See Readiness help.
+          </span>
+        </span>
+      )}
+      {needsHelp.length > 0 && (
+        <details className="tg-strip-readiness">
+          <summary>Readiness help · {needsHelp.map((drone) => formatDroneId(drone.drone_id)).join(', ')}</summary>
+          {needsHelp.map((drone) => (
+            <div key={drone.drone_id} aria-label={`${formatDroneId(drone.drone_id)} readiness help`}>
+              <strong>{formatDroneId(drone.drone_id)}</strong>
+              <ReadinessHelp drone={drone} className="fleet-reasons" />
+            </div>
+          ))}
+        </details>
       )}
       <span className="tg-strip-quick" role="group" aria-label="Quick commands">
         {QUICK_COMMANDS.map((spec) => {

@@ -816,7 +816,9 @@ def test_adapter_receives_fresh_telemetry_while_its_state_delivery_is_blocked(
                     _authenticate_adapter(adapter)
                     adapter.send_json(membership_payload(action="join", event_id="join-backlog"))
                     _receive_type(console, "membership")
-                    adapter.send_json(telemetry_payload(event_id="telemetry-before-backlog"))
+                    adapter.send_json(
+                        telemetry_payload(event_id="telemetry-before-backlog", state="landed")
+                    )
                     _receive_type(console, "telemetry")
                     adapter.send_json(
                         membership_payload(action="readiness", event_id="ready-backlog")

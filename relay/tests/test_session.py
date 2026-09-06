@@ -664,7 +664,7 @@ def test_complete_durable_batch_remains_replayable_after_close_failure(
 ) -> None:
     _join(relay_session, adapter_principal)
     relay_session.process_telemetry(
-        telemetry_payload(event_id="telemetry-before-stale"), adapter_principal
+        telemetry_payload(event_id="telemetry-before-stale", state="landed"), adapter_principal
     )
     relay_session.process_membership(
         membership_payload(action="readiness", event_id="readiness-1"), adapter_principal
@@ -765,19 +765,19 @@ def test_source_allowlist_refuses_names_a_source_never_emits(
     keyboard_principal: Principal,
     webcam_principal: Principal,
 ) -> None:
-    webcam_takeoff = intent_payload(source="webcam")
-    webcam_takeoff.update(name="takeoff", confirm=True)
+    webcam_home = intent_payload(source="webcam")
+    webcam_home.update(name="come_home", confirm=True)
     keyboard_hold = intent_payload(source="keyboard", intent_id="intent-2")
 
-    refused_takeoff = relay_session.process_frame(webcam_takeoff, webcam_principal)
+    refused_home = relay_session.process_frame(webcam_home, webcam_principal)
     refused_hold = relay_session.process_frame(keyboard_hold, keyboard_principal)
     accepted_hold = relay_session.process_frame(
         intent_payload(source="webcam", intent_id="intent-3"), webcam_principal
     )
 
-    assert refused_takeoff[0]["type"] == "refusal"
-    assert refused_takeoff[0]["reason"] == "source_not_allowed"
-    assert refused_takeoff[0]["detail"] == "takeoff is not allowed from source webcam"
+    assert refused_home[0]["type"] == "refusal"
+    assert refused_home[0]["reason"] == "source_not_allowed"
+    assert refused_home[0]["detail"] == "come_home is not allowed from source webcam"
     assert refused_hold[0]["reason"] == "source_not_allowed"
     assert refused_hold[0]["detail"] == "hold is not allowed from source keyboard"
     assert accepted_hold[0]["status"] == "accepted"
@@ -869,7 +869,9 @@ def test_signed_readiness_becomes_selectable_only_after_current_telemetry(
     relay_session: RelaySession, adapter_principal: Principal
 ) -> None:
     _join(relay_session, adapter_principal)
-    relay_session.process_telemetry(telemetry_payload(event_id="telemetry-1"), adapter_principal)
+    relay_session.process_telemetry(
+        telemetry_payload(event_id="telemetry-1", state="landed"), adapter_principal
+    )
 
     events = relay_session.process_membership(
         membership_payload(action="readiness", event_id="readiness-1"),

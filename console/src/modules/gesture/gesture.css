@@ -54,6 +54,9 @@
 .tg-strip-all:hover:not(:disabled) { background: var(--color-ground); }
 .tg-strip-all:disabled { color: var(--color-ink-3); background: var(--color-disabled-bg); }
 .tg-strip-blockers { flex: 1 1 100%; font-size: var(--text-11-5); line-height: var(--leading-1-4); color: var(--color-ink-3); }
+.tg-strip-readiness { flex: 1 1 100%; font-size: var(--text-11-5); line-height: var(--leading-1-4); }
+.tg-strip-readiness summary { cursor: pointer; }
+.tg-strip-readiness > div { border-top: 1px solid var(--color-rule-inner); margin-top: 8px; padding-top: 8px; }
 .tg-strip-quick { display: flex; flex-wrap: wrap; gap: 5px; flex: 0 0 auto; }
 .tg-quick {
   display: flex;

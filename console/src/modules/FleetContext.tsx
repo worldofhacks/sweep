@@ -2,8 +2,9 @@ import type { DepartureRecord } from '../control/state'
 import { capabilityBlockedReason, formatDroneId, isIntentEnabled } from '../control/state'
 import type { RelayAircraftState } from '../relay/contract'
 import { isReady, membershipTone, metricTone, sortedAircraft } from '../shell/derive'
-import { formatPercent, formatTime, humanizeCode } from '../shell/format'
-import { MEMBERSHIP_REASON, READINESS } from '../shell/sentences'
+import { formatPercent, formatTime } from '../shell/format'
+import { MEMBERSHIP_REASON } from '../shell/sentences'
+import { ReadinessHelp } from './ReadinessHelp'
 import type { ModuleProps } from './types'
 
 /**
@@ -113,7 +114,7 @@ function FleetCard({
     <article className="fleet-card" aria-label={`${id} registry card`}>
       <div className="fleet-card-head">
         <span className="fleet-id">{id}</span>
-        <span className={`fleet-membership tone-${membershipTone(drone.membership)}`}>
+        <span className={`fleet-membership tone-${membershipTone(drone.membership, drone.pos_quality)}`}>
           {drone.membership}
         </span>
         <span className="fleet-flight">{drone.flight_state ?? 'flight state unreported'}</span>
@@ -125,7 +126,7 @@ function FleetCard({
       </div>
       <p className="fleet-line">
         <span className={drone.control_authority ? 'tone-ink' : 'tone-danger'}>
-          {drone.control_authority ? 'Sweep' : 'RC takeover'}
+          {drone.control_authority ? 'Sweep' : 'Sweep control not granted'}
         </span>
         <span className={drone.rc_safety_operator_present ? undefined : 'tone-danger'}>
           RC safety operator {drone.rc_safety_operator_present ? 'present' : 'absent'}
@@ -135,15 +136,7 @@ function FleetCard({
           {drone.last_seen_at === null ? 'last seen unreported' : `seen ${formatTime(drone.last_seen_at)}`}
         </span>
       </p>
-      {drone.readiness_reasons.length > 0 && (
-        <div className="fleet-reasons">
-          {drone.readiness_reasons.map((code) => (
-            <p key={code}>
-              <code>{code}</code> — {READINESS[code] ?? humanizeCode(code)}
-            </p>
-          ))}
-        </div>
-      )}
+      <ReadinessHelp drone={drone} className="fleet-reasons" />
       <button
         type="button"
         className={selected ? 'fleet-select is-selected' : 'fleet-select'}

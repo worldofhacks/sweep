@@ -60,7 +60,7 @@ private fun FlightCard(flight: FlightNode, simulation: FlightSimulation?) {
                 Text("Control authority LOST: $lost. The RC has the aircraft; readiness reports control_authority=false until re-armed.", color = MaterialTheme.colorScheme.error)
                 Button(onClick = flight.executor::rearmAuthority) { Text("Re-arm control authority") }
             } else {
-                Text("Control authority: armed (RC input, pause, mode switch, or the flight controller dropping virtual stick cancels the loop).", style = MaterialTheme.typography.bodySmall)
+                Text("No RC takeover is latched. Readiness → Control authority determines whether console motion is allowed. RC input, pause, mode switch, or the flight controller dropping Virtual Stick cancels the loop.", style = MaterialTheme.typography.bodySmall)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.weight(1f)) {

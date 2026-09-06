@@ -15,6 +15,11 @@ data class BridgeSetup(
     val token: String,
     val localizationPins: LocalizationPins? = null,
 ) {
+    /** Pilot declarations belong to this relay identity; diagnostic pins do not transfer it. */
+    fun hasSameRelayIdentity(other: BridgeSetup?): Boolean = other != null &&
+        relayUrl == other.relayUrl && session == other.session &&
+        droneId == other.droneId && token == other.token
+
     /** Never includes the token. */
     override fun toString(): String = "BridgeSetup(relayUrl=$relayUrl, session=$session, droneId=$droneId, token=<redacted>)"
 }
