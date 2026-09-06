@@ -36,8 +36,14 @@ describe('Search module', () => {
       intent_id: intent.intent_id,
       plan: { ...searchPreview().plan, selection: intent.selection },
     }))
-    const status = vi.fn(async () => searchStatus())
-    const acknowledge = vi.fn(async () => searchStatus(true))
+    const status = vi.fn(async (_session: string, intentId: string) => ({
+      ...searchStatus(),
+      intent_id: intentId,
+    }))
+    const acknowledge = vi.fn(async (_session: string, intentId: string) => ({
+      ...searchStatus(true),
+      intent_id: intentId,
+    }))
     const clients = mount({ catalog, preview, status, acknowledge })
     await screen.findByText(/Development fixture active/i)
     const u = userEvent.setup()
@@ -51,9 +57,58 @@ describe('Search module', () => {
     expect(clients.console.sent[0].intent_id).toBe(preview.mock.calls[0][0].intent_id)
     expect(clients.console.sent[0]).toMatchObject({ name: 'search', confirm: true, args: { zone_id: 'lobby', target_class: 'backpack' } })
 
+    await screen.findByText(/camera-1 \/ frame frame-1 · box 1, 2, 3, 4/i)
+    expect(screen.getByText(/lobby, floor-1 at 1\.0, 1\.0 m/i)).toBeVisible()
     await u.click(await screen.findByRole('button', { name: 'Acknowledge finding' }))
     await waitFor(() => expect(acknowledge).toHaveBeenCalledWith(session, clients.console.sent[0].intent_id, 'sighting/1'))
     expect(clients.console.sent).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Acknowledged' })).toBeDisabled()
+  })
+
+  test('tracks and acknowledges only the newest search mission', async () => {
+    const catalog = vi.fn(async () => ({ target_classes: ['backpack'], zones: ['lobby'] }))
+    const preview = vi.fn(async (intent: IntentV1) => ({
+      ...searchPreview(),
+      session: intent.session,
+      intent_id: intent.intent_id,
+      plan: { ...searchPreview().plan, selection: intent.selection },
+    }))
+    const status = vi.fn(async (_session: string, intentId: string) => ({
+      ...searchStatus(),
+      intent_id: intentId,
+      candidates: [{ ...searchStatus().candidates[0], sighting_id: `sighting-${intentId}` }],
+    }))
+    const acknowledge = vi.fn(async (_session: string, intentId: string, sightingId: string) => ({
+      ...searchStatus(true),
+      intent_id: intentId,
+      candidates: [{ ...searchStatus(true).candidates[0], sighting_id: sightingId }],
+    }))
+    const clients = mount({ catalog, preview, status, acknowledge })
+    const u = userEvent.setup()
+
+    await u.click(await screen.findByRole('button', { name: 'Preview search' }))
+    await u.click(within(await screen.findByRole('region', { name: 'Pending confirmation' }))
+      .getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    const firstIntentId = clients.console.sent[0].intent_id
+    await screen.findByRole('button', { name: 'Acknowledge finding' })
+    await u.click(screen.getByRole('button', { name: 'Acknowledge finding' }))
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith(
+      session, firstIntentId, `sighting-${firstIntentId}`,
+    ))
+    expect(screen.getByRole('button', { name: 'Acknowledged' })).toBeDisabled()
+
+    await u.click(screen.getByRole('button', { name: 'Preview search' }))
+    await u.click(within(await screen.findByRole('region', { name: 'Pending confirmation' }))
+      .getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
+    const secondIntentId = clients.console.sent[1].intent_id
+    await waitFor(() => expect(status).toHaveBeenCalledWith(session, secondIntentId))
+    await screen.findByRole('button', { name: 'Acknowledge finding' })
+    expect(screen.queryByRole('button', { name: 'Acknowledged' })).toBeNull()
+    await u.click(screen.getByRole('button', { name: 'Acknowledge finding' }))
+    await waitFor(() => expect(acknowledge).toHaveBeenLastCalledWith(
+      session, secondIntentId, `sighting-${secondIntentId}`,
+    ))
   })
 })

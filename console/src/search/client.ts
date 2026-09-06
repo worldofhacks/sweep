@@ -116,7 +116,8 @@ export class HttpSearchClient implements SearchClient {
     url.pathname = `/session/${encodeURIComponent(session)}/search/${action}`
     url.search = ''
     url.hash = ''
-    const response = await this.fetcher(url.toString(), {
+    const fetcher = this.fetcher
+    const response = await fetcher(url.toString(), {
       method: body ? 'POST' : 'GET',
       headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
       ...(body ? { body: JSON.stringify(body) } : {}),

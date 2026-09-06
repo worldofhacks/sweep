@@ -77,6 +77,26 @@ describe('search HTTP client', () => {
     expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toMatchObject({ intent: { confirm: true, name: 'search' } })
     expect(fetcher.mock.calls[3][0]).toBe('https://relay.example/session/session-1/search/search-1/findings/sighting%2F1/ack')
   })
+
+  test('calls an injected browser fetcher as a plain function', async () => {
+    const fetcher = vi.fn(function (this: unknown) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ session: intent.session, target_classes: ['backpack'], zones: ['lobby'] }),
+        ),
+      )
+    })
+    const client = new HttpSearchClient(
+      { baseUrl: 'wss://relay.example/ws', token: 'test-token' },
+      fetcher as unknown as typeof fetch,
+    )
+
+    await expect(client.catalog(intent.session)).resolves.toEqual({
+      target_classes: ['backpack'],
+      zones: ['lobby'],
+    })
+    expect(fetcher.mock.contexts[0]).toBeUndefined()
+  })
 })
 
 export { intent as searchIntent, preview as searchPreview, status as searchStatus }

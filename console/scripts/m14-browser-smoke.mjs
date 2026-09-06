@@ -88,6 +88,18 @@ try {
       }),
     })
   })
+  await page.route(`http://127.0.0.1:${relayPort}/session/${sessionId}/search/catalog`, async (route) => {
+    if (route.request().method() !== 'GET') throw new Error('search catalog must use GET')
+    if (route.request().headers().authorization !== `Bearer ${relayToken}`) {
+      throw new Error('search catalog request is not authenticated')
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'Access-Control-Allow-Origin': `http://127.0.0.1:${consolePort}` },
+      body: JSON.stringify({ session: sessionId, target_classes: ['backpack'], zones: ['lobby'] }),
+    })
+  })
   await page.addInitScript(() => {
     class BrowserSmokeMediaRecorder {
       state = 'inactive'
@@ -128,6 +140,13 @@ try {
     { baseUrl: `ws://127.0.0.1:${relayPort}`, sessionId, token: relayToken },
   )
   await page.goto(`http://127.0.0.1:${consolePort}/`)
+  const searchCatalog = await page.evaluate(async ({ baseUrl, sessionId, token }) => {
+    const { HttpSearchClient } = await import('/src/search/client.ts')
+    return new HttpSearchClient({ baseUrl, token }).catalog(sessionId)
+  }, { baseUrl: `ws://127.0.0.1:${relayPort}`, sessionId, token: relayToken })
+  if (JSON.stringify(searchCatalog) !== JSON.stringify({ target_classes: ['backpack'], zones: ['lobby'] })) {
+    throw new Error(`browser search catalog did not load: ${JSON.stringify(searchCatalog)}`)
+  }
   await page.getByRole('button', { name: 'Network stop', exact: true }).waitFor()
   await openControlPane(page, 'Fleet')
   await page.getByRole('region', { name: 'Registry', exact: true }).getByRole('article', { name: 'D-01 registry card' }).getByRole('button', { name: 'Select D-01', exact: true }).click()

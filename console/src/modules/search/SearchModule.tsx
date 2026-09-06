@@ -17,7 +17,7 @@ export function SearchModule({ controller, services }: ModuleProps) {
   const [acknowledging, setAcknowledging] = useState<string | null>(null)
   const enabled = state.enabledIntentNames.includes('search')
   const searchRequest = useMemo(
-    () => [...state.requests].reverse().find((request) => request.intent.name === 'search' && request.status !== 'cancelled') ?? null,
+    () => state.requests.find((request) => request.intent.name === 'search' && request.status !== 'cancelled') ?? null,
     [state.requests],
   )
   const searchIntentId = searchRequest?.intent.intent_id ?? null
@@ -112,7 +112,7 @@ export function SearchModule({ controller, services }: ModuleProps) {
         {error && <p role="alert">{error}</p>}
       </div>
       {route && <div className="se-panel"><RoutePreview preview={route} /></div>}
-      {status && <SearchStatusView status={status} acknowledging={acknowledging} onAcknowledge={acknowledge} />}
+      {status?.intent_id === searchIntentId && <SearchStatusView status={status} acknowledging={acknowledging} onAcknowledge={acknowledge} />}
     </section>
   )
 }
@@ -140,7 +140,8 @@ function SearchStatusView({ status, acknowledging, onAcknowledge }: {
         {status.candidates.length === 0 ? <p>No candidate sightings have been reported.</p> : (
           <ul className="se-findings">{status.candidates.map((candidate) => <li key={candidate.sighting_id}>
             <strong>{candidate.label}</strong> · {(candidate.confidence * 100).toFixed(0)}% · {candidate.observation_count} observations
-            {candidate.position && <span> · {candidate.position.zone_id} at {candidate.position.x_m.toFixed(1)}, {candidate.position.y_m.toFixed(1)} m</span>}
+            {candidate.frame && <span> · {candidate.frame.source_id} / frame {candidate.frame.frame_id} · box {candidate.bbox_xyxy.join(', ')}</span>}
+            {candidate.position && <span> · {candidate.position.zone_id}, {candidate.position.floor_id} at {candidate.position.x_m.toFixed(1)}, {candidate.position.y_m.toFixed(1)} m</span>}
             <button type="button" disabled={candidate.acknowledged || acknowledging === candidate.sighting_id}
               onClick={() => { void onAcknowledge(candidate.sighting_id) }}>
               {candidate.acknowledged ? 'Acknowledged' : acknowledging === candidate.sighting_id ? 'Acknowledging…' : 'Acknowledge finding'}
