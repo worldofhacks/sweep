@@ -574,24 +574,36 @@ def _service_running(service: OwnedService) -> bool:
     return running is True
 
 
-def _stop_service(service: OwnedService) -> None:
+def _stop_service(service: OwnedService) -> bool:
+    """Stop/remove the owned service and report a confirmed controlled stop."""
     details = _inspect_container(service.container_id)
     if details is None:
-        return
+        return False
     try:
         labels = details["Config"]["Labels"]  # type: ignore[index]
+        running = details["State"]["Running"]  # type: ignore[index]
     except (KeyError, TypeError) as exc:
         raise RecordingError("Docker returned incomplete MediaMTX metadata") from exc
     if not isinstance(labels, dict) or labels.get(OWNER_LABEL) != service.owner_token:
         raise RecordingError("refusing to stop a MediaMTX container owned by another operation")
+    if not isinstance(running, bool):
+        raise RecordingError("Docker returned incomplete MediaMTX metadata")
 
-    _command(["docker", "stop", "--time", "20", service.container_id], timeout=45, check=False)
+    stopped = _command(
+        ["docker", "stop", "--time", "20", service.container_id],
+        timeout=45,
+        check=False,
+    )
     removed = _command(["docker", "rm", "--force", service.container_id], timeout=30, check=False)
     if removed.returncode != 0:
         detail = removed.stderr.strip()[-1000:]
         raise RecordingError(
             "could not remove the owned MediaMTX container" + (f": {detail}" if detail else "")
         )
+    # A nonzero stop means the service may have exited between inspection and the
+    # controlled stop request.  A later successful force-remove cannot turn that
+    # ambiguity back into an operator or safety-limit success.
+    return running and stopped.returncode == 0
 
 
 def _directory_flags() -> int:
@@ -638,15 +650,25 @@ def _open_file_at(root_descriptor: int, relative: Path) -> int:
     return descriptor
 
 
-def _scan_tree_at(root_descriptor: int, label: str) -> list[TreeEntry]:
+def _scan_tree_at(
+    root_descriptor: int,
+    label: str,
+    finalization: FinalizationBudget | None = None,
+) -> list[TreeEntry]:
     entries: list[TreeEntry] = []
     pending = [(Path(), os.dup(root_descriptor))]
     try:
         while pending:
+            if finalization is not None:
+                finalization.checkpoint()
             parent_relative, descriptor = pending.pop()
             try:
                 children = list(os.scandir(descriptor))
+                if finalization is not None:
+                    finalization.checkpoint()
                 for child in children:
+                    if finalization is not None:
+                        finalization.checkpoint()
                     metadata = child.stat(follow_symlinks=False)
                     relative = parent_relative / child.name
                     entry = TreeEntry.from_stat(relative, metadata)
@@ -671,7 +693,12 @@ def _scan_tree_at(root_descriptor: int, label: str) -> list[TreeEntry]:
         for _, descriptor in pending:
             os.close(descriptor)
         raise
-    return sorted(entries, key=lambda entry: entry.relative.as_posix())
+    if finalization is not None:
+        finalization.checkpoint()
+    ordered = sorted(entries, key=lambda entry: entry.relative.as_posix())
+    if finalization is not None:
+        finalization.checkpoint()
+    return ordered
 
 
 def _tree_bytes(run_dir: Path) -> int:
@@ -690,10 +717,16 @@ def _allocated_size(size: int, block_size: int) -> int:
     return ((size + block_size - 1) // block_size) * block_size
 
 
-def _tree_usage_at(root_descriptor: int, block_size: int) -> tuple[int, int]:
+def _tree_usage_at(
+    root_descriptor: int,
+    block_size: int,
+    finalization: FinalizationBudget | None = None,
+) -> tuple[int, int]:
     logical = 0
     allocated = block_size
-    for entry in _scan_tree_at(root_descriptor, "recording tree"):
+    for entry in _scan_tree_at(root_descriptor, "recording tree", finalization):
+        if finalization is not None:
+            finalization.checkpoint()
         if stat.S_ISREG(entry.mode):
             logical += entry.size
             allocated += _allocated_size(entry.size, block_size) + block_size
@@ -725,11 +758,17 @@ def _prepared_context(spec: RunSpec, prepared: PreparedRun | None) -> Iterator[P
 
 
 def _budget_status(
-    spec: RunSpec, prepared: PreparedRun | None = None
+    spec: RunSpec,
+    prepared: PreparedRun | None = None,
+    finalization: FinalizationBudget | None = None,
 ) -> tuple[tuple[str, ...], bool]:
+    if finalization is not None:
+        finalization.checkpoint()
     with _prepared_context(spec, prepared) as pinned:
         export_block = pinned.export_root.block_size()
-        used, export_allocation = _tree_usage_at(pinned.run_dir.descriptor, export_block)
+        used, export_allocation = _tree_usage_at(
+            pinned.run_dir.descriptor, export_block, finalization
+        )
         pinned.assert_current()
         reasons = []
         recording_reason = _limit_reason(
@@ -740,6 +779,8 @@ def _budget_status(
 
         export_safe = True
         if not _same_filesystem(pinned.run_dir, pinned.export_root):
+            if finalization is not None:
+                finalization.checkpoint()
             required = (
                 export_allocation
                 + _allocated_size(MAX_MANIFEST_BYTES, export_block)
@@ -753,6 +794,8 @@ def _budget_status(
                 )
                 export_safe = False
         pinned.assert_current()
+        if finalization is not None:
+            finalization.checkpoint()
         return tuple(reasons), export_safe
 
 
@@ -872,7 +915,7 @@ def _segments_at(
     if finalization is not None:
         finalization.checkpoint()
     files: list[TreeEntry] = []
-    for entry in _scan_tree_at(root_descriptor, "recording tree"):
+    for entry in _scan_tree_at(root_descriptor, "recording tree", finalization):
         if finalization is not None:
             finalization.checkpoint()
         if not stat.S_ISREG(entry.mode):
@@ -942,13 +985,21 @@ def _segments(
         pinned.close()
 
 
-def _descriptor_bytes(descriptor: int, maximum: int) -> bytes:
+def _descriptor_bytes(
+    descriptor: int,
+    maximum: int,
+    finalization: FinalizationBudget | None = None,
+) -> bytes:
+    if finalization is not None:
+        finalization.checkpoint()
     size = os.fstat(descriptor).st_size
     if size > maximum:
         raise RecordingError(f"recording file exceeds the {maximum}-byte read bound")
     chunks: list[bytes] = []
     offset = 0
     while offset < size:
+        if finalization is not None:
+            finalization.checkpoint()
         chunk = os.pread(descriptor, min(1024 * 1024, size - offset), offset)
         if not chunk:
             raise RecordingError("recording file changed during inspection")
@@ -956,6 +1007,8 @@ def _descriptor_bytes(descriptor: int, maximum: int) -> bytes:
         offset += len(chunk)
     if os.fstat(descriptor).st_size != size:
         raise RecordingError("recording file changed during inspection")
+    if finalization is not None:
+        finalization.checkpoint()
     return b"".join(chunks)
 
 
@@ -978,10 +1031,17 @@ def _descriptor_sha256(descriptor: int, finalization: FinalizationBudget | None 
     return digest.hexdigest()
 
 
-def _atomic_write_at(directory_descriptor: int, name: str, payload: bytes) -> None:
+def _atomic_write_at(
+    directory_descriptor: int,
+    name: str,
+    payload: bytes,
+    finalization: FinalizationBudget | None = None,
+) -> None:
     temporary = f".{name}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
     descriptor: int | None = None
     try:
+        if finalization is not None:
+            finalization.checkpoint()
         descriptor = os.open(
             temporary,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
@@ -990,16 +1050,32 @@ def _atomic_write_at(directory_descriptor: int, name: str, payload: bytes) -> No
         )
         with os.fdopen(descriptor, "wb") as output:
             descriptor = None
-            output.write(payload)
+            view = memoryview(payload)
+            offset = 0
+            while offset < len(view):
+                if finalization is not None:
+                    finalization.checkpoint()
+                written = output.write(view[offset : offset + 1024 * 1024])
+                if written is None or written <= 0:
+                    raise RecordingError("recording manifest write stalled")
+                offset += written
             output.flush()
+            if finalization is not None:
+                finalization.checkpoint()
             os.fsync(output.fileno())
+        if finalization is not None:
+            finalization.checkpoint()
         os.replace(
             temporary,
             name,
             src_dir_fd=directory_descriptor,
             dst_dir_fd=directory_descriptor,
         )
+        if finalization is not None:
+            finalization.checkpoint()
         os.fsync(directory_descriptor)
+        if finalization is not None:
+            finalization.checkpoint()
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -1010,7 +1086,10 @@ def _atomic_write_at(directory_descriptor: int, name: str, payload: bytes) -> No
 
 
 def _verify_copy_at(
-    root_descriptor: int, segments: tuple[dict[str, object], ...], manifest: bytes
+    root_descriptor: int,
+    segments: tuple[dict[str, object], ...],
+    manifest: bytes,
+    finalization: FinalizationBudget | None = None,
 ) -> None:
     expected_files = {"recording-manifest.json", *(str(item["path"]) for item in segments)}
     expected_directories: set[str] = set()
@@ -1021,34 +1100,43 @@ def _verify_copy_at(
             parent.as_posix() for parent in relative.parents if parent != Path(".")
         )
 
-    entries = _scan_tree_at(root_descriptor, "exported run")
+    entries = _scan_tree_at(root_descriptor, "exported run", finalization)
     found_files = {entry.relative.as_posix() for entry in entries if stat.S_ISREG(entry.mode)}
     found_directories = {entry.relative.as_posix() for entry in entries if stat.S_ISDIR(entry.mode)}
+    if finalization is not None:
+        finalization.checkpoint()
     if found_files != expected_files or found_directories != expected_directories:
         raise RecordingError("exported run does not exactly match the manifest")
 
     descriptor = _open_file_at(root_descriptor, Path("recording-manifest.json"))
     try:
-        if _descriptor_bytes(descriptor, MAX_MANIFEST_BYTES) != manifest:
+        if _descriptor_bytes(descriptor, MAX_MANIFEST_BYTES, finalization) != manifest:
             raise RecordingError("exported manifest bytes changed during copy")
     finally:
         os.close(descriptor)
     for item in segments:
+        if finalization is not None:
+            finalization.checkpoint()
         relative = Path(str(item["path"]))
         descriptor = _open_file_at(root_descriptor, relative)
         try:
             if (
                 os.fstat(descriptor).st_size != item["size_bytes"]
-                or _descriptor_sha256(descriptor) != item["sha256"]
+                or _descriptor_sha256(descriptor, finalization) != item["sha256"]
             ):
                 raise RecordingError(f"exported segment does not match its manifest: {relative}")
         finally:
             os.close(descriptor)
 
 
-def _fsync_tree_at(root_descriptor: int) -> None:
-    entries = _scan_tree_at(root_descriptor, "recording tree")
+def _fsync_tree_at(
+    root_descriptor: int,
+    finalization: FinalizationBudget | None = None,
+) -> None:
+    entries = _scan_tree_at(root_descriptor, "recording tree", finalization)
     for entry in entries:
+        if finalization is not None:
+            finalization.checkpoint()
         if not stat.S_ISREG(entry.mode):
             continue
         descriptor = _open_file_at(root_descriptor, entry.relative)
@@ -1057,6 +1145,8 @@ def _fsync_tree_at(root_descriptor: int) -> None:
                 raise RecordingError(
                     f"recording file changed during synchronization: {entry.relative}"
                 )
+            if finalization is not None:
+                finalization.checkpoint()
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
@@ -1066,16 +1156,24 @@ def _fsync_tree_at(root_descriptor: int) -> None:
         reverse=True,
     )
     for entry in directories:
+        if finalization is not None:
+            finalization.checkpoint()
         descriptor = _open_directory_at(root_descriptor, entry.relative)
         try:
             if not entry.matches(os.fstat(descriptor)):
                 raise RecordingError(
                     f"recording directory changed during synchronization: {entry.relative}"
                 )
+            if finalization is not None:
+                finalization.checkpoint()
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+    if finalization is not None:
+        finalization.checkpoint()
     os.fsync(root_descriptor)
+    if finalization is not None:
+        finalization.checkpoint()
 
 
 def _copy_file_at(
@@ -1084,12 +1182,15 @@ def _copy_file_at(
     relative: Path,
     expected_size: int,
     expected_sha256: str,
+    finalization: FinalizationBudget | None = None,
 ) -> None:
     parts = _relative_parts(relative)
     source = _open_file_at(source_root, relative)
     destination_parent: int | None = None
     destination: int | None = None
     try:
+        if finalization is not None:
+            finalization.checkpoint()
         destination_parent = (
             _open_directory_at(destination_root, Path(*parts[:-1]))
             if len(parts) > 1
@@ -1106,12 +1207,16 @@ def _copy_file_at(
         digest = hashlib.sha256()
         offset = 0
         while offset < expected_size:
+            if finalization is not None:
+                finalization.checkpoint()
             chunk = os.pread(source, min(1024 * 1024, expected_size - offset), offset)
             if not chunk:
                 raise RecordingError(f"recording segment changed during copy: {relative}")
             digest.update(chunk)
             written = 0
             while written < len(chunk):
+                if finalization is not None:
+                    finalization.checkpoint()
                 count = os.write(destination, chunk[written:])
                 if count <= 0:
                     raise RecordingError(f"recording segment copy stalled: {relative}")
@@ -1119,7 +1224,11 @@ def _copy_file_at(
             offset += len(chunk)
         if os.fstat(source).st_size != expected_size or digest.hexdigest() != expected_sha256:
             raise RecordingError(f"recording segment changed during copy: {relative}")
+        if finalization is not None:
+            finalization.checkpoint()
         os.fsync(destination)
+        if finalization is not None:
+            finalization.checkpoint()
     except BaseException:
         if destination is not None:
             os.close(destination)
@@ -1237,7 +1346,10 @@ def _archive_plan(
     stop_reason: str,
     elapsed_seconds: float,
     configuration: dict[str, str] | None = None,
+    finalization: FinalizationBudget | None = None,
 ) -> ArchivePlan:
+    if finalization is not None:
+        finalization.checkpoint()
     manifest = _canonical_json(
         {
             "schema": "sweep.media.recording-manifest.v1",
@@ -1262,6 +1374,8 @@ def _archive_plan(
     )
     if len(manifest) > MAX_MANIFEST_BYTES:
         raise RecordingError(f"recording manifest exceeds {MAX_MANIFEST_BYTES} bytes")
+    if finalization is not None:
+        finalization.checkpoint()
     return ArchivePlan(manifest, tuple(segments))
 
 
@@ -1277,8 +1391,15 @@ def _archive_allocation(plan: ArchivePlan, block_size: int) -> int:
 
 
 def _ensure_publication_space(
-    spec: RunSpec, plan: ArchivePlan, prepared: PreparedRun, *, complete_archive: bool
+    spec: RunSpec,
+    plan: ArchivePlan,
+    prepared: PreparedRun,
+    *,
+    complete_archive: bool,
+    finalization: FinalizationBudget | None = None,
 ) -> None:
+    if finalization is not None:
+        finalization.checkpoint()
     prepared.assert_current()
     destination = prepared.export_root if complete_archive else prepared.run_dir
     block_size = destination.block_size()
@@ -1289,29 +1410,78 @@ def _ensure_publication_space(
         allocation += (ARCHIVE_METADATA_BLOCKS + 2) * block_size
     required = spec.min_free_bytes + allocation
     free = destination.free_bytes()
+    if finalization is not None:
+        finalization.checkpoint()
     if free <= required:
         raise RecordingError(
             f"recording publication requires more than {required} free bytes ({free} available)"
         )
 
 
+def _rename_for_publication(
+    source_name: str,
+    destination_name: str,
+    *,
+    source_descriptor: int,
+    destination_descriptor: int,
+    finalization: FinalizationBudget | None,
+    publication_committed: Callable[[], None] | None,
+) -> None:
+    """Linearize the deadline/cancellation check with the irreversible publish rename."""
+    handled = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
+    previous_mask: set[signal.Signals] | None = None
+    if finalization is not None and hasattr(signal, "pthread_sigmask"):
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled)
+    try:
+        if finalization is not None:
+            finalization.checkpoint()
+        os.rename(
+            source_name,
+            destination_name,
+            src_dir_fd=source_descriptor,
+            dst_dir_fd=destination_descriptor,
+        )
+        if publication_committed is not None:
+            publication_committed()
+    finally:
+        if previous_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
 def _export(
     spec: RunSpec,
     plan: ArchivePlan,
     prepared: PreparedRun | None = None,
+    finalization: FinalizationBudget | None = None,
+    publication_committed: Callable[[], None] | None = None,
 ) -> Path:
     with _prepared_context(spec, prepared) as pinned:
+        if finalization is not None:
+            finalization.checkpoint()
         pinned.assert_current()
         if _entry_at(pinned.export_root.descriptor, spec.export_dir.name) is not None:
             raise RecordingError(f"durable run destination already exists: {spec.export_dir}")
 
         if _same_filesystem(pinned.run_dir, pinned.export_root):
-            _ensure_publication_space(spec, plan, pinned, complete_archive=False)
-            _atomic_write_at(pinned.run_dir.descriptor, "recording-manifest.json", plan.manifest)
+            _ensure_publication_space(
+                spec,
+                plan,
+                pinned,
+                complete_archive=False,
+                finalization=finalization,
+            )
+            _atomic_write_at(
+                pinned.run_dir.descriptor,
+                "recording-manifest.json",
+                plan.manifest,
+                finalization,
+            )
             pinned.assert_current()
-            _verify_copy_at(pinned.run_dir.descriptor, plan.segments, plan.manifest)
-            _fsync_tree_at(pinned.run_dir.descriptor)
+            _verify_copy_at(pinned.run_dir.descriptor, plan.segments, plan.manifest, finalization)
+            _fsync_tree_at(pinned.run_dir.descriptor, finalization)
             pinned.assert_current()
+            if finalization is not None:
+                finalization.checkpoint()
             if pinned.run_dir.free_bytes() <= spec.min_free_bytes:
                 raise RecordingError("recording publication would breach the free-space reserve")
             if _entry_at(pinned.export_root.descriptor, spec.export_dir.name) is not None:
@@ -1319,11 +1489,13 @@ def _export(
             _assert_entry_matches_pin(
                 pinned.session_dir.descriptor, spec.run_dir.name, pinned.run_dir
             )
-            os.rename(
+            _rename_for_publication(
                 spec.run_dir.name,
                 spec.export_dir.name,
-                src_dir_fd=pinned.session_dir.descriptor,
-                dst_dir_fd=pinned.export_root.descriptor,
+                source_descriptor=pinned.session_dir.descriptor,
+                destination_descriptor=pinned.export_root.descriptor,
+                finalization=finalization,
+                publication_committed=publication_committed,
             )
             os.fsync(pinned.export_root.descriptor)
             os.fsync(pinned.session_dir.descriptor)
@@ -1332,12 +1504,20 @@ def _export(
             _assert_published(spec, pinned, pinned.run_dir.descriptor)
             return spec.export_dir
 
-        _ensure_publication_space(spec, plan, pinned, complete_archive=True)
+        _ensure_publication_space(
+            spec,
+            plan,
+            pinned,
+            complete_archive=True,
+            finalization=finalization,
+        )
         staging_name = f".{spec.run_id}.partial-{uuid.uuid4().hex}"
         staging_descriptor: int | None = None
         staging_identity: tuple[int, int] | None = None
         published = False
         try:
+            if finalization is not None:
+                finalization.checkpoint()
             os.mkdir(staging_name, mode=0o700, dir_fd=pinned.export_root.descriptor)
             staging_descriptor = os.open(
                 staging_name, _directory_flags(), dir_fd=pinned.export_root.descriptor
@@ -1348,10 +1528,14 @@ def _export(
                 {str(segment["path"]).split("/", 1)[0] for segment in plan.segments}
             )
             for stream in stream_directories:
+                if finalization is not None:
+                    finalization.checkpoint()
                 if stream not in ALLOWED_STREAMS:
                     raise RecordingError(f"unexpected stream path in archive plan: {stream}")
                 os.mkdir(stream, mode=0o700, dir_fd=staging_descriptor)
             for segment in plan.segments:
+                if finalization is not None:
+                    finalization.checkpoint()
                 pinned.assert_current()
                 relative = Path(str(segment["path"]))
                 if len(relative.parts) != 2 or relative.parts[0] not in ALLOWED_STREAMS:
@@ -1366,12 +1550,20 @@ def _export(
                     relative,
                     size,
                     digest,
+                    finalization,
                 )
-            _atomic_write_at(staging_descriptor, "recording-manifest.json", plan.manifest)
+            _atomic_write_at(
+                staging_descriptor,
+                "recording-manifest.json",
+                plan.manifest,
+                finalization,
+            )
             pinned.assert_current()
-            _verify_copy_at(staging_descriptor, plan.segments, plan.manifest)
-            _fsync_tree_at(staging_descriptor)
+            _verify_copy_at(staging_descriptor, plan.segments, plan.manifest, finalization)
+            _fsync_tree_at(staging_descriptor, finalization)
             pinned.assert_current()
+            if finalization is not None:
+                finalization.checkpoint()
             if pinned.export_root.free_bytes() <= spec.min_free_bytes:
                 raise RecordingError("recording publication would breach the free-space reserve")
             if _entry_at(pinned.export_root.descriptor, spec.export_dir.name) is not None:
@@ -1386,11 +1578,13 @@ def _export(
                 != staging_identity
             ):
                 raise RecordingError("durable export staging directory identity changed")
-            os.rename(
+            _rename_for_publication(
                 staging_name,
                 spec.export_dir.name,
-                src_dir_fd=pinned.export_root.descriptor,
-                dst_dir_fd=pinned.export_root.descriptor,
+                source_descriptor=pinned.export_root.descriptor,
+                destination_descriptor=pinned.export_root.descriptor,
+                finalization=finalization,
+                publication_committed=publication_committed,
             )
             published = True
             os.fsync(pinned.export_root.descriptor)
@@ -1445,7 +1639,8 @@ def record(spec: RunSpec) -> Path:
     prepared = _prepare(spec)
     stop_requested = threading.Event()
     requested_signal: int | None = None
-    validating_segments = False
+    finalizing = False
+    publication_committed = False
     cancel_finalization = False
 
     def request_stop(signum: int, _frame: object) -> None:
@@ -1454,7 +1649,7 @@ def record(spec: RunSpec) -> Path:
         if requested_signal is None:
             requested_signal = signum
         stop_requested.set()
-        if validating_segments and repeated:
+        if finalizing and not publication_committed and repeated:
             cancel_finalization = True
             raise RecordingError(
                 "recording finalization cancelled by a repeated stop signal; finalized "
@@ -1463,6 +1658,7 @@ def record(spec: RunSpec) -> Path:
 
     failures: list[str] = []
     stop_reason = "operator"
+    stop_decided = False
     owned: OwnedService | None = None
     started_at = ""
     started_monotonic = 0.0
@@ -1530,11 +1726,19 @@ def record(spec: RunSpec) -> Path:
                         stop_reason = "service_failure"
                         break
                     next_service_check = time.monotonic() + 2
+            stop_decided = True
         finally:
             if owned is None:
                 owned = _discover_owned_service(spec, environment, spec.owner_token)
             if owned is not None:
-                _stop_service(owned)
+                # Linearize every non-service stop reason against the immutable owned
+                # container in the same inspection that authorizes cleanup. A crash
+                # coinciding with a duration or storage boundary is still a service failure.
+                was_running = _stop_service(owned)
+                if stop_decided and stop_reason != "service_failure" and was_running is False:
+                    if "MediaMTX stopped unexpectedly" not in failures:
+                        failures.append("MediaMTX stopped unexpectedly")
+                    stop_reason = "service_failure"
 
         stopped_at = _utc_now()
         stopped_monotonic = time.monotonic()
@@ -1545,45 +1749,60 @@ def record(spec: RunSpec) -> Path:
                 signal.SIGHUP: "sighup",
             }[requested_signal]
 
-        prepared.assert_current()
-        post_stop_reasons, post_stop_export_safe = _budget_status(spec, prepared)
-        failures.extend(reason for reason in post_stop_reasons if reason not in failures)
         finalization = FinalizationBudget(
             deadline=time.monotonic() + MAX_FINALIZATION_SECONDS,
             limit_seconds=MAX_FINALIZATION_SECONDS,
             run_dir=spec.run_dir,
             cancelled=lambda: cancel_finalization,
         )
-        validating_segments = True
+        finalizing = True
         try:
+            prepared.assert_current()
+            post_stop_reasons, post_stop_export_safe = _budget_status(spec, prepared, finalization)
+            finalization.checkpoint()
+            failures.extend(reason for reason in post_stop_reasons if reason not in failures)
             segments = _segments(spec.run_dir, prepared, finalization)
             finalization.checkpoint()
-        finally:
-            validating_segments = False
-        prepared.assert_current()
-        final_reasons, final_export_safe = _budget_status(spec, prepared)
-        failures.extend(reason for reason in final_reasons if reason not in failures)
-        if (post_stop_reasons or final_reasons) and stop_reason in {
-            "operator",
-            "sigterm",
-            "sighup",
-        }:
-            stop_reason = "safety_limit"
-        if not (post_stop_export_safe and final_export_safe):
-            detail = "; ".join(failures)
-            raise RecordingError(
-                f"{detail}; finalized evidence remains unexported at {spec.run_dir}"
+            prepared.assert_current()
+            final_reasons, final_export_safe = _budget_status(spec, prepared, finalization)
+            finalization.checkpoint()
+            failures.extend(reason for reason in final_reasons if reason not in failures)
+            if (post_stop_reasons or final_reasons) and stop_reason in {
+                "operator",
+                "sigterm",
+                "sighup",
+            }:
+                stop_reason = "safety_limit"
+            if not (post_stop_export_safe and final_export_safe):
+                detail = "; ".join(failures)
+                raise RecordingError(
+                    f"{detail}; finalized evidence remains unexported at {spec.run_dir}"
+                )
+            plan = _archive_plan(
+                spec,
+                segments,
+                started_at=started_at,
+                stopped_at=stopped_at,
+                stop_reason=stop_reason,
+                elapsed_seconds=stopped_monotonic - started_monotonic,
+                configuration=configuration,
+                finalization=finalization,
             )
-        plan = _archive_plan(
-            spec,
-            segments,
-            started_at=started_at,
-            stopped_at=stopped_at,
-            stop_reason=stop_reason,
-            elapsed_seconds=stopped_monotonic - started_monotonic,
-            configuration=configuration,
-        )
-        archive = _export(spec, plan, prepared)
+            finalization.checkpoint()
+
+            def mark_publication_committed() -> None:
+                nonlocal publication_committed
+                publication_committed = True
+
+            archive = _export(
+                spec,
+                plan,
+                prepared,
+                finalization,
+                mark_publication_committed,
+            )
+        finally:
+            finalizing = False
         print(json.dumps({"event": "recording_exported", "path": str(archive)}, sort_keys=True))
         if failures:
             raise RecordingError(f"{'; '.join(failures)}; stopped safely and exported to {archive}")

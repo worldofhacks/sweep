@@ -34,14 +34,14 @@ The helper starts only MediaMTX and remains in the foreground. Follow logs from
 another terminal with `docker compose logs -f mediamtx`. Press Ctrl-C once the
 publishers have stopped or the run is complete. `SIGHUP` and `SIGTERM` also take the
 orderly stop path and remain caught until validation and durable publication finish.
-The first catchable signal requests that orderly path. If validation itself must be
-abandoned, send a second catchable signal; the helper aborts, restores its handlers,
-and leaves the stopped working run unexported for inspection.
+The first catchable signal requests that orderly path. If pre-publication
+finalization must be abandoned, send a second catchable signal; the helper aborts,
+restores its handlers, and leaves the stopped working run unexported for inspection.
 The helper stops its exact owned MediaMTX container before reading its output,
 fully decodes the selected video stream in every finalized MP4 under explicit
-duration, dimension, stream-count, per-process, and one-hour aggregate validation
-bounds, hashes every segment,
-and atomically publishes a canonical `recording-manifest.json` to
+duration, dimension, stream-count, per-process, and one-hour aggregate finalization
+bounds through the publication commit, hashes every segment, and atomically publishes
+a canonical `recording-manifest.json` to
 `<export-root>/<run-id>/`. Zero-segment runs fail and remain unexported. The working
 run and durable root directory identities are pinned and revalidated throughout;
 replacement or unmount fails closed instead of redirecting monitoring or evidence.
@@ -61,8 +61,8 @@ and exits nonzero; it is never reported as a successful operator stop. If a
 cross-filesystem export would breach the durable reserve, finalized evidence remains
 in the fresh working run for manual recovery.
 An unexpected MediaMTX exit is archived as `service_failure`, never mislabeled as a
-storage limit or signal stop, including when an exit and operator signal race. If
-aggregate validation expires, no archive is published and the stopped working run
+storage limit or signal stop, including when an exit and a duration, storage, or
+operator boundary race. If aggregate pre-publication finalization expires, no archive is published and the stopped working run
 remains available for explicit recovery; use shorter evidence runs on a host that
 cannot validate the planned media inside that bound. Override a recording budget
 only from an evidence plan that accounts for

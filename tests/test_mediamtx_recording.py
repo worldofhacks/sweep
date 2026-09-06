@@ -319,7 +319,10 @@ def test_owned_service_cleanup_targets_only_the_immutable_container_id(
     monkeypatch.setattr(
         recording,
         "_inspect_container",
-        lambda *_: {"Config": {"Labels": {recording.OWNER_LABEL: "owner-token"}}},
+        lambda *_: {
+            "Config": {"Labels": {recording.OWNER_LABEL: "owner-token"}},
+            "State": {"Running": True},
+        },
     )
 
     def command(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -327,11 +330,34 @@ def test_owned_service_cleanup_targets_only_the_immutable_container_id(
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
     monkeypatch.setattr(recording, "_command", command)
-    recording._stop_service(service)
+    assert recording._stop_service(service) is True
     assert commands == [
         ["docker", "stop", "--time", "20", "owned-container-id"],
         ["docker", "rm", "--force", "owned-container-id"],
     ]
+
+
+def test_owned_service_cleanup_does_not_hide_an_exit_before_controlled_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = recording.OwnedService("owned-container-id", "owner-token")
+    monkeypatch.setattr(
+        recording,
+        "_inspect_container",
+        lambda *_: {
+            "Config": {"Labels": {recording.OWNER_LABEL: "owner-token"}},
+            "State": {"Running": True},
+        },
+    )
+
+    def command(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if arguments[:2] == ["docker", "stop"]:
+            return subprocess.CompletedProcess(arguments, 1, "", "already stopped")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(recording, "_command", command)
+
+    assert recording._stop_service(service) is False
 
 
 def test_prepare_refuses_reused_working_or_durable_run(tmp_path: Path) -> None:
@@ -806,15 +832,12 @@ def test_repeated_signal_during_finalization_aborts_without_export(
     monkeypatch.setattr(recording, "_stop_service", lambda *_: None)
     monkeypatch.setattr(recording, "_budget_status", lambda *args, **kwargs: ((), True))
 
-    def interrupt_validation(
-        _run_dir: Path,
-        _prepared: recording.PreparedRun,
-        _finalization: recording.FinalizationBudget,
-    ) -> list[dict[str, object]]:
+    def interrupt_export(*_args: object, **_kwargs: object) -> Path:
         os.kill(os.getpid(), signal.SIGTERM)
-        raise AssertionError("the repeated signal must leave the validation call")
+        raise AssertionError("the repeated signal must leave the export call")
 
-    monkeypatch.setattr(recording, "_segments", interrupt_validation)
+    monkeypatch.setattr(recording, "_segments", lambda *_: _fixture_segments(spec))
+    monkeypatch.setattr(recording, "_export", interrupt_export)
 
     with pytest.raises(recording.RecordingError, match="repeated stop signal"):
         recording.record(spec)
@@ -868,6 +891,68 @@ def test_signal_wake_rechecks_service_before_assigning_success(
     manifest = json.loads((spec.export_dir / "recording-manifest.json").read_bytes())
     assert manifest["stop_reason"] == "service_failure"
     assert service_checks == ["container-id"]
+
+
+@pytest.mark.parametrize("boundary", ("duration", "storage"))
+def test_boundary_stop_rechecks_service_before_assigning_safety_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    base = _spec(tmp_path)
+    spec = recording.RunSpec(**{**base.__dict__, "max_duration_seconds": 10.0})
+    container_ids = iter((None, "container-id"))
+    clock = [100.0]
+    cleanup_checks: list[str] = []
+
+    class BoundaryStop:
+        def set(self) -> None:
+            pass
+
+        def wait(self, _timeout: float) -> bool:
+            if boundary == "duration":
+                clock[0] = 110.0
+            return False
+
+    monkeypatch.setattr(recording.threading, "Event", BoundaryStop)
+    monkeypatch.setattr(recording.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        recording,
+        "_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=[], returncode=0, stdout=""),
+    )
+    monkeypatch.setattr(
+        recording, "_compose_container_id", lambda *args, **kwargs: next(container_ids)
+    )
+    monkeypatch.setattr(
+        recording,
+        "_owned_service",
+        lambda container_id, token, **_kwargs: recording.OwnedService(container_id, token),
+    )
+
+    def stopped_cleanup(service: recording.OwnedService) -> bool:
+        cleanup_checks.append(service.container_id)
+        return False
+
+    budget_calls = 0
+
+    def budget(*_args: object, **_kwargs: object) -> tuple[tuple[str, ...], bool]:
+        nonlocal budget_calls
+        budget_calls += 1
+        if boundary == "storage" and budget_calls == 1:
+            return (("recording byte budget reached (100 >= 100)",), True)
+        return ((), True)
+
+    monkeypatch.setattr(recording, "_stop_service", stopped_cleanup)
+    monkeypatch.setattr(recording, "_budget_status", budget)
+    monkeypatch.setattr(recording, "_segments", lambda *_: _fixture_segments(spec))
+
+    with pytest.raises(recording.RecordingError, match="MediaMTX stopped unexpectedly"):
+        recording.record(spec)
+
+    manifest = json.loads((spec.export_dir / "recording-manifest.json").read_bytes())
+    assert manifest["stop_reason"] == "service_failure"
+    assert cleanup_checks == ["container-id"]
 
 
 @pytest.mark.parametrize(("offset", "exports"), ((-0.001, True), (0.0, False), (0.001, False)))
@@ -951,6 +1036,67 @@ def test_command_caps_timeout_to_remaining_finalization_budget(
         with pytest.raises(recording.RecordingError, match="aggregate budget"):
             recording._command(["must-not-start"], timeout=30, finalization=budget)
     assert calls == [5.0]
+
+
+@pytest.mark.parametrize("offset", (0.0, 0.001))
+def test_post_validation_budget_scan_cannot_publish_at_or_after_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offset: float,
+) -> None:
+    spec = _spec(tmp_path)
+    container_ids = iter((None, "container-id"))
+    clock = [100.0]
+    budget_calls = 0
+    monkeypatch.setattr(recording, "MAX_FINALIZATION_SECONDS", 1.0)
+    monkeypatch.setattr(recording.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        recording.threading,
+        "Event",
+        lambda: SimpleNamespace(set=lambda: None, wait=lambda _timeout: True),
+    )
+    monkeypatch.setattr(
+        recording,
+        "_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=[], returncode=0, stdout=""),
+    )
+    monkeypatch.setattr(
+        recording, "_compose_container_id", lambda *args, **kwargs: next(container_ids)
+    )
+    monkeypatch.setattr(
+        recording,
+        "_owned_service",
+        lambda container_id, token, **_kwargs: recording.OwnedService(container_id, token),
+    )
+    monkeypatch.setattr(recording, "_stop_service", lambda *_: None)
+
+    def budget(
+        _specification: recording.RunSpec,
+        _prepared: recording.PreparedRun,
+        finalization: recording.FinalizationBudget,
+    ) -> tuple[tuple[str, ...], bool]:
+        nonlocal budget_calls
+        budget_calls += 1
+        if budget_calls == 2:
+            clock[0] = finalization.deadline + offset
+        return ((), True)
+
+    def segments(
+        _run_dir: Path,
+        _prepared: recording.PreparedRun,
+        finalization: recording.FinalizationBudget,
+    ) -> list[dict[str, object]]:
+        clock[0] = finalization.deadline - 0.001
+        return _fixture_segments(spec)
+
+    monkeypatch.setattr(recording, "_budget_status", budget)
+    monkeypatch.setattr(recording, "_segments", segments)
+
+    with pytest.raises(recording.RecordingError, match="aggregate budget"):
+        recording.record(spec)
+    assert budget_calls == 2
+    assert spec.run_dir.is_dir()
+    assert not spec.export_dir.exists()
 
 
 def test_record_refuses_configuration_mutation_during_startup(
@@ -1344,10 +1490,11 @@ def test_cross_filesystem_export_verifies_before_publish(
         root_descriptor: int,
         details: tuple[dict[str, object], ...],
         manifest: bytes,
+        finalization: recording.FinalizationBudget | None = None,
     ) -> None:
         staging = next(spec.export_root.glob(f".{spec.run_id}.partial-*"))
         (staging / str(details[0]["path"])).write_bytes(b"same-size-tamper")
-        original_verify(root_descriptor, details, manifest)
+        original_verify(root_descriptor, details, manifest, finalization)
 
     monkeypatch.setattr(recording, "_same_filesystem", lambda *_: False)
     monkeypatch.setattr(recording, "_verify_copy_at", tamper_with_staging)
