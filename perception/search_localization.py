@@ -24,7 +24,16 @@ class SearchCameraModel:
             raise ValueError("camera model matrices have invalid dimensions")
         if not np.isfinite(matrix).all() or not np.isfinite(transform).all():
             raise ValueError("camera model matrices must be finite")
-        if matrix[0, 0] <= 0 or matrix[1, 1] <= 0 or abs(np.linalg.det(transform[:3, :3])) < 1e-9:
+        rotation = transform[:3, :3]
+        if (
+            matrix[0, 0] <= 0
+            or matrix[1, 1] <= 0
+            or not np.allclose(matrix[2], (0, 0, 1), atol=1e-9)
+            or abs(np.linalg.det(matrix)) < 1e-9
+            or not np.allclose(transform[3], (0, 0, 0, 1), atol=1e-9)
+            or not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-6)
+            or not np.isclose(np.linalg.det(rotation), 1, atol=1e-6)
+        ):
             raise ValueError("camera model is not projectable")
 
 
@@ -79,7 +88,7 @@ class FiveFrameLocalizer:
         self._zones = zones
         self._samples: deque[Pose] = deque(maxlen=5)
         self._candidate_id: str | None = None
-        self._frames: set[str] = set()
+        self._frames: deque[str] = deque(maxlen=512)
 
     def observe(self, pose: Pose | None, candidate_id: str = "") -> SearchLocalization | None:
         if pose is None:
@@ -98,7 +107,16 @@ class FiveFrameLocalizer:
             return None
         values = np.asarray([(item.x_m, item.y_m, item.z_m) for item in self._samples])
         x, y, z = np.median(values, axis=0)
-        zone = next(zone for zone in self._zones if _inside(float(x), float(y), zone.polygon_xy))
+        zone = next(
+            (
+                zone
+                for zone in self._zones
+                if zone.floor_id == pose.floor_id and _inside(float(x), float(y), zone.polygon_xy)
+            ),
+            None,
+        )
+        if zone is None:
+            return None
         return SearchLocalization(Pose(float(x), float(y), float(z), zone.floor_id), 5)
 
     def observe_sighting(
@@ -122,5 +140,5 @@ class FiveFrameLocalizer:
             return None
         pose = project_bottom_center(event.candidate, image_width_px, model, self._zones)
         result = self.observe(pose, event.sighting_id)
-        self._frames.add(event.identity.frame_id)
+        self._frames.append(event.identity.frame_id)
         return result
