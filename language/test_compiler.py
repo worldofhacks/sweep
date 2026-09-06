@@ -24,9 +24,12 @@ from language.compiler import (
     TranscriptCompiler,
 )
 from language.contracts import (
+    MAX_PLAN_STEPS,
+    NEGATED_TRANSCRIPT_DETAIL,
     CompilerReason,
     OutcomeKind,
     build_grounding_facts,
+    transcript_negates_action,
 )
 from language.transport import (
     PINNED_COMPILER_MODEL,
@@ -144,6 +147,40 @@ def _compile(case_id: str):
         correlation_id=case.case_id,
     )
     return case, result
+
+
+def test_compiler_plan_bound_matches_the_eight_step_wire_limit() -> None:
+    case = _case("hold-current-selection")
+    response = _response("hold-current-selection")
+    one_step = response["intents"]
+
+    at_limit = TranscriptCompiler(
+        StaticResponseTransport({**response, "intents": one_step * MAX_PLAN_STEPS}),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        case.transcript,
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+        correlation_id="eight-step-boundary",
+    )
+    over_limit = TranscriptCompiler(
+        StaticResponseTransport({**response, "intents": one_step * (MAX_PLAN_STEPS + 1)}),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        case.transcript,
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+        correlation_id="nine-step-boundary",
+    )
+
+    assert at_limit[0].kind is OutcomeKind.PLAN
+    assert len(at_limit[0].intents) == MAX_PLAN_STEPS
+    assert over_limit[0].kind is OutcomeKind.REFUSE
+    assert over_limit[0].reason is CompilerReason.INVALID_MODEL_OUTPUT
 
 
 def _state(case, *, session: str = "language-eval") -> dict[str, object]:
@@ -596,6 +633,72 @@ def test_voice_estop_requires_exact_phrase_and_qualification(
         qualified_voice_intents=qualified,
     )
     assert outcome.kind is expected_kind
+
+
+def _reviewed_case(case_id: str):
+    return next(case for case in load_corpus() if case.case_id == case_id)
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Do not take off.",
+        "Don't take off.",
+        "Don’t take off.",
+        "DO NOT TAKE OFF!",
+        "Never take off now.",
+        "Take off? Not now.",
+        "You cannot take off.",
+        "We won't take off.",
+    ],
+)
+def test_negated_transcript_clarifies_even_when_the_model_proposes_a_plan(transcript) -> None:
+    case = _reviewed_case("take-off")
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [{"name": "takeoff", "args": {}, "selection": [1, 2], "mode": "indoor"}],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        transcript,
+        _state(case),
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+    )
+    assert outcome.kind is OutcomeKind.CLARIFY
+    assert outcome.reason is CompilerReason.AMBIGUOUS_ACTION
+    assert outcome.detail == NEGATED_TRANSCRIPT_DETAIL
+    assert outcome.intents == ()
+    assert plan is None
+
+
+@pytest.mark.parametrize(
+    "transcript", ["Take off.", "Take off now.", "Note the time, then take off.", "Nothing else."]
+)
+def test_negation_gate_leaves_affirmative_phrases_alone(transcript: str) -> None:
+    assert not transcript_negates_action(transcript)
+    case = _reviewed_case("take-off")
+    outcome, plan = TranscriptCompiler(
+        StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [{"name": "takeoff", "args": {}, "selection": [1, 2], "mode": "indoor"}],
+            }
+        ),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        transcript,
+        _state(case),
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+    )
+    assert outcome.kind is OutcomeKind.PLAN
+    assert plan is not None
 
 
 @pytest.mark.parametrize("stopped", [False, True])

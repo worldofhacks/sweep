@@ -1,18 +1,29 @@
 /**
  * Transcript upload client for the relay push-to-talk endpoint.
  * Copied from PR #49 (issue-42-push-to-talk, console/src/voice/client.ts) so the
- * Speech module binds to the transcription contract that branch defines.
+ * Speech module binds to the transcription contract that branch defines, then
+ * extended with the versioned `plan` field the relay-side compiler fills in.
+ * `emissions` stays empty forever: the console emits, one step at a time, after
+ * the operator confirms.
  */
+import { isVoicePlan, type VoicePlan } from '../relay/contract'
+
 export type VoiceOutcome = {
-  v?: 1
-  type?: 'voice_outcome'
-  session?: string
-  correlation_id?: string
+  v: 1
+  type: 'voice_outcome'
+  session: string
+  correlation_id: string
   status: 'transcribed' | 'refused'
   source: 'whisper' | 'template'
   reason: string | null
   transcript: string | null
   emissions: []
+  /**
+   * The compiler's validated preview, present only when the relay has a
+   * compiler and transcription succeeded. Absent or null means the relay
+   * answered in the original shape and the local fallback compiles instead.
+   */
+  plan?: VoicePlan | null
 }
 
 export type TranscriptRequest = {
@@ -110,10 +121,10 @@ export function transcriptEndpoint(baseUrl: string, sessionId: string): string {
   return url.toString()
 }
 
-function isVoiceOutcome(value: unknown, sessionId: string, correlationId: string): value is VoiceOutcome {
+export function isVoiceOutcome(value: unknown, sessionId: string, correlationId: string): value is VoiceOutcome {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
-  return (
+  const base =
     record.v === 1 &&
     record.type === 'voice_outcome' &&
     record.session === sessionId &&
@@ -124,5 +135,13 @@ function isVoiceOutcome(value: unknown, sessionId: string, correlationId: string
     (record.transcript === null || typeof record.transcript === 'string') &&
     Array.isArray(record.emissions) &&
     record.emissions.length === 0
+  if (!base) return false
+  if (record.plan === undefined || record.plan === null) return true
+  return (
+    isVoicePlan(record.plan) &&
+    record.status === 'transcribed' &&
+    record.plan.session === sessionId &&
+    record.plan.correlation_id === correlationId &&
+    record.plan.transcript === record.transcript
   )
 }

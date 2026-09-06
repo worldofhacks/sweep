@@ -34,7 +34,7 @@ from planner.models import TranslationGrounding, TranslationPolicy
 def test_synthetic_corpus_runs_through_recorded_production_requests(tmp_path) -> None:
     cases = load_corpus()
     responses = load_synthetic_responses(corpus=cases)
-    assert len(cases) == 50
+    assert len(cases) == 53
     cassette = tmp_path / "language-replay.json"
     for case in cases:
         facts = build_grounding_facts(
@@ -183,7 +183,7 @@ def test_manifest_rejects_replaced_semantic_result(tmp_path) -> None:
     assert not output.exists()
 
 
-def test_default_corpus_is_pinned_to_the_reviewed_50_case_release(tmp_path) -> None:
+def test_default_corpus_is_pinned_to_the_reviewed_release(tmp_path) -> None:
     selected = DEFAULT_CORPUS_PATH
     truncated = tmp_path / selected.name
     truncated.write_text("\n".join(selected.read_text().splitlines()[:-1]) + "\n")

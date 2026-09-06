@@ -15,6 +15,8 @@ export interface ConsoleRuntime {
   client: RelayClient
   keyboardClient: RelayClient
   webcamClient: RelayClient
+  /** Dedicated principal for exact relay-compiled plan steps. */
+  languageClient: RelayClient
   /** Null when no relay bootstrap exists: the Speech module renders language disabled. */
   transcriptClient: TranscriptClient | null
   /**
@@ -44,6 +46,9 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       webcamClient: new UnavailableRelayClient(
         'Relay bootstrap is not configured. Webcam gesture source is unavailable; use the console controls and the physical RC safety path.',
       ),
+      languageClient: new UnavailableRelayClient(
+        'Relay bootstrap is not configured. Relay-compiled language plans are unavailable.',
+      ),
       transcriptClient: null,
       mediaConfigurationSource: null,
     }
@@ -67,6 +72,12 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       baseUrl: config.baseUrl,
       sessionId: config.sessionId,
       source: 'webcam',
+      token: config.token,
+    }),
+    languageClient: new WebSocketRelayClient({
+      baseUrl: config.baseUrl,
+      sessionId: config.sessionId,
+      source: 'language',
       token: config.token,
     }),
     transcriptClient: new HttpTranscriptClient({ baseUrl: config.baseUrl, token: config.token }),

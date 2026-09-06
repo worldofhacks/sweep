@@ -159,12 +159,13 @@ dock and Come home sends at once; a name outside the relay's advertised capabili
 
 Speech (`src/voice/`, `src/speech/`, panel in `src/modules/speech/`) is push-to-talk through the
 relay transcription endpoint: hold the button to record, release to upload; recording stops one
-second before the relay's thirty-second cap. The transcript, or typed text, compiles locally to one
-canonical intent (`capture_room`, `hold`, or `select`); every other recognised command is refused by
-name, ambiguity returns options, and the outcome card says the local fallback ran. Drafting sends
-nothing: the intent leaves on the console connection only after the dock confirms it. Without a
-relay bootstrap, and in fixture mode, the module reports language disabled and still compiles typed
-text.
+second before the relay's thirty-second cap. A relay plan is parsed strictly, bound to the current
+session, correlation, state, capabilities, absolute expiry, plan digest, and deterministic step IDs,
+then staged one step at a time with source `language`. Confirmation sends only the exact staged
+payload, and any relevant state or input change invalidates it. A relayed transcript without such a
+plan is display-only. Separately typed text may use the labelled local matcher for `capture_room`,
+`hold`, or `select`; local negation and ambiguity produce no draft. Without a relay bootstrap, and
+in fixture mode, the module reports language disabled and still accepts separately typed text.
 
 The M2.0 control panel emits the production Intent v1 sequence for session arm, aircraft
 selection, confirmed takeoff, configured-step translation, hold, come home, and confirmed

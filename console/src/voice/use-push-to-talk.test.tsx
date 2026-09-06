@@ -36,6 +36,10 @@ describe('push-to-talk recording', () => {
     const stopTrack = vi.fn()
     const client: TranscriptClient = {
       transcribe: vi.fn().mockResolvedValue({
+        v: 1,
+        type: 'voice_outcome',
+        session: 'session-1',
+        correlation_id: 'voice-1',
         status: 'refused',
         source: 'template',
         reason: 'compiler_unavailable',
@@ -96,6 +100,10 @@ describe('push-to-talk recording', () => {
     const stopTrack = vi.fn()
     const client: TranscriptClient = {
       transcribe: vi.fn().mockResolvedValue({
+        v: 1,
+        type: 'voice_outcome',
+        session: 'session-1',
+        correlation_id: 'voice-1',
         status: 'transcribed',
         source: 'whisper',
         reason: null,
@@ -222,5 +230,81 @@ describe('push-to-talk recording', () => {
     expect(recorder.stop).toHaveBeenCalledTimes(1)
     expect(stopTrack).toHaveBeenCalledTimes(1)
     expect(client.transcribe).not.toHaveBeenCalled()
+  })
+
+  test('discards an upload result from the previous relay session', async () => {
+    let resolveUpload: ((value: Awaited<ReturnType<TranscriptClient['transcribe']>>) => void) | undefined
+    const upload = new Promise<Awaited<ReturnType<TranscriptClient['transcribe']>>>((resolve) => {
+      resolveUpload = resolve
+    })
+    const recorder = new FakeRecorder()
+    const client: TranscriptClient = { transcribe: vi.fn(() => upload) }
+    const { result, rerender } = renderHook(
+      ({ sessionId }) =>
+        usePushToTalk({
+          sessionId,
+          client,
+          requestAudio: async () => ({ getTracks: () => [{ stop: vi.fn() }] }) as unknown as MediaStream,
+          recorderFactory: (() => recorder) as RecorderFactory,
+          nextId: () => 'voice-old-session',
+        }),
+      { initialProps: { sessionId: 'session-1' } },
+    )
+
+    await act(async () => result.current.start())
+    act(() => result.current.stop())
+    expect(result.current.status).toBe('uploading')
+    rerender({ sessionId: 'session-2' })
+    await act(async () => {
+      resolveUpload?.({
+        v: 1,
+        type: 'voice_outcome',
+        session: 'session-1',
+        correlation_id: 'voice-old-session',
+        status: 'transcribed',
+        source: 'whisper',
+        reason: null,
+        transcript: 'take off',
+        emissions: [],
+      })
+    })
+
+    expect(result.current.status).toBe('idle')
+    expect(result.current.outcome).toBeNull()
+  })
+
+  test('rejects a relay response with a mismatched request correlation', async () => {
+    const recorder = new FakeRecorder()
+    const client: TranscriptClient = {
+      transcribe: vi.fn().mockResolvedValue({
+        v: 1,
+        type: 'voice_outcome',
+        session: 'session-1',
+        correlation_id: 'voice-other',
+        status: 'transcribed',
+        source: 'whisper',
+        reason: null,
+        transcript: 'hold',
+        emissions: [],
+      }),
+    }
+    const { result } = renderHook(() =>
+      usePushToTalk({
+        sessionId: 'session-1',
+        client,
+        requestAudio: async () => ({ getTracks: () => [{ stop: vi.fn() }] }) as unknown as MediaStream,
+        recorderFactory: (() => recorder) as RecorderFactory,
+        nextId: () => 'voice-expected',
+      }),
+    )
+
+    await act(async () => result.current.start())
+    await act(async () => result.current.stop())
+
+    expect(result.current.status).toBe('error')
+    expect(result.current.outcome).toBeNull()
+    expect(result.current.detail).toBe(
+      'Voice relay returned a response for another request. Nothing was emitted.',
+    )
   })
 })

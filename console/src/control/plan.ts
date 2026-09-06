@@ -56,7 +56,22 @@ export function planSteps(intent: IntentV1): string[] {
   return [`Send ${intent.name} to ${ids || 'the roster'}.`]
 }
 
-/** The preview a confirmation-gated draft carries into the dock. */
-export function buildPlanPreview(intent: IntentV1, rosterVersion: number): PlanPreview {
-  return { title: planTitle(intent), steps: planSteps(intent), rosterVersion }
+/**
+ * The preview a confirmation-gated draft carries into the dock. `expiresAt` is
+ * the console-clock deadline a relay-compiled step inherits from its plan: the
+ * dock counts it down and the control flow refuses to confirm past it.
+ */
+export function buildPlanPreview(
+  intent: IntentV1,
+  rosterVersion: number,
+  expiresAt?: number,
+  voiceBinding?: PlanPreview['voiceBinding'],
+): PlanPreview {
+  const preview: PlanPreview = {
+    title: planTitle(intent),
+    steps: planSteps(intent),
+    rosterVersion,
+    ...(voiceBinding === undefined ? {} : { voiceBinding }),
+  }
+  return expiresAt === undefined ? preview : { ...preview, expiresAt }
 }

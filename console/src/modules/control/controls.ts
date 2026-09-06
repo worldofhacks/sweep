@@ -705,7 +705,15 @@ export function requestTone(status: RequestStatus): Tone {
 
 /** Retry is offered on failed and refused requests; the reason it is disabled is stated in text. */
 export function retryBlockedReason(request: RequestRecord, state: ControlState): string | null {
-  const connection = request.intent.source === 'keyboard' ? state.keyboardConnection : state.connection
+  if (request.intent.source === 'language') {
+    return 'Disabled: a language plan step cannot be retried outside its exact compiler plan. Compile a fresh plan.'
+  }
+  const connection =
+    request.intent.source === 'keyboard'
+      ? state.keyboardConnection
+      : request.intent.source === 'webcam'
+        ? state.webcamConnection
+        : state.connection
   if (!isLinkUp(connection.status)) {
     return `Disabled: the ${request.intent.source} connection is ${connection.status}.`
   }

@@ -105,6 +105,18 @@ describe('compileUtterance', () => {
     expect(compileUtterance('make me a sandwich', context)).toMatchObject({ status: 'refused', reason: 'unknown_intent' })
   })
 
+  test.each([
+    'do not hold position',
+    "don't capture the kitchen",
+    'DON’T SELECT ALL READY AIRCRAFT!',
+    'never freeze that one',
+  ])('negated local fallback input emits no draft: %s', (utterance) => {
+    expect(compileUtterance(utterance, context)).toMatchObject({
+      status: 'refused',
+      reason: 'negated_action',
+    })
+  })
+
   test('every try phrase compiles to one of the three outcomes', () => {
     const statuses = TRY_PHRASES.map((phrase) => compileUtterance(phrase, context).status)
     expect(new Set(statuses)).toEqual(new Set(['compiled', 'ambiguous', 'refused']))

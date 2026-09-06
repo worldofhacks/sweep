@@ -1,7 +1,16 @@
 import { describe, expect, test } from 'vitest'
-import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1, parseRelayServerEvent } from './contract'
+import {
+  C1_BASIC_CONTROL_INTENTS,
+  intentFromVoicePlanStep,
+  isConsoleIntentV1,
+  isVoicePlan,
+  parseRelayServerEvent,
+  type VoicePlan,
+  type VoicePlanStep,
+} from './contract'
 
 const session = 'session-contract-test'
+const t = 1_756_700_000_000
 
 function aircraft(overrides: Record<string, unknown> = {}) {
   return {
@@ -544,5 +553,78 @@ describe('console Intent v1 mirror', () => {
         args: { box: { min_x: 1, max_x: -1, min_y: -1, max_y: 1 } },
       }),
     ).toBe(false)
+  })
+})
+
+function voiceStep(index: number, overrides: Partial<VoicePlanStep> = {}): VoicePlanStep {
+  return {
+    index,
+    intent_id: `voice-step-${index}`,
+    name: 'hold',
+    args: {},
+    selection: [1],
+    mode: 'indoor',
+    confirm_required: false,
+    notes: ['Hold D-01.'],
+    ...overrides,
+  }
+}
+
+function voicePlan(steps: VoicePlanStep[]): VoicePlan {
+  return {
+    v: 1,
+    kind: 'plan',
+    transcript: 'Hold position.',
+    reason: null,
+    detail: null,
+    options: [],
+    steps,
+    compiled_at_ms: t,
+    expires_at_ms: t + 30_000,
+    state_event_id: 'state-voice-plan',
+    roster_version: 1,
+    session,
+    correlation_id: 'voice-request-1',
+    plan_digest: 'a'.repeat(64),
+    model: 'claude-sonnet-5',
+    prompt_schema_version: 'intent-v1-compiler-8',
+    response_source: 'anthropic',
+    pending_intent_id: null,
+  }
+}
+
+describe('bound voice-plan mirror', () => {
+  test('accepts eight canonical steps and rejects nine at the console boundary', () => {
+    const eight = Array.from({ length: 8 }, (_, index) => voiceStep(index))
+    expect(isVoicePlan(voicePlan(eight))).toBe(true)
+    expect(isVoicePlan(voicePlan([...eight, voiceStep(8)]))).toBe(false)
+  })
+
+  test('requires exact SELECT targets, confirmation policy, and lowercase digest', () => {
+    const select = voiceStep(0, {
+      name: 'select',
+      args: { ids: [2] },
+      selection: [2],
+    })
+    expect(isVoicePlan(voicePlan([select]))).toBe(true)
+    expect(isVoicePlan(voicePlan([{ ...select, selection: [1] }]))).toBe(false)
+    expect(isVoicePlan(voicePlan([{ ...select, confirm_required: true }]))).toBe(false)
+    expect(isVoicePlan({ ...voicePlan([select]), plan_digest: 'A'.repeat(64) })).toBe(false)
+  })
+
+  test('mints a language draft only from the exact step object in the parsed plan', () => {
+    const step = voiceStep(0, { intent_id: 'voice-bound-step' })
+    const plan = voicePlan([step])
+    const draft = intentFromVoicePlanStep(plan, step, t + 1)
+
+    expect(draft).toMatchObject({
+      intent_id: 'voice-bound-step',
+      source: 'language',
+      session,
+      name: 'hold',
+      selection: [1],
+      confirm: false,
+    })
+    expect(intentFromVoicePlanStep(plan, { ...step }, t + 1)).toBeNull()
   })
 })

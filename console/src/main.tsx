@@ -35,6 +35,7 @@ async function resolveRuntime() {
       client: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'console', fixtureScenario),
       keyboardClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'keyboard', fixtureScenario),
       webcamClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'webcam', fixtureScenario),
+      languageClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'language', fixtureScenario),
       // The fixture has no transcription endpoint; the Speech module says so and accepts typed text.
       transcriptClient: null,
       // The fixture has no relay, so only a same-origin media endpoint can enable playback.
@@ -50,6 +51,7 @@ void resolveRuntime().then((runtime) => {
     console: runtime.client,
     keyboard: runtime.keyboardClient,
     webcam: runtime.webcamClient,
+    language: runtime.languageClient,
   }
   const services = { transcript: runtime.transcriptClient ?? undefined }
 

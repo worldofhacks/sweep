@@ -170,6 +170,14 @@ try {
   ) {
     throw new Error(`browser voice upload did not preserve its authenticated bounded contract: ${JSON.stringify(voiceUpload)}`)
   }
+  const relayedDraft = compilerResult.getByRole('button', { name: 'Draft for confirmation', exact: true })
+  if (await relayedDraft.isEnabled()) {
+    throw new Error('an unbound relayed transcript was allowed to masquerade as a console draft')
+  }
+  const utterance = page.getByRole('textbox', { name: 'Utterance' })
+  await utterance.fill('')
+  await utterance.fill('hold position')
+  await page.getByRole('button', { name: 'Compile to intents', exact: true }).click()
   await compilerResult.getByRole('button', { name: 'Draft for confirmation', exact: true }).click()
   await page.getByRole('button', { name: 'Confirm and send', exact: true }).click()
   await page.getByRole('navigation', { name: 'Modules' }).getByRole('button', { name: 'Control', exact: true }).click()

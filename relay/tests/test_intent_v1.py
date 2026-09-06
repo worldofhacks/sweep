@@ -251,7 +251,7 @@ def test_invalid_intent_id_or_retry_of_is_rejected(
     assert result.reason is RejectionReason.INVALID_PAYLOAD
 
 
-@pytest.mark.parametrize("source", ["language", "band", "Webcam"])
+@pytest.mark.parametrize("source", ["band", "Webcam"])
 def test_unregistered_source_is_rejected(
     console_select_payload: dict[str, object], source: str
 ) -> None:

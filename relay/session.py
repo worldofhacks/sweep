@@ -103,6 +103,7 @@ class IntentSinkResult:
 
 IntentSink = Callable[[IntentV1, dict[str, object]], object]
 LeaveAuthorizer = Callable[[int, int, dict[str, object]], bool]
+LanguageIntentAuthorizer = Callable[[IntentV1, Mapping[str, object], int], tuple[str, str] | None]
 NodeFrame = (
     CapabilitiesFrame
     | CaptureBundleFrame
@@ -268,6 +269,9 @@ class RelaySession:
         self._capability_profile = capability_profile
         self._intent_sink: IntentSink | None = None
         self.intent_sink = intent_sink
+        # Bound exactly once by the relay transcript compiler.  A language
+        # principal has no admission path while this remains absent.
+        self._language_intent_authorizer: LanguageIntentAuthorizer | None = None
         self.registry = FleetRegistry(
             telemetry_freshness_ms=limits.telemetry_freshness_ms,
             capability_profile=capability_profile,
@@ -320,6 +324,21 @@ class RelaySession:
         if sink is not None and _sink_capability_profile(sink) != self.capability_profile:
             raise ValueError("relay session and planner use different capability profiles")
         self._intent_sink = sink
+
+    def bind_language_intent_authorizer(self, authorizer: LanguageIntentAuthorizer) -> None:
+        """Install the one plan-binding gate used by the language principal.
+
+        The compiler is composed after sessions are constructed in some tests,
+        so this narrow one-time hook avoids a mutable policy surface while still
+        keeping a language socket closed until an audited compiler owns it.
+        """
+        if not callable(authorizer):
+            raise ValueError("language intent authorizer must be callable")
+        with self._lock:
+            existing = self._language_intent_authorizer
+            if existing is not None and existing is not authorizer:
+                raise ValueError("language intent authorizer is already bound")
+            self._language_intent_authorizer = authorizer
 
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Route one post-authentication frame according to its bound principal."""
@@ -462,6 +481,28 @@ class RelaySession:
                         normalized=intent,
                     )
                 ]
+
+            if intent.source == "language":
+                authorizer = self._language_intent_authorizer
+                refusal = (
+                    (
+                        "unbound_language_intent",
+                        "language intents require an active audited compiler plan",
+                    )
+                    if authorizer is None
+                    else authorizer(intent, self._state_event(now), now)
+                )
+                if refusal is not None:
+                    reason, detail = refusal
+                    return [
+                        self._refuse_intent(
+                            raw,
+                            reason=reason,
+                            detail=detail,
+                            now=now,
+                            normalized=intent,
+                        )
+                    ]
 
             self._remember_intent(intent.intent_id)
             self._intents[intent.intent_id] = _IntentLedgerEntry(

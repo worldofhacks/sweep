@@ -159,6 +159,50 @@ describe('control reducer fleet lifecycle', () => {
     expect(rosterMoved.requests[0]).toMatchObject({ status: 'invalidated', reasonCode: 'stale_roster' })
   })
 
+  test('keeps a proposed SELECT across the old selection and invalidates an unready target', () => {
+    const proposed: IntentV1 = {
+      ...captureIntent('intent-select-two'),
+      name: 'select',
+      args: { ids: [2] },
+      selection: [2],
+    }
+    const ready = [drone(), drone({ drone_id: 2 })]
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: stateEvent('state-before-select', 1, ready, [1]),
+    })
+    state = controlReducer(state, {
+      type: 'request_created',
+      request: createRequestRecord(proposed, t + 2),
+    })
+    state = controlReducer(state, {
+      type: 'request_pending_confirmation',
+      intentId: proposed.intent_id,
+      t: t + 3,
+      plan: { title: 'Select D-02', steps: ['select'], rosterVersion: 1 },
+    })
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: stateEvent('state-still-old-selection', 1, ready, [1]),
+    })
+    expect(state.requests[0].status).toBe('pending_confirmation')
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: stateEvent(
+        'state-target-unready',
+        1,
+        [drone(), drone({ drone_id: 2, membership: 'degraded', selectable: false })],
+        [1],
+      ),
+    })
+    expect(state.requests[0]).toMatchObject({
+      status: 'invalidated',
+      reasonCode: 'stale_selection',
+    })
+  })
+
   test('preserves loss and rejoin evidence in all 15 valid socket interleavings', () => {
     const loss: RelayServerEvent = {
       v: 1, t: t + 2, type: 'membership', event_id: 'loss', session,

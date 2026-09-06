@@ -216,6 +216,7 @@ class TranscriptCompiler:
         altitude: object = None,
         capability_profile: CapabilityProfile | None = None,
         qualified_voice_intents: tuple[str, ...] = (),
+        require_qualified_voice_intents: bool = False,
         now_ms: int,
         correlation_id: str | None = None,
         session_id: str | None = None,
@@ -269,6 +270,20 @@ class TranscriptCompiler:
             source=response.source,
             transcript=transcript.strip(),
         )
+        if (
+            require_qualified_voice_intents
+            and outcome.kind is OutcomeKind.PLAN
+            and any(
+                intent.name.value not in facts.qualified_voice_intents for intent in outcome.intents
+            )
+        ):
+            # Live speech is a distinct input-channel/intent pair.  A model
+            # proposal cannot turn an unqualified pair into a console intent.
+            outcome = CompilerOutcome(
+                kind=OutcomeKind.UNSUPPORTED,
+                reason=CompilerReason.CAPABILITY_UNAVAILABLE,
+                source=response.source,
+            )
         elapsed_ms = int((time.monotonic() - started) * 1_000)
         self._trace(
             {

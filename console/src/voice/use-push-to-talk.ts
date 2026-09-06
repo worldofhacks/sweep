@@ -57,17 +57,39 @@ export function usePushToTalk({
   const [outcome, setOutcome] = useState<VoiceOutcome | null>(null)
   /** Wall-clock start of the active recording, for the countdown to the cap. */
   const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [stateScope, setStateScope] = useState(() => ({ sessionId, client }))
   const recorderRef = useRef<Recorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const recordingRequestedRef = useRef(false)
   const stopRequestedRef = useRef(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const startedAtRef = useRef<number | null>(null)
+  /** Invalidates every pending permission, recorder, or upload callback. */
+  const generationRef = useRef(0)
+  const sessionRef = useRef(sessionId)
+  const clientRef = useRef(client)
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) clearTimeout(timerRef.current)
     timerRef.current = null
   }, [])
+
+  const releaseCapture = useCallback(() => {
+    clearTimer()
+    recordingRequestedRef.current = false
+    stopRequestedRef.current = false
+    const recorder = recorderRef.current
+    recorderRef.current = null
+    if (recorder) {
+      recorder.ondataavailable = null
+      recorder.onstop = null
+      recorder.onerror = null
+      if (recorder.state === 'recording') recorder.stop()
+    }
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    startedAtRef.current = null
+  }, [clearTimer])
 
   const stop = useCallback(() => {
     recordingRequestedRef.current = false
@@ -79,9 +101,27 @@ export function usePushToTalk({
     }
   }, [clearTimer])
 
+  const reset = useCallback(() => {
+    generationRef.current += 1
+    releaseCapture()
+    setStateScope({ sessionId, client })
+    setStartedAt(null)
+    setStatus('idle')
+    setDetail(null)
+    setOutcome(null)
+  }, [client, releaseCapture, sessionId])
+
   const start = useCallback(async () => {
+    // Effects own external-resource rebinding. Until the new scope has reached
+    // that boundary, remain idle rather than starting against the old client.
+    if (sessionRef.current !== sessionId || clientRef.current !== client) return
     if (recorderRef.current !== null || recordingRequestedRef.current) return
+    const generation = ++generationRef.current
+    const requestSession = sessionId
+    const isCurrent = () =>
+      generationRef.current === generation && sessionRef.current === requestSession
     recordingRequestedRef.current = true
+    setStateScope({ sessionId: requestSession, client })
     setStatus('requesting_microphone')
     setDetail(null)
     setOutcome(null)
@@ -89,14 +129,15 @@ export function usePushToTalk({
     try {
       stream = await requestAudio()
     } catch {
+      if (!isCurrent()) return
       recordingRequestedRef.current = false
       setStatus('error')
       setDetail('Microphone access was not granted. No audio was sent.')
       return
     }
-    if (!recordingRequestedRef.current) {
+    if (!isCurrent() || !recordingRequestedRef.current) {
       stream.getTracks().forEach((track) => track.stop())
-      setStatus('idle')
+      if (isCurrent()) setStatus('idle')
       return
     }
     let recorder: Recorder
@@ -104,6 +145,7 @@ export function usePushToTalk({
       recorder = recorderFactory(stream)
     } catch {
       stream.getTracks().forEach((track) => track.stop())
+      if (!isCurrent()) return
       recordingRequestedRef.current = false
       setStatus('error')
       setDetail('Recording could not start. No audio was sent.')
@@ -115,7 +157,7 @@ export function usePushToTalk({
     streamRef.current = stream
     startedAtRef.current = now()
     recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunks.push(event.data)
+      if (isCurrent() && event.data.size > 0) chunks.push(event.data)
     }
     recorder.onstop = () => {
       clearTimer()
@@ -127,6 +169,7 @@ export function usePushToTalk({
       recorderRef.current = null
       const startedAt = startedAtRef.current
       startedAtRef.current = null
+      if (!isCurrent()) return
       setStartedAt(null)
       if (!stopRequested) {
         setStatus('error')
@@ -142,13 +185,23 @@ export function usePushToTalk({
       setStatus('uploading')
       const durationMs = startedAt === null ? 0 : Math.max(0, Math.min(maxRecordingMs, now() - startedAt))
       void client
-        .transcribe({ sessionId, correlationId, audio, durationMs })
+        .transcribe({ sessionId: requestSession, correlationId, audio, durationMs })
         .then((received) => {
+          if (!isCurrent()) return
+          if (
+            received.session !== requestSession ||
+            received.correlation_id !== correlationId
+          ) {
+            setStatus('error')
+            setDetail('Voice relay returned a response for another request. Nothing was emitted.')
+            return
+          }
           setOutcome(received)
           setStatus(received.status)
           setDetail(received.reason)
         })
         .catch((error: unknown) => {
+          if (!isCurrent()) return
           setStatus('error')
           setDetail(error instanceof Error ? error.message : 'Voice upload failed. No command was sent.')
         })
@@ -162,13 +215,14 @@ export function usePushToTalk({
       recordingRequestedRef.current = false
       stopRequestedRef.current = false
       startedAtRef.current = null
-      setStartedAt(null)
+      if (isCurrent()) setStartedAt(null)
       stream.getTracks().forEach((track) => track.stop())
       streamRef.current = null
     }
     recorder.onerror = () => {
       discardRecording()
       if (recorder.state === 'recording') recorder.stop()
+      if (!isCurrent()) return
       setStatus('error')
       setDetail('Recording failed. No audio was sent.')
     }
@@ -177,8 +231,13 @@ export function usePushToTalk({
       recorder.start()
     } catch {
       discardRecording()
+      if (!isCurrent()) return
       setStatus('error')
       setDetail('Recording could not start. No audio was sent.')
+      return
+    }
+    if (!isCurrent()) {
+      discardRecording()
       return
     }
     setStatus('recording')
@@ -186,34 +245,27 @@ export function usePushToTalk({
     timerRef.current = setTimeout(stop, maxRecordingMs)
   }, [clearTimer, client, maxRecordingMs, nextId, now, recorderFactory, requestAudio, sessionId, stop])
 
-  useEffect(
-    () => () => {
-      clearTimer()
-      recordingRequestedRef.current = false
-      stopRequestedRef.current = false
-      const recorder = recorderRef.current
-      recorderRef.current = null
-      if (recorder) {
-        recorder.ondataavailable = null
-        recorder.onstop = null
-        recorder.onerror = null
-        if (recorder.state === 'recording') recorder.stop()
-      }
-      streamRef.current?.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-      startedAtRef.current = null
-    },
-    [clearTimer],
-  )
+  useEffect(() => {
+    sessionRef.current = sessionId
+    clientRef.current = client
+    generationRef.current += 1
+    releaseCapture()
+    return () => {
+      generationRef.current += 1
+      releaseCapture()
+    }
+  }, [client, releaseCapture, sessionId])
 
+  const scopeIsCurrent = stateScope.sessionId === sessionId && stateScope.client === client
   return {
-    status,
-    detail,
-    outcome,
+    status: scopeIsCurrent ? status : 'idle',
+    detail: scopeIsCurrent ? detail : null,
+    outcome: scopeIsCurrent ? outcome : null,
     start,
     stop,
-    isRecording: status === 'recording',
-    startedAt,
+    reset,
+    isRecording: scopeIsCurrent && status === 'recording',
+    startedAt: scopeIsCurrent ? startedAt : null,
     maxRecordingMs,
   }
 }
