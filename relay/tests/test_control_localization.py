@@ -1,4 +1,5 @@
 from dataclasses import replace
+from typing import get_type_hints
 
 from arbiter.safety import SafetyArbiter
 from perception.control_localization import (
@@ -9,12 +10,13 @@ from perception.control_localization import (
     TagFix,
     VelocityObservation,
 )
-from planner.models import RefusalReason
+from planner.models import AircraftState, RefusalReason
 from relay.control_localization import (
     ClockMapping,
     ControlLocalizationPins,
     ControlLocalizationStore,
     ControlLocalizationWire,
+    ControlProvenance,
     to_wire_payload,
 )
 from relay.intent_v1 import IntentName
@@ -161,6 +163,15 @@ def test_fuser_wire_store_replaces_generic_telemetry_pose_with_capture_timestamp
     assert aircraft.control_provenance.position_uncertainty_m < 0.2
 
 
+def test_store_projection_round_trips_validated_public_provenance() -> None:
+    evidence = store()
+    assert evidence.ingest(payload(), 1, 1, 101_000).accepted
+
+    aircraft = evidence.apply(make_snapshot(1, now_ms=101_000)).aircraft[1]
+    assert AircraftState.from_mapping(aircraft.to_dict()) == aircraft
+    assert get_type_hints(AircraftState)["control_provenance"] == ControlProvenance | None
+
+
 def test_stale_localization_replaces_quality_and_existing_safety_refuses_translation():
     evidence = store()
     evidence.ingest(payload(), 1, 1, 101_000)
@@ -172,6 +183,20 @@ def test_stale_localization_replaces_quality_and_existing_safety_refuses_transla
 
     refusal = SafetyArbiter(safety_config()).check_intent(
         make_intent(IntentName.TRANSLATE, selection=(1,)), stale
+    )
+    assert refusal is not None
+    assert refusal.reason is RefusalReason.POSITION_QUALITY
+
+
+def test_unpinned_aircraft_cannot_retain_telemetry_pose_for_translation() -> None:
+    localized = store().apply(make_snapshot(2, selection=(2,), now_ms=101_000))
+    aircraft = localized.aircraft[2]
+    assert aircraft.position_quality == 0.0
+    assert aircraft.position_last_seen_ms == 0
+    assert aircraft.control_provenance is None
+
+    refusal = SafetyArbiter(safety_config()).check_intent(
+        make_intent(IntentName.TRANSLATE, selection=(2,)), localized
     )
     assert refusal is not None
     assert refusal.reason is RefusalReason.POSITION_QUALITY
@@ -189,6 +214,20 @@ def test_mismatched_pins_and_unverified_webcam_shape_cannot_fall_back_to_telemet
     evidence.ingest({"type": "webcam_localization", "control_eligible": False}, 1, 1, 101_000)
     webcam = evidence.apply(make_snapshot(1, now_ms=101_000))
     assert webcam.aircraft[1].position_quality == 0.0
+
+
+def test_loss_reason_from_rejected_provenance_survives_apply() -> None:
+    evidence = store()
+    rejected = payload()
+    rejected["map_id"] = "untrusted-map"
+
+    result = evidence.ingest(rejected, 1, 1, 101_000)
+    assert not result.accepted
+    assert result.reason == "provenance_mismatch"
+
+    applied = evidence.apply(make_snapshot(1, now_ms=101_000))
+    assert applied.aircraft[1].control_provenance is not None
+    assert applied.aircraft[1].control_provenance.reason == "provenance_mismatch"
 
 
 def test_missing_signature_or_non_boolean_eligibility_are_invalid_payloads():
@@ -247,6 +286,35 @@ def test_reconnect_clock_mapping_covariance_and_duplicate_replay_are_rejected():
     duplicate = evidence.ingest(payload(), 1, 1, 101_000)
     assert not duplicate.accepted
     assert duplicate.reason == "duplicate_event"
+
+
+def test_seen_event_window_rejects_nonconsecutive_replay() -> None:
+    evidence = store()
+    assert evidence.ingest(payload("A"), 1, 1, 101_000).accepted
+    assert evidence.ingest(payload("B"), 1, 1, 101_000).accepted
+
+    replay = evidence.ingest(payload("A"), 1, 1, 101_000)
+    assert not replay.accepted
+    assert replay.reason == "duplicate_event"
+
+
+def test_clock_conversion_overflow_replaces_a_prior_usable_patch_with_loss() -> None:
+    evidence = store()
+    assert evidence.ingest(payload("ready"), 1, 1, 101_000).accepted
+    assert evidence.apply(make_snapshot(1, now_ms=101_000)).aircraft[1].position_quality == 1.0
+
+    overflow = payload("overflow")
+    overflow["evaluated_at_s"] = 1e308
+    overflow["last_fix_capture_time_s"] = 1e308
+    overflow["fix_age_s"] = 0.0
+    result = evidence.ingest(overflow, 1, 1, 101_000)
+    assert not result.accepted
+    assert result.reason == "clock_conversion_overflow"
+
+    aircraft = evidence.apply(make_snapshot(1, now_ms=101_000)).aircraft[1]
+    assert aircraft.position_quality == 0.0
+    assert aircraft.control_provenance is not None
+    assert aircraft.control_provenance.reason == "clock_conversion_overflow"
 
 
 def test_covariance_above_the_control_uncertainty_bound_is_not_position_evidence():

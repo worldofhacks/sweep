@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from math import isfinite
@@ -10,6 +11,7 @@ from types import MappingProxyType
 import numpy as np
 
 from perception.control_localization import ControlLocalizationSnapshot
+from planner.control_provenance import ControlProvenance
 from planner.models import FleetSnapshot, Position
 
 
@@ -85,10 +87,13 @@ class ClockMapping:
         _finite(self.milliseconds_per_capture_second, "milliseconds_per_capture_second")
 
     def to_relay_ms(self, capture_time_s: float) -> int:
-        return round(
+        relay_time = (
             self.relay_reference_ms
             + (capture_time_s - self.capture_reference_s) * self.milliseconds_per_capture_second
         )
+        if not isfinite(relay_time):
+            raise OverflowError("clock conversion is outside the relay timestamp range")
+        return round(relay_time)
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -161,76 +166,6 @@ class ControlLocalizationPins:
             or self.clock_mapping.relay_clock_id != self.relay_clock_id
         ):
             raise ValueError("control localization pins must bind the measured clock mapping")
-
-
-@dataclass(frozen=True, slots=True)
-class ControlProvenance:
-    map_id: str
-    geometry_id: str
-    camera_calibration_id: str
-    body_extrinsics_id: str
-    capture_clock_id: str
-    relay_clock_id: str
-    source_ids: tuple[str, ...]
-    capture_time_s: float | None
-    conversion_error_ms: int
-    reason: str
-    evaluated_at_relay_ms: int | None = None
-    position_uncertainty_m: float | None = None
-
-    def __post_init__(self) -> None:
-        if (
-            not all(
-                isinstance(value, str) and value
-                for value in (
-                    self.map_id,
-                    self.geometry_id,
-                    self.camera_calibration_id,
-                    self.body_extrinsics_id,
-                    self.capture_clock_id,
-                    self.relay_clock_id,
-                    self.reason,
-                    *self.source_ids,
-                )
-            )
-            or not isinstance(self.source_ids, tuple)
-            or not self.source_ids
-            or isinstance(self.conversion_error_ms, bool)
-            or not isinstance(self.conversion_error_ms, int)
-            or self.conversion_error_ms < 0
-            or self.capture_time_s is not None
-            and not isfinite(self.capture_time_s)
-            or self.evaluated_at_relay_ms is not None
-            and (
-                isinstance(self.evaluated_at_relay_ms, bool)
-                or not isinstance(self.evaluated_at_relay_ms, int)
-                or self.evaluated_at_relay_ms < 0
-            )
-            or self.position_uncertainty_m is not None
-            and (
-                isinstance(self.position_uncertainty_m, bool)
-                or not isinstance(self.position_uncertainty_m, int | float)
-                or not isfinite(self.position_uncertainty_m)
-                or self.position_uncertainty_m < 0
-            )
-        ):
-            raise ValueError("control provenance is invalid")
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "map_id": self.map_id,
-            "geometry_id": self.geometry_id,
-            "camera_calibration_id": self.camera_calibration_id,
-            "body_extrinsics_id": self.body_extrinsics_id,
-            "capture_clock_id": self.capture_clock_id,
-            "relay_clock_id": self.relay_clock_id,
-            "source_ids": self.source_ids,
-            "capture_time_s": self.capture_time_s,
-            "conversion_error_ms": self.conversion_error_ms,
-            "reason": self.reason,
-            "evaluated_at_relay_ms": self.evaluated_at_relay_ms,
-            "position_uncertainty_m": self.position_uncertainty_m,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,6 +338,7 @@ class ControlLocalizationStore:
         max_clock_error_ms: int,
         max_fix_age_ms: int,
         max_position_uncertainty_m: float,
+        seen_event_window: int = 128,
     ) -> None:
         if (
             isinstance(max_clock_error_ms, bool)
@@ -415,6 +351,9 @@ class ControlLocalizationStore:
             or not isinstance(max_position_uncertainty_m, int | float)
             or not isfinite(max_position_uncertainty_m)
             or max_position_uncertainty_m <= 0
+            or isinstance(seen_event_window, bool)
+            or not isinstance(seen_event_window, int)
+            or seen_event_window <= 0
         ):
             raise ValueError("control localization age limits must be non-negative")
         self._pins = MappingProxyType(dict(pins))
@@ -423,10 +362,11 @@ class ControlLocalizationStore:
         self._max_clock_error_ms = max_clock_error_ms
         self._max_fix_age_ms = max_fix_age_ms
         self._max_position_uncertainty_m = float(max_position_uncertainty_m)
+        self._seen_event_window = seen_event_window
         self._patches: dict[int, _Patch] = {}
         self._last_capture_ms: dict[int, int] = {}
         self._last_evaluated_s: dict[int, float] = {}
-        self._last_event_id: dict[int, str] = {}
+        self._seen_event_ids: dict[int, deque[str]] = {}
 
     def ingest(
         self,
@@ -443,41 +383,74 @@ class ControlLocalizationStore:
         except ValueError:
             self._record_loss(authenticated_drone_id, "invalid_payload", now_ms)
             return IngestResult(False, "invalid_payload")
+        except OverflowError:
+            self._record_loss(authenticated_drone_id, "clock_conversion_overflow", now_ms)
+            return IngestResult(False, "clock_conversion_overflow")
         if reason is not None:
             self._record_loss(authenticated_drone_id, reason, now_ms, wire)
             return IngestResult(False, reason)
-        capture_ms = self._conservative_capture_ms(wire)
+        try:
+            capture_ms = self._conservative_capture_ms(wire)
+            provenance = self._provenance(wire)
+        except OverflowError:
+            self._record_loss(authenticated_drone_id, "clock_conversion_overflow", now_ms)
+            return IngestResult(False, "clock_conversion_overflow")
         self._last_capture_ms[wire.drone_id] = capture_ms
         self._last_evaluated_s[wire.drone_id] = wire.evaluated_at_s
-        self._last_event_id[wire.drone_id] = wire.event_id
+        seen_ids = self._seen_event_ids.setdefault(wire.drone_id, deque())
+        if len(seen_ids) == self._seen_event_window:
+            seen_ids.popleft()
+        seen_ids.append(wire.event_id)
         self._patches[wire.drone_id] = _Patch(
             pose=Position(*wire.position_map_enu_m),
             quality=1.0,
             last_seen_ms=capture_ms,
-            provenance=self._provenance(wire),
+            provenance=provenance,
         )
         return IngestResult(True, "accepted")
 
     def apply(self, snapshot: FleetSnapshot) -> FleetSnapshot:
         aircraft = dict(snapshot.aircraft)
-        for drone_id, pins in self._pins.items():
-            current = aircraft.get(drone_id)
-            if current is None:
+        for drone_id, current in aircraft.items():
+            pins = self._pins.get(drone_id)
+            if pins is None:
+                aircraft[drone_id] = replace(
+                    current,
+                    position_quality=0.0,
+                    position_last_seen_ms=0,
+                    position_loss_since_ms=(
+                        current.position_loss_since_ms
+                        if current.position_loss_since_ms is not None
+                        else snapshot.now_ms
+                    ),
+                    control_provenance=None,
+                )
                 continue
             patch = self._patches.get(drone_id)
             if current.connection_epoch != pins.connection_epoch:
                 self._record_loss(drone_id, "connection_epoch_mismatch", snapshot.now_ms)
                 patch = self._patches[drone_id]
-            elif patch is None or not self._fresh(patch, snapshot.now_ms):
+            elif patch is None:
+                self._record_loss(drone_id, "localization_missing", snapshot.now_ms)
+                patch = self._patches[drone_id]
+            elif patch.quality > 0 and not self._fresh(patch, snapshot.now_ms):
                 self._record_loss(drone_id, "localization_missing", snapshot.now_ms)
                 patch = self._patches[drone_id]
             changes: dict[str, object] = {
                 "pose": current.pose if patch.pose is None else patch.pose,
                 "position_quality": patch.quality,
                 "position_last_seen_ms": patch.last_seen_ms,
+                "position_loss_since_ms": (
+                    None
+                    if patch.quality > 0
+                    else (
+                        current.position_loss_since_ms
+                        if current.position_loss_since_ms is not None
+                        else snapshot.now_ms
+                    )
+                ),
+                "control_provenance": patch.provenance,
             }
-            if "control_provenance" in current.__dataclass_fields__:
-                changes["control_provenance"] = patch.provenance
             aircraft[drone_id] = replace(current, **changes)
         return replace(snapshot, aircraft=aircraft)
 
@@ -534,7 +507,7 @@ class ControlLocalizationStore:
         previous_evaluation = self._last_evaluated_s.get(wire.drone_id)
         if previous_evaluation is not None and wire.evaluated_at_s < previous_evaluation:
             return "evaluation_time_regressed"
-        if self._last_event_id.get(wire.drone_id) == wire.event_id:
+        if wire.event_id in self._seen_event_ids.get(wire.drone_id, ()):
             return "duplicate_event"
         return None
 
@@ -557,7 +530,9 @@ class ControlLocalizationStore:
     def _position_uncertainty_m(wire: ControlLocalizationWire) -> float:
         return float(np.sqrt(np.linalg.eigvalsh(np.asarray(wire.covariance_map_enu_m2)).max()))
 
-    def _provenance(self, wire: ControlLocalizationWire) -> ControlProvenance:
+    def _provenance(
+        self, wire: ControlLocalizationWire, *, reason: str | None = None
+    ) -> ControlProvenance:
         return ControlProvenance(
             wire.map_id,
             wire.geometry_id,
@@ -568,7 +543,7 @@ class ControlLocalizationStore:
             wire.source_ids,
             wire.last_fix_capture_time_s,
             wire.clock_mapping.max_error_ms,
-            wire.reason,
+            wire.reason if reason is None else reason,
             wire.clock_mapping.to_relay_ms(wire.evaluated_at_s),
             (None if wire.covariance_map_enu_m2 is None else self._position_uncertainty_m(wire)),
         )
@@ -580,20 +555,24 @@ class ControlLocalizationStore:
         if pin is None:
             return
         last_seen = self._last_capture_ms.get(drone_id, 0)
-        provenance = (
-            self._provenance(wire)
-            if wire is not None
-            else ControlProvenance(
-                pin.map_id,
-                pin.geometry_id,
-                pin.camera_calibration_id,
-                pin.body_extrinsics_id,
-                pin.capture_clock_id,
-                pin.relay_clock_id,
-                pin.source_ids,
-                None,
-                self._max_clock_error_ms,
-                reason,
-            )
-        )
+        provenance = self._loss_provenance(pin, reason)
+        if wire is not None:
+            try:
+                provenance = self._provenance(wire, reason=reason)
+            except OverflowError:
+                pass
         self._patches[drone_id] = _Patch(None, 0.0, last_seen, provenance)
+
+    def _loss_provenance(self, pin: ControlLocalizationPins, reason: str) -> ControlProvenance:
+        return ControlProvenance(
+            pin.map_id,
+            pin.geometry_id,
+            pin.camera_calibration_id,
+            pin.body_extrinsics_id,
+            pin.capture_clock_id,
+            pin.relay_clock_id,
+            pin.source_ids,
+            None,
+            self._max_clock_error_ms,
+            reason,
+        )
