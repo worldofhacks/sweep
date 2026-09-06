@@ -126,6 +126,10 @@ pending plan through the control hook so the shell states it.
 
 ## Gesture and Speech modules
 
+The [four-aircraft input demo](../docs/FLEET_INPUT_DEMO.md) runs this console through
+the production relay and signed fake nodes, with repeatable gesture and fleet
+acceptance evidence.
+
 Gesture (`src/gesture/`, panel in `src/modules/gesture/`) is the webcam producer: tracking is off
 until the operator enables it, then the browser asks for camera permission and the MediaPipe
 GestureRecognizer runtime and model load from the MediaPipe CDN. Open palm drafts `capture_room`,

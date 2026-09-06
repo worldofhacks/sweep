@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { WebSocketRelayClient, buildSessionWebSocketUrl } from './client'
+import { controlReducer, createInitialControlState } from '../control/state'
+import { REJOIN_NODE_EVENTS } from './rejoin-node-events.test-fixtures'
 
 class TestSocket extends EventTarget {
   readyState = 1
@@ -29,6 +31,43 @@ class TestSocket extends EventTarget {
 }
 
 describe('WebSocket relay client', () => {
+  test.each(['console', 'keyboard', 'webcam'] as const)('keeps the %s connection healthy across real node rejoin reports without granting control state', (source) => {
+    const socket = new TestSocket()
+    const session = REJOIN_NODE_EVENTS[0].session
+    const statuses: string[] = []
+    const serverTypes: string[] = []
+    let state = createInitialControlState(session, 100)
+    const client = new WebSocketRelayClient(
+      { baseUrl: 'ws://relay.example.test', sessionId: session, source, token: 'test-token' },
+      { now: () => 100, createSocket: () => socket as unknown as WebSocket },
+    )
+    client.subscribe((event) => {
+      if (event.kind === 'connection') statuses.push(event.connection.status)
+      else {
+        serverTypes.push(event.event.type)
+        state = controlReducer(state, { type: 'relay_event', event: event.event, source })
+      }
+    })
+    client.start()
+    socket.open()
+    socket.message({ v: 1, t: 100, type: 'auth.accepted', event_id: 'rejoin-auth', session, source, drone_id: null })
+    REJOIN_NODE_EVENTS.forEach((event) => socket.message(event))
+
+    expect(statuses.at(-1)).toBe('connected')
+    expect(statuses).not.toContain('degraded')
+    expect(serverTypes).toEqual(['auth.accepted', 'capabilities', 'node_status', 'capture_readiness'])
+    expect(state.aircraft).toEqual({})
+    expect(state.selection).toEqual([])
+    expect(state.armed).toBe(false)
+    expect(state.rosterVersion).toBe(0)
+    expect(state.seenEventIds).toContain(REJOIN_NODE_EVENTS[2].event_id)
+
+    socket.message({ ...REJOIN_NODE_EVENTS[1], phone_battery_percent: 101 })
+    expect(statuses.at(-1)).toBe('degraded')
+    expect(serverTypes).toHaveLength(4)
+    client.stop()
+  })
+
   test('puts no token in the URL and sends the strict first auth frame', () => {
     const socket = new TestSocket()
     const client = new WebSocketRelayClient(

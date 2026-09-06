@@ -22,11 +22,12 @@ function mount(options: { loadError?: Error; withWebcam?: boolean } = {}) {
     keyboard: new FixtureRelayClient(session, wall, 'keyboard'),
     ...(options.withWebcam === false ? {} : { webcam: new FixtureRelayClient(session, wall, 'webcam') }),
   }
+  let sequence = 0
   render(
     <App
       sessionId={session}
       clients={clients}
-      intentDependencies={{ now: wall, nextId: () => 'panel-intent-0123456789abcdef' }}
+      intentDependencies={{ now: wall, nextId: () => `panel-intent-0123456789abcdef${sequence++ === 0 ? '' : `-${sequence}`}` }}
       initialModule="gesture"
       services={{ gesture: rig.dependencies }}
     />,
@@ -182,6 +183,34 @@ describe('Gesture module', () => {
     expect(lines.at(-1)).toMatchObject({ kind: 'status', recognizer: 'model_failed_to_load', detail: 'wasm fetch failed' })
   })
 
+  test('shows selected-fleet HOLD as ready independently of capture and names the exact targets before confirmation', async () => {
+    const { clients, hold } = mount()
+    const user = userEvent.setup()
+    await screen.findByText(/Development fixture active/i)
+    await user.click(within(screen.getByRole('group', { name: 'Target' })).getByRole('button', { name: 'Select D-02' }))
+    await user.click(enableButton())
+    await act(async () => {})
+
+    expect(screen.getByLabelText('Open palm pair')).toHaveTextContent('Unavailable: Select exactly one ready aircraft for capture_room.')
+    expect(screen.getByLabelText('Closed fist pair')).toHaveTextContent('Ready to draft hold for D-01, D-02.')
+    expect(screen.getByLabelText('Thumb up pair')).toHaveTextContent('Unavailable: No plan preview is pending')
+    expect(screen.queryByText(/^Drafting blocked:/)).not.toBeInTheDocument()
+
+    hold('Closed_Fist', 650)
+    expect(screen.getByText('Targets: D-01, D-02.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Closed fist pair')).toHaveTextContent('Unavailable: A plan preview is already pending')
+    expect(screen.getByLabelText('Thumb up pair')).toHaveTextContent('Ready to confirm for D-01, D-02.')
+    expect(screen.getByLabelText('Thumb down pair')).toHaveTextContent('Ready to cancel for D-01, D-02.')
+    expect(clients.webcam?.sent).toHaveLength(0)
+
+    hold(null, 250)
+    hold('Thumb_Up', 1_000)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({ name: 'hold', selection: [1, 2], source: 'webcam', confirm: true })
+    expect(clients.console.sent.map(({ name }) => name)).toEqual(['select'])
+    expect(screen.getByLabelText('Closed fist pair')).toHaveTextContent('Ready to draft hold for D-01, D-02.')
+  })
+
   test('renders low confidence, a dwell timeout and a dropped webcam as non-emitting states', async () => {
     const { rig, clients, hold } = mount()
     const user = userEvent.setup()
@@ -251,8 +280,8 @@ describe('Gesture module', () => {
     await user.click(enableButton())
     await act(async () => {})
     expect(
-      screen.getByText('Drafting blocked: The webcam relay source is not connected; no gesture intent can be sent.'),
-    ).toBeInTheDocument()
+      screen.getAllByText('Unavailable: The webcam relay source is not connected; no gesture intent can be sent.'),
+    ).toHaveLength(4)
     hold('Open_Palm', 650)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     expect(screen.getByText(/Last gesture action: Blocked/)).toBeInTheDocument()
@@ -275,8 +304,8 @@ describe('Gesture module', () => {
     expect(trackingState()).toHaveTextContent('webcam source connected')
     expect(screen.getByRole('group', { name: 'Target' })).toHaveTextContent('1 of 4 selected')
     expect(
-      screen.getByText('Drafting blocked: The console connection is disconnected; no gesture intent can be drafted.'),
-    ).toBeInTheDocument()
+      screen.getAllByText('Unavailable: The console connection is disconnected; no gesture intent can be drafted.'),
+    ).toHaveLength(4)
 
     hold('Open_Palm', 650)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()

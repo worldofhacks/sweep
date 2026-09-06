@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import './gesture.css'
+import { formatDroneId } from '../../control/state'
 import { drawLandmarkOverlay } from '../../gesture/overlay'
 import {
   NEVER_GESTURE_EMITTABLE,
@@ -8,6 +9,7 @@ import {
 } from '../../gesture/policy'
 import {
   useGestureProducer,
+  type GestureActionReadiness,
   type GestureActionRecord,
   type GestureProducerView,
 } from '../../gesture/use-gesture-producer'
@@ -127,8 +129,8 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
           <div className="gs-column">
             <p className="gs-eyebrow is-first">Gesture-to-intent pairs</p>
             <div className="gs-pairs">
-              {pairs.map((pair) => (
-                <PairRow key={pair.gesture} pair={pair} view={view} />
+              {view.actionReadiness.map((readiness) => (
+                <PairRow key={readiness.pair.gesture} readiness={readiness} view={view} />
               ))}
             </div>
             <NeverEmittable />
@@ -317,7 +319,8 @@ function Meter({ label, value, text }: { label: string; value: number; text: str
   )
 }
 
-function PairRow({ pair, view }: { pair: GesturePair; view: GestureProducerView }) {
+function PairRow({ readiness, view }: { readiness: GestureActionReadiness; view: GestureProducerView }) {
+  const { pair, blockedReason, targets } = readiness
   const active = 'pair' in view.outcome && view.outcome.pair.gesture === pair.gesture
   const pct =
     active && view.outcome.kind === 'candidate'
@@ -332,6 +335,11 @@ function PairRow({ pair, view }: { pair: GesturePair; view: GestureProducerView 
       <span className="gs-pair-name">{gestureName(pair.gesture)}</span>
       <span className="gs-pair-status">{pairStatus(pair)}</span>
       <span className="gs-pair-dwell">{dwellLabel(pair)}</span>
+      <span className={blockedReason ? 'gs-pair-readiness is-blocked' : 'gs-pair-readiness'}>
+        {blockedReason
+          ? `Unavailable: ${blockedReason}`
+          : `Ready to ${pair.action.kind === 'draft' ? `draft ${pair.action.name}` : pair.action.kind} for ${targets.map(formatDroneId).join(', ')}.`}
+      </span>
     </div>
   )
 }
@@ -372,6 +380,7 @@ function CandidatePreview({
             {gesturePreview.plan?.title}. Thumb up confirms and sends through the webcam source; thumb down
             cancels. Nothing is sent until confirmed.
           </p>
+          <p>Targets: {gesturePreview.intent.selection.map(formatDroneId).join(', ')}.</p>
         </>
       ) : (
         <>
@@ -386,9 +395,6 @@ function CandidatePreview({
         <p className={view.lastAction.kind === 'blocked' ? 'is-blocked' : undefined}>
           Last gesture action: {humanizeCode(view.lastAction.kind)}. {view.lastAction.detail}
         </p>
-      )}
-      {view.emissionBlockedReason && view.status === 'tracking' && (
-        <p className="is-blocked">Drafting blocked: {view.emissionBlockedReason}</p>
       )}
     </div>
   )
