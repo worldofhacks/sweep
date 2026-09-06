@@ -30,6 +30,7 @@ DEFAULT_MIN_FREE_BYTES = 10 * 1024**3
 MAX_SEGMENTS = 10_000
 ALLOWED_STREAMS = {f"drone{index}" for index in range(1, 5)}
 MAX_TREE_ENTRIES = MAX_SEGMENTS + len(ALLOWED_STREAMS) + 1
+LOCK_PATH = Path("/tmp/sweep-mediamtx-recording.lock")
 
 
 class RecordingError(RuntimeError):
@@ -170,10 +171,14 @@ def _prepare(spec: RunSpec) -> None:
 
 
 @contextmanager
-def _lock(recording_root: Path) -> Iterator[None]:
+def _lock() -> Iterator[None]:
     import fcntl
 
-    with (recording_root / ".recording.lock").open("a+") as lock:
+    try:
+        descriptor = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        raise RecordingError(f"could not open recording lock: {LOCK_PATH}") from exc
+    with os.fdopen(descriptor, "a+") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -418,8 +423,10 @@ def _export(
 
 
 def record(spec: RunSpec) -> Path:
-    _prepare(spec)
     environment = _compose_environment(spec)
+    if _service_running(spec, environment):
+        raise RecordingError("MediaMTX is already running; stop it before starting a recording run")
+    _prepare(spec)
     started_at = _utc_now()
     configuration = _configuration(spec)
     stop_requested = threading.Event()
@@ -521,8 +528,7 @@ def main(argv: list[str] | None = None) -> int:
             if shutil.which(tool) is None:
                 raise RecordingError(f"required program is unavailable: {tool}")
         spec = _parse(argv)
-        spec.recording_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with _lock(spec.recording_root):
+        with _lock():
             record(spec)
     except (OSError, RecordingError) as exc:
         print(f"recording error: {exc}", file=sys.stderr)

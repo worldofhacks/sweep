@@ -200,6 +200,45 @@ def test_recording_override_is_opt_in_exact_and_operator_owned(tmp_path: Path) -
     )
 
 
+def test_recording_lock_serializes_recording_helpers_globally() -> None:
+    locker = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, os, signal, sys; "
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600); "
+            "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); signal.pause()",
+            str(recording.LOCK_PATH),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert locker.stdout is not None
+        assert locker.stdout.readline() == "locked\n"
+        with pytest.raises(recording.RecordingError, match="another recording operation"):
+            with recording._lock():
+                pass
+    finally:
+        locker.terminate()
+        locker.wait(timeout=10)
+
+
+def test_record_refuses_a_running_mediamtx_without_creating_or_stopping_a_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(tmp_path)
+    stopped: list[bool] = []
+    monkeypatch.setattr(recording, "_service_running", lambda *_: True)
+    monkeypatch.setattr(recording, "_stop_service", lambda *_: stopped.append(True))
+
+    with pytest.raises(recording.RecordingError, match="already running"):
+        recording.record(spec)
+
+    assert stopped == []
+    assert not spec.run_dir.exists()
+
+
 def test_prepare_refuses_reused_working_or_durable_run(tmp_path: Path) -> None:
     spec = _spec(tmp_path)
     recording._prepare(spec)
