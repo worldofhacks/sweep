@@ -73,24 +73,25 @@ def vertical_path_clear(
     artifact: NavigationArtifact,
     half_height_m: float,
 ) -> bool:
-    """Require the entire vertical interval to be covered by clear inflated bands."""
+    """Reject all overlapping blocked bands; cover the path with endpoint-floor bands."""
     if (start.x_m, start.y_m) != (end.x_m, end.y_m):
         return False
     available = artifact.grid_clearance_m - half_height_m
     if available < -EPS:
         return False
-    intervals = []
-    relevant_floors = {start.floor_id, end.floor_id}
-    relevant_levels = tuple(level for level in artifact.grids if level.floor_id in relevant_floors)
     low = min(start.z_m, end.z_m)
     high = max(start.z_m, end.z_m)
-    for level in relevant_levels:
+    intervals = []
+    relevant_floors = {start.floor_id, end.floor_id}
+    for level in artifact.grids:
         probe = Pose(start.x_m, start.y_m, level.z_m, level.floor_id)
-        free = level.free(level.cell_for(probe))
-        if low - EPS <= level.z_m <= high + EPS and not free:
+        interval = (level.z_m - available, level.z_m + available)
+        if interval[1] < low - EPS or interval[0] > high + EPS:
+            continue
+        if not level.free(level.cell_for(probe)):
             return False
-        if free:
-            intervals.append((level.z_m - available, level.z_m + available))
+        if level.floor_id in relevant_floors:
+            intervals.append(interval)
     cursor = low
     for interval_low, interval_high in sorted(intervals):
         if interval_high < cursor - EPS:
