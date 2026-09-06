@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import Lock, RLock
 
-from planner.models import CommandOperation
+from planner.models import CommandOperation, FleetSnapshot
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
@@ -976,22 +976,22 @@ class RelaySession:
 
     def control_localization(self, drone_id: int) -> ControlLocalizationFrame | None:
         with self._lock:
+            self._ensure_projection_usable()
             frame = self._control_localization.get(drone_id)
             if frame is None:
                 return None
-            self._ensure_projection_usable()
             try:
                 self.registry.check_current(drone_id, frame.wire.connection_epoch)
             except RegistryError:
                 return None
             return frame
 
-    def apply_control_localization(self, snapshot: object) -> object:
+    def apply_control_localization(self, snapshot: FleetSnapshot) -> FleetSnapshot:
         with self._lock:
             self._ensure_projection_usable()
             if self._control_localization_store is None:
                 return snapshot
-            return self._control_localization_store.apply(snapshot)  # type: ignore[arg-type]
+            return self._control_localization_store.apply(snapshot)
 
     def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Accept a node-authored frame; only capabilities and node_status change state.

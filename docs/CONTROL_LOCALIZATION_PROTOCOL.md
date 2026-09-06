@@ -14,3 +14,47 @@ The fuser's last accepted tag capture time is the only value used for `position_
 The relay integration uses `ControlLocalizationStore.ingest(raw, authenticated_drone_id, authenticated_connection_epoch, now_ms)`, then `apply(fleet_snapshot)`. `apply` replaces the affected aircraft's map-frame pose, quality, last-seen time, and immutable control provenance with the localization evidence. It leaves link telemetry independent. The caller owns payload signing and should call `ingest` only after authenticating the localization producer principal.
 
 The deployment pin for each drone is `ControlLocalizationPins`. It includes the selected map, geometry, camera-calibration and body-extrinsics identities, the capture and relay clock identities, connection epoch, and ordered source IDs. `ControlProvenance` is the immutable value that can be attached to the root-owned aircraft state when that field lands.
+
+## Deployment configuration
+
+When `SWEEP_LOCALIZATION_KEYS_JSON` authorizes one or more localization producers, set
+`SWEEP_CONTROL_LOCALIZATION_CONFIG` to a local JSON file. Startup rejects an absent file,
+invalid schema, or a pin set that does not exactly match the authorized producer IDs. The
+relay creates an independent `ControlLocalizationStore` for each session from that file.
+
+The file contains exactly `limits` and `drones`:
+
+```json
+{
+  "limits": {
+    "max_clock_error_ms": 5,
+    "max_fix_age_ms": 500,
+    "max_position_uncertainty_m": 0.2,
+    "land_after_fix_age_ms": 2000
+  },
+  "drones": [{
+    "drone_id": 1,
+    "connection_epoch": 1,
+    "map_id": "map-sha",
+    "geometry_id": "geometry-sha",
+    "camera_calibration_id": "camera-calibration-sha",
+    "body_extrinsics_id": "body-extrinsics-sha",
+    "capture_clock_id": "camera-clock",
+    "relay_clock_id": "relay-monotonic",
+    "source_ids": ["tag-camera", "msdk-velocity", "tof-height"],
+    "clock_mapping": {
+      "capture_clock_id": "camera-clock",
+      "relay_clock_id": "relay-monotonic",
+      "capture_reference_s": 0,
+      "relay_reference_ms": 100000,
+      "milliseconds_per_capture_second": 1000,
+      "max_error_ms": 5,
+      "measured": true
+    }
+  }]
+}
+```
+
+A frame with a stale capture time or different pinned identity is retained in the audit
+trail but marks that aircraft's localization unavailable. The next autonomy snapshot then
+has zero position quality, so position-requiring motion is refused.

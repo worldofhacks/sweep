@@ -82,5 +82,6 @@ def test_localization_retention_rolls_back_with_failed_audit(
     monkeypatch.setattr(relay_session.audit_log, "append_batch", fail)
     with pytest.raises(AuditLogError):
         relay_session.process_frame(payload, producer)
-    assert relay_session.control_localization(1) is None
+    with pytest.raises(AuditLogError):
+        relay_session.control_localization(1)
     assert payload["event_id"] not in relay_session._seen_transport_event_ids
