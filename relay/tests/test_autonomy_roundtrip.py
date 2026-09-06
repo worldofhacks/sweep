@@ -14,6 +14,7 @@ import uvicorn
 
 import relay.autonomy as autonomy_module
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
+from relay.audit import AuditLogError
 from relay.autonomy import (
     LIFECYCLE_SOURCE,
     PREEMPTED_BY_ESTOP,
@@ -168,6 +169,13 @@ class _Fleet:
         ]
         assert [record["seq"] for record in issued] == list(range(1, len(issued) + 1))
         return [(record["operation"], record["intent_id"]) for record in issued]
+
+    def command_is_replayable(self, drone_id: int, operation: str, intent_id: str) -> bool:
+        """Return false while an atomic audit append intentionally blocks replay."""
+        try:
+            return (operation, intent_id) in self.commands_for(drone_id)
+        except AuditLogError:
+            return False
 
     def node_acks(self, intent_id: str, drone_id: int) -> list[str]:
         return [
@@ -399,7 +407,7 @@ def test_estop_reaches_responsive_nodes_at_once_while_a_node_stays_silent(
         # dx < 0 makes drone 1 lead; its node swallows the goto, so the plan waits on it.
         translate_id = fleet.send("translate", selection=[1, 2], args={"dx": -1, "dy": 0})
         _wait_until(
-            lambda: ("goto", translate_id) in fleet.commands_for(1),
+            lambda: fleet.command_is_replayable(1, "goto", translate_id),
             what="the goto issued to the silent node",
         )
         started = time.monotonic()
