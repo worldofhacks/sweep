@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import org.worldofhacks.sweep.bridge.BridgeNode
 import org.worldofhacks.sweep.bridge.SetupSummary
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfigJson
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 import org.worldofhacks.sweep.bridge.flight.FlightCards
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
@@ -216,6 +217,7 @@ private fun SetupCard(
             }
             disabledReason?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             LocalizationDiagnosticsCard(setup, running, aircraft, node)
+            MeasuredNavigationConfigCard(setup, running, aircraft, node)
             BatteryOptimizationRow()
         }
     }
@@ -283,6 +285,59 @@ private fun LocalizationDiagnosticsCard(
         message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 }
+@Composable
+private fun MeasuredNavigationConfigCard(
+    setup: SetupSummary,
+    running: Boolean,
+    aircraft: AircraftSnapshot,
+    node: BridgeNode,
+) {
+    var importedJson by rememberSaveable { mutableStateOf("") }
+    var message by rememberSaveable { mutableStateOf<String?>(null) }
+    val writable = setup.loaded && !running && aircraft.state == FlightStates.LANDED
+    val config = setup.navigationConfig
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Measured navigation configuration", style = MaterialTheme.typography.titleMedium)
+        if (config == null) {
+            Text("Inactive. Import the exact measured deployment JSON to enable signed route execution after reconnecting.")
+        } else {
+            Text("Configured: ${config.navigationConfigId}")
+            Text("Map ${config.mapId} · geometry ${config.geometryId}", style = MaterialTheme.typography.bodySmall)
+            Text("Pose freshness ${config.poseFreshnessMs} ms · route lifetime ${config.authorizationLifetimeMs} ms", style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedTextField(
+            value = importedJson,
+            onValueChange = { importedJson = it.take(4_096) },
+            label = { Text("Paste measured navigation JSON (v1)") },
+            minLines = 4,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = writable && importedJson.isNotBlank(),
+                onClick = {
+                    runCatching { NavigationConfigJson.parse(importedJson) }
+                        .onSuccess {
+                            node.saveNavigationConfig(it)
+                            message = "Measured navigation configuration submitted. Reconnect after it appears above."
+                            importedJson = ""
+                        }
+                        .onFailure { message = "Import rejected: ${it.message ?: "invalid JSON"}" }
+                },
+            ) { Text("Import config") }
+            OutlinedButton(
+                enabled = writable && config != null,
+                onClick = {
+                    node.saveNavigationConfig(null)
+                    message = "Measured navigation configuration clear submitted."
+                },
+            ) { Text("Clear config") }
+        }
+        if (!writable) Text("Disconnect the relay and land before changing navigation configuration.", style = MaterialTheme.typography.bodySmall)
+        message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
 @Composable
 private fun BatteryOptimizationRow() {
     val context = LocalContext.current

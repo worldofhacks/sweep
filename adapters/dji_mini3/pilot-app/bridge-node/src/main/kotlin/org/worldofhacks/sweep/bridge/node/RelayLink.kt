@@ -101,7 +101,6 @@ class RelayLink(
     client: OkHttpClient? = null,
     clientProvider: (() -> OkHttpClient?)? = null,
     private val videoPublish: VideoPublishSource = VideoPublishSource { VideoPublishState.STOPPED },
-    private val navigationAdmission: NavigationAdmissionConfig? = null,
 ) : AutoCloseable {
     init {
         require(client == null || clientProvider == null) { "supply either a fixed client or a client provider, not both" }
@@ -420,17 +419,14 @@ class RelayLink(
 
     private fun onNavigationAuthorization(json: JsonObject) {
         val authorization = parseOrLog("navigation_route_authorization") { NavigationRouteAuthorization.parse(json) } ?: return
-        val navigation = navigationAdmission ?: run {
-            log.log("dropping navigation route authorization without enabled navigation setup")
+        val navigation = config.navigationAdmission ?: run {
+            log.log("dropping navigation route authorization without a measured navigation configuration")
             return
         }
-        val pins = config.localizationPins ?: run {
-            log.log("dropping navigation route authorization without localization pins")
-            return
-        }
+        val pins = navigation.measured
         val current = _state.value
         val relayNow = admission.relayNowMs()
-        val identityMatches = navigation.enabled && current.authenticated && current.joined &&
+        val identityMatches = current.authenticated && current.joined &&
             authorization.session == config.session && authorization.droneId == config.droneId &&
             authorization.connectionEpoch == current.connectionEpoch && authorization.navigationConfigId == navigation.navigationConfigId &&
             authorization.mapId == pins.mapId && authorization.geometryId == pins.geometryId &&
@@ -449,14 +445,11 @@ class RelayLink(
 
     private fun onNavigationPose(json: JsonObject) {
         val pose = parseOrLog("navigation_pose") { NavigationPose.parse(json) } ?: return
-        val navigation = navigationAdmission ?: run {
-            log.log("dropping navigation pose without enabled navigation setup")
+        val navigation = config.navigationAdmission ?: run {
+            log.log("dropping navigation pose without a measured navigation configuration")
             return
         }
-        val pins = config.localizationPins ?: run {
-            log.log("dropping navigation pose without localization pins")
-            return
-        }
+        val pins = navigation.measured
         val authorization = _state.value.navigationAuthorization ?: run {
             log.log("dropping navigation pose without route authorization")
             return
@@ -467,7 +460,7 @@ class RelayLink(
         val poseTime = pose.poseTimeMs
         val fixTime = pose.fixTimeMs
         val uncertainty = pose.positionUncertaintyMm
-        val identityMatches = navigation.enabled && current.authenticated && current.joined &&
+        val identityMatches = current.authenticated && current.joined &&
             pose.session == config.session && pose.droneId == config.droneId && pose.connectionEpoch == current.connectionEpoch &&
             pose.commandId == authorization.commandId && pose.routeId == authorization.routeId &&
             pose.navigationConfigId == navigation.navigationConfigId && pose.mapId == pins.mapId && pose.geometryId == pins.geometryId &&
@@ -911,13 +904,13 @@ class RelayLink(
     }
 
     private fun admitNavigationGoto(command: CommandFrame, goto: CommandArgs.Goto): Boolean {
-        val navigation = navigationAdmission ?: return false
-        val pins = config.localizationPins ?: return false
+        val navigation = config.navigationAdmission ?: return false
+        val pins = navigation.measured
         val authorization = _state.value.navigationAuthorization ?: return false
         val pose = _state.value.navigationPose ?: return false
         val now = clock.nowMs()
         val relayNow = admission.relayNowMs()
-        return navigation.enabled && effectiveAuthority(aircraft.snapshot.value) &&
+        return effectiveAuthority(aircraft.snapshot.value) &&
             authorization.verifies(config.key) && pose.verifies(config.key) &&
             authorization.session == config.session && authorization.droneId == config.droneId &&
             authorization.connectionEpoch == _state.value.connectionEpoch &&

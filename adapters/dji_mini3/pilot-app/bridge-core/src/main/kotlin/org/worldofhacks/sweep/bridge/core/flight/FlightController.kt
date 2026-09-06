@@ -112,6 +112,7 @@ class FlightController(
     private var facts = AircraftFacts()
     private var link = LinkFacts()
     private var navigation = NavigationEvidence()
+    private var navigationConfig = config.navigation
     private var settings: FlightSettings? = null
     private var watchdog: Watchdog? = null
     private var lastRelayActivityMs: Long? = null
@@ -177,6 +178,12 @@ class FlightController(
 
     fun updateNavigation(next: NavigationEvidence) {
         navigation = next
+    }
+
+    fun configureNavigation(next: NavigationConfig?) {
+        require(phase == Phase.Idle && active == null && !vsEnabled) { "navigation configuration changes require an idle flight controller" }
+        navigationConfig = next
+        navigation = NavigationEvidence()
     }
 
     private fun applySettings(next: FlightSettings) {
@@ -647,7 +654,7 @@ class FlightController(
     }
 
     private fun navigationCheck(command: FlightCommand, args: CommandArgs.Goto, now: Long): NavigationCheck {
-        val config = config.navigation ?: return navigationInvalid("navigation is not configured on this node")
+        val config = navigationConfig ?: return navigationInvalid("navigation is not configured on this node")
         val authorization = navigation.authorization ?: return navigationInvalid("signed route authorization is unavailable")
         val pose = navigation.pose ?: return navigationInvalid("signed navigation pose is unavailable")
         val relayOffset = navigation.relayOffsetMs ?: return navigationInvalid("relay clock offset is unavailable")
@@ -732,7 +739,7 @@ class FlightController(
     private fun navigationLost(detail: String): NavigationCheck.Invalid =
         NavigationCheck.Invalid(FlightReason.NAVIGATION_LOST, detail)
 
-    private fun navigationLossLandAfterMs(): Long = config.navigation?.lossLandAfterMs ?: 0
+    private fun navigationLossLandAfterMs(): Long = navigationConfig?.lossLandAfterMs ?: 0
 
     private fun distanceToSegment(
         point: Triple<Double, Double, Double>,
