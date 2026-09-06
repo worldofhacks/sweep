@@ -6,7 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from perception.object_detection import DetectionCandidate, LiveDetectionWorker
+from perception.object_detection import DecodedFrame, DetectionCandidate, LiveDetectionWorker
 from perception.search_events import CameraPolicy, FramePoseEvidence, SearchMissionIdentity
 from planner.navigation import (
     ArtifactPin,
@@ -129,7 +129,8 @@ def test_search_refuses_disconnected_occupancy_and_changed_map() -> None:
 class _Frames:
     def __init__(self, timestamps: list[float]) -> None:
         self._frames = deque(
-            (np.zeros((2, 2, 3), dtype=np.uint8), timestamp) for timestamp in timestamps
+            DecodedFrame(np.zeros((2, 2, 3), dtype=np.uint8), timestamp, timestamp, True)
+            for timestamp in timestamps
         )
 
     def read(self, timeout: float = 0.1):
