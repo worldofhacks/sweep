@@ -504,6 +504,7 @@
 .sh-dock-meta { font-family: var(--font-mono); font-size: var(--text-11-5); color: var(--color-ink-2); white-space: nowrap; }
 .sh-dock-countdown { font-family: var(--font-mono); font-size: var(--text-12); font-variant-numeric: tabular-nums; color: var(--color-ink-2); }
 .sh-dock-countdown.is-urgent { color: var(--color-danger); }
+.sh-dock-countdown.is-expired { color: var(--color-danger); font-weight: var(--weight-700); }
 .sh-dock-actions { display: flex; flex: 1 1 240px; gap: 8px; }
 .sh-confirm {
   flex: 1 1 auto;

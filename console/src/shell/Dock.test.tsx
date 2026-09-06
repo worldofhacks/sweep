@@ -74,7 +74,10 @@ describe('pending dock', () => {
         onCancel={vi.fn()}
       />,
     )
-    expect(screen.getByText(/confirm within 0 s/)).toBeInTheDocument()
+    expect(screen.queryByText(/confirm within/)).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('confirmation window expired — cancel and say it again')
+    expect(screen.getByRole('button', { name: 'Confirm and send' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
   })
 
   test('expands the exact Intent v1 JSON by default and calls back with the intent id', async () => {

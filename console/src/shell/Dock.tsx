@@ -59,6 +59,7 @@ function PendingPlan({
   const plan = pending.plan
   const expiresAt = plan?.expiresAt
   const remainingMs = expiresAt === undefined ? null : Math.max(0, expiresAt - now)
+  const expired = remainingMs === 0
 
   useEffect(() => {
     region.current?.focus()
@@ -85,7 +86,7 @@ function PendingPlan({
             roster v{plan?.rosterVersion ?? 'unreported'} · source {pending.intent.source} ·{' '}
             <span title={intentId}>{shortId(intentId)}</span>
           </span>
-          {remainingMs !== null && (
+          {remainingMs !== null && !expired && (
             <span
               className={
                 remainingMs < COUNTDOWN_URGENT_MS ? 'sh-dock-countdown is-urgent' : 'sh-dock-countdown'
@@ -96,9 +97,21 @@ function PendingPlan({
               confirm within {Math.round(remainingMs / 1000)} s
             </span>
           )}
+          {expired && (
+            <span className="sh-dock-countdown is-expired" role="status">
+              {' '}
+              confirmation window expired — cancel and say it again
+            </span>
+          )}
         </p>
         <span className="sh-dock-actions">
-          <button type="button" className="sh-confirm" onClick={() => onConfirm(intentId)}>
+          <button
+            type="button"
+            className="sh-confirm"
+            disabled={expired}
+            title={expired ? 'The confirmation window expired; nothing can be sent from this preview.' : undefined}
+            onClick={() => onConfirm(intentId)}
+          >
             Confirm and send
           </button>
           <button type="button" className="sh-cancel" onClick={() => onCancel(intentId)}>

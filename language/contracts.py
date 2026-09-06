@@ -88,6 +88,11 @@ _TRANSLATION_DISTANCE_FIRST = re.compile(
 _ALTITUDE_DIRECTION = r"(?:up|down)"
 _EXPLICIT_ALTITUDE_DIRECTION_TOKEN = re.compile(rf"\b{_ALTITUDE_DIRECTION}\b", re.IGNORECASE)
 _ABSOLUTE_ALTITUDE_TOKEN = re.compile(r"\bhover\s+at\b", re.IGNORECASE)
+# A negated transcript ("Do not take off.") must never reach the dock as the very
+# step it rules out. The gate runs on the normalised text after the model, next to
+# the voice-estop literal check, and turns any proposed plan into a clarification.
+_NEGATION_TOKEN = re.compile(r"\b(?:do not|not|never|cannot|no longer|\w+n[’']t)\b")
+NEGATED_TRANSCRIPT_DETAIL = "The transcript negates an action, so no step was proposed."
 _ALTITUDE_DIRECTION_FIRST = re.compile(
     rf"\A(?:fly|move|go)(?:\s+{_TRANSLATION_TARGET})?\s+"
     rf"(?P<direction>{_ALTITUDE_DIRECTION})"
@@ -674,6 +679,13 @@ def validate_model_outcome(
             reason=CompilerReason.CAPABILITY_UNAVAILABLE,
             source=source,
         )
+    if transcript_negates_action(transcript):
+        return CompilerOutcome(
+            kind=OutcomeKind.CLARIFY,
+            reason=CompilerReason.AMBIGUOUS_ACTION,
+            detail=NEGATED_TRANSCRIPT_DETAIL,
+            source=source,
+        )
     if not _explicit_translation_matches(intents, transcript, facts):
         return _invalid(source)
     if not _explicit_altitude_matches(intents, transcript, facts):
@@ -1142,6 +1154,13 @@ def _explicit_navigation_matches(
         and tuple(sorted(navigation[0].selection)) == tuple(sorted(selection))
         and all(intent.name is not IntentName.TAKEOFF for intent in intents)
     )
+def transcript_negates_action(transcript: str) -> bool:
+    """True when the transcript negates an action, so no plan may come from it.
+
+    Casing, spacing, trailing punctuation and the Unicode apostrophe are
+    normalised first so "DON’T TAKE OFF!" is caught like "don't take off".
+    """
+    return _NEGATION_TOKEN.search(_normalized_motion_text(transcript)) is not None
 
 
 def _parse_translation_phrase(text: str, facts: GroundingFacts) -> _MotionPhrase | None:
