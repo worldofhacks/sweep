@@ -38,6 +38,41 @@ inside the configured conflict window are both dropped and cause a fleet hold; a
 selection wins. Position loss holds the fleet, then lands in place after the configured
 dwell. Planner exceptions become a typed failure plus a safety hold and do not escape.
 
+## Device classes
+
+`FleetSnapshot` carries both device classes. Every `AircraftState` (the name is kept)
+has a `device_class`, a `unit`, and exactly one telemetry state: an aircraft has a
+`FlightState` and a null `drive_state`, a ground vehicle a `DriveState` and a null
+`flight_state`. `airborne` stays an aircraft fact; `mobile` is the per-class question
+the safety paths ask, true for an airborne aircraft and for a ground vehicle that is
+`idle`, `moving`, or `stopped`. `relay_snapshot` derives a ground vehicle's `armed`
+from that same evidence: its wheels are enabled in every drive state but `docked` and
+`fault`.
+
+`select`, `arm`, `disarm`, `translate`, `formation_next`, `formation_set`, `spacing`,
+`come_home`, `hold`, and `estop` plan for both classes. `takeoff`, `land`, `altitude`,
+`sweep`, `capture_room`, `survey_area`, and `map_area` targeted at a ground vehicle are
+refused `unsupported_for_device_class` with the class in the detail. `land_all` skips
+ground vehicles in a mixed roster and carries that refusal only when the roster holds
+ground vehicles and no aircraft.
+
+A ground vehicle's commands reuse the existing operations — `goto`, `rotate_to`,
+`hover`, `estop` — with `z = 0` targets on the floor plane and `drive_speed_m_s` in
+place of `flight_speed_m_s` (`drive_rotate_speed_deg_s` is the matching rotation speed;
+no intent expands into a ground `rotate_to` yet). `come_home` drives to the launch spot
+rather than climbing to the takeoff altitude. Formations expand once per class around
+that class's own centre, aircraft at the mean height of the selected aircraft and
+ground vehicles on the floor, so a ground vehicle is never assigned an aircraft's slot
+or altitude; a class with one selected device holds its position. `translate` in the
+`aircraft_relative` frame rotates the step by the ground vehicle's own heading.
+
+Fleet safety plans follow `mobile`: an internal hold, the position-loss hold, and the
+adapter-failure hold cover every mobile device of either class, while the following
+`land` covers airborne aircraft only, because a ground vehicle has no land operation
+and stopping is its whole response. `authorize_graceful_removal` accepts a ground
+vehicle that is `docked`, `idle`, or `stopped`; its drive state is the same evidence as
+an aircraft's disarmed proof, so the armed gate is not applied to it twice.
+
 ## Relay and registry boundary
 
 `FleetSnapshot.from_relay_state(raw, enrichment=...)` adapts #14's state projection.

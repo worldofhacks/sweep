@@ -9,9 +9,11 @@ from itertools import combinations
 from math import cos, dist, factorial, fsum, isclose, isfinite, radians, sin, sqrt
 
 from planner.models import (
+    AircraftState,
     AltitudeGrounding,
     Command,
     CommandOperation,
+    DeviceClass,
     FleetSnapshot,
     FlightState,
     HoldScope,
@@ -46,6 +48,33 @@ SELECTION_TARGETED_INTENTS = frozenset(
     }
 )
 
+AIRCRAFT_ONLY_INTENTS = frozenset(
+    {
+        IntentName.TAKEOFF,
+        IntentName.LAND,
+        IntentName.ALTITUDE,
+        IntentName.SWEEP,
+        IntentName.CAPTURE_ROOM,
+        IntentName.SURVEY_AREA,
+        IntentName.MAP_AREA,
+    }
+)
+"""Intents only an aircraft can execute; a ground vehicle target is refused by class.
+
+``land_all`` is deliberately absent: it skips ground vehicles in a mixed roster rather
+than refusing, and is refused by class only when no aircraft is registered at all.
+"""
+GROUND_VEHICLE_OPERATIONS = frozenset(
+    {
+        CommandOperation.GOTO,
+        CommandOperation.ROTATE_TO,
+        CommandOperation.HOVER,
+        CommandOperation.ESTOP,
+    }
+)
+"""The adapter operations a ground node accepts; this issue adds no new operation."""
+_GROUND_FLOOR_Z_M = 0.0
+
 
 @dataclass(frozen=True, slots=True)
 class PlanningConfig:
@@ -61,6 +90,8 @@ class PlanningConfig:
     capture_gimbal_pitch_deg: float
     reconstruct_headings_deg: tuple[float, ...]
     translation_frame: str = "world"
+    drive_speed_m_s: float = 0.3
+    drive_rotate_speed_deg_s: float = 45.0
     altitude_step_m: float | None = None
     altitude_floor_z_m: float | None = None
     altitude_configuration_id: str | None = None
@@ -74,6 +105,8 @@ class PlanningConfig:
             "flight_speed_m_s": self.flight_speed_m_s,
             "capture_yaw_speed_deg_s": self.capture_yaw_speed_deg_s,
             "spacing_step_m": self.spacing_step_m,
+            "drive_speed_m_s": self.drive_speed_m_s,
+            "drive_rotate_speed_deg_s": self.drive_rotate_speed_deg_s,
         }
         for name, value in positive.items():
             if (
@@ -158,6 +191,19 @@ class PlanningConfig:
             requested.enabled_intent_names - {IntentName.ALTITUDE},
         )
 
+    def motion_speed_m_s(self, aircraft: AircraftState) -> float:
+        """Return the planned speed for one device: flight speed, or the ground drive speed."""
+        if aircraft.device_class is DeviceClass.GROUND_VEHICLE:
+            return self.drive_speed_m_s
+        return self.flight_speed_m_s
+
+    @staticmethod
+    def target_z_m(aircraft: AircraftState, z: float) -> float:
+        """Return the planned target height; a ground vehicle stays on the floor plane."""
+        if aircraft.device_class is DeviceClass.GROUND_VEHICLE:
+            return _GROUND_FLOOR_Z_M
+        return z
+
     def translation_grounding(self, snapshot: FleetSnapshot) -> TranslationGrounding:
         return TranslationGrounding(
             policy=TranslationPolicy(
@@ -206,6 +252,10 @@ class DeterministicPlanner:
                 RefusalReason.STALE_SELECTION,
                 "intent selection does not match the authoritative selection",
             )
+
+        class_refusal = _check_device_classes(intent, snapshot)
+        if class_refusal is not None:
+            return class_refusal
 
         selected = tuple(sorted(snapshot.selection))
         plan_id = f"plan:{intent.intent_id}"
@@ -305,7 +355,8 @@ class DeterministicPlanner:
                     )
                 )
             for drone_id in ordered:
-                pose = snapshot.aircraft[drone_id].pose
+                aircraft = snapshot.aircraft[drone_id]
+                pose = aircraft.pose
                 drone_dx, drone_dy = displacements[drone_id]
                 builder.add(
                     drone_id,
@@ -313,8 +364,8 @@ class DeterministicPlanner:
                     {
                         "x": pose.x + drone_dx,
                         "y": pose.y + drone_dy,
-                        "z": pose.z,
-                        "speed": self.config.flight_speed_m_s,
+                        "z": self.config.target_z_m(aircraft, pose.z),
+                        "speed": self.config.motion_speed_m_s(aircraft),
                     },
                 )
 
@@ -406,7 +457,7 @@ class DeterministicPlanner:
                         "x": target.x,
                         "y": target.y,
                         "z": target.z,
-                        "speed": self.config.flight_speed_m_s,
+                        "speed": self.config.motion_speed_m_s(snapshot.aircraft[drone_id]),
                     },
                 )
 
@@ -518,8 +569,10 @@ class DeterministicPlanner:
                     {
                         "x": aircraft.home.x,
                         "y": aircraft.home.y,
-                        "z": max(aircraft.pose.z, self.config.takeoff_altitude_m),
-                        "speed": self.config.flight_speed_m_s,
+                        "z": self.config.target_z_m(
+                            aircraft, max(aircraft.pose.z, self.config.takeoff_altitude_m)
+                        ),
+                        "speed": self.config.motion_speed_m_s(aircraft),
                     },
                 )
 
@@ -530,7 +583,8 @@ class DeterministicPlanner:
         elif intent.name is IntentName.LAND_ALL:
             for drone_id, aircraft in sorted(snapshot.aircraft.items()):
                 if (
-                    aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+                    aircraft.device_class is DeviceClass.AIRCRAFT
+                    and aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
                     and aircraft.airborne
                 ):
                     builder.add(drone_id, CommandOperation.LAND, safety_action=True)
@@ -590,7 +644,7 @@ class DeterministicPlanner:
                 drone_id
                 for drone_id, aircraft in sorted(snapshot.aircraft.items())
                 if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
-                and aircraft.airborne
+                and aircraft.mobile
             )
         )
         plan_id = f"plan:{intent_id}:safety-hold"
@@ -616,14 +670,18 @@ class DeterministicPlanner:
         snapshot: FleetSnapshot,
         land: bool,
     ) -> Plan:
-        """Hold every airborne aircraft, then land all after the configured dwell."""
+        """Hold every mobile device, then land every airborne aircraft after the dwell.
+
+        A ground vehicle is held and never landed: it has no land operation, so its hold
+        is the whole response and the following land covers the aircraft only.
+        """
         plan_id = f"plan:{intent_id}"
         builder = _CommandBuilder(intent_id, snapshot, plan_id)
         targets = tuple(
             drone_id
             for drone_id, aircraft in sorted(snapshot.aircraft.items())
             if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
-            and aircraft.airborne
+            and (aircraft.airborne if land else aircraft.mobile)
         )
         operation = CommandOperation.LAND if land else CommandOperation.HOVER
         for drone_id in targets:
@@ -800,7 +858,53 @@ def _formation_targets(
     *,
     minimum_clearance: float | None = None,
 ) -> tuple[tuple[int, Position], ...] | None:
+    """Expand one formation per device class so no ground vehicle takes an aircraft slot.
+
+    Each class forms around its own centre at its own height: aircraft at the mean
+    height of the selected aircraft, ground vehicles on the floor plane. A class with a
+    single selected device holds its own position.
+    """
+    if name not in FORMATION_NAMES or len(selected) < 2:
+        return None
+    assignments: list[tuple[int, Position]] = []
+    for device_class in (DeviceClass.AIRCRAFT, DeviceClass.GROUND_VEHICLE):
+        group = tuple(
+            drone_id
+            for drone_id in selected
+            if snapshot.aircraft[drone_id].device_class is device_class
+        )
+        if not group:
+            continue
+        group_targets = _class_formation_targets(
+            name, group, snapshot, spacing, device_class, minimum_clearance=minimum_clearance
+        )
+        if group_targets is None:
+            return None
+        assignments.extend(group_targets)
+    return tuple(assignments)
+
+
+def _class_formation_targets(
+    name: str,
+    selected: tuple[int, ...],
+    snapshot: FleetSnapshot,
+    spacing: float,
+    device_class: DeviceClass,
+    *,
+    minimum_clearance: float | None = None,
+) -> tuple[tuple[int, Position], ...] | None:
     count = len(selected)
+    if count == 1:
+        drone_id = selected[0]
+        pose = snapshot.aircraft[drone_id].pose
+        return (
+            (
+                drone_id,
+                Position(
+                    pose.x, pose.y, 0.0 if device_class is DeviceClass.GROUND_VEHICLE else pose.z
+                ),
+            ),
+        )
     if (
         name not in FORMATION_NAMES
         or not 2 <= count <= MAX_INTENT_DRONE_IDS
@@ -809,7 +913,11 @@ def _formation_targets(
         return None
     center_x = sum(snapshot.aircraft[drone_id].pose.x / count for drone_id in selected)
     center_y = sum(snapshot.aircraft[drone_id].pose.y / count for drone_id in selected)
-    z = sum(snapshot.aircraft[drone_id].pose.z / count for drone_id in selected)
+    z = (
+        _GROUND_FLOOR_Z_M
+        if device_class is DeviceClass.GROUND_VEHICLE
+        else sum(snapshot.aircraft[drone_id].pose.z / count for drone_id in selected)
+    )
     if not all(isfinite(value) for value in (center_x, center_y, z, spacing)):
         return None
     offsets = _formation_offsets(name, count)
@@ -1083,7 +1191,9 @@ def _sequential_formation_order(
     occupied = {
         drone_id: aircraft.pose
         for drone_id, aircraft in snapshot.aircraft.items()
-        if aircraft.membership is MembershipState.READY and aircraft.airborne
+        if aircraft.membership is MembershipState.READY
+        and aircraft.mobile
+        and aircraft.device_class is snapshot.aircraft[assignments[0][0]].device_class
     }
     by_drone = dict(assignments)
     drone_ids = tuple(sorted(by_drone))
@@ -1301,6 +1411,37 @@ def _safe_sweep_routes(
     if ordered_ends is None:
         return None
     return ordered_starts, ordered_ends
+
+
+def _check_device_classes(intent: IntentV1, snapshot: FleetSnapshot) -> Refusal | None:
+    """Refuse an intent no selected device's class can execute.
+
+    ``land_all`` targets the roster rather than the selection: it skips ground vehicles
+    and is refused by class only when the roster holds ground vehicles and no aircraft.
+    """
+    if intent.name in AIRCRAFT_ONLY_INTENTS:
+        for drone_id in sorted(snapshot.selection):
+            aircraft = snapshot.aircraft.get(drone_id)
+            if aircraft is not None and aircraft.device_class is not DeviceClass.AIRCRAFT:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.UNSUPPORTED_FOR_DEVICE_CLASS,
+                    f"{intent.name.value} is not supported for device class "
+                    f"{aircraft.device_class.value}",
+                    drone_id,
+                )
+        return None
+    if intent.name is IntentName.LAND_ALL and snapshot.aircraft:
+        classes = {aircraft.device_class for aircraft in snapshot.aircraft.values()}
+        if DeviceClass.AIRCRAFT not in classes:
+            return _refusal(
+                intent,
+                snapshot,
+                RefusalReason.UNSUPPORTED_FOR_DEVICE_CLASS,
+                f"land_all is not supported for device class {DeviceClass.GROUND_VEHICLE.value}",
+            )
+    return None
 
 
 def _refusal(

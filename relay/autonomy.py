@@ -41,6 +41,7 @@ from planner.controller import AutonomyController, RelayExecution
 from planner.models import (
     CommandAcknowledgement,
     DeviceClass,
+    DriveState,
     ExecutionResult,
     FleetSnapshot,
     FlightState,
@@ -98,7 +99,17 @@ _TERMINAL = frozenset(
 )
 _LOGGER = logging.getLogger(__name__)
 _FLIGHT_STATES = frozenset(state.value for state in FlightState)
+_DRIVE_STATES = frozenset(state.value for state in DriveState)
+_TELEMETRY_STATES_BY_CLASS = {
+    DeviceClass.AIRCRAFT: _FLIGHT_STATES,
+    DeviceClass.GROUND_VEHICLE: _DRIVE_STATES,
+}
 _PHYSICALLY_DISARMED_STATES = frozenset({FlightState.DISARMED.value, FlightState.LANDED.value})
+_WHEELS_DISABLED_STATES = frozenset({DriveState.DOCKED.value, DriveState.FAULT.value})
+_PHYSICALLY_UNPOWERED_STATES = {
+    DeviceClass.AIRCRAFT: _PHYSICALLY_DISARMED_STATES,
+    DeviceClass.GROUND_VEHICLE: _WHEELS_DISABLED_STATES,
+}
 _PUBLISH_TIMEOUT_S = 30.0
 
 
@@ -191,10 +202,20 @@ def relay_snapshot(
     time, so an operator intent that starts in between is refused as
     ``estop_active`` rather than sent.
 
-    Aircraft without current-epoch telemetry, or whose telemetry state is not a
-    ``FlightState``, are excluded from commands and mark the fleet observation
-    incomplete. That fact prevents the session-wide arm authorization from being
-    withdrawn until every registered aircraft is proven physically disarmed.
+    Devices without current-epoch telemetry, whose telemetry state is outside the
+    vocabulary their device class reports, or whose class the projection does not
+    name, are excluded: they cannot be selected or commanded until the node reports
+    a state this build understands. Ground vehicles are projected with their
+    ``DriveState`` and a null ``flight_state``, so one snapshot carries a mixed
+    session and every fleet-wide stop, hold, and spacing check computed from it
+    includes them.
+
+    ``armed`` per class: an aircraft is physically armed in every flight state
+    except ``disarmed`` and ``landed``; a ground vehicle's wheels are enabled in
+    every drive state except ``docked`` and ``fault``. Telemetry v1 carries no
+    separate motor or wheel-enable field for either class.
+
+    Missing observations mark the fleet incomplete and block disarm.
     """
     drones_raw = state.get("drones")
     if not isinstance(drones_raw, list):
@@ -208,10 +229,18 @@ def relay_snapshot(
         drone_id = drone.get("drone_id")
         if not isinstance(drone_id, int) or isinstance(drone_id, bool) or drone_id <= 0:
             raise ValueError("relay drone entries require a positive drone_id")
-        if drone.get("device_class") not in {None, DeviceClass.AIRCRAFT.value}:
+        raw_class = drone.get("device_class")
+        if raw_class is not None and (
+            not isinstance(raw_class, str) or raw_class not in _TELEMETRY_STATES_BY_CLASS
+        ):
+            fleet_observation_complete = False
             continue
+        device_class = DeviceClass.AIRCRAFT if raw_class is None else DeviceClass(raw_class)
         telemetry = drone.get("telemetry")
-        if not isinstance(telemetry, Mapping) or telemetry.get("state") not in _FLIGHT_STATES:
+        if (
+            not isinstance(telemetry, Mapping)
+            or telemetry.get("state") not in _TELEMETRY_STATES_BY_CLASS[device_class]
+        ):
             fleet_observation_complete = False
             continue
         capabilities = drone.get("camera_capabilities")
@@ -223,7 +252,7 @@ def relay_snapshot(
         readiness = None if capture_readiness is None else capture_readiness(drone_id)
         enrichment[drone_id] = RelayAircraftSafetyEnrichment(
             drone_id=drone_id,
-            armed=telemetry["state"] not in _PHYSICALLY_DISARMED_STATES,
+            armed=telemetry["state"] not in _PHYSICALLY_UNPOWERED_STATES[device_class],
             physical_rc_available=drone.get("rc_safety_operator_present") is True,
             storage_remaining_bytes=(
                 storage

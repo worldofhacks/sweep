@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from planner.models import DeviceClass
+from planner.models import DeviceClass, DriveState, FlightState
 from relay.app import RelayRuntime
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event
@@ -467,12 +467,11 @@ def test_session_and_runtime_thread_the_configured_devices_into_the_registry(
     assert refused[0]["reason"] == "device_class_mismatch"
 
 
-def test_ground_vehicles_are_not_in_the_planner_snapshot_yet(
+def test_a_mixed_session_projects_both_classes_into_one_planner_snapshot(
     tmp_path: Path, clock: MutableClock, event_ids: EventIds
 ) -> None:
-    """The relay admits, projects, and labels a ground vehicle, but ``FleetSnapshot`` is
-    aircraft-shaped, so the planner and the arbiter do not see one until the per-class
-    snapshot lands. ``relay/README.md`` records the gap for a mixed session."""
+    """One snapshot carries the whole session: the aircraft with its flight state, the
+    ground vehicle with its drive state, a null ``flight_state``, and its unit."""
     settings = RelaySettings(
         relay_token=CONSOLE_KEY,
         adapter_keys={1: ADAPTER_KEY, GROUND_ID: GROUND_KEY},
@@ -500,7 +499,67 @@ def test_ground_vehicles_are_not_in_the_planner_snapshot_yet(
     state = session.current_state()
     assert {drone["drone_id"] for drone in state["drones"]} == {1, GROUND_ID}
     snapshot = relay_snapshot(state, operator_last_seen_ms=None)
-    assert set(snapshot.aircraft) == {1}
+
+    assert set(snapshot.aircraft) == {1, GROUND_ID}
+    robot = snapshot.aircraft[GROUND_ID]
+    assert robot.device_class is DeviceClass.GROUND_VEHICLE
+    assert robot.drive_state is DriveState.MOVING
+    assert robot.flight_state is None
+    assert robot.unit == 1
+    assert robot.pose.z == 0.0
+    assert robot.mobile is True and robot.airborne is False
+    assert robot.armed is True, "wheels are enabled in every state but docked and fault"
+    drone = snapshot.aircraft[1]
+    assert drone.device_class is DeviceClass.AIRCRAFT
+    assert drone.flight_state is FlightState.LANDED
+    assert drone.drive_state is None
+    assert drone.armed is False and drone.mobile is False
+
+    session.process_frame(
+        ground_telemetry_payload(
+            event_id="telemetry-docked", timestamp=clock() + 1, state="docked"
+        ),
+        ground,
+    )
+    docked = relay_snapshot(session.current_state(), operator_last_seen_ms=None)
+    assert docked.aircraft[GROUND_ID].armed is False
+    assert docked.aircraft[GROUND_ID].mobile is False
+
+
+def test_a_device_state_outside_its_class_vocabulary_is_excluded(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    """Each class's telemetry state is read in its own vocabulary and nothing else."""
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY, GROUND_ID: GROUND_KEY},
+        device_classes={GROUND_ID: GROUND},
+        log_dir=tmp_path,
+    )
+    session = RelayRuntime(settings, clock=clock, event_ids=event_ids).session(SESSION)
+    ground = Principal(source="adapter", drone_id=GROUND_ID, signing_key=GROUND_KEY)
+    session.process_frame(
+        ground_membership_payload(action="join", event_id="join-ground", timestamp=clock()), ground
+    )
+    session.process_frame(
+        ground_telemetry_payload(event_id="telemetry-ground", timestamp=clock(), state="idle"),
+        ground,
+    )
+    state = session.current_state()
+    assert set(relay_snapshot(state, operator_last_seen_ms=None).aircraft) == {GROUND_ID}
+
+    flight_state = {
+        **state,
+        "drones": [{**state["drones"][0], "telemetry": {**state["drones"][0]["telemetry"]}}],
+    }
+    flight_state["drones"][0]["telemetry"]["state"] = "hovering"
+    assert relay_snapshot(flight_state, operator_last_seen_ms=None).aircraft == {}
+
+    unknown_class = {
+        **state,
+        "drones": [{**state["drones"][0], "device_class": "submarine"}],
+    }
+    assert relay_snapshot(unknown_class, operator_last_seen_ms=None).aircraft == {}
 
 
 def test_unconfigured_session_treats_every_id_as_an_aircraft_numbered_by_id(

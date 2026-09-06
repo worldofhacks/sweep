@@ -1471,7 +1471,7 @@ class AdapterDispatcher:
             # Enrichment failure after I/O must not prevent stopping that same aircraft.
             current = fallback_snapshot
         aircraft = current.aircraft.get(failed_command.drone_id)
-        if aircraft is None or not aircraft.airborne:
+        if aircraft is None or not aircraft.mobile:
             return []
         hold = Command(
             command_id=f"{failed_command.command_id}:safety-hold",

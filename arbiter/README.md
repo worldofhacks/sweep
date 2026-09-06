@@ -46,6 +46,20 @@ requests produce a typed refusal and zero requested adapter commands. The physic
 RC-N1 and safety operator remain the independent pause, RTH, landing, and takeover
 path.
 
+Device classes change which gates apply, never whether one is checked. The geofence
+bounds every device in x and y; only an aircraft is bounded in z, and the ceiling does
+not apply to a ground vehicle on the floor plane. Spacing is checked within a class:
+aircraft against aircraft, ground vehicle against ground vehicle, because clearance
+between the two is a vertical question this issue does not answer. The gates that ask
+whether a device is airborne read `mobile` for a ground vehicle, so `hold`, `goto`,
+`rotate_to`, and `hover` require one that is `idle`, `moving`, or `stopped`, and `arm`
+requires one that is `docked`, `idle`, or `stopped`. `ground_max_speed_m_s` caps the
+planned drive speed of a ground `goto` with a `speed_limit` refusal, and a ground
+vehicle accepts only `goto`, `rotate_to`, `hover`, and `estop`; every other operation
+is refused `unsupported_for_device_class`, as are the aircraft-only intents targeted at
+one. Battery, link, telemetry freshness, position quality, operator, authority, and
+membership gates are unchanged and apply to both classes.
+
 Rule: no model in the safety path. Target: every safety rule has a test that tries to
 break it.
 

@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from planner.models import (
+    AircraftState,
+    DeviceClass,
+    DriveState,
     FleetSnapshot,
     FlightState,
     JsonValue,
@@ -16,6 +19,8 @@ from planner.models import (
     Refusal,
     RefusalReason,
 )
+
+_GROUND_REMOVABLE_STATES = frozenset({DriveState.DOCKED, DriveState.IDLE, DriveState.STOPPED})
 
 
 class RosterChangeKind(StrEnum):
@@ -89,7 +94,12 @@ class RosterReconciliation:
 
 
 def authorize_graceful_removal(snapshot: FleetSnapshot, drone_id: int) -> RemovalAuthorization:
-    """Authorize a signed leave only when M1.2's physical-state gate passes."""
+    """Authorize a signed leave only when M1.2's physical-state gate passes.
+
+    A ground vehicle passes that gate while it is docked, idle, or stopped. Its drive
+    state is the same evidence as an aircraft's disarmed proof, so the separate armed
+    gate is not applied to it a second time.
+    """
     aircraft = snapshot.aircraft.get(drone_id)
     if aircraft is None:
         refusal = _transition_refusal(
@@ -98,14 +108,18 @@ def authorize_graceful_removal(snapshot: FleetSnapshot, drone_id: int) -> Remova
             RefusalReason.AIRCRAFT_NOT_REGISTERED,
             "graceful removal target is not registered",
         )
-    elif aircraft.flight_state not in {FlightState.DISARMED, FlightState.LANDED}:
+    elif not _removable_state(aircraft):
         refusal = _transition_refusal(
             snapshot,
             drone_id,
             RefusalReason.INVALID_STATE,
-            "graceful removal requires a landed aircraft",
+            (
+                "graceful removal requires a docked, idle, or stopped ground vehicle"
+                if aircraft.device_class is DeviceClass.GROUND_VEHICLE
+                else "graceful removal requires a landed aircraft"
+            ),
         )
-    elif aircraft.armed:
+    elif aircraft.device_class is DeviceClass.AIRCRAFT and aircraft.armed:
         refusal = _transition_refusal(
             snapshot,
             drone_id,
@@ -253,6 +267,12 @@ def reconcile_roster_change(
         return RosterReconciliation(change=change, accepted=True)
 
     return _reconciliation_refusal(current, change, "unknown roster change")
+
+
+def _removable_state(aircraft: AircraftState) -> bool:
+    if aircraft.device_class is DeviceClass.GROUND_VEHICLE:
+        return aircraft.drive_state in _GROUND_REMOVABLE_STATES
+    return aircraft.flight_state in {FlightState.DISARMED, FlightState.LANDED}
 
 
 def _transition_refusal(

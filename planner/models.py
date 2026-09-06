@@ -188,6 +188,8 @@ class RefusalReason(StrEnum):
     INVALID_ROSTER_TRANSITION = "invalid_roster_transition"
     INVALID_RESUME = "invalid_resume"
     INVALID_PLAN = "invalid_plan"
+    UNSUPPORTED_FOR_DEVICE_CLASS = "unsupported_for_device_class"
+    SPEED_LIMIT = "speed_limit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,7 +260,7 @@ class AircraftState:
     membership: MembershipState
     pose: Position
     home: Position | None
-    flight_state: FlightState
+    flight_state: FlightState | None
     armed: bool
     battery: float
     link_quality: float
@@ -273,6 +275,9 @@ class AircraftState:
     heading_deg: float | None = None
     active_task_id: str | None = None
     position_loss_since_ms: int | None = None
+    device_class: DeviceClass = DeviceClass.AIRCRAFT
+    drive_state: DriveState | None = None
+    unit: int | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -293,8 +298,22 @@ class AircraftState:
             raise ValueError("pose must be a Position")
         if self.home is not None and not isinstance(self.home, Position):
             raise ValueError("home must be a Position or null")
-        if not isinstance(self.flight_state, FlightState):
-            raise ValueError("flight_state must be a FlightState")
+        if not isinstance(self.device_class, DeviceClass):
+            raise ValueError("device_class must be a DeviceClass")
+        if self.device_class is DeviceClass.AIRCRAFT:
+            if not isinstance(self.flight_state, FlightState):
+                raise ValueError("an aircraft requires a FlightState")
+            if self.drive_state is not None:
+                raise ValueError("an aircraft carries no drive_state")
+        else:
+            if self.flight_state is not None:
+                raise ValueError("a ground vehicle carries no flight_state")
+            if not isinstance(self.drive_state, DriveState):
+                raise ValueError("a ground vehicle requires a DriveState")
+        if self.unit is not None and (
+            not isinstance(self.unit, int) or isinstance(self.unit, bool) or self.unit <= 0
+        ):
+            raise ValueError("unit must be null or a positive integer")
         if self.heading_deg is not None and (
             not _is_finite_number(self.heading_deg) or not 0 <= self.heading_deg < 360
         ):
@@ -333,12 +352,33 @@ class AircraftState:
 
     @property
     def airborne(self) -> bool:
+        """True only for an aircraft off the ground; a ground vehicle is never airborne."""
         return self.flight_state in {
             FlightState.TAKING_OFF,
             FlightState.AIRBORNE,
             FlightState.HOVERING,
             FlightState.LANDING,
         }
+
+    @property
+    def mobile(self) -> bool:
+        """Under power and able to move now: airborne, or a ground vehicle off its dock.
+
+        A docked or faulted ground vehicle is not mobile, so the gates that ask whether a
+        device must be stopped, held, or kept clear of another read the same fact for both
+        classes.
+        """
+        if self.device_class is DeviceClass.GROUND_VEHICLE:
+            return self.drive_state in {DriveState.IDLE, DriveState.MOVING, DriveState.STOPPED}
+        return self.airborne
+
+    @property
+    def telemetry_state(self) -> str:
+        """The telemetry ``state`` value this device reports, from either class vocabulary."""
+        if self.flight_state is not None:
+            return self.flight_state.value
+        assert self.drive_state is not None
+        return self.drive_state.value
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object]) -> AircraftState:
@@ -352,6 +392,11 @@ class AircraftState:
         home_raw = raw.get("home")
         home = Position.from_mapping(home_raw) if isinstance(home_raw, Mapping) else None
         drone_id = _positive_int(raw, "drone_id", fallback="id")
+        device_class = _device_class(raw.get("device_class"))
+        state_key = "drive_state" if device_class is DeviceClass.GROUND_VEHICLE else "flight_state"
+        flight_state, drive_state = _telemetry_states(
+            _string(raw, state_key, fallback="state"), device_class
+        )
 
         return cls(
             drone_id=drone_id,
@@ -359,7 +404,10 @@ class AircraftState:
             membership=MembershipState(_string(raw, "membership")),
             pose=pose,
             home=home,
-            flight_state=FlightState(_string(raw, "flight_state", fallback="state")),
+            flight_state=flight_state,
+            drive_state=drive_state,
+            device_class=device_class,
+            unit=_optional_unit(raw.get("unit")),
             armed=_boolean(raw, "armed"),
             battery=_fraction(raw, "battery"),
             link_quality=_fraction(raw, "link_quality", fallback="link"),
@@ -383,7 +431,10 @@ class AircraftState:
             "membership": self.membership.value,
             "pose": self.pose.to_dict(),
             "home": self.home.to_dict() if self.home is not None else None,
-            "flight_state": self.flight_state.value,
+            "device_class": self.device_class.value,
+            "unit": self.unit,
+            "flight_state": None if self.flight_state is None else self.flight_state.value,
+            "drive_state": None if self.drive_state is None else self.drive_state.value,
             "armed": self.armed,
             "battery": self.battery,
             "link_quality": self.link_quality,
@@ -522,6 +573,7 @@ class FleetSnapshot:
             if not isinstance(item, Mapping):
                 raise ValueError("relay drone entries must be mappings")
             drone_id = _positive_int(item, "drone_id")
+            device_class = _device_class(item.get("device_class"))
             safety = enrichment.aircraft.get(drone_id)
             if safety is None:
                 raise ValueError(f"missing safety enrichment for aircraft {drone_id}")
@@ -549,7 +601,8 @@ class FleetSnapshot:
             else:
                 flight_state_raw = safety.last_known_flight_state
             if not isinstance(flight_state_raw, str):
-                raise ValueError(f"missing flight state for aircraft {drone_id}")
+                raise ValueError(f"missing telemetry state for device {drone_id}")
+            flight_state, drive_state = _telemetry_states(flight_state_raw, device_class)
 
             battery = _relay_fraction(
                 telemetry_mapping,
@@ -586,7 +639,10 @@ class FleetSnapshot:
                     membership=MembershipState(_string(item, "membership")),
                     pose=pose,
                     home=home,
-                    flight_state=FlightState(flight_state_raw),
+                    flight_state=flight_state,
+                    drive_state=drive_state,
+                    device_class=device_class,
+                    unit=_optional_unit(item.get("unit")),
                     armed=safety.armed,
                     battery=battery,
                     link_quality=link_quality,
@@ -1023,6 +1079,32 @@ def _optional_nonnegative_int(value: object) -> int | None:
         return None
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError("optional timestamp must be null or non-negative")
+    return value
+
+
+def _device_class(value: object) -> DeviceClass:
+    """Read a projected device class; an absent class is an aircraft, an unknown one fails."""
+    if value is None:
+        return DeviceClass.AIRCRAFT
+    if not isinstance(value, str):
+        raise ValueError("device_class must be null or a class name")
+    return DeviceClass(value)
+
+
+def _telemetry_states(
+    raw: str, device_class: DeviceClass
+) -> tuple[FlightState | None, DriveState | None]:
+    """Read one telemetry ``state`` value in the vocabulary its device class reports."""
+    if device_class is DeviceClass.GROUND_VEHICLE:
+        return None, DriveState(raw)
+    return FlightState(raw), None
+
+
+def _optional_unit(value: object) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError("unit must be null or a positive integer")
     return value
 
 
