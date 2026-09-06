@@ -8,6 +8,7 @@ from relay.contracts import (
     MAX_CAPABILITY_ITEM_UTF8_BYTES,
     MAX_CAPABILITY_LIST_CANONICAL_BYTES,
     MAX_CAPABILITY_LIST_ITEMS,
+    MAX_CAPTURE_BUNDLE_MEDIA_ITEMS,
     MAX_STORAGE_REMAINING_BYTES,
     ContractError,
     DeltaKind,
@@ -247,6 +248,31 @@ def test_capture_bundle_frame_nests_media_records() -> None:
     assert frame.status == "completed"
     assert frame.media[0].file_id == "capture-1-pano-360"
     assert frame.to_event() == raw
+
+
+def test_capture_bundle_bounds_nested_media_records() -> None:
+    file = media_file_payload(event_id="media-template")
+    record = {
+        key: value
+        for key, value in file.items()
+        if key not in {"v", "t", "type", "event_id", "session"}
+    }
+    raw = capture_bundle_payload(
+        event_id="bundle-max-media",
+        media=[
+            {**record, "file_id": f"capture-1-{index}"}
+            for index in range(MAX_CAPTURE_BUNDLE_MEDIA_ITEMS)
+        ],
+    )
+
+    assert len(parse_capture_bundle(raw).media) == MAX_CAPTURE_BUNDLE_MEDIA_ITEMS
+
+    raw["media"].append({**record, "file_id": "capture-1-over"})  # type: ignore[index]
+    with pytest.raises(
+        ContractError, match=f"at most {MAX_CAPTURE_BUNDLE_MEDIA_ITEMS} entries"
+    ) as error:
+        parse_capture_bundle(raw)
+    assert error.value.code == "invalid_capture_bundle"
 
 
 def test_capture_bundle_failure_requires_a_machine_readable_reason() -> None:

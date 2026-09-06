@@ -114,6 +114,9 @@ NODE_FRAME_TYPES = frozenset(
 MAX_CAPABILITY_LIST_ITEMS = 64
 MAX_CAPABILITY_ITEM_UTF8_BYTES = 512
 MAX_CAPABILITY_LIST_CANONICAL_BYTES = 8 * 1024
+# A capture bundle is persisted as one audit event and retained by the live
+# capture projection, so it cannot contain more media records than that projection.
+MAX_CAPTURE_BUNDLE_MEDIA_ITEMS = 64
 # Android reports this field as a signed ``Long``. Mirror that exact upper bound
 # before the value reaches retained state or its audit projection.
 MAX_STORAGE_REMAINING_BYTES = (1 << 63) - 1
@@ -988,8 +991,13 @@ def parse_capture_bundle(raw: object) -> CaptureBundleFrame:
     coverage = _choice(value["coverage"], "coverage", _CAPTURE_COVERAGES, code)
     status = _choice(value["status"], "status", _CAMERA_RESULT_STATUSES, code)
     media_raw = value["media"]
-    if isinstance(media_raw, str) or not isinstance(media_raw, Sequence):
+    if not isinstance(media_raw, list):
         raise ContractError(code, "media must be a list")
+    if len(media_raw) > MAX_CAPTURE_BUNDLE_MEDIA_ITEMS:
+        raise ContractError(
+            code,
+            f"media may contain at most {MAX_CAPTURE_BUNDLE_MEDIA_ITEMS} entries",
+        )
     media = tuple(
         _media_record(_mapping(item, code, "media entries must be objects"), code)
         for item in media_raw
