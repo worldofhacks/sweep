@@ -790,6 +790,78 @@ def test_http_metrics_and_replay_require_bearer_authentication(
     assert replay.json()["event_id"]
 
 
+def test_adapter_receives_fresh_telemetry_while_its_state_delivery_is_blocked(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    state_delivery_started = Event()
+    release_state_delivery = Event()
+    original_send_json = WebSocket.send_json
+
+    async def block_state_delivery(websocket: WebSocket, data: object, mode: str = "text") -> None:
+        if isinstance(data, dict) and data.get("type") == "state":
+            state_delivery_started.set()
+            assert await asyncio.to_thread(release_state_delivery.wait, 2)
+        await original_send_json(websocket, data, mode=mode)
+
+    try:
+        with TestClient(app) as client:
+            runtime = app.state.relay_runtime
+            with client.websocket_connect(f"/ws/{SESSION}") as console:
+                _authenticate_console(console)
+                with client.websocket_connect(f"/ws/{SESSION}") as adapter:
+                    _authenticate_adapter(adapter)
+                    adapter.send_json(membership_payload(action="join", event_id="join-backlog"))
+                    _receive_type(console, "membership")
+                    adapter.send_json(telemetry_payload(event_id="telemetry-before-backlog"))
+                    _receive_type(console, "telemetry")
+                    adapter.send_json(
+                        membership_payload(action="readiness", event_id="ready-backlog")
+                    )
+                    _receive_type(console, "membership")
+                    session = runtime.sessions[SESSION]
+                    assert session.current_state()["drones"][0]["membership"] == "ready"
+
+                    monkeypatch.setattr(WebSocket, "send_json", block_state_delivery)
+                    release_timer = Timer(2, release_state_delivery.set)
+                    release_timer.start()
+                    blocked = telemetry_payload(
+                        event_id="telemetry-blocked-delivery", timestamp=clock.value
+                    )
+                    blocked["x"] = 1.0
+                    adapter.send_json(blocked)
+                    assert state_delivery_started.wait(timeout=2)
+                    clock.advance(900)
+                    queued = telemetry_payload(
+                        event_id="telemetry-queued-after-delivery", timestamp=clock.value
+                    )
+                    queued["x"] = 2.0
+                    adapter.send_json(queued)
+
+                    deadline = time.monotonic() + 1
+                    while time.monotonic() < deadline:
+                        telemetry = session.current_state()["drones"][0]["telemetry"]
+                        if telemetry is not None and telemetry["x"] == 2.0:
+                            break
+                        sleep(0.01)
+                    assert telemetry is not None and telemetry["x"] == 2.0
+
+                    clock.advance(200)
+                    periodic = session.periodic_events()
+                    assert not any(
+                        event.get("type") == "membership"
+                        and event.get("reason") == "telemetry_stale"
+                        for event in periodic
+                    )
+                    release_state_delivery.set()
+                    release_timer.cancel()
+    finally:
+        release_state_delivery.set()
+
+
 def test_authenticated_console_receives_periodic_state_fanout_at_frozen_rate(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:
