@@ -646,7 +646,7 @@ the aircraft.
 | `set_gimbal_pitch {pitch_mdeg}` | `KeyRotateByAngle`, absolute pitch, roll and yaw ignored, 1 s; then polls `KeyGimbalAttitude` | reported pitch within 1° of the target (the arbiter's `max_capture_gimbal_error_deg`); `camera_failure` past 6 s, `camera_unsupported` when no gimbal attitude has ever been reported |
 | `camera_ready` | releases the media manager if a download left it enabled, sets `PHOTO_NORMAL` (`KeyCameraFlatMode`, or `KeyCameraMode` on a camera without flat modes), rereads storage, and sends a `capture_readiness` frame with `camera_ok` (aircraft and camera connected, photo mode) and `storage_ok` (storage inserted with at least 1 MB free) | both gates true; `camera_not_ready` otherwise, the detail naming each failed gate |
 | `capture_photo {capture_id}` | records the aircraft pose, heading, and gimbal pitch, fires `KeyStartShootPhoto`, waits for `KeyNewlyGeneratedMediaFile`, and sends a `media_file` record with `retrieval_status: pending`, an all-zero checksum, and the aircraft file as `storage_ref`, before the terminal acknowledgement | the camera announced the file (8 s); `camera_not_ready` before `camera_ready`, `camera_failure` on a refused shutter or no announcement |
-| `retrieve_media {file_id}` | `IMediaManager.enable`, pulls the photo list from the current storage, finds the announced index, `pullOriginalMediaFileFromCamera` into `filesDir/captures/<capture_id>/DJI_<n>.JPG` with `executing` progress once a second, hashes the file, `disable`, and sends the `completed` `media_file` record (SHA-256 of the bytes, `file://` path as `storage_ref`) before the terminal acknowledgement | the file is on the phone and its record was sent; `download_failure` on an unknown file, a changed connection epoch, a media-manager or download error, or the 120 s deadline |
+| `retrieve_media {file_id}` | `IMediaManager.enable`, pulls the photo list from the current storage, finds the announced index, `pullOriginalMediaFileFromCamera` into `filesDir/captures/<capture_id>/DJI_<n>.JPG` with `executing` progress once a second, checks the bytes written against the size the camera listed, hashes the file, `disable`, and sends the `completed` `media_file` record (SHA-256 of the bytes, `file://` path as `storage_ref`) before the terminal acknowledgement | the file is on the phone with the listed byte count and its record was sent; `download_failure` on an unknown file, a changed connection epoch, a media-manager or download error, a write error or short file on the phone (the partial file is removed and the record stays `pending`), or the 120 s deadline |
 | `capture_panorama {capture_id}` | nothing | never: `camera_unsupported`, because a native panorama yaws the aircraft under the flight controller, outside the Virtual Stick loop and the arbiter's pose lock; `reconstruct_8` is the working pattern |
 
 Both flavors therefore join with `capabilities: [flight, reconstruct_8]` and report
@@ -666,9 +666,14 @@ must have that value raised before the session, because a retrieval the relay ti
 cannot be resumed.
 
 `capture_readiness` cadence: the link sends one frame on join (with the fake camera:
-`camera_ok=false` until `camera_ready` puts it in photo mode; with the aircraft: whatever the
-keys report), one whenever a gate, the active capture id, or the missing-coverage sectors
-change (checked every 100 ms), and one at every `camera_ready`. `coverage_missing` lists the
+`camera_ok=true`, since it boots in photo mode as the Mini 3 does; with the aircraft: whatever
+the keys report), one whenever a gate, the active capture id, or the missing-coverage sectors
+change (checked every 100 ms), and one at every `camera_ready`. The arbiter admits a
+`capture_room` intent only after a current-epoch frame with `camera_ok` and `storage_ok`
+(`relay/autonomy.py`, `arbiter/safety.py`), and no plan step runs before that admission, so
+the camera must already be in the still-photo mode when the intent is drafted; the plan's
+`camera_ready` step sets photo mode again, which matters only for a camera that left it after
+admission. `coverage_missing` lists the
 45° sectors of `reconstruct_8` no accepted frame falls into; `next_heading_deg` and
 `suggested_delta` stay null because the planner, not the node, chooses the next heading.
 
@@ -700,7 +705,11 @@ Preconditions, as for the guarded-hover checklist: relay on the `remote` backend
 readiness toggles), the RC operator holding the aircraft at the approved hover pose, the
 console connected with the aircraft selected and the room id typed. `capture_gimbal_pitch_deg`
 in the planning JSON is the pitch the gimbal is driven to; keep it inside the range the
-Capture card reports.
+Capture card reports. The camera must be in the still-photo mode before the draft: set the
+RC-N1 photo/video switch to photo and check that the Capture card reads `photo mode yes`,
+so the phone's `capture_readiness` carries `camera_ok=true`. The arbiter refuses the
+`capture_room` intent `camera_not_ready` until a current-epoch readiness frame reports
+`camera_ok`, and the plan's `camera_ready` step never runs for a refused intent.
 
 Button path: Control module, pattern `reconstruct_8`, Capture room; review the preview
 (34 steps), Confirm and send in the dock. Gesture path: Gesture module with tracking on,
@@ -732,7 +741,10 @@ Abort and failure behavior: a stick past a third of its travel or the pause butt
 never move the aircraft, so a takeover during a shutter or download only ends the plan at
 its next `rotate_to`. A `camera_not_ready` or `download_failure` fails the plan with that
 reason; the files already on the phone stay where they are and the relay keeps their records.
-The room-world generation step (Marble) is separate and not started by this path.
+A download that stops short of the size the camera listed is removed from the phone and
+answered `download_failure` (retryable for the same `file_id` within the connection epoch);
+the plan fails closed with that reason and the file's record stays `pending`. The room-world
+generation step (Marble) is separate and not started by this path.
 
 ## Phase B4 exit procedure on the phone (not yet evidenced)
 

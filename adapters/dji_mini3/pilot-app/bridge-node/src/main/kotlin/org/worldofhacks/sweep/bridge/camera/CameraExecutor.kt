@@ -8,6 +8,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -366,11 +367,14 @@ class CameraExecutor(
         report.executing("downloading ${captured.camera.name} (${captured.camera.sizeBytes} bytes) over the RC link")
         val outcome = CompletableFuture<String?>()
         var lastProgressAt = clock.nowMs()
+        // The size the port reports for the file; the bytes on disk must match it before a checksum goes out.
+        val expectedBytes = AtomicLong(0L)
         port.download(
             captured.camera,
             target,
             object : DownloadListener {
                 override fun progress(bytes: Long, total: Long) {
+                    if (total > 0) expectedBytes.set(total)
                     val now = clock.nowMs()
                     if (total > 0 && now - lastProgressAt >= config.progressIntervalMs) {
                         lastProgressAt = now
@@ -397,6 +401,15 @@ class CameraExecutor(
         await(config.modeTimeoutMs) { done -> port.leaveMediaMode(done) }
         if (failure != null) {
             report.failed(DOWNLOAD_FAILURE, "$failure [retryable]")
+            finish()
+            return
+        }
+        val expected = expectedBytes.get()
+        val onDisk = target.length()
+        if (expected > 0 && onDisk != expected) {
+            // A port that swallowed a write error would hand over a short file; never checksum one.
+            target.delete()
+            report.failed(DOWNLOAD_FAILURE, "download truncated: $onDisk of $expected bytes on the phone; partial file removed [retryable]")
             finish()
             return
         }

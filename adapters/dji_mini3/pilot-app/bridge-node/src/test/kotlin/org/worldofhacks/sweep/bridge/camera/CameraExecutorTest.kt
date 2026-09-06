@@ -34,7 +34,8 @@ import org.worldofhacks.sweep.bridge.core.frames.PhoneThermalState
  * The Phase G camera path behind the relay link, on the fake camera port: the frame order
  * on the wire for every camera operation, the pending-then-completed media records with a
  * SHA-256 that matches the synthetic file on disk, the readiness gates, and the refusals
- * (native panorama, unknown file, gimbal not reached, storage low).
+ * (native panorama, unknown file, gimbal not reached, storage low, photo mode left, a short
+ * download).
  */
 class CameraExecutorTest {
     private val key = "adapter-key-0123456789abcdef0123456789abcdef".toByteArray(Charsets.UTF_8)
@@ -111,8 +112,8 @@ class CameraExecutorTest {
                 val readiness = stub.awaitFrame("capture_readiness")
                 assertEquals("visual_advisory", readiness.str("guidance_mode"))
                 assertEquals("operator_approved", readiness.str("pose_source"))
-                // The fake camera is not in photo mode until camera_ready: honest gates on join.
-                assertFalse(readiness.bool("camera_ok"))
+                // The fake camera boots in photo mode as a Mini 3 does, so the arbiter's camera gate is open from join.
+                assertTrue(readiness.bool("camera_ok"))
                 assertTrue(readiness.bool("storage_ok"))
                 val joinCapabilities = stub.awaitFrame("capabilities")
                 assertEquals(emptyList<Any>(), (joinCapabilities["native_panorama_modes"] as org.worldofhacks.sweep.bridge.core.json.JsonArray).items)
@@ -216,6 +217,9 @@ class CameraExecutorTest {
                 val outOfRange = stub.issueCommand(CommandArgs.SetGimbalPitch(pitchMdeg = 80_000))
                 assertTrue(stub.awaitAck(outOfRange.commandId, "failed").str("detail").contains("outside"))
 
+                // The RC's photo/video switch leaves photo mode: the gate closes, the link reports it, the shutter is refused.
+                node.port.setPhotoMode(false)
+                stub.awaitFrame("capture_readiness") { !it.bool("camera_ok") && it.bool("storage_ok") }
                 val photoBeforeReady = stub.issueCommand(CommandArgs.CapturePhoto("cap-early"))
                 assertEquals("camera_not_ready", stub.awaitAck(photoBeforeReady.commandId, "failed").str("reason"))
 
@@ -239,6 +243,42 @@ class CameraExecutorTest {
                 assertTrue(failed.str("detail").contains("link dropped"))
                 assertEquals(1, stub.frames("media_file") { it.str("file_id") == "cap-3-frame-01" }.size, "no completed record after a failed download")
                 assertTrue(node.executor.progress.value.phase == CapturePhase.Idle)
+            }
+        }
+    }
+
+    @Test
+    fun `a short download is removed and answered download_failure with only the pending record`() {
+        StubRelay(key).use { stub ->
+            node(stub).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                stub.awaitAck(stub.issueCommand(CommandArgs.CameraReady).commandId, "completed")
+                val photo = stub.issueCommand(CommandArgs.CapturePhoto("cap-4"))
+                stub.awaitAck(photo.commandId, "completed")
+                stub.awaitFrame("media_file") { it.str("file_id") == "cap-4-frame-01" }
+
+                // The port stops after 100 bytes yet reports success, as a swallowed write error would.
+                node.port.truncateDownloadAt = 100
+                val short = stub.issueCommand(CommandArgs.RetrieveMedia("cap-4-frame-01"))
+                val failed = stub.awaitAck(short.commandId, "failed")
+                assertEquals("download_failure", failed.str("reason"))
+                assertTrue(failed.str("detail").contains("truncated: 100 of"), failed.str("detail"))
+                assertTrue(failed.str("detail").contains("[retryable]"), failed.str("detail"))
+                val onDisk = File(node.root, "cap-4/FAKE_0001.JPG")
+                assertFalse(onDisk.exists(), "the partial file is removed")
+                val records = stub.frames("media_file") { it.str("file_id") == "cap-4-frame-01" }
+                assertEquals(listOf("pending"), records.map { it.str("retrieval_status") }, "no completed record for a short file")
+                assertEquals(RetrievalStatus.PENDING, node.executor.status.value.files.single().record.retrievalStatus)
+                assertTrue(node.executor.progress.value.phase == CapturePhase.Idle)
+
+                // Retryable: the ledger still holds the file, and a whole download completes with the right checksum.
+                node.port.truncateDownloadAt = null
+                val retry = stub.issueCommand(CommandArgs.RetrieveMedia("cap-4-frame-01"))
+                stub.awaitAck(retry.commandId, "completed")
+                val completed = stub.awaitFrame("media_file") { it.str("file_id") == "cap-4-frame-01" && it.str("retrieval_status") == "completed" }
+                assertTrue(onDisk.isFile)
+                assertEquals(sha256(onDisk), completed.str("checksum_sha256"))
+                assertTrue(node.port.bytesOf(1)!!.contentEquals(onDisk.readBytes()), "the retried file is whole")
             }
         }
     }

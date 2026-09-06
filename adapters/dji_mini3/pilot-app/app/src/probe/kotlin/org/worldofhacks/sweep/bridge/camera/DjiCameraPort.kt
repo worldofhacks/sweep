@@ -294,6 +294,12 @@ class DjiCameraPort(private val log: (name: String, detail: String) -> Unit) : C
         )
     }
 
+    /**
+     * The SDK streams the file in chunks and calls `onFinish` whatever happened to them on
+     * the phone, so a write error (disk full, I/O) and the byte count decide the outcome
+     * here: a short or unwritten file is removed and reported as a failure, never handed
+     * to the executor to checksum as a completed capture.
+     */
     private fun pullFile(media: MediaFile, target: File, listener: DownloadListener) {
         target.parentFile?.mkdirs()
         val stream = try {
@@ -305,26 +311,50 @@ class DjiCameraPort(private val log: (name: String, detail: String) -> Unit) : C
         media.pullOriginalMediaFileFromCamera(
             0L,
             object : MediaFileDownloadListener {
+                @Volatile
+                private var writeError: java.io.IOException? = null
+
                 override fun onStart() = listener.progress(0, media.fileSize)
 
                 override fun onProgress(total: Long, current: Long) = listener.progress(current, total)
 
                 override fun onRealtimeDataUpdate(data: ByteArray, position: Long) {
+                    if (writeError != null) return
                     try {
                         stream.write(data)
                     } catch (error: java.io.IOException) {
+                        writeError = error
                         log("Media manager", "write failed at $position: ${error.message}")
                     }
                 }
 
                 override fun onFinish() {
-                    runCatching { stream.close() }
+                    try {
+                        stream.close()
+                    } catch (error: java.io.IOException) {
+                        if (writeError == null) writeError = error
+                    }
+                    val expected = media.fileSize
+                    val written = target.length()
+                    val error = writeError
+                    val problem = when {
+                        error != null -> "download truncated: $written of $expected bytes: ${error.message}"
+                        expected <= 0 -> "download unverified: the camera listed no size for ${media.fileName}; $written bytes written"
+                        written != expected -> "download truncated: $written of $expected bytes"
+                        else -> null
+                    }
+                    if (problem != null) {
+                        target.delete()
+                        listener.failed("$problem; partial file removed")
+                        return
+                    }
                     listener.finished()
                 }
 
                 override fun onFailure(error: IDJIError) {
                     runCatching { stream.close() }
-                    listener.failed("download failed: ${describe(error)}")
+                    target.delete()
+                    listener.failed("download failed: ${describe(error)}; partial file removed")
                 }
             },
         )

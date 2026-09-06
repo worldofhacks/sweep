@@ -27,7 +27,9 @@ class FakeCameraPort(
     private val _facts = MutableStateFlow(
         CameraFacts(
             cameraConnected = connected(),
-            photoMode = false,
+            // A Mini 3 boots in still-photo mode; the arbiter refuses a capture_room intent until a
+            // capture_readiness frame reports camera_ok, so the fake joins the way the aircraft does.
+            photoMode = true,
             storageInserted = true,
             storageRemainingBytes = storageRemainingBytes,
             gimbalPitchMinDeg = -90.0,
@@ -43,7 +45,11 @@ class FakeCameraPort(
     private var nextIndex = 1
     private val files = LinkedHashMap<Int, ByteArray>()
 
-    /** Test knobs: a pitch the gimbal "reports" instead of the commanded one, and a forced download failure. */
+    /**
+     * Test knobs: a pitch the gimbal "reports" instead of the commanded one, a forced download
+     * failure, a forced shutter failure, and a download that stops after this many bytes yet
+     * reports success, as a port with a swallowed write error would.
+     */
     @Volatile
     var reportedPitchOverride: Double? = null
 
@@ -53,12 +59,18 @@ class FakeCameraPort(
     @Volatile
     var shutterFailure: String? = null
 
+    @Volatile
+    var truncateDownloadAt: Int? = null
+
     val shots: Int
         get() = synchronized(lock) { nextIndex - 1 }
 
     fun bytesOf(index: Int): ByteArray? = synchronized(lock) { files[index]?.copyOf() }
 
     fun setStorageRemainingBytes(value: Long) = _facts.update { it.copy(storageRemainingBytes = value) }
+
+    /** The RC's photo/video switch: leaves or re-enters still-photo mode without a command. */
+    fun setPhotoMode(value: Boolean) = _facts.update { it.copy(photoMode = value) }
 
     override fun refreshFacts(onResult: (PortResult) -> Unit) {
         _facts.update { it.copy(cameraConnected = connected()) }
@@ -109,6 +121,7 @@ class FakeCameraPort(
 
     override fun download(file: CameraFile, target: File, listener: DownloadListener) {
         val failure = downloadFailure
+        val truncateAt = truncateDownloadAt
         val bytes = synchronized(lock) { files[file.index] }
         later {
             when {
@@ -117,14 +130,16 @@ class FakeCameraPort(
                 else -> {
                     runCatching {
                         target.parentFile?.mkdirs()
-                        listener.progress(0, bytes.size.toLong())
+                        val total = bytes.size.toLong()
+                        listener.progress(0, total)
                         target.outputStream().use { stream ->
                             val half = bytes.size / 2
-                            stream.write(bytes, 0, half)
-                            listener.progress(half.toLong(), bytes.size.toLong())
-                            stream.write(bytes, half, bytes.size - half)
+                            val stopAt = truncateAt?.coerceIn(0, bytes.size) ?: bytes.size
+                            stream.write(bytes, 0, minOf(half, stopAt))
+                            listener.progress(half.toLong(), total)
+                            if (stopAt > half) stream.write(bytes, half, stopAt - half)
                         }
-                        listener.progress(bytes.size.toLong(), bytes.size.toLong())
+                        listener.progress(total, total)
                     }.onSuccess { listener.finished() }.onFailure { error -> listener.failed(error.message ?: error.javaClass.simpleName) }
                 }
             }
