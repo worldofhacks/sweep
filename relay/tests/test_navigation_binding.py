@@ -4,10 +4,12 @@ from dataclasses import replace
 
 from planner.models import Refusal
 from planner.navigation import ArrivalSlot, NavigationDispatchAcceptance, NavigationPermission
+from planner.navigation_deployment import NavigationDeployment
 from planner.navigation_runtime import NavigationExecutionConfig, NavigationRuntime
 from planner.test_navigation import MOTION, artifact, pose
 from relay.autonomy import AutonomyComposition, AutonomyConfig, create_autonomy_app
-from relay.capabilities import C1_CAPABILITY_PROFILE, IntentName
+from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, IntentName
+from relay.tests.test_search_runtime import _search_runtime
 from tests.autonomy_fixtures import planning_config, safety_config
 
 
@@ -37,8 +39,6 @@ def _runtime() -> NavigationRuntime:
 
 def test_navigation_deployment_binds_one_explicit_profile_and_runtime() -> None:
     runtime = _runtime()
-    from planner.navigation_deployment import NavigationDeployment
-
     composition = AutonomyComposition(
         AutonomyConfig(
             planning=planning_config(),
@@ -71,6 +71,32 @@ def test_default_autonomy_profile_has_no_navigation_runtime() -> None:
         assert composition.session("default-navigation-binding").planner.navigation is None
     finally:
         composition.close()
+
+
+def test_c2_profile_keeps_disarm_without_unconfigured_navigation_or_search() -> None:
+    profile = AutonomyConfig(
+        planning=planning_config(), safety=safety_config()
+    ).effective_capability_profile(C2_CAPABILITY_PROFILE)
+
+    assert profile.supports(IntentName.DISARM)
+    assert not profile.supports(IntentName.NAVIGATE)
+    assert not profile.supports(IntentName.SEARCH)
+
+
+def test_c2_profile_adds_configured_navigation_and_search() -> None:
+    runtime = _runtime()
+    profile = AutonomyConfig(
+        planning=planning_config(),
+        safety=safety_config(),
+        navigation_deployment=NavigationDeployment(
+            runtime, 1, "control-store", "synthetic", "navigation-config"
+        ),
+        search_runtime=_search_runtime(),
+    ).effective_capability_profile(C2_CAPABILITY_PROFILE)
+
+    assert profile.supports(IntentName.DISARM)
+    assert profile.supports(IntentName.NAVIGATE)
+    assert profile.supports(IntentName.SEARCH)
 
 
 def test_session_preview_returns_the_frozen_route_and_current_aliases(tmp_path) -> None:

@@ -14,7 +14,7 @@ from planner.test_navigation import MOTION, artifact, pose
 from relay.auth import Principal
 from relay.autonomy import AutonomyConfig, create_autonomy_app
 from relay.main import build_transcript_service, transcript_service_factory
-from relay.settings import AdapterBackend, RelaySettings
+from relay.settings import AdapterBackend, CapabilityRelease, RelaySettings
 from relay.tests.conftest import (
     ADAPTER_KEY,
     CONSOLE_KEY,
@@ -25,7 +25,7 @@ from relay.tests.conftest import (
 )
 from relay.tests.test_search_runtime import _search_runtime
 from relay.voice import compiler_capability_version
-from tests.autonomy_fixtures import planning_config, safety_config
+from tests.autonomy_fixtures import camera_config, planning_config, safety_config
 
 
 def _runtime() -> NavigationRuntime:
@@ -53,9 +53,11 @@ def _runtime() -> NavigationRuntime:
 
 
 @pytest.mark.parametrize("search_enabled", [False, True])
+@pytest.mark.parametrize("capability_release", [CapabilityRelease.C1, CapabilityRelease.C2])
 def test_transcript_service_factory_resolves_configured_navigation_for_the_relay_compiler(
     tmp_path,
     search_enabled,
+    capability_release,
 ) -> None:
     runtime = _runtime()
     config = AutonomyConfig(
@@ -64,6 +66,7 @@ def test_transcript_service_factory_resolves_configured_navigation_for_the_relay
         navigation_deployment=NavigationDeployment(
             runtime, 1, "control-store", "synthetic", "navigation-config"
         ),
+        sim_camera=camera_config() if capability_release is CapabilityRelease.C2 else None,
     )
     if search_enabled:
         config = replace(config, search_runtime=_search_runtime())
@@ -71,7 +74,12 @@ def test_transcript_service_factory_resolves_configured_navigation_for_the_relay
         relay_token=CONSOLE_KEY,
         adapter_keys={1: ADAPTER_KEY},
         log_dir=tmp_path,
-        adapter_backend=AdapterBackend.REMOTE,
+        adapter_backend=(
+            AdapterBackend.SIM
+            if capability_release is CapabilityRelease.C2
+            else AdapterBackend.REMOTE
+        ),
+        capability_release=capability_release,
     )
     clock = MutableClock()
     app, composition = create_autonomy_app(
@@ -114,6 +122,7 @@ def test_transcript_service_factory_resolves_configured_navigation_for_the_relay
 
             factory_compiler = app.state.transcript_service._compiler
             assert isinstance(factory_compiler, RelayTranscriptCompiler)
+            assert factory_compiler._capability_profile == composition.capability_profile
             grounding = factory_compiler._navigation(state)
             assert grounding is not None
             assert grounding.resolve("main hall")[0].zone_id == "atrium"
@@ -137,6 +146,7 @@ def test_transcript_service_factory_resolves_configured_navigation_for_the_relay
             )
             compiler = service._compiler
             assert isinstance(compiler, RelayTranscriptCompiler)
+            assert compiler._capability_profile == composition.capability_profile
             plan, compiled = compiler.compile(
                 "fly to main hall",
                 state,

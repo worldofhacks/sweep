@@ -61,7 +61,7 @@ def build_transcript_service(
             )
             return TranscriptService(transcription=transcription)
         transport = AnthropicTransport(api_key=api_key)
-    capability_profile = config.effective_capability_profile()
+    capability_profile = config.effective_capability_profile(runtime.settings.capability_profile)
 
     def navigation(_relay_state: Mapping[str, object]):
         deployment = config.navigation_deployment

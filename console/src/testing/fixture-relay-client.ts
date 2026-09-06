@@ -85,6 +85,8 @@ export class FixtureRelayClient implements RelayClient {
   private readonly now: () => number
   private readonly source: IntentSource
   private armed: boolean
+  private enabledIntentNames = new Set(C2_FLEET_OPERATIONS_INTENTS)
+  private capabilityProfile = 'c2_fleet_operations'
 
   constructor(
     sessionId: string,
@@ -152,8 +154,7 @@ export class FixtureRelayClient implements RelayClient {
       throw new Error('Fixture relay is disconnected; the intent was not sent.')
     }
     const t = this.now()
-    if (!C2_FLEET_OPERATIONS_INTENTS.includes(intent.name)) {
-      // The same refusal relay/intent_v1.py returns for a name outside the advertised profile.
+    if (!this.enabledIntentNames.has(intent.name)) {
       this.emitServer({
         v: 1,
         t,
@@ -165,7 +166,7 @@ export class FixtureRelayClient implements RelayClient {
         status: 'refused',
         source: 'relay',
         reason: 'unsupported',
-        detail: `${intent.name} is outside the C2 fixture capability set`,
+        detail: `${intent.name} is outside the advertised fixture capability set`,
         roster_version: this.scenario.rosterVersion,
         drone_id: null,
         connection_epoch: null,
@@ -199,6 +200,10 @@ export class FixtureRelayClient implements RelayClient {
   }
 
   emitServer(event: RelayServerEvent): void {
+    if (event.type === 'state') {
+      this.enabledIntentNames = new Set(event.enabled_intent_names)
+      this.capabilityProfile = event.capability_profile
+    }
     this.emit({ kind: 'server_event', event })
   }
 
@@ -228,8 +233,8 @@ export class FixtureRelayClient implements RelayClient {
       formation: this.scenario.formation,
       spacing: this.scenario.spacing,
       mode: 'indoor',
-      capability_profile: 'c2_fleet_operations',
-      enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS],
+      capability_profile: this.capabilityProfile,
+      enabled_intent_names: [...this.enabledIntentNames],
       pending: this.scenario.pending,
       accepted_plan: null,
       drones: this.scenario.fleet(this.now()),

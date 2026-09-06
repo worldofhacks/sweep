@@ -138,8 +138,10 @@ class AutonomyConfig:
     search_runtime: SearchRuntime | None = None
     search_detection: SearchDetectionConfig | None = None
 
-    def effective_capability_profile(self) -> CapabilityProfile:
-        base_profile = self.planning.effective_capability_profile()
+    def effective_capability_profile(
+        self, requested: CapabilityProfile = C1_CAPABILITY_PROFILE
+    ) -> CapabilityProfile:
+        base_profile = self.planning.effective_capability_profile(requested)
         profile = (
             base_profile
             if self.navigation_deployment is None
@@ -1118,7 +1120,7 @@ class AutonomyComposition:
         detection_camera_provider_factory: CameraProviderFactory | None = None,
     ) -> None:
         self.config = config
-        self.capability_profile = config.planning.effective_capability_profile(capability_profile)
+        self.capability_profile = config.effective_capability_profile(capability_profile)
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
