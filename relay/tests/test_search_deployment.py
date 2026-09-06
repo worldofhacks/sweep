@@ -96,6 +96,7 @@ def test_search_runtime_loader_rejects_duplicate_json_fields(tmp_path) -> None:
     with pytest.raises(SettingsError, match="duplicate JSON field"):
         load_search_runtime({"SWEEP_SEARCH_CONFIG": str(path)}, _runtime())
 
+
 def test_detection_config_requires_each_configured_camera_and_model_pin(tmp_path) -> None:
     search_path = tmp_path / "search.json"
     search_path.write_text(json.dumps(_config()))
