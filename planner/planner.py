@@ -44,6 +44,7 @@ SELECTION_TARGETED_INTENTS = frozenset(
         IntentName.SPACING,
         IntentName.SWEEP,
         IntentName.NAVIGATE,
+        IntentName.SEARCH,
     }
 )
 

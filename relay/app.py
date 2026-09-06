@@ -46,6 +46,7 @@ IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
 _LOGGER = logging.getLogger(__name__)
 ShutdownCallback = Callable[[], None]
+StartupCallback = Callable[[], None]
 _OUTBOUND_LIMIT = 128
 _SEND_TIMEOUT_SECONDS = 5.0
 _CLOSE_TIMEOUT_SECONDS = 1.0
@@ -889,6 +890,7 @@ def create_app(
     control_localization_factory: ControlLocalizationFactory | None = None,
     control_pose_signing_key: ControlPoseSigningKey | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
+    startup_callback: StartupCallback | None = None,
     shutdown_callback: ShutdownCallback | None = None,
     media_monitor_factory: MediaMonitorFactory | None = None,
 ) -> FastAPI:
@@ -919,6 +921,8 @@ def create_app(
             else transcript_service_factory(runtime)
         )
         await runtime.start()
+        if startup_callback is not None:
+            startup_callback()
         try:
             yield
         finally:

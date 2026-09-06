@@ -168,7 +168,10 @@ class AdapterDispatcher:
         completed: bool = False,
         pending: bool = False,
     ) -> Refusal | None:
-        if plan.navigation is None and plan.intent_name is not IntentName.NAVIGATE:
+        if plan.navigation is None and plan.intent_name not in {
+            IntentName.NAVIGATE,
+            IntentName.SEARCH,
+        }:
             return None
         if self.navigation is None or plan.navigation is None:
             return Refusal(
