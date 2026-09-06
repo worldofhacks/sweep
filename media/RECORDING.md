@@ -84,10 +84,14 @@ that deletion window. A successful export moves or verified-copies the fresh run
 of the working directory, so later runs cannot include earlier media. After an
 uncatchable `SIGKILL`, host power loss, or runtime crash while the Docker daemon
 remains up, immediately stop the container ID belonging to that run with
-`docker stop --time 20 <container-id>`; the helper prints that immutable ID in its
-`recording_started` event. Do not reuse that run ID or restart recording into its
-directory; preserve the entire hashed-session/run directory for manual recovery and
-start a new run ID.
+`docker kill --signal=SIGTERM <container-id>`, then use
+`docker stop --time 20 <container-id>` as the bounded wait/escalation step and
+`docker rm --force <container-id>` for cleanup. Only successful SIGTERM delivery to
+an initially running immutable container ID is attributed as a controlled stop; a
+later stop or removal cannot turn a raced exit into evidence of one. The helper
+prints that immutable ID in its `recording_started` event. Do not reuse that run ID
+or restart recording into its directory; preserve the entire hashed-session/run
+directory for manual recovery and start a new run ID.
 
 The Compose image is pinned to the MediaMTX 1.20.1 multi-platform manifest digest.
 Each recording manifest binds that image, the relay session, and SHA-256 identities

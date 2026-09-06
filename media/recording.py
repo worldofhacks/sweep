@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import selectors
 import shutil
 import signal
 import stat
@@ -40,6 +41,7 @@ MAX_VIDEO_PIXELS = 7_680 * 4_320
 MAX_DECODE_SECONDS = 300.0
 MAX_FINALIZATION_SECONDS = 60 * 60
 MAX_MANIFEST_BYTES = 8 * 1024**2
+MAX_MEDIA_TOOL_OUTPUT_BYTES = 1024**2
 ARCHIVE_METADATA_BLOCKS = 16
 OWNER_LABEL = "org.worldofhacks.sweep.recording-owner"
 ALLOWED_STREAMS = {f"drone{index}" for index in range(1, 5)}
@@ -454,20 +456,38 @@ def _command(
     check: bool = True,
     pass_fds: tuple[int, ...] = (),
     finalization: FinalizationBudget | None = None,
+    max_output_bytes: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if finalization is not None:
         timeout = finalization.timeout(timeout)
     try:
-        result = subprocess.run(
-            command,
-            cwd=ROOT,
-            env=environment,
-            text=True,
-            capture_output=True,
-            check=check,
-            timeout=timeout,
-            pass_fds=pass_fds,
-        )
+        if max_output_bytes is None:
+            result = subprocess.run(
+                command,
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=check,
+                timeout=timeout,
+                pass_fds=pass_fds,
+            )
+        else:
+            result = _bounded_output_command(
+                command,
+                timeout=timeout,
+                environment=environment,
+                check=check,
+                pass_fds=pass_fds,
+                max_output_bytes=max_output_bytes,
+            )
+    except RecordingError as exc:
+        if finalization is not None:
+            try:
+                finalization.checkpoint()
+            except RecordingError as budget_error:
+                raise budget_error from exc
+        raise
     except (OSError, subprocess.SubprocessError) as exc:
         if finalization is not None:
             try:
@@ -482,6 +502,115 @@ def _command(
     if finalization is not None:
         finalization.checkpoint()
     return result
+
+
+def _bounded_output_command(
+    command: list[str],
+    *,
+    timeout: float,
+    environment: dict[str, str] | None,
+    check: bool,
+    pass_fds: tuple[int, ...],
+    max_output_bytes: int,
+) -> subprocess.CompletedProcess[str]:
+    """Run a media tool with a strict per-stream output cap and always reap it."""
+    if type(max_output_bytes) is not int or max_output_bytes <= 0:
+        raise ValueError("command output limit must be a positive integer")
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        pass_fds=pass_fds,
+    )
+    assert process.stdout is not None and process.stderr is not None
+    output = {"stdout": bytearray(), "stderr": bytearray()}
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    deadline = time.monotonic() + timeout
+    exceeded: str | None = None
+    timed_out = False
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            for key, _ in selector.select(min(0.05, remaining)):
+                stream = str(key.data)
+                buffer = output[stream]
+                allowance = max_output_bytes - len(buffer)
+                chunk = os.read(key.fd, min(64 * 1024, allowance + 1))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if len(chunk) > allowance:
+                    buffer.extend(chunk[:allowance])
+                    exceeded = stream
+                    break
+                buffer.extend(chunk)
+            if exceeded is not None:
+                break
+
+        if exceeded is not None:
+            _terminate_and_reap(process)
+            raise RecordingError(
+                f"command {exceeded} exceeded the {max_output_bytes}-byte limit "
+                f"({' '.join(command)})"
+            )
+        if timed_out:
+            _kill_and_reap(process)
+            raise subprocess.TimeoutExpired(
+                command,
+                timeout,
+                output=bytes(output["stdout"]).decode("utf-8", errors="replace"),
+                stderr=bytes(output["stderr"]).decode("utf-8", errors="replace"),
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _kill_and_reap(process)
+            raise subprocess.TimeoutExpired(command, timeout)
+        returncode = process.wait(timeout=remaining)
+    except BaseException:
+        if process.poll() is None:
+            _kill_and_reap(process)
+        raise
+    finally:
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
+
+    stdout = bytes(output["stdout"]).decode("utf-8", errors="replace")
+    stderr = bytes(output["stderr"]).decode("utf-8", errors="replace")
+    result = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+    if check and returncode != 0:
+        raise subprocess.CalledProcessError(
+            returncode,
+            command,
+            output=stdout,
+            stderr=stderr,
+        )
+    return result
+
+
+def _terminate_and_reap(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        process.wait()
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        _kill_and_reap(process)
+
+
+def _kill_and_reap(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is None:
+        process.kill()
+    process.wait()
 
 
 def _compose_container_id(
@@ -589,21 +718,37 @@ def _stop_service(service: OwnedService) -> bool:
     if not isinstance(running, bool):
         raise RecordingError("Docker returned incomplete MediaMTX metadata")
 
-    stopped = _command(
-        ["docker", "stop", "--time", "20", service.container_id],
-        timeout=45,
-        check=False,
-    )
+    failure: RecordingError | None = None
+    controlled = False
+    try:
+        signaled = _command(
+            ["docker", "kill", "--signal=SIGTERM", service.container_id],
+            timeout=20,
+            check=False,
+        )
+        controlled = running and signaled.returncode == 0
+    except RecordingError as exc:
+        failure = exc
+    try:
+        _command(
+            ["docker", "stop", "--time", "20", service.container_id],
+            timeout=45,
+            check=False,
+        )
+    except RecordingError as exc:
+        if failure is None:
+            failure = exc
     removed = _command(["docker", "rm", "--force", service.container_id], timeout=30, check=False)
     if removed.returncode != 0:
         detail = removed.stderr.strip()[-1000:]
         raise RecordingError(
             "could not remove the owned MediaMTX container" + (f": {detail}" if detail else "")
         )
-    # A nonzero stop means the service may have exited between inspection and the
-    # controlled stop request.  A later successful force-remove cannot turn that
-    # ambiguity back into an operator or safety-limit success.
-    return running and stopped.returncode == 0
+    if failure is not None:
+        raise failure
+    # Only the first delivery attempt proves attribution. A later stop or remove
+    # cannot launder an exit that raced the immutable-ID SIGTERM request.
+    return controlled
 
 
 def _directory_flags() -> int:
@@ -663,30 +808,30 @@ def _scan_tree_at(
                 finalization.checkpoint()
             parent_relative, descriptor = pending.pop()
             try:
-                children = list(os.scandir(descriptor))
-                if finalization is not None:
-                    finalization.checkpoint()
-                for child in children:
-                    if finalization is not None:
-                        finalization.checkpoint()
-                    metadata = child.stat(follow_symlinks=False)
-                    relative = parent_relative / child.name
-                    entry = TreeEntry.from_stat(relative, metadata)
-                    entries.append(entry)
-                    if len(entries) > MAX_TREE_ENTRIES:
-                        raise RecordingError(f"{label} exceeds {MAX_TREE_ENTRIES} entries")
-                    if stat.S_ISLNK(metadata.st_mode):
-                        raise RecordingError(f"{label} contains a symbolic link: {relative}")
-                    if stat.S_ISDIR(metadata.st_mode):
-                        child_descriptor = os.open(
-                            child.name, _directory_flags(), dir_fd=descriptor
-                        )
-                        if not entry.matches(os.fstat(child_descriptor)):
-                            os.close(child_descriptor)
-                            raise RecordingError(f"{label} changed during inspection: {relative}")
-                        pending.append((relative, child_descriptor))
-                    elif not stat.S_ISREG(metadata.st_mode):
-                        raise RecordingError(f"{label} contains a special file: {relative}")
+                with os.scandir(descriptor) as children:
+                    for child in children:
+                        if finalization is not None:
+                            finalization.checkpoint()
+                        metadata = child.stat(follow_symlinks=False)
+                        relative = parent_relative / child.name
+                        entry = TreeEntry.from_stat(relative, metadata)
+                        entries.append(entry)
+                        if len(entries) > MAX_TREE_ENTRIES:
+                            raise RecordingError(f"{label} exceeds {MAX_TREE_ENTRIES} entries")
+                        if stat.S_ISLNK(metadata.st_mode):
+                            raise RecordingError(f"{label} contains a symbolic link: {relative}")
+                        if stat.S_ISDIR(metadata.st_mode):
+                            child_descriptor = os.open(
+                                child.name, _directory_flags(), dir_fd=descriptor
+                            )
+                            if not entry.matches(os.fstat(child_descriptor)):
+                                os.close(child_descriptor)
+                                raise RecordingError(
+                                    f"{label} changed during inspection: {relative}"
+                                )
+                            pending.append((relative, child_descriptor))
+                        elif not stat.S_ISREG(metadata.st_mode):
+                            raise RecordingError(f"{label} contains a special file: {relative}")
             finally:
                 os.close(descriptor)
     except BaseException:
@@ -815,6 +960,7 @@ def _probe_descriptor(
         timeout=30,
         pass_fds=(descriptor,),
         finalization=finalization,
+        max_output_bytes=MAX_MEDIA_TOOL_OUTPUT_BYTES,
     )
     try:
         probe = json.loads(result.stdout)
@@ -872,6 +1018,7 @@ def _probe_descriptor(
         timeout=30,
         pass_fds=(descriptor,),
         finalization=finalization,
+        max_output_bytes=MAX_MEDIA_TOOL_OUTPUT_BYTES,
     )
     if not any(
         line.strip() and not line.lstrip().startswith("#") for line in decoded.stdout.splitlines()
@@ -888,6 +1035,7 @@ def _probe_descriptor(
         timeout=decode_timeout,
         pass_fds=(descriptor,),
         finalization=finalization,
+        max_output_bytes=MAX_MEDIA_TOOL_OUTPUT_BYTES,
     )
     video_facts = {"index": index, "codec_name": codec, "width": width, "height": height}
     return format_name, duration, video_facts
@@ -1300,22 +1448,30 @@ def _remove_directory_at(
     name: str,
     *,
     expected: tuple[int, int] | None = None,
+    _entry_count: list[int] | None = None,
 ) -> None:
+    if _entry_count is None:
+        _entry_count = [0]
     descriptor = os.open(name, _directory_flags(), dir_fd=parent_descriptor)
     try:
         metadata = os.fstat(descriptor)
         if expected is not None and (metadata.st_dev, metadata.st_ino) != expected:
             raise RecordingError(f"refusing to remove a replaced directory: {name}")
-        for child in list(os.scandir(descriptor)):
-            child_metadata = child.stat(follow_symlinks=False)
-            if stat.S_ISDIR(child_metadata.st_mode):
-                _remove_directory_at(
-                    descriptor,
-                    child.name,
-                    expected=(child_metadata.st_dev, child_metadata.st_ino),
-                )
-            else:
-                os.unlink(child.name, dir_fd=descriptor)
+        with os.scandir(descriptor) as children:
+            for child in children:
+                _entry_count[0] += 1
+                if _entry_count[0] > MAX_TREE_ENTRIES:
+                    raise RecordingError(f"recording cleanup exceeds {MAX_TREE_ENTRIES} entries")
+                child_metadata = child.stat(follow_symlinks=False)
+                if stat.S_ISDIR(child_metadata.st_mode):
+                    _remove_directory_at(
+                        descriptor,
+                        child.name,
+                        expected=(child_metadata.st_dev, child_metadata.st_ino),
+                        _entry_count=_entry_count,
+                    )
+                else:
+                    os.unlink(child.name, dir_fd=descriptor)
         current = _entry_at(parent_descriptor, name)
         if current is None or (current.st_dev, current.st_ino) != (
             metadata.st_dev,

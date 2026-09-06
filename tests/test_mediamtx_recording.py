@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -332,6 +333,7 @@ def test_owned_service_cleanup_targets_only_the_immutable_container_id(
     monkeypatch.setattr(recording, "_command", command)
     assert recording._stop_service(service) is True
     assert commands == [
+        ["docker", "kill", "--signal=SIGTERM", "owned-container-id"],
         ["docker", "stop", "--time", "20", "owned-container-id"],
         ["docker", "rm", "--force", "owned-container-id"],
     ]
@@ -351,13 +353,130 @@ def test_owned_service_cleanup_does_not_hide_an_exit_before_controlled_stop(
     )
 
     def command(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        if arguments[:2] == ["docker", "stop"]:
+        if arguments[:2] == ["docker", "kill"]:
             return subprocess.CompletedProcess(arguments, 1, "", "already stopped")
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
     monkeypatch.setattr(recording, "_command", command)
 
     assert recording._stop_service(service) is False
+
+
+def test_owned_service_cleanup_is_idempotent_for_an_already_stopped_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = recording.OwnedService("owned-container-id", "owner-token")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        recording,
+        "_inspect_container",
+        lambda *_: {
+            "Config": {"Labels": {recording.OWNER_LABEL: "owner-token"}},
+            "State": {"Running": False},
+        },
+    )
+
+    def command(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(arguments)
+        return subprocess.CompletedProcess(
+            arguments,
+            1 if arguments[:2] == ["docker", "kill"] else 0,
+            "",
+            "not running" if arguments[:2] == ["docker", "kill"] else "",
+        )
+
+    monkeypatch.setattr(recording, "_command", command)
+
+    assert recording._stop_service(service) is False
+    assert commands == [
+        ["docker", "kill", "--signal=SIGTERM", "owned-container-id"],
+        ["docker", "stop", "--time", "20", "owned-container-id"],
+        ["docker", "rm", "--force", "owned-container-id"],
+    ]
+
+
+def test_owned_service_cleanup_always_removes_after_signal_delivery_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = recording.OwnedService("owned-container-id", "owner-token")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        recording,
+        "_inspect_container",
+        lambda *_: {
+            "Config": {"Labels": {recording.OWNER_LABEL: "owner-token"}},
+            "State": {"Running": True},
+        },
+    )
+
+    def command(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(arguments)
+        if arguments[:2] == ["docker", "kill"]:
+            raise recording.RecordingError("signal transport failed")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(recording, "_command", command)
+
+    with pytest.raises(recording.RecordingError, match="signal transport failed"):
+        recording._stop_service(service)
+    assert commands[-1] == ["docker", "rm", "--force", "owned-container-id"]
+
+
+def test_bounded_media_command_accepts_exact_stdout_and_stderr_caps() -> None:
+    limit = 16
+    result = recording._bounded_output_command(
+        [
+            sys.executable,
+            "-c",
+            "import os; os.write(1, b'o' * 16); os.write(2, b'e' * 16)",
+        ],
+        timeout=2,
+        environment=None,
+        check=True,
+        pass_fds=(),
+        max_output_bytes=limit,
+    )
+
+    assert result.stdout == "o" * limit
+    assert result.stderr == "e" * limit
+
+
+@pytest.mark.parametrize(("descriptor", "stream"), ((1, "stdout"), (2, "stderr")))
+def test_bounded_media_command_terminates_and_reaps_at_cap_plus_one(
+    monkeypatch: pytest.MonkeyPatch,
+    descriptor: int,
+    stream: str,
+) -> None:
+    limit = 16
+    processes: list[subprocess.Popen[bytes]] = []
+    launch = recording.subprocess.Popen
+
+    def capture_process(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        process = launch(*args, **kwargs)  # type: ignore[arg-type]
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(recording.subprocess, "Popen", capture_process)
+    script = (
+        "import os, signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"os.write({descriptor}, b'x' * 17); time.sleep(10)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(recording.RecordingError, match=rf"{stream} exceeded the {limit}-byte"):
+        recording._bounded_output_command(
+            [sys.executable, "-c", script],
+            timeout=5,
+            environment=None,
+            check=True,
+            pass_fds=(),
+            max_output_bytes=limit,
+        )
+
+    assert time.monotonic() - started < 2
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
 
 
 def test_prepare_refuses_reused_working_or_durable_run(tmp_path: Path) -> None:
@@ -1142,6 +1261,59 @@ def test_recording_tree_scan_is_bounded(tmp_path: Path, monkeypatch: pytest.Monk
         recording._tree_bytes(tmp_path)
 
 
+@pytest.mark.parametrize("operation", ["scan", "remove"])
+def test_directory_iteration_stops_at_the_first_over_limit_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for name in ("one", "two", "three", "must-not-read"):
+        (tree / name).write_bytes(b"x")
+    monkeypatch.setattr(recording, "MAX_TREE_ENTRIES", 2)
+    actual_scandir = recording.os.scandir
+    reads: list[str] = []
+    closed: list[bool] = []
+
+    @contextmanager
+    def sentinel_scandir(target):  # type: ignore[no-untyped-def]
+        with actual_scandir(target) as entries:
+
+            def bounded_entries():  # type: ignore[no-untyped-def]
+                for entry in entries:
+                    reads.append(entry.name)
+                    if len(reads) > 3:
+                        raise AssertionError(
+                            "directory iterator was consumed past the refusal bound"
+                        )
+                    yield entry
+
+            try:
+                yield bounded_entries()
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr(recording.os, "scandir", sentinel_scandir)
+    if operation == "scan":
+        descriptor = os.open(tree, os.O_RDONLY)
+        try:
+            with pytest.raises(recording.RecordingError, match="exceeds 2 entries"):
+                recording._scan_tree_at(descriptor, "test tree")
+        finally:
+            os.close(descriptor)
+    else:
+        descriptor = os.open(tmp_path, os.O_RDONLY)
+        try:
+            with pytest.raises(recording.RecordingError, match="cleanup exceeds 2 entries"):
+                recording._remove_directory_at(descriptor, tree.name)
+        finally:
+            os.close(descriptor)
+
+    assert len(reads) == 3
+    assert closed == [True]
+
+
 def test_segment_validation_refuses_empty_invalid_and_unexpected_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1248,12 +1420,12 @@ def test_segment_validation_rejects_corruption_after_a_decodable_first_gop(
 def test_probe_accepts_exact_media_bounds_and_fully_decodes_with_a_bounded_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[list[str], float]] = []
+    calls: list[tuple[list[str], float, object]] = []
 
     def command(
         arguments: list[str], *, timeout: float, **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
-        calls.append((arguments, timeout))
+        calls.append((arguments, timeout, _kwargs.get("max_output_bytes")))
         if arguments[0] == "ffprobe":
             output = json.dumps(
                 {
@@ -1289,11 +1461,16 @@ def test_probe_accepts_exact_media_bounds_and_fully_decodes_with_a_bounded_timeo
         "width": 7680,
         "height": 4320,
     }
-    full_decode, timeout = calls[-1]
+    full_decode, timeout, _ = calls[-1]
     assert full_decode[:5] == ["ffmpeg", "-nostdin", "-v", "error", "-xerror"]
     assert full_decode[-3:] == ["-f", "null", "-"]
     assert "-frames:v" not in full_decode
     assert timeout == recording.MAX_DECODE_SECONDS
+    assert [output_limit for _, _, output_limit in calls] == [
+        recording.MAX_MEDIA_TOOL_OUTPUT_BYTES,
+        recording.MAX_MEDIA_TOOL_OUTPUT_BYTES,
+        recording.MAX_MEDIA_TOOL_OUTPUT_BYTES,
+    ]
 
 
 @pytest.mark.parametrize(
