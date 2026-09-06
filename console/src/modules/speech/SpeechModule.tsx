@@ -177,17 +177,22 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
    * buttons: takeoff, land, land_all, capture_room and sweep are parked for
    * confirmation; hold, select and every other name are parked as a preview the
    * operator sends from the dock. The step's targets must still be the
-   * authoritative selection; nothing is sent here.
+   * authoritative selection; nothing is sent here. The step inherits the plan's
+   * deadline, so the dock counts it down and refuses a late confirmation.
    */
   const stageStep = () => {
     if (relay === null || nextStep === null || stageBlocked !== null) return
-    const intent = stageThroughController(nextStep, {
-      issueIntent,
-      prepareCapture,
-      prepareHold,
-      prepareIntent,
-      prepareSelect,
-    })
+    const intent = stageThroughController(
+      nextStep,
+      {
+        issueIntent,
+        prepareCapture,
+        prepareHold,
+        prepareIntent,
+        prepareSelect,
+      },
+      relayView?.deadline ?? undefined,
+    )
     setSpeech((previous) => {
       if (previous.relayPlan === null) return previous
       return {
@@ -522,25 +527,40 @@ type StagingController = Pick<
  * Hands one compiled step to the control flow. Confirmation-gated names go
  * through issueIntent, which parks them pending confirmation exactly like the
  * Control buttons; hold, select and capture_room use their prepare functions;
- * everything else is parked as a preview through prepareIntent. Never sends.
+ * everything else is parked as a preview through prepareIntent. `expiresAt`
+ * is the plan's console-clock deadline, carried into the dock preview so a
+ * step cannot be confirmed after its plan expired. Never sends.
  */
-function stageThroughController(step: VoicePlanStep, controller: StagingController): IntentV1 | null {
+function stageThroughController(
+  step: VoicePlanStep,
+  controller: StagingController,
+  expiresAt?: number,
+): IntentV1 | null {
   switch (step.name) {
     case 'select':
-      return controller.prepareSelect(Array.isArray(step.args.ids) ? (step.args.ids as DroneId[]) : [], 'console')
+      return controller.prepareSelect(
+        Array.isArray(step.args.ids) ? (step.args.ids as DroneId[]) : [],
+        'console',
+        expiresAt,
+      )
     case 'hold':
-      return controller.prepareHold('console')
+      return controller.prepareHold('console', expiresAt)
     case 'capture_room':
-      return controller.prepareCapture(String(step.args.room_id), 'console', step.args.pattern as CapturePattern)
+      return controller.prepareCapture(
+        String(step.args.room_id),
+        'console',
+        step.args.pattern as CapturePattern,
+        expiresAt,
+      )
     case 'takeoff':
     case 'land':
     case 'land_all':
     case 'sweep':
-      return controller.issueIntent(stepRequest(step))
+      return controller.issueIntent(stepRequest(step), expiresAt)
     case 'estop':
       return null
     default:
-      return controller.prepareIntent(stepRequest(step), 'console')
+      return controller.prepareIntent(stepRequest(step), 'console', expiresAt)
   }
 }
 
@@ -651,8 +671,9 @@ function RelayPlanCard({
           )}
           {relay.stageNote && <p className="sp-result-blocked">{relay.stageNote}</p>}
           <p className="sp-drafted">
-            Steps stage with source <code>console</code> and pass the arbiter exactly like a button press. The next
-            step is offered only after the one before it reaches a terminal state; it is never sent on its own.
+            Steps stage with source <code>console</code> and pass the arbiter exactly like a button press. A staged
+            step inherits the plan's expiry: the dock counts it down and refuses to confirm past it. The next step is
+            offered only after the one before it reaches a terminal state; it is never sent on its own.
           </p>
         </>
       )}
