@@ -1154,6 +1154,8 @@ def _explicit_navigation_matches(
         and tuple(sorted(navigation[0].selection)) == tuple(sorted(selection))
         and all(intent.name is not IntentName.TAKEOFF for intent in intents)
     )
+
+
 def transcript_negates_action(transcript: str) -> bool:
     """True when the transcript negates an action, so no plan may come from it.
 
