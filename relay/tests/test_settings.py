@@ -182,3 +182,73 @@ def test_command_deadline_defaults_above_the_ttl_and_must_cover_it() -> None:
                 "SWEEP_COMMAND_DEADLINE_MS": "2999",
             }
         )
+
+
+def test_media_settings_default_to_node_claims_and_no_runtime_config() -> None:
+    settings = RelaySettings.from_env(
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_MEDIA_API_URL": "",
+            "SWEEP_MEDIA_API_PASSWORD": "   ",
+            "SWEEP_MEDIA_WEBRTC_ORIGIN": "http://127.0.0.1:8889",
+            "SWEEP_MEDIA_READ_USERNAME": "sweep-reader",
+            "SWEEP_MEDIA_READ_PASSWORD": "",
+        }
+    )
+
+    assert settings.media_api_url is None
+    assert settings.media_api_username == "sweep-api"
+    assert settings.media_api_password is None
+    assert settings.media_api_timeout_ms == 500
+    assert settings.media_poll_interval_ms == 1_000
+    assert settings.media_stale_after_ms == 3_000
+    assert settings.media_runtime_config() is None
+
+
+def test_media_settings_come_from_the_environment_and_stay_out_of_repr() -> None:
+    settings = RelaySettings.from_env(
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_MEDIA_API_URL": "http://127.0.0.1:9997",
+            "SWEEP_MEDIA_API_USERNAME": "relay-api",
+            "SWEEP_MEDIA_API_PASSWORD": "api-secret",
+            "SWEEP_MEDIA_API_TIMEOUT_MS": "250",
+            "SWEEP_MEDIA_POLL_INTERVAL_MS": "500",
+            "SWEEP_MEDIA_STALE_AFTER_MS": "2000",
+            "SWEEP_MEDIA_WEBRTC_ORIGIN": "http://10.10.1.60:8889",
+            "SWEEP_MEDIA_READ_USERNAME": "sweep-reader",
+            "SWEEP_MEDIA_READ_PASSWORD": "reader-secret",
+        }
+    )
+
+    assert settings.media_api_url == "http://127.0.0.1:9997"
+    assert settings.media_api_username == "relay-api"
+    assert settings.media_api_password == "api-secret"
+    assert settings.media_api_timeout_ms == 250
+    assert settings.media_poll_interval_ms == 500
+    assert settings.media_stale_after_ms == 2_000
+    assert settings.media_runtime_config() == {
+        "webrtcOrigin": "http://10.10.1.60:8889",
+        "readerUsername": "sweep-reader",
+        "readerPassword": "reader-secret",
+    }
+    assert "api-secret" not in repr(settings)
+    assert "reader-secret" not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"SWEEP_MEDIA_API_URL": "http://127.0.0.1:9997"},
+        {"SWEEP_MEDIA_API_URL": "http://127.0.0.1:9997/v3", "SWEEP_MEDIA_API_PASSWORD": "x"},
+        {"SWEEP_MEDIA_API_URL": "http://user:pw@127.0.0.1:9997", "SWEEP_MEDIA_API_PASSWORD": "x"},
+        {"SWEEP_MEDIA_API_TIMEOUT_MS": "0"},
+        {"SWEEP_MEDIA_POLL_INTERVAL_MS": "2000", "SWEEP_MEDIA_STALE_AFTER_MS": "1000"},
+        {"SWEEP_MEDIA_WEBRTC_ORIGIN": "http://ground-station:8889/drone1"},
+    ],
+)
+def test_invalid_media_configuration_fails(overrides: dict[str, str]) -> None:
+    environment = {"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(), **overrides}
+
+    with pytest.raises(SettingsError):
+        RelaySettings.from_env(environment)

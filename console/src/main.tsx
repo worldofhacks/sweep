@@ -4,7 +4,11 @@ import './index.css'
 import App from './App.tsx'
 import { UnreportedCatalogClient } from './catalog/client.ts'
 import { createMediaRuntime } from './media/runtime.ts'
-import { bootstrapMediaConfiguration } from './media/runtime-config.ts'
+import {
+  SAME_ORIGIN_MEDIA_SOURCE,
+  bootstrapMediaConfiguration,
+  loadMediaRuntimeConfiguration,
+} from './media/runtime-config.ts'
 import { bootstrapConsoleRuntime } from './relay/bootstrap.ts'
 import {
   FixtureCatalogClient,
@@ -33,6 +37,8 @@ async function resolveRuntime() {
       webcamClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'webcam', fixtureScenario),
       // The fixture has no transcription endpoint; the Speech module says so and accepts typed text.
       transcriptClient: null,
+      // The fixture has no relay, so only a same-origin media endpoint can enable playback.
+      mediaConfigurationSource: null,
       catalogClient: new FixtureCatalogClient(fixtureScenario, () => Date.now()),
     }
   }
@@ -49,6 +55,13 @@ void resolveRuntime().then((runtime) => {
 
   // The console renders at once without media; a valid runtime configuration
   // re-renders the same tree with playback enabled. Relay state is unaffected.
+  // The same-origin endpoint (pnpm dev, or a host that serves it) is read first;
+  // a built console without one falls back to the relay's copy behind the bearer.
+  const mediaSources = runtime.mediaConfigurationSource
+    ? [SAME_ORIGIN_MEDIA_SOURCE, runtime.mediaConfigurationSource]
+    : [SAME_ORIGIN_MEDIA_SOURCE]
+  const loadMedia = () =>
+    loadMediaRuntimeConfiguration((input, init) => fetch(input, init), console.warn, mediaSources)
   bootstrapMediaConfiguration((configuration) => {
     root.render(
       <StrictMode>
@@ -61,5 +74,5 @@ void resolveRuntime().then((runtime) => {
         />
       </StrictMode>,
     )
-  })
+  }, loadMedia)
 })

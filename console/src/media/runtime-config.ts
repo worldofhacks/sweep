@@ -7,6 +7,40 @@ import type { MediaRuntimeConfiguration } from './playback'
 
 export const MEDIA_CONFIG_ENDPOINT = '/runtime-config.json'
 
+/** One place the media bootstrap may be read from; sources are tried in order. */
+export interface MediaConfigurationSource {
+  url: string
+  /** The relay bearer for the relay's copy of the endpoint; absent for the same-origin one. */
+  authorization?: string
+}
+
+/** The development server's endpoint, or whatever a production host serves at the same path. */
+export const SAME_ORIGIN_MEDIA_SOURCE: MediaConfigurationSource = { url: MEDIA_CONFIG_ENDPOINT }
+
+/**
+ * The relay serves the same JSON at `/runtime-config.json` behind its bearer token
+ * (relay/README.md), so a built console can play without a host that proxies the endpoint.
+ * The HTTP origin is the relay bootstrap's WebSocket origin; anything else yields no source.
+ */
+export function relayMediaConfigurationSource(
+  baseUrl: string,
+  token: string,
+): MediaConfigurationSource | null {
+  let url: URL
+  try {
+    url = new URL(baseUrl)
+  } catch {
+    return null
+  }
+  if (url.protocol === 'ws:') url.protocol = 'http:'
+  if (url.protocol === 'wss:') url.protocol = 'https:'
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !token) return null
+  return {
+    url: new URL(MEDIA_CONFIG_ENDPOINT, url.origin).toString(),
+    authorization: `Bearer ${token}`,
+  }
+}
+
 /**
  * Renders the console immediately without media, then once more with the
  * media configuration when the runtime endpoint provides a valid one.
@@ -21,21 +55,36 @@ export function bootstrapMediaConfiguration(
   })
 }
 
+/** The first source that answers with a complete configuration wins; none means no playback. */
 export async function loadMediaRuntimeConfiguration(
   fetcher: typeof fetch = fetch,
   report: (message: string) => void = console.warn,
+  sources: readonly MediaConfigurationSource[] = [SAME_ORIGIN_MEDIA_SOURCE],
+): Promise<MediaRuntimeConfiguration | undefined> {
+  for (const source of sources) {
+    const configuration = await readSource(fetcher, source)
+    if (configuration) return configuration
+  }
+  return unavailable(report)
+}
+
+async function readSource(
+  fetcher: typeof fetch,
+  source: MediaConfigurationSource,
 ): Promise<MediaRuntimeConfiguration | undefined> {
   try {
-    const response = await fetcher(MEDIA_CONFIG_ENDPOINT, {
-      cache: 'no-store',
-      credentials: 'same-origin',
-    })
-    if (!response.ok) return unavailable(report)
+    const response = await fetcher(
+      source.url,
+      source.authorization
+        ? { cache: 'no-store', credentials: 'omit', headers: { Authorization: source.authorization } }
+        : { cache: 'no-store', credentials: 'same-origin' },
+    )
+    if (!response.ok) return undefined
     const payload: unknown = await response.json()
-    if (!isObject(payload)) return unavailable(report)
-    return normalizeMediaConfiguration(payload.media) ?? unavailable(report)
+    if (!isObject(payload)) return undefined
+    return normalizeMediaConfiguration(payload.media)
   } catch {
-    return unavailable(report)
+    return undefined
   }
 }
 

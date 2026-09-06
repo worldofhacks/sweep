@@ -308,33 +308,105 @@ describe('Live module focus', () => {
 })
 
 describe('Live module playback', () => {
-  test('the player mounts only while the relay reports the focused stream live and playback is configured', async () => {
+  test('a wall tile plays only while the relay reports its stream live, and the focus feed follows the focused aircraft', async () => {
     const clients = fixtureClients()
     const log = new SessionLog()
     const user = userEvent.setup()
     renderLive(clients, log.media)
     await screen.findByText(/Development fixture active/i)
 
-    expect(screen.queryByLabelText(/Live feed/)).not.toBeInTheDocument()
-    expect(log.started).toEqual([])
+    // Fixture: D-01 live, D-02 and D-03 offline, D-04 unreported: exactly one tile plays.
+    expect(tile('D-01').getByLabelText('Live feed D-01')).toBeInTheDocument()
+    expect(await tile('D-01').findByText('Playback playing')).toBeInTheDocument()
+    expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(1)
+    expect(log.started).toEqual(['drone1'])
+    expect(tile('D-01').queryByText(/Playback is not configured/)).not.toBeInTheDocument()
+    expect(tile('D-02').getByText('No video. The adapter reports the stream offline.')).toBeInTheDocument()
 
     await openPane(user, 'Focus feed')
     const focused = within(screen.getByRole('region', { name: 'Focused aircraft D-01' }))
     expect(focused.getByLabelText('Live feed D-01')).toBeInTheDocument()
     expect(await focused.findByText('Playback playing')).toBeInTheDocument()
-    expect(log.started).toEqual(['drone1'])
+    // Leaving the wall closed its player; the focus feed opened its own session.
+    await waitFor(() => expect(log.closed).toBe(1))
+    expect(log.started).toEqual(['drone1', 'drone1'])
     expect(focused.queryByText(/Playback is not configured/)).not.toBeInTheDocument()
 
     await openPane(user, 'Wall of 4')
-    expect(screen.queryByLabelText(/Live feed/)).not.toBeInTheDocument()
-    await waitFor(() => expect(log.closed).toBe(1))
+    await waitFor(() => expect(log.closed).toBe(2))
+    expect(log.started).toEqual(['drone1', 'drone1', 'drone1'])
 
     await user.click(screen.getByRole('button', { name: 'Focus D-02' }))
     await openPane(user, 'Focus feed')
     const offline = within(screen.getByRole('region', { name: 'Focused aircraft D-02' }))
     expect(offline.queryByLabelText(/Live feed/)).not.toBeInTheDocument()
     expect(offline.getByText('No video. The adapter reports the stream offline.')).toBeInTheDocument()
-    expect(log.started).toEqual(['drone1'])
+    await waitFor(() => expect(log.closed).toBe(3))
+    expect(log.started).toEqual(['drone1', 'drone1', 'drone1'])
+  })
+
+  test('four live tiles hold four concurrent sessions that close together when the pane changes', async () => {
+    const clients = fixtureClients()
+    const log = new SessionLog()
+    const user = userEvent.setup()
+    renderLive(clients, log.media)
+    await screen.findByText(/Development fixture active/i)
+    await waitFor(() => expect(log.started).toEqual(['drone1']))
+
+    const drones = fixtureAircraft(clock()).map((drone) => ({
+      ...drone,
+      video: { status: 'live' as const, last_frame_at: clock() - 100 },
+    }))
+    emitState(clients.console, 'state-all-live', drones, [1])
+
+    await waitFor(() => expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(4))
+    for (const id of ['D-01', 'D-02', 'D-03', 'D-04']) {
+      expect(await tile(id).findByText('Playback playing')).toBeInTheDocument()
+    }
+    // D-01's session survived the state update; the other three opened once each.
+    expect(log.started).toEqual(['drone1', 'drone2', 'drone3', 'drone4'])
+    expect(log.closed).toBe(0)
+
+    await openPane(user, 'Focus feed')
+    await waitFor(() => expect(log.closed).toBe(4))
+    expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(1)
+  })
+
+  test('a tile tears its player down the moment the relay reports the stream dropped and says the age', async () => {
+    const clients = fixtureClients()
+    const log = new SessionLog()
+    renderLive(clients, log.media)
+    await screen.findByText(/Development fixture active/i)
+    await waitFor(() => expect(log.started).toEqual(['drone1']))
+
+    const drones = fixtureAircraft(clock())
+    drones[0] = { ...drones[0], video: { status: 'offline', last_frame_at: clock() - 7_000 } }
+    emitState(clients.console, 'state-d1-dropped', drones, [1])
+
+    await waitFor(() => expect(log.closed).toBe(1))
+    const one = tile('D-01')
+    expect(one.queryByLabelText(/Live feed/)).not.toBeInTheDocument()
+    expect(one.getByText('offline')).toBeInTheDocument()
+    expect(one.getByText('7 s ago')).toBeInTheDocument()
+    expect(one.getByText('No video. The adapter reports the stream offline.')).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Live feed/)).not.toBeInTheDocument()
+
+    drones[0] = { ...drones[0], video: { status: 'live', last_frame_at: clock() - 50 } }
+    emitState(clients.console, 'state-d1-back', drones, [1])
+    await waitFor(() => expect(log.started).toEqual(['drone1', 'drone1']))
+    expect(await tile('D-01').findByText('Playback playing')).toBeInTheDocument()
+    expect(tile('D-01').getByText('just now')).toBeInTheDocument()
+  })
+
+  test('unmounting the console closes every open session', async () => {
+    const clients = fixtureClients()
+    const log = new SessionLog()
+    const view = renderLive(clients, log.media)
+    await screen.findByText(/Development fixture active/i)
+    await waitFor(() => expect(log.started).toEqual(['drone1']))
+
+    view.unmount()
+    await waitFor(() => expect(log.closed).toBe(1))
   })
 
   test('a live stream without a media bootstrap says playback is not configured', async () => {
@@ -342,6 +414,10 @@ describe('Live module playback', () => {
     const user = userEvent.setup()
     renderLive(clients)
     await screen.findByText(/Development fixture active/i)
+
+    expect(screen.queryByLabelText(/Live feed/)).not.toBeInTheDocument()
+    expect(tile('D-01').getByText('Playback is not configured on this console.')).toBeInTheDocument()
+    expect(tile('D-02').queryByText(/Playback is not configured/)).not.toBeInTheDocument()
 
     await openPane(user, 'Focus feed')
     const focused = within(screen.getByRole('region', { name: 'Focused aircraft D-01' }))
