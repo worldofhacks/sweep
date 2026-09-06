@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from math import isfinite
+from math import hypot, isfinite
 from typing import Final
 
 from planner.models import (
@@ -954,14 +954,14 @@ class SafetyArbiter:
             and not snapshot.selection
             and any(
                 aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
-                and aircraft.airborne
+                and aircraft.mobile
                 for aircraft in snapshot.aircraft.values()
             )
         ):
             return self._invalid_plan_refusal(
                 plan,
                 snapshot,
-                "operator hold cannot omit eligible airborne aircraft with no selection",
+                "operator hold cannot omit eligible mobile devices with no selection",
             )
         safety_targets = self._expected_safety_targets(
             plan,
@@ -2059,7 +2059,12 @@ class SafetyArbiter:
             ):
                 continue
             other_target = projected_positions.get(other_id, other.pose)
-            if target.distance_to(other_target) < self.config.min_spacing_m:
+            separation = (
+                hypot(target.x - other_target.x, target.y - other_target.y)
+                if device_class is DeviceClass.GROUND_VEHICLE
+                else target.distance_to(other_target)
+            )
+            if separation < self.config.min_spacing_m:
                 return self._command_refusal(
                     command,
                     snapshot,

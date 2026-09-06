@@ -11,6 +11,7 @@ from planner.models import (
     DriveState,
     FleetSnapshot,
     FlightState,
+    HoldScope,
     Plan,
     Position,
     Refusal,
@@ -204,6 +205,33 @@ def test_a_planned_drive_speed_above_the_ground_maximum_is_refused() -> None:
 
     assert too_fast is not None and too_fast.reason is RefusalReason.SPEED_LIMIT
     assert at_the_cap is None
+
+
+def test_ground_spacing_ignores_height_just_like_the_ground_geofence() -> None:
+    snapshot = make_mixed_snapshot(aircraft_ids=(), ground_ids=(11, 12))
+    snapshot = replace_aircraft(snapshot, 12, pose=Position(2.0, 6.0, 4.0))
+
+    refusal = _goto(snapshot, 11, x=2.0, y=6.0, z=0.0)
+
+    assert refusal is not None and refusal.reason is RefusalReason.SPACING
+
+
+def test_an_empty_operator_hold_cannot_claim_to_stop_a_ground_only_fleet() -> None:
+    snapshot = make_mixed_snapshot(aircraft_ids=(), selection=())
+    plan = Plan(
+        plan_id="plan:empty-hold",
+        intent_id="empty-hold",
+        intent_name=IntentName.HOLD,
+        roster_version=snapshot.roster_version,
+        selection=(),
+        confirmed=False,
+        commands=(),
+        hold_scope=HoldScope.OPERATOR_SELECTION,
+    )
+
+    refusal = _arbiter().check_plan(plan, snapshot)
+
+    assert refusal is not None and refusal.reason is RefusalReason.INVALID_PLAN
 
 
 def test_the_flight_speed_is_not_capped_by_the_ground_maximum() -> None:
