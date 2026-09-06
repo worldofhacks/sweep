@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from random import Random
 
+from adapters.dispatch import AdapterDispatcher
 from adapters.sim.flight import SimFlightAdapter
 from arbiter.bvc import BvcConfig, filter_velocities
 from planner.models import (
@@ -184,6 +186,14 @@ def test_dispatch_sends_bvc_projected_gotos_through_the_existing_adapter_route()
     result = dispatcher.dispatch(plan, snapshot)
 
     assert result.status is LifecycleStatus.COMPLETED
+    assert result.deflected_commands == tuple(
+        projected[command.command_id] for command in plan.commands
+    )
+    assert result.completion_detail is not None
+    assert "requested targets remain outstanding" in result.completion_detail
+    assert result.to_dict()["deflected_commands"] == [
+        command.to_dict() for command in result.deflected_commands
+    ]
     assert all(
         "BVC deflected goto" in acknowledgement.detail
         for acknowledgement in result.acknowledgements
@@ -245,12 +255,44 @@ def test_missing_peer_velocity_deflects_to_a_hold_setpoint() -> None:
     assert projected.parameters["y"] == snapshot.aircraft[1].pose.y
 
 
+class _ExecutingDeflectionFlight(SimFlightAdapter):
+    def goto(self, drone_id: int, x: float, y: float, z: float, speed: float):
+        acknowledgement = super().goto(drone_id, x, y, z, speed)
+        return replace(acknowledgement, status=LifecycleStatus.EXECUTING)
+
+
+def test_async_deflection_keeps_the_actual_setpoint_in_the_terminal_result() -> None:
+    snapshot = make_snapshot(2, selection=(1,))
+    snapshot = replace_aircraft(snapshot, 1, pose=Position(-0.5, 0.0, 1.0))
+    snapshot = replace_aircraft(snapshot, 2, pose=Position(0.5, 0.0, 1.0))
+    _, _, arbiter, _, _, camera = make_stack(snapshot)
+    flight = _ExecutingDeflectionFlight.from_snapshot(snapshot)
+    dispatcher = AdapterDispatcher(flight=flight, camera=camera, arbiter=arbiter)
+    plan = Plan(
+        plan_id="bvc-async",
+        intent_id="bvc-async",
+        intent_name=IntentName.TRANSLATE,
+        roster_version=snapshot.roster_version,
+        selection=(1,),
+        confirmed=False,
+        commands=(replace(_goto("bvc-async:1", 1, 0.5, 0.0), intent_id="bvc-async"),),
+    )
+
+    pending = dispatcher.dispatch(plan, snapshot)
+    terminal = replace(pending.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
+    result = dispatcher.resume_after_completion(plan, pending, terminal, snapshot)
+
+    assert pending.status is LifecycleStatus.EXECUTING
+    assert result.status is LifecycleStatus.COMPLETED
+    assert result.deflected_commands == pending.deflected_commands
+    assert result.completion_detail is not None
+    assert "requested targets remain outstanding" in result.completion_detail
+
+
 def _random_positions(rng: Random) -> dict[int, Position]:
     positions: dict[int, Position] = {}
     while len(positions) < 4:
-        candidate = Position(
-            rng.uniform(-8.0, 8.0), rng.uniform(-8.0, 8.0), rng.uniform(0.5, 3.5)
-        )
+        candidate = Position(rng.uniform(-8.0, 8.0), rng.uniform(-8.0, 8.0), rng.uniform(0.5, 3.5))
         if all(candidate.distance_to(existing) >= 1.0 for existing in positions.values()):
             positions[len(positions) + 1] = candidate
     return positions

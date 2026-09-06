@@ -760,6 +760,8 @@ class ExecutionResult:
     refusal: Refusal | None = None
     capture_bundle: object | None = None
     degraded_aircraft: tuple[int, ...] = ()
+    deflected_commands: tuple[Command, ...] = ()
+    completion_detail: str | None = None
 
     def to_dict(self) -> dict[str, JsonValue]:
         bundle = self.capture_bundle
@@ -774,6 +776,8 @@ class ExecutionResult:
             "refusal": self.refusal.to_dict() if self.refusal is not None else None,
             "capture_bundle": _json_native(bundle),
             "degraded_aircraft": list(self.degraded_aircraft),
+            "deflected_commands": [command.to_dict() for command in self.deflected_commands],
+            "completion_detail": self.completion_detail,
         }
 
 

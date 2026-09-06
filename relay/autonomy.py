@@ -288,7 +288,7 @@ def record_result(session: RelaySession, result: ExecutionResult) -> dict[str, o
         drone_id=None if refusal is None else refusal.drone_id,
         connection_epoch=None if refusal is None else refusal.connection_epoch,
         reason=reason,
-        detail=None if refusal is None else refusal.detail,
+        detail=result.completion_detail if refusal is None else refusal.detail,
     )
 
 
