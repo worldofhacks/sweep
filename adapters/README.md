@@ -117,6 +117,10 @@ relay registry directly over the node socket.
 entry, and `relay/tests/test_bridge_roundtrip.py` dispatches through `build_dispatcher`
 on the `remote` backend to drive it end to end; `relay/tests/test_autonomy_roundtrip.py`
 runs the M2.0 workflow from console intents through `relay.autonomy` to two fake nodes.
+It is the reference node kit (`nodekit/`) bound to `nodekit.fake.FakeAircraft` plus the
+operations only a Mini 3 has: takeoff, land, the gimbal, capture, and media retrieval.
+The kit owns authentication, the signed join and readiness, telemetry, scans, command
+admission, the control-heartbeat deadman, and reconnection for every device class.
 
 The existing `crazyswarm2/` and `mavlink/` packages remain inactive placeholder stubs. They are not accepted hardware implementations and do not drive an abstraction change until a concrete second hardware integration is specified and proven.
 

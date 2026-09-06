@@ -22,6 +22,7 @@ Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp
 | [`planner/`](planner/) | Autonomy | M1 | Deterministic formations, sweep lanes, allocation, clamping |
 | [`arbiter/`](arbiter/) | Autonomy | M1 | Safety rules, e-stop, battery return |
 | [`adapters/`](adapters/) | Autonomy | M1, M2 | deterministic simulator and DJI Mini 3 bridge contract |
+| [`nodekit/`](nodekit/) | Platform | F.2 | Reference node kit: the node protocol for any device class |
 | [`media/`](media/) | Platform | M3 | MediaMTX config and stream naming |
 | [`perception/`](perception/) | Interaction | M3 | Detector and world-position estimates |
 | [`language/`](language/) | Interaction, Platform | M4 | Plan compiler, resolvers, prompts, local fallback |

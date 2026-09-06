@@ -17,6 +17,7 @@ PACKAGES = [
     "adapters.crazyswarm2",
     "adapters.dji_mini3",
     "adapters.mavlink",
+    "nodekit",
     "calibration",
     "perception",
     "language",
