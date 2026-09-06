@@ -153,6 +153,9 @@ data class NavigationConfig(
         ) {
             "navigation measured limits are invalid"
         }
+        require(maxPositionUncertaintyM <= minOf(arrivalHorizontalToleranceM, arrivalVerticalToleranceM)) {
+            "navigation uncertainty must fit inside arrival tolerances"
+        }
     }
 
     fun isWithinArrival(
@@ -165,6 +168,7 @@ data class NavigationConfig(
             positionUncertaintyM.isFinite() &&
             horizontalDistanceM >= 0 &&
             positionUncertaintyM >= 0 &&
+            positionUncertaintyM <= maxPositionUncertaintyM &&
             horizontalDistanceM + positionUncertaintyM <= arrivalHorizontalToleranceM &&
             abs(verticalDistanceM) + positionUncertaintyM <= arrivalVerticalToleranceM
 }
