@@ -69,6 +69,9 @@ describe('Target strip quick commands', () => {
     const wall = () => rig.dependencies.clock.wall()
     const socket = new EventTarget() as EventTarget & { readyState: number; send(payload: string): void; close(): void }
     const sent: string[] = []
+    const controlFrames = () => sent
+      .map((frame) => JSON.parse(frame))
+      .filter((frame) => frame.type !== 'operator_presence')
     socket.readyState = 1
     socket.send = (payload) => { sent.push(payload) }
     socket.close = () => {}
@@ -112,7 +115,7 @@ describe('Target strip quick commands', () => {
       args: { ids: [1, 2, 4] }, selection: [1, 2, 4], confirm: false,
     })
     expect(isConsoleIntentV1(draft)).toBe(true)
-    expect(sent.map((frame) => JSON.parse(frame).type)).toEqual(['auth'])
+    expect(controlFrames().map((frame) => frame.type)).toEqual(['auth'])
     expect(target).toHaveTextContent('0 of 4 selected')
 
     // The relay continues publishing its old selection until this proposal is confirmed.
@@ -120,7 +123,7 @@ describe('Target strip quick commands', () => {
       act(() => message({ ...initialState, event_id: `repeat-state-${stateSequence}`, state_sequence: stateSequence }))
       expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBe(dock)
       expect(JSON.parse(dock.querySelector('pre')!.textContent!)).toEqual(draft)
-      expect(sent).toHaveLength(1)
+      expect(controlFrames()).toHaveLength(1)
     }
     if (scenario !== 'unchanged selection') {
       const changedState: RelayStateEvent = {
@@ -137,12 +140,12 @@ describe('Target strip quick commands', () => {
       expect(screen.getByText('Preview invalidated, nothing sent').closest('[role="alert"]')).toHaveTextContent(
         scenario === 'roster change' ? 'stale_roster' : 'stale_selection',
       )
-      expect(sent).toHaveLength(1)
+      expect(controlFrames()).toHaveLength(1)
       return
     }
     await user.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
-    expect(sent).toHaveLength(2)
-    const intent = JSON.parse(sent[1])
+    expect(controlFrames()).toHaveLength(2)
+    const intent = controlFrames()[1]
     expect(intent).toEqual({ ...draft, t: wall(), confirm: true })
     expect(isConsoleIntentV1(intent)).toBe(true)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
