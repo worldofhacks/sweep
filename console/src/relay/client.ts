@@ -26,11 +26,26 @@ export interface WebSocketRelayConfig {
 interface WebSocketDependencies {
   now: () => number
   createSocket: (url: string) => WebSocket
+  subscribeOperatorActivity?: (listener: () => void) => () => void
 }
+
+export const OPERATOR_PRESENCE_MIN_INTERVAL_MS = 1_000
 
 const browserDependencies: WebSocketDependencies = {
   now: () => Date.now(),
   createSocket: (url) => new WebSocket(url),
+  subscribeOperatorActivity: (listener) => {
+    const onActivity = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.repeat) return
+      if (event.isTrusted && document.visibilityState === 'visible') listener()
+    }
+    document.addEventListener('pointerdown', onActivity, true)
+    document.addEventListener('keydown', onActivity, true)
+    return () => {
+      document.removeEventListener('pointerdown', onActivity, true)
+      document.removeEventListener('keydown', onActivity, true)
+    }
+  },
 }
 
 export class WebSocketRelayClient implements RelayClient {
@@ -38,6 +53,8 @@ export class WebSocketRelayClient implements RelayClient {
   private readonly listeners = new Set<RelayClientListener>()
   private socket: WebSocket | null = null
   private authenticated = false
+  private stopOperatorActivity: (() => void) | null = null
+  private lastPresenceSentAt: number | null = null
   private readonly config: WebSocketRelayConfig
   private readonly dependencies: WebSocketDependencies
 
@@ -104,6 +121,7 @@ export class WebSocketRelayClient implements RelayClient {
           return
         }
         this.authenticated = true
+        this.startOperatorActivity(socket)
         this.emitConnection('connected', 'Relay authenticated this console source.')
       } else if (!this.authenticated) {
         if (event.type === 'auth.refused') {
@@ -126,6 +144,7 @@ export class WebSocketRelayClient implements RelayClient {
       if (this.socket !== socket) return
       this.socket = null
       this.authenticated = false
+      this.stopOperatorActivityTracking()
       this.emitConnection('disconnected', `Relay socket closed (code ${event.code}). No retry was attempted.`)
     })
   }
@@ -134,6 +153,7 @@ export class WebSocketRelayClient implements RelayClient {
     const socket = this.socket
     this.socket = null
     this.authenticated = false
+    this.stopOperatorActivityTracking()
     socket?.close(1000, 'console_unmounted')
   }
 
@@ -147,6 +167,34 @@ export class WebSocketRelayClient implements RelayClient {
       throw new Error('Relay is not authenticated; the intent was not sent.')
     }
     this.socket.send(JSON.stringify(intent))
+  }
+
+  private startOperatorActivity(socket: WebSocket): void {
+    if (
+      this.config.source !== 'console' ||
+      this.stopOperatorActivity !== null ||
+      this.dependencies.subscribeOperatorActivity === undefined
+    ) {
+      return
+    }
+    this.stopOperatorActivity = this.dependencies.subscribeOperatorActivity(() => {
+      if (this.socket !== socket || !this.authenticated || socket.readyState !== 1) return
+      const now = this.dependencies.now()
+      if (
+        this.lastPresenceSentAt !== null &&
+        now - this.lastPresenceSentAt < OPERATOR_PRESENCE_MIN_INTERVAL_MS
+      ) {
+        return
+      }
+      socket.send(JSON.stringify({ v: 1, type: 'operator_presence', activity: 'interaction' }))
+      this.lastPresenceSentAt = now
+    })
+  }
+
+  private stopOperatorActivityTracking(): void {
+    this.stopOperatorActivity?.()
+    this.stopOperatorActivity = null
+    this.lastPresenceSentAt = null
   }
 
   private emitConnection(status: RelayConnection['status'], reason?: string): void {

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +19,8 @@ from relay.autonomy import (
     PREEMPTED_BY_HOLD,
     AutonomyComposition,
     AutonomyConfig,
+    AutonomySession,
+    PresenceWatchdogConfig,
     _Job,
     control_projection,
     create_autonomy_app,
@@ -26,6 +30,7 @@ from relay.control_frames import sign_localization_frame
 from relay.control_localization import ControlLocalizationWire, to_wire_payload
 from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.session import RelaySession
+from relay.session_report import report_path
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 from relay.tests.conftest import (
     ADAPTER_KEY,
@@ -311,6 +316,8 @@ def test_autonomy_composition_threads_one_ungrounded_profile(
         ("SWEEP_PLANNING_JSON", "{not json", "valid JSON"),
         ("SWEEP_PLANNING_JSON", "[]", "JSON object"),
         ("SWEEP_SIM_CAMERA_JSON", '{"panorama_width_px": 4096}', "keys must be exactly"),
+        ("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", "", "required"),
+        ("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", '{"action":"land_all"}', "hold or estop"),
         ("SWEEP_SAFETY_JSON", "__unordered_geofence__", "geofence"),
         ("SWEEP_SAFETY_JSON", "__zero_spacing__", "min_spacing_m"),
         ("SWEEP_PLANNING_JSON", "__headings_object__", "JSON array"),
@@ -604,6 +611,71 @@ def test_sim_backend_runs_the_checkpoint_intents_in_process_without_wire_command
     )
 
 
+def test_operator_presence_watchdog_uses_receipt_time_and_confirms_one_hold(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=3_000))
+    app, composition = create_autonomy_app(
+        _settings(tmp_path), config, clock=clock, event_ids=event_ids
+    )
+    try:
+        with TestClient(app) as client:
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            with (
+                client.websocket_connect(f"/ws/{SESSION}") as console,
+                client.websocket_connect(f"/ws/{SESSION}") as adapter,
+            ):
+                _authenticate(console, source="console")
+                _authenticate(adapter, source="adapter")
+                adapter.send_json(membership_payload(action="join", event_id="join-1"))
+                adapter.send_json(telemetry_payload(event_id="telemetry-1", state="hovering"))
+                adapter.send_json(membership_payload(action="readiness", event_id="ready-1"))
+                _receive_until(
+                    console,
+                    lambda event: (
+                        event["type"] == "state" and event["drones"][0]["membership"] == "ready"
+                    ),
+                )
+                console.send_json(
+                    _intent(
+                        "select",
+                        intent_id="select-1",
+                        selection=[],
+                        args={"ids": [1]},
+                        timestamp=clock.value + 1_000,
+                    )
+                )
+                assert _autonomy_outcome(console, "select-1")["status"] == "completed"
+
+                clock.advance(3_000)
+                first = runtime.periodic_events(session)
+                action = next(event for event in first if event["type"] == "safety_action")
+                admitted = next(
+                    event
+                    for event in first
+                    if event["type"] == "acknowledgement" and event["status"] == "accepted"
+                )
+                terminal = _autonomy_outcome(console, admitted["intent_id"])
+                repeated = runtime.periodic_events(session)
+    finally:
+        composition.close()
+
+    assert action["reason"] == "operator_presence_expired"
+    assert action["action"] == "hold"
+    assert action["status"] == "requested"
+    assert action["targets"] == [{"drone_id": 1, "connection_epoch": 1}]
+    assert terminal["status"] == "completed", terminal
+    assert not any(event["type"] == "safety_action" for event in repeated)
+    report = json.loads(report_path(tmp_path, SESSION).read_text())
+    assert report["session"] == SESSION
+    assert len(report["telemetry"]) == 1
+    assert [event["status"] for event in report["safety_actions"]] == [
+        "requested",
+        "confirmed",
+    ]
+
+
 def test_graceful_leave_is_authorized_only_for_a_landed_disarmed_aircraft(
     tmp_path: Path, clock: MutableClock, event_ids: EventIds
 ) -> None:
@@ -678,3 +750,226 @@ def test_localization_config_rejects_duplicate_fields(field: str) -> None:
     raw = raw.replace(marker, f'"{field}": null, {marker}', 1)
     with pytest.raises(SettingsError, match="unique fields"):
         AutonomyConfig.from_env(_env_example() | {"SWEEP_CONTROL_LOCALIZATION_JSON": raw})
+
+
+def test_presence_watchdog_requires_explicit_deployment_configuration() -> None:
+    environment = _env_example()
+    environment.pop("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", None)
+    with pytest.raises(SettingsError, match="SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON is required"):
+        AutonomyConfig.from_env(environment)
+
+
+def test_presence_watchdog_rejects_timeout_shorter_than_three_delivery_intervals() -> None:
+    with pytest.raises(ValueError, match="at least 3000"):
+        replace(_config(), safety=replace(safety_config(), operator_timeout_ms=2_999))
+
+
+def test_authenticated_presence_refreshes_deadline_without_emitting_a_command(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=3_000))
+    app, composition = create_autonomy_app(_settings(tmp_path), config, clock=clock)
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+            adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+            frame = {"v": 1, "type": "operator_presence", "activity": "interaction"}
+            assert session.process_frame(frame, console) == []
+            clock.advance(999)
+            assert session.process_frame(frame, console) == []
+            assert (
+                len(
+                    [
+                        record
+                        for record in session.audit_log.replay()
+                        if record["event"]["type"] == "operator_presence"
+                    ]
+                )
+                == 1
+            )
+            clock.advance(1)
+            assert session.process_frame(frame, console) == []
+            clock.advance(2_999)
+            assert not any(e["type"] == "safety_action" for e in runtime.periodic_events(session))
+            forbidden = session.process_frame(frame, adapter)
+            assert forbidden[0]["reason"] == "invalid_operator_presence"
+            clock.advance(1)
+            action = next(
+                e for e in runtime.periodic_events(session) if e["type"] == "safety_action"
+            )
+            assert action["status"] == "not_required"
+    finally:
+        composition.close()
+
+
+def test_failed_presence_hold_suppresses_heartbeats_and_retries(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=3_000))
+    app, composition = create_autonomy_app(
+        _settings(tmp_path, AdapterBackend.REMOTE), config, clock=clock, event_ids=event_ids
+    )
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+            console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+            session.process_membership(
+                membership_payload(action="join", event_id="join-1"), adapter
+            )
+            session.process_telemetry(
+                telemetry_payload(event_id="telemetry-1", state="hovering"), adapter
+            )
+            session.process_membership(
+                membership_payload(action="readiness", event_id="ready-1"), adapter
+            )
+            session.process_frame(
+                {"v": 1, "type": "operator_presence", "activity": "interaction"}, console
+            )
+
+            clock.advance(3_000)
+            first = runtime.periodic_events(session)
+            requested = next(
+                event
+                for event in first
+                if event["type"] == "safety_action"
+                and event.get("reason") == "operator_presence_expired"
+            )
+            assert requested["status"] == "requested"
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                actions = [
+                    record["event"]
+                    for record in session.audit_log.replay()
+                    if record["event"]["type"] == "safety_action"
+                    and record["event"].get("reason") == "operator_presence_expired"
+                ]
+                if any(event["status"] == "failed" for event in actions):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("failed watchdog attempt was not recorded")
+
+            assert composition.session(SESSION).control_heartbeats_allowed() is False
+            clock.advance(1_999)
+            assert not any(
+                event.get("status") == "retrying" for event in runtime.periodic_events(session)
+            )
+            clock.advance(1)
+            retry = next(
+                event
+                for event in runtime.periodic_events(session)
+                if event.get("status") == "retrying"
+            )
+            assert retry["attempt"] == 2
+            assert retry["intent_id"] != requested["intent_id"]
+            assert retry["targets"] == requested["targets"]
+    finally:
+        composition.close()
+
+    assert json.loads(report_path(tmp_path, SESSION).read_text())["completion"]["status"] == (
+        "incomplete"
+    )
+
+
+def test_idle_presence_expiry_does_not_latch_estop(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    config = replace(
+        _config(),
+        safety=replace(safety_config(), operator_timeout_ms=3_000),
+        presence_watchdog=PresenceWatchdogConfig(action="estop"),
+    )
+    app, composition = create_autonomy_app(
+        _settings(tmp_path), config, clock=clock, event_ids=event_ids
+    )
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+            session.process_frame(
+                {"v": 1, "type": "operator_presence", "activity": "interaction"}, console
+            )
+            clock.advance(3_000)
+
+            action = next(
+                event
+                for event in runtime.periodic_events(session)
+                if event["type"] == "safety_action"
+            )
+
+            assert action["status"] == "not_required"
+            assert action["targets"] == []
+            assert session.current_state()["estop"] is False
+            assert not any(
+                event["type"] == "safety_action" for event in runtime.periodic_events(session)
+            )
+    finally:
+        composition.close()
+
+
+def test_shutdown_deadline_marks_report_incomplete_while_worker_is_live(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_execute(_self: AutonomySession, _job: _Job) -> None:
+        started.set()
+        release.wait()
+
+    monkeypatch.setattr(AutonomySession, "_execute", blocked_execute)
+    composition = AutonomyComposition(_config())
+    runtime = RelayRuntime(
+        _settings(tmp_path),
+        clock=clock,
+        event_ids=event_ids,
+        intent_sink_factory=composition.intent_sink_factory,
+        capability_profile=composition.capability_profile,
+    )
+    composition.bind(runtime)
+    runtime.session(SESSION)
+    autonomy = composition.session(SESSION)
+    blocked_intent = IntentV1(
+        v=1,
+        t=clock(),
+        type="intent",
+        intent_id="blocked-1",
+        retry_of=None,
+        source="console",
+        session=SESSION,
+        name=IntentName.SELECT,
+        args={"ids": []},
+        selection=(),
+        mode=Mode.INDOOR,
+        confirm=False,
+    )
+    autonomy.submit(blocked_intent, {"t": clock()})
+    assert started.wait(timeout=1)
+
+    with pytest.raises(ValueError, match="positive number"):
+        composition.close(timeout_s=float("nan"))
+    before = time.monotonic()
+    composition.close(timeout_s=0.5)
+    elapsed = time.monotonic() - before
+    report = json.loads(report_path(tmp_path, SESSION).read_text())
+
+    assert elapsed < 1
+    assert report["completion"] == {
+        "status": "incomplete",
+        "reason": "worker_deadline_exceeded",
+        "generated_at_ms": clock(),
+    }
+
+    release.set()
+    composition.close(timeout_s=1)
+    with pytest.raises(RuntimeError, match="closed"):
+        autonomy.submit(replace(blocked_intent, intent_id="after-close"), {"t": clock()})

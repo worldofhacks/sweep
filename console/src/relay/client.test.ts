@@ -182,3 +182,51 @@ describe('WebSocket relay client', () => {
     expect(serverTypes).toEqual(['auth.accepted', 'telemetry'])
   })
 })
+
+
+test('only deliberate authenticated interaction refreshes presence at the bounded cadence', () => {
+  const socket = new TestSocket()
+  let now = 1_000
+  let activity = () => {}
+  let activitySubscribed = false
+  const client = new WebSocketRelayClient(
+    { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source: 'console', token: 'token' },
+    {
+      now: () => now,
+      createSocket: () => socket as unknown as WebSocket,
+      subscribeOperatorActivity: (listener) => {
+        activity = listener
+        activitySubscribed = true
+        return () => { activitySubscribed = false }
+      },
+    },
+  )
+  try {
+    client.start()
+    socket.open()
+    expect(socket.sent).toHaveLength(1)
+    socket.message({
+      v: 1, t: 101, type: 'auth.accepted', event_id: 'presence-auth',
+      session: 'session-1', source: 'console', drone_id: null,
+    })
+    expect(socket.sent).toHaveLength(1)
+    activity()
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      v: 1,
+      type: 'operator_presence',
+      activity: 'interaction',
+    })
+    const afterFirstInteraction = socket.sent.length
+    activity()
+    now += 999
+    activity()
+    expect(socket.sent).toHaveLength(afterFirstInteraction)
+    now += 1
+    activity()
+    expect(socket.sent).toHaveLength(afterFirstInteraction + 1)
+    client.stop()
+    expect(activitySubscribed).toBe(false)
+  } finally {
+    client.stop()
+  }
+})
