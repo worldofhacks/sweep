@@ -563,24 +563,28 @@ class AutonomySession:
         for worker in self._workers:
             worker.start()
 
-    def submit(self, intent: IntentV1, _state: dict[str, object]) -> None:
+    def submit(self, intent: IntentV1, state: dict[str, object]) -> None:
         """``IntentSink``: record operator activity and route the intent without blocking."""
         if intent.name in {IntentName.HOLD, IntentName.ESTOP, IntentName.SELECT}:
             if search := self._composition.search_runtime:
                 search.revoke_unstarted_previews(intent.session)
         if intent.name is IntentName.SEARCH:
             search = self._composition.search_runtime
-            now_ms = self.snapshot(_state).now_ms
+            now_ms = self.snapshot(state).now_ms
             if search is None or not search.accepts_intent(intent, now_ms):
                 refusal_detail = "search intent has no matching frozen preview"
             else:
                 refusal_detail = None
         else:
             refusal_detail = None
-        with self._lock:
-            previous = self._operator_last_seen_ms
-            self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
-            self._presence_expiry_seen_ms = None
+        received_at = state.get("t")
+        if isinstance(received_at, int) and not isinstance(received_at, bool):
+            with self._lock:
+                previous = self._operator_last_seen_ms
+                self._operator_last_seen_ms = (
+                    received_at if previous is None else max(previous, received_at)
+                )
+                self._presence_expiry_seen_ms = None
         runtime = self._composition.runtime_if_bound()
         job = _Job(
             intent,
@@ -588,7 +592,7 @@ class AutonomySession:
             refusal_detail=refusal_detail,
         )
         if intent.name is IntentName.NAVIGATE:
-            now_ms = _state.get("t")
+            now_ms = state.get("t")
             with self._lock:
                 preview = self._navigation_previews.pop(intent.intent_id, None)
             if (
@@ -628,8 +632,13 @@ class AutonomySession:
                 "navigation deployment is unavailable",
             )
         with self._lock:
-            previous = self._operator_last_seen_ms
-            self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
+            received_at = state.get("t")
+            if type(received_at) is int:
+                previous = self._operator_last_seen_ms
+                self._operator_last_seen_ms = (
+                    received_at if previous is None else max(previous, received_at)
+                )
+                self._presence_expiry_seen_ms = None
             if intent.intent_id in self._navigation_previews:
                 return Refusal(
                     intent.intent_id,
@@ -775,7 +784,7 @@ class AutonomySession:
             last_seen = self._operator_last_seen_ms
             expired = (
                 last_seen is not None
-                and now - last_seen > self.arbiter.config.operator_timeout_ms
+                and now - last_seen >= self.arbiter.config.operator_timeout_ms
                 and self._presence_expiry_seen_ms != last_seen
             )
             if not expired:

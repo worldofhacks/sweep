@@ -634,7 +634,7 @@ def test_sim_backend_runs_the_checkpoint_intents_in_process_without_wire_command
     )
 
 
-def test_operator_presence_watchdog_dispatches_one_hold_without_a_new_command(
+def test_operator_presence_watchdog_uses_relay_receipt_time_and_dispatches_one_hold(
     tmp_path: Path, clock: MutableClock, event_ids: EventIds
 ) -> None:
     config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=5))
@@ -661,7 +661,13 @@ def test_operator_presence_watchdog_dispatches_one_hold_without_a_new_command(
                     ),
                 )
                 console.send_json(
-                    _intent("select", intent_id="select-1", selection=[], args={"ids": [1]})
+                    _intent(
+                        "select",
+                        intent_id="select-1",
+                        selection=[],
+                        args={"ids": [1]},
+                        timestamp=clock.value + 1_000,
+                    )
                 )
                 assert _autonomy_outcome(console, "select-1")["status"] == "completed"
 
@@ -789,7 +795,7 @@ def test_authenticated_presence_refreshes_deadline_without_emitting_a_command(
             assert not any(e["type"] == "safety_action" for e in runtime.periodic_events(session))
             forbidden = session.process_frame(frame, adapter)
             assert forbidden[0]["reason"] == "invalid_operator_presence"
-            clock.advance(2)
+            clock.advance(1)
             assert any(e["type"] == "safety_action" for e in runtime.periodic_events(session))
     finally:
         composition.close()
