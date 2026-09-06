@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-import pytest
-
 from planner.models import Refusal
 from planner.navigation import ArrivalSlot, NavigationDispatchAcceptance, NavigationPermission
 from planner.navigation_runtime import NavigationExecutionConfig, NavigationRuntime
@@ -164,19 +162,23 @@ def test_session_preview_returns_the_frozen_route_and_current_aliases(tmp_path) 
             args={"zone_id": "atrium"},
         )
         assert not isinstance(owner.preview_navigation(changed, session.current_state()), Refusal)
-        with pytest.raises(ValueError, match="current matching server preview"):
-            owner.submit(
-                replace(changed, confirm=True, args={"zone_id": "other"}),
-                session.current_state(),
-            )
+        owner.submit(
+            replace(changed, confirm=True, args={"zone_id": "other"}),
+            session.current_state(),
+        )
+        assert owner._normal.pending[-1].refusal_detail == (
+            "navigation requires a current matching server preview"
+        )
 
         stopped = replace(intent, intent_id="preview-navigation-stopped")
         assert not isinstance(owner.preview_navigation(stopped, session.current_state()), Refusal)
         owner.submit(
             make_intent(IntentName.HOLD, selection=(1,), t=clock.value), session.current_state()
         )
-        with pytest.raises(ValueError, match="current matching server preview"):
-            owner.submit(replace(stopped, confirm=True), session.current_state())
+        owner.submit(replace(stopped, confirm=True), session.current_state())
+        assert owner._normal.pending[-1].refusal_detail == (
+            "navigation requires a current matching server preview"
+        )
     finally:
         composition.close()
 

@@ -345,6 +345,7 @@ class _Job:
     cancelled_by: str | None = None
     finished: bool = False
     prepared: PreparedExecution | None = None
+    refusal_detail: str | None = None
 
     def check(self) -> None:
         if self.cancelled_by is not None:
@@ -479,8 +480,9 @@ class AutonomySession:
                 or preview[0] < now_ms
                 or not self._same_navigation_preview(preview[1].intent, intent)
             ):
-                raise ValueError("navigation requires a current matching server preview")
-            job.prepared = replace(preview[1], intent=intent)
+                job.refusal_detail = "navigation requires a current matching server preview"
+            else:
+                job.prepared = replace(preview[1], intent=intent)
         elif intent.name in {IntentName.HOLD, IntentName.ESTOP, IntentName.SELECT}:
             with self._lock:
                 self._navigation_previews.clear()
@@ -741,6 +743,25 @@ class AutonomySession:
             self._publish(runtime, lambda: publications)
         if job.cancelled_by is not None:
             return  # cancelled while queued; the stop recorded its invalidation
+
+        if job.refusal_detail is not None:
+            result = ExecutionResult(
+                intent_id=intent.intent_id,
+                roster_version=session.registry.roster_version,
+                status=LifecycleStatus.REFUSED,
+                refusal=Refusal(
+                    intent_id=intent.intent_id,
+                    roster_version=session.registry.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.INVALID_PLAN,
+                    detail=job.refusal_detail,
+                ),
+            )
+            with self._lock:
+                job.finished = True
+            self._report(runtime, session, job, result)
+            return
 
         def current() -> FleetSnapshot:
             job.check()
