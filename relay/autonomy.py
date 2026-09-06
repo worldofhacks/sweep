@@ -1257,6 +1257,24 @@ def create_autonomy_app(
         except ValueError:
             raise HTTPException(status_code=404, detail="search mission is unknown") from None
 
+    @app.post("/session/{session_id}/search/{intent_id}/findings/{sighting_id}/ack")
+    async def acknowledge_search_finding(
+        session_id: str,
+        intent_id: str,
+        sighting_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        runtime: RelayRuntime = request.app.state.relay_runtime
+        token = authorization.removeprefix("Bearer ").encode() if authorization else None
+        expected = runtime.credential_resolver.resolve("console", None)
+        if token is None or expected is None or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=401, detail="console authentication is required")
+        search = composition.search_runtime
+        if search is None or not search.acknowledge_finding(intent_id, sighting_id):
+            raise HTTPException(status_code=404, detail="search finding is unknown")
+        return search.status_payload(intent_id)
+
     composition.bind(app)
     return app, composition
 
