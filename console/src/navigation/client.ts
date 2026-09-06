@@ -65,7 +65,7 @@ export class HttpNavigationClient implements NavigationClient {
 
   async preview(intent: IntentV1): Promise<NavigationPreview> {
     const value = await this.request(intent.session, 'preview', { intent: { ...intent, confirm: true } })
-    if (!validPreview(value, intent)) throw new Error('The relay returned an invalid route preview.')
+    if (!isNavigationPreview(value, intent)) throw new Error('The relay returned an invalid route preview.')
     return value
   }
 
@@ -104,7 +104,7 @@ function point(value: unknown): value is RoutePoint {
   return record(value) && ['x_m', 'y_m', 'z_m'].every(key => typeof value[key] === 'number' && Number.isFinite(value[key]))
 }
 
-function validPreview(value: unknown, intent: IntentV1): value is NavigationPreview {
+export function isNavigationPreview(value: unknown, intent: IntentV1): value is NavigationPreview {
   if (!record(value) || value.session !== intent.session || value.intent_id !== intent.intent_id ||
     typeof value.t !== 'number' || !Number.isFinite(value.t) ||
     typeof value.expires_at_ms !== 'number' || !Number.isFinite(value.expires_at_ms) ||

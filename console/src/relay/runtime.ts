@@ -1,4 +1,5 @@
 import { HttpNavigationClient, type NavigationClient } from '../navigation/client'
+import { HttpSearchClient, type SearchClient } from '../search/client'
 import { UnavailableRelayClient, WebSocketRelayClient, type RelayClient } from './client'
 import { HttpTranscriptClient, type TranscriptClient } from '../voice/client'
 
@@ -10,10 +11,10 @@ export interface SweepRelayRuntimeConfig {
 
 export interface ConsoleRuntime {
   navigationClient: NavigationClient | null
+  searchClient: SearchClient | null
   client: RelayClient
   keyboardClient: RelayClient
   webcamClient: RelayClient
-  /** Null when no relay bootstrap exists: the Speech module renders language disabled. */
   transcriptClient: TranscriptClient | null
   sessionId: string
 }
@@ -39,6 +40,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       ),
       transcriptClient: null,
       navigationClient: null,
+      searchClient: null,
     }
   }
 
@@ -63,6 +65,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       token: config.token,
     }),
     navigationClient: new HttpNavigationClient(config),
+    searchClient: new HttpSearchClient(config),
     transcriptClient: new HttpTranscriptClient({ baseUrl: config.baseUrl, token: config.token }),
   }
 }

@@ -1,4 +1,5 @@
 import type { NavigationClient, NavigationPreview } from '../navigation/client'
+import type { SearchClient } from '../search/client'
 import { useCallback, useEffect, useMemo, useReducer, useRef, type Dispatch } from 'react'
 import type { RelayClient } from '../relay/client'
 import type {
@@ -45,6 +46,7 @@ export interface UseControlConsoleOptions {
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
   navigation?: NavigationClient
+  search?: SearchClient
 }
 
 /** One control press: an intent name, its args, and the aircraft it addresses. */
@@ -59,6 +61,7 @@ export function useControlConsole({
   sessionId,
   clients,
   navigation,
+  search,
   intentDependencies = browserIntentDependencies,
 }: UseControlConsoleOptions) {
   const [state, dispatch] = useReducer(
@@ -267,6 +270,38 @@ export function useControlConsole({
     if (intentDependencies.now() >= expiresAt) throw new Error('The route preview expired. Preview it again.')
     return stageForConfirmation(draft, expiresAt, preview)
   }, [navigation, intentDependencies, stageForConfirmation])
+
+  const prepareSearch = useCallback(async (
+    zoneId: string,
+    targetClass: string,
+    deadline?: number,
+    isCurrent: () => boolean = () => true,
+  ): Promise<IntentV1> => {
+    const current = latestState.current
+    if (!isCurrent()) throw new Error('The search preview is no longer current. Preview it again.')
+    if (deadline !== undefined && intentDependencies.now() >= deadline) {
+      throw new Error('The compiled plan expired. Preview it again.')
+    }
+    if (!search || !isIntentEnabled(current, 'search') || current.connection.status !== 'connected' ||
+      current.selection.length === 0 || !selectionReady(current, current.selection)) {
+      throw new Error('Select ready aircraft and connect to a relay with search configured.')
+    }
+    const sequence = ++previewSequence.current
+    const draft = createIntent({ name: 'search', args: { zone_id: zoneId, target_class: targetClass },
+      selection: current.selection, source: 'console', session: current.sessionId }, intentDependencies)
+    const startedAt = intentDependencies.now()
+    const preview = await search.preview(draft)
+    const latest = latestState.current
+    if (!isCurrent() || sequence !== previewSequence.current || latest.rosterVersion !== current.rosterVersion ||
+      latest.connection !== current.connection || JSON.stringify(latest.selection) !== JSON.stringify(current.selection) ||
+      !isIntentEnabled(latest, 'search') || !selectionReady(latest, current.selection) ||
+      preview.plan.roster_version !== current.rosterVersion) {
+      throw new Error('The fleet changed while preparing the search. Preview it again.')
+    }
+    const expiresAt = Math.min(deadline ?? Infinity, startedAt + preview.expires_at_ms - preview.t)
+    if (intentDependencies.now() >= expiresAt) throw new Error('The search preview expired. Preview it again.')
+    return stageForConfirmation(draft, expiresAt, preview)
+  }, [search, intentDependencies, stageForConfirmation])
 
   /**
    * A select intent addresses the aircraft it names: `selection` carries the
@@ -648,6 +683,7 @@ export function useControlConsole({
     selectAllReady,
     prepareCapture,
     prepareNavigation,
+    prepareSearch,
     prepareHold,
     prepareIntent,
     prepareSelect,

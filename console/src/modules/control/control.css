@@ -560,7 +560,7 @@
 .ct-routes { display: grid; gap: 16px; }
 .ct-routes .ct-panel { padding: 20px; }
 .ct-routes label { display: block; margin: 20px 0 8px; }
-.ct-routes select { max-width: 100%; min-width: 240px; padding: 10px; background: var(--panel, #151719); color: inherit; border: 1px solid currentColor; border-radius: 4px; }
+.ct-routes select { max-width: 100%; min-width: 240px; padding: 10px; background: var(--color-surface); color: var(--color-ink); border: 1px solid var(--color-rule); border-radius: 4px; }
 .ct-routes button { display: block; margin-top: 16px; padding: 10px 16px; }
 .ct-route-preview { max-width: 680px; overflow: auto; }
 .ct-route-preview svg { display: block; width: 100%; max-height: 260px; }
