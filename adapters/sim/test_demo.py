@@ -88,6 +88,7 @@ def test_four_node_demo_dispatches_selection_and_fleet_stops_over_signed_wire(
         assert {drone["telemetry"]["x"] for drone in demo.drones().values()} == {0, 2, 4, 6}
         assert all(drone["membership"] == "ready" for drone in demo.drones().values())
         with connect(f"{demo.ws_url}/ws/{demo.config.session}") as websocket:
+            assert websocket.response.headers.get("Sec-WebSocket-Extensions") is None
             websocket.send(
                 json.dumps({"v": 1, "type": "auth", "source": "console", "token": demo.token})
             )
