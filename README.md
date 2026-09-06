@@ -1,65 +1,70 @@
 # Sweep
 
-One person creates AI-generated room worlds from guided photos, commands four indoor DJI Mini 3 drones through button controls on a laptop console, cycles aircraft into and out of the live fleet, and sees what the swarm sees. Webcam gesture work and the transcript-to-plan compiler develop against the same intent contracts as the button path; push-to-talk speech follows the M1.E gate. The simulator retains the 4-to-6-drone expansion target.
+Sweep lets an operator select indoor drones, preview a destination or search, confirm the request, and follow execution from a laptop console. Buttons, keyboard controls, gestures and voice share an Intent v1 boundary with a deterministic planner, safety arbiter and vehicle adapters. Detections report findings; they never initiate approach, following or other movement.
 
-The first user is a responder who needs eyes inside a building before entry. The three-guided-phone-photo Marble flow is completed feasibility evidence and remains a fallback. The first pending user-visible slice is one end-to-end drone capture: the operator clicks Capture room, reviews the Intent v1 preview, confirms it, and one DJI Mini 3 holds an approved pose while its files create a private Marble room world. The north-star command is “Map this floor.” During the MVP, it sends an operator-present two-drone subset through approved room poses on a supplied occupancy map, then generates a room-by-room visual walkthrough. Physical bring-up uses four Mini 3 aircraft, four RC-N1 controllers, and four benchmarked Android bridge nodes, one node before two and four. The session registry supports live join, readiness, graceful leave, loss, and rejoin. Four to six drones remain in simulation. Spoken language and gestures are additional MVP input sources built at their listed gates; the EMG band remains Future work. Everything is open source.
+The physical target is four DJI Mini 3 aircraft with one Android bridge and physical RC safety operator per airborne aircraft. Four to six aircraft are exercised in simulation. A separate Capture/Worlds workflow turns accepted capture bundles into room-world presentations; generated content never supplies flight geometry.
 
-Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the M0 through M4 delivery sequence.
+## Current status
+
+As of September 6, 2026, the integrated PR stack passes 2,201 Python tests, 528 console tests, the production console build, and browser rehearsals for fleet controls, five destination routes and repeated object search. The search rehearsal covers every configured cell, localizes findings from five synthetic observations and checks that acknowledgement adds no flight command. [The runtime audit](https://github.com/worldofhacks/sweep/pull/224) links each implementation and test boundary. Open PRs still require review and merge; these results describe the tested integration checkout.
+
+Physical flight authorization remains pending. One real aircraft must supply measured camera, velocity, height, attitude/gimbal and timing evidence, including dropouts. Five mapped-route rehearsals must show p95 position error at or below 0.25 m against independent reference measurements, with no unhandled update gap over 500 ms. Map/calibration binding, stale-data refusal, hold/land behavior and physical RC takeover must pass their deployment and failure trials. Estimator confidence and synthetic tests cannot substitute for those measurements.
+
+The current work prioritizes autonomous destination navigation and object search. Lobby and atrium-front are candidate formation volumes pending measured approval; kitchen remains a named destination/transit area and is not a formation fallback. Capture/Worlds continues in its separate lane.
 
 ## Read first
 
-- [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. M0 freezes five contract groups: intent and WebSocket, telemetry, flight and camera adapters, repository layout, and room-world records.
-- [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped work breakdown.
-- [Decision records](docs/decisions/): why the scaffold and the architecture look the way they do. The [docs index](docs/README.md) lists everything else.
-- The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.
+- [GitHub issues](https://github.com/worldofhacks/sweep/issues): authoritative feature scope and acceptance decisions.
+- [MVP delivery plan](docs/mvp-plan.md): current priorities, issue map, dependency boundaries and remaining physical gates.
+- [PRD](docs/prd.md): product behavior, architecture and contracts, synchronized with the issues.
+- [Decision records](docs/decisions/) and [docs index](docs/README.md): supporting rationale and run guides.
+
+C1 provides earned basic controls, including selected land and configured altitude. C2 adds disarm, formations, spacing and sweep for accepted deployments. Configured `navigate {zone_id}` and `search {zone_id, target_label}` remain separate from C3 assisted survey and C4 `map_area` traversal/capture. Navigation arrival permission does not authorize a formation.
+
+## Run the software
+
+Install [uv](https://docs.astral.sh/uv/), Node at the version in [.node-version](.node-version), [pnpm](https://pnpm.io/) at the version in [console/package.json](console/package.json), and [just](https://just.systems/). Docker is needed for MediaMTX.
+
+```bash
+just setup
+just test
+just lint
+just ci
+```
+
+`just ci` runs the Python and console checks. GitHub CI also runs the browser and applicable JVM/Android checks. For the existing browser-to-simulator path:
+
+```bash
+pnpm --dir console exec playwright install chromium
+pnpm --dir console test:m14-browser
+```
+
+For an interactive relay and console, copy `.env.example` to `.env`, configure the required credentials and backend, then run `just relay` and `just console` in separate terminals. See the [relay guide](relay/README.md) for session and adapter configuration. Keep credentials on the server and out of browser bundles and logs.
+
+The extended fleet, navigation and search rehearsals require their integration changes while those PRs remain open. [Navigation proof #213](https://github.com/worldofhacks/sweep/pull/213) and [search proof #221](https://github.com/worldofhacks/sweep/pull/221) contain the run commands and upload screenshots, audit logs and evidence JSON in CI. Their loopback demos use generated credentials and explicitly synthetic maps, camera inputs and aircraft movement.
 
 ## Layout
 
-| Path | Capability area | Milestone | What lives here |
-|---|---|---|---|
-| [`console/`](console/) | Interaction | M0+ | Operator console: Vite + React + TypeScript |
-| [`relay/`](relay/) | Platform | M1 | FastAPI WebSocket intent bus, state, JSONL logging, replay |
-| [`planner/`](planner/) | Autonomy | M1 | Deterministic formations, sweep lanes, allocation, clamping |
-| [`arbiter/`](arbiter/) | Autonomy | M1 | Safety rules, e-stop, battery return |
-| [`adapters/`](adapters/) | Autonomy | M1, M2 | deterministic simulator and DJI Mini 3 bridge contract |
-| [`media/`](media/) | Platform | M3 | MediaMTX config and stream naming |
-| [`perception/`](perception/) | Interaction | M3 | Detector and world-position estimates |
-| [`language/`](language/) | Interaction, Platform | M4 | Plan compiler, resolvers, prompts, local fallback |
-| [`evals/`](evals/) | Platform | M1+ | Gesture, language, sim scenario, and hardware acceptance evals |
-| [`datasets/`](datasets/) | Interaction, all | M1+ | Recorded gesture sessions and utterances |
-| [`docs/`](docs/) | all | all | PRD, MVP plan, specs, plans, build guide, contract, demo script |
-| [`RESEARCH/`](RESEARCH/) | all | all | Source-backed feasibility notes that constrain product claims and planning |
-| [`tests/`](tests/) | Platform | all | Cross-cutting tests, starting with the layout contract test |
-
-Capability areas define module boundaries. Any engineer may claim a ready task and own it through review (PRD section 8.1). Each runtime directory has a README with its capability area, milestone, responsibility, and PRD sections.
-
-## Quickstart
-
-Prerequisites: [uv](https://docs.astral.sh/uv/) (it fetches Python 3.12 itself), Node 24 with [pnpm](https://pnpm.io/) 10 (`npm install -g pnpm@10`; the exact version is pinned in `console/package.json` and pnpm switches to it automatically), and [just](https://just.systems/). Docker only for `just media`. `glab` only if you touch the GitLab mirror.
-
-```bash
-just setup      # uv sync + pnpm install
-just test       # pytest (also what bare `just` runs)
-just lint       # ruff check + ruff format --check + eslint
-just fmt        # auto-format and auto-fix both
-just ci         # exactly what CI runs; run it before you push
-just console    # console dev server, http://localhost:5173 by default
-just media      # MediaMTX via docker compose, in the foreground
-```
-
-`just --list` shows every recipe. Python runs from the repo root through uv, and modules are invoked as packages, for example `uv run python -m relay.main` once that module exists. Keep uv's default `.venv/` at the repo root (the ignore rules assume it). Copy `.env.example` to `.env` when you need the relay token or the API key; keys never reach the console. `tests/test_layout.py` guards the Appendix D layout: every declared package, including the three `adapters/` subpackages, must resolve from this repo, and no undeclared top-level package may appear.
-
-## Start here
-
-Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter and camera-capability interfaces, live fleet membership, repo layout, and the room-world records (PRD section 8.2). M1 then proves one complete Mini 3 room capture and private Marble result through button-generated Intent v1. M2 adds the second through fourth matching bridge nodes and proves live membership; 4 to 6 remain in simulation. Known-map autonomous multi-room traversal and capture proves one drone before two only after indoor localization and collision-clearance sensing pass their gates. The complete dependency map is in [docs/mvp-plan.md](docs/mvp-plan.md), and any engineer may claim a ready item.
+| Path | Responsibility |
+| --- | --- |
+| [`console/`](console/) | Operator controls, previews, fleet/media state and findings |
+| [`relay/`](relay/) | Authentication, sessions, capability state, signed transport, audit and replay |
+| [`planner/`](planner/) | Deterministic intent planning, routes, arrival slots and fleet operations |
+| [`arbiter/`](arbiter/) | State, clearance, separation, confirmation and stop checks |
+| [`adapters/`](adapters/) | Simulator and DJI phone bridge implementations |
+| [`perception/`](perception/) | Tag localization, fusion, detection and observation provenance |
+| [`media/`](media/) | MediaMTX configuration and stream transport |
+| [`language/`](language/) | Transcript compilation, authoritative grounding and producer evaluation |
+| [`evals/`](evals/), [`tests/`](tests/) | Runtime, contract and acceptance checks |
+| [`datasets/`](datasets/) | Recorded inputs and evaluation cases |
+| [`docs/`](docs/), [`RESEARCH/`](RESEARCH/) | Product plans, protocols, run guides and supporting research |
 
 ## Working agreement
 
-- No merge to `main` without CI green and one review (PRD section 8.2). `main` is protected accordingly: pull request, one approval, both CI checks.
-- No new intents without a contract change, a test, and every registered input updated. No model in the safety path. Nothing outside the M1 through M4 acceptance paths before M4 exits (PRD section 8.6).
-- Daily stand-up and integration. Hardware flights follow the operator and physical-RC rule in PRD section 8.5. Every hardware session ends with a session report committed to the repo.
+Use small PRs with current CI and independent review. Shared contracts and safety paths have one change owner and a separate reviewer. New or widened intents require contract and execution tests; no input producer calls an adapter directly, and no model decides safety authorization.
+
+Record the exact code, map, calibration and hardware configuration for each acceptance run. Real flights retain operator presence and physical RC takeover throughout. Issue status, software implementation and physical acceptance are separate claims.
 
 ## Remotes
 
-- GitHub: https://github.com/worldofhacks/sweep (`origin`).
-- GitLab: a public mirror on labs.gauntletai.com (`gitlab`). It is created once with `just gitlab-remote` (needs `glab` and `glab auth login --hostname labs.gauntletai.com`); on a fresh clone, add it with `git remote add gitlab <url>` instead of re-running the recipe.
+[GitHub](https://github.com/worldofhacks/sweep) is `origin`. The public GitLab mirror is on labs.gauntletai.com; `just gitlab-remote` creates it once, while an existing mirror should be added with `git remote add gitlab <url>`.
