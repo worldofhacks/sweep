@@ -5,6 +5,7 @@ import dji.sdk.keyvalue.key.BatteryKey
 import dji.sdk.keyvalue.key.DJIKey
 import dji.sdk.keyvalue.key.DJIKeyInfo
 import dji.sdk.keyvalue.key.FlightControllerKey
+import dji.sdk.keyvalue.key.GimbalKey
 import dji.sdk.keyvalue.key.KeyTools
 import dji.sdk.keyvalue.key.RemoteControllerKey
 import dji.sdk.keyvalue.value.common.Attitude
@@ -114,6 +115,7 @@ internal class ProbeAircraft(
         Binding("KeyAircraftLocation3D", FlightControllerKey.KeyAircraftLocation3D) { location = it },
         Binding("KeyAircraftVelocity", FlightControllerKey.KeyAircraftVelocity) { velocity = it },
         Binding("KeyAircraftAttitude", FlightControllerKey.KeyAircraftAttitude) { attitude = it },
+        Binding("KeyGimbalAttitude", GimbalKey.KeyGimbalAttitude, ComponentIndexType.LEFT_OR_MAIN) { },
         Binding("KeyAltitude", FlightControllerKey.KeyAltitude) { altitude = it },
         Binding("KeyUltrasonicHeight", FlightControllerKey.KeyUltrasonicHeight) { ultrasonicHeightDm = it },
         Binding("KeyFlightMode", FlightControllerKey.KeyFlightMode) { flightMode = it },
@@ -275,6 +277,12 @@ internal class ProbeAircraft(
             }
             "KeyAltitude" -> (value as? Double)?.let(rawRecorder::recordBarometricHeightM)
             "KeyUltrasonicHeight" -> (value as? Int)?.let(rawRecorder::recordUltrasonicHeightDm)
+            "KeyAircraftAttitude" -> (value as? Attitude)?.let { attitude ->
+                rawRecorder.recordAircraftAttitudeDegrees(attitude.yaw, attitude.pitch, attitude.roll)
+            }
+            "KeyGimbalAttitude" -> (value as? Attitude)?.let { attitude ->
+                rawRecorder.recordGimbalAttitudeDegrees(attitude.yaw, attitude.pitch, attitude.roll)
+            }
         }
         publish()
     }

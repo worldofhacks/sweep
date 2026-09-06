@@ -26,6 +26,8 @@ import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.ProbeReport
+import org.worldofhacks.sweep.bridge.session.RawEvidenceExport
+import org.worldofhacks.sweep.bridge.session.RawEvidenceSession
 import org.worldofhacks.sweep.bridge.session.ProductConnection
 import org.worldofhacks.sweep.bridge.session.SensorRecordingSession
 import org.worldofhacks.sweep.bridge.session.SensorRelayContext
@@ -49,7 +51,8 @@ import org.worldofhacks.sweep.bridge.video.FpvSessionHost
 internal class SdkSession(private val application: Application) :
     AircraftSession,
     FpvSessionHost,
-    SensorRecordingSession {
+    SensorRecordingSession,
+    RawEvidenceSession {
     private val model = SessionModel()
     private val sensorRawLock = Any()
     private var sensorRelayContext: SensorRelayContext? = null
@@ -77,6 +80,20 @@ internal class SdkSession(private val application: Application) :
 
         override fun recordUltrasonicHeightDm(heightDm: Int): SensorRawAppendResult =
             sensorRaw?.recordUltrasonicHeightDm(heightDm) ?: SensorRawAppendResult.NO_IDENTITY
+
+        override fun recordAircraftAttitudeDegrees(
+            yawDeg: Double,
+            pitchDeg: Double,
+            rollDeg: Double,
+        ): SensorRawAppendResult = sensorRaw?.recordAircraftAttitudeDegrees(yawDeg, pitchDeg, rollDeg)
+            ?: SensorRawAppendResult.NO_IDENTITY
+
+        override fun recordGimbalAttitudeDegrees(
+            yawDeg: Double,
+            pitchDeg: Double,
+            rollDeg: Double,
+        ): SensorRawAppendResult = sensorRaw?.recordGimbalAttitudeDegrees(yawDeg, pitchDeg, rollDeg)
+            ?: SensorRawAppendResult.NO_IDENTITY
     }
     private val probe = ProbeAircraft(
         phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
@@ -327,14 +344,25 @@ internal class SdkSession(private val application: Application) :
     override fun exportProbeReport(): ExportResult = ProbeReport.write(
         directory = application.filesDir,
         state = model.current,
-        environment = ProbeReport.Environment(
-            aircraftVariant = BuildConfig.AIRCRAFT,
-            applicationId = BuildConfig.APPLICATION_ID,
-            appVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-            msdkVersion = SDKManager.getInstance().sdkVersion,
-            phone = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
-            android = "${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} / build ${Build.DISPLAY}",
-        ),
+        environment = probeEnvironment(),
         exportedAtMs = System.currentTimeMillis(),
+    )
+
+    override fun exportRawEvidence(): ExportResult {
+        val exportedAtMs = System.currentTimeMillis()
+        return RawEvidenceExport.write(
+            filesDir = application.filesDir,
+            probeReport = ProbeReport.render(model.current, probeEnvironment(), exportedAtMs),
+            exportedAtMs = exportedAtMs,
+        )
+    }
+
+    private fun probeEnvironment() = ProbeReport.Environment(
+        aircraftVariant = BuildConfig.AIRCRAFT,
+        applicationId = BuildConfig.APPLICATION_ID,
+        appVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+        msdkVersion = SDKManager.getInstance().sdkVersion,
+        phone = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+        android = "${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} / build ${Build.DISPLAY}",
     )
 }

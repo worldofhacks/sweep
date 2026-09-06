@@ -73,6 +73,14 @@ internal class SensorRawSink private constructor(
         data class UltrasonicHeight(val heightDm: Int) : Sample {
             override val kind = "phone_height_raw"
         }
+
+        data class AircraftAttitude(val yawDeg: Double, val pitchDeg: Double, val rollDeg: Double) : Sample {
+            override val kind = "phone_attitude_raw"
+        }
+
+        data class GimbalAttitude(val yawDeg: Double, val pitchDeg: Double, val rollDeg: Double) : Sample {
+            override val kind = "phone_attitude_raw"
+        }
     }
 
     private data class Pending(
@@ -125,6 +133,28 @@ internal class SensorRawSink private constructor(
     override fun recordUltrasonicHeightDm(heightDm: Int): SensorRawAppendResult =
         append(Sample.UltrasonicHeight(heightDm))
 
+    override fun recordAircraftAttitudeDegrees(
+        yawDeg: Double,
+        pitchDeg: Double,
+        rollDeg: Double,
+    ): SensorRawAppendResult = recordAttitude(
+        yawDeg,
+        pitchDeg,
+        rollDeg,
+        Sample.AircraftAttitude(yawDeg, pitchDeg, rollDeg),
+    )
+
+    override fun recordGimbalAttitudeDegrees(
+        yawDeg: Double,
+        pitchDeg: Double,
+        rollDeg: Double,
+    ): SensorRawAppendResult = recordAttitude(
+        yawDeg,
+        pitchDeg,
+        rollDeg,
+        Sample.GimbalAttitude(yawDeg, pitchDeg, rollDeg),
+    )
+
     fun metrics(): SensorRawMetrics = SensorRawMetrics(
         queued.get(),
         appendedToWriter.get(),
@@ -164,6 +194,16 @@ internal class SensorRawSink private constructor(
     private fun invalid(): SensorRawAppendResult {
         rejectedInvalid.incrementAndGet()
         return SensorRawAppendResult.INVALID
+    }
+
+    private fun recordAttitude(
+        yawDeg: Double,
+        pitchDeg: Double,
+        rollDeg: Double,
+        sample: Sample,
+    ): SensorRawAppendResult {
+        if (!yawDeg.isFinite() || !pitchDeg.isFinite() || !rollDeg.isFinite()) return invalid()
+        return append(sample)
     }
 
     private fun append(sample: Sample): SensorRawAppendResult = synchronized(admission) {
@@ -278,6 +318,20 @@ internal class SensorRawSink private constructor(
                     "height_value" to sample.heightDm,
                     "height_unit" to "dm",
                 )
+                is Sample.AircraftAttitude -> arrayOf(
+                    "sdk_key" to "KeyAircraftAttitude",
+                    "attitude_frame" to "aircraft_body_to_ned",
+                    "yaw_deg" to sample.yawDeg,
+                    "pitch_deg" to sample.pitchDeg,
+                    "roll_deg" to sample.rollDeg,
+                )
+                is Sample.GimbalAttitude -> arrayOf(
+                    "sdk_key" to "KeyGimbalAttitude",
+                    "attitude_frame" to "raw_sdk_axes",
+                    "yaw_deg" to sample.yawDeg,
+                    "pitch_deg" to sample.pitchDeg,
+                    "roll_deg" to sample.rollDeg,
+                )
             }
             return Json.canonical(
                 Json.json(
@@ -296,6 +350,8 @@ internal class SensorRawSink private constructor(
                     "rc_firmware" to pending.identity.rcFirmware,
                     "sdk_version" to pending.identity.sdkVersion,
                     "recorder_config_sha256" to pending.identity.recorderConfigSha256,
+                    "time_basis" to "android_callback_receipt_elapsed_realtime_ms",
+                    "source_timestamp_status" to "not_provided_by_msdk_key_listener",
                     "received_at_android_elapsed_realtime_ms" to pending.receivedAtMonotonicMs,
                     "written_at_android_elapsed_realtime_ms" to elapsedRealtimeMs(),
                     *sampleFields,
