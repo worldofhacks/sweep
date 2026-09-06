@@ -31,6 +31,7 @@ from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.relay_bridge import AutonomyRelayBridge
 from relay.app import create_app
 from relay.auth import Principal, sign_event
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.session import Clock, EventIdFactory, RelaySession
 from relay.settings import RelaySettings
 
@@ -46,6 +47,7 @@ class SimBridgeFactory:
         watchdog: WatchdogConfig,
         adapter_keys: Mapping[int, bytes],
         auto_start_nodes: bool,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     ) -> None:
         self.initial_snapshot = initial_snapshot
         self.planning = planning
@@ -54,7 +56,7 @@ class SimBridgeFactory:
         self.watchdog = watchdog
         self.adapter_keys = adapter_keys
         self.auto_start_nodes = auto_start_nodes
-        self.capability_profile = planning.effective_capability_profile()
+        self.capability_profile = planning.effective_capability_profile(capability_profile)
         self.bridges: dict[str, AutonomyRelayBridge] = {}
         self.flights: dict[str, SimFlightAdapter] = {}
         self.nodes: dict[str, _SimNodeIngress] = {}
@@ -424,6 +426,7 @@ def create_m14_sim_app(
         ),
         adapter_keys=active_settings.adapter_keys,
         auto_start_nodes=auto_start_nodes,
+        capability_profile=active_settings.capability_profile,
     )
     application = create_app(
         active_settings,
