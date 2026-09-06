@@ -477,12 +477,16 @@ class AutonomySession:
         for worker in self._workers:
             worker.start()
 
-    def submit(self, intent: IntentV1, _state: dict[str, object]) -> None:
+    def submit(self, intent: IntentV1, state: dict[str, object]) -> None:
         """``IntentSink``: record operator activity and route the intent without blocking."""
-        with self._lock:
-            previous = self._operator_last_seen_ms
-            self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
-            self._presence_expiry_seen_ms = None
+        received_at = state.get("t")
+        if isinstance(received_at, int) and not isinstance(received_at, bool):
+            with self._lock:
+                previous = self._operator_last_seen_ms
+                self._operator_last_seen_ms = (
+                    received_at if previous is None else max(previous, received_at)
+                )
+                self._presence_expiry_seen_ms = None
         runtime = self._composition.runtime_if_bound()
         job = _Job(intent, None if runtime is None else runtime.sessions.get(self.session_id))
         try:
@@ -543,7 +547,7 @@ class AutonomySession:
             last_seen = self._operator_last_seen_ms
             expired = (
                 last_seen is not None
-                and now - last_seen > self.arbiter.config.operator_timeout_ms
+                and now - last_seen >= self.arbiter.config.operator_timeout_ms
                 and self._presence_expiry_seen_ms != last_seen
             )
             if not expired:
