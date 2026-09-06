@@ -520,7 +520,7 @@ def test_material_state_projection_fails_closed_for_unbounded_or_non_json_extens
     with pytest.raises(AuditLogError, match="bounded audit projectors: unbounded_extension"):
         _material_state_projection(state)
 
-    state.pop("captures")
+    state.pop("unbounded_extension")
     registry.apply_join(_join_request("join-projection", 1_000))
     state = registry.state_event(session=SESSION, t=1_000, event_id="state-2")
     state["drones"][0]["unbounded_future_history"] = [{"value": index} for index in range(10_000)]
