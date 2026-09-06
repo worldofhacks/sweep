@@ -13,13 +13,15 @@ from relay.app import RelayRuntime
 from relay.auth import Principal
 from relay.autonomy import (
     LIFECYCLE_SOURCE,
+    PREEMPTED_BY_HOLD,
     AutonomyComposition,
     AutonomyConfig,
+    _Job,
     control_projection,
     create_autonomy_app,
     relay_snapshot,
 )
-from relay.intent_v1 import IntentName
+from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.session import RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 from relay.tests.conftest import (
@@ -365,6 +367,68 @@ def test_control_projection_latches_estop_from_the_intent_and_earns_the_rest() -
         "accepted_plan": summary
     }
     assert control_projection(IntentName.TAKEOFF, _result(None, LifecycleStatus.EXECUTING)) == {}
+
+
+def test_hold_lane_records_motion_preemption_before_cancellation_and_queues_behind_land() -> None:
+    class LifecycleRecorder:
+        def __init__(self) -> None:
+            self.victim: _Job | None = None
+            self.observations: list[tuple[dict[str, object], str | None]] = []
+
+        def record_lifecycle(self, **fields: object) -> dict[str, object]:
+            assert self.victim is not None
+            event = dict(fields)
+            self.observations.append((event, self.victim.cancelled_by))
+            return event
+
+    def job(name: IntentName, intent_id: str, recorder: LifecycleRecorder | None) -> _Job:
+        intent = IntentV1(
+            v=1,
+            t=1_756_700_000_000,
+            type="intent",
+            intent_id=intent_id,
+            retry_of=None,
+            source="console",
+            session=SESSION,
+            name=name,
+            args={"dx": 1.0, "dy": 0.0} if name is IntentName.TRANSLATE else {},
+            selection=() if name is IntentName.LAND_ALL else (1,),
+            mode=Mode.INDOOR,
+            confirm=name is IntentName.LAND_ALL,
+        )
+        return _Job(intent, recorder)  # type: ignore[arg-type]
+
+    composition = AutonomyComposition(_config())
+    autonomy = composition.session(SESSION)
+    recorder = LifecycleRecorder()
+    try:
+        motion = job(IntentName.TRANSLATE, "translate-running", None)
+        recorder.victim = motion
+        hold = job(IntentName.HOLD, "hold-now", recorder)
+        with autonomy._normal.ready:
+            autonomy._normal.running = motion
+
+        assert autonomy._route(hold) is autonomy._hold
+        assert [
+            (event["intent_id"], event["status"], prior) for event, prior in recorder.observations
+        ] == [("translate-running", "invalidated", None)]
+        assert motion.cancelled_by == PREEMPTED_BY_HOLD
+        assert hold.publications == [recorder.observations[0][0]]
+
+        land = job(IntentName.LAND_ALL, "land-running", None)
+        recorder.victim = land
+        late_hold = job(IntentName.HOLD, "hold-behind-land", recorder)
+        with autonomy._normal.ready:
+            autonomy._normal.running = land
+
+        assert autonomy._route(late_hold) is autonomy._normal
+        assert land.cancelled_by is None
+        assert late_hold.publications == []
+        assert len(recorder.observations) == 1
+    finally:
+        with autonomy._normal.ready:
+            autonomy._normal.running = None
+        composition.close()
 
 
 def test_sim_backend_runs_the_checkpoint_intents_in_process_without_wire_commands(
