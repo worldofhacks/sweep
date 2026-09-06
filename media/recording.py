@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE_COMPOSE = ROOT / "docker-compose.yml"
 RECORDING_COMPOSE = ROOT / "docker-compose.recording.yml"
 MEDIA_CONFIG = ROOT / "media" / "mediamtx.yml"
+LOCK_ROOT = Path("/tmp").resolve()
 
 IMAGE_DIGEST = "sha256:1b029d11049be75630e9b73bb0d5f47b08a7db4eaee89a80bf8f53bc40e56414"
 IMAGE_REF = f"bluenviron/mediamtx:1.20.1@{IMAGE_DIGEST}"
@@ -30,7 +32,6 @@ DEFAULT_MIN_FREE_BYTES = 10 * 1024**3
 MAX_SEGMENTS = 10_000
 ALLOWED_STREAMS = {f"drone{index}" for index in range(1, 5)}
 MAX_TREE_ENTRIES = MAX_SEGMENTS + len(ALLOWED_STREAMS) + 1
-LOCK_PATH = Path("/tmp/sweep-mediamtx-recording.lock")
 
 
 class RecordingError(RuntimeError):
@@ -170,23 +171,50 @@ def _prepare(spec: RunSpec) -> None:
         raise RecordingError(f"recording run already exists: {spec.run_dir}") from exc
 
 
+def _compose_identities(spec: RunSpec, environment: dict[str, str]) -> tuple[str, str]:
+    output = _command(
+        _compose_command(spec, "config", "--format", "json"), timeout=30, environment=environment
+    ).stdout
+    try:
+        resolved = json.loads(output)
+        project = resolved["name"]
+        container = resolved["services"]["mediamtx"]["container_name"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RecordingError("Compose did not resolve the MediaMTX runtime identity") from exc
+    if not all(isinstance(value, str) and 1 <= len(value) <= 255 for value in (project, container)):
+        raise RecordingError("Compose returned an invalid MediaMTX runtime identity")
+    return f"project:{project}", f"container:{container}"
+
+
 @contextmanager
-def _lock() -> Iterator[None]:
+def _lock(identities: tuple[str, ...]) -> Iterator[None]:
     import fcntl
 
+    locks = []
     try:
-        descriptor = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    except OSError as exc:
-        raise RecordingError(f"could not open recording lock: {LOCK_PATH}") from exc
-    with os.fdopen(descriptor, "a+") as lock:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RecordingError("another recording operation is active") from exc
-        try:
-            yield
-        finally:
+        for identity in sorted(set(identities)):
+            name = hashlib.sha256(identity.encode()).hexdigest()
+            descriptor = os.open(
+                LOCK_ROOT / f"sweep-recording-{name}.lock",
+                os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+                0o600,
+            )
+            lock = os.fdopen(descriptor, "a+")
+            metadata = os.fstat(lock.fileno())
+            if metadata.st_uid != os.getuid() or not stat.S_ISREG(metadata.st_mode):
+                lock.close()
+                raise RecordingError("recording identity lock has unsafe ownership or type")
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                lock.close()
+                raise RecordingError("another recording operation controls this MediaMTX") from exc
+            locks.append(lock)
+        yield
+    finally:
+        for lock in reversed(locks):
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
 
 
 def _compose_command(spec: RunSpec, *arguments: str) -> list[str]:
@@ -444,6 +472,8 @@ def record(spec: RunSpec) -> Path:
             environment=environment,
         )
         _verify_image(spec, environment)
+        if _configuration(spec) != configuration:
+            raise RecordingError("recording configuration changed during MediaMTX startup")
         if not _service_running(spec, environment):
             raise RecordingError("MediaMTX did not remain running after startup")
         event = {"event": "recording_started", "run_id": spec.run_id, "session_id": spec.session_id}
@@ -528,7 +558,11 @@ def main(argv: list[str] | None = None) -> int:
             if shutil.which(tool) is None:
                 raise RecordingError(f"required program is unavailable: {tool}")
         spec = _parse(argv)
-        with _lock():
+        environment = _compose_environment(spec)
+        identities = _compose_identities(spec, environment)
+        with _lock(identities):
+            if _compose_identities(spec, environment) != identities:
+                raise RecordingError("MediaMTX runtime identity changed before startup")
             record(spec)
     except (OSError, RecordingError) as exc:
         print(f"recording error: {exc}", file=sys.stderr)

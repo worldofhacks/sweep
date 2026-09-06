@@ -25,10 +25,11 @@ python3 media/recording.py \
 
 The command refuses an existing working or exported run, reserves a fresh
 `recordings/<session-id>/<run-id>/` bind mount, starts only MediaMTX, and remains in the
-foreground. Stop a running MediaMTX service before starting the helper. The helper holds
-one system-wide MediaMTX lock, so it supports one recording run at a time even when the
-working roots differ. Follow logs from another terminal with `docker compose logs -f
-mediamtx`. Press Ctrl-C once the publishers have stopped or the run is complete.
+foreground. Stop a running MediaMTX service before starting the helper. A host lock
+prevents another helper from controlling the same Compose project or container, even
+when it uses a different recording root. Follow logs from another terminal with
+`docker compose logs -f mediamtx`. Press Ctrl-C once the publishers have stopped or the
+run is complete.
 The helper stops MediaMTX gracefully before reading its output, validates every
 finalized MP4 with `ffprobe`, hashes every segment, and atomically publishes a
 canonical `recording-manifest.json` to
@@ -62,7 +63,8 @@ and start a new run ID.
 
 The Compose image is pinned to the MediaMTX 1.20.1 multi-platform manifest digest.
 Each recording manifest binds that image, the relay session, and SHA-256 identities
-for the MediaMTX and Compose configuration. fMP4 timing describes ground-station
+for the MediaMTX and Compose configuration; the helper refuses a configuration that
+changes while the container starts. fMP4 timing describes ground-station
 arrival and container presentation timestamps only; it does not establish camera
 capture time, phone clock alignment, frame correspondence, or another clock
 transform.

@@ -200,32 +200,44 @@ def test_recording_override_is_opt_in_exact_and_operator_owned(tmp_path: Path) -
     )
 
 
-def test_recording_lock_serializes_recording_helpers_globally(
+def test_lock_follows_actual_compose_identity_across_recording_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lock_path = tmp_path / "recording.lock"
-    monkeypatch.setattr(recording, "LOCK_PATH", lock_path)
-    locker = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import fcntl, os, signal, sys; "
-            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600); "
-            "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); signal.pause()",
-            str(lock_path),
-        ],
-        stdout=subprocess.PIPE,
-        text=True,
+    monkeypatch.setattr(recording, "LOCK_ROOT", tmp_path)
+    compose_available = (
+        shutil.which("docker") is not None
+        and _command("docker", "compose", "version", check=False).returncode == 0
     )
-    try:
-        assert locker.stdout is not None
-        assert locker.stdout.readline() == "locked\n"
-        with pytest.raises(recording.RecordingError, match="another recording operation"):
-            with recording._lock():
+    _required_or_skip(compose_available, "Docker Compose is required")
+    environment = _test_environment()
+    first = _spec(tmp_path)
+    other_root = tmp_path / "other-recordings"
+    other_root.mkdir()
+    second = recording.RunSpec(
+        **{**first.__dict__, "recording_root": other_root, "run_id": "run-02"}
+    )
+    first_identity = recording._compose_identities(
+        first, recording._compose_environment(first, environment)
+    )
+    second_identity = recording._compose_identities(
+        second, recording._compose_environment(second, environment)
+    )
+    assert first_identity == second_identity
+    with recording._lock(first_identity):
+        with pytest.raises(recording.RecordingError, match="controls this MediaMTX"):
+            with recording._lock(second_identity):
                 pass
-    finally:
-        locker.terminate()
-        locker.wait(timeout=10)
+
+    override = tmp_path / "docker-compose.unique.yml"
+    override.write_text("services:\n  mediamtx:\n    container_name: sweep-recording-unique\n")
+    unique = recording.RunSpec(**{**second.__dict__, "extra_compose_files": (override,)})
+    unique_environment = {**environment, "COMPOSE_PROJECT_NAME": "sweep-recording-unique"}
+    unique_identity = recording._compose_identities(
+        unique, recording._compose_environment(unique, unique_environment)
+    )
+    assert set(first_identity).isdisjoint(unique_identity)
+    with recording._lock(first_identity), recording._lock(unique_identity):
+        pass
 
 
 def test_record_refuses_a_running_mediamtx_without_creating_or_stopping_a_run(
@@ -302,6 +314,36 @@ def test_limits_fail_closed_at_byte_and_free_space_boundaries() -> None:
     assert recording._limit_reason(99, 51, 100, 50) is None
     assert "byte budget" in recording._limit_reason(100, 51, 100, 50)
     assert "free-space reserve" in recording._limit_reason(99, 50, 100, 50)
+
+
+def test_record_refuses_configuration_mutation_during_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(tmp_path)
+    override = tmp_path / "docker-compose.mutated.yml"
+    override.write_text("services:\n  mediamtx:\n    environment:\n      TEST_VALUE: before\n")
+    spec = recording.RunSpec(**{**spec.__dict__, "extra_compose_files": (override,)})
+    stopped: list[bool] = []
+
+    monkeypatch.setattr(
+        recording,
+        "_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=[], returncode=0, stdout=""),
+    )
+    monkeypatch.setattr(
+        recording,
+        "_verify_image",
+        lambda *_: override.write_text(
+            "services:\n  mediamtx:\n    environment:\n      TEST_VALUE: after\n"
+        ),
+    )
+    monkeypatch.setattr(recording, "_stop_service", lambda *_: stopped.append(True))
+
+    with pytest.raises(recording.RecordingError, match="configuration changed during"):
+        recording.record(spec)
+    assert stopped == [True]
+    assert spec.run_dir.is_dir()
+    assert not spec.export_dir.exists()
 
 
 def test_recording_tree_scan_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
