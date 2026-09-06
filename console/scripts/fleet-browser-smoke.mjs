@@ -7,16 +7,22 @@ import { chromium } from 'playwright'
 
 const consoleRoot = resolve(import.meta.dirname, '..')
 const repositoryRoot = resolve(consoleRoot, '..')
-const language = process.argv.includes('--language')
+const liveLanguage = process.argv.includes('--live-language')
+const language = liveLanguage || process.argv.includes('--language')
+const providerEnvIndex = process.argv.indexOf('--provider-env')
+const providerEnv = providerEnvIndex < 0 ? null : process.argv[providerEnvIndex + 1]
+if (providerEnvIndex >= 0) assert.ok(liveLanguage && providerEnv, '--provider-env requires --live-language and a file path')
+if (liveLanguage) assert.equal(process.platform, 'darwin', 'Live provider rehearsal currently uses macOS say/afconvert to generate speech audio')
 const session = `fleet-browser-${Date.now()}`
 const directory = resolve(repositoryRoot, 'output/playwright', session)
 const logs = join(directory, 'audit')
 await mkdir(logs, { recursive: true })
-const evidence = { session, nodes: 4, aircraft: 'synthetic signed bridge nodes', gestures: 'scripted MediaPipe results', language: language ? 'synthetic provider responses through real compiler and audio upload' : 'typed local fallback', checks: [] }
+const evidence = { session, nodes: 4, aircraft: 'synthetic signed bridge nodes', gestures: 'scripted MediaPipe results', language: liveLanguage ? 'real Whisper and Anthropic providers with computer-generated speech; not a human microphone accuracy test' : language ? 'synthetic provider responses through real compiler and audio upload' : 'typed local fallback', checks: [], utterances: [] }
 const child = spawn(join(repositoryRoot, '.venv/bin/python'), [
   '-m', language ? 'adapters.sim.language_demo' : 'adapters.sim.demo',
   '--count', '4', '--session', session, '--console-dist', join(consoleRoot, 'dist'), '--log-dir', logs,
-  ...(language ? ['--synthetic-inputs'] : []),
+  ...(language && !liveLanguage ? ['--synthetic-inputs'] : []),
+  ...(providerEnv ? ['--provider-env', resolve(providerEnv)] : []),
 ], { cwd: repositoryRoot, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
 let browser, context, page, baseUrl, token
 let serviceLog = ''
@@ -33,6 +39,25 @@ try {
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, recordVideo: { dir: directory }, permissions: ['camera', 'microphone'] })
   page = await context.newPage()
   page.on('pageerror', (error) => pageErrors.push(error.message))
+  if (liveLanguage) await page.addInitScript(() => {
+    const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      if (!constraints.audio || !window.__fleetSpeechAudio) return original(constraints)
+      await window.__fleetSpeechContext?.close()
+      const audio = new AudioContext()
+      window.__fleetSpeechContext = audio
+      const data = Uint8Array.from(atob(window.__fleetSpeechAudio), (value) => value.charCodeAt(0))
+      const buffer = await audio.decodeAudioData(data.buffer)
+      window.__fleetSpeechDuration = buffer.duration * 1000 + 400
+      const destination = audio.createMediaStreamDestination()
+      const source = audio.createBufferSource()
+      source.buffer = buffer
+      source.connect(destination)
+      await audio.resume()
+      source.start(audio.currentTime + .2)
+      return destination.stream
+    }
+  })
   // Only recognition is scripted. Real browser capture, dwell/confirmation policy,
   // WebSockets, relay, arbiter, signed commands, node ACKs and telemetry still run.
   await page.route(/\/assets\/vision_bundle[^/]*\.js(?:\?.*)?$/, (route) => route.fulfill({
@@ -120,12 +145,15 @@ try {
   assert.equal(intentRecords(await events(), invalidated.intent_id).length, 0)
   await api('/demo/nodes/3/rejoin', {})
   assert.equal((await status()).drones.find((drone) => drone.drone_id === 3).connection_epoch, 2)
+  const gestureDownload = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Download session (JSONL)', exact: true }).click()
+  await (await gestureDownload).saveAs(join(directory, 'gesture.jsonl'))
   evidence.checks.push('membership change invalidates preview; rejoin gets a new epoch')
 
   if (language) {
     for (const [text, name, targets] of [
-      ['select all drones', 'select', [1, 2, 3, 4]], ['hold', 'hold', [1, 2, 3, 4]],
-      ['come home', 'come_home', [1, 2, 3, 4]], ['land all', 'land_all', []],
+      ['select drones 1 and 2', 'select', [1, 2]], ['hold', 'hold', [1, 2]],
+      ['come home', 'come_home', [1, 2]], ['land all', 'land_all', []],
     ]) await voiceCommand(text, name, targets)
   } else {
     await typedCommand('select all ready aircraft', 'select')
@@ -213,7 +241,7 @@ async function controlCommand(label, name, confirm = false) {
 }
 async function typedCommand(text, name) {
   await module('Speech')
-  await page.getByLabel('Utterance', { exact: true }).fill(text)
+  await page.getByRole('textbox', { name: /Utterance/ }).fill(text)
   await page.getByRole('button', { name: 'Compile to intents', exact: true }).click()
   await page.getByRole('button', { name: 'Draft for confirmation', exact: true }).click()
   await confirmAndWait(name)
@@ -221,15 +249,23 @@ async function typedCommand(text, name) {
 }
 async function voiceCommand(text, name, targets) {
   await module('Speech')
-  await api('/demo/language/next', { text })
-  const upload = page.waitForResponse((response) => response.url().endsWith(`/api/sessions/${session}/transcripts`) && response.request().method() === 'POST')
+  if (liveLanguage) {
+    const number = evidence.utterances.length
+    const aiff = join(directory, `speech-${number}.aiff`)
+    const wav = join(directory, `speech-${number}.wav`)
+    await command('/usr/bin/say', ['-r', '145', '-o', aiff, text])
+    await command('/usr/bin/afconvert', ['-f', 'WAVE', '-d', 'LEI16@24000', '-c', '1', aiff, wav])
+    await page.evaluate((audio) => { window.__fleetSpeechAudio = audio }, (await readFile(wav)).toString('base64'))
+  } else await api('/demo/language/next', { text })
+  const upload = page.waitForResponse((response) => response.url().endsWith(`/api/sessions/${session}/transcripts`) && response.request().method() === 'POST', { timeout: 60000 })
   const talk = page.locator('.sp-listen')
   await talk.dispatchEvent('pointerdown', { buttons: 1 })
   await page.getByRole('button', { name: /Listening — release to transcribe/ }).waitFor()
-  await page.waitForTimeout(500)
+  await page.waitForTimeout(liveLanguage ? await page.evaluate(() => window.__fleetSpeechDuration) : 500)
   await talk.dispatchEvent('pointerup', { buttons: 0 })
   const outcome = await (await upload).json()
-  assert.equal(outcome.transcript, text)
+  evidence.utterances.push({ requested: text, transcript: outcome.transcript, kind: outcome.compilation?.kind, reason: outcome.compilation?.reason, source: outcome.compilation?.source })
+  if (!liveLanguage) assert.equal(outcome.transcript, text)
   assert.equal(outcome.compilation?.kind, 'plan', JSON.stringify(outcome))
   await page.getByRole('button', { name: 'Stage step 1 of 1', exact: true }).click()
   const pending = await pendingIntent()
@@ -237,6 +273,13 @@ async function voiceCommand(text, name, targets) {
   assert.deepEqual(pending.selection, targets)
   await confirmAndWait(name)
   evidence.checks.push(`audio upload → compiler → confirmed ${name} completed`)
+}
+async function command(executable, args) {
+  const process = spawn(executable, args, { stdio: 'ignore' })
+  await new Promise((done, reject) => {
+    process.once('error', reject)
+    process.once('exit', (code) => code === 0 ? done() : reject(new Error(`${executable} exited ${code}`)))
+  })
 }
 async function gesture(category, duration, score = .95) {
   await page.evaluate((frame) => { window.__fleetGesture = frame }, { category, score })

@@ -85,7 +85,7 @@ real grounded compiler using bounded synthetic provider responses.
 In that integration checkout:
 
 ```bash
-uv run python -m adapters.sim.language_demo --count 4 --port 8767 --console-dist console/dist
+uv run python -m adapters.sim.language_demo --count 4 --port 8767 --console-dist console/dist --provider-env /path/to/.env
 ```
 
 For repeatable software evidence, run the built console's browser script with
@@ -94,6 +94,21 @@ and labels them in the evidence. It does not claim speech recognition accuracy.
 The script covers arm, selection, takeoff, translation, HOLD, return home, and
 fleet landing through the Speech module's audio upload, compilation, staged
 preview, explicit confirmation, and authoritative completion.
+
+`--provider-env` reads only `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`, preserving
+the isolated relay configuration. The keys stay in the backend process, and demo
+tracing is disabled. It cannot be combined with `--synthetic-inputs`.
+
+On macOS, an additional provider rehearsal generates speech with the system voice,
+records it through the browser, and calls the real transcription and language
+providers:
+
+```bash
+node scripts/fleet-browser-smoke.mjs --live-language --provider-env /path/to/.env
+```
+
+This makes billable provider requests. Its evidence identifies generated speech
+and real providers; it is not a human microphone accuracy measurement.
 
 Real microphone/webcam rehearsal and physical drone acceptance remain separate
 evidence. Record those with the existing session recorder and relay JSONL after
