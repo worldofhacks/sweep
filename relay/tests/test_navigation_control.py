@@ -90,6 +90,11 @@ def test_signed_navigation_packets_bind_the_exact_phone_route() -> None:
     assert authorization["command_id"] == command.command_id
     assert initial["status"] == "ready"
 
+    control.invalidate(prepared.intent_id)
+    assert control.periodic_poses(session, approved.now_ms) == []
+
+    authorization = control.authorize(prepared, command, approved, session.session_id)
+    initial = control.initial_pose(1, session, approved.now_ms)
     stale = control.periodic_poses(session, approved.now_ms + 501)[0]
     assert stale["status"] == "hold"
     assert stale["flight_approved"] is True
