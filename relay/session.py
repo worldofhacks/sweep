@@ -1213,11 +1213,9 @@ class RelaySession:
             return dict(packet)
 
     def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
-        """Accept a node-authored frame and project the ones that change state.
+        """Audit admitted node reports and return their public projections.
 
-        Capabilities and node_status update the aircraft row; media files and capture
-        bundles are audited and added to the bounded ``state.captures`` live projection
-        without being fanned out themselves; capture readiness is fanned out unchanged.
+        Media updates emit capture state; node-authored capture bundles are refused.
         """
         now = self.clock()
         with self._lock, self._audit_operation():
