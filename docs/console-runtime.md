@@ -28,3 +28,6 @@ diagnostics: a disabled drive, missing or stale sensor, nearby obstacle, or loca
 override may cause the refusal. Resolve the reported condition and let the node
 publish fresh signed readiness. Do not synthesize authority or pose evidence in
 the console to make controls selectable.
+
+For the verified ground-robot hardware gaps, scan faults and physical checks, see
+[Ohmni LiDAR commissioning](ohmni-lidar-commissioning.md).
