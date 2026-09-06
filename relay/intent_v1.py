@@ -232,14 +232,11 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({"zone_id": value["zone_id"]})
 
     if name is IntentName.SEARCH:
-        if (
-            set(value) != {"zone_id", "target_class"}
-            or any(
-                not isinstance(value[key], str)
-                or not 1 <= len(value[key]) <= 128
-                or value[key].strip() != value[key]
-                for key in ("zone_id", "target_class")
-            )
+        if set(value) != {"zone_id", "target_class"} or any(
+            not isinstance(value[key], str)
+            or not 1 <= len(value[key]) <= 128
+            or value[key].strip() != value[key]
+            for key in ("zone_id", "target_class")
         ):
             raise ValueError
         return MappingProxyType(
