@@ -25,10 +25,11 @@ python3 media/recording.py \
 
 The command refuses an existing working or exported run, reserves a fresh
 `recordings/<session-id>/<run-id>/` bind mount, starts only MediaMTX, and remains in the
-foreground. A host lock prevents another helper from controlling the same Compose
-project or container, even when it uses a different recording root. Follow logs from
-another terminal with `docker compose logs -f mediamtx`. Press Ctrl-C once the
-publishers have stopped or the run is complete.
+foreground. Stop a running MediaMTX service before starting the helper. A host lock
+prevents another helper from controlling the same Compose project or container, even
+when it uses a different recording root. Follow logs from another terminal with
+`docker compose logs -f mediamtx`. Press Ctrl-C once the publishers have stopped or the
+run is complete.
 The helper stops MediaMTX gracefully before reading its output, validates every
 finalized MP4 with `ffprobe`, hashes every segment, and atomically publishes a
 canonical `recording-manifest.json` to

@@ -200,7 +200,10 @@ def test_recording_override_is_opt_in_exact_and_operator_owned(tmp_path: Path) -
     )
 
 
-def test_lock_follows_actual_compose_identity_across_recording_roots(tmp_path: Path) -> None:
+def test_lock_follows_actual_compose_identity_across_recording_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(recording, "LOCK_ROOT", tmp_path)
     compose_available = (
         shutil.which("docker") is not None
         and _command("docker", "compose", "version", check=False).returncode == 0
@@ -235,6 +238,21 @@ def test_lock_follows_actual_compose_identity_across_recording_roots(tmp_path: P
     assert set(first_identity).isdisjoint(unique_identity)
     with recording._lock(first_identity), recording._lock(unique_identity):
         pass
+
+
+def test_record_refuses_a_running_mediamtx_without_creating_or_stopping_a_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(tmp_path)
+    stopped: list[bool] = []
+    monkeypatch.setattr(recording, "_service_running", lambda *_: True)
+    monkeypatch.setattr(recording, "_stop_service", lambda *_: stopped.append(True))
+
+    with pytest.raises(recording.RecordingError, match="already running"):
+        recording.record(spec)
+
+    assert stopped == []
+    assert not spec.run_dir.exists()
 
 
 def test_prepare_refuses_reused_working_or_durable_run(tmp_path: Path) -> None:

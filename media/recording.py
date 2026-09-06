@@ -451,8 +451,10 @@ def _export(
 
 
 def record(spec: RunSpec) -> Path:
-    _prepare(spec)
     environment = _compose_environment(spec)
+    if _service_running(spec, environment):
+        raise RecordingError("MediaMTX is already running; stop it before starting a recording run")
+    _prepare(spec)
     started_at = _utc_now()
     configuration = _configuration(spec)
     stop_requested = threading.Event()
