@@ -58,6 +58,7 @@ export function LiveModule({ controller, now, media }: ModuleProps) {
           selectionDisabledReason={capabilityBlockedReason(state, 'select')}
           onFocus={selectFeed}
           onToggleSelection={toggleAircraft}
+          media={media}
         />
       )}
     </Pane>

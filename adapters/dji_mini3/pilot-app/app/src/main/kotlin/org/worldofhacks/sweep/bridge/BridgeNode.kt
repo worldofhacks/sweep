@@ -25,6 +25,8 @@ import org.worldofhacks.sweep.bridge.node.ReadinessInput
 import org.worldofhacks.sweep.bridge.node.RelayLink
 import org.worldofhacks.sweep.bridge.node.VideoPublishSource
 import org.worldofhacks.sweep.bridge.session.AircraftSession
+import org.worldofhacks.sweep.bridge.session.SensorRecordingSession
+import org.worldofhacks.sweep.bridge.session.SensorRelayContext
 
 /**
  * Process-wide owner of the relay link: the encrypted setup store, the pilot's readiness
@@ -38,6 +40,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
     private val phone = AndroidPhoneStatus(application)
     private val lock = Any()
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    private val sensorRecording = session as? SensorRecordingSession
 
     private val _setup = MutableStateFlow(SetupSummary())
     val setup: StateFlow<SetupSummary> = _setup.asStateFlow()
@@ -176,7 +179,25 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     videoPublish = { videoPublish.current() },
                 )
                 relayLink = link
-                mirror = scope.launch { link.state.collect { state -> _link.value = state.copy(relayNetwork = _relayNetwork.value) } }
+                mirror = scope.launch {
+                    link.state.collect { state ->
+                        _link.value = state.copy(relayNetwork = _relayNetwork.value)
+                        val epoch = state.connectionEpoch
+                        synchronized(lock) {
+                            // A cancelled collector may already be inside this block. Fence it
+                            // to its owning link so it cannot restore a stale recording epoch.
+                            if (relayLink === link) {
+                                sensorRecording?.updateSensorRelayContext(
+                                    if (state.authenticated && state.joined && epoch != null && epoch > 0) {
+                                        SensorRelayContext(setup.session, setup.droneId, epoch)
+                                    } else {
+                                        null
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
                 if (wifi != null && !loopback) {
                     networkMirror = scope.launch {
                         var activeNetwork = binding?.network
@@ -211,6 +232,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
             networkMirror?.cancel()
             networkMirror = null
             _running.value = false
+            sensorRecording?.updateSensorRelayContext(null)
         }
         link?.close()
         _link.update { LinkState(readiness = readiness) }

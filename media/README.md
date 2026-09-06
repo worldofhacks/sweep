@@ -18,7 +18,11 @@ The Android app derives a media-only publisher password from the stored per-node
 printf %s 'sweep-media-publish-v1:drone1' | openssl dgst -sha256 -hmac "$SWEEP_DRONE1_ADAPTER_TOKEN" -binary | xxd -p -c 256
 ```
 
-Generate a separate reader password (for example, `openssl rand -hex 32`) and use it as `SWEEP_MEDIA_READ_PASSWORD`; the console uses `SWEEP_MEDIA_READ_USERNAME=sweep-reader`. Also set `SWEEP_MEDIA_WEBRTC_ORIGIN=http://<ground-station>:8889` for the console runtime configuration.
+Generate a separate reader password (for example, `openssl rand -hex 32`) and use it as `SWEEP_MEDIA_READ_PASSWORD`; the console uses `SWEEP_MEDIA_READ_USERNAME=sweep-reader`. Also set `SWEEP_MEDIA_WEBRTC_ORIGIN=http://<ground-station>:8889` for the console runtime configuration; the relay serves those three values to the built console at `GET /runtime-config.json` (`console/README.md`, "Live playback").
+
+The control API is on so the relay can project each aircraft's stream state (`relay/README.md`, the `video` field of the state fan-out). `docker-compose.yml` publishes it at `127.0.0.1:9997` only, so it is reachable by processes on the ground station and never from the LAN; a relay running inside the compose network would use `http://mediamtx:9997` instead. The sixth account, `sweep-api`, may only call the API and is locked like the others until `SWEEP_MEDIA_API_PASSWORD` (generate it with `openssl rand -hex 32`) is set; the relay reads the same value together with `SWEEP_MEDIA_API_URL=http://127.0.0.1:9997`. The relay polls `/v3/paths/get/drone{id}` at `SWEEP_MEDIA_POLL_INTERVAL_MS` with a `SWEEP_MEDIA_API_TIMEOUT_MS` bound and, when the API stops answering, falls back to each node's own `video_publish_state` after `SWEEP_MEDIA_STALE_AFTER_MS`.
+
+Adding or changing any media credential in `.env` needs the container recreated, not restarted: `docker compose up -d mediamtx`.
 
 Basic authentication protects authorization but plain HTTP does not encrypt media credentials or video. Use this configuration only on the isolated flight-room LAN; use TLS or a trusted VPN before crossing a shared or untrusted network. A WHIP `Location` response is accepted only on the original scheme, host, and port, so the app cannot forward its credential to another origin.
 

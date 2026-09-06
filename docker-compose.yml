@@ -15,6 +15,7 @@ services:
       - "8889:8889"                 # WebRTC (WHIP publish, WHEP play) for the console
       - "8189:8189/udp"             # WebRTC ICE
       - "8888:8888"                 # HLS
+      - "127.0.0.1:9997:9997"       # Control API, loopback only: the relay's video projection
     environment:
       # MediaMTX advertises its own (container) address as its ICE candidate; a WHIP publisher
       # or WHEP player on another machine needs the ground station's LAN address instead.
@@ -30,6 +31,9 @@ services:
       - MTX_AUTHINTERNALUSERS_3_PASS=${SWEEP_MEDIA_DRONE4_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
       - MTX_AUTHINTERNALUSERS_4_USER=${SWEEP_MEDIA_READ_USERNAME:-sweep-reader}
       - MTX_AUTHINTERNALUSERS_4_PASS=${SWEEP_MEDIA_READ_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
+      # The relay's control-API reader (media/mediamtx.yml `sweep-api`); locked without a value.
+      - MTX_AUTHINTERNALUSERS_5_USER=${SWEEP_MEDIA_API_USERNAME:-sweep-api}
+      - MTX_AUTHINTERNALUSERS_5_PASS=${SWEEP_MEDIA_API_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
     volumes:
       # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
       - ./media/mediamtx.yml:/mediamtx.yml:ro

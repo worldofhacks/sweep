@@ -17,7 +17,9 @@ from relay.contracts import (
     MembershipRequest,
     NodeStatusFrame,
     TelemetryV1,
+    VideoPublishState,
 )
+from relay.media import MediaEvidenceProvider, project_video
 
 MAX_PHYSICAL_AIRCRAFT = 4
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
@@ -90,6 +92,8 @@ class _AircraftRecord:
     history: list[dict[str, object]] = field(default_factory=list)
     camera_capabilities: CapabilitiesFrame | None = None
     node_status: NodeStatusFrame | None = None
+    # The latest node_status that claimed publishing; kept across rejoin as frame history.
+    video_publishing_at: int | None = None
 
 
 class FleetRegistry:
@@ -100,11 +104,13 @@ class FleetRegistry:
         *,
         telemetry_freshness_ms: int,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        media_evidence: MediaEvidenceProvider | None = None,
     ) -> None:
         if telemetry_freshness_ms <= 0:
             raise ValueError("telemetry_freshness_ms must be positive")
         self.telemetry_freshness_ms = telemetry_freshness_ms
         self.capability_profile = capability_profile
+        self._media_evidence = media_evidence
         self._aircraft: dict[int, _AircraftRecord] = {}
         self._roster_version = 0
         self._state_sequence = 0
@@ -469,7 +475,10 @@ class FleetRegistry:
         """Retain the node's latest bridge health; only signed readiness changes authority."""
         with self._lock:
             self.check_current(frame.drone_id, frame.connection_epoch)
-            self._aircraft[frame.drone_id].node_status = frame
+            record = self._aircraft[frame.drone_id]
+            record.node_status = frame
+            if frame.video_publish_state is VideoPublishState.PUBLISHING:
+                record.video_publishing_at = max(record.video_publishing_at or 0, frame.t)
 
     def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None:
         with self._lock:
@@ -680,6 +689,16 @@ class FleetRegistry:
             ),
             "node_status": (
                 None if record.node_status is None else record.node_status.state_payload()
+            ),
+            "video": project_video(
+                membership=record.membership,
+                node_status=record.node_status,
+                node_publishing_at=record.video_publishing_at,
+                evidence=(
+                    None
+                    if self._media_evidence is None
+                    else self._media_evidence(record.drone_id, now_ms)
+                ),
             ),
         }
 
