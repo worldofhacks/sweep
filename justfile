@@ -50,6 +50,10 @@ relay host="127.0.0.1" port="8000": _dotenv
 fake-node drone_id="1" session="demo" relay="ws://127.0.0.1:8000": _dotenv
     uv run --env-file .env python -m adapters.dji_mini3.fake_node --drone-id {{drone_id}} --session {{session}} --relay {{relay}}
 
+# Run a device as a node kit node (device: ground, aircraft, or module:factory); reads .env
+node device_id="11" device="ground" session="demo" relay="ws://127.0.0.1:8000": _dotenv
+    uv run --env-file .env python -m nodekit.cli --device-id {{device_id}} --device {{device}} --session {{session}} --relay {{relay}}
+
 _dotenv:
     @test -f .env || { echo "copy .env.example to .env and fill in SWEEP_RELAY_TOKEN first"; exit 1; }
 
