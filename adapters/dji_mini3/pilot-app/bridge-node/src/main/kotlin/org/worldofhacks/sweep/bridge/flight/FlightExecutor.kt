@@ -26,6 +26,7 @@ import org.worldofhacks.sweep.bridge.core.flight.FlightReason
 import org.worldofhacks.sweep.bridge.core.flight.FlightSettings
 import org.worldofhacks.sweep.bridge.core.flight.FlightStatus
 import org.worldofhacks.sweep.bridge.core.flight.LinkFacts
+import org.worldofhacks.sweep.bridge.core.flight.NavigationEvidence
 import org.worldofhacks.sweep.bridge.core.flight.PortResult
 import org.worldofhacks.sweep.bridge.core.flight.ReportSink
 import org.worldofhacks.sweep.bridge.core.flight.StickFrame
@@ -107,8 +108,20 @@ class FlightExecutor(
         }
     }
 
-    /** Mirrors relay thresholds, join, estop, and verified heartbeat time into the loop. */
-    fun observe(link: StateFlow<LinkState>): Job = scope.launch { link.collect { state -> controller.updateLink(linkFacts(state)) } }
+    /** Mirrors relay state and admitted navigation evidence into the loop. */
+    fun observe(link: StateFlow<LinkState>): Job = scope.launch {
+        link.collect { state ->
+            controller.updateLink(linkFacts(state))
+            controller.updateNavigation(
+                NavigationEvidence(
+                    authorization = state.navigationAuthorization,
+                    pose = state.navigationPose,
+                    poseFreshUntilMs = state.navigationPoseFreshUntilMs,
+                    relayOffsetMs = state.relayOffsetMs,
+                ),
+            )
+        }
+    }
 
     override fun execute(command: CommandFrame, report: CommandReport) {
         if (FlightCommand.isFlight(command.args)) {
