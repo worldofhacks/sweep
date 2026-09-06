@@ -55,7 +55,11 @@ void resolveRuntime().then((runtime) => {
     webcam: runtime.webcamClient,
     language: runtime.languageClient,
   }
-  const services = { transcript: runtime.transcriptClient ?? undefined }
+  const services = {
+    transcript: runtime.transcriptClient ?? undefined,
+    navigation: runtime.navigationClient ?? undefined,
+    search: runtime.searchClient ?? undefined,
+  }
 
   // The console renders at once without media; a valid runtime configuration
   // re-renders the same tree with playback enabled. Relay state is unaffected.
