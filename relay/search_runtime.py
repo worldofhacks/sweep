@@ -366,7 +366,7 @@ class SearchRuntime:
         )
 
     def observe_processed_frame(
-        self, intent_id: str, event: ProcessedFrameEvent, pose: FramePoseEvidence
+        self, intent_id: str, event: ProcessedFrameEvent, pose: FramePoseEvidence, *, now_s: float
     ) -> CoverageObservation:
         with self._lock:
             mission = self._mission(intent_id)
@@ -375,7 +375,7 @@ class SearchRuntime:
             height_reason = self.camera_height_reason(pose.pose.z_m)
             if height_reason is not None:
                 return CoverageObservation(False, height_reason, ())
-            return mission.ledger.observe_processed(event, pose, pose.observed_at_s)
+            return mission.ledger.observe_processed(event, pose, now_s)
 
     def camera_height_reason(self, body_z_m: float) -> str | None:
         if self.config.floor_z_m is None or self.config.camera_offset_z_m is None:

@@ -14,7 +14,9 @@ from planner.navigation import (
     ArrivalSlot,
     MotionConfig,
     NavigationArtifact,
+    NavigationDispatchAcceptance,
     NavigationPermission,
+    NavigationPlan,
     Pose,
 )
 from planner.navigation_runtime import NavigationExecutionConfig, NavigationRuntime
@@ -61,9 +63,10 @@ def load_navigation_deployment(
     accepted = _object(config.get("accepted_versions"), "accepted_versions")
     if not accepted or any(not isinstance(k, str) or not _sha(v) for k, v in accepted.items()):
         raise SettingsError("accepted_versions must pin bundle hashes")
-    arrival_slots = _arrival_slots(config.get("zones"))
+    arrival_slots, navigation_allowed_zone_ids = _arrival_slots(config.get("zones"))
     permission = NavigationPermission(
         frozenset(_strings(config.get("permission_zone_ids"), "permission_zone_ids"))
+        & navigation_allowed_zone_ids
     )
     execution = _execution(_object(config.get("execution"), "execution"))
     max_aircraft = _positive_int(config.get("max_aircraft"), "max_aircraft")
@@ -71,10 +74,12 @@ def load_navigation_deployment(
     if not isinstance(identity, str) or not identity:
         raise SettingsError("control_store_identity is required")
 
-    def artifact() -> NavigationArtifact:
-        fresh = _object(_read(path), "navigation config")
-        if fresh != config:
+    def current_config() -> None:
+        if _object(_read(path), "navigation config") != config:
             raise ValueError("navigation deployment configuration changed")
+
+    def artifact() -> NavigationArtifact:
+        current_config()
         return NavigationArtifact.from_geometry_directory(bundle, geometry, accepted, arrival_slots)
 
     deployment = NavigationDeployment(
@@ -84,12 +89,34 @@ def load_navigation_deployment(
         backend,
         sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
     )
+    evidence: Path | None = None
+    evidence_payload: dict[str, object] | None = None
     if backend == "remote":
         report = _object(_read(geometry / "geometry.json"), "geometry report")
         if report.get("evidence_kind") == "synthetic":
             raise SettingsError("synthetic geometry cannot activate remote navigation")
         evidence = _path(base, config.get("evidence_file"), "evidence_file")
-        _remote_evidence(_object(_read(evidence), "navigation evidence"), deployment, artifact())
+        evidence_payload = _object(_read(evidence), "navigation evidence")
+        _remote_evidence(evidence_payload, deployment, artifact())
+
+    def accept(
+        plan: NavigationPlan, current_artifact: NavigationArtifact
+    ) -> NavigationDispatchAcceptance:
+        current_config()
+        if evidence is not None:
+            fresh_evidence = _object(_read(evidence), "navigation evidence")
+            if fresh_evidence != evidence_payload:
+                raise ValueError("navigation remote evidence changed")
+            _remote_evidence(fresh_evidence, deployment, current_artifact)
+        return NavigationDispatchAcceptance(
+            f"{backend}:{identity}:{plan.plan_revision}",
+            plan.map_pin,
+            plan.geometry_pin,
+            plan.navigation_pin,
+            plan.plan_revision,
+        )
+
+    deployment.runtime.dispatch_acceptance = accept
     return deployment
 
 
@@ -132,15 +159,19 @@ def _execution(value: dict[str, object]) -> NavigationExecutionConfig:
         raise SettingsError(f"invalid navigation execution: {error}") from error
 
 
-def _arrival_slots(value: object) -> tuple[ArrivalSlot, ...]:
+def _arrival_slots(value: object) -> tuple[tuple[ArrivalSlot, ...], frozenset[str]]:
     if not isinstance(value, list) or not value:
         raise SettingsError("zones must be a nonempty array")
     slots: list[ArrivalSlot] = []
+    navigation_allowed_zone_ids: set[str] = set()
     for raw in value:
         item = _object(raw, "zone")
         _only(item, {"id", "floor_id", "navigation_allowed", "aliases", "arrival_slots"})
+        zone_id = _text(item.get("id"), "zone id")
         if type(item.get("navigation_allowed")) is not bool:
             raise SettingsError("navigation_allowed must be boolean")
+        if item["navigation_allowed"]:
+            navigation_allowed_zone_ids.add(zone_id)
         for slot in item.get("arrival_slots", []):
             data = _object(slot, "arrival slot")
             _only(data, {"id", "x_m", "y_m", "z_m", "radius_m", "half_height_m"})
@@ -148,7 +179,7 @@ def _arrival_slots(value: object) -> tuple[ArrivalSlot, ...]:
                 slots.append(
                     ArrivalSlot(
                         _text(data.get("id"), "slot id"),
-                        _text(item.get("id"), "zone id"),
+                        zone_id,
                         Pose(
                             _number(data.get("x_m"), "x_m"),
                             _number(data.get("y_m"), "y_m"),
@@ -163,7 +194,7 @@ def _arrival_slots(value: object) -> tuple[ArrivalSlot, ...]:
                 raise SettingsError(f"invalid arrival slot: {error}") from error
     if len({slot.slot_id for slot in slots}) != len(slots):
         raise SettingsError("arrival slot ids must be unique")
-    return tuple(slots)
+    return tuple(slots), frozenset(navigation_allowed_zone_ids)
 
 
 def _remote_evidence(

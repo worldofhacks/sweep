@@ -57,7 +57,7 @@ def _at_first_coverage(snapshot, preview: SearchMissionPreview):
 
 def _frame(task, cell, index: int) -> tuple[ProcessedFrameEvent, FramePoseEvidence]:
     timestamp = 10 + index / 10
-    identity = FrameIdentity(task.source_id, task.task_id.split(":v", 1)[0], "test-run", index + 1)
+    identity = FrameIdentity(task.source_id, task.task_id.rsplit(":", 1)[0], "test-run", index + 1)
     event = ProcessedFrameEvent(
         identity,
         timestamp,
@@ -116,7 +116,9 @@ def test_controller_dispatches_guarded_coverage_route_and_processed_frames_compl
 
     for index, cell in enumerate(task.cells):
         event, evidence = _frame(task, cell, index)
-        assert runtime.observe_processed_frame(intent.intent_id, event, evidence).accepted
+        assert runtime.observe_processed_frame(
+            intent.intent_id, event, evidence, now_s=evidence.observed_at_s
+        ).accepted
 
     result = controller.dispatch_prepared(
         PreparedExecution(intent, preview.plan, snapshot), current_snapshot=current
@@ -169,10 +171,14 @@ def test_hold_and_cancel_reject_replayed_frames_and_never_reassign_after_reconne
         _at_first_coverage(snapshot, preview),
     )
     assert runtime.hold(intent.intent_id, "operator_hold").state == "hold"
-    held_observation = runtime.observe_processed_frame(intent.intent_id, event, evidence)
+    held_observation = runtime.observe_processed_frame(
+        intent.intent_id, event, evidence, now_s=evidence.observed_at_s
+    )
     assert held_observation.reason == "task_not_active"
     assert runtime.cancel(intent.intent_id, "operator_cancelled").state == "cancelled"
-    cancelled_observation = runtime.observe_processed_frame(intent.intent_id, event, evidence)
+    cancelled_observation = runtime.observe_processed_frame(
+        intent.intent_id, event, evidence, now_s=evidence.observed_at_s
+    )
     assert cancelled_observation.reason == "task_not_active"
 
     _, _, _, reconnect_snapshot, _, reconnect_intent, reconnect_runtime, reconnect_preview = (
@@ -289,3 +295,21 @@ def test_camera_ready_failure_stops_search_before_any_coverage_transit() -> None
     ]
     assert not any(call.operation == "goto" for call in flight.calls)
     assert runtime.status(intent.intent_id).tasks[0].state == "pending"
+
+
+def test_delayed_frame_cannot_use_its_pose_observation_time_as_the_current_clock() -> None:
+    _, _, _, snapshot, _, intent, runtime, preview = _prepared("delayed-frame")
+    route = preview.task_routes[0]
+    task = preview.search.assignments[0].task
+    runtime.start(intent.intent_id, snapshot)
+    runtime.on_command(intent.intent_id, route.gimbal_command_id, snapshot)
+    runtime.on_command(intent.intent_id, route.camera_ready_command_id, snapshot)
+    runtime.on_command(
+        intent.intent_id, route.first_coverage_command_id, _at_first_coverage(snapshot, preview)
+    )
+    event, evidence = _frame(task, task.cells[0], 0)
+
+    observation = runtime.observe_processed_frame(intent.intent_id, event, evidence, now_s=100)
+
+    assert observation.reason == "stale_frame"
+    assert runtime.progress(intent.intent_id, 1).covered_cells == 0

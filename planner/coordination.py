@@ -20,6 +20,7 @@ MOTION_INTENTS = frozenset(
         IntentName.LAND_ALL,
         IntentName.CAPTURE_ROOM,
         IntentName.NAVIGATE,
+        IntentName.SEARCH,
     }
 )
 

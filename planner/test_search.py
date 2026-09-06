@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -154,7 +155,7 @@ def _worker(source_id: str, timestamps: list[float], *, empty: bool = False) -> 
         _Frames(timestamps),
         _Detector(() if empty else (DetectionCandidate("backpack", 24, 0.9, (0, 0, 1, 1)),)),
         source_id=source_id,
-        mission_id=MISSION.mission_id,
+        mission_id=MISSION.frame_mission_id,
         max_frame_age_s=1,
         monotonic_clock=lambda: clock[0],
     )
@@ -316,3 +317,80 @@ def test_camera_policy_uses_yaw_independent_inscribed_footprint() -> None:
         camera.conservative_footprint_side_m * (1 - camera.overlap_fraction)
     )
     assert not camera.covers(camera_pose, outside)
+
+
+def test_same_floor_coverage_uses_the_grid_nearest_the_camera_height() -> None:
+    levels = (
+        GridLevel("level_1", 0.2, (0, 0), 1, 14, 5, frozenset()),
+        GridLevel("level_1", 1.0, (0, 0), 1, 14, 5, frozenset()),
+    )
+    preview = SearchPlanner().plan(request(1), replace(artifact(), grids=levels))
+
+    assert not isinstance(preview, SearchRefusal)
+    assert {cell.pose.z_m for cell in preview.assignments[0].task.cells} == {1.0}
+
+
+def test_coverage_requires_requested_class_and_keeps_detector_configuration_per_source() -> None:
+    preview = SearchPlanner().plan(request(1), artifact())
+    assert not isinstance(preview, SearchRefusal)
+    ledger = preview.ledger()
+    task = preview.assignments[0].task
+    ledger.activate(task.task_id)
+    worker = _worker(task.source_id, [1, 1.1], empty=True)
+    (processed,) = _poll(worker, 1.01)
+    evidence = _evidence(processed, task.cells[0], task.connection_epoch, 1)
+
+    unrelated = ledger.observe_processed(
+        replace(processed, target_labels=("person",)), evidence, 1.02
+    )
+    assert unrelated.reason == "target_class_mismatch"
+    assert ledger.progress(task.task_id)[0] == 0
+    assert ledger.observe_processed(processed, evidence, 1.02).accepted
+    covered_before = ledger.progress(task.task_id)
+    (next_frame,) = _poll(worker, 1.11)
+    changed = ledger.observe_processed(
+        replace(next_frame, detector_config_sha256="b" * 64),
+        _evidence(next_frame, task.cells[-1], task.connection_epoch, 1.1),
+        1.12,
+    )
+    assert changed.reason == "detector_configuration_changed"
+    assert ledger.progress(task.task_id) == covered_before
+
+
+def test_sighting_requires_requested_class_and_accepted_frame_detector_digest() -> None:
+    preview = SearchPlanner().plan(request(1), artifact())
+    assert not isinstance(preview, SearchRefusal)
+    ledger = preview.ledger()
+    task = preview.assignments[0].task
+    ledger.activate(task.task_id)
+    processed, sighting = _poll(_worker(task.source_id, [1]), 1.01)
+    assert ledger.observe_processed(
+        processed, _evidence(processed, task.cells[0], task.connection_epoch, 1), 1.02
+    ).accepted
+
+    assert ledger.observe_sighting(replace(sighting, detector_config_sha256="b" * 64)) is None
+    assert (
+        ledger.observe_sighting(
+            replace(sighting, candidate=replace(sighting.candidate, label="person", class_id=0))
+        )
+        is None
+    )
+    assert ledger.candidates() == ()
+    assert ledger.observe_sighting(sighting) is not None
+
+
+@pytest.mark.parametrize("changed", [replace(MISSION, version=4), replace(MISSION, epoch=3)])
+def test_changed_mission_version_or_epoch_cannot_reuse_processed_frames(changed) -> None:
+    preview = SearchPlanner().plan(request(1), artifact())
+    assert not isinstance(preview, SearchRefusal)
+    task = preview.assignments[0].task
+    processed, _ = _poll(_worker(task.source_id, [1]), 1.01)
+    ledger = replace(preview, mission=changed).ledger()
+    ledger.activate(task.task_id)
+
+    observation = ledger.observe_processed(
+        processed, _evidence(processed, task.cells[0], task.connection_epoch, 1), 1.02
+    )
+
+    assert observation.reason == "mission_mismatch"
+    assert ledger.progress(task.task_id)[0] == 0

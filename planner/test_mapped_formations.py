@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from itertools import permutations
 from math import dist
 
@@ -12,6 +13,7 @@ from planner.mapped_formations import (
     FormationZone,
     MappedFormationPlanner,
     MappedFormationRequest,
+    _circle_inside,
 )
 from planner.navigation import (
     ArtifactPin,
@@ -198,3 +200,32 @@ def test_separation_unapproved_zone_and_grounded_aircraft_are_refused() -> None:
     assert close.code == "slot_separation"
     assert unapproved.code == "formation_zone_unapproved"
     assert grounded.code == "grounded_aircraft"
+
+
+def test_exact_disk_containment_rejects_a_concave_notch_between_sample_angles() -> None:
+    boundary = [
+        [0.0, 0.0],
+        [20.0, 0.0],
+        [20.0, 8.0],
+        [9.28, 10.055],
+        [20.0, 12.0],
+        [20.0, 20.0],
+        [0.0, 20.0],
+        [0.0, 0.0],
+    ]
+
+    assert not _circle_inside(boundary, pose(9.0, 10.0), MOTION.swept_radius_m)
+
+
+def test_slots_require_the_full_swept_height_inside_the_formation_volume() -> None:
+    tight_height = replace(ZONE, z_min_m=1.39, z_max_m=1.61)
+
+    result = MappedFormationPlanner().plan(
+        request("line", drone(1, 8, 8), drone(2, 12, 8), offsets=(0, 0)),
+        artifact(),
+        tight_height,
+    )
+
+    assert result == FormationRefusal(
+        "slot_outside_formation_zone", "slot altitude is outside formation volume: slot-00"
+    )
