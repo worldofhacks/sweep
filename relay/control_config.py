@@ -80,9 +80,7 @@ class ControlRuntimeConfig:
                 drone_id=drone_id,
                 map_id=_text(item["map_id"], "map_id"),
                 geometry_id=_text(item["geometry_id"], "geometry_id"),
-                camera_calibration_id=_text(
-                    item["camera_calibration_id"], "camera_calibration_id"
-                ),
+                camera_calibration_id=_text(item["camera_calibration_id"], "camera_calibration_id"),
                 body_extrinsics_id=_text(item["body_extrinsics_id"], "body_extrinsics_id"),
                 source_ids=tuple(_text(value, "source_ids") for value in item["source_ids"]),
                 clock_mapping=ClockMapping.from_mapping(item["clock_mapping"]),
