@@ -68,6 +68,13 @@ from relay.control_localization import (
 )
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
 from relay.search_deployment import load_search_runtime
+from relay.search_detection import (
+    DetectorFactory,
+    SearchDetectionConfig,
+    SearchDetectionFactory,
+    StreamFactory,
+)
+from relay.search_detection_deployment import load_search_detection_config
 from relay.search_runtime import SearchRuntime
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
@@ -126,6 +133,7 @@ class AutonomyConfig:
     control_localization_projector: ControlLocalizationProjector | None = None
     navigation_deployment: NavigationDeployment | None = None
     search_runtime: SearchRuntime | None = None
+    search_detection: SearchDetectionConfig | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
@@ -139,6 +147,7 @@ class AutonomyConfig:
         navigation = load_navigation_deployment(
             values, backend="remote" if adapter_backend == "remote" else "synthetic"
         )
+        search = load_search_runtime(values, None if navigation is None else navigation.runtime)
         return cls(
             planning=_config_from_json(
                 PlanningConfig, values.get("SWEEP_PLANNING_JSON", ""), "SWEEP_PLANNING_JSON"
@@ -159,9 +168,8 @@ class AutonomyConfig:
                 )
             ),
             navigation_deployment=navigation,
-            search_runtime=load_search_runtime(
-                values, None if navigation is None else navigation.runtime
-            ),
+            search_runtime=search,
+            search_detection=load_search_detection_config(values, search),
         )
 
 
@@ -823,7 +831,10 @@ class AutonomySession:
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
             )
             if intent.name is IntentName.SEARCH and self._composition.search_runtime is not None:
-                result = self._composition.search_runtime.execute(
+                search = self._composition.search_runtime
+                if factory := self._composition.detection_factory:
+                    factory.start_mission(intent.intent_id, session)
+                result = search.execute(
                     intent.intent_id, dispatcher, snapshot, current_snapshot=current
                 )
             else:
@@ -1040,7 +1051,13 @@ class AutonomySession:
 class AutonomyComposition:
     """Per-session autonomy workers behind ``create_app``'s sink and leave factories."""
 
-    def __init__(self, config: AutonomyConfig) -> None:
+    def __init__(
+        self,
+        config: AutonomyConfig,
+        *,
+        detection_stream_factory: StreamFactory | None = None,
+        detection_detector_factory: DetectorFactory | None = None,
+    ) -> None:
         self.config = config
         base_profile = config.planning.effective_capability_profile()
         self.capability_profile = (
@@ -1059,6 +1076,18 @@ class AutonomyComposition:
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
+        factory_args: dict[str, object] = {}
+        if detection_stream_factory is not None:
+            factory_args["stream_factory"] = detection_stream_factory
+        if detection_detector_factory is not None:
+            factory_args["detector_factory"] = detection_detector_factory
+        self._detection_factory = (
+            None
+            if config.search_detection is None or config.search_runtime is None
+            else SearchDetectionFactory(
+                config.search_detection, config.search_runtime, **factory_args
+            )
+        )
 
     def bind(self, target: FastAPI | RelayRuntime) -> None:
         """Point the composition at the runtime the app creates in its lifespan."""
@@ -1093,6 +1122,14 @@ class AutonomyComposition:
     def search_runtime(self) -> SearchRuntime | None:
         return self.config.search_runtime
 
+    @property
+    def detection_factory(self) -> SearchDetectionFactory | None:
+        return self._detection_factory
+
+    def start(self) -> None:
+        if self._detection_factory is not None:
+            self._detection_factory.start()
+
     def intent_sink_factory(self, session: RelaySession) -> IntentSink:
         return self.session(session.session_id)
 
@@ -1108,6 +1145,8 @@ class AutonomyComposition:
             return session
 
     def close(self, *, timeout_s: float = 5.0) -> None:
+        if self._detection_factory is not None:
+            self._detection_factory.close()
         with self._lock:
             sessions = tuple(self._sessions.values())
         for session in sessions:
@@ -1120,11 +1159,17 @@ def create_autonomy_app(
     *,
     clock: Clock | None = None,
     event_ids: EventIdFactory | None = None,
+    detection_stream_factory: StreamFactory | None = None,
+    detection_detector_factory: DetectorFactory | None = None,
 ) -> tuple[FastAPI, AutonomyComposition]:
     """Build the relay app with the planner and arbiter consuming every accepted intent."""
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
-    composition = AutonomyComposition(config)
+    composition = AutonomyComposition(
+        config,
+        detection_stream_factory=detection_stream_factory,
+        detection_detector_factory=detection_detector_factory,
+    )
     control_localization_factory = (
         None
         if config.control_localization_projector is None
@@ -1138,6 +1183,8 @@ def create_autonomy_app(
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_factory=control_localization_factory,
+        startup_callback=composition.start,
+        shutdown_callback=composition.close,
     )
 
     @app.get("/session/{session_id}/navigation/catalog")
@@ -1265,9 +1312,12 @@ def create_autonomy_app(
         if search is None:
             raise HTTPException(status_code=404, detail="search is unavailable")
         try:
-            return search.status_payload(intent_id)
+            status = search.status_payload(intent_id)
         except ValueError:
             raise HTTPException(status_code=404, detail="search mission is unknown") from None
+        if factory := composition.detection_factory:
+            status["detection_workers"] = factory.status(intent_id)
+        return status
 
     @app.post("/session/{session_id}/search/{intent_id}/findings/{sighting_id}/ack")
     async def acknowledge_search_finding(
