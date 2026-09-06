@@ -120,7 +120,7 @@ class WebcamStream:
         return self
 
     def read(self, timeout: float = 0.1) -> tuple[np.ndarray, float] | None:
-        """Return a decoded BGR frame and monotonic receipt time; wait at most one second."""
+        """Return a BGR frame and host decode-completion time, not camera capture time."""
         if not math.isfinite(timeout) or not 0 <= timeout <= 1:
             raise ValueError("read timeout must be between zero and one second")
         if not self._started or self._closed:
