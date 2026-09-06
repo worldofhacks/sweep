@@ -35,7 +35,7 @@ class BenchRecorderTest {
                 """{"command_id":"cmd-1","kind":"command_acked","rtt_ms":40,"status":"accepted","t_ms":1040}""",
                 """{"kind":"stick_sent","seq":1,"t_ms":1040}""",
                 """{"drone_id":1,"event_id":"evt-1","kind":"telemetry","t_ms":1040}""",
-                """{"decode_ms":7,"dropped":false,"keyframe":true,"kind":"video_frame","size_bytes":1200,"t_ms":1040}""",
+                """{"decode_ms":7,"decode_time_status":"not_exposed_by_receive_stream_listener","dropped":false,"frame_sequence":null,"keyframe":true,"kind":"video_frame","received_at_android_elapsed_realtime_ms":null,"sdk_presentation_time_ms":null,"sdk_presentation_time_source":"StreamInfo.presentationTimeMs","size_bytes":1200,"t_ms":1040}""",
                 """{"kind":"note","t_ms":1040,"text":"bench start"}""",
             ),
             out.toString().trimEnd().lines(),
