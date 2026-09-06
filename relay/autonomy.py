@@ -482,7 +482,8 @@ class AutonomySession:
         """``IntentSink``: record operator activity and route the intent without blocking."""
         if intent.name is IntentName.SEARCH:
             search = self._composition.search_runtime
-            if search is None or not search.accepts_intent(intent):
+            now_ms = self.snapshot(_state).now_ms
+            if search is None or not search.accepts_intent(intent, now_ms):
                 _LOGGER.warning("search intent %s has no matching frozen preview", intent.intent_id)
                 return
         with self._lock:
@@ -1237,6 +1238,10 @@ def create_autonomy_app(
             "type": "search_preview",
             "intent_id": validated.intent.intent_id,
             "preview": result.search.payload(),
+            "plan": result.plan.to_dict(),
+            "expires_at_ms": composition.search_runtime.preview_expires_at_ms(
+                validated.intent.intent_id
+            ),
         }
 
     @app.get("/session/{session_id}/search/{intent_id}")

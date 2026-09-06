@@ -65,6 +65,7 @@ class SearchRuntimeConfig:
     permission: NavigationPermission
     mission_version: int = 1
     maximum_drones: int = 4
+    preview_ttl_ms: int = 30_000
 
     def __post_init__(self) -> None:
         if not isinstance(self.calibration_id, str) or not self.calibration_id.strip():
@@ -73,6 +74,8 @@ class SearchRuntimeConfig:
             raise ValueError("search mission version must be positive")
         if type(self.maximum_drones) is not int or not 1 <= self.maximum_drones <= 4:
             raise ValueError("search maximum drones must be between one and four")
+        if type(self.preview_ttl_ms) is not int or self.preview_ttl_ms <= 0:
+            raise ValueError("search preview ttl must be positive")
         areas = dict(self.areas)
         sources = dict(self.source_by_drone)
         if not areas or any(zone_id != area.zone_id for zone_id, area in areas.items()):
@@ -109,6 +112,7 @@ class _Mission:
     acknowledged_findings: set[str] | None = None
     candidate_frames: dict[str, SightingEvent] | None = None
     intent_fingerprint: tuple[object, ...] = ()
+    expires_at_ms: int = 0
 
 
 class SearchRuntime:
@@ -176,6 +180,7 @@ class SearchRuntime:
             candidate_frames={},
             acknowledged_findings=set(),
             intent_fingerprint=self._intent_fingerprint(intent),
+            expires_at_ms=snapshot.now_ms + self.config.preview_ttl_ms,
         )
         return preview
 
@@ -187,12 +192,17 @@ class SearchRuntime:
     def has_mission(self, intent_id: str) -> bool:
         return intent_id in self._missions
 
-    def accepts_intent(self, intent: IntentV1) -> bool:
+    def accepts_intent(self, intent: IntentV1, now_ms: int) -> bool:
         mission = self._missions.get(intent.intent_id)
         return (
             mission is not None
             and mission.intent_fingerprint == self._intent_fingerprint(intent)
+            and not mission.started
+            and now_ms <= mission.expires_at_ms
         )
+
+    def preview_expires_at_ms(self, intent_id: str) -> int:
+        return self._mission(intent_id).expires_at_ms
 
     def execute(
         self,
@@ -611,6 +621,8 @@ class SearchRuntime:
             intent.source,
             intent.name,
             intent.confirm,
+            intent.retry_of,
+            intent.mode,
             tuple(sorted(intent.selection)),
             intent.args.get("zone_id"),
             intent.args.get("target_class"),
