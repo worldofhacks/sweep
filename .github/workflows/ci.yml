@@ -117,6 +117,8 @@ jobs:
         working-directory: console
       - run: node scripts/navigation-browser-smoke.mjs
         working-directory: console
+      - run: node scripts/search-browser-smoke.mjs
+        working-directory: console
       - uses: actions/upload-artifact@v4
         if: always()
         with:
