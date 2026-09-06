@@ -206,8 +206,8 @@ export function useControlConsole({
   )
 
   const issueIntent = useCallback(
-    <N extends ConsoleIntentName>(request: IntentRequest<N>) => {
-      if (!isIntentEnabled(state, request.name)) return
+    <N extends ConsoleIntentName>(request: IntentRequest<N>): IntentV1 | null => {
+      if (!isIntentEnabled(state, request.name)) return null
       const intent = createIntent(
         {
           name: request.name,
@@ -219,6 +219,7 @@ export function useControlConsole({
         intentDependencies,
       )
       stageIntent(intent)
+      return intent
     },
     [intentDependencies, stageIntent, state],
   )
@@ -349,6 +350,33 @@ export function useControlConsole({
           name: 'select',
           args: { ids: desired },
           selection: state.selection,
+          source,
+          session: state.sessionId,
+        },
+        intentDependencies,
+      )
+      return stageForConfirmation(draft)
+    },
+    [intentDependencies, stageForConfirmation, state],
+  )
+
+  /**
+   * Drafts any control press as a preview that must be confirmed before it is
+   * sent, whatever the name's own confirmation rule. The relay-compiled speech
+   * path stages every plan step through this or the name-specific prepare
+   * functions so nothing leaves on a compile.
+   */
+  const prepareIntent = useCallback(
+    <N extends ConsoleIntentName>(request: IntentRequest<N>, source: DraftSource = 'console'): IntentV1 | null => {
+      if (!isIntentEnabled(state, request.name)) return null
+      const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
+      const selection = fleetWide ? [] : request.targets ?? state.selection
+      if (!fleetWide && selection.length === 0) return null
+      const draft = createIntent(
+        {
+          name: request.name,
+          args: request.args,
+          selection,
           source,
           session: state.sessionId,
         },
@@ -551,6 +579,7 @@ export function useControlConsole({
     selectAllReady,
     prepareCapture,
     prepareHold,
+    prepareIntent,
     prepareSelect,
     confirmRequest,
     cancelRequest,

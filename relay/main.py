@@ -13,14 +13,73 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Sequence
+import os
+from collections.abc import Callable, Mapping, Sequence
 
 import uvicorn
 
+from language.relay_compiler import RelayTranscriptCompiler
+from language.transport import AnthropicTransport, ModelTransport
+from planner.models import TranslationPolicy
+from relay.app import RelayRuntime
 from relay.autonomy import AutonomyConfig, create_autonomy_app
 from relay.settings import RelaySettings, SettingsError
+from relay.voice import TranscriptionTransport, TranscriptService
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def build_transcript_service(
+    runtime: RelayRuntime,
+    *,
+    config: AutonomyConfig,
+    environ: Mapping[str, str] | None = None,
+    transport: ModelTransport | None = None,
+    transcription: TranscriptionTransport | None = None,
+) -> TranscriptService:
+    """Compose the voice endpoint's service for this relay process.
+
+    ``OPENAI_API_KEY`` enables Whisper transcription; without it every upload is a
+    typed ``transcription_unavailable`` refusal. ``ANTHROPIC_API_KEY`` enables the
+    pinned plan compiler; without it the endpoint keeps returning the transcript with
+    the typed ``compiler_unavailable`` refusal and the console labels its local
+    fallback. Both keys are read here, in the relay process, and never leave it.
+    """
+    values = os.environ if environ is None else environ
+    if not values.get("OPENAI_API_KEY") and transcription is None:
+        _LOGGER.warning(
+            "OPENAI_API_KEY is not set: voice uploads will be refused transcription_unavailable"
+        )
+    if transport is None:
+        api_key = values.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            _LOGGER.warning(
+                "ANTHROPIC_API_KEY is not set: transcripts return compiler_unavailable and "
+                "the console compiles them with its labelled local fallback"
+            )
+            return TranscriptService(transcription=transcription)
+        transport = AnthropicTransport(api_key=api_key)
+    compiler = RelayTranscriptCompiler(
+        sessions=runtime.sessions.get,
+        transport=transport,
+        translation_policy=TranslationPolicy(
+            frame=config.planning.translation_frame,
+            step_m=config.planning.translation_step_m,
+        ),
+        capability_profile=config.planning.effective_capability_profile(),
+    )
+    return TranscriptService(transcription=transcription, compiler=compiler)
+
+
+def transcript_service_factory(
+    config: AutonomyConfig, environ: Mapping[str, str] | None = None
+) -> Callable[[RelayRuntime], TranscriptService]:
+    """The ``create_app`` hook that binds the compiler to the started runtime."""
+
+    def factory(runtime: RelayRuntime) -> TranscriptService:
+        return build_transcript_service(runtime, config=config, environ=environ)
+
+    return factory
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -44,7 +103,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         settings = RelaySettings.from_env()
         config = AutonomyConfig.from_env()
-        app, composition = create_autonomy_app(settings, config)
+        app, composition = create_autonomy_app(
+            settings, config, transcript_service_factory=transcript_service_factory(config)
+        )
     except SettingsError as error:
         _LOGGER.error("%s", error)
         return 2
