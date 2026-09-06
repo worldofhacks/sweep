@@ -814,11 +814,16 @@ class AutonomySession:
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
             )
-            result = (
-                controller.execute(intent, snapshot, current_snapshot=current)
-                if job.prepared is None
-                else controller.dispatch_prepared(job.prepared, current_snapshot=current)
-            )
+if intent.name is IntentName.SEARCH and self._composition.search_runtime is not None:
+                result = self._composition.search_runtime.execute(
+                    intent.intent_id, dispatcher, snapshot, current_snapshot=current
+                )
+            else:
+                result = (
+                    controller.execute(intent, snapshot, current_snapshot=current)
+                    if job.prepared is None
+                    else controller.dispatch_prepared(job.prepared, current_snapshot=current)
+                )
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -1198,6 +1203,59 @@ def create_autonomy_app(
             "plan": result.to_dict(),
             "rooms": catalog["zones"],
         }
+
+    @app.post("/session/{session_id}/search/preview")
+    async def search_preview(
+        session_id: str, request: Request, authorization: str | None = Header(default=None)
+    ) -> dict[str, object]:
+        runtime: RelayRuntime = request.app.state.relay_runtime
+        token = authorization.removeprefix("Bearer ").encode() if authorization else None
+        expected = runtime.credential_resolver.resolve("console", None)
+        if token is None or expected is None or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=401, detail="console authentication is required")
+        payload = await request.json()
+        candidate = payload.get("intent") if isinstance(payload, Mapping) else None
+        validated = validate_intent(candidate, capability_profile=composition.capability_profile)
+        if (
+            not isinstance(validated, AcceptedIntent)
+            or validated.intent.name is not IntentName.SEARCH
+        ):
+            raise HTTPException(
+                status_code=422, detail="a configured console search intent is required"
+            )
+        session = await runtime.activate_session(session_id)
+        result = composition.session(session_id).preview_search(
+            validated.intent, session.current_state()
+        )
+        if isinstance(result, Refusal):
+            raise HTTPException(status_code=409, detail=result.detail)
+        return {
+            "v": 1,
+            "t": runtime.clock(),
+            "type": "search_preview",
+            "intent_id": validated.intent.intent_id,
+            "preview": result.search.payload(),
+        }
+
+    @app.get("/session/{session_id}/search/{intent_id}")
+    async def search_status(
+        session_id: str,
+        intent_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        runtime: RelayRuntime = request.app.state.relay_runtime
+        token = authorization.removeprefix("Bearer ").encode() if authorization else None
+        expected = runtime.credential_resolver.resolve("console", None)
+        if token is None or expected is None or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=401, detail="console authentication is required")
+        search = composition.search_runtime
+        if search is None:
+            raise HTTPException(status_code=404, detail="search is unavailable")
+        try:
+            return search.status_payload(intent_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="search mission is unknown") from None
 
     composition.bind(app)
     return app, composition
