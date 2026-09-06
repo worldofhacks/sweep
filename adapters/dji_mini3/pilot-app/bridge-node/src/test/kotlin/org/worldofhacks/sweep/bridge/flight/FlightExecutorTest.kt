@@ -47,7 +47,7 @@ class FlightExecutorTest {
     }
 
     /** The stub emits the real relay's signed control heartbeat unless a silence test disables it. */
-    private fun node(stub: StubRelay, flying: Boolean, localizationPins: LocalizationPins? = null): Node {
+    private fun node(stub: StubRelay, flying: Boolean, localizationPins: LocalizationPins? = null, pulseCapability: Boolean = false): Node {
         val aircraft = FakeFlightAircraft()
         aircraft.setConnected(true)
         if (flying) aircraft.place(zUp = 1.2, flying = true)
@@ -58,7 +58,7 @@ class FlightExecutorTest {
             1,
             String(key, Charsets.UTF_8),
             "test-node-1",
-            listOf("flight"),
+            if (pulseCapability) listOf("flight", CommandArgs.BodyPulse.CAPABILITY) else listOf("flight"),
             localizationPins,
         )
         val link = RelayLink(nodeConfig, aircraft, executor, phone, timing = timing, log = { logs += it })
@@ -104,6 +104,39 @@ class FlightExecutorTest {
         awaitFrame("acknowledgement", timeoutMs) { it.str("command_id") == commandId && it.str("status") == status }
 
     private fun StubRelay.acks(commandId: String): List<JsonObject> = frames("acknowledgement") { it.str("command_id") == commandId }
+
+    @Test
+    fun `signed pulse reaches flight loop and ends neutral without a position target`() {
+        StubRelay(key).use { stub ->
+            node(stub, flying = true, pulseCapability = true).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                val sticks = CopyOnWriteArrayList<StickFrame>()
+                node.executor.onStickSent = { _, frame, _ -> sticks += frame }
+                val command = stub.issueCommand(CommandArgs.BodyPulse(-250, 500))
+                stub.awaitAck(command.commandId, "completed")
+                assertEquals(listOf("accepted", "executing", "completed"), stub.acks(command.commandId).map { it.str("status") }.distinct())
+                assertTrue(sticks.any { it.roll == -0.25 && it.pitch == 0.0 })
+                assertTrue(sticks.last().isNeutral)
+                await("virtual stick released after pulse") { !node.aircraft.model.virtualStickEnabled }
+                assertTrue(node.aircraft.snapshot.value.y < 0.0)
+            }
+        }
+    }
+
+    @Test
+    fun `node without pulse capability refuses signed pulse before executor admission`() {
+        StubRelay(key).use { stub ->
+            node(stub, flying = true).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                val command = stub.issueCommand(CommandArgs.BodyPulse(250, 500))
+                val failed = stub.awaitAck(command.commandId, "failed")
+                assertEquals("unsupported", failed.str("reason"))
+                assertEquals(listOf("failed"), stub.acks(command.commandId).map { it.str("status") })
+                assertEquals(0.0, node.aircraft.snapshot.value.y)
+                assertEquals(0L, node.executor.status.value.sticksSent)
+            }
+        }
+    }
 
     @Test
     fun `diagnostic localization cannot advertise navigation or alter the existing goto path`() {

@@ -25,11 +25,13 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
+from math import cos, radians, sin
 
 from websockets.asyncio.client import connect
 
 from planner.models import CommandOperation
 from relay.auth import sign_event, verify_event_signature
+from relay.body_pulse import BODY_PULSE_CAPABILITY
 from relay.contracts import (
     CommandFrame,
     ContractError,
@@ -53,7 +55,7 @@ class FakeNodeConfig:
     token: str
     adapter_id: str
     telemetry_hz: float = 10.0
-    capabilities: tuple[str, ...] = ("flight", "pano_360", "reconstruct_8")
+    capabilities: tuple[str, ...] = ("flight", "pano_360", "reconstruct_8", BODY_PULSE_CAPABILITY)
     home: tuple[float, float, float] = (0.0, 0.0, 0.0)
     horizontal_fov_deg: float = 66.0
     gimbal_pitch_min_deg: float = -90.0
@@ -287,6 +289,20 @@ class FakeNode:
         self._finish_command(frame)
 
     def _finish_command(self, frame: CommandFrame) -> None:
+        if frame.operation is CommandOperation.BODY_PULSE and (
+            frame.seq != self._last_seq or frame.connection_epoch != self._connection_epoch
+        ):
+            # A delayed fixture callback must never resume motion after HOLD,
+            # LAND, ESTOP, a replacement command, or a connection epoch change.
+            self._enqueue(
+                self._acknowledgement(
+                    frame,
+                    "invalidated",
+                    reason="stale_command",
+                    detail="body pulse superseded before fixture execution",
+                )
+            )
+            return
         status, reason, detail = self._execute(frame)
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
 
@@ -325,6 +341,18 @@ class FakeNode:
             aircraft.x = int(args["x_mm"]) / 1000
             aircraft.y = int(args["y_mm"]) / 1000
             aircraft.z = int(args["z_mm"]) / 1000
+            aircraft.state = "hovering"
+        elif operation is CommandOperation.BODY_PULSE:
+            if BODY_PULSE_CAPABILITY not in self.config.capabilities:
+                return "failed", "unsupported", "body_pulse_v1 is unavailable"
+            if aircraft.state != "hovering":
+                return "failed", "unsupported", "body pulse requires a hovering aircraft"
+            # Kinematic fixture only. Android, not this instantaneous simulation,
+            # owns the real monotonic pulse timer and neutralization evidence.
+            distance = int(args["forward_mm_s"]) * int(args["duration_ms"]) / 1_000_000
+            heading = radians(aircraft.yaw_deg)
+            aircraft.x += sin(heading) * distance
+            aircraft.y += cos(heading) * distance
             aircraft.state = "hovering"
         elif operation is CommandOperation.ROTATE_TO:
             aircraft.yaw_deg = int(args["yaw_mdeg"]) / 1000

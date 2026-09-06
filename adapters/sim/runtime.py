@@ -31,6 +31,7 @@ from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.relay_bridge import AutonomyRelayBridge
 from relay.app import create_app
 from relay.auth import Principal, sign_event
+from relay.body_pulse import BODY_PULSE_CAPABILITY
 from relay.session import Clock, EventIdFactory, RelaySession
 from relay.settings import RelaySettings
 
@@ -349,7 +350,9 @@ class _SimNodeIngress:
             "action": action,
         }
         if action == "join":
-            event.update(adapter_id=f"sim-{drone_id}", capabilities=["flight"])
+            event.update(
+                adapter_id=f"sim-{drone_id}", capabilities=["flight", BODY_PULSE_CAPABILITY]
+            )
         else:
             event.update(
                 connection_epoch=self.flight.aircraft[drone_id].connection_epoch,

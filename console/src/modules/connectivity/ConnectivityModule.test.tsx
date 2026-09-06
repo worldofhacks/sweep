@@ -49,7 +49,7 @@ describe('Connectivity module', () => {
       'Storage',
       'Firmware',
     ])
-    expect(cell(rows[0], 'RC controller')).toHaveTextContent('standby · fw 2.4.1')
+    expect(cell(rows[0], 'RC controller')).toHaveTextContent('Sweep control granted · fw 2.4.1')
     expect(cell(rows[0], 'Android bridge')).toHaveTextContent('Pixel 7a · sdk 1.3.0')
     expect(cell(rows[0], 'LAN')).toHaveTextContent('18 ms')
     expect(cell(rows[0], 'Relay')).toHaveTextContent('connected')
@@ -63,13 +63,13 @@ describe('Connectivity module', () => {
     expect(cell(rows[2], 'Telemetry')).toHaveTextContent(/^stale /)
     expect(cell(rows[2], 'Telemetry')).toHaveClass('tone-warn')
     expect(
-      within(rows[2]).getByText("Telemetry stopped. Check the bridge phone's LAN link before commanding motion."),
+      within(rows[2]).getByText(/Telemetry stopped inside the freshness window/),
     ).toBeInTheDocument()
 
-    expect(cell(rows[3], 'RC controller')).toHaveTextContent('in control · fw 2.4.1')
+    expect(cell(rows[3], 'RC controller')).toHaveTextContent('Sweep control not granted · fw 2.4.1')
     expect(cell(rows[3], 'RC controller')).toHaveClass('tone-danger')
     expect(
-      within(rows[3]).getByText('The RC pilot holds authority. Sweep commands are refused until authority returns.'),
+      within(rows[3]).getByText(/Sweep control is not granted/),
     ).toBeInTheDocument()
 
     expect(cell(rows[4], 'Android bridge')).toHaveTextContent('down')
@@ -78,7 +78,7 @@ describe('Connectivity module', () => {
     expect(cell(rows[4], 'Storage')).toHaveTextContent('unknown')
     expect(
       within(rows[4]).getByText(
-        'Adapter connection lost. Power-cycle the bridge phone, then rejoin; the aircraft returns with a higher epoch.',
+        /Adapter connection lost. Check the bridge phone's LAN and relay connection/,
       ),
     ).toBeInTheDocument()
 
@@ -159,7 +159,7 @@ describe('Connectivity module', () => {
     expect(screen.getByText(/does not report shared-service status/)).toBeInTheDocument()
     const rows = within(screen.getByRole('table')).getAllByRole('row')
     expect(rows).toHaveLength(4)
-    expect(cell(rows[0], 'RC controller')).toHaveTextContent('standby · fw unreported')
+    expect(cell(rows[0], 'RC controller')).toHaveTextContent('Sweep control granted · fw unreported')
     expect(cell(rows[0], 'Telemetry')).toHaveTextContent('unreported')
   })
 })

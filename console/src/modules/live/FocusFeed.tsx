@@ -102,7 +102,7 @@ function Feed({
   return (
     <div className={`lv-feed is-${stream.status}`}>
       {plays ? (
-        <LivePlayer key={drone.drone_id} device={drone} media={media} />
+        <LivePlayer key={`${drone.drone_id}:${drone.connection_epoch}`} device={drone} media={media} />
       ) : (
         <div className="lv-feed-reticle" aria-hidden="true" />
       )}

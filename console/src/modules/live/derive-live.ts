@@ -50,7 +50,9 @@ export interface Word {
 export function deriveReadiness(drone: RelayAircraftState): Word {
   return drone.readiness_reasons.length > 0
     ? { text: drone.readiness_reasons.join(', '), tone: 'danger' }
-    : { text: 'ready', tone: 'ok' }
+    : drone.pos_quality === 0
+      ? { text: 'position quality 0%', tone: 'warn' }
+      : { text: 'ready', tone: 'ok' }
 }
 
 /**

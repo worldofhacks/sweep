@@ -10,9 +10,10 @@ import { Mosaic } from './Mosaic'
 import { GROUND_WALL_SIZE, groundNote, mosaicNote } from './derive-live'
 import { useSecondTick } from './use-second-tick'
 
-type LivePane = 'wall4' | 'wall6' | 'ground' | 'focus'
+type LivePane = 'all' | 'wall4' | 'wall6' | 'ground' | 'focus'
 
 const PANES: PaneTab[] = [
+  { id: 'all', label: 'All devices' },
   { id: 'wall4', label: 'Wall of 4' },
   { id: 'wall6', label: 'Wall of 6' },
   { id: 'ground', label: 'Ground' },
@@ -26,7 +27,7 @@ const PANES: PaneTab[] = [
  * clears only when the device leaves.
  */
 export function LiveModule({ controller, now, media }: ModuleProps) {
-  const [pane, setPane] = useState<LivePane>('wall4')
+  const [pane, setPane] = useState<LivePane>('all')
   const { state, selectFeed, toggleAircraft } = controller
   const devices = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
   const aircraft = useMemo(
@@ -68,6 +69,14 @@ export function LiveModule({ controller, now, media }: ModuleProps) {
         />
       ) : pane === 'focus' ? (
         <FocusFeed focused={focused} requests={state.requests} now={currentNow} media={media} />
+      ) : pane === 'all' ? (
+        <Mosaic
+          devices={devices}
+          label="All devices"
+          note={`${devices.length} reported ${devices.length === 1 ? 'device' : 'devices'}. New devices appear automatically; offline feeds keep their place.`}
+          noun="device"
+          {...wallProps}
+        />
       ) : pane === 'ground' ? (
         ground.length === 0 ? (
           <EmptyModule

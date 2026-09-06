@@ -98,6 +98,7 @@ def test_every_operation_has_an_explicit_stopped_state_classification(
     stopped_intents = {
         CommandOperation.TAKEOFF: None,
         CommandOperation.GOTO: None,
+        CommandOperation.BODY_PULSE: None,
         CommandOperation.ROTATE_TO: None,
         CommandOperation.HOVER: IntentName.HOLD,
         CommandOperation.LAND: IntentName.LAND_ALL,

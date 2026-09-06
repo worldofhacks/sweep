@@ -14,7 +14,8 @@ describe('sentences per device class', () => {
     expect(REASONS.aircraft_not_ready).toBe(
       'The aircraft has open readiness reasons and cannot accept flight commands.',
     )
-    expect(READINESS.rc_safety_operator_missing).toBe('No RC safety operator is reported present.')
+    expect(READINESS.rc_safety_operator_missing).toContain('Readiness → RC safety operator present')
+    expect(READINESS.rc_safety_operator_missing).toContain('a person at the physical RC')
     expect(MEMBERSHIP_REASON.graceful_leave_requested).toBe('The aircraft asked to leave.')
     expect(INVALIDATION.aircraft_departed).toBe('An aircraft in the plan left the session.')
     expect(Object.values(REASONS).every((sentence) => typeof sentence === 'string')).toBe(true)
@@ -29,13 +30,16 @@ describe('sentences per device class', () => {
     expect(reasonSentence('spacing', 'device')).toBe(
       'The commanded formation would put two devices closer than the spacing limit.',
     )
-    expect(readinessSentence('rc_safety_operator_missing', 'robot')).toBe(
+    expect(readinessSentence('rc_safety_operator_missing', 'robot')).toContain(
       'No spotter is reported present beside the robot with its screen stop in reach.',
     )
-    expect(readinessSentence('drive_capability_missing', 'robot')).toBe(
+    expect(readinessSentence('drive_capability_missing', 'robot')).toContain(
       'The adapter does not advertise ground drive control.',
     )
     expect(readinessSentence('telemetry_missing', 'device')).toBe('No telemetry has arrived for this device.')
+    expect(readinessSentence('home_pose_missing', 'robot')).toContain('robot’s localization')
+    expect(readinessSentence('home_pose_missing', 'robot')).not.toContain('bridge phone')
+    expect(readinessSentence('control_authority_missing', 'robot')).not.toContain('Virtual Stick')
     expect(membershipReasonSentence('device_class_mismatch', 'robot')).toContain('device class')
     expect(reasonSentence('aircraft_departed', 'robot')).toBe('A robot in the plan left the session.')
     expect(reasonSentence(undefined, 'robot')).toBe('')

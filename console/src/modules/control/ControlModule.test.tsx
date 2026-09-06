@@ -578,7 +578,7 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     expect(d03.getByText(/Telemetry stopped inside the freshness window/)).toBeInTheDocument()
     expect(d03.getByRole('button', { name: 'Select D-03' })).toBeDisabled()
     const d04 = within(registry.getByRole('article', { name: 'D-04 registry card' }))
-    expect(d04.getByText('RC takeover')).toHaveClass('tone-danger')
+    expect(d04.getByText('Sweep control not granted')).toHaveClass('tone-danger')
     expect(d04.getByText('RC safety operator absent')).toHaveClass('tone-danger')
     expect(d04.getByText('epoch 5')).toBeInTheDocument()
 

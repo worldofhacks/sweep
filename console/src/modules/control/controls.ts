@@ -76,6 +76,7 @@ export function noReadyReason(state: ControlState): string {
 
 /** Intents the relay refuses for ground vehicles with `unsupported_for_device_class`. */
 export const AIRCRAFT_ONLY_INTENTS: readonly ConsoleIntentName[] = [
+  'body_pulse',
   'takeoff',
   'land',
   'land_all',
@@ -102,6 +103,9 @@ export function deviceClassBlockedReason(
   targets: readonly DroneId[] = state.selection,
 ): string | null {
   if (!AIRCRAFT_ONLY_INTENTS.includes(name)) return null
+  if (name === 'body_pulse' && targets.some((id) => state.aircraft[id]?.device_class === 'ground_vehicle')) {
+    return 'Body pulses require an aircraft-only selection.'
+  }
   return allGroundVehicles(state, targets) ? ROBOT_UNSUPPORTED_NOTE : null
 }
 

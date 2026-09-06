@@ -64,7 +64,10 @@ class FlightExecutor(
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
 
     /** The pure loop; only touch it from [post]ed blocks (tests included). */
-    val controller = FlightController(PostingPort(port), clock, config) { line -> log.log("flight: $line") }
+    val controller = FlightController(
+        PostingPort(port), clock, config,
+        pulseClock = Clock { TimeUnit.NANOSECONDS.toMillis(System.nanoTime()) },
+    ) { line -> log.log("flight: $line") }
 
     private val _status = MutableStateFlow(controller.status)
     val status: StateFlow<FlightStatus> = _status.asStateFlow()

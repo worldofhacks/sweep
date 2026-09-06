@@ -213,7 +213,7 @@ describe('connectivity', () => {
       'Firmware',
     ])
     expect(cells.map((cell) => cell.value)).toEqual([
-      'standby · fw unreported',
+      'Sweep control granted · fw unreported',
       'unreported',
       'unreported',
       'connected',
@@ -239,7 +239,7 @@ describe('connectivity', () => {
   test('node cells with a record: versions, rtt, rate, storage, and the stale and down variants', () => {
     const healthy = nodeCells(drone({}), node, now)
     expect(healthy.map((cell) => cell.value)).toEqual([
-      'standby · fw 2.4.1',
+      'Sweep control granted · fw 2.4.1',
       'Pixel 7a · sdk 1.3.0',
       '18 ms',
       'connected',
@@ -266,7 +266,7 @@ describe('connectivity', () => {
       now,
     )
     expect(down.map((cell) => cell.value)).toEqual([
-      'in control · fw 2.4.1',
+      'Sweep control not granted · fw 2.4.1',
       'down',
       'no route',
       'disconnected',
@@ -297,7 +297,23 @@ describe('connectivity', () => {
     expect(nodeError(drone({ readiness_reasons: ['telemetry_stale'], control_authority: false }))).toMatch(
       /^Telemetry stopped/,
     )
-    expect(nodeError(drone({ control_authority: false }))).toMatch(/^The RC pilot holds authority/)
+    expect(nodeError(drone({ control_authority: false }))).toMatch(/^Sweep control is not granted/)
+  })
+
+  test('live telemetry with zero position quality shows all setup gates without inferring RC takeover', () => {
+    const aircraft = drone({
+      pos_quality: 0, control_authority: false, rc_safety_operator_present: false,
+      readiness_reasons: ['home_pose_missing', 'control_authority_missing', 'rc_safety_operator_missing'],
+    })
+    const cells = nodeCells(aircraft, { ...node, telemetry_rate_hz: 10 }, now)
+    expect(cells[4]).toEqual({ key: 'Telemetry', value: '10.0 Hz · position 0%', tone: 'warn' })
+    expect(cells[0].value).toBe('Sweep control not granted · fw 2.4.1')
+    const help = nodeError(aircraft)
+    expect(help).toContain('Home pose confirmed')
+    expect(help).toContain('Readiness → Control authority')
+    expect(help).toContain('Readiness → RC safety operator present')
+    expect(help).toContain('Position quality is 0%')
+    expect(help).not.toContain('The RC pilot holds authority')
   })
 
   test('the ladder marks the rung the sockets and video can prove', () => {

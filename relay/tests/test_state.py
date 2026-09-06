@@ -89,7 +89,7 @@ def test_all_readiness_gates_must_pass_before_aircraft_is_selectable() -> None:
     assert "telemetry_missing" in transition.readiness_reasons
     assert "home_pose_missing" in transition.readiness_reasons
 
-    telemetry = parse_telemetry(telemetry_payload(event_id="telemetry-1"))
+    telemetry = parse_telemetry(telemetry_payload(event_id="telemetry-1", state="landed"))
     registry.apply_telemetry(telemetry, transition_event_id="recovered-1")
     transition = registry.apply_readiness(
         parse_membership_request(membership_payload(action="readiness", event_id="ready-1"))
@@ -103,6 +103,7 @@ def test_all_readiness_gates_must_pass_before_aircraft_is_selectable() -> None:
     assert state["enabled_intent_names"] == [
         "altitude",
         "arm",
+        "body_pulse",
         "capture_room",
         "come_home",
         "estop",
@@ -174,7 +175,7 @@ def test_stale_telemetry_degrades_and_new_current_frame_recovers() -> None:
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
     _join(registry, 1, "join-1")
     registry.apply_telemetry(
-        parse_telemetry(telemetry_payload(event_id="telemetry-1")),
+        parse_telemetry(telemetry_payload(event_id="telemetry-1", state="landed")),
         transition_event_id="unused",
     )
     _ready(registry, "ready-1", 1_756_700_000_000)
@@ -302,7 +303,7 @@ def test_airborne_rejoin_cannot_replace_the_confirmed_home_pose() -> None:
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
     _join(registry, 1, "join-1")
     registry.apply_telemetry(
-        parse_telemetry(telemetry_payload(event_id="telemetry-home")),
+        parse_telemetry(telemetry_payload(event_id="telemetry-home", state="landed")),
         transition_event_id="unused-home",
     )
     _ready(registry, "ready-1", 1_756_700_000_000)

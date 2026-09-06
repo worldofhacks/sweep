@@ -161,7 +161,7 @@ describe('header derivations', () => {
       danger: false,
     })
     expect(deriveRcLine(connected({ selection: [1, 2] }))).toEqual({
-      text: 'D-01 Sweep · RC operator present   D-02 RC takeover · RC operator absent',
+      text: 'D-01 Sweep · RC operator present   D-02 Sweep control not granted · RC operator absent',
       danger: true,
     })
     expect(deriveRcLine(connected({ selection: [] })).text).toBe('D-01 Sweep · RC operator present')

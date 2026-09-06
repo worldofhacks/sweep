@@ -108,12 +108,17 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
                     if (fpv != null) Button(onClick = { flightDisplay = true }) { Text("Flight display") }
                 }
             }
+            if (setup.complete) {
+                item { ReadinessCard(link, aircraft, node, session) }
+            }
             item { SetupCard(setup, running, aircraft, node) }
             item { ConnectivityCard(link, running, now, node) }
             if (fpv != null) {
                 item { StreamEvidenceCard(fpv, now) { flightDisplay = true } }
             }
-            item { ReadinessCard(link, node) }
+            if (!setup.complete) {
+                item { ReadinessCard(link, aircraft, node, session) }
+            }
             item { NodeStatusCard(link, aircraft, now) }
             item { FlightCards(session) } // Phase E: flight loop and #85 probe cards
             item { CommandsCard(link.commands, now) }
@@ -347,39 +352,61 @@ private fun ConnectivityCard(link: LinkState, running: Boolean, now: Long, node:
 }
 
 @Composable
-private fun ReadinessCard(link: LinkState, node: BridgeNode) {
+private fun ReadinessCard(link: LinkState, aircraft: AircraftSnapshot, node: BridgeNode, session: AircraftSession) {
     val readiness = link.readiness
-    fun send(transform: (ReadinessInput) -> ReadinessInput) = node.setReadiness(transform(readiness))
+    fun send(transform: (ReadinessInput) -> ReadinessInput) = node.updateReadiness(transform)
+    val connected = link.joined && aircraft.aircraftConnected && aircraft.rcConnected
+    val grounded = aircraft.state == FlightStates.LANDED || aircraft.state == FlightStates.DISARMED
+    val positionAvailable = aircraft.posQuality.isFinite() && aircraft.posQuality > 0.0
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Readiness", style = MaterialTheme.typography.titleMedium)
-            Text("Each toggle sends a signed readiness frame with the current connection epoch.", style = MaterialTheme.typography.bodySmall)
-            ToggleRow("Home pose confirmed", "The relay records the current telemetry position as home.", readiness.homePoseConfirmed) { on ->
+            Text("Complete these inputs on this phone before selecting its aircraft in the console. They do not start motors or take off.", style = MaterialTheme.typography.bodySmall)
+            Text("Relay: ${if (link.joined) "joined" else "not joined"} · aircraft: ${if (aircraft.aircraftConnected) "connected" else "disconnected"} · RC: ${if (aircraft.rcConnected) "connected" else "disconnected"}")
+            if (!connected) {
+                Text("Connect the relay, this aircraft and its RC to enable readiness inputs.", color = MaterialTheme.colorScheme.error)
+            }
+            Text("Aircraft position: ${"%.2f".format(aircraft.x)}, ${"%.2f".format(aircraft.y)}, ${"%.2f".format(aircraft.z)} m · quality ${"%.2f".format(aircraft.posQuality)}")
+            if (!positionAvailable) {
+                Text("No usable aircraft position. Wait for valid positioning before confirming home; a connected RC alone does not provide it.", color = MaterialTheme.colorScheme.error)
+            }
+            ToggleRow("Home pose confirmed", "Confirm this landed aircraft is at its intended home. The relay records home only from fresh, grounded telemetry meeting its position-quality limit.", readiness.homePoseConfirmed, enabled = readiness.homePoseConfirmed || (connected && grounded && positionAvailable)) { on ->
                 send { it.copy(homePoseConfirmed = on) }
             }
-            ToggleRow("Control authority", "Off: motion commands fail with authority_lost; the relay reports control_authority_missing.", readiness.controlAuthority) { on ->
+            if (readiness.homePoseConfirmed && "home_pose_missing" in link.readinessReasons) {
+                Text("Home confirmation is pending usable telemetry at the relay. Keep the aircraft landed at home.", color = MaterialTheme.colorScheme.error)
+            }
+            ToggleRow("Control authority", "Allow Sweep console motion commands for this aircraft. The RC remains primary; a takeover must be explicitly re-armed below.", readiness.controlAuthority, enabled = readiness.controlAuthority || (connected && aircraft.authorityLostReason == null)) { on ->
                 send { it.copy(controlAuthority = on) }
             }
-            ToggleRow("RC safety operator present", "Off: the relay reports rc_safety_operator_missing and the arbiter refuses motion.", readiness.rcSafetyOperatorPresent) { on ->
+            ToggleRow("RC safety operator present", "Confirm a person is holding this aircraft's RC, watching the aircraft and ready to take manual control. Clear this when they leave.", readiness.rcSafetyOperatorPresent, enabled = readiness.rcSafetyOperatorPresent || connected) { on ->
                 send { it.copy(rcSafetyOperatorPresent = on) }
+            }
+            aircraft.authorityLostReason?.let { reason ->
+                Text("Authority stopped: $reason. Resolve the RC takeover before re-arming; then grant Control authority again if it is off.", color = MaterialTheme.colorScheme.error)
+                session.flight?.let { flight ->
+                    OutlinedButton(onClick = flight.executor::rearmAuthority) { Text("Re-arm control authority") }
+                }
             }
             Text("Relay answer: ${link.membership ?: "not joined"}" + (link.membershipReason?.let { " ($it)" } ?: ""))
             if (link.readinessReasons.isNotEmpty()) {
                 Text("Readiness gates: ${link.readinessReasons.joinToString()}")
             }
-            Text("Reported control authority: ${if (link.controlAuthority) "Sweep" else "RC"}" + (link.authorityChangeReason?.let { " ($it)" } ?: ""))
+            Text("Reported Sweep control: ${if (link.controlAuthority) "granted" else "not granted"}" + (link.authorityChangeReason?.let { " ($it)" } ?: ""))
+            Text("Virtual Stick: ${if (aircraft.virtualStickEnabled) "enabled" else "off"}. Granting control does not enable it by itself.", style = MaterialTheme.typography.bodySmall)
+            Text("Relay credentials are saved. Flight readiness must describe the current aircraft, home and RC operator; it is not a permanent setup preference.", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
 
 @Composable
-private fun ToggleRow(title: String, consequence: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun ToggleRow(title: String, consequence: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.weight(1f)) {
             Text(title)
             Text(consequence, style = MaterialTheme.typography.bodySmall)
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 

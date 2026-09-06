@@ -77,6 +77,7 @@ class FakeAircraft(
             is CommandArgs.Goto -> _snapshot.update {
                 it.copy(x = args.xMm / 1000.0, y = args.yMm / 1000.0, z = args.zMm / 1000.0, state = FlightStates.HOVERING)
             }
+            is CommandArgs.BodyPulse -> return "control_loop_unavailable" to "body_pulse requires the timed FlightExecutor"
             is CommandArgs.RotateTo -> yawDeg = args.yawMdeg / 1000.0
             CommandArgs.Hover, CommandArgs.Estop -> _snapshot.update {
                 if (it.state == FlightStates.LANDED) it else it.copy(state = FlightStates.HOVERING)

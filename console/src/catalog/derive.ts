@@ -1,8 +1,9 @@
 import type { ConnectionStatus, ControlState } from '../control/state'
-import { deviceNoun, formatDroneId, type DeviceLabeller } from '../control/state'
+import { formatDroneId, type DeviceLabeller } from '../control/state'
 import type { DroneId, RelayAircraftState } from '../relay/contract'
 import { connectionTone, isLinkUp, sortedAircraft, type Tone } from '../shell/derive'
 import { formatAge } from '../shell/format'
+import { readinessNotes } from '../shell/readiness'
 import type {
   BundleRef,
   CapturePose,
@@ -251,7 +252,7 @@ export function nodeCells(
   return [
     {
       key: 'RC controller',
-      value: `${drone.control_authority ? 'standby' : 'in control'} · ${rcFirmware}`,
+      value: `${drone.control_authority ? 'Sweep control granted' : 'Sweep control not granted'} · ${rcFirmware}`,
       tone: drone.control_authority ? 'ink' : 'danger',
     },
     {
@@ -269,8 +270,8 @@ export function nodeCells(
       key: 'Telemetry',
       value: stale
         ? `stale ${drone.last_seen_at === null ? 'unreported' : formatAge(now - drone.last_seen_at)}`
-        : rate,
-      tone: stale ? 'warn' : rate === 'unreported' ? 'muted' : 'ink',
+        : `${rate}${drone.pos_quality === 0 ? ' · position 0%' : ''}`,
+      tone: stale || drone.pos_quality === 0 ? 'warn' : rate === 'unreported' ? 'muted' : 'ink',
     },
     {
       key: 'Camera',
@@ -289,23 +290,12 @@ export function nodeCells(
 
 /** The design's per-node error line: what is wrong and what to do. */
 export function nodeError(drone: RelayAircraftState): string | null {
-  const ground = drone.device_class === 'ground_vehicle'
-  if (drone.membership === 'disconnected') {
-    return ground
-      ? 'Node connection lost. Restart the node on the robot, then rejoin; the robot returns with a higher epoch.'
-      : `Adapter connection lost. Power-cycle the bridge phone, then rejoin; the ${deviceNoun(drone.device_class)} returns with a higher epoch.`
-  }
-  if (drone.readiness_reasons.includes('telemetry_stale')) {
-    return ground
-      ? "Telemetry stopped. Check the robot's Wi-Fi link before commanding motion."
-      : "Telemetry stopped. Check the bridge phone's LAN link before commanding motion."
-  }
-  if (!drone.control_authority) {
-    return ground
-      ? 'The wheels are disabled or a local override is active. Sweep commands are refused until authority returns.'
-      : 'The RC pilot holds authority. Sweep commands are refused until authority returns.'
-  }
-  return null
+  const reasons = [...drone.readiness_reasons]
+  if (drone.membership === 'disconnected') reasons.unshift('disconnected')
+  if (!drone.control_authority) reasons.push('control_authority_missing')
+  if (!drone.rc_safety_operator_present) reasons.push('rc_safety_operator_missing')
+  const notes = readinessNotes({ ...drone, readiness_reasons: [...new Set(reasons)] })
+  return notes.length ? notes.map(({ text }) => text).join(' ') : null
 }
 
 export function nodeRecordFor(

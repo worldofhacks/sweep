@@ -74,6 +74,7 @@ HOLD_PREEMPTS = frozenset(
     {
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.BODY_PULSE,
         IntentName.ALTITUDE,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
@@ -959,6 +960,8 @@ def create_autonomy_app(
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_factory=control_localization_factory,
+        min_home_position_quality=config.safety.min_position_quality,
+        max_home_position_age_ms=config.safety.max_position_age_ms,
         transcript_service_factory=transcript_service_factory,
     )
     composition.bind(app)

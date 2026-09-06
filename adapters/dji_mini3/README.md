@@ -162,6 +162,17 @@ On the phone:
   up; Connect or a replug recovers without an epoch change.
 - Commands: every command this epoch with its outcome and reason.
 
+Readiness declarations are process-local pilot input. App process restarts begin with all
+three off, even when encrypted relay setup is restored. Saving a different relay URL,
+session, drone ID, or token clears the declarations; they cannot transfer to that identity.
+Saving unchanged setup, a transient relay reconnect (including a new connection epoch),
+and stopping/starting the link within the same process retain pilot input. Each reconnect
+resends it in a signed frame for the current epoch, and the relay checks readiness again.
+Aircraft/RC connectivity and an SDK takeover latch independently restrict effective control
+authority. A connected RC does not establish that a human safety operator is present, and
+the authority toggle permits requesting SDK control rather than proving Virtual Stick is
+currently enabled. Clearing a takeover latch still requires the separate pilot re-arm.
+
 In the relay's audit JSONL (`SWEEP_SESSION_LOG_DIR/<sha256 of the session id>.jsonl`):
 `membership` with `action: "join"` and `connection_epoch: 1`, `telemetry` at 10 Hz,
 `membership` with `action: "readiness"` and `membership: "ready"`, `capabilities` with the
@@ -285,10 +296,28 @@ the relay audits each one and the remote adapter keeps waiting), then `completed
 |---|---|---|
 | `takeoff {z_mm}` | `KeyStartTakeoff`, wait for the reported flight state to settle in a hover, then a vertical velocity step to `z_mm` if it differs by more than 0.2 m | hover at the requested altitude |
 | `goto {x_mm, y_mm, z_mm, speed_mm_s}` | one time-boxed body-frame velocity step: the displacement from the position the node reports (0,0 indoors until M3 localization) rotated into the body frame at the current heading, held for exactly `distance / speed`; speed is clamped to the node limit (0.5 m/s horizontal, 0.3 m/s vertical, PRD 5.4) and the acknowledgement says when it was slowed | the time box plus a 500 ms neutral settle |
+| `body_pulse {forward_mm_s, duration_ms}` | signed nose-forward/backward velocity, nonzero speed within ±250 mm/s and duration 100–500 ms; no lateral, vertical, or position arguments | the pulse duration from the first moving stick frame, then the normal neutral settle and Virtual Stick release |
 | `rotate_to {yaw_mdeg, speed_mdeg_s}` | yaw angle mode to the compass heading, shortest way, rate clamped to 30 deg/s | heading within 5 deg for 500 ms; `yaw_not_reached` past the deadline |
 | `hover` | neutral sticks (velocity zero) | 500 ms settle |
 | `land` | neutral sticks, Virtual Stick off, `KeyStartAutoLanding` | the reported `landed` state |
 | `estop` | neutral sticks and hover at once, plus the network-stop latch below | 500 ms settle |
+
+Both Android flavors advertise `body_pulse_v1`; a node without that membership capability
+refuses a pulse before executor admission. Pulses use the ordinary signed command,
+current epoch, sequence, TTL, control-authority and watchdog path. They require a hovering
+aircraft and never use the local bench entry point. The phone times a pulse with a monotonic
+clock after Virtual Stick enables and its first movement frame is sent. At the expiry tick
+it sends neutral instead of another movement frame, then releases Virtual Stick after the
+configured settle. HOLD/ESTOP, RC takeover and deadman loss preempt it. Timing is limited by
+the configured stick cadence and scheduler; a late tick does not replay missed movement.
+At 250 mm/s a 500 ms pulse has nominal travel 0.125 m, not measured position completion.
+The first tick at or after the deadline emits neutral: a 101 ms request at 10 Hz therefore
+holds its moving frame for 200 ms. Relay clearance reserves one maximum supported tick
+(200 ms at 5 Hz), giving a 0.175 m radius per maximum pulse. That reserve does not bound
+scheduler stalls, SDK latency, braking, or position uncertainty; measured operational
+clearance is still required.
+The normal relay position/readiness/spacing gates and the hardware axis-probe requirement
+still apply; adding the capability does not qualify hardware or indoor localization.
 
 Reasons the loop returns, besides the contract's `authority_lost`, `watchdog_hold`, and
 `watchdog_failsafe`: `watchdog_disarmed`, `estop_asserted`, `not_airborne`, `already_airborne`,

@@ -11,6 +11,7 @@ MOTION_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.BODY_PULSE,
         IntentName.ALTITUDE,
         IntentName.FORMATION_NEXT,
         IntentName.FORMATION_SET,

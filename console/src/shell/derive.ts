@@ -118,8 +118,7 @@ export interface RcLine {
 /**
  * Authority and safety-operator words per class. For an aircraft the operator
  * is the RC pilot beside it; for a ground vehicle it is the spotter with the
- * robot's screen stop in reach, and lost authority means the wheels are
- * disabled or a local override is active.
+ * robot's screen stop in reach. Missing permission does not prove a takeover.
  */
 export function authorityWords(drone: RelayAircraftState): {
   authority: string
@@ -130,7 +129,7 @@ export function authorityWords(drone: RelayAircraftState): {
 } {
   const ground = drone.device_class === 'ground_vehicle'
   return {
-    authority: drone.control_authority ? 'Sweep' : ground ? 'Local override' : 'RC takeover',
+    authority: drone.control_authority ? 'Sweep' : 'Sweep control not granted',
     operator: ground ? 'Spotter' : 'RC safety operator',
     operatorShort: ground ? 'Spotter' : 'RC operator',
   }
@@ -231,8 +230,9 @@ export function deriveInvalidation(
   }
 }
 
-export function membershipTone(membership: RelayAircraftState['membership']): Tone {
-  if (membership === 'ready') return 'ok'
+export function membershipTone(membership: RelayAircraftState['membership'], positionQuality?: number | null): Tone {
+  // Membership alone does not establish position quality or motion admission.
+  if (membership === 'ready') return positionQuality === 0 ? 'warn' : 'ok'
   if (membership === 'degraded' || membership === 'leaving') return 'warn'
   if (membership === 'disconnected') return 'danger'
   return 'ink'

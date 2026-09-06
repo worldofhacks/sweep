@@ -15,6 +15,10 @@ node_modules/
 .env
 .env.*
 !.env.example
+# Per-session credentials, phone provisioning metadata, and local flight logs
+.sweep/
+.playwright-cli/
+output/playwright/
 
 # OS and editors
 .DS_Store

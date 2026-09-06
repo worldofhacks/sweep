@@ -7,7 +7,7 @@ export interface ModuleNavProps {
 }
 
 const RAIL_NOTE =
-  'M2.0 — the console sends select, hold, capture_room and estop. Other controls are listed as unsupported until the relay accepts them.'
+  'Available controls follow the relay’s advertised capabilities and current aircraft readiness. Disabled controls show their reason.'
 
 export function Rail({ modules, active, onSelect }: ModuleNavProps) {
   return (

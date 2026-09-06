@@ -23,6 +23,7 @@ from planner.models import (
     TranslationGrounding,
     TranslationPolicy,
 )
+from relay.body_pulse import BODY_PULSE_CAPABILITY, valid_body_pulse_args
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import IntentName, IntentV1
 
@@ -30,6 +31,7 @@ SELECTION_TARGETED_INTENTS = frozenset(
     {
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
+        IntentName.BODY_PULSE,
         IntentName.ALTITUDE,
         IntentName.HOLD,
         IntentName.COME_HOME,
@@ -231,6 +233,29 @@ class DeterministicPlanner:
                     CommandOperation.TAKEOFF,
                     {"z": self.config.takeoff_altitude_m},
                 )
+
+        elif intent.name is IntentName.BODY_PULSE:
+            if not valid_body_pulse_args(intent.args):
+                return _refusal(
+                    intent, snapshot, RefusalReason.INVALID_PLAN, "invalid body_pulse bounds"
+                )
+            if abs(intent.args["forward_mm_s"]) > self.config.flight_speed_m_s * 1000:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.INVALID_PLAN,
+                    "body pulse exceeds the configured flight speed",
+                )
+            for drone_id in selected:
+                if BODY_PULSE_CAPABILITY not in snapshot.aircraft[drone_id].capabilities:
+                    return _refusal(
+                        intent,
+                        snapshot,
+                        RefusalReason.UNSUPPORTED,
+                        "aircraft does not advertise body_pulse_v1",
+                        drone_id,
+                    )
+                builder.add(drone_id, CommandOperation.BODY_PULSE, dict(intent.args))
 
         elif intent.name is IntentName.TRANSLATE:
             translation_frame = self.config.translation_frame

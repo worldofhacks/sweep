@@ -5,6 +5,7 @@ from math import isfinite
 from types import MappingProxyType
 from typing import Literal
 
+from relay.body_pulse import valid_body_pulse_args
 from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
     C1_IMPLEMENTED_INTENT_NAMES,
@@ -75,7 +76,7 @@ MAX_INTENT_TIMESTAMP = (1 << 63) - 1
 REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam", "language"})
 # Intent v1 names each registered source may emit. The console owns every C1
 # name; the keyboard socket carries only the Shift+Escape network stop; the
-# webcam gesture producer drafts only the two names its gesture policy may emit
+# webcam gesture producer drafts only the names its gesture policy may emit
 # (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES), so the console's
 # never-gesture-emittable list is enforced by the relay as well. A name outside
 # its source's set is refused with `source_not_allowed` only after the effective
@@ -85,7 +86,16 @@ SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
     {
         "console": C1_IMPLEMENTED_INTENT_NAMES,
         "keyboard": frozenset({IntentName.ESTOP}),
-        "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
+        "webcam": frozenset(
+            {
+                IntentName.CAPTURE_ROOM,
+                IntentName.HOLD,
+                IntentName.ARM,
+                IntentName.TAKEOFF,
+                IntentName.BODY_PULSE,
+                IntentName.LAND,
+            }
+        ),
         # This is only the schema ceiling. RelaySession additionally requires a
         # one-shot audited compiler-plan binding for every language intent.
         "language": C1_IMPLEMENTED_INTENT_NAMES,
@@ -151,6 +161,15 @@ def validate_intent(
         return RejectedIntent(
             RejectionReason.UNSUPPORTED,
             f"{name} is outside capability profile {capability_profile.name}",
+        )
+
+    if (
+        source == "webcam"
+        and name in {IntentName.ARM, IntentName.TAKEOFF, IntentName.BODY_PULSE, IntentName.LAND}
+        and raw["confirm"] is not True
+    ):
+        return RejectedIntent(
+            RejectionReason.INVALID_PAYLOAD, "webcam flight actions require confirmation"
         )
 
     if name not in SOURCE_ALLOWED_NAMES[source]:
@@ -236,7 +255,7 @@ def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
         return raw["confirm"] is True
     if name is IntentName.MAP_AREA:
         return raw["confirm"] is True and bool(raw["selection"])
-    if name is IntentName.SWEEP:
+    if name in {IntentName.SWEEP, IntentName.BODY_PULSE}:
         return raw["confirm"] is True and bool(raw["selection"])
     return True
 
@@ -249,6 +268,11 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         if set(value) != {"ids"} or not _is_drone_ids(value["ids"], allow_empty=False):
             raise ValueError
         return MappingProxyType({"ids": tuple(value["ids"])})
+
+    if name is IntentName.BODY_PULSE:
+        if not valid_body_pulse_args(value):
+            raise ValueError
+        return MappingProxyType(dict(value))
 
     if name is IntentName.TRANSLATE:
         if set(value) != {"dx", "dy"}:

@@ -79,24 +79,38 @@ const REASON_SENTENCES: Sentences = {
 }
 
 const READINESS_SENTENCES: Sentences = {
-  identity_unverified: "The adapter's identity has not been verified for this session.",
-  adapter_capabilities_missing: 'The adapter has not advertised its capabilities.',
-  flight_capability_missing: 'The adapter does not advertise flight control.',
-  drive_capability_missing: 'The adapter does not advertise ground drive control.',
-  telemetry_missing: (noun) => `No telemetry has arrived for this ${noun}.`,
-  telemetry_stale: 'Telemetry stopped inside the freshness window.',
-  home_pose_missing: (noun) => `No home pose is recorded for this ${noun}.`,
+  identity_unverified: (noun) => noun === 'aircraft'
+    ? "The adapter's identity has not been verified. Check the bridge phone's session and node setup, then reconnect."
+    : "The adapter's identity has not been verified. Check the robot node's session and device setup, then reconnect.",
+  adapter_capabilities_missing: (noun) => noun === 'aircraft'
+    ? 'The adapter has not advertised its capabilities. Check that the bridge phone is connected to the aircraft and relay.'
+    : 'The adapter has not advertised its capabilities. Check the robot node and relay connection.',
+  flight_capability_missing: 'The adapter does not advertise flight control. Check the bridge adapter and aircraft connection before continuing.',
+  drive_capability_missing: 'The adapter does not advertise ground drive control. Check the robot node configuration before continuing.',
+  telemetry_missing: (noun) => noun === 'device' ? 'No telemetry has arrived for this device.' : noun === 'aircraft'
+    ? 'No telemetry has arrived. Check the aircraft, RC and bridge phone connections; wait for live telemetry.'
+    : 'No telemetry has arrived. Check the robot node and Wi-Fi connection; wait for live telemetry.',
+  telemetry_stale: (noun) => noun === 'aircraft'
+    ? "Telemetry stopped inside the freshness window. Check the bridge phone's LAN and aircraft connections; wait for fresh telemetry."
+    : "Telemetry stopped inside the freshness window. Check the robot's Wi-Fi and node connection; wait for fresh telemetry.",
+  home_pose_missing: (noun) => noun === 'aircraft'
+    ? 'Home pose is not confirmed. While landed, establish real positioning, then check Readiness → Home pose confirmed on the bridge phone. Fresh positioning must meet the relay’s quality limit.'
+    : 'Home pose is not confirmed. Check the robot’s localization and home configuration; a live connection alone does not establish position.',
   control_authority_missing: (noun) =>
     noun === 'robot'
-      ? 'Sweep does not hold control authority: the wheels are disabled or a local override is active.'
-      : 'Sweep does not hold control authority.',
+      ? 'Sweep control is not granted. Review the robot node’s motion permission with the spotter; resolve disabled wheels or an actual local override before granting control.'
+      : 'Sweep control is not granted. Review Readiness → Control authority on the phone with the RC pilot. Resolve connection loss or actual takeover first. Permission does not mean Virtual Stick is enabled.',
   rc_safety_operator_missing: (noun) =>
     noun === 'robot'
-      ? 'No spotter is reported present beside the robot with its screen stop in reach.'
-      : 'No RC safety operator is reported present.',
-  disconnected: 'The adapter connection is down.',
-  leaving: (noun) => `The ${noun} is completing a graceful leave.`,
+      ? 'No spotter is reported present beside the robot with its screen stop in reach. Confirm presence through the robot node only when that person is in place.'
+      : 'Confirm Readiness → RC safety operator present on the bridge phone only with a person at the physical RC; a connection alone is insufficient.',
+  disconnected: (noun) => noun === 'aircraft'
+    ? "Adapter connection lost. Check the bridge phone's LAN and relay connection, then reconnect."
+    : "Node connection lost. Check the robot's Wi-Fi and relay connection, then reconnect.",
+  leaving: (noun) => `The ${noun} is completing a graceful leave. Wait for it to finish, then rejoin if needed.`,
 }
+
+export const ZERO_POSITION_QUALITY_HELP = 'Position quality is 0%. Live telemetry does not establish valid positioning. Check device positioning; the relay’s quality limit still applies.'
 
 const MEMBERSHIP_REASON_SENTENCES: Sentences = {
   authenticated_join: 'The adapter authenticated and joined the roster.',

@@ -12,6 +12,7 @@ import type {
 } from '../relay/contract'
 import {
   intentFromVoicePlanStep,
+  followsSelection,
   isConsoleIntentV1,
   requiresConfirmation,
   selectionRule,
@@ -74,6 +75,15 @@ export function useControlConsole({
     sessionId,
     (id) => createInitialControlState(id, intentDependencies.now()),
   )
+  const confirmedIds = useRef(new Set<string>())
+
+  // Only one pending preview can be confirmed. Retain its synchronous send
+  // guard until React commits the lifecycle update, then release the entry.
+  useEffect(() => {
+    const pendingIds = new Set(state.requests.filter((request) => request.status === 'pending_confirmation').map((request) => request.intent.intent_id))
+    for (const id of confirmedIds.current) if (!pendingIds.has(id)) confirmedIds.current.delete(id)
+  }, [state.requests])
+  useEffect(() => { confirmedIds.current.clear() }, [sessionId])
 
   // Scans arrive on the console connection beside telemetry and go to their
   // own store; the reducer only records that one arrived. The ref keeps the
@@ -208,6 +218,7 @@ export function useControlConsole({
       voiceBinding?: NonNullable<RequestRecord['plan']>['voiceBinding'],
     ): IntentV1 => {
       const t = intentDependencies.now()
+      confirmedIds.current.delete(intent.intent_id)
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
         .filter((request) => request.status === 'pending_confirmation')
@@ -266,11 +277,13 @@ export function useControlConsole({
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
       if (!isIntentEnabled(state, request.name)) return null
+      const selection = ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection
+      if (request.name === 'body_pulse' && selection.some((id) => state.aircraft[id]?.device_class !== 'aircraft')) return null
       const intent = createIntent(
         {
           name: request.name,
           args: request.args,
-          selection: ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection,
+          selection,
           source: 'console',
           session: state.sessionId,
         },
@@ -438,6 +451,7 @@ export function useControlConsole({
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
       if (!fleetWide && selection.length === 0) return null
+      if (request.name === 'body_pulse' && selection.some((id) => state.aircraft[id]?.device_class !== 'aircraft')) return null
       const draft = createIntent(
         {
           name: request.name,
@@ -512,7 +526,7 @@ export function useControlConsole({
   const confirmRequest = useCallback(
     (intentId: string): IntentV1 | null => {
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
-      if (!request || request.status !== 'pending_confirmation') return null
+      if (!request || request.status !== 'pending_confirmation' || confirmedIds.current.has(intentId)) return null
       if (!isIntentEnabled(state, request.intent.name)) {
         dispatch({
           type: 'request_invalidated',
@@ -565,7 +579,7 @@ export function useControlConsole({
       }
       const selectionMatches = request.intent.selection.length === state.selection.length &&
         request.intent.selection.every((id) => state.selection.includes(id))
-      if (!selectionMatches && selectionRule(request.intent.name) !== 'all' && request.intent.name !== 'select') {
+      if (!selectionMatches && followsSelection(request.intent.name) && request.intent.name !== 'select') {
         dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
           reasonCode: 'stale_selection', detail: 'The authoritative selection changed after preview. No command was sent.' })
         return null
@@ -586,8 +600,19 @@ export function useControlConsole({
         })
         return null
       }
+      if (request.intent.name === 'body_pulse' && (
+        !state.armed || state.estop || request.intent.selection.some((id) =>
+          state.aircraft[id]?.device_class !== 'aircraft' ||
+          !state.aircraft[id]?.adapter_capabilities.includes('body_pulse_v1') ||
+          !['airborne', 'hovering'].includes(state.aircraft[id]?.flight_state ?? ''))
+      )) {
+        dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
+          reasonCode: 'pulse_readiness_changed', detail: 'A selected aircraft is no longer ready for a body pulse. Preview again; nothing was sent.' })
+        return null
+      }
       const confirmedAt = intentDependencies.now()
       const confirmed = confirmIntent(request.intent, confirmedAt)
+      confirmedIds.current.add(intentId)
       sendExistingIntent(confirmed, confirmedAt)
       return confirmed
     },
@@ -683,7 +708,7 @@ export function useControlConsole({
       if (request.status !== 'failed' && request.status !== 'refused') return
       if (request.intent.source === 'language') return
       const intent = retryIntent(request.intent, intentDependencies)
-      if (['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
+      if (intent.source === 'webcam' || ['arm', 'body_pulse', 'takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
         stageForConfirmation({ ...intent, confirm: false })
         return
       }

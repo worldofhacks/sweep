@@ -230,6 +230,15 @@ class RemoteBridgeAdapter:
             },
         )
 
+    def body_pulse(
+        self, drone_id: int, forward_mm_s: int, duration_ms: int
+    ) -> AdapterAcknowledgement:
+        return self._flight(
+            drone_id,
+            CommandOperation.BODY_PULSE,
+            {"forward_mm_s": forward_mm_s, "duration_ms": duration_ms},
+        )
+
     def rotate_to(self, drone_id: int, yaw: float, speed: float) -> AdapterAcknowledgement:
         return self._flight(
             drone_id,

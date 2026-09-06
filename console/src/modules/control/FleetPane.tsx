@@ -9,8 +9,9 @@ import {
 } from '../../control/state'
 import type { RelayAircraftState } from '../../relay/contract'
 import { authorityWords, isReady, membershipTone, metricTone, sortedAircraft } from '../../shell/derive'
-import { formatAgo, formatPercent, formatTime, humanizeCode } from '../../shell/format'
-import { membershipReasonSentence, readinessSentence } from '../../shell/sentences'
+import { formatAgo, formatPercent, formatTime } from '../../shell/format'
+import { membershipReasonSentence } from '../../shell/sentences'
+import { ReadinessHelp } from '../ReadinessHelp'
 import type { ModuleProps } from '../types'
 import { motionStateWord } from './controls'
 
@@ -100,7 +101,7 @@ function RegistryCard({
     <article className="ct-registry-card" aria-label={`${id} registry card`}>
       <div className="ct-registry-head">
         <span className="ct-registry-id">{id}</span>{' '}
-        <span className={`ct-registry-membership tone-${membershipTone(drone.membership)}`}>{drone.membership}</span>{' '}
+        <span className={`ct-registry-membership tone-${membershipTone(drone.membership, drone.pos_quality)}`}>{drone.membership}</span>{' '}
         <span className="ct-registry-flight">{motionStateWord(drone)}</span>{' '}
         <span className="ct-registry-stamp">epoch {drone.connection_epoch}</span>{' '}
         <span className="ct-registry-stamp">{formatAgo(now, drone.last_seen_at)}</span>
@@ -127,15 +128,7 @@ function RegistryCard({
           ))
         )}
       </div>
-      {drone.readiness_reasons.length > 0 && (
-        <div className="ct-registry-reasons">
-          {drone.readiness_reasons.map((code) => (
-            <p key={code}>
-              <code>{code}</code> — {readinessSentence(code, noun) ?? humanizeCode(code)}
-            </p>
-          ))}
-        </div>
-      )}
+      <ReadinessHelp drone={drone} className="ct-registry-reasons" />
       <button
         type="button"
         className={selected ? 'ct-registry-select is-selected' : 'ct-registry-select'}

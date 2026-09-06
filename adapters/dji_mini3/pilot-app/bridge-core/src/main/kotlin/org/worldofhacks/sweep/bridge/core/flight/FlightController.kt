@@ -57,6 +57,8 @@ class FlightController(
     private val port: FlightPort,
     private val clock: Clock,
     val config: FlightConfig = FlightConfig(),
+    /** Elapsed time for pulse deadlines; the phone supplies a monotonic clock. */
+    private val pulseClock: Clock = clock,
     private val log: (String) -> Unit = {},
 ) {
     private sealed interface Phase {
@@ -65,6 +67,8 @@ class FlightController(
         data class Enabling(val sinceMs: Long) : Phase
 
         data class Running(val steps: List<MotionStep>, val index: Int, val startedMs: Long, val yawSettledSinceMs: Long?) : Phase
+
+        data class Pulsing(val body: BodyVelocity, val durationMs: Long, val startedMs: Long? = null) : Phase
 
         data class Settling(val untilMs: Long, val detail: String) : Phase
 
@@ -147,6 +151,10 @@ class FlightController(
     fun updateLink(next: LinkFacts) {
         val previous = link
         link = next
+        if (!next.controlAuthorityGranted && active?.command?.args is CommandArgs.BodyPulse) {
+            failActive(FlightReason.AUTHORITY_LOST, "control authority withdrawn during body_pulse")
+            releaseVirtualStick()
+        }
         next.settings?.let { applySettings(it) }
         val activity = next.lastRelayActivityMs
         if (activity != null && activity != lastRelayActivityMs) {
@@ -245,6 +253,7 @@ class FlightController(
             CommandArgs.Land -> land(command, sink, now)
             is CommandArgs.Takeoff -> takeoff(command, args, sink, now)
             is CommandArgs.Goto -> goto(command, args, sink, now)
+            is CommandArgs.BodyPulse -> bodyPulse(command, args, sink, now)
             is CommandArgs.RotateTo -> rotateTo(command, args, sink, now)
             else -> fail(sink, FlightReason.UNSUPPORTED, "${command.operation} is not a flight operation")
         }
@@ -348,6 +357,21 @@ class FlightController(
         }
         active = Active(command, sink, now, describe(step, 1, 1))
         beginVirtualStick(now) { transition(Phase.Running(listOf(step), 0, clock.nowMs(), null)) }
+    }
+
+    private fun bodyPulse(command: FlightCommand, args: CommandArgs.BodyPulse, sink: ReportSink, now: Long) {
+        if (!motionAllowed(sink)) return
+        if (!facts.flying || facts.flightState != "hovering") {
+            fail(sink, FlightReason.NOT_AIRBORNE, "body_pulse needs a hovering aircraft")
+            return
+        }
+        val body = BodyVelocity(forwardMS = args.forwardMmS / 1000.0)
+        if (!config.limits.within(body)) {
+            fail(sink, FlightReason.UNSUPPORTED, "body_pulse exceeds the configured flight limits")
+            return
+        }
+        active = Active(command, sink, now, "body pulse forward ${format(body.forwardMS)} m/s for ${args.durationMs} ms; then neutral hold")
+        beginVirtualStick(now) { transition(Phase.Pulsing(body, args.durationMs)) }
     }
 
     private fun rotateTo(command: FlightCommand, args: CommandArgs.RotateTo, sink: ReportSink, now: Long) {
@@ -533,7 +557,7 @@ class FlightController(
             // whose Virtual Stick enable answered after it, reaches Running under an asserted
             // stop and is cut on the first tick that sees it, before this tick's frame goes out.
             when (phase) {
-                is Phase.Running, is Phase.Bench -> {
+                is Phase.Running, is Phase.Pulsing, is Phase.Bench -> {
                     failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted: sticks neutral, hovering")
                     transition(Phase.Settling(now + config.settleMs, "network stop hover"))
                 }
@@ -569,6 +593,12 @@ class FlightController(
                 transition(Phase.Idle)
             }
             is Phase.Running -> advanceRunning(current, now)
+            is Phase.Pulsing -> {
+                val started = current.startedMs
+                if (started != null && pulseClock.nowMs() - started >= current.durationMs) {
+                    transition(Phase.Settling(now + config.settleMs, "body pulse ended after ${current.durationMs} ms; neutral hold ${config.settleMs} ms"))
+                }
+            }
             is Phase.Settling -> if (now >= current.untilMs) {
                 completeActive("${current.detail}; measured speed ${format(facts.speedMS)} m/s")
                 releaseVirtualStick()
@@ -727,6 +757,11 @@ class FlightController(
         if (!vsEnabled) return
         val frame = when (val current = phase) {
             is Phase.Running -> frameFor(current.steps[current.index])
+            is Phase.Pulsing -> {
+                // Count from the first non-neutral frame, not SDK enable or network receipt.
+                if (current.startedMs == null) phase = current.copy(startedMs = pulseClock.nowMs())
+                mapping.toFrame(current.body)
+            }
             is Phase.Bench -> current.frame
             else -> StickFrame.NEUTRAL
         }
@@ -879,6 +914,7 @@ class FlightController(
             is MotionStep.Velocity -> "velocity_step"
             is MotionStep.Yaw -> "yaw_step"
         }
+        is Phase.Pulsing -> "body_pulse"
         is Phase.Settling -> "settling"
         is Phase.TakingOff -> "taking_off"
         is Phase.Landing -> "landing"

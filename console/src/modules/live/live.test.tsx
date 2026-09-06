@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
 import App from '../../App'
@@ -7,7 +7,7 @@ import type { PlaybackSession, PlaybackStateListener } from '../../media/player'
 import type { MediaRuntime } from '../../media/runtime'
 import { UnavailableRelayClient } from '../../relay/client'
 import { C1_BASIC_CONTROL_INTENTS, type DroneId, type RelayAircraftState } from '../../relay/contract'
-import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
+import { FixtureRelayClient, fixtureAircraft, fixtureScenario } from '../../testing/fixture-relay-client'
 
 const session = 'live-module-session'
 const clock = () => 1_756_700_000_000
@@ -38,7 +38,7 @@ function livePanes() {
   return within(screen.getByRole('group', { name: 'Live panes' }))
 }
 
-async function openPane(user: User, label: 'Wall of 4' | 'Wall of 6' | 'Ground' | 'Focus feed') {
+async function openPane(user: User, label: 'All devices' | 'Wall of 4' | 'Wall of 6' | 'Ground' | 'Focus feed') {
   await user.click(livePanes().getByRole('button', { name: label }))
 }
 
@@ -55,6 +55,7 @@ function emitState(
   eventId: string,
   drones: RelayAircraftState[],
   selection: DroneId[],
+  rosterVersion = 7,
 ) {
   client.emitServer({
     v: 1,
@@ -62,7 +63,7 @@ function emitState(
     type: 'state',
     event_id: eventId,
     session,
-    roster_version: 7,
+    roster_version: rosterVersion,
     armed: true,
     estop: false,
     selection,
@@ -115,9 +116,11 @@ class LoggedSession implements PlaybackSession {
 
 describe('Live module walls', () => {
   test('the wall of four shows one tile per reported aircraft with its stream state in words', async () => {
+    const user = userEvent.setup()
     const clients = fixtureClients()
     renderLive(clients)
     await screen.findByText(/Development fixture active/i)
+    await openPane(user, 'Wall of 4')
 
     expect(livePanes().getByRole('button', { name: 'Wall of 4' })).toHaveAttribute('aria-pressed', 'true')
     const wall = within(screen.getByRole('region', { name: 'Wall of 4' }))
@@ -159,6 +162,7 @@ describe('Live module walls', () => {
     const user = userEvent.setup()
     const six = renderLive(fixtureClients(6))
     await screen.findByText(/Development fixture active/i)
+    await openPane(user, 'Wall of 4')
     expect(
       screen.getByText(/The relay reports 6 aircraft; the first 4 by id are shown\./),
     ).toBeInTheDocument()
@@ -308,6 +312,102 @@ describe('Live module focus', () => {
 })
 
 describe('Live module playback', () => {
+  test('the default wall grows from aircraft to a joining robot and all eight configured devices without empty slots or restarting existing feeds', async () => {
+    const clients = fixtureClients()
+    const log = new SessionLog()
+    const view = renderLive(clients, log.media)
+    await screen.findByRole('region', { name: 'All devices' })
+    expect(livePanes().getByRole('button', { name: 'All devices' })).toHaveAttribute('aria-pressed', 'true')
+    const aircraft = fixtureAircraft(clock()).map((device) => ({
+      ...device, video: { status: 'live' as const, last_frame_at: clock() },
+    }))
+    act(() => emitState(clients.console, 'two-aircraft-online', aircraft.slice(0, 2), [1]))
+    const wall = within(screen.getByRole('region', { name: 'All devices' }))
+    expect(wall.getAllByRole('article')).toHaveLength(2)
+    expect(wall.queryByRole('article', { name: /Slot .* empty/ })).not.toBeInTheDocument()
+    await waitFor(() => expect(log.started).toEqual(['drone1', 'drone2']))
+    const firstPlayer = tile('D-01').getByLabelText('Live feed D-01')
+    const robot = fixtureScenario('mixed').fleet(clock()).find((device) => device.drone_id === 11)!
+    act(() => emitState(clients.console, 'robot-joining', [...aircraft.slice(0, 2), {
+      ...robot, membership: 'registered', selectable: false,
+      readiness_reasons: ['telemetry_missing'], video: undefined,
+    }], [1], 8))
+    expect(wall.getAllByRole('article')).toHaveLength(3)
+    expect(tile('G-01').getByText('registered')).toBeInTheDocument()
+    expect(tile('G-01').getByText('unreported')).toBeInTheDocument()
+    expect(tile('G-01').queryByLabelText('Live feed G-01')).not.toBeInTheDocument()
+    expect(log.started).toEqual(['drone1', 'drone2'])
+    const robots = Array.from({ length: 4 }, (_, index) => ({
+      ...robot, drone_id: 11 + index, unit: index + 1,
+      video: { status: 'live' as const, last_frame_at: clock() },
+    }))
+    act(() => emitState(clients.console, 'eight-devices-online', [...aircraft, ...robots], [1], 9))
+    expect(wall.getAllByRole('article')).toHaveLength(8)
+    expect(wall.queryByRole('article', { name: /Slot .* empty/ })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(8))
+    expect(log.started).toEqual(['drone1', 'drone2', 'drone3', 'drone4', 'ground1', 'ground2', 'ground3', 'ground4'])
+    expect(tile('D-01').getByLabelText('Live feed D-01')).toBe(firstPlayer)
+    expect(log.closed).toBe(0)
+    expect(clients.console.sent).toEqual([])
+    view.unmount()
+    expect(log.closed).toBe(8)
+  })
+
+  test('selecting a robot camera uses its global device id alongside an aircraft selection', async () => {
+    const clients = {
+      console: new FixtureRelayClient(session, clock, 'console', 'mixed'),
+      keyboard: new FixtureRelayClient(session, clock, 'keyboard', 'mixed'),
+    }
+    const user = userEvent.setup()
+    renderLive(clients)
+    await screen.findByRole('region', { name: 'All devices' })
+    await user.click(tile('G-02').getByRole('button', { name: 'add to selection G-02' }))
+    expect(clients.console.sent).toHaveLength(1)
+    expect(clients.console.sent[0]).toMatchObject({
+      name: 'select', source: 'console', selection: [1, 12], args: { ids: [1, 12] },
+    })
+    expect(clients.keyboard.sent).toEqual([])
+  })
+
+  test('the mixed wall plays all five class/unit paths and reconnects only the device whose epoch changed', async () => {
+    const clients = {
+      console: new FixtureRelayClient(session, clock, 'console', 'mixed'),
+      keyboard: new FixtureRelayClient(session, clock, 'keyboard', 'mixed'),
+    }
+    const log = new SessionLog()
+    const view = renderLive(clients, log.media)
+    await screen.findByRole('region', { name: 'All devices' })
+    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2']))
+    const drones = fixtureScenario('mixed').fleet(clock()).map((drone) => ({
+      ...drone, video: { status: 'live' as const, last_frame_at: clock() },
+    }))
+    const rosterVersion = fixtureScenario('mixed').rosterVersion
+    act(() => emitState(clients.console, 'five-live', drones, [1], rosterVersion))
+    await waitFor(() => expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(5))
+    expect(log.started).toEqual(['drone1', 'ground1', 'ground2', 'drone2', 'ground3'])
+    expect(log.closed).toBe(0)
+    for (const id of ['D-01', 'D-02', 'G-01', 'G-02', 'G-03']) {
+      expect(tile(id).getByLabelText(`Live feed ${id}`)).toBeInTheDocument()
+    }
+    const rejoined = drones.map((drone) => drone.drone_id === 12
+      ? { ...drone, connection_epoch: drone.connection_epoch + 1 }
+      : drone)
+    act(() => emitState(clients.console, 'ground-two-rejoined', rejoined, [1], rosterVersion))
+    await waitFor(() => expect(log.closed).toBe(1))
+    expect(log.started).toEqual(['drone1', 'ground1', 'ground2', 'drone2', 'ground3', 'ground2'])
+    expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(5)
+    act(() => emitState(clients.console, 'ground-one-offline', rejoined.map((drone) => drone.drone_id === 11
+      ? { ...drone, video: { status: 'offline', last_frame_at: clock() } }
+      : drone), [1], rosterVersion))
+    await waitFor(() => expect(log.closed).toBe(2))
+    expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(4)
+    expect(tile('G-01').getByText('No video. The adapter reports the stream offline.')).toBeInTheDocument()
+    expect(clients.console.sent).toEqual([])
+    expect(clients.keyboard.sent).toEqual([])
+    view.unmount()
+    expect(log.closed).toBe(6)
+  })
+
   test('a wall tile plays only while the relay reports its stream live, and the focus feed follows the focused aircraft', async () => {
     const clients = fixtureClients()
     const log = new SessionLog()
@@ -469,11 +569,12 @@ describe('Live module ground pane', () => {
     await screen.findByText(/Development fixture active/i)
 
     // The aircraft walls hold aircraft only: the mixed fixture has two.
+    await openPane(user, 'Wall of 4')
     const wall = within(screen.getByRole('region', { name: 'Wall of 4' }))
     expect(wall.getAllByRole('button', { name: /^Focus D-/ })).toHaveLength(2)
     expect(wall.queryByRole('article', { name: /^G-/ })).not.toBeInTheDocument()
     expect(wall.getByRole('article', { name: 'Slot 3 empty' })).toHaveTextContent('no aircraft')
-    await waitFor(() => expect(log.started).toEqual(['drone1']))
+    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2', 'drone1']))
 
     await openPane(user, 'Ground')
     const ground = within(screen.getByRole('region', { name: 'Ground' }))
@@ -488,7 +589,7 @@ describe('Live module ground pane', () => {
     expect(tile('G-01').getByLabelText('Live feed G-01')).toBeInTheDocument()
     expect(tile('G-02').getByLabelText('Live feed G-02')).toBeInTheDocument()
     expect(await tile('G-01').findByText('Playback playing')).toBeInTheDocument()
-    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2']))
+    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2', 'drone1', 'ground1', 'ground2']))
     expect(tile('G-03').getByText('unreported')).toBeInTheDocument()
     expect(tile('G-03').getByText('rc_safety_operator_missing')).toBeInTheDocument()
     expect(tile('G-03').getByRole('button', { name: 'not selectable G-03' })).toHaveAttribute(

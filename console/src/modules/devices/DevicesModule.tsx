@@ -5,8 +5,10 @@ import { deviceNoun, formatDeviceId, pluralNoun, rosterNoun } from '../../contro
 import type { DroneId, RelayAircraftState } from '../../relay/contract'
 import { Pane } from '../../shell/Pane'
 import { authorityWords, membershipTone, sortedAircraft } from '../../shell/derive'
-import { formatAgo, formatPercent, formatTime, humanizeCode } from '../../shell/format'
-import { membershipReasonSentence, readinessSentence, reasonSentence } from '../../shell/sentences'
+import { formatAgo, formatPercent, formatTime } from '../../shell/format'
+import { readinessNotes } from '../../shell/readiness'
+import { membershipReasonSentence, reasonSentence } from '../../shell/sentences'
+import { ReadinessHelp } from '../ReadinessHelp'
 import { motionStateWord } from '../control/controls'
 import { useSecondTick } from '../live/use-second-tick'
 import type { ModuleProps } from '../types'
@@ -93,7 +95,7 @@ function DeviceCard({
       <div className="dv-card-head">
         <span className="dv-id">{id}</span>
         <span className="dv-class">{CLASS_WORD[device.device_class]}</span>
-        <span className={`dv-membership tone-${membershipTone(device.membership)}`}>{device.membership}</span>
+        <span className={`dv-membership tone-${membershipTone(device.membership, device.pos_quality)}`}>{device.membership}</span>
         <span className="dv-state">{motionStateWord(device)}</span>
       </div>
       <dl className="dv-rows">
@@ -116,14 +118,8 @@ function DeviceCard({
         <Row k="sensor" v={sensor.text} tone={sensor.tone} />
         <Row k="last seen" v={device.last_seen_at === null ? 'unreported' : formatAgo(now, device.last_seen_at)} />
       </dl>
-      {device.readiness_reasons.length > 0 ? (
-        <div className="dv-reasons">
-          {device.readiness_reasons.map((code) => (
-            <p key={code}>
-              <code>{code}</code> — {readinessSentence(code, noun) ?? humanizeCode(code)}
-            </p>
-          ))}
-        </div>
+      {readinessNotes(device).length > 0 ? (
+        <ReadinessHelp drone={device} className="dv-reasons" />
       ) : (
         <p className="dv-ready tone-ok">ready</p>
       )}

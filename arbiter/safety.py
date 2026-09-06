@@ -24,11 +24,17 @@ from planner.models import (
     RefusalReason,
 )
 from planner.planner import SELECTION_TARGETED_INTENTS
+from relay.body_pulse import (
+    BODY_PULSE_CAPABILITY,
+    body_pulse_displacement_bound_m,
+    valid_body_pulse_args,
+)
 from relay.intent_v1 import IntentName, IntentV1
 
 _CONFIRMED_INTENTS: Final = frozenset(
     {
         IntentName.TAKEOFF,
+        IntentName.BODY_PULSE,
         IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.CAPTURE_ROOM,
@@ -51,6 +57,7 @@ _STOPPED_OPERATION_BY_INTENT: Final = {
 _ARMED_INTENTS: Final = frozenset(
     {
         IntentName.TRANSLATE,
+        IntentName.BODY_PULSE,
         IntentName.ALTITUDE,
         IntentName.FORMATION_NEXT,
         IntentName.FORMATION_SET,
@@ -76,12 +83,18 @@ _POSITION_REQUIRED: Final = frozenset(
     {
         CommandOperation.TAKEOFF,
         CommandOperation.GOTO,
+        CommandOperation.BODY_PULSE,
         CommandOperation.ROTATE_TO,
         *_CAMERA_OPERATIONS,
     }
 )
 _PHYSICALLY_ARMED_OPERATIONS: Final = frozenset(
-    {CommandOperation.GOTO, CommandOperation.ROTATE_TO, *_CAMERA_OPERATIONS}
+    {
+        CommandOperation.GOTO,
+        CommandOperation.BODY_PULSE,
+        CommandOperation.ROTATE_TO,
+        *_CAMERA_OPERATIONS,
+    }
 )
 _STABLE_MOTION_STATES: Final = frozenset({FlightState.AIRBORNE, FlightState.HOVERING})
 
@@ -175,7 +188,10 @@ class SafetyArbiter:
                 "intent selection differs from authoritative state",
             )
 
-        if intent.name in _CONFIRMED_INTENTS and not intent.confirm:
+        if (
+            intent.name in _CONFIRMED_INTENTS
+            or (intent.source == "webcam" and intent.name is IntentName.ARM)
+        ) and not intent.confirm:
             return self._intent_refusal(
                 intent,
                 snapshot,
@@ -275,6 +291,18 @@ class SafetyArbiter:
                 )
                 if battery_refusal is not None:
                     return battery_refusal
+
+            if intent.name is IntentName.BODY_PULSE and (
+                BODY_PULSE_CAPABILITY not in aircraft.capabilities
+                or not valid_body_pulse_args(intent.args)
+            ):
+                return self._intent_refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.UNSUPPORTED,
+                    "body_pulse requires current body_pulse_v1 capability and bounded arguments",
+                    drone_id,
+                )
 
             if intent.name is IntentName.CAPTURE_ROOM:
                 capture_refusal = self._check_capture_preconditions(
@@ -654,6 +682,11 @@ class SafetyArbiter:
             if telemetry_refusal is not None:
                 return telemetry_refusal
 
+        if command.operation is CommandOperation.BODY_PULSE:
+            pulse_refusal = self._check_body_pulse(plan, command, snapshot, aircraft)
+            if pulse_refusal is not None:
+                return pulse_refusal
+
         target = self.command_position(command, aircraft)
         if target is not None and not command.safety_action:
             if plan.intent_name is IntentName.ALTITUDE:
@@ -843,6 +876,7 @@ class SafetyArbiter:
             IntentName.SELECT: frozenset(),
             IntentName.TAKEOFF: frozenset({CommandOperation.TAKEOFF}),
             IntentName.TRANSLATE: frozenset({CommandOperation.GOTO}),
+            IntentName.BODY_PULSE: frozenset({CommandOperation.BODY_PULSE}),
             IntentName.ALTITUDE: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
             IntentName.FORMATION_NEXT: frozenset({CommandOperation.GOTO}),
             IntentName.FORMATION_SET: frozenset({CommandOperation.GOTO}),
@@ -1052,6 +1086,7 @@ class SafetyArbiter:
                 )
         if plan.intent_name in {
             IntentName.TAKEOFF,
+            IntentName.BODY_PULSE,
             IntentName.TRANSLATE,
             IntentName.FORMATION_NEXT,
             IntentName.FORMATION_SET,
@@ -1111,6 +1146,12 @@ class SafetyArbiter:
 
     @staticmethod
     def _valid_normal_command(intent_name: IntentName, command: Command) -> bool:
+        if intent_name is IntentName.BODY_PULSE:
+            return (
+                command.operation is CommandOperation.BODY_PULSE
+                and not command.safety_action
+                and valid_body_pulse_args(command.parameters)
+            )
         if intent_name is IntentName.LAND:
             return (
                 command.operation is CommandOperation.LAND
@@ -1680,6 +1721,17 @@ class SafetyArbiter:
                     aircraft.drone_id,
                 )
         elif (
+            intent.name is IntentName.BODY_PULSE
+            and aircraft.flight_state is not FlightState.HOVERING
+        ):
+            return self._intent_refusal(
+                intent,
+                snapshot,
+                RefusalReason.INVALID_STATE,
+                "body_pulse requires a hovering aircraft",
+                aircraft.drone_id,
+            )
+        elif (
             intent.name
             in {
                 IntentName.TRANSLATE,
@@ -1743,6 +1795,16 @@ class SafetyArbiter:
                     RefusalReason.INVALID_STATE,
                     "takeoff command requires an armed, landed aircraft",
                 )
+        elif (
+            operation is CommandOperation.BODY_PULSE
+            and aircraft.flight_state is not FlightState.HOVERING
+        ):
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.INVALID_STATE,
+                "body_pulse requires a hovering aircraft",
+            )
         elif (
             operation in {CommandOperation.GOTO, CommandOperation.ROTATE_TO}
             and aircraft.flight_state not in _STABLE_MOTION_STATES
@@ -1870,6 +1932,8 @@ class SafetyArbiter:
             CommandOperation.GOTO,
         }:
             route_distance += aircraft.pose.distance_to(target)
+        if command is not None and command.operation is CommandOperation.BODY_PULSE:
+            route_distance += 2 * body_pulse_displacement_bound_m(command.parameters)
         required = self.config.battery_reserve_fraction + (
             route_distance * self.config.battery_cost_per_m
         )
@@ -1972,6 +2036,85 @@ class SafetyArbiter:
                 )
         return None
 
+    def _check_body_pulse(
+        self, plan: Plan, command: Command, snapshot: FleetSnapshot, aircraft: AircraftState
+    ) -> Refusal | None:
+        if (
+            plan.intent_name is not IntentName.BODY_PULSE
+            or not plan.confirmed
+            or command.safety_action
+            or not valid_body_pulse_args(command.parameters)
+        ):
+            return self._invalid_plan_refusal(plan, snapshot, "invalid confirmed body_pulse")
+        if BODY_PULSE_CAPABILITY not in aircraft.capabilities:
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.UNSUPPORTED,
+                "aircraft does not advertise body_pulse_v1 in the current epoch",
+            )
+        if aircraft.active_task_id not in {None, plan.intent_id}:
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.INVALID_STATE,
+                "body pulse requires the selected aircraft to finish its active task",
+            )
+        radius = body_pulse_displacement_bound_m(command.parameters)
+        pose = aircraft.pose
+        fence = self.config.geofence
+        # A body command does not depend on a world heading. Bound every possible
+        # horizontal direction instead of inventing a heading or a future pose.
+        if (
+            pose.x - radius < fence.min_x
+            or pose.x + radius > fence.max_x
+            or pose.y - radius < fence.min_y
+            or pose.y + radius > fence.max_y
+            or not fence.min_z <= pose.z <= fence.max_z
+        ):
+            return self._command_refusal(
+                command,
+                snapshot,
+                RefusalReason.GEOFENCE,
+                "body pulse displacement envelope exceeds the configured geofence",
+            )
+        for other_id, other in snapshot.aircraft.items():
+            if other_id == aircraft.drone_id or not other.airborne:
+                continue
+            evidence = self._check_telemetry(
+                command.intent_id, snapshot, other, require_position=True
+            )
+            if evidence is not None:
+                return evidence
+            if other.flight_state is not FlightState.HOVERING or other.active_task_id not in {
+                None,
+                plan.intent_id,
+            }:
+                return self._command_refusal(
+                    command,
+                    snapshot,
+                    RefusalReason.INVALID_STATE,
+                    f"body pulse requires aircraft {other_id} to hold before motion",
+                )
+            # Check both pulse envelopes even though current dispatch is ordered.
+            # A late acknowledgement must not make concurrent movement unsafe.
+            other_radius = max(
+                (
+                    body_pulse_displacement_bound_m(item.parameters)
+                    for item in plan.commands
+                    if item.drone_id == other_id and item.operation is CommandOperation.BODY_PULSE
+                ),
+                default=0.0,
+            )
+            if pose.distance_to(other.pose) < self.config.min_spacing_m + radius + other_radius:
+                return self._command_refusal(
+                    command,
+                    snapshot,
+                    RefusalReason.SPACING,
+                    f"body pulse envelopes violate spacing from aircraft {other_id}",
+                )
+        return None
+
     def _check_spacing(
         self,
         command: Command,
@@ -2017,7 +2160,11 @@ class SafetyArbiter:
                 float(command.parameters["y"]),
                 float(command.parameters["z"]),
             )
-        if command.operation in {CommandOperation.ROTATE_TO, *_CAMERA_OPERATIONS}:
+        if command.operation in {
+            CommandOperation.BODY_PULSE,
+            CommandOperation.ROTATE_TO,
+            *_CAMERA_OPERATIONS,
+        }:
             return aircraft.pose
         return None
 

@@ -22,6 +22,7 @@ from tests.autonomy_fixtures import (
     make_snapshot,
     make_stack,
     planning_config,
+    replace_aircraft,
     safety_config,
 )
 
@@ -30,6 +31,7 @@ def test_c1_profile_enables_only_earned_intents() -> None:
     assert C1_CAPABILITY_PROFILE.enabled_intent_names == C1_IMPLEMENTED_INTENT_NAMES
     assert {name.value for name in C1_CAPABILITY_PROFILE.enabled_intent_names} == {
         "arm",
+        "body_pulse",
         "altitude",
         "capture_room",
         "come_home",
@@ -178,6 +180,17 @@ def test_every_advertised_intent_has_a_safe_planner_and_arbiter_path() -> None:
     )
     arbiter = SafetyArbiter(safety_config())
     cases = (
+        (
+            make_intent(
+                IntentName.BODY_PULSE,
+                selection=(1,),
+                confirm=True,
+                args={"forward_mm_s": 250, "duration_ms": 500},
+            ),
+            replace_aircraft(
+                make_snapshot(1, selection=(1,)), 1, capabilities=frozenset({"body_pulse_v1"})
+            ),
+        ),
         (
             make_intent(IntentName.ARM, selection=()),
             make_snapshot(1, selection=(), flight_state=FlightState.DISARMED, armed=False),

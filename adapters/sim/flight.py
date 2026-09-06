@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from math import cos, radians, sin
 from threading import RLock
 
 from adapters.protocols import (
@@ -22,6 +23,7 @@ from planner.models import (
     LossBehavior,
     Position,
 )
+from relay.body_pulse import valid_body_pulse_args
 
 
 class InjectedFlightFailure(StrEnum):
@@ -72,7 +74,7 @@ class SimFlightAdapter:
                 connection_epoch=state.connection_epoch,
                 pose=state.pose,
                 home=state.home,
-                yaw_deg=0.0,
+                yaw_deg=state.heading_deg if state.heading_deg is not None else 0.0,
                 flight_state=state.flight_state,
                 armed=state.armed,
                 battery=state.battery,
@@ -177,6 +179,43 @@ class SimFlightAdapter:
                 flight_state=FlightState.HOVERING,
             )
             return self._ack(drone_id, CommandOperation.GOTO)
+
+    def body_pulse(
+        self, drone_id: int, forward_mm_s: int, duration_ms: int
+    ) -> AdapterAcknowledgement:
+        params = {"forward_mm_s": forward_mm_s, "duration_ms": duration_ms}
+        if not valid_body_pulse_args(params):
+            raise ValueError("invalid body_pulse bounds")
+        failure = self._take_failure(drone_id, CommandOperation.BODY_PULSE)
+        if failure is not None:
+            return failure
+        with self._lock:
+            blocked = self._blocked_motion(drone_id, CommandOperation.BODY_PULSE)
+            if blocked is not None:
+                return blocked
+            if self._require_aircraft(drone_id).flight_state is not FlightState.HOVERING:
+                return self._ack(
+                    drone_id,
+                    CommandOperation.BODY_PULSE,
+                    status=LifecycleStatus.FAILED,
+                    detail="body_pulse requires a hovering aircraft",
+                )
+            self.calls.append(
+                AdapterCall(CommandOperation.BODY_PULSE, (drone_id,), tuple(sorted(params.items())))
+            )
+            aircraft = self._require_aircraft(drone_id)
+            distance = forward_mm_s * duration_ms / 1_000_000
+            heading = radians(aircraft.yaw_deg)
+            self._aircraft[drone_id] = replace(
+                aircraft,
+                pose=Position(
+                    aircraft.pose.x + sin(heading) * distance,
+                    aircraft.pose.y + cos(heading) * distance,
+                    aircraft.pose.z,
+                ),
+                flight_state=FlightState.HOVERING,
+            )
+            return self._ack(drone_id, CommandOperation.BODY_PULSE)
 
     def rotate_to(self, drone_id: int, yaw: float, speed: float) -> AdapterAcknowledgement:
         failure = self._take_failure(drone_id, CommandOperation.ROTATE_TO)

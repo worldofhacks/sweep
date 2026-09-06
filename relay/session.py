@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import Lock, RLock
 
-from planner.models import CommandOperation
+from planner.models import CommandOperation, DeviceClass
 from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
@@ -306,6 +306,8 @@ class RelaySession:
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
         devices: Mapping[int, DeviceIdentity] | None = None,
+        min_home_position_quality: float = 0.0,
+        max_home_position_age_ms: int | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -335,6 +337,9 @@ class RelaySession:
             media_evidence=media_evidence,
             membership_history_limit=limits.state_membership_history,
             devices=devices,
+            min_home_position_quality=min_home_position_quality,
+            max_home_position_age_ms=max_home_position_age_ms,
+            future_clock_skew_ms=limits.future_clock_skew_ms,
         )
         self._audit_sampling = _AuditSampling()
         # Sensor admission is per device: the relay clock of the last accepted frame
@@ -546,6 +551,20 @@ class RelaySession:
                         raw,
                         reason="downstream_unavailable",
                         detail="no planner/arbiter intent consumer is configured",
+                        now=now,
+                        normalized=intent,
+                    )
+                ]
+
+            if intent.name is IntentName.BODY_PULSE and any(
+                self.registry.device_identity(drone_id).device_class is not DeviceClass.AIRCRAFT
+                for drone_id in intent.selection
+            ):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="unsupported_for_device_class",
+                        detail="body_pulse is supported only for aircraft",
                         now=now,
                         normalized=intent,
                     )
@@ -861,7 +880,7 @@ class RelaySession:
                         "invalid_signature", "membership signature was not accepted"
                     )
                 self._claim_transport_event(request.event_id, request.t, principal, now)
-                transition = self._apply_membership(request)
+                transition = self._apply_membership(request, now_ms=now)
             except (ContractError, RegistryError) as error:
                 return [
                     self._protocol_refusal(
@@ -895,7 +914,7 @@ class RelaySession:
                     )
                 self._claim_transport_event(telemetry.event_id, telemetry.t, principal, now)
                 transition = self.registry.apply_telemetry(
-                    telemetry, transition_event_id=self.event_ids()
+                    telemetry, transition_event_id=self.event_ids(), now_ms=now
                 )
             except (ContractError, RegistryError) as error:
                 return [
@@ -1330,6 +1349,7 @@ class RelaySession:
                     "command ledger is full of commands still awaiting a bounded terminal result"
                 )
             self.registry.check_current(drone_id, connection_epoch)
+            self._check_command_device_class(drone_id, operation)
             entry = self._intents.get(intent_id)
             if entry is not None and entry.status in _TERMINAL_STATUSES:
                 raise ValueError("intent is terminal and cannot receive new commands")
@@ -1402,6 +1422,7 @@ class RelaySession:
         with self._lock:
             self._ensure_mutation_usable()
             self.registry.check_current(drone_id, connection_epoch)
+            self._check_command_device_class(drone_id, operation)
             entry = self._intents.get(intent_id)
             if entry is None or entry.status in _TERMINAL_STATUSES:
                 raise ValueError("dispatched command does not belong to an active intent")
@@ -1429,6 +1450,17 @@ class RelaySession:
                 operation=operation,
                 issued_at=now,
                 waiter_active=False,
+            )
+
+    def _check_command_device_class(self, drone_id: int, operation: CommandOperation) -> None:
+        # Keep the node-timed flight primitive closed at both pre-I/O paths even
+        # while the per-class planner is being integrated independently.
+        if (
+            operation is CommandOperation.BODY_PULSE
+            and self.registry.device_identity(drone_id).device_class is not DeviceClass.AIRCRAFT
+        ):
+            raise ContractError(
+                "unsupported_for_device_class", "body_pulse is supported only for aircraft"
             )
 
     def await_command_acknowledgement(
@@ -1961,11 +1993,13 @@ class RelaySession:
             self._ensure_projection_usable()
             return {**self._metrics, "roster_version": self.registry.roster_version}
 
-    def _apply_membership(self, request: MembershipRequest) -> MembershipTransition:
+    def _apply_membership(
+        self, request: MembershipRequest, *, now_ms: int
+    ) -> MembershipTransition:
         if request.action is MembershipAction.JOIN:
             return self.registry.apply_join(request)
         if request.action is MembershipAction.READINESS:
-            return self.registry.apply_readiness(request)
+            return self.registry.apply_readiness(request, now_ms=now_ms)
         if request.action is MembershipAction.GRACEFUL_LEAVE:
             assert request.connection_epoch is not None
             if self.leave_authorizer is None:

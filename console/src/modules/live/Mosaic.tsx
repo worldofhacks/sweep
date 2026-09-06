@@ -8,7 +8,8 @@ import { deriveReadiness, deriveStream, mosaicSlots, type WallSize } from './der
 
 export interface MosaicProps {
   devices: RelayAircraftState[]
-  count: WallSize
+  /** Omitted for the live roster: exactly one tile per reported device. */
+  count?: WallSize
   /** Accessible name of the wall region. */
   label: string
   /** The sentence above the wall. */
@@ -47,7 +48,7 @@ export function Mosaic({
   onToggleSelection,
   media,
 }: MosaicProps) {
-  const slots = mosaicSlots(devices, count)
+  const slots = count === undefined ? devices : mosaicSlots(devices, count)
   return (
     <section className="lv-wall" aria-label={label}>
       <p className="lv-note">{note}</p>
@@ -116,7 +117,7 @@ function Tile({
   return (
     <article className={`lv-tile is-${stream.status}`} aria-label={`${id} camera tile`}>
       <div className="lv-visual">
-        {plays && <LivePlayer key={drone.drone_id} device={drone} media={media} />}
+        {plays && <LivePlayer key={`${drone.drone_id}:${drone.connection_epoch}`} device={drone} media={media} />}
         <div className="lv-bar">
           <span>{id}</span>
           <span className="lv-bar-status">
@@ -134,7 +135,7 @@ function Tile({
         <span className="lv-metric">bat {formatPercent(drone.battery)}</span>
         <span className="lv-metric">link {formatPercent(drone.link)}</span>
         <span className="lv-metric">pos {formatPercent(drone.pos_quality)}</span>
-        <span className={`tone-${membershipTone(drone.membership)}`}>{drone.membership}</span>
+        <span className={`tone-${membershipTone(drone.membership, drone.pos_quality)}`}>{drone.membership}</span>
         <span className={`tone-${readiness.tone}`}>{readiness.text}</span>
       </p>
       <span className="lv-actions">

@@ -9,9 +9,10 @@ import {
 } from '../control/state'
 import type { RelayAircraftState } from '../relay/contract'
 import { authorityWords, isReady, membershipTone, metricTone, sortedAircraft } from '../shell/derive'
-import { formatPercent, formatTime, humanizeCode } from '../shell/format'
-import { membershipReasonSentence, readinessSentence } from '../shell/sentences'
+import { formatPercent, formatTime } from '../shell/format'
+import { membershipReasonSentence } from '../shell/sentences'
 import { motionStateWord } from './control/controls'
+import { ReadinessHelp } from './ReadinessHelp'
 import type { ModuleProps } from './types'
 
 /**
@@ -123,7 +124,7 @@ function FleetCard({
     <article className="fleet-card" aria-label={`${id} registry card`}>
       <div className="fleet-card-head">
         <span className="fleet-id">{id}</span>
-        <span className={`fleet-membership tone-${membershipTone(drone.membership)}`}>
+        <span className={`fleet-membership tone-${membershipTone(drone.membership, drone.pos_quality)}`}>
           {drone.membership}
         </span>
         <span className="fleet-flight">{motionStateWord(drone)}</span>
@@ -145,15 +146,7 @@ function FleetCard({
           {drone.last_seen_at === null ? 'last seen unreported' : `seen ${formatTime(drone.last_seen_at)}`}
         </span>
       </p>
-      {drone.readiness_reasons.length > 0 && (
-        <div className="fleet-reasons">
-          {drone.readiness_reasons.map((code) => (
-            <p key={code}>
-              <code>{code}</code> — {readinessSentence(code, noun) ?? humanizeCode(code)}
-            </p>
-          ))}
-        </div>
-      )}
+      <ReadinessHelp drone={drone} className="fleet-reasons" />
       <button
         type="button"
         className={selected ? 'fleet-select is-selected' : 'fleet-select'}

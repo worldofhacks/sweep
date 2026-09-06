@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { WebSocketRelayClient, buildSessionWebSocketUrl } from './client'
+import { publicNodeEvents } from '../testing/public-node-events'
 
 class TestSocket extends EventTarget {
   readyState = 1
@@ -29,6 +30,42 @@ class TestSocket extends EventTarget {
 }
 
 describe('WebSocket relay client', () => {
+  test.each(['console', 'keyboard', 'webcam', 'language'] as const)('keeps %s connected through public phone events and a higher-epoch rejoin', (source) => {
+    const socket = new TestSocket()
+    const statuses: string[] = []
+    const serverTypes: string[] = []
+    const client = new WebSocketRelayClient(
+      { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source, token: 'test-token' },
+      { now: () => 100, createSocket: () => socket as unknown as WebSocket },
+    )
+    client.subscribe((event) => {
+      if (event.kind === 'connection') statuses.push(event.connection.status)
+      else serverTypes.push(event.event.type)
+    })
+    client.start()
+    socket.open()
+    socket.message({ v: 1, t: 100, type: 'auth.accepted', event_id: 'auth-node-events', session: 'session-1', source, drone_id: null })
+    const joined = { v: 1, t: 101, type: 'membership', event_id: 'join-5', session: 'session-1',
+      roster_version: 12, action: 'join', drone_id: 2, connection_epoch: 5, membership: 'registered',
+      readiness_reasons: ['telemetry_missing'], adapter_id: 'test-android-node', capabilities: ['flight', 'body_pulse_v1'],
+      provenance: 'adapter_signature', reason: null }
+    socket.message(joined)
+    publicNodeEvents('session-1', 5).forEach((event) => socket.message(event))
+    socket.message({ ...joined, event_id: 'lost-5', roster_version: 13, action: 'unexpected_loss', membership: 'disconnected', provenance: 'relay_transport_attestation', reason: 'socket_closed' })
+    socket.message({ ...joined, event_id: 'join-6', roster_version: 14, connection_epoch: 6 })
+    publicNodeEvents('session-1', 6).forEach((event) => socket.message(event))
+    expect(statuses.at(-1)).toBe('connected')
+    expect(statuses).not.toContain('degraded')
+    expect(serverTypes.filter((type) => type === 'capabilities')).toHaveLength(2)
+    expect(serverTypes.filter((type) => type === 'node_status')).toHaveLength(2)
+    const count = serverTypes.length
+    socket.message({ ...publicNodeEvents('session-1')[1], watchdog_state: 'invented' })
+    expect(statuses.at(-1)).toBe('degraded')
+    expect(serverTypes).toHaveLength(count)
+    socket.message({ ...joined, type: 'unknown_frame' })
+    expect(serverTypes).toHaveLength(count)
+  })
+
   test('puts no token in the URL and sends the strict first auth frame', () => {
     const socket = new TestSocket()
     const client = new WebSocketRelayClient(

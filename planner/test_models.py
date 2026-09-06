@@ -104,6 +104,7 @@ def test_relay_projection_requires_explicit_safety_enrichment() -> None:
     assert aircraft.pose == Position(1.0, 2.0, 0.0)
     assert aircraft.heading_deg == 90.0
     assert aircraft.physical_rc_available is True
+    assert aircraft.capabilities == frozenset({"flight", "camera"})
 
 
 def test_relay_projection_fails_closed_without_enrichment() -> None:
