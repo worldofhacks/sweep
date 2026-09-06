@@ -45,12 +45,17 @@ import org.worldofhacks.sweep.bridge.video.FpvSessionHost
  */
 class SdkSession(private val application: Application) : AircraftSession, FpvSessionHost {
     private val model = SessionModel()
+    private val sensorRaw: SensorRawSink? =
+        SensorRawSink.open(application.filesDir).also { sink ->
+            model.event("Sensor raw log", sink?.file?.absolutePath ?: "could not open sensor raw log")
+        }
     private val probe = ProbeAircraft(
         phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
         androidVersion = Build.VERSION.RELEASE ?: "",
         sdkVersion = { runCatching { SDKManager.getInstance().sdkVersion }.getOrNull().orEmpty() },
         log = { name, detail -> model.event(name, detail) },
         record = { key, event, status -> recordKey(key, event, status) },
+        recordRaw = { kind, fields -> sensorRaw?.append(kind, fields) },
     )
 
     /**

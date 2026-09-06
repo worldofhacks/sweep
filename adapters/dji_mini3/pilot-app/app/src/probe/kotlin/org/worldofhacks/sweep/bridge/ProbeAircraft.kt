@@ -70,6 +70,7 @@ class ProbeAircraft(
     private val log: (name: String, detail: String) -> Unit,
     /** Bench log hook: one call per key and listener event (`attached`, `product_connected`, `first_value`). */
     private val record: (key: String, event: String, status: TelemetryKeyStatus) -> Unit = { _, _, _ -> },
+    private val recordRaw: (kind: String, fields: Map<String, Any>) -> Unit = { _, _ -> },
 ) : AircraftSource, CommandExecutor {
     private val lock = Any()
 
@@ -267,6 +268,31 @@ class ProbeAircraft(
         if (first != null) {
             log("Telemetry key", "${binding.name} first value" + (sinceAttachMs?.let { " $it ms after its listener was registered" } ?: ""))
             record(binding.name, "first_value", first)
+        }
+        when (binding.name) {
+            "KeyAircraftVelocity" -> (value as? Velocity3D)?.let { velocity ->
+                if (velocity.x.isFinite() && velocity.y.isFinite() && velocity.z.isFinite()) {
+                    recordRaw(
+                        "phone_velocity_raw",
+                        mapOf(
+                            "sdk_key" to binding.name,
+                            "velocity_ned_mps" to listOf(velocity.x, velocity.y, velocity.z),
+                        ),
+                    )
+                }
+            }
+            "KeyAltitude" -> (value as? Double)?.takeIf { it.isFinite() }?.let { height ->
+                recordRaw(
+                    "phone_height_raw",
+                    mapOf("sdk_key" to binding.name, "height_m" to height),
+                )
+            }
+            "KeyUltrasonicHeight" -> (value as? Int)?.let { heightDm ->
+                recordRaw(
+                    "phone_height_raw",
+                    mapOf("sdk_key" to binding.name, "height_m" to heightDm / 10.0),
+                )
+            }
         }
         publish()
     }
