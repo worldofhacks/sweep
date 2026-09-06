@@ -20,7 +20,7 @@ from relay.app import RelayRuntime, create_app
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
-from relay.session import CapabilityBoundIntentSink, IntentSink
+from relay.session import CapabilityBoundIntentSink, IntentSink, RelaySession
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
     ADAPTER_KEY,
@@ -786,6 +786,79 @@ def test_http_metrics_and_replay_require_bearer_authentication(
     assert replay.status_code == 200
     assert replay.json()["type"] == "replay"
     assert replay.json()["event_id"]
+
+
+def test_live_replay_waits_for_audit_commit_and_returns_contiguous_snapshot(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    append_started = Event()
+    release_append = Event()
+    replay_entered = Event()
+    replay_returned = Event()
+    real_append_batch = SessionAuditLog.append_batch
+    real_replay = RelaySession.replay
+
+    def pause_append(
+        audit_log: SessionAuditLog,
+        events: object,
+        *,
+        operation_id: int | None = None,
+    ) -> list[dict[str, object]]:
+        append_started.set()
+        assert release_append.wait(timeout=2)
+        return real_append_batch(audit_log, events, operation_id=operation_id)
+
+    def mark_replay(
+        session: RelaySession, *, after_sequence: int = 0
+    ) -> dict[str, object]:
+        replay_entered.set()
+        return real_replay(session, after_sequence=after_sequence)
+
+    monkeypatch.setattr(SessionAuditLog, "append_batch", pause_append)
+    monkeypatch.setattr(RelaySession, "replay", mark_replay)
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as executor:
+        session = app.state.relay_runtime.session(SESSION)
+        append = executor.submit(session.update_control_projection, selection=())
+        assert append_started.wait(timeout=2)
+
+        def request_replay() -> object:
+            response = client.get(f"/session/{SESSION}?after_sequence=0", headers=headers)
+            replay_returned.set()
+            return response
+
+        replay = executor.submit(request_replay)
+        assert replay_entered.wait(timeout=2)
+        assert not replay_returned.wait(timeout=0.1)
+        release_append.set()
+
+        append.result(timeout=2)
+        response = replay.result(timeout=2)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [record["seq"] for record in body["events"]] == list(
+        range(1, body["last_sequence"] + 1)
+    )
+
+
+def test_replay_reports_unrecoverable_audit_history_as_unavailable(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    SessionAuditLog(app_settings.log_dir, SESSION).begin_operation()
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client:
+        response = client.get(f"/session/{SESSION}", headers=headers)
+
+    assert response.status_code == 503
+    assert "incomplete operation" in response.json()["detail"]
 
 
 def test_authenticated_console_receives_periodic_state_fanout_at_frozen_rate(
