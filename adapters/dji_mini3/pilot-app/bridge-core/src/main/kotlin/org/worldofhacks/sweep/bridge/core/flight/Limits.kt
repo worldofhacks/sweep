@@ -123,4 +123,52 @@ data class FlightConfig(
     /** PRD 5.5: network stop holds, then lands if the stop stays asserted this long. */
     val estopLandAfterMs: Long = 5_000,
     val defaultStickHz: Int = FlightSettings.DEFAULT_STICK_HZ,
+    val navigation: NavigationConfig? = null,
 )
+
+data class NavigationConfig(
+    val navigationConfigId: String,
+    val mapId: String,
+    val geometryId: String,
+    val cameraCalibrationId: String,
+    val bodyExtrinsicsId: String,
+    val poseFreshnessMs: Long,
+    val authorizationLifetimeMs: Long,
+    val lossLandAfterMs: Long,
+    val arrivalHorizontalToleranceM: Double,
+    val arrivalVerticalToleranceM: Double,
+    val maxPositionUncertaintyM: Double,
+) {
+    init {
+        require(
+            listOf(navigationConfigId, mapId, geometryId, cameraCalibrationId, bodyExtrinsicsId)
+                .all { it.isNotBlank() },
+        ) { "navigation identities must be pinned" }
+        require(poseFreshnessMs > 0 && authorizationLifetimeMs > 0 && lossLandAfterMs > 0) {
+            "navigation timing bounds are invalid"
+        }
+        require(
+            listOf(arrivalHorizontalToleranceM, arrivalVerticalToleranceM, maxPositionUncertaintyM)
+                .all { it.isFinite() && it > 0 },
+        ) {
+            "navigation measured limits are invalid"
+        }
+        require(maxPositionUncertaintyM <= minOf(arrivalHorizontalToleranceM, arrivalVerticalToleranceM)) {
+            "navigation uncertainty must fit inside arrival tolerances"
+        }
+    }
+
+    fun isWithinArrival(
+        horizontalDistanceM: Double,
+        verticalDistanceM: Double,
+        positionUncertaintyM: Double,
+    ): Boolean =
+        horizontalDistanceM.isFinite() &&
+            verticalDistanceM.isFinite() &&
+            positionUncertaintyM.isFinite() &&
+            horizontalDistanceM >= 0 &&
+            positionUncertaintyM >= 0 &&
+            positionUncertaintyM <= maxPositionUncertaintyM &&
+            horizontalDistanceM + positionUncertaintyM <= arrivalHorizontalToleranceM &&
+            abs(verticalDistanceM) + positionUncertaintyM <= arrivalVerticalToleranceM
+}
