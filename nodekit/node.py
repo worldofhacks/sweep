@@ -516,8 +516,9 @@ class Node:
     def _anchor_clock(self, timestamp: object) -> None:
         if isinstance(timestamp, int) and not isinstance(timestamp, bool):
             self._relay_clock_anchor = (timestamp, self.config.monotonic())
-            # Authentication starts a new epoch; state below supplies the relay floor.
-            self._last_t = timestamp
+            # Relay ordering is keyed by source/device, not connection epoch. A fast
+            # reconnect must retain this process's already-sent synthetic clock lead.
+            self._last_t = max(self._last_t, timestamp)
 
     def _observe_clock(self, frame: dict[str, Any]) -> None:
         timestamp = frame.get("t")

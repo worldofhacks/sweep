@@ -61,6 +61,16 @@ def test_bounded_timestamp_budget_fails_without_duplicate_or_regression():
     assert node._last_t == frames[-1]
 
 
+def test_reconnect_preserves_the_source_floor_across_a_new_connection_epoch():
+    node, _ = make_node()
+    before_disconnect = [node.now_t() for _ in range(20)]
+    # A re-enable/reconnect may happen before elapsed relay time catches up with the
+    # strict source sequence. Epoch changes do not reset the relay's transport ledger.
+    node._anchor_clock(100_005)
+    assert node.now_t() == before_disconnect[-1] + 1
+    assert node.relay_now_ms() == 100_005
+
+
 def test_join_frames_are_queued_in_their_strict_creation_order():
     node, _ = make_node()
     join(node)
