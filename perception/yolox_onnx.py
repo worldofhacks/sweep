@@ -115,7 +115,8 @@ class YoloXOnnxDetector:
         ):
             raise ValueError("detector frame must be a nonempty uint8 BGR image")
         input_image, scale, padding = _letterbox(frame)
-        blob = cv2.dnn.blobFromImage(input_image, 1.0, swapRB=True)
+        # Official YOLOX exports consume OpenCV's native BGR channel order.
+        blob = cv2.dnn.blobFromImage(input_image, 1.0, swapRB=False)
         self._net.setInput(blob)
         predictions = np.asarray(self._net.forward())
         return _postprocess_yolox(

@@ -1071,7 +1071,7 @@ def test_conflict_uses_admission_time_even_when_second_acceptance_delivery_is_de
             )
         )
         first_execution.start()
-        sleep(0.6)
+        first_execution.join(timeout=2)
         assert not first_execution.is_alive()
 
         session.mark_pending_intent_delivered(second["intent_id"])
@@ -1326,7 +1326,7 @@ def test_delayed_pre_command_telemetry_cannot_rollback_post_command_state(tmp_pa
 
 
 def test_concurrent_simulator_frames_receive_unique_ordered_timestamps(tmp_path: Path) -> None:
-    harness = Harness(tmp_path, make_snapshot(1, now_ms=Clock().value), auto_start_nodes=True)
+    harness = Harness(tmp_path, make_snapshot(1, now_ms=Clock().value), auto_start_nodes=False)
 
     with TestClient(harness.app):
         harness.app.state.relay_runtime.session(SESSION)
