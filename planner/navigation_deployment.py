@@ -13,7 +13,9 @@ from planner.navigation import (
     ArrivalSlot,
     MotionConfig,
     NavigationArtifact,
+    NavigationDispatchAcceptance,
     NavigationPermission,
+    NavigationPlan,
     Pose,
 )
 from planner.navigation_runtime import NavigationExecutionConfig, NavigationRuntime
@@ -69,21 +71,45 @@ def load_navigation_deployment(
     if not isinstance(identity, str) or not identity:
         raise SettingsError("control_store_identity is required")
 
-    def artifact() -> NavigationArtifact:
-        fresh = _object(_read(path), "navigation config")
-        if fresh != config:
+    def current_config() -> None:
+        if _object(_read(path), "navigation config") != config:
             raise ValueError("navigation deployment configuration changed")
+
+    def artifact() -> NavigationArtifact:
+        current_config()
         return NavigationArtifact.from_geometry_directory(bundle, geometry, accepted, arrival_slots)
 
     deployment = NavigationDeployment(
         NavigationRuntime(artifact, execution, permission), max_aircraft, identity, backend
     )
+    evidence: Path | None = None
+    evidence_payload: dict[str, object] | None = None
     if backend == "remote":
         report = _object(_read(geometry / "geometry.json"), "geometry report")
         if report.get("evidence_kind") == "synthetic":
             raise SettingsError("synthetic geometry cannot activate remote navigation")
         evidence = _path(base, config.get("evidence_file"), "evidence_file")
-        _remote_evidence(_object(_read(evidence), "navigation evidence"), deployment, artifact())
+        evidence_payload = _object(_read(evidence), "navigation evidence")
+        _remote_evidence(evidence_payload, deployment, artifact())
+
+    def accept(
+        plan: NavigationPlan, current_artifact: NavigationArtifact
+    ) -> NavigationDispatchAcceptance:
+        current_config()
+        if evidence is not None:
+            fresh_evidence = _object(_read(evidence), "navigation evidence")
+            if fresh_evidence != evidence_payload:
+                raise ValueError("navigation remote evidence changed")
+            _remote_evidence(fresh_evidence, deployment, current_artifact)
+        return NavigationDispatchAcceptance(
+            f"{backend}:{identity}:{plan.plan_revision}",
+            plan.map_pin,
+            plan.geometry_pin,
+            plan.navigation_pin,
+            plan.plan_revision,
+        )
+
+    deployment.runtime.dispatch_acceptance = accept
     return deployment
 
 
