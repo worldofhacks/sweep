@@ -28,6 +28,7 @@ from relay.auth import (
     sign_event,
 )
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.control_localization import ControlLocalizationStore
 from relay.intent_v1 import REGISTERED_SOURCES
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import RelaySettings, console_origins_from_env
@@ -43,6 +44,7 @@ _CLOSE_TIMEOUT_SECONDS = 1.0
 _CONTROL_HEARTBEAT_MAX_INTERVAL_SECONDS = 1.0
 TranscriptServiceFactory = Callable[["RelayRuntime"], TranscriptService]
 AuthoritativeRoomsFactory = Callable[[RelaySession], tuple[str, ...]]
+ControlLocalizationStoreFactory = Callable[[str], ControlLocalizationStore | None]
 
 
 @dataclass(eq=False, slots=True)
@@ -110,6 +112,7 @@ class RelayRuntime:
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
         authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
+        control_localization_store_factory: ControlLocalizationStoreFactory | None = None,
     ) -> None:
         self.settings = settings
         self.credential_resolver = credential_resolver or settings.credential_resolver()
@@ -125,6 +128,7 @@ class RelayRuntime:
         self.capability_profile = capability_profile
         self.leave_authorizer_factory = leave_authorizer_factory
         self.authoritative_rooms_factory = authoritative_rooms_factory
+        self.control_localization_store_factory = control_localization_store_factory
         self.sessions: dict[str, RelaySession] = {}
         self._subscriptions: dict[str, dict[str, _Subscription]] = {}
         self._adapter_connections: dict[tuple[str, int], str] = {}
@@ -167,6 +171,11 @@ class RelayRuntime:
                     event_ids=self.event_ids,
                     leave_authorizer=leave_authorizer,
                     capability_profile=self.capability_profile,
+                    control_localization_store=(
+                        None
+                        if self.control_localization_store_factory is None
+                        else self.control_localization_store_factory(session_id)
+                    ),
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -556,6 +565,11 @@ class RelayRuntime:
                 if subscription.sender_failed.is_set():
                     continue
                 for event in events:
+                    if event.get("type") == "control_localization" and (
+                        subscription.principal.source != "localization"
+                        or subscription.principal.drone_id != event.get("drone_id")
+                    ):
+                        continue
                     roster_version = event.get("roster_version")
                     if (
                         event.get("type") in {"membership", "state"}
@@ -782,6 +796,7 @@ def create_app(
     capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
     authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
+    control_localization_store_factory: ControlLocalizationStoreFactory | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
     shutdown_callback: ShutdownCallback | None = None,
 ) -> FastAPI:
@@ -797,6 +812,7 @@ def create_app(
             capability_profile=capability_profile,
             leave_authorizer_factory=leave_authorizer_factory,
             authoritative_rooms_factory=authoritative_rooms_factory,
+            control_localization_store_factory=control_localization_store_factory,
         )
         application.state.relay_runtime = runtime
         application.state.transcript_service = (
