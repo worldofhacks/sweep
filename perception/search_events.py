@@ -283,6 +283,9 @@ class CoverageLedger:
     def task_state(self, task_id: str) -> TaskState:
         return self._states[task_id]
 
+    def covered_cell_ids(self, task_id: str) -> tuple[str, ...]:
+        return tuple(sorted(self._covered[task_id]))
+
     def activate(self, task_id: str) -> SearchTaskEvent:
         if self._states[task_id] != "pending":
             raise ValueError("only pending coverage tasks can activate")

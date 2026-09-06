@@ -245,6 +245,17 @@ class SearchRuntime:
                     "state": mission.ledger.task_state(assignment.task.task_id),
                     "covered_cells": covered,
                     "total_cells": total,
+                    "covered_cell_ids": mission.ledger.covered_cell_ids(assignment.task.task_id),
+                    "cells": [
+                        {
+                            "cell_id": cell.cell_id,
+                            "x_m": cell.pose.x_m,
+                            "y_m": cell.pose.y_m,
+                            "z_m": cell.pose.z_m,
+                            "floor_id": cell.pose.floor_id,
+                        }
+                        for cell in assignment.task.cells
+                    ],
                 }
             )
         candidates = []
@@ -263,6 +274,10 @@ class SearchRuntime:
                     "source_id": candidate.source_id,
                     "acknowledged": sighting_id in mission.acknowledged_findings,
                     "position": position,
+                    "label": candidate.candidate.label,
+                    "confidence": candidate.candidate.confidence,
+                    "bbox_xyxy": candidate.candidate.bbox_xyxy,
+                    "observation_count": candidate.observation_count,
                 }
             )
         return {
