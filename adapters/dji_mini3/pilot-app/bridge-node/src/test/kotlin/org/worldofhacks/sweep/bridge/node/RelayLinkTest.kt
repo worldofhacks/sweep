@@ -18,6 +18,7 @@ import org.worldofhacks.sweep.bridge.core.frames.PhoneThermalState
 import org.worldofhacks.sweep.bridge.core.frames.TelemetryFrame
 import org.worldofhacks.sweep.bridge.core.frames.VideoPublishState
 import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
+import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonBool
 import org.worldofhacks.sweep.bridge.core.json.JsonInt
 import org.worldofhacks.sweep.bridge.core.json.JsonNull
@@ -284,17 +285,24 @@ class RelayLinkTest {
         StubRelay(key, emitControlHeartbeats = false).use { stub ->
             val aircraft = FakeAircraft(connected = true)
             link(stub, aircraft).use { link ->
-                await("joined") { link.state.value.joined }
+                await("ready with the relay's connection identity") {
+                    link.state.value.membership == "ready" &&
+                        link.state.value.connectionEpoch == stub.epoch.get() &&
+                        link.state.value.rosterVersion == stub.rosterVersion.get()
+                }
                 stub.sendNavigationAuthorization()
                 stub.sendNavigationPose()
                 val command = stub.issueCommand(
                     CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-1"),
                     commandId = "route-command-1",
-                    ttlMs = 10_000,
                 )
 
                 val refusal = stub.awaitAck(command.commandId, "failed")
-                assertEquals("navigation_not_authorized", refusal.str("reason"))
+                assertEquals(
+                    "navigation_not_authorized",
+                    refusal.str("reason"),
+                    "unexpected refusal: ${Json.canonical(refusal)}",
+                )
                 assertNull(link.state.value.navigationAuthorization)
                 assertEquals(0.0, aircraft.snapshot.value.x)
             }
