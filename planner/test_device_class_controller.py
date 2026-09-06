@@ -63,9 +63,7 @@ def test_ground_position_loss_holds_after_dwell_and_with_invalid_clock(loss_sinc
 
 @pytest.mark.parametrize("fail_hold", [False, True])
 def test_first_late_position_loss_stops_robots_and_still_lands_aircraft(fail_hold: bool) -> None:
-    snapshot = replace_aircraft(
-        make_mixed_snapshot(), 11, position_last_seen_ms=NOW_MS - 4_000
-    )
+    snapshot = replace_aircraft(make_mixed_snapshot(), 11, position_last_seen_ms=NOW_MS - 4_000)
     # A safety response covers the fleet regardless of the operator's selection.
     snapshot = replace(snapshot, selection=(1,))
     controller, _, _, dispatcher, _, _ = make_stack(snapshot)
@@ -82,7 +80,10 @@ def test_first_late_position_loss_stops_robots_and_still_lands_aircraft(fail_hol
     assert result.execution is not None
     assert result.execution.status is LifecycleStatus.COMPLETED
     assert {device_id for op, device_id in devices.calls if op is CommandOperation.HOVER} == {
-        1, 2, 11, 12
+        1,
+        2,
+        11,
+        12,
     }
     assert devices.calls[-2:] == [(CommandOperation.LAND, 1), (CommandOperation.LAND, 2)]
 

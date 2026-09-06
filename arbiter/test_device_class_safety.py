@@ -359,7 +359,8 @@ def test_disarm_requires_complete_observation_even_if_all_visible_robots_are_sto
     assert isinstance(plan, Plan)
 
     for refusal in (
-        _arbiter().check_intent(intent, snapshot), _arbiter().check_plan(plan, snapshot)
+        _arbiter().check_intent(intent, snapshot),
+        _arbiter().check_plan(plan, snapshot),
     ):
         assert refusal is not None and refusal.reason is RefusalReason.AIRCRAFT_NOT_READY
 

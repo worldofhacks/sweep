@@ -2706,9 +2706,7 @@ def _material_state_projection(state: Mapping[str, object]) -> str:
         raise AuditLogError(f"material state is not JSON-native: {error}") from None
 
 
-_MAX_PROJECTED_DEVICES = (
-    MAX_SIMULATED_AIRCRAFT + MAX_PHYSICAL_DEVICES[DeviceClass.GROUND_VEHICLE]
-)
+_MAX_PROJECTED_DEVICES = MAX_SIMULATED_AIRCRAFT + MAX_PHYSICAL_DEVICES[DeviceClass.GROUND_VEHICLE]
 
 
 def _material_drones_projection(value: object) -> list[dict[str, object]]:

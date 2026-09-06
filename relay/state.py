@@ -48,6 +48,7 @@ def aircraft_limit_for_profile(capability_profile: CapabilityProfile) -> int:
         else MAX_PHYSICAL_AIRCRAFT
     )
 
+
 # The one capability each class must advertise before readiness, and the gate it fails.
 _REQUIRED_CLASS_CAPABILITY: Mapping[DeviceClass, tuple[str, str]] = MappingProxyType(
     {
