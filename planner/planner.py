@@ -509,7 +509,7 @@ class DeterministicPlanner:
                         "x": target.x,
                         "y": target.y,
                         "z": target.z,
-                        "speed": self.config.flight_speed_m_s,
+                        "speed": self.config.motion_speed_m_s(snapshot.aircraft[drone_id]),
                     },
                 )
 

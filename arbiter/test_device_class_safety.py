@@ -36,6 +36,22 @@ def _arbiter() -> SafetyArbiter:
     return SafetyArbiter(safety_config())
 
 
+@pytest.mark.parametrize("aircraft_ids", [(), (1, 2)])
+def test_spacing_uses_class_speed_and_passes_the_ground_cap(aircraft_ids) -> None:
+    snapshot = make_mixed_snapshot(aircraft_ids=aircraft_ids, formation="line")
+    config = replace(planning_config(), flight_speed_m_s=0.8, drive_speed_m_s=0.3)
+    planner = DeterministicPlanner(config, C2_CAPABILITY_PROFILE)
+    intent = make_intent(IntentName.SPACING, selection=snapshot.selection, args={"delta": 1})
+
+    plan = planner.plan(intent, snapshot)
+
+    assert isinstance(plan, Plan)
+    for command in plan.commands:
+        expected = 0.8 if command.drone_id in aircraft_ids else 0.3
+        assert command.parameters["speed"] == expected
+    assert _arbiter().check_plan(plan, snapshot) is None
+
+
 def _command_plan(
     snapshot: FleetSnapshot,
     drone_id: int,
