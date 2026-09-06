@@ -78,6 +78,28 @@ def test_explicit_host_approval_turns_a_diagnostic_pose_into_signed_route_eviden
     assert authorization["tube_radius_mm"] == 130
     assert initial["status"] == "ready"
     assert approved.aircraft[1].control_provenance is not None
+    refreshed = control.periodic_poses(session, approved.now_ms)[0]
+    stale = control.periodic_poses(session, approved.now_ms + 501)[0]
+    for packet in (refreshed, stale):
+        unsigned = dict(packet)
+        signature = unsigned.pop("signature")
+        assert verify_event_signature(unsigned, signature, KEY)
+    assert refreshed["status"] == "ready"
+    assert refreshed["seq"] > initial["seq"]
+    assert stale["status"] == "hold"
+    assert stale["flight_approved"] is True
+    assert all(
+        stale[field] is None
+        for field in (
+            "pose_time_ms",
+            "fix_time_ms",
+            "x_mm",
+            "y_mm",
+            "z_mm",
+            "position_uncertainty_mm",
+        )
+    )
+    assert control.periodic_poses(session, approved.now_ms + 502) == []
 
 
 def test_diagnostic_pose_never_becomes_navigation_evidence_without_host_approval() -> None:

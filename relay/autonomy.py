@@ -871,7 +871,16 @@ class AutonomySession:
                 owner.watchdog_running = True
         for owner in waiting:
             threading.Thread(target=self._watch_navigation, args=(owner,), daemon=True).start()
-        return []
+        if self.navigation_control is None:
+            return []
+        now_ms = state.get("t")
+        session = self._composition.runtime.sessions.get(self.session_id)
+        if type(now_ms) is not int or session is None:
+            return []
+        return [
+            session.record_navigation_packet(packet)
+            for packet in self.navigation_control.periodic_poses(session, now_ms)
+        ]
 
     def _watch_navigation(self, owner: _AwaitingExecution) -> None:
         pending = owner.pending

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from math import ceil
@@ -52,6 +53,7 @@ class NavigationControl:
         self.config = config
         self._active: dict[int, _ActiveRoute] = {}
         self._sequence = 0
+        self._lock = threading.Lock()
 
     def approved_snapshot(self, snapshot: FleetSnapshot, session: RelaySession) -> FleetSnapshot:
         aircraft = dict(snapshot.aircraft)
@@ -96,18 +98,19 @@ class NavigationControl:
             raise ValueError("mapped goto aircraft is no longer current")
         if not self._matches_provenance(aircraft.control_provenance, pin):
             raise ValueError("mapped goto requires host-approved localization")
-        self._sequence += 1
-        active = _ActiveRoute(
-            route_id=plan.intent_id,
-            command_id=command.command_id,
-            drone_id=command.drone_id,
-            connection_epoch=command.connection_epoch,
-            start=segment.start,
-            target=segment.end,
-            expires_at_ms=snapshot.now_ms + self.config.navigation.config.segment_timeout_ms,
-            sequence=self._sequence,
-        )
-        self._active[command.drone_id] = active
+        with self._lock:
+            self._sequence += 1
+            active = _ActiveRoute(
+                route_id=plan.intent_id,
+                command_id=command.command_id,
+                drone_id=command.drone_id,
+                connection_epoch=command.connection_epoch,
+                start=segment.start,
+                target=segment.end,
+                expires_at_ms=snapshot.now_ms + self.config.navigation.config.segment_timeout_ms,
+                sequence=self._sequence,
+            )
+            self._active[command.drone_id] = active
         motion = self.config.navigation.config.motion
         unsigned = {
             "v": 1,
@@ -157,49 +160,103 @@ class NavigationControl:
         }
 
     def initial_pose(self, drone_id: int, session: RelaySession, now_ms: int) -> dict[str, object]:
-        active = self._active.get(drone_id)
-        if active is None:
-            raise ValueError("navigation route is not active")
         pose = session.control_pose(drone_id)
-        pin = self.config.localization.pins[drone_id]
-        if pose is None or pose.connection_epoch != active.connection_epoch:
-            raise ValueError("navigation pose is unavailable")
-        if not self._usable_pose(pose, pin, now_ms):
-            raise ValueError("navigation pose is not ready")
+        with self._lock:
+            active = self._active.get(drone_id)
+            if active is None:
+                raise ValueError("navigation route is not active")
+            pin = self.config.localization.pins[drone_id]
+            if pose is None or pose.connection_epoch != active.connection_epoch:
+                raise ValueError("navigation pose is unavailable")
+            if now_ms > active.expires_at_ms:
+                raise ValueError("navigation route has expired")
+            if not self._usable_pose(pose, pin, now_ms):
+                raise ValueError("navigation pose is not ready")
+            return self._pose_packet(active, pin, session.session_id, now_ms, pose)
+
+    def periodic_poses(self, session: RelaySession, now_ms: int) -> list[dict[str, object]]:
+        with self._lock:
+            active_routes = tuple(self._active.items())
+        observations = [
+            (drone_id, active, session.control_pose(drone_id))
+            for drone_id, active in active_routes
+        ]
+        registry = getattr(session, "registry", None)
+        with self._lock:
+            packets = []
+            for drone_id, active, pose in observations:
+                if self._active.get(drone_id) != active:
+                    continue
+                active_identity = (
+                    None
+                    if registry is None
+                    else registry.active_connection_identity(drone_id)
+                )
+                if registry is not None and (
+                    active_identity is None or active_identity[0] != active.connection_epoch
+                ):
+                    del self._active[drone_id]
+                    continue
+                pin = self.config.localization.pins[drone_id]
+                if (
+                    pose is None
+                    or pose.connection_epoch != active.connection_epoch
+                    or now_ms > active.expires_at_ms
+                    or not self._usable_pose(pose, pin, now_ms)
+                ):
+                    packets.append(self._pose_packet(active, pin, session.session_id, now_ms, None))
+                    del self._active[drone_id]
+                else:
+                    packets.append(self._pose_packet(active, pin, session.session_id, now_ms, pose))
+            return packets
+
+    def _pose_packet(
+        self,
+        active: _ActiveRoute,
+        pin: ControlLocalizationPins,
+        session_id: str,
+        now_ms: int,
+        pose: ControlPose | None,
+    ) -> dict[str, object]:
         self._sequence += 1
+        sequence = self._sequence
         unsigned = {
             "v": 1,
             "type": "navigation_pose",
             "t": now_ms,
-            "event_id": f"navigation-pose-{drone_id}-{self._sequence}",
-            "session": session.session_id,
-            "drone_id": drone_id,
+            "event_id": f"navigation-pose-{active.drone_id}-{sequence}",
+            "session": session_id,
+            "drone_id": active.drone_id,
             "connection_epoch": active.connection_epoch,
             "command_id": active.command_id,
             "route_id": active.route_id,
-            "seq": self._sequence,
+            "seq": sequence,
             "navigation_config_id": self.config.configuration_id,
             "map_id": pin.map_id,
             "geometry_id": pin.geometry_id,
             "camera_calibration_id": pin.camera_calibration_id,
             "body_extrinsics_id": pin.body_extrinsics_id,
-            "pose_time_ms": pose.pose_time_ms,
-            "fix_time_ms": pose.fix_time_ms,
-            "x_mm": pose.x_mm,
-            "y_mm": pose.y_mm,
-            "z_mm": pose.z_mm,
-            "position_uncertainty_mm": pose.position_uncertainty_mm,
-            "status": "ready",
+            "pose_time_ms": None if pose is None else pose.pose_time_ms,
+            "fix_time_ms": None if pose is None else pose.fix_time_ms,
+            "x_mm": None if pose is None else pose.x_mm,
+            "y_mm": None if pose is None else pose.y_mm,
+            "z_mm": None if pose is None else pose.z_mm,
+            "position_uncertainty_mm": None if pose is None else pose.position_uncertainty_mm,
+            "status": "hold" if pose is None else "ready",
             "flight_approved": True,
         }
-        return {**unsigned, "signature": sign_event(unsigned, self.config.node_keys[drone_id])}
+        return {
+            **unsigned,
+            "signature": sign_event(unsigned, self.config.node_keys[active.drone_id]),
+        }
 
     def invalidate(self, route_id: str) -> None:
-        self._active = {
-            drone_id: route
-            for drone_id, route in self._active.items()
-            if route.route_id != route_id
-        }
+        with self._lock:
+            self._active = {
+                drone_id: route
+                for drone_id, route in self._active.items()
+                if route.route_id != route_id
+            }
 
     def _segment(self, plan: Plan, command: Command):
         if plan.navigation is None:

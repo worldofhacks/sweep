@@ -631,7 +631,11 @@ class RelayRuntime:
                 if subscription.sender_failed.is_set():
                     continue
                 for event in events:
-                    if event.get("type") == "control_pose" and (
+                    if event.get("type") in {
+                        "control_pose",
+                        "navigation_pose",
+                        "navigation_route_authorization",
+                    } and (
                         subscription.principal.source != "adapter"
                         or subscription.principal.drone_id != event.get("drone_id")
                     ):
