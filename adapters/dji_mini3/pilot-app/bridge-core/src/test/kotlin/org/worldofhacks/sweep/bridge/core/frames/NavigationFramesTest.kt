@@ -84,11 +84,15 @@ class NavigationFramesTest {
             operation = CommandOperation.GOTO,
             args = CommandArgs.Goto(1_000, 0, 1_000, 300),
         )
-        val routeIdInGoto = legacy.copy(
+        val routeArgs = CommandArgs.Goto(1_000, 0, 1_000, 300, "route-7")
+        val routeGoto = legacy.copy(args = routeArgs, rawArgs = routeArgs.toJson()).signed(key).toJson()
+        assertEquals("route-7", (CommandFrame.parse(routeGoto).args as CommandArgs.Goto).navigationRouteId)
+
+        val unboundRouteId = legacy.copy(
             rawArgs = legacy.rawArgs.with("route_id", Json.value("route-7")),
         ).signed(key).toJson()
 
-        assertThrows(ContractError::class.java) { CommandFrame.parse(routeIdInGoto) }
+        assertThrows(ContractError::class.java) { CommandFrame.parse(unboundRouteId) }
     }
 
     private fun NavigationRouteAuthorization.signed(): JsonObject =

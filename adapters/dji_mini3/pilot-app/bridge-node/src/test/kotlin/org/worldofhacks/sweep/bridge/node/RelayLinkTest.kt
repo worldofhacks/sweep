@@ -62,7 +62,17 @@ class RelayLinkTest {
         aircraft: FakeAircraft,
         readiness: ReadinessInput = ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true),
         token: String = String(key, Charsets.UTF_8),
-    ): RelayLink = RelayLink(config(stub, token), aircraft, aircraft, phone, timing = timing, log = { logs += it }).also {
+        localizationPins: LocalizationPins? = null,
+        navigationAdmission: NavigationAdmissionConfig? = null,
+    ): RelayLink = RelayLink(
+        config(stub, token, localizationPins),
+        aircraft,
+        aircraft,
+        phone,
+        timing = timing,
+        log = { logs += it },
+        navigationAdmission = navigationAdmission,
+    ).also {
         it.setReadiness(readiness)
         it.start()
     }
@@ -221,6 +231,89 @@ class RelayLinkTest {
                 // A command issued on the relay clock is fresh even though the phone clock trails it.
                 val command = stub.issueCommand(CommandArgs.Hover)
                 stub.awaitAck(command.commandId, "completed")
+            }
+        }
+    }
+
+    @Test
+    fun `route-bearing goto is refused while navigation setup remains disabled`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            link(stub, aircraft).use { link ->
+                await("joined") { link.state.value.joined }
+                stub.sendNavigationAuthorization()
+                stub.sendNavigationPose()
+                val command = stub.issueCommand(
+                    CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-1"),
+                    commandId = "route-command-1",
+                )
+
+                val refusal = stub.awaitAck(command.commandId, "failed")
+                assertEquals("navigation_not_authorized", refusal.str("reason"))
+                assertNull(link.state.value.navigationAuthorization)
+                assertEquals(0.0, aircraft.snapshot.value.x)
+            }
+        }
+    }
+
+    @Test
+    fun `signed pinned route evidence admits only its exact goto`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
+            val navigation = NavigationAdmissionConfig("navigation-a", poseFreshnessMs = 500, maxAuthorizationLifetimeMs = 1_000, enabled = true)
+            link(stub, aircraft, localizationPins = pins, navigationAdmission = navigation).use { link ->
+                await("joined") { link.state.value.joined }
+                stub.sendNavigationAuthorization(signingKey = "wrong-key".toByteArray())
+                await("forged authorization drop") { logs.any { it.contains("navigation route authorization") } }
+                assertNull(link.state.value.navigationAuthorization)
+
+                stub.sendNavigationAuthorization()
+                await("route authorization") { link.state.value.navigationAuthorization?.routeId == "route-1" }
+                stub.sendNavigationPose()
+                await("route pose") { link.state.value.navigationPose?.status?.name == "READY" }
+
+                val wrongTarget = stub.issueCommand(
+                    CommandArgs.Goto(900, 0, 1_000, 300, navigationRouteId = "route-1"),
+                    commandId = "route-command-1",
+                )
+                assertEquals("navigation_not_authorized", stub.awaitAck(wrongTarget.commandId, "failed").str("reason"))
+
+                stub.sendNavigationAuthorization(commandId = "route-command-2", routeId = "route-2")
+                await("replacement route authorization") { link.state.value.navigationAuthorization?.routeId == "route-2" }
+                stub.sendNavigationPose(commandId = "route-command-2", routeId = "route-2")
+                await("replacement route pose") { link.state.value.navigationPose?.routeId == "route-2" }
+                val exact = stub.issueCommand(
+                    CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-2"),
+                    commandId = "route-command-2",
+                )
+                stub.awaitAck(exact.commandId, "completed")
+                assertEquals(1.0, aircraft.snapshot.value.x)
+            }
+        }
+    }
+
+    @Test
+    fun `authority loss clears route evidence before its goto can execute`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
+            val navigation = NavigationAdmissionConfig("navigation-a", poseFreshnessMs = 500, maxAuthorizationLifetimeMs = 1_000, enabled = true)
+            link(stub, aircraft, localizationPins = pins, navigationAdmission = navigation).use { link ->
+                await("joined") { link.state.value.joined }
+                stub.sendNavigationAuthorization()
+                await("route authorization") { link.state.value.navigationAuthorization != null }
+                stub.sendNavigationPose()
+                await("route pose") { link.state.value.navigationPose?.status?.name == "READY" }
+                aircraft.setConnected(aircraft = false)
+                await("route evidence cleared") { link.state.value.navigationAuthorization == null }
+
+                val command = stub.issueCommand(
+                    CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-1"),
+                    commandId = "route-command-1",
+                )
+                assertEquals("authority_lost", stub.awaitAck(command.commandId, "failed").str("reason"))
+                assertEquals(0.0, aircraft.snapshot.value.x)
             }
         }
     }
