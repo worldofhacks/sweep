@@ -169,7 +169,11 @@ class SearchRuntime:
             return self._refusal(intent.intent_id, snapshot, "search intent already has a mission")
         preview = SearchMissionPreview(search, plan)
         self._missions[intent.intent_id] = _Mission(
-            preview, search.ledger(), candidates={}, candidate_frames={}, acknowledged_findings=set()
+            preview,
+            search.ledger(),
+            candidates={},
+            candidate_frames={},
+            acknowledged_findings=set(),
         )
         return preview
 
