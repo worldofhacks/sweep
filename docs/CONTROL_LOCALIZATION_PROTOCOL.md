@@ -1,5 +1,10 @@
 # Control localization payload
 
+Set `SWEEP_LOCALIZATION_KEYS_JSON` to a JSON object mapping each positive drone ID to
+its dedicated localization-producer secret. For example, `{"1":"..."}` authorizes
+only that secret to authenticate as `source: "localization"` for drone 1. These keys
+are separate from `SWEEP_ADAPTER_KEYS_JSON`; a missing entry rejects localization input.
+
 `relay.control_localization` accepts a versioned, signed `control_localization` payload only after the relay transport authenticates its drone and connection epoch. `to_wire_payload` requires the adapter signature; the transport verifies it before calling the store. The payload is an adapter boundary for the control-localization fuser. Webcam observations cannot enter it because their capture times and publisher identity are explicitly unverified.
 
 Each payload has a unique event ID and carries the map, geometry, camera-calibration, body-extrinsics, source, and capture-clock pins. It carries a measured mapping from the capture clock to the relay monotonic clock, including its maximum conversion error. The deployment pin stores that exact measured mapping. The store rejects changed offsets, rates, clock identities, duplicate event IDs, and clock uncertainty above the configured bound.

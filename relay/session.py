@@ -41,6 +41,7 @@ from relay.contracts import (
     refusal_event,
 )
 from relay.control_frames import ControlLocalizationFrame
+from relay.control_localization import ControlLocalizationStore
 from relay.intent_v1 import (
     REGISTERED_SOURCES,
     AcceptedIntent,
@@ -234,6 +235,7 @@ class RelaySession:
         intent_sink: IntentSink | None = None,
         leave_authorizer: LeaveAuthorizer | None = None,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        control_localization_store: ControlLocalizationStore | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -259,6 +261,7 @@ class RelaySession:
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._control_localization: dict[int, ControlLocalizationFrame] = {}
+        self._control_localization_store = control_localization_store
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
@@ -960,6 +963,13 @@ class RelaySession:
             assert self._audit_undo is not None
             self._audit_undo.append(undo)
             self._control_localization[drone_id] = frame
+            if self._control_localization_store is not None:
+                self._control_localization_store.ingest(
+                    frame.to_event(),
+                    frame.wire.drone_id,
+                    frame.wire.connection_epoch,
+                    now,
+                )
             event = {**frame.unsigned_event(), "signature_verified": True}
             self._append_audit(event)
             return [event]
@@ -969,11 +979,19 @@ class RelaySession:
             frame = self._control_localization.get(drone_id)
             if frame is None:
                 return None
+            self._ensure_projection_usable()
             try:
                 self.registry.check_current(drone_id, frame.wire.connection_epoch)
             except RegistryError:
                 return None
             return frame
+
+    def apply_control_localization(self, snapshot: object) -> object:
+        with self._lock:
+            self._ensure_projection_usable()
+            if self._control_localization_store is None:
+                return snapshot
+            return self._control_localization_store.apply(snapshot)  # type: ignore[arg-type]
 
     def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Accept a node-authored frame; only capabilities and node_status change state.

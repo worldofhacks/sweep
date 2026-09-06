@@ -473,12 +473,15 @@ class AutonomySession:
         with self._lock:
             operator_last_seen_ms = self._operator_last_seen_ms
             estop_requested = self._stop_requested
-        return relay_snapshot(
+        snapshot = relay_snapshot(
             state,
             operator_last_seen_ms=operator_last_seen_ms,
             estop_requested=estop_requested,
             capture_readiness=capture_readiness,
         )
+        runtime = self._composition.runtime_if_bound()
+        session = None if runtime is None else runtime.sessions.get(self.session_id)
+        return snapshot if session is None else session.apply_control_localization(snapshot)
 
     def close(self, timeout_s: float) -> None:
         for lane in self._lanes:
