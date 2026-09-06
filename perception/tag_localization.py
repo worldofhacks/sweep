@@ -102,7 +102,15 @@ class TagLocalizer:
         self.detector = cv2.aruco.ArucoDetector(dictionary, parameters)
 
     def estimate(self, image, capture_time, decode_time, now, max_age=0.5):
+        return self.estimate_with_body_camera(
+            image, capture_time, decode_time, now, self.T_body_camera, max_age
+        )
+
+    def estimate_with_body_camera(
+        self, image, capture_time, decode_time, now, T_body_camera, max_age=0.5
+    ):
         """Times are seconds in one monotonic clock; capture time must be measured upstream."""
+        body_camera = rigid(T_body_camera)
         times = np.array([capture_time, decode_time, now, max_age], dtype=float)
         if (
             not np.isfinite(times).all()
@@ -119,7 +127,7 @@ class TagLocalizer:
             age_s=now - capture_time,
             map_sha256=self.manifest["content_sha256"],
             calibration_sha256=self.calibration_sha256,
-            T_body_camera=self.T_body_camera.tolist(),
+            T_body_camera=body_camera.tolist(),
             timing_provenance="upstream_capture_clock",
             calibration_evidence_kind=self.evidence_kind,
         )
@@ -189,7 +197,7 @@ class TagLocalizer:
         ):
             return report | {"reason": "ambiguous"}
         error, camera = candidates[0]
-        body = camera @ np.linalg.inv(self.T_body_camera)
+        body = camera @ np.linalg.inv(body_camera)
         return report | dict(
             accepted=True,
             reason="pose",
