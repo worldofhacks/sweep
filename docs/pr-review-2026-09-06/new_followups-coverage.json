@@ -1,0 +1,160 @@
+{
+  "reviewed_at": "2026-09-06",
+  "base": "d83fda0",
+  "heads": {
+    "presence_session_reports": "db425079c71018bafabdef77d399a38a7645799d",
+    "deepgram": "2e1cdb4a8bd74b845f748c843c87b38f72c4d009",
+    "transcript_upload_deadline": "224645ffcca2dfcd16bbead4933fa075e6575c20"
+  },
+  "review_commits": [
+    {
+      "commit": "6cea3215e9dd95dd7470819af245d6f9afeed351",
+      "base": "db425079c71018bafabdef77d399a38a7645799d",
+      "finding": "presence expiry used client intent timestamp and expired after the deadline"
+    },
+    {
+      "commit": "3d5258fd8510f579d163b48c5204b415f10e4eed",
+      "base": "2e1cdb4a8bd74b845f748c843c87b38f72c4d009",
+      "finding": "Deepgram source was rejected by the relay outcome parser"
+    }
+  ],
+  "symbol_coverage": [
+    {
+      "pr": "presence_session_reports",
+      "files": {
+        "console/src/relay/client.ts": [
+          "WebSocketRelayClient auth.accepted handler",
+          "WebSocketRelayClient stop",
+          "WebSocketRelayClient.stopPresenceTimer"
+        ],
+        "relay/autonomy.py": [
+          "AutonomyConfig.from_env",
+          "PresenceWatchdogConfig.__post_init__",
+          "AutonomySession.submit",
+          "AutonomySession.record_operator_presence",
+          "AutonomySession.periodic_events",
+          "AutonomySession._execute",
+          "AutonomyComposition.close",
+          "create_autonomy_app"
+        ],
+        "relay/session.py": [
+          "RelaySession.process_frame",
+          "RelaySession.process_operator_presence",
+          "RelaySession.record_safety_action"
+        ],
+        "relay/session_report.py": [
+          "load_jsonl_records",
+          "build_session_report",
+          "report_path",
+          "write_session_report",
+          "_events_of_type",
+          "_telemetry_summary",
+          "_command_timings",
+          "_timestamp"
+        ],
+        "relay/app.py": [
+          "RelayRuntime.periodic_events",
+          "application lifespan shutdown callback"
+        ]
+      },
+      "call_chains": [
+        "visible console -> authenticated websocket -> process_operator_presence -> record_operator_presence -> periodic_events -> record_safety_action/admit_safety_stop -> cancellation lane -> audit/report",
+        "composition shutdown -> audit_log.replay -> write_session_report -> atomic report path"
+      ],
+      "status": "reviewed; one critical fix supplied"
+    },
+    {
+      "pr": "deepgram",
+      "files": {
+        "relay/settings.py": [
+          "transcription_provider_from_env",
+          "RelaySettings.transcription_provider validation",
+          "RelaySettings.from_env"
+        ],
+        "relay/app.py": [
+          "application lifespan transcript service construction"
+        ],
+        "relay/main.py": [
+          "build_transcript_service"
+        ],
+        "relay/voice.py": [
+          "OpenAIWhisperTransport provider metadata/key lookup",
+          "DeepgramTransport.__init__",
+          "DeepgramTransport.transcribe",
+          "configured_transcription",
+          "ReplayTranscriptionTransport.__init__",
+          "ReplayTranscriptionTransport.transcribe",
+          "RecordingTranscriptionTransport.__init__",
+          "RecordingTranscriptionTransport.transcribe",
+          "VoiceOutcome source contract",
+          "parse_voice_outcome",
+          "TranscriptService.__init__",
+          "TranscriptService.process",
+          "transcription_request_key"
+        ],
+        "evals/voice_provider_benchmark.py": [
+          "word_errors",
+          "run",
+          "main"
+        ],
+        "console/src/voice/client.ts": [
+          "VoiceOutcome source union",
+          "isVoiceOutcome"
+        ],
+        "console/src/modules/speech/SpeechModule.tsx": [
+          "TranscriptOrigin"
+        ]
+      },
+      "call_chains": [
+        "settings/environment -> configured_transcription -> app or main transcript service -> Deepgram transport -> typed VoiceOutcome -> server and console parsers",
+        "recording transport -> provider/model/options replay key -> cassette -> replay transport",
+        "20-file manifest -> audio validation -> both providers -> live rows or latency-null replay rows"
+      ],
+      "status": "reviewed; one critical fix supplied; human 20-recording benchmark unavailable"
+    },
+    {
+      "pr": "transcript_upload_deadline",
+      "files": {
+        "relay/settings.py": [
+          "RelaySettings.transcript_upload_timeout_ms validation",
+          "RelaySettings.from_env"
+        ],
+        "relay/app.py": [
+          "transcript route upload read/error mapping",
+          "_bounded_request_body"
+        ]
+      },
+      "call_chains": [
+        "authenticated transcript request -> content-length gate -> bounded streamed body -> upload_timeout response or transcript service"
+      ],
+      "status": "reviewed; no unresolved findings"
+    }
+  ],
+  "changed_noncode_reviewed": {
+    "presence_session_reports": [
+      ".env.example",
+      "relay/README.md",
+      "console/src/relay/client.test.ts",
+      "relay/tests/test_autonomy.py",
+      "relay/tests/test_session_report.py",
+      "relay/tests/fixtures/session-report.jsonl",
+      "tests/test_env_example.py"
+    ],
+    "deepgram": [
+      ".env.example",
+      "docs/mvp-plan.md",
+      "evals/README.md",
+      "relay/README.md",
+      "console/src/voice/client.test.ts",
+      "relay/tests/test_deepgram.py",
+      "evals/test_voice_provider_benchmark.py",
+      "tests/test_env_example.py"
+    ],
+    "transcript_upload_deadline": [
+      ".env.example",
+      "relay/README.md",
+      "relay/tests/test_transcript_upload_deadline.py",
+      "tests/test_env_example.py"
+    ]
+  }
+}

@@ -1,0 +1,1505 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-06",
+  "main_head_at_audit_start": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+  "original_pull_request_count": 53,
+  "coverage_terms": {
+    "individual_function_or_method": "Concrete functions or methods named and traced.",
+    "symbol_group": "Coherent symbol set and call chain reviewed; this does not assert separate full coverage for every member.",
+    "call_chain_review": "Behavior followed across components without a full function inventory.",
+    "pending_unreviewed": "No review coverage claim."
+  },
+  "original_pull_requests": [
+    {
+      "number": 164,
+      "title": "Add four-aircraft console demo and selected-fleet gesture controls",
+      "base": "c009835e00c400ede26a07903621e96ac9e55e6e",
+      "head": "521d59966c5e616829a955133f74440027eb7a09",
+      "head_ref": "codex/fleet-input-demo",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "selection invalidation",
+        "fixture lifecycle",
+        "gesture draft",
+        "fleet browser demo"
+      ],
+      "call_chains_checked": [],
+      "review_result": "Compatible fixture and C2 behavior retained.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 173,
+      "title": "Retain localization provenance in planner aircraft snapshots",
+      "base": "88df04ff20bb3ab7929e176c2a3fe5e21d0d342a",
+      "head": "896817855c0d2732e84714c2efaf2e54add3be4e",
+      "head_ref": "feat/navigation-control-provenance",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "ControlProvenance",
+            "ControlProvenance.from_mapping",
+            "ControlProvenance.to_dict"
+          ],
+          "callers": [
+            "AircraftState.from_mapping",
+            "snapshot readers"
+          ],
+          "callees": [
+            "_parse_control_field",
+            "_serialize_control_field"
+          ],
+          "contract": "Optional control provenance survives state JSON round trips without changing legacy snapshots."
+        },
+        {
+          "symbols": [
+            "AircraftState.control_provenance",
+            "Plan.control_provenance"
+          ],
+          "callers": [
+            "navigation runtime snapshot construction",
+            "plan serialization"
+          ],
+          "callees": [
+            "AircraftState.to_dict",
+            "Plan.to_dict"
+          ],
+          "contract": "Planner and relay consumers receive the control source and timestamp that produced a snapshot."
+        }
+      ],
+      "call_chains_checked": [
+        "ControlProvenance.from_mapping/to_dict -> AircraftState -> NavigationRuntime"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 174,
+      "title": "Prepare confirmed destination routes through the planner",
+      "base": "896817855c0d2732e84714c2efaf2e54add3be4e",
+      "head": "1a476245f0a4c9066e9914028ffd6228358ff250",
+      "head_ref": "feat/navigation-route-preparation",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "NavigationRuntime",
+            "NavigationExecution",
+            "NavigationPlanner.prepare"
+          ],
+          "callers": [
+            "DeterministicPlanner",
+            "relay autonomy composition"
+          ],
+          "callees": [
+            "navigation artifact validation",
+            "route geometry",
+            "Plan construction"
+          ],
+          "contract": "A confirmed navigation intent yields a frozen, pinned route plan or a refusal."
+        },
+        {
+          "symbols": [
+            "NavigationArtifact",
+            "_validate_connectors_against_graph",
+            "_navigation_configuration_sha256"
+          ],
+          "callers": [
+            "NavigationRuntime",
+            "deployment loading"
+          ],
+          "callees": [
+            "graph and connector validators",
+            "SHA-256 digest input"
+          ],
+          "contract": "Map, connector, floor, and geometry inputs are validated and bound into the route identity."
+        },
+        {
+          "symbols": [
+            "level_for_pose",
+            "pose_supported",
+            "vertical_path_clear",
+            "segment_geometry_clear"
+          ],
+          "callers": [
+            "NavigationRuntime route preparation and revalidation"
+          ],
+          "callees": [
+            "motion envelope and geofence geometry"
+          ],
+          "contract": "Every route pose and segment fits configured floor, clearance, and motion limits."
+        },
+        {
+          "symbols": [
+            "ControlPublisher",
+            "AutonomyConfig navigation fields",
+            "_parse_args"
+          ],
+          "callers": [
+            "perception publisher",
+            "relay app configuration",
+            "intent parser"
+          ],
+          "callees": [
+            "approved localization state",
+            "CapabilityProfile"
+          ],
+          "contract": "Only a navigation-enabled relay accepts the structured navigation arguments and receives approved localization."
+        }
+      ],
+      "call_chains_checked": [
+        "confirmed navigate intent -> DeterministicPlanner -> NavigationRuntime.prepare -> frozen Plan -> AdapterDispatcher",
+        "control localization -> approved snapshot -> route preparation"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 175,
+      "title": "Load pinned room navigation deployments",
+      "base": "1a476245f0a4c9066e9914028ffd6228358ff250",
+      "head": "27887f6cf4f6451517d9c4bae5bb2f6e544cd6c0",
+      "head_ref": "feat/navigation-deployment-loader",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "NavigationDeployment",
+            "load_navigation_deployment"
+          ],
+          "callers": [
+            "relay configuration loader",
+            "NavigationRuntime"
+          ],
+          "callees": [
+            "_execution",
+            "_arrival_slots",
+            "_remote_evidence",
+            "artifact loader"
+          ],
+          "contract": "Deployment JSON must select an exact artifact and valid execution limits before routes are exposed."
+        },
+        {
+          "symbols": [
+            "_execution",
+            "_arrival_slots",
+            "_remote_evidence"
+          ],
+          "callers": [
+            "load_navigation_deployment"
+          ],
+          "callees": [
+            "typed execution and evidence config constructors"
+          ],
+          "contract": "Unknown or invalid execution, destination-slot, and remote-evidence data is refused during startup."
+        }
+      ],
+      "call_chains_checked": [
+        "deployment JSON -> NavigationDeployment -> NavigationRuntime -> relay composition"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 176,
+      "title": "Revalidate each autonomous route segment during execution",
+      "base": "27887f6cf4f6451517d9c4bae5bb2f6e544cd6c0",
+      "head": "e69a5465a3249669d57e7bfa0ec892e3faef0220",
+      "head_ref": "feat/navigation-segment-execution",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "AdapterDispatcher navigation dispatch and resume paths"
+          ],
+          "callers": [
+            "AutonomySession",
+            "confirmed plan execution"
+          ],
+          "callees": [
+            "NavigationRuntime revalidation",
+            "adapter GOTO or hold",
+            "route authorization"
+          ],
+          "contract": "A frozen route is checked before and after segments, expires by deadline, and holds or refuses when evidence becomes invalid."
+        },
+        {
+          "symbols": [
+            "SafetyArbiter navigation intent sets and plan validation"
+          ],
+          "callers": [
+            "AdapterDispatcher",
+            "DeterministicPlanner"
+          ],
+          "callees": [
+            "safety configuration and command checks"
+          ],
+          "contract": "Navigation remains a confirmed, armed, selection-targeted operation with a safe hold response."
+        }
+      ],
+      "call_chains_checked": [
+        "frozen route -> per-command runtime check -> adapter dispatch/acknowledgement -> hold or completion"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 177,
+      "title": "feat(dji): add fail-closed Phase G camera and media path",
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "b42bb0960afc556342d6a110adefd1978afca1ce",
+      "head_ref": "feat/issue-43-phase-g-camera",
+      "slice": "phone_media",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "CameraExecutor.capture",
+        "CameraExecutor.retrieve",
+        "CameraExecutor.captureEvidence",
+        "DjiCameraPort.download",
+        "DjiCameraPort.pullFile",
+        "RelayLink.publishMediaFile"
+      ],
+      "call_chains_checked": [
+        "RelayLink command dispatch -> CameraExecutor.submit -> CameraPort -> DjiCameraPort MSDK actions",
+        "DjiCameraPort download callbacks -> CameraExecutor verified local file -> RelayLink media_file publication -> relay capture projection -> console catalog",
+        "ProbeAircraft camera facts -> CameraExecutor shutter admission -> CaptureCard/SessionScreen"
+      ],
+      "review_result": "pass",
+      "evidence_source": "phone_media-coverage.json"
+    },
+    {
+      "number": 179,
+      "title": "Define measured navigation limits for the phone controller",
+      "base": "ea348004cea50db1a3baea7a4b7f5ce04f3078d9",
+      "head": "45940dd61e0c1fe670242629f967abbeaf483e9b",
+      "head_ref": "feat/navigation-contracts",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "NavigationConfig",
+            "NavigationConfig.isWithinArrival"
+          ],
+          "callers": [
+            "Android FlightController navigation completion"
+          ],
+          "callees": [
+            "distance and uncertainty measurements"
+          ],
+          "contract": "Arrival requires both distance plus uncertainty inside tolerance and uncertainty below its independent limit."
+        }
+      ],
+      "call_chains_checked": [
+        "NavigationConfig -> FlightController navigation arrival check"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 180,
+      "title": "Parse signed route authorization and navigation poses on the phone",
+      "base": "ea348004cea50db1a3baea7a4b7f5ce04f3078d9",
+      "head": "2d8343a36089de0f88fece61b4159a794194bb9e",
+      "head_ref": "feat/android-signed-navigation-frame",
+      "slice": "phone_media",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "NavigationRouteAuthorization.unsignedEvent",
+        "NavigationRouteAuthorization.parse",
+        "NavigationPose.parse",
+        "verifies"
+      ],
+      "call_chains_checked": [
+        "relay-signed JSON -> NavigationRouteAuthorization.parse/NavigationPose.parse -> verifies -> RelayLink admission"
+      ],
+      "review_result": "pass",
+      "evidence_source": "phone_media-coverage.json"
+    },
+    {
+      "number": 181,
+      "title": "fix(relay): retain telemetry while bounding redundant state audits",
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "2a098388ced7a1124bb493288eda7fe00203222e",
+      "head_ref": "fix/relay-audit-volume",
+      "slice": "docs_evidence",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "SessionAuditLog.append_batch",
+        "SessionAuditLog._complete_operation",
+        "SessionAuditLog._recover_mirror_from_database",
+        "SessionAuditLog._migrate_legacy_database",
+        "RelaySession state projection"
+      ],
+      "call_chains_checked": [
+        "relay mutation -> material state projection -> SessionAuditLog.append_batch -> SQLite digest records -> JSONL mirror",
+        "reopen -> database row validation -> mirror comparison/recovery -> replay"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "docs_evidence-coverage.json"
+    },
+    {
+      "number": 183,
+      "title": "Track search coverage from fresh detector frames",
+      "base": "ea348004cea50db1a3baea7a4b7f5ce04f3078d9",
+      "head": "096dda9c600bb273a9a4fb6a183e19528e00f25c",
+      "head_ref": "feat/search-frame-coverage",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "SearchMissionIdentity",
+        "CameraPolicy",
+        "CoverageCell",
+        "CoverageTask",
+        "FramePoseEvidence",
+        "SearchTaskEvent",
+        "CoverageObservation",
+        "SearchCandidateEvent",
+        "CoverageLedger.__init__/activate/hold/cancel/mark_incomplete/observe_processed/observe_sighting/progress/candidates"
+      ],
+      "call_chains_checked": [
+        "LiveDetectionWorker emits ProcessedFrameEvent and SightingEvent; SearchRuntime.observe_processed_frame and observe_sighting call CoverageLedger; SearchPlanner creates its tasks."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 184,
+      "title": "Plan bounded autonomous search lanes in approved rooms",
+      "base": "096dda9c600bb273a9a4fb6a183e19528e00f25c",
+      "head": "c43a220d0d6ea7d8c3a2aba6bc70179efa49c334",
+      "head_ref": "feat/search-room-planning",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "SearchArea",
+        "SearchDrone",
+        "SearchRequest",
+        "CoverageLane",
+        "DroneSearchAssignment",
+        "SearchPreview.ledger/payload",
+        "SearchPlanner.plan/_transit/_level_for",
+        "_polygon_area/_point_in_polygon/_neighbors/_components/_balanced_regions/_lanes"
+      ],
+      "call_chains_checked": [
+        "SearchRuntime.prepare builds SearchRequest and calls SearchPlanner.plan; SearchPreview feeds the runtime ledger and coverage route."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 185,
+      "title": "Admit only current signed route commands on bridge nodes",
+      "base": "2d8343a36089de0f88fece61b4159a794194bb9e",
+      "head": "d84d306a0c1d9247e2fddeb93ddfa855d4fbc7da",
+      "head_ref": "feat/android-navigation-admission",
+      "slice": "phone_media",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "RelayLink.admitNavigationGoto",
+        "RelayLink.clearNavigationAdmission",
+        "LinkState navigation fields",
+        "CommandArgs.Goto parse"
+      ],
+      "call_chains_checked": [
+        "RelayLink authenticated input -> navigation state -> admitNavigationGoto -> command execution"
+      ],
+      "review_result": "pass",
+      "evidence_source": "phone_media-coverage.json"
+    },
+    {
+      "number": 186,
+      "title": "Execute admitted navigation routes in the phone flight controller",
+      "base": "d84d306a0c1d9247e2fddeb93ddfa855d4fbc7da",
+      "head": "d18c51e8b37d5b37d577cf052c162757a73c26ca",
+      "head_ref": "feat/android-route-controller",
+      "slice": "phone_media",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "FlightController.goto",
+        "FlightController.navigationCheck",
+        "FlightController.checkNavigation",
+        "FlightController.advanceNavigation",
+        "FlightExecutor.configureNavigation"
+      ],
+      "call_chains_checked": [
+        "FlightExecutor input -> FlightController.updateNavigation -> navigationCheck -> streamSticks -> FlightPort"
+      ],
+      "review_result": "pass",
+      "evidence_source": "phone_media-coverage.json"
+    },
+    {
+      "number": 187,
+      "title": "Preview and freeze configured destination routes in the relay",
+      "base": "e69a5465a3249669d57e7bfa0ec892e3faef0220",
+      "head": "11f83607d16b81ff22c6c352ed0f397c815608c6",
+      "head_ref": "feat/relay-navigation-preview",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "AutonomySession preview, confirm, catalog, and expiry methods"
+          ],
+          "callers": [
+            "authenticated catalog and preview endpoints",
+            "intent confirmation"
+          ],
+          "callees": [
+            "NavigationRuntime.prepare",
+            "prepared execution storage",
+            "AdapterDispatcher"
+          ],
+          "contract": "Only the exact, current, unexpired preview is consumed by confirmation; changed or missing previews refuse before dispatch."
+        },
+        {
+          "symbols": [
+            "AutonomyComposition navigation setup",
+            "create_autonomy_app",
+            "build_dispatcher",
+            "navigation_metadata"
+          ],
+          "callers": [
+            "relay startup"
+          ],
+          "callees": [
+            "NavigationRuntime",
+            "route catalog serialization",
+            "configured adapters"
+          ],
+          "contract": "Navigation endpoints and execution exist only when a deployment is configured and the profile enables navigation."
+        }
+      ],
+      "call_chains_checked": [
+        "catalog endpoint -> preview -> confirmation -> PreparedExecution -> dispatch",
+        "expiry/cancellation -> preview refusal"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 188,
+      "title": "Retain configured aliases in pinned navigation catalogs",
+      "base": "11f83607d16b81ff22c6c352ed0f397c815608c6",
+      "head": "fc87a2af617a31538b17ae93f370bdf85e2a6fd5",
+      "head_ref": "feat/navigation-catalog-aliases",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "NavigationArtifact aliases and identity validation",
+            "_navigation_configuration_sha256"
+          ],
+          "callers": [
+            "artifact parsing",
+            "catalog generation",
+            "preview invalidation"
+          ],
+          "callees": [
+            "alias normalization",
+            "artifact digest"
+          ],
+          "contract": "Aliases are valid artifact data and participate in the pin, so alias changes invalidate older catalogs and previews."
+        },
+        {
+          "symbols": [
+            "load_navigation_deployment",
+            "_execution",
+            "_arrival_slots"
+          ],
+          "callers": [
+            "relay startup"
+          ],
+          "callees": [
+            "artifact alias validation"
+          ],
+          "contract": "Deployment parsing preserves configured aliases while retaining strict field validation."
+        }
+      ],
+      "call_chains_checked": [
+        "configured aliases -> artifact identity -> deployment runtime -> catalog/language resolver"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 190,
+      "title": "Bind measured navigation setup to phone admission and flight control",
+      "base": "d18c51e8b37d5b37d577cf052c162757a73c26ca",
+      "head": "1b2348a6a9b2ed524ff4e544c9ba31a37433d915",
+      "head_ref": "feat/android-navigation-setup",
+      "slice": "phone_media",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "BridgeSetupStore.load",
+        "BridgeNode.configureNavigation",
+        "RelayLink configuration update",
+        "FlightExecutor.configureNavigation"
+      ],
+      "call_chains_checked": [
+        "BridgeSetupStore import -> BridgeNode setup -> RelayLink pins -> FlightExecutor configuration -> FlightController admission"
+      ],
+      "review_result": "pass",
+      "evidence_source": "phone_media-coverage.json"
+    },
+    {
+      "number": 193,
+      "title": "feat(console): preview spoken destination routes before confirmation",
+      "base": "bb725f3e749d2a4e9c29e1b639146d154a788fa8",
+      "head": "f303ed496025a7b9693e55d3d5f823908143254d",
+      "head_ref": "feat/console-navigation-speech",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "prepareVoicePlanStep",
+        "navigation.preview",
+        "SpeechModule.stageStep",
+        "confirmRequest"
+      ],
+      "call_chains_checked": [],
+      "review_result": "Reworked to preserve the language source and relay-minted ID.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 194,
+      "title": "feat(console): preview and monitor visual searches",
+      "base": "f303ed496025a7b9693e55d3d5f823908143254d",
+      "head": "b413963e341fa64646461ffa39ab0062c8842b32",
+      "head_ref": "feat/console-search-ui-pr",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "prepareSearch",
+        "SearchModule.prepare",
+        "HttpSearchClient.preview",
+        "HttpSearchClient.acknowledge"
+      ],
+      "call_chains_checked": [],
+      "review_result": "Integrated with pre-request deadline and stale-result guards.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 195,
+      "title": "Prepare pinned search runtime missions",
+      "base": "da91decbc2f9f329f383654b3a60eebb7b358fc1",
+      "head": "c47cd74c100ee6a94fb5549d4b29d9193c350525",
+      "head_ref": "feat/search-runtime-prepare-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "SearchRuntimeConfig",
+        "SearchMissionPreview",
+        "SearchMissionStatus",
+        "SearchRuntime.prepare/start/status/_transit_plan/_mission/_refusal"
+      ],
+      "call_chains_checked": [
+        "AutonomySession.preview_search calls prepare; prepared mission is later bound to the confirming websocket intent."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 196,
+      "title": "Execute frozen search coverage routes",
+      "base": "c47cd74c100ee6a94fb5549d4b29d9193c350525",
+      "head": "05ac8558d825ac3f192ae336c262ef3749646718",
+      "head_ref": "feat/search-runtime-execution-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "SearchRuntime.execute/observe_processed_frame/observe_sighting/detection_worker/hold/cancel/_coverage_plan/_coverage_leg/_coverage_endpoints/_activate_arrived_tasks/_status"
+      ],
+      "call_chains_checked": [
+        "Dispatcher completion observer activates a task; workers then deliver coverage; execute marks unfinished tasks incomplete."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 198,
+      "title": "feat(search): localize approved-zone sightings",
+      "base": "05ac8558d825ac3f192ae336c262ef3749646718",
+      "head": "8181d77cc0b0704e061886820a96775a72b05bea",
+      "head_ref": "feat/search-runtime-localization-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "SearchCameraModel",
+        "SearchLocalization",
+        "project_bottom_center",
+        "FiveFrameLocalizer.observe/observe_sighting",
+        "_inside"
+      ],
+      "call_chains_checked": [
+        "SearchRuntime.detection_worker supplies accepted frame pose and camera model to FiveFrameLocalizer then stores SearchLocalization."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 199,
+      "title": "feat(search): expose coverage and finding status",
+      "base": "8181d77cc0b0704e061886820a96775a72b05bea",
+      "head": "5b6f983e5f5dfe52420ebefb4833d73ba07cb7f0",
+      "head_ref": "feat/search-runtime-status-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "CoverageLedger.covered_cell_ids",
+        "SearchRuntime.localize_sighting/acknowledge_finding/status_payload"
+      ],
+      "call_chains_checked": [
+        "Detector candidate and localizer state are serialized by status_payload and exposed by search status and acknowledgement endpoints."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 200,
+      "title": "feat(relay): register configured search intents",
+      "base": "5b6f983e5f5dfe52420ebefb4833d73ba07cb7f0",
+      "head": "102ff306c25b0cebf0a9f9a92d7b452cd37138de",
+      "head_ref": "feat/search-runtime-intent-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "IntentName.SEARCH",
+        "IMPLEMENTED_INTENT_NAMES/C1_IMPLEMENTED_INTENT_NAMES",
+        "_has_valid_scope/_parse_args"
+      ],
+      "call_chains_checked": [
+        "validate_intent gates HTTP and websocket inputs before AutonomySession.submit and SearchRuntime.prepare."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 201,
+      "title": "feat(sim): rehearse five mapped destinations through signed nodes",
+      "base": "9a4709ffaebcc398d2df52b65a5350bc56f6fc5e",
+      "head": "f34050962324b5d855f788c89585d839c2e5392f",
+      "head_ref": "feat/fleet-navigation-demo",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "navigation demo dependency"
+      ],
+      "call_chains_checked": [],
+      "review_result": "No console diff.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 202,
+      "title": "feat(search): count coverage during route execution",
+      "base": "102ff306c25b0cebf0a9f9a92d7b452cd37138de",
+      "head": "5667a8ce861aeece1011e030a8a6872c8ef8e3dd",
+      "head_ref": "feat/search-runtime-coverage-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "AdapterDispatcher._navigation_check",
+        "SafetyArbiter SEARCH operation map",
+        "SearchRuntime._activate_arrived_tasks"
+      ],
+      "call_chains_checked": [
+        "SEARCH Plan reaches AdapterDispatcher navigation checks, then completion callback updates task state before processed frames are admitted."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 203,
+      "title": "feat(search): localize confirmed findings during coverage",
+      "base": "5667a8ce861aeece1011e030a8a6872c8ef8e3dd",
+      "head": "0ba2645db4231547af1830a055097a7459c148b2",
+      "head_ref": "feat/search-runtime-localized-findings-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "_Mission.candidate_frames",
+        "SearchRuntime.detection_worker camera/localizer closure",
+        "status payload frame fields"
+      ],
+      "call_chains_checked": [
+        "Accepted processed frame caches pose and camera; following sighting enters a per-ID localizer and status includes frame provenance."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 204,
+      "title": "Avoid persisting live telemetry state projections",
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "903d0d1db1e7c9a4160388da8bad8b969a37ddee",
+      "head_ref": "fix/telemetry-stale-roster-followup",
+      "slice": "docs_evidence",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "RelaySession telemetry processing",
+        "RelaySession durable audit replay"
+      ],
+      "call_chains_checked": [
+        "signed telemetry -> live subscriber publication and durable telemetry audit -> reopened session replay"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "docs_evidence-coverage.json"
+    },
+    {
+      "number": 205,
+      "title": "feat(relay): load strict search runtime deployments",
+      "base": "0ba2645db4231547af1830a055097a7459c148b2",
+      "head": "f43b595ea0f044194dedef46ce183a9300af450a",
+      "head_ref": "feat/search-runtime-deployment-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "load_search_runtime",
+        "_no_duplicate_fields",
+        "_areas",
+        "_sources",
+        "AutonomyConfig.from_env"
+      ],
+      "call_chains_checked": [
+        "AutonomyConfig.from_env loads navigation first, then strict search configuration with matching artifact pin and owner-approved zones."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 206,
+      "title": "feat(language): resolve mapped navigation destinations",
+      "base": "fc87a2af617a31538b17ae93f370bdf85e2a6fd5",
+      "head": "8d2f88619035bddac31abae66eb7e5ce1ee4e459",
+      "head_ref": "feat/navigation-language-resolution",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "NavigationGrounding",
+            "navigation_from_record"
+          ],
+          "callers": [
+            "build_grounding_facts",
+            "RelayTranscriptCompiler"
+          ],
+          "callees": [
+            "configured navigation catalog and aliases"
+          ],
+          "contract": "Spoken destinations resolve to canonical configured zones before an intent is accepted."
+        },
+        {
+          "symbols": [
+            "build_grounding_facts",
+            "plan_step_matches",
+            "validate_model_outcome",
+            "_validate_proposed_intent"
+          ],
+          "callers": [
+            "TranscriptCompiler.compile"
+          ],
+          "callees": [
+            "grounding facts",
+            "plan digest",
+            "semantic state folding"
+          ],
+          "contract": "The model can propose only a route grounded in current capability, map, and destination facts."
+        },
+        {
+          "symbols": [
+            "_plan_digest",
+            "ConfirmedPlan serialization"
+          ],
+          "callers": [
+            "preview confirmation and transcript transport"
+          ],
+          "callees": [
+            "canonical navigation arguments"
+          ],
+          "contract": "Canonical destination identity contributes to the plan digest and survives transport."
+        }
+      ],
+      "call_chains_checked": [
+        "spoken alias -> NavigationGrounding.resolve -> canonical zone -> validated navigate intent"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 207,
+      "title": "feat(relay): ground voice compiler navigation",
+      "base": "7f15d46c31fa2b5a5600b0b5ec8553f857f75663",
+      "head": "50862f4e7dc14bf3cbfe7120de39412c47349471",
+      "head_ref": "feat/navigation-language-relay-wiring",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "RelayTranscriptCompiler",
+            "build_transcript_service",
+            "_explicit_navigation_matches"
+          ],
+          "callers": [
+            "relay main startup",
+            "voice-plan endpoints"
+          ],
+          "callees": [
+            "build_grounding_facts",
+            "navigation metadata",
+            "TranscriptCompiler"
+          ],
+          "contract": "Relay state, navigation catalog, and the compiler capability profile must describe the same current system."
+        }
+      ],
+      "call_chains_checked": [
+        "relay state -> build_grounding_facts -> RelayTranscriptCompiler -> voice plan"
+      ],
+      "review_result": "confirmed profile mismatch after search integration",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 208,
+      "title": "feat(relay): execute guarded search previews",
+      "base": "f43b595ea0f044194dedef46ce183a9300af450a",
+      "head": "4c430f0221a8c31e8594ad29e77d866d533593e9",
+      "head_ref": "feat/search-runtime-relay-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "AutonomySession.preview_search",
+        "search preview/status/ack endpoints",
+        "SearchRuntime.has_mission/accepts_intent/preview_expires_at_ms/revoke_unstarted_previews/_intent_fingerprint"
+      ],
+      "call_chains_checked": [
+        "HTTP preview writes frozen mission; websocket submission checks full fingerprint and TTL; stop/select/membership revoke unstarted missions."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 209,
+      "title": "feat(relay): run configured live search detection",
+      "base": "4c430f0221a8c31e8594ad29e77d866d533593e9",
+      "head": "39c1f9f289c99a99099e43d0d9d1d069977c9ab2",
+      "head_ref": "feat/search-runtime-detection-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "SearchDetectionFactory.start/start_mission/status/finish_mission/close/_pose_provider",
+        "load_search_detection_config/_drone_id/_field/_source/_model_path/_camera",
+        "AutonomyComposition.start/close"
+      ],
+      "call_chains_checked": [
+        "App lifespan starts composition, AutonomySession starts required workers before route dispatch, worker callbacks enter SearchRuntime, status reports workers."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 210,
+      "title": "feat(sim): provide synthetic search detection fixtures",
+      "base": "39c1f9f289c99a99099e43d0d9d1d069977c9ab2",
+      "head": "db24faae5b3a808ba704abb3d92c8699ab0ccee4",
+      "head_ref": "feat/search-runtime-demo-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "SyntheticFrameStream",
+        "SyntheticDetector",
+        "SearchDemo.stream_factory/detector_factory/pose_provider_factory/camera_provider_factory/publish_frame",
+        "search_demo"
+      ],
+      "call_chains_checked": [
+        "Test factories supply deterministic frames, measured pose, and calibrated camera model to the production SearchDetectionFactory."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 211,
+      "title": "test(relay): exercise synthetic search through fake nodes",
+      "base": "db24faae5b3a808ba704abb3d92c8699ab0ccee4",
+      "head": "1665b83c8d7fc63e703c3c2d01948574546f2c78",
+      "head_ref": "feat/search-runtime-demo-reuse-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "FakeNode._finish_command",
+        "SearchDemo.publish_frame",
+        "_wait_until/_outcome/_intent/search_demo_server/test_synthetic_search_demo_runs_from_http_preview_through_fake_node"
+      ],
+      "call_chains_checked": [
+        "HTTP preview to websocket confirmation to fake-node acknowledgement drives relay resume and status polling."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 212,
+      "title": "fix(relay): bound and synchronize search mission state",
+      "base": "1665b83c8d7fc63e703c3c2d01948574546f2c78",
+      "head": "6acf9795422f43ca1a6508272671d9ba5225270e",
+      "head_ref": "feat/search-runtime-hardening-pr",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "SearchRuntime locking/status_payload/_discard_terminal_missions",
+        "mission and candidate capacity constants"
+      ],
+      "call_chains_checked": [
+        "Worker callbacks, status reads and acknowledgement share SearchRuntime state under RLock; capacity removes terminal work only."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 213,
+      "title": "test(console): verify five destination routes in browser CI",
+      "base": "962c1657e19622be97771255e632ac47c8d6f3ee",
+      "head": "c500a4d4614ed45dfa9aaff59d231dc86c8633cb",
+      "head_ref": "test/browser-navigation-proof",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "route preview",
+        "cancel",
+        "confirmation dock",
+        "telemetry assertions"
+      ],
+      "call_chains_checked": [],
+      "review_result": "Browser proof only.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 214,
+      "title": "Add simulator-gated C2 capability release",
+      "base": "15cbad03a0cd46f0a736d5c00d463cc38b2cd21c",
+      "head": "89c10a8d3f626b2e744e2aba62b2ee095c7eaf83",
+      "head_ref": "feat/c2-release-disarm",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "C2 release dependency"
+      ],
+      "call_chains_checked": [],
+      "review_result": "No console diff.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 215,
+      "title": "Bind C2 release setting through relay and simulator",
+      "base": "89c10a8d3f626b2e744e2aba62b2ee095c7eaf83",
+      "head": "c2a0e1d31af176035d1368736995781b0be66998",
+      "head_ref": "feat/c2-sim-profile-binding",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "C2 profile dependency"
+      ],
+      "call_chains_checked": [],
+      "review_result": "No console diff.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 216,
+      "title": "feat(sim): run object search in the fleet console demo",
+      "base": "4af08fc7d923ee44ea297eb76d89d07d08f0e5a9",
+      "head": "aebdd79a554c0295452289dc6155f52e1b081aa3",
+      "head_ref": "feat/fleet-search-demo",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "search demo runtime dependency"
+      ],
+      "call_chains_checked": [],
+      "review_result": "No console diff.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 217,
+      "title": "Publish signed navigation route packets",
+      "base": "8b881819de09dc29e288630e9d9bcb4b670cc9e9",
+      "head": "48be395a5dcd2573f90987396d28cf09c6ca90a5",
+      "head_ref": "feat/navigation-route-publisher",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "NavigationControl",
+            "RelayRuntime outbound fan-out",
+            "_command_arguments"
+          ],
+          "callers": [
+            "approved route authorization",
+            "websocket node subscriptions"
+          ],
+          "callees": [
+            "signed route, pose, and GOTO frame builders"
+          ],
+          "contract": "A node receives the signed route and pose before the GOTO whose arguments bind their route ID."
+        },
+        {
+          "symbols": [
+            "RelaySession navigation control record",
+            "tools/write_android_navigation_packets.py"
+          ],
+          "callers": [
+            "session audit and CI contract producer"
+          ],
+          "callees": [
+            "NavigationControl",
+            "Kotlin PythonNavigationContractTest"
+          ],
+          "contract": "Sequence and epoch-scoped navigation packets are auditable and consumable by the Android parser."
+        }
+      ],
+      "call_chains_checked": [
+        "approved diagnostic pose -> signed route and pose -> session fan-out -> command frame -> Kotlin parser"
+      ],
+      "review_result": "no confirmed issue; producer imports private test fixtures",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 218,
+      "title": "Wire authorized navigation routes to bridge nodes",
+      "base": "48be395a5dcd2573f90987396d28cf09c6ca90a5",
+      "head": "82bd103572ab4f73dfba6998fc009483f1aa8817",
+      "head_ref": "feat/navigation-route-adapter",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            "RemoteBridgeAdapter.authorize_navigation",
+            "RemoteBridgeAdapter._issue"
+          ],
+          "callers": [
+            "AdapterDispatcher before remote route GOTO"
+          ],
+          "callees": [
+            "NodeLink authorize and deliver",
+            "route-ID command arguments"
+          ],
+          "contract": "Remote dispatch authorizes the exact route and pose before issuing a matching GOTO."
+        },
+        {
+          "symbols": [
+            "RelayNodeLink.authorize_navigation",
+            "RelayNodeLink.deliver",
+            "AutonomySession navigation lifecycle methods"
+          ],
+          "callers": [
+            "RemoteBridgeAdapter",
+            "relay control flow"
+          ],
+          "callees": [
+            "signed navigation frames",
+            "session route state and invalidation"
+          ],
+          "contract": "Route lifecycle changes reach nodes in order and stale route IDs are rejected."
+        }
+      ],
+      "call_chains_checked": [
+        "AdapterDispatcher.authorize_navigation -> RelayNodeLink -> signed route/pose delivery -> RemoteBridgeAdapter GOTO with route ID -> Kotlin admission"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 219,
+      "title": "Run Python navigation contract producer in JVM CI",
+      "base": "48be395a5dcd2573f90987396d28cf09c6ca90a5",
+      "head": "ede28e7d6c1a502564fb06a9ebfe13b43eda7bf7",
+      "head_ref": "test/navigation-python-contract-ci",
+      "slice": "navigation",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        {
+          "symbols": [
+            ".github/workflows/ci.yml bridge-jvm job",
+            ".gitlab-ci.yml bridge-jvm job"
+          ],
+          "callers": [
+            "GitHub Actions",
+            "GitLab CI"
+          ],
+          "callees": [
+            "tools/write_android_navigation_packets.py",
+            "PythonNavigationContractTest"
+          ],
+          "contract": "Each JVM job creates the exact signed Python packet file before the Kotlin producer-consumer test runs."
+        }
+      ],
+      "call_chains_checked": [
+        "CI root checkout -> Python packet producer -> PYTHON_NAVIGATION_PACKET_PATH -> bridge-core test"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "navigation-coverage.json"
+    },
+    {
+      "number": 220,
+      "title": "fix(relay): share configured voice and autonomy capabilities",
+      "base": "6acf9795422f43ca1a6508272671d9ba5225270e",
+      "head": "21161907d455141edb3ec556c5801c3391c6f8b1",
+      "head_ref": "integration/relay-capability-profile",
+      "slice": "search",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "AutonomyConfig.effective_capability_profile",
+        "AutonomyComposition capability initialization",
+        "create_autonomy_app transcript service hook",
+        "build_transcript_service/transcript_service_factory"
+      ],
+      "call_chains_checked": [
+        "Configured profile feeds both autonomy intent validation and transcript compiler; enabled SEARCH is present only when navigation and search runtime deploy together."
+      ],
+      "review_result": "reviewed; see search-report.md",
+      "evidence_source": "search-coverage.json"
+    },
+    {
+      "number": 221,
+      "title": "test(console): verify repeated object search in browser CI",
+      "base": "aebdd79a554c0295452289dc6155f52e1b081aa3",
+      "head": "018ccc41f92aa9d3b9144b76de45479fa08d96c5",
+      "head_ref": "test/browser-search-proof",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "browser search preview",
+        "confirmation dock",
+        "coverage status",
+        "finding acknowledgement"
+      ],
+      "call_chains_checked": [],
+      "review_result": "Browser proof depends on the merged configured search runtime.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 222,
+      "title": "Align console C2 capability handling",
+      "base": "c2a0e1d31af176035d1368736995781b0be66998",
+      "head": "0b3cd0bdb032101c52aed31af82cb44b77a7f4ee",
+      "head_ref": "fix/c2-release-review",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "C1_BASIC_CONTROL_INTENTS",
+        "C2_FLEET_OPERATIONS_INTENTS",
+        "gateControl",
+        "FixtureRelayClient.sendIntent"
+      ],
+      "call_chains_checked": [],
+      "review_result": "C2-specific disarm is accepted only under the exact C2 advertisement.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 223,
+      "title": "test(relay): cover C2 configured capability widening",
+      "base": "61fdfd45dc9be29bd960d6a203b63618797dcd50",
+      "head": "19b00ed1e6afe2da61af6e33a33459d63bcd7d74",
+      "head_ref": "feat/c2-configured-capabilities",
+      "slice": "console_demo",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "isCapabilityAdvertisement",
+        "isSupportedIntent",
+        "FixtureRelayClient.emitServer",
+        "FixtureRelayClient.sendIntent"
+      ],
+      "call_chains_checked": [],
+      "review_result": "Configured navigation/search must remain profile-gated; reconciled.",
+      "evidence_source": "console_demo-coverage.json"
+    },
+    {
+      "number": 224,
+      "title": "docs: record runtime wiring audit and navigation/search evidence",
+      "base": "a01fefe0ed01148f202da5dc91fc991fc1390b08",
+      "head": "1966a5e98ed640f5f1c33de3031a18493162e5bf",
+      "head_ref": "docs/runtime-wiring-audit",
+      "slice": "docs_evidence",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "runtime-wiring evidence table",
+        "historical integrated-checkout record"
+      ],
+      "call_chains_checked": [
+        "implementation/test boundary -> cited PR -> software rehearsal claim -> separately stated physical gate"
+      ],
+      "review_result": "no confirmed issue; historical totals not rerun",
+      "evidence_source": "docs_evidence-coverage.json"
+    },
+    {
+      "number": 225,
+      "title": "docs: sync README, PRD and MVP plan with current issues",
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "dea2dc59d6bc3e461fe7a656dea37aed36b6dfdf",
+      "head_ref": "docs/issue-aligned-product-plan",
+      "slice": "docs_evidence",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "just setup/test/lint/ci/relay/console recipes",
+        "console test:m14-browser script"
+      ],
+      "call_chains_checked": [
+        "README command -> justfile recipe or console package script"
+      ],
+      "review_result": "no confirmed issue; changed local Markdown links resolve",
+      "evidence_source": "docs_evidence-coverage.json"
+    },
+    {
+      "number": 226,
+      "title": "Add flight acceptance evidence evaluator",
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "7abf28fa756fcc35a6d6fd2d8dd556c73265d14a",
+      "head_ref": "feat/flight-acceptance-evidence-evaluator",
+      "slice": "docs_evidence",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "evaluate",
+        "_parse_manifest",
+        "_pair_samples",
+        "_gap_report",
+        "_validate_hashes",
+        "_write_report"
+      ],
+      "call_chains_checked": [
+        "manifest and raw evidence -> typed samples -> pairing/gap/percentile checks -> integrity checks -> atomic report"
+      ],
+      "review_result": "no confirmed issue; evaluator test suite passed",
+      "evidence_source": "docs_evidence-coverage.json"
+    },
+    {
+      "number": 227,
+      "title": "Capture and export raw Android flight evidence",
+      "base": "8b881819de09dc29e288630e9d9bcb4b670cc9e9",
+      "head": "0d3cca17b825e1a5a6b98f53beaa66b6c8cea450",
+      "head_ref": "feat/android-sensor-capture-export",
+      "slice": "phone_media",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "ProbeAircraft.received",
+        "SensorRawSink.recordAttitude",
+        "SensorRawSink.serialize",
+        "RawEvidenceExport.write",
+        "RawEvidenceExport.copyMember",
+        "StreamEvidenceTracker"
+      ],
+      "call_chains_checked": [
+        "MSDK KeyManager callback -> ProbeAircraft.received -> SensorRawRecorder -> SensorRawSink append/worker -> JSONL",
+        "SessionScreen export -> RawEvidenceExport.write -> ZIP provenance manifest"
+      ],
+      "review_result": "pass; raw timing and raw SDK gimbal axes remain diagnostic",
+      "evidence_source": "phone_media-coverage.json"
+    },
+    {
+      "number": 228,
+      "title": "feat(perception): convert Android v3 sensor records",
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "2a66e6d97af477fe3770e925e86e7d043b00d30c",
+      "head_ref": "feat/android-v3-sensor-record-adapter",
+      "slice": "phone_media",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "SensorRecordAdapter.record",
+        "SensorRecordAdapter.record_if_selected",
+        "SensorRecordAdapter._common",
+        "SensorRecordAdapter._attitude",
+        "SensorRecordAdapter._phone_record"
+      ],
+      "call_chains_checked": [
+        "Android JSONL -> SensorRecordAdapter._common/_phone -> record_if_selected -> ControlPublisher.enqueue -> fuser refusal of unverified observations"
+      ],
+      "review_result": "pass; no ready pose path",
+      "evidence_source": "phone_media-coverage.json"
+    },
+    {
+      "number": 229,
+      "title": "Add opt-in MediaMTX camera recording",
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "adbaf440e5fe0ad65ca0148e6a4ba5837348192c",
+      "head_ref": "feat/opt-in-mediamtx-recording",
+      "slice": "phone_media",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "MediaMTX recording profile and archive checksum workflow"
+      ],
+      "call_chains_checked": [
+        "docker compose recording profile -> MediaMTX segments -> operator archive -> archive-relative SHA-256 file"
+      ],
+      "review_result": "pass",
+      "evidence_source": "phone_media-coverage.json"
+    },
+    {
+      "number": 230,
+      "title": "Bound transcript uploads with a total body-read deadline",
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "115e60259764617f1e2fc7e1935331b4b11eaef1",
+      "head_ref": "feat/transcript-body-deadline",
+      "slice": "docs_evidence",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "_bounded_request_body",
+        "RelaySettings.transcript_upload_timeout_ms",
+        "transcript upload error mapping"
+      ],
+      "call_chains_checked": [
+        "authenticated request -> streamed bounded read -> timeout response or transcript service"
+      ],
+      "review_result": "no confirmed issue",
+      "evidence_source": "docs_evidence-coverage.json"
+    }
+  ],
+  "followups_and_pending_work": [
+    {
+      "number": 231,
+      "original_base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "original_head": "b22f5acbfdd44a28658d390b16bbd50429e5e162",
+      "current_head": "b22f5acbfdd44a28658d390b16bbd50429e5e162",
+      "status": "open",
+      "coverage_kind": "symbol_group",
+      "review_result": "Receipt-clock audit; 6cea3215e is applied as eecd80a.",
+      "evidence_source": "new_followups-coverage.json"
+    },
+    {
+      "number": 232,
+      "original_base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "original_head": "2e1cdb4a8bd74b845f748c843c87b38f72c4d009",
+      "current_head": "9346c9bf86e143c2d3938cb666c138ad2ef212ea",
+      "status": "open",
+      "coverage_kind": "symbol_group_with_mapped_delta",
+      "review_result": "Deepgram parser fix 3d5258f is patch-identical to 006dbd8. Current head adds the reviewed parser/test formatting delta.",
+      "evidence_source": "new_followups-coverage.json; patch-id mapping"
+    },
+    {
+      "number": 233,
+      "original_base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "original_head": "6e2deb1be16981aa3aeca2fe1c91dd483c01796b",
+      "current_head": "6e2deb1be16981aa3aeca2fe1c91dd483c01796b",
+      "status": "closed without merge",
+      "coverage_kind": "call_chain_review",
+      "symbols_or_calls_checked": [
+        "SafetyArbiter.filtered_goto_commands",
+        "ExecutionResult.deflected_commands",
+        "direct and resumed dispatcher completion"
+      ],
+      "review_result": "Actual BVC interim setpoint and outstanding target fix 39a306b is applied as db63e99.",
+      "evidence_source": "bvc-velocity-report.md; patch-id mapping"
+    },
+    {
+      "number": 234,
+      "original_base": "2a66e6d97af477fe3770e925e86e7d043b00d30c",
+      "original_head": "d8dde8bba15a194bf105a84cbc34852061995186",
+      "current_head": "d8dde8bba15a194bf105a84cbc34852061995186",
+      "status": "open",
+      "coverage_kind": "individual_function_or_method",
+      "symbols_or_calls_checked": [
+        "VerifiedLocalizationIngestion._measured_transform",
+        "VerifiedLocalizationIngestion._measured_rotation",
+        "VerifiedLocalizationIngestion._store_capture_aligned_attitude",
+        "VerifiedLocalizationIngestion._capture_aligned",
+        "gimbal_mount_to_gimbal frame composition",
+        "angular uncertainty lever-arm bound"
+      ],
+      "review_result": "67ae7df maps patch-identically to 12ecc9a; 4d16767 maps to 98c81cc. The PR-head correction composes joint-relative gimbal rotation and uses the monotonic 2*lever*sin(min(180,sum)/2) error bound; tests cover non-identity joint and 180-degree error.",
+      "evidence_source": "phone_media-coverage.json; verified-final-tests.txt; patch-id mapping"
+    },
+    {
+      "number": 235,
+      "title": "Promote detection attention with authenticated acknowledgement",
+      "original_base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "original_head": "b308f9294faa74cd9072d43f6f6c7e63c888cfbc",
+      "current_head": "b308f9294faa74cd9072d43f6f6c7e63c888cfbc",
+      "branch": "feat/detection-attention-confirmation",
+      "github_state": "open",
+      "coverage_kind": "symbol_group",
+      "symbols_or_calls_checked": [
+        "HostRecordedFrameProcessor",
+        "detection audit-before-publication and active-epoch deduplication",
+        "authenticated acknowledgement endpoint and client acknowledgement method",
+        "polled attention state and console contract"
+      ],
+      "call_chains_checked": [
+        "pinned YOLOX COCO model -> recorded frame processor -> audit event -> active attention state -> authenticated console poll and acknowledgement",
+        "detection event -> attention promotion; no detection path emits a command"
+      ],
+      "review_result": "Root reviewed the exact head. The first integration cherry-pick dropped the state interface/default and client acknowledgement method plus its contract test; 5a0f2a7 restores them. The model is pinned to YOLOX COCO 0.89728647.",
+      "validation": "35 focused source tests passed. Later integration validation passed 2,424 Python tests and 531 console tests at 114f5b1 plus 5a0f2a7. Browser and phone validation remained in progress.",
+      "evidence_source": "root review of PR #235 and integration correction 5a0f2a7"
+    }
+  ],
+  "review_commit_mappings": [
+    {
+      "review": "67ae7df",
+      "integration": "12ecc9a",
+      "patch_id_equal": true
+    },
+    {
+      "review": "4d16767",
+      "integration": "98c81cc",
+      "patch_id_equal": true
+    },
+    {
+      "review": "3d5258f",
+      "integration": "006dbd8",
+      "patch_id_equal": true
+    },
+    {
+      "review": "39a306b",
+      "integration": "db63e99",
+      "patch_id_equal": true
+    }
+  ],
+  "fixed_integration_defects": [
+    "strict voice binding and language preview",
+    "receipt clock",
+    "async console expiry and session races",
+    "single presence and navigation timer",
+    "capture audit budget",
+    "search pending cancellation and failure",
+    "Deepgram parser",
+    "BVC actual setpoint metadata",
+    "detection attention state interface, client acknowledgement method, and contract test retained after the initial integration cherry-pick"
+  ],
+  "validation_status": {
+    "python": {
+      "head": "114f5b1e1e1156fa93c360271e1d80212781d2ae",
+      "passed": 2424,
+      "duration_seconds": 395.88
+    },
+    "console": {
+      "head": "5a0f2a7",
+      "passed": 531,
+      "lint": "pass",
+      "build": "pass"
+    },
+    "browser": {
+      "head": "99dd4c3",
+      "scripts": [
+        "m14-browser-smoke.mjs",
+        "fleet-browser-smoke.mjs",
+        "navigation-browser-smoke.mjs",
+        "search-browser-smoke.mjs"
+      ],
+      "result": "pass"
+    },
+    "phone": {
+      "review_commit": "cbcf02a",
+      "result": "bridge JVM plus Android fake/probe tests pass",
+      "test_only_change": "disabled navigation command TTL 10 seconds"
+    },
+    "ci": {
+      "pull_request": 236,
+      "status": "final head pending"
+    },
+    "hardware": "no physical flight validation",
+    "asr": "20 recorded utterance comparison and provider cassettes pending"
+  }
+}

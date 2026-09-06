@@ -1,0 +1,76 @@
+{
+  "reviewed_at": "2026-09-06",
+  "source_inventory": "docs_evidence.json",
+  "review_mode": [
+    "documentation/evidence boundary",
+    "implementation and consumer tracing",
+    "focused regression validation",
+    "standards and hygiene"
+  ],
+  "findings": [],
+  "evidence_limitations": [
+    {
+      "scope": "physical flight acceptance",
+      "status": "not supplied and not claimed complete",
+      "detail": "No five-route physical recording set, independent-reference series, hardware configuration package, or completed evaluator report was available."
+    },
+    {
+      "scope": "#224 integrated rehearsal totals",
+      "status": "historical result not rerun",
+      "detail": "The referenced revision 7d11aa4 is available locally; the reported 2,201 Python tests, 528 console tests, build, and browser rehearsals were not independently re-executed in this review."
+    }
+  ],
+  "prs": [
+    {
+      "number": 181,
+      "head": "2a098388ced7a1124bb493288eda7fe00203222e",
+      "files_reviewed": ["relay/audit.py", "relay/session.py", "relay/state.py", "console/src/control/state.ts", "relay/README.md", ".env.example"],
+      "symbols": ["SessionAuditLog.append_batch", "SessionAuditLog._complete_operation", "SessionAuditLog._recover_mirror_from_database", "SessionAuditLog._migrate_legacy_database", "RelaySession state projection"],
+      "call_chains": ["relay mutation -> material state projection -> SessionAuditLog.append_batch -> SQLite digest records -> JSONL mirror", "reopen -> database row validation -> mirror comparison/recovery -> replay"],
+      "result": "no confirmed issue",
+      "validation": "226 focused audit/session/settings/state tests passed on the follow-up review checkout"
+    },
+    {
+      "number": 204,
+      "head": "903d0d1db1e7c9a4160388da8bad8b969a37ddee",
+      "files_reviewed": ["relay/session.py", "relay/tests/test_session.py"],
+      "symbols": ["RelaySession telemetry processing", "RelaySession durable audit replay"],
+      "call_chains": ["signed telemetry -> live subscriber publication and durable telemetry audit -> reopened session replay"],
+      "result": "no confirmed issue"
+    },
+    {
+      "number": 224,
+      "head": "1966a5e98ed640f5f1c33de3031a18493162e5bf",
+      "files_reviewed": ["docs/RUNTIME_WIRING_AUDIT_2026-09-06.md"],
+      "symbols": ["runtime-wiring evidence table", "historical integrated-checkout record"],
+      "call_chains": ["implementation/test boundary -> cited PR -> software rehearsal claim -> separately stated physical gate"],
+      "result": "no confirmed issue; historical totals not rerun"
+    },
+    {
+      "number": 225,
+      "head": "dea2dc59d6bc3e461fe7a656dea37aed36b6dfdf",
+      "files_reviewed": ["README.md", "docs/mvp-plan.md", "docs/prd.md", "justfile", "console/package.json"],
+      "symbols": ["just setup/test/lint/ci/relay/console recipes", "console test:m14-browser script"],
+      "call_chains": ["README command -> justfile recipe or console package script"],
+      "result": "no confirmed issue; changed local Markdown links resolve"
+    },
+    {
+      "number": 226,
+      "head": "7abf28fa756fcc35a6d6fd2d8dd556c73265d14a",
+      "files_reviewed": ["docs/FLIGHT_ACCEPTANCE_EVIDENCE.md", "evals/flight_acceptance.py", "tests/test_flight_acceptance.py"],
+      "symbols": ["evaluate", "_parse_manifest", "_pair_samples", "_gap_report", "_validate_hashes", "_write_report"],
+      "call_chains": ["manifest and raw evidence -> typed samples -> pairing/gap/percentile checks -> integrity checks -> atomic report"],
+      "result": "no confirmed issue; evaluator test suite passed",
+      "validation": "15 tests passed; module help invocation passed"
+    },
+    {
+      "number": 230,
+      "head": "115e60259764617f1e2fc7e1935331b4b11eaef1",
+      "files_reviewed": ["relay/app.py", "relay/settings.py", "relay/README.md", "relay/tests/test_transcript_upload_deadline.py", ".env.example"],
+      "symbols": ["_bounded_request_body", "RelaySettings.transcript_upload_timeout_ms", "transcript upload error mapping"],
+      "call_chains": ["authenticated request -> streamed bounded read -> timeout response or transcript service"],
+      "result": "no confirmed issue",
+      "validation": "44 focused transcript-upload/voice tests passed on the follow-up review checkout"
+    }
+  ]
+}

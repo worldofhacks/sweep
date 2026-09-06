@@ -1,0 +1,85 @@
+{
+  "scope": "console/demo pinned-head audit",
+  "integration_fix": {
+    "changed_console_files": [
+      "console/src/control/plan.ts",
+      "console/src/control/use-control-console.ts",
+      "console/src/modules/speech/SpeechModule.tsx",
+      "console/src/modules/speech/SpeechModule.test.tsx",
+      "console/src/relay/contract.ts"
+    ],
+    "reasons": [
+      "retain strict relay-minted language source, intent ID, binding, and expiry",
+      "freeze spoken navigation with that immutable draft before confirmation",
+      "discard stale asynchronous previews",
+      "reconcile C1, C2, and configured navigation/search capability advertisement"
+    ]
+  },
+  "pull_requests": [
+    {
+      "number": 223,
+      "head": "19b00ed1e6afe2da61af6e33a33459d63bcd7d74",
+      "console_files": [
+        "console/src/relay/contract.ts",
+        "console/src/testing/fixture-relay-client.ts",
+        "console/src/testing/fixture-relay-client.test.ts"
+      ],
+      "covered_calls": ["isCapabilityAdvertisement", "isSupportedIntent", "FixtureRelayClient.emitServer", "FixtureRelayClient.sendIntent"],
+      "finding": "Configured navigation/search must remain profile-gated; reconciled."
+    },
+    {
+      "number": 222,
+      "head": "0b3cd0bdb032101c52aed31af82cb44b77a7f4ee",
+      "console_files": ["console/src/relay/contract.ts", "console/src/modules/control/controls.ts", "console/src/testing/fixture-relay-client.ts"],
+      "covered_calls": ["C1_BASIC_CONTROL_INTENTS", "C2_FLEET_OPERATIONS_INTENTS", "gateControl", "FixtureRelayClient.sendIntent"],
+      "finding": "C2-specific disarm is accepted only under the exact C2 advertisement."
+    },
+    {
+      "number": 221,
+      "head": "018ccc41f92aa9d3b9144b76de45479fa08d96c5",
+      "console_files": ["console/scripts/search-browser-smoke.mjs"],
+      "covered_calls": ["browser search preview", "confirmation dock", "coverage status", "finding acknowledgement"],
+      "finding": "Browser proof depends on the merged configured search runtime."
+    },
+    {"number": 216, "head": "aebdd79a554c0295452289dc6155f52e1b081aa3", "console_files": [], "covered_calls": ["search demo runtime dependency"], "finding": "No console diff."},
+    {"number": 215, "head": "c2a0e1d31af176035d1368736995781b0be66998", "console_files": [], "covered_calls": ["C2 profile dependency"], "finding": "No console diff."},
+    {"number": 214, "head": "89c10a8d3f626b2e744e2aba62b2ee095c7eaf83", "console_files": [], "covered_calls": ["C2 release dependency"], "finding": "No console diff."},
+    {
+      "number": 213,
+      "head": "c500a4d4614ed45dfa9aaff59d231dc86c8633cb",
+      "console_files": ["console/scripts/navigation-browser-smoke.mjs"],
+      "covered_calls": ["route preview", "cancel", "confirmation dock", "telemetry assertions"],
+      "finding": "Browser proof only."
+    },
+    {"number": 201, "head": "f34050962324b5d855f788c89585d839c2e5392f", "console_files": [], "covered_calls": ["navigation demo dependency"], "finding": "No console diff."},
+    {
+      "number": 194,
+      "head": "b413963e341fa64646461ffa39ab0062c8842b32",
+      "console_files": ["console/src/control/use-control-console.ts", "console/src/modules/search/SearchModule.tsx", "console/src/search/client.ts", "console/src/relay/runtime.ts"],
+      "covered_calls": ["prepareSearch", "SearchModule.prepare", "HttpSearchClient.preview", "HttpSearchClient.acknowledge"],
+      "finding": "Integrated with pre-request deadline and stale-result guards."
+    },
+    {
+      "number": 193,
+      "head": "f303ed496025a7b9693e55d3d5f823908143254d",
+      "console_files": ["console/src/control/use-control-console.ts", "console/src/modules/speech/SpeechModule.tsx", "console/src/modules/speech/SpeechModule.test.tsx"],
+      "covered_calls": ["prepareVoicePlanStep", "navigation.preview", "SpeechModule.stageStep", "confirmRequest"],
+      "finding": "Reworked to preserve the language source and relay-minted ID."
+    },
+    {
+      "number": 164,
+      "head": "521d59966c5e616829a955133f74440027eb7a09",
+      "console_files": ["console/src/control/state.ts", "console/src/control/use-control-console.ts", "console/src/gesture/use-gesture-producer.ts", "console/src/testing/fixture-relay-client.ts", "console/scripts/fleet-browser-smoke.mjs"],
+      "covered_calls": ["selection invalidation", "fixture lifecycle", "gesture draft", "fleet browser demo"],
+      "finding": "Compatible fixture and C2 behavior retained."
+    }
+  ],
+  "validation": {
+    "full_console_test": "476 passed",
+    "focused_reconciliation_test": "98 passed",
+    "typescript": "passed",
+    "lint": "passed",
+    "production_build": "passed",
+    "diff_check": "passed"
+  }
+}

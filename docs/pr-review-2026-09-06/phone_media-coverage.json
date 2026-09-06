@@ -1,0 +1,136 @@
+{
+  "metadata_source": "phone_media.json",
+  "diff_directory": "/var/tmp/gauntlet/sweep-critical-followups/review",
+  "review_basis": "Each entry uses the exact base and head from phone_media.json. The full changed-file list and PR body remain in that source; the ledger records the changed call sites and their downstream consumer.",
+  "reviews": [
+    {
+      "number": 177,
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "b42bb0960afc556342d6a110adefd1978afca1ce",
+      "diff": "pr-177.diff",
+      "files": "phone_media.json#177",
+      "call_chains": [
+        "RelayLink command dispatch -> CameraExecutor.submit -> CameraPort -> DjiCameraPort MSDK actions",
+        "DjiCameraPort download callbacks -> CameraExecutor verified local file -> RelayLink media_file publication -> relay capture projection -> console catalog",
+        "ProbeAircraft camera facts -> CameraExecutor shutter admission -> CaptureCard/SessionScreen"
+      ],
+      "functions_checked": ["CameraExecutor.capture", "CameraExecutor.retrieve", "CameraExecutor.captureEvidence", "DjiCameraPort.download", "DjiCameraPort.pullFile", "RelayLink.publishMediaFile"],
+      "result": "pass"
+    },
+    {
+      "number": 180,
+      "base": "ea348004cea50db1a3baea7a4b7f5ce04f3078d9",
+      "head": "2d8343a36089de0f88fece61b4159a794194bb9e",
+      "diff": "pr-180.diff",
+      "files": "phone_media.json#180",
+      "call_chains": ["relay-signed JSON -> NavigationRouteAuthorization.parse/NavigationPose.parse -> verifies -> RelayLink admission"],
+      "functions_checked": ["NavigationRouteAuthorization.unsignedEvent", "NavigationRouteAuthorization.parse", "NavigationPose.parse", "verifies"],
+      "result": "pass"
+    },
+    {
+      "number": 185,
+      "base": "2d8343a36089de0f88fece61b4159a794194bb9e",
+      "head": "d84d306a0c1d9247e2fddeb93ddfa855d4fbc7da",
+      "diff": "pr-185.diff",
+      "files": "phone_media.json#185",
+      "call_chains": ["RelayLink authenticated input -> navigation state -> admitNavigationGoto -> command execution"],
+      "functions_checked": ["RelayLink.admitNavigationGoto", "RelayLink.clearNavigationAdmission", "LinkState navigation fields", "CommandArgs.Goto parse"],
+      "result": "pass"
+    },
+    {
+      "number": 186,
+      "base": "d84d306a0c1d9247e2fddeb93ddfa855d4fbc7da",
+      "head": "d18c51e8b37d5b37d577cf052c162757a73c26ca",
+      "diff": "pr-186.diff",
+      "files": "phone_media.json#186",
+      "call_chains": ["FlightExecutor input -> FlightController.updateNavigation -> navigationCheck -> streamSticks -> FlightPort"],
+      "functions_checked": ["FlightController.goto", "FlightController.navigationCheck", "FlightController.checkNavigation", "FlightController.advanceNavigation", "FlightExecutor.configureNavigation"],
+      "result": "pass"
+    },
+    {
+      "number": 190,
+      "base": "d18c51e8b37d5b37d577cf052c162757a73c26ca",
+      "head": "1b2348a6a9b2ed524ff4e544c9ba31a37433d915",
+      "diff": "pr-190.diff",
+      "files": "phone_media.json#190",
+      "call_chains": ["BridgeSetupStore import -> BridgeNode setup -> RelayLink pins -> FlightExecutor configuration -> FlightController admission"],
+      "functions_checked": ["BridgeSetupStore.load", "BridgeNode.configureNavigation", "RelayLink configuration update", "FlightExecutor.configureNavigation"],
+      "result": "pass"
+    },
+    {
+      "number": 227,
+      "base": "8b881819de09dc29e288630e9d9bcb4b670cc9e9",
+      "head": "0d3cca17b825e1a5a6b98f53beaa66b6c8cea450",
+      "diff": "pr-227.diff",
+      "files": "phone_media.json#227",
+      "call_chains": ["MSDK KeyManager callback -> ProbeAircraft.received -> SensorRawRecorder -> SensorRawSink append/worker -> JSONL", "SessionScreen export -> RawEvidenceExport.write -> ZIP provenance manifest"],
+      "functions_checked": ["ProbeAircraft.received", "SensorRawSink.recordAttitude", "SensorRawSink.serialize", "RawEvidenceExport.write", "RawEvidenceExport.copyMember", "StreamEvidenceTracker"],
+      "result": "pass; raw timing and raw SDK gimbal axes remain diagnostic"
+    },
+    {
+      "number": 228,
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "2a66e6d97af477fe3770e925e86e7d043b00d30c",
+      "diff": "pr-228.diff",
+      "files": "phone_media.json#228",
+      "call_chains": ["Android JSONL -> SensorRecordAdapter._common/_phone -> record_if_selected -> ControlPublisher.enqueue -> fuser refusal of unverified observations"],
+      "functions_checked": ["SensorRecordAdapter.record", "SensorRecordAdapter.record_if_selected", "SensorRecordAdapter._common", "SensorRecordAdapter._attitude", "SensorRecordAdapter._phone_record"],
+      "result": "pass; no ready pose path"
+    },
+    {
+      "number": 229,
+      "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
+      "head": "adbaf440e5fe0ad65ca0148e6a4ba5837348192c",
+      "diff": "pr-229.diff",
+      "files": "phone_media.json#229",
+      "call_chains": ["docker compose recording profile -> MediaMTX segments -> operator archive -> archive-relative SHA-256 file"],
+      "functions_checked": ["MediaMTX recording profile and archive checksum workflow"],
+      "result": "pass"
+    },
+    {
+      "number": 84,
+      "base": "2a66e6d97af477fe3770e925e86e7d043b00d30c",
+      "head": "e45ebacbbd544ce6f7cc65ed6ca0f00fb399844b",
+      "fix_commit": "67ae7df081a5a9f042bafd8f255f952140b32678",
+      "followup_fix_commit": "4d1676775586cdae188e7450f776746d3347e1aa",
+      "worktree": "/var/tmp/gauntlet/sweep-audit-phone-84",
+      "files": ["perception/verified_localization.py", "perception/test_verified_localization.py", "perception/VERIFIED_LOCALIZATION_INGESTION.md"],
+      "call_chains": ["artifact file -> _measured -> timing/identity/camera configuration -> VerifiedLocalizationIngestion.records", "raw Android input -> SensorRecordAdapter -> verified velocity/height -> ControlPublisher -> ControlLocalization", "decoded frame bytes -> digest -> cv2.imdecode -> TagLocalizer -> tag record", "live input -> run_live publisher_lines -> ControlPublisher._run_live -> queue/cadence/reconnect"],
+      "functions_checked": [
+        "_text",
+        "_integer",
+        "_number",
+        "_sha256",
+        "_matrix",
+        "_rotation",
+        "_rigid",
+        "_covariance",
+        "_canonical_json",
+        "_measured",
+        "_Timing.from_mapping",
+        "_Timing.capture_time",
+        "VerifiedLocalizationIngestion.__init__",
+        "VerifiedLocalizationIngestion._measured_transform",
+        "VerifiedLocalizationIngestion._measured_rotation",
+        "VerifiedLocalizationIngestion.bind_live_epoch",
+        "VerifiedLocalizationIngestion.records",
+        "VerifiedLocalizationIngestion._identity",
+        "VerifiedLocalizationIngestion._store_attitude",
+        "VerifiedLocalizationIngestion._store_capture_aligned_attitude",
+        "VerifiedLocalizationIngestion._frame",
+        "VerifiedLocalizationIngestion._capture_aligned",
+        "_homogeneous",
+        "_angle_deg",
+        "run_replay",
+        "run_live",
+        "main"
+      ],
+      "result": "fixed: unbound evidence, calibrated capture-aligned public attitude contract, raw-SDK-axis rejection, frame-byte TOCTOU, telemetry uncertainty gate, timing covariance, test-fixture scope, and live-loop bypass"
+    }
+  ],
+  "verification": {
+    "command": "pytest -q perception/test_verified_localization.py perception/test_sensor_records.py perception/test_control_publisher.py",
+    "result": "56 passed",
+    "static": ["ruff check", "ruff format --check", "git diff --check"]
+  }
+}
