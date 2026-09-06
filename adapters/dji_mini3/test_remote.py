@@ -93,9 +93,7 @@ class ScriptedLink:
             )
         self._pending[request.command_id] = acknowledgements
 
-    def authorize_navigation(
-        self, plan: Plan, command: Command, snapshot: FleetSnapshot
-    ) -> None:
+    def authorize_navigation(self, plan: Plan, command: Command, snapshot: FleetSnapshot) -> None:
         self.navigation_authorizations.append((plan, command, snapshot))
 
     def await_acknowledgement(
