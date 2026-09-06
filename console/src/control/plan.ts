@@ -1,5 +1,5 @@
 import type { IntentV1 } from '../relay/contract'
-import { formatDroneId, type PlanPreview } from './state'
+import { formatDroneId, type DeviceLabeller, type PlanPreview } from './state'
 
 const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
   capture_room: 'Capture room',
@@ -14,9 +14,9 @@ export function planTitle(intent: IntentV1): string {
   return PLAN_TITLES[intent.name] ?? intent.name
 }
 
-/** Ordered plain-language steps from the design's planSteps. */
-export function planSteps(intent: IntentV1): string[] {
-  const ids = intent.selection.map(formatDroneId).join(', ')
+/** Ordered plain-language steps from the design's planSteps; `label` names each target by its class. */
+export function planSteps(intent: IntentV1, label: DeviceLabeller = formatDroneId): string[] {
+  const ids = intent.selection.map(label).join(', ')
   if (intent.name === 'capture_room' && 'pattern' in intent.args) {
     const args = intent.args
     return [
@@ -66,10 +66,11 @@ export function buildPlanPreview(
   rosterVersion: number,
   expiresAt?: number,
   voiceBinding?: PlanPreview['voiceBinding'],
+  label: DeviceLabeller = formatDroneId,
 ): PlanPreview {
   const preview: PlanPreview = {
     title: planTitle(intent),
-    steps: planSteps(intent),
+    steps: planSteps(intent, label),
     rosterVersion,
     ...(voiceBinding === undefined ? {} : { voiceBinding }),
   }

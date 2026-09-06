@@ -1,5 +1,5 @@
 import type { ConnectionStatus, ControlState } from '../control/state'
-import { formatDroneId } from '../control/state'
+import { deviceNoun, formatDroneId, type DeviceLabeller } from '../control/state'
 import type { DroneId, RelayAircraftState } from '../relay/contract'
 import { connectionTone, isLinkUp, sortedAircraft, type Tone } from '../shell/derive'
 import { formatAge } from '../shell/format'
@@ -136,8 +136,11 @@ export interface CaptureFilter {
   test: (capture: CaptureRecord) => boolean
 }
 
-/** All, then every project (when more than one), room and aircraft seen, then needs retake. */
-export function captureFilters(captures: CaptureRecord[]): CaptureFilter[] {
+/** All, then every project (when more than one), room and device seen, then needs retake. */
+export function captureFilters(
+  captures: CaptureRecord[],
+  label: DeviceLabeller = formatDroneId,
+): CaptureFilter[] {
   const projects = unique(captures.map((capture) => capture.project))
   const rooms = unique(captures.map((capture) => capture.room_id))
   const drones = unique(captures.map((capture) => capture.drone_id)).sort((a, b) => a - b)
@@ -157,7 +160,7 @@ export function captureFilters(captures: CaptureRecord[]): CaptureFilter[] {
     })),
     ...drones.map((id) => ({
       id: `drone:${id}`,
-      label: formatDroneId(id),
+      label: label(id),
       test: (capture: CaptureRecord) => capture.drone_id === id,
     })),
     { id: 'retake', label: 'Needs retake', test: (capture) => capture.needs_retake },
@@ -286,14 +289,21 @@ export function nodeCells(
 
 /** The design's per-node error line: what is wrong and what to do. */
 export function nodeError(drone: RelayAircraftState): string | null {
+  const ground = drone.device_class === 'ground_vehicle'
   if (drone.membership === 'disconnected') {
-    return 'Adapter connection lost. Power-cycle the bridge phone, then rejoin; the aircraft returns with a higher epoch.'
+    return ground
+      ? 'Node connection lost. Restart the node on the robot, then rejoin; the robot returns with a higher epoch.'
+      : `Adapter connection lost. Power-cycle the bridge phone, then rejoin; the ${deviceNoun(drone.device_class)} returns with a higher epoch.`
   }
   if (drone.readiness_reasons.includes('telemetry_stale')) {
-    return "Telemetry stopped. Check the bridge phone's LAN link before commanding motion."
+    return ground
+      ? "Telemetry stopped. Check the robot's Wi-Fi link before commanding motion."
+      : "Telemetry stopped. Check the bridge phone's LAN link before commanding motion."
   }
   if (!drone.control_authority) {
-    return 'The RC pilot holds authority. Sweep commands are refused until authority returns.'
+    return ground
+      ? 'The wheels are disabled or a local override is active. Sweep commands are refused until authority returns.'
+      : 'The RC pilot holds authority. Sweep commands are refused until authority returns.'
   }
   return null
 }

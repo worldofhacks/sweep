@@ -25,6 +25,8 @@ const t = 1_756_700_000_000
 function drone(overrides: Partial<RelayAircraftState> = {}): RelayAircraftState {
   return {
     drone_id: 1,
+    device_class: 'aircraft',
+    unit: overrides.drone_id ?? 1,
     connection_epoch: 1,
     membership: 'ready',
     readiness_reasons: [],
@@ -164,8 +166,18 @@ describe('header derivations', () => {
     })
     expect(deriveRcLine(connected({ selection: [] })).text).toBe('D-01 Sweep · RC operator present')
     expect(deriveRcLine(connected({ selection: [], aircraft: {} }))).toEqual({
-      text: 'no aircraft reported',
+      text: 'no devices reported',
       danger: false,
+    })
+    const robot = drone({
+      drone_id: 11,
+      device_class: 'ground_vehicle',
+      unit: 1,
+      rc_safety_operator_present: false,
+    })
+    expect(deriveRcLine(connected({ selection: [11], aircraft: { 11: robot } }))).toEqual({
+      text: 'G-01 Sweep · Spotter absent',
+      danger: true,
     })
   })
 

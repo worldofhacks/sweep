@@ -7,10 +7,14 @@ import {
   MAX_INTENT_DRONE_IDS,
   MAX_INTENT_IDENTIFIER_CODE_POINTS,
   MAX_INTENT_SESSION_CODE_POINTS,
+  MAP_METADATA_HEADERS,
+  MAX_SENSOR_FRAME_BYTES,
   intentFromVoicePlanStep,
   isConsoleIntentV1,
   isVoicePlan,
+  parseMapMetadata,
   parseRelayServerEvent,
+  type MapMetadata,
   type VoicePlan,
   type VoicePlanStep,
 } from './contract'
@@ -814,5 +818,174 @@ describe('bound voice-plan mirror', () => {
       confirm: false,
     })
     expect(intentFromVoicePlanStep(plan, { ...step }, t + 1)).toBeNull()
+  })
+})
+
+function stateWith(drones: unknown[], eventId = 'state-device-class') {
+  return parseRelayServerEvent({
+    v: 1, t: 100, type: 'state', event_id: eventId, session,
+    roster_version: 1, state_sequence: 1, armed: false, estop: false,
+    selection: [], formation: 'none', spacing: 0.8, mode: 'indoor',
+    capability_profile: 'c1_basic_control',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+    pending: null, accepted_plan: null, drones,
+  })
+}
+
+function sensor(overrides: Record<string, unknown> = {}) {
+  return {
+    v: 1,
+    t: 1_720_000_000_000,
+    type: 'sensor',
+    event_id: 'sensor-1',
+    session,
+    drone_id: 11,
+    connection_epoch: 3,
+    kind: 'lidar_scan',
+    pose: { x: 1.2, y: -0.4, yaw_deg: 87.5 },
+    angle_min_deg: 0,
+    angle_increment_deg: 1,
+    range_min_m: 0.15,
+    range_max_m: 12,
+    ranges_cm: Array.from({ length: 360 }, (_, index) => (index % 5 === 0 ? 0 : 150 + (index % 40))),
+    ...overrides,
+  }
+}
+
+describe('device classes on the state projection', () => {
+  test('a relay without device classes parses as aircraft whose unit is the drone id', () => {
+    const event = stateWith([aircraft({ drone_id: 3 })])
+    expect(event?.type).toBe('state')
+    if (event?.type !== 'state') throw new Error('expected a state event')
+    expect(event.drones[0]).toMatchObject({ drone_id: 3, device_class: 'aircraft', unit: 3 })
+    expect(event.drones[0].sensor).toBeUndefined()
+  })
+
+  test('accepts a ground vehicle with its unit and sensor projection', () => {
+    const event = stateWith([
+      aircraft({
+        drone_id: 11,
+        device_class: 'ground_vehicle',
+        unit: 1,
+        flight_state: 'idle',
+        adapter_capabilities: ['class:ground_vehicle', 'ground_drive', 'lidar'],
+        camera_patterns: [],
+        sensor: { kind: 'lidar_scan', last_scan_at: 1_720_000_000_000 },
+      }),
+    ])
+    expect(event?.type).toBe('state')
+    if (event?.type !== 'state') throw new Error('expected a state event')
+    expect(event.drones[0]).toMatchObject({
+      device_class: 'ground_vehicle',
+      unit: 1,
+      sensor: { kind: 'lidar_scan', last_scan_at: 1_720_000_000_000 },
+    })
+  })
+
+  test.each([
+    ['device_class', 'boat'],
+    ['device_class', null],
+    ['unit', 0],
+    ['unit', 1.5],
+    ['unit', '1'],
+    ['sensor', { kind: 'lidar_scan' }],
+    ['sensor', { kind: 'radar', last_scan_at: null }],
+    ['sensor', { kind: 'lidar_scan', last_scan_at: -1 }],
+    ['sensor', { kind: 'lidar_scan', last_scan_at: null, url: 'x' }],
+  ])('fails closed on an invalid %s %j', (field, value) => {
+    expect(stateWith([aircraft({ [field]: value })])).toBeNull()
+  })
+})
+
+describe('sensor frames', () => {
+  test('accepts a lidar scan as the relay fans it out', () => {
+    const event = parseRelayServerEvent(sensor())
+    expect(event).toMatchObject({
+      type: 'sensor',
+      drone_id: 11,
+      connection_epoch: 3,
+      kind: 'lidar_scan',
+      angle_increment_deg: 1,
+    })
+    if (event?.type !== 'sensor') throw new Error('expected a sensor event')
+    expect(event.ranges_cm).toHaveLength(360)
+  })
+
+  test.each([
+    [0.5, 720],
+    [2, 180],
+  ])('accepts increment %s with exactly %s ranges', (increment, length) => {
+    const ranges = Array.from({ length }, () => 200)
+    expect(
+      parseRelayServerEvent(sensor({ angle_increment_deg: increment, ranges_cm: ranges })),
+    ).not.toBeNull()
+    expect(
+      parseRelayServerEvent(sensor({ angle_increment_deg: increment, ranges_cm: [...ranges, 200] })),
+    ).toBeNull()
+  })
+
+  test.each([
+    ['kind', 'radar'],
+    ['angle_increment_deg', 0.25],
+    ['angle_increment_deg', 3],
+    ['ranges_cm', Array.from({ length: 359 }, () => 100)],
+    ['ranges_cm', Array.from({ length: 360 }, () => 65_536)],
+    ['ranges_cm', Array.from({ length: 360 }, () => -1)],
+    ['ranges_cm', Array.from({ length: 360 }, () => 1.5)],
+    ['pose', { x: 0, y: 0, yaw_deg: 360 }],
+    ['pose', { x: 0, y: 0, yaw_deg: -1 }],
+    ['pose', { x: 0, y: 0 }],
+    ['pose', { x: 0, y: 0, yaw_deg: 0, z: 0 }],
+    ['range_min_m', -0.1],
+    ['range_max_m', 0.15],
+    ['range_max_m', Number.POSITIVE_INFINITY],
+    ['angle_min_deg', 'north'],
+    ['drone_id', 0],
+    ['connection_epoch', -1],
+  ])('fails closed on an invalid %s', (field, value) => {
+    expect(parseRelayServerEvent(sensor({ [field]: value }))).toBeNull()
+  })
+
+  test('rejects a frame whose canonical JSON exceeds the relay ceiling', () => {
+    const padded = sensor({ event_id: 'e'.repeat(MAX_SENSOR_FRAME_BYTES) })
+    expect(parseRelayServerEvent(padded)).toBeNull()
+    expect(parseRelayServerEvent(sensor({ event_id: 'e'.repeat(64) }))).not.toBeNull()
+  })
+})
+
+describe('map metadata headers', () => {
+  const headers: Record<string, string> = {
+    [MAP_METADATA_HEADERS.resolution_m]: '0.05',
+    [MAP_METADATA_HEADERS.origin_x]: '-8.5',
+    [MAP_METADATA_HEADERS.origin_y]: '-6',
+    [MAP_METADATA_HEADERS.width]: '340',
+    [MAP_METADATA_HEADERS.height]: '240',
+    [MAP_METADATA_HEADERS.updated_at]: '1720000000000',
+  }
+  const read = (source: Record<string, string>) => (name: string) => source[name] ?? null
+
+  test('parses every header into typed metadata', () => {
+    const expected: MapMetadata = {
+      resolution_m: 0.05,
+      origin_x: -8.5,
+      origin_y: -6,
+      width: 340,
+      height: 240,
+      updated_at: 1_720_000_000_000,
+    }
+    expect(parseMapMetadata(read(headers))).toEqual(expected)
+  })
+
+  test.each([
+    [MAP_METADATA_HEADERS.resolution_m, '0'],
+    [MAP_METADATA_HEADERS.width, '12.5'],
+    [MAP_METADATA_HEADERS.height, '0'],
+    [MAP_METADATA_HEADERS.updated_at, '-5'],
+    [MAP_METADATA_HEADERS.origin_x, 'east'],
+  ])('fails closed when %s is %s', (name, value) => {
+    expect(parseMapMetadata(read({ ...headers, [name]: value }))).toBeNull()
+    const missing = { ...headers }
+    delete missing[name]
+    expect(parseMapMetadata(read(missing))).toBeNull()
   })
 })

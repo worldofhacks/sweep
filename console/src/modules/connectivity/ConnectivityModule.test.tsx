@@ -132,9 +132,9 @@ describe('Connectivity module', () => {
     renderCatalogConsole({ scenario: 'down' })
     await openHealth(user)
 
-    const nodes = within(screen.getByRole('region', { name: 'Per-aircraft nodes' }))
+    const nodes = within(screen.getByRole('region', { name: 'Per-device nodes' }))
     expect(
-      nodes.getByText('No aircraft have joined this session. The relay reports an empty roster.'),
+      nodes.getByText('No devices have joined this session. The relay reports an empty roster.'),
     ).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
     const services = within(screen.getByRole('region', { name: 'Shared services' }))
