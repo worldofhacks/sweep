@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from planner.models import LifecycleStatus, Position, PreparedExecution
+from planner.models import LifecycleStatus, Position, PreparedExecution, Refusal
 from planner.navigation_deployment import load_navigation_deployment
 from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES, CapabilityProfile
 from relay.intent_v1 import IntentName
@@ -138,6 +138,27 @@ def test_strict_config_rejects_negative_limits_and_changed_config(
         load_navigation_deployment({"SWEEP_NAVIGATION_CONFIG": str(path)})
 
 
+def test_zone_ids_without_arrival_slots_are_validated(
+    generated: tuple[Path, Path], tmp_path: Path
+) -> None:
+    bundle, geometry = generated
+    payload = config(bundle, geometry)
+    payload["zones"] = [
+        {
+            "id": "",
+            "floor_id": "level_1",
+            "navigation_allowed": False,
+            "aliases": [],
+            "arrival_slots": [],
+        }
+    ]
+    path = tmp_path / "navigation.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(SettingsError, match="zone id"):
+        load_navigation_deployment({"SWEEP_NAVIGATION_CONFIG": str(path)})
+
+
 def test_runtime_artifact_callable_revokes_changed_config_or_geometry(
     generated: tuple[Path, Path], tmp_path: Path
 ) -> None:
@@ -216,3 +237,45 @@ def test_loaded_synthetic_runtime_dispatches_confirmed_navigation(
 
     assert result.status is LifecycleStatus.COMPLETED, result.refusal
     assert any(call.operation == "goto" for call in flight.calls)
+
+
+def test_loaded_runtime_refuses_config_disabled_zone(
+    dispatchable_generated: tuple[Path, Path], tmp_path: Path
+) -> None:
+    bundle, geometry = dispatchable_generated
+    payload = config(bundle, geometry)
+    payload["zones"][0] = {
+        "id": "kitchen",
+        "floor_id": "level_1",
+        "navigation_allowed": False,
+        "aliases": ["kitchen"],
+        "arrival_slots": [
+            {
+                "id": "k",
+                "x_m": 0.9,
+                "y_m": 0.2,
+                "z_m": 1.8,
+                "radius_m": 0.4,
+                "half_height_m": 0.4,
+            }
+        ],
+    }
+    payload["permission_zone_ids"] = ["kitchen"]
+    path = tmp_path / "navigation.json"
+    path.write_text(json.dumps(payload))
+    deployment = load_navigation_deployment({"SWEEP_NAVIGATION_CONFIG": str(path)})
+    assert deployment is not None
+
+    snapshot = replace_aircraft(make_snapshot(1), 1, pose=Position(0.5, 0.5, 1.8))
+    planned = deployment.runtime.prepare(
+        make_intent(
+            IntentName.NAVIGATE,
+            selection=(1,),
+            args={"zone_id": "kitchen"},
+            confirm=True,
+        ),
+        snapshot,
+    )
+
+    assert isinstance(planned, Refusal)
+    assert planned.detail.startswith("arrival_not_permitted:")

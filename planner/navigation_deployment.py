@@ -61,9 +61,10 @@ def load_navigation_deployment(
     accepted = _object(config.get("accepted_versions"), "accepted_versions")
     if not accepted or any(not isinstance(k, str) or not _sha(v) for k, v in accepted.items()):
         raise SettingsError("accepted_versions must pin bundle hashes")
-    arrival_slots = _arrival_slots(config.get("zones"))
+    arrival_slots, navigation_allowed_zone_ids = _arrival_slots(config.get("zones"))
     permission = NavigationPermission(
         frozenset(_strings(config.get("permission_zone_ids"), "permission_zone_ids"))
+        & navigation_allowed_zone_ids
     )
     execution = _execution(_object(config.get("execution"), "execution"))
     max_aircraft = _positive_int(config.get("max_aircraft"), "max_aircraft")
@@ -152,15 +153,19 @@ def _execution(value: dict[str, object]) -> NavigationExecutionConfig:
         raise SettingsError(f"invalid navigation execution: {error}") from error
 
 
-def _arrival_slots(value: object) -> tuple[ArrivalSlot, ...]:
+def _arrival_slots(value: object) -> tuple[tuple[ArrivalSlot, ...], frozenset[str]]:
     if not isinstance(value, list) or not value:
         raise SettingsError("zones must be a nonempty array")
     slots: list[ArrivalSlot] = []
+    navigation_allowed_zone_ids: set[str] = set()
     for raw in value:
         item = _object(raw, "zone")
         _only(item, {"id", "floor_id", "navigation_allowed", "aliases", "arrival_slots"})
+        zone_id = _text(item.get("id"), "zone id")
         if type(item.get("navigation_allowed")) is not bool:
             raise SettingsError("navigation_allowed must be boolean")
+        if item["navigation_allowed"]:
+            navigation_allowed_zone_ids.add(zone_id)
         for slot in item.get("arrival_slots", []):
             data = _object(slot, "arrival slot")
             _only(data, {"id", "x_m", "y_m", "z_m", "radius_m", "half_height_m"})
@@ -168,7 +173,7 @@ def _arrival_slots(value: object) -> tuple[ArrivalSlot, ...]:
                 slots.append(
                     ArrivalSlot(
                         _text(data.get("id"), "slot id"),
-                        _text(item.get("id"), "zone id"),
+                        zone_id,
                         Pose(
                             _number(data.get("x_m"), "x_m"),
                             _number(data.get("y_m"), "y_m"),
@@ -183,7 +188,7 @@ def _arrival_slots(value: object) -> tuple[ArrivalSlot, ...]:
                 raise SettingsError(f"invalid arrival slot: {error}") from error
     if len({slot.slot_id for slot in slots}) != len(slots):
         raise SettingsError("arrival slot ids must be unique")
-    return tuple(slots)
+    return tuple(slots), frozenset(navigation_allowed_zone_ids)
 
 
 def _remote_evidence(
