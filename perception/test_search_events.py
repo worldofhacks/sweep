@@ -169,3 +169,17 @@ def test_accepted_frame_receipts_are_bounded() -> None:
     assert ledger.observe_processed(second, second_pose, 10.02).accepted
     assert ledger.observe_processed(first, first_pose, 10.02).reason == "duplicate_frame"
     assert len(ledger._accepted_frames) == 1
+
+
+def test_coverage_binds_a_source_to_its_first_worker_run_after_receipt_eviction() -> None:
+    ledger = _ledger(target_x_m=3, max_accepted_frame_receipts=1)
+    first = _worker_event()
+    pose = FramePoseEvidence(first.identity, 3, Pose(1, 1, 0, "floor-1"), 10.0, 10.01)
+    assert ledger.observe_processed(first, pose, 10.02).accepted
+
+    second = replace(first, identity=replace(first.identity, worker_run_id="run-2", frame_sequence=1))
+    second_pose = replace(pose, identity=second.identity)
+    rejected = ledger.observe_processed(second, second_pose, 10.02)
+
+    assert not rejected.accepted
+    assert rejected.reason == "duplicate_frame"

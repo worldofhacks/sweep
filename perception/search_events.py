@@ -273,6 +273,7 @@ class CoverageLedger:
         self._accepted_frames: set[tuple[str, str, str]] = set()
         self._accepted_frame_order: deque[tuple[str, str, str]] = deque()
         self._last_accepted_frame_sequence: dict[str, tuple[str, int]] = {}
+        self._accepted_worker_runs: dict[str, str] = {}
         self._max_accepted_frame_receipts = max_accepted_frame_receipts
         self._candidates: dict[str, SearchCandidateEvent] = {}
         self._max_frame_age_s = max_frame_age_s
@@ -333,7 +334,11 @@ class CoverageLedger:
         ):
             return CoverageObservation(False, "stale_pose", ())
         frame_key = (event.identity.source_id, event.identity.frame_id, event.identity.mission_id)
-        if frame_key in self._accepted_frames or self._frame_sequence_was_accepted(event):
+        if (
+            frame_key in self._accepted_frames
+            or self._frame_sequence_was_accepted(event)
+            or self._worker_run_changed(event)
+        ):
             return CoverageObservation(False, "duplicate_frame", ())
         covered = self._covered[task_id]
         newly_covered = tuple(
@@ -357,12 +362,19 @@ class CoverageLedger:
             and event.identity.frame_sequence <= receipt[1]
         )
 
+    def _worker_run_changed(self, event: ProcessedFrameEvent) -> bool:
+        accepted = self._accepted_worker_runs.get(event.identity.source_id)
+        return accepted is not None and accepted != event.identity.worker_run_id
+
     def _remember_accepted_frame(
         self, event: ProcessedFrameEvent, frame_key: tuple[str, str, str]
     ) -> None:
         self._last_accepted_frame_sequence[event.identity.source_id] = (
             event.identity.worker_run_id,
             event.identity.frame_sequence,
+        )
+        self._accepted_worker_runs.setdefault(
+            event.identity.source_id, event.identity.worker_run_id
         )
         self._accepted_frames.add(frame_key)
         self._accepted_frame_order.append(frame_key)
