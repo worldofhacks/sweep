@@ -26,6 +26,7 @@ import org.worldofhacks.sweep.bridge.core.flight.FlightReason
 import org.worldofhacks.sweep.bridge.core.flight.FlightSettings
 import org.worldofhacks.sweep.bridge.core.flight.FlightStatus
 import org.worldofhacks.sweep.bridge.core.flight.LinkFacts
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
 import org.worldofhacks.sweep.bridge.core.flight.NavigationEvidence
 import org.worldofhacks.sweep.bridge.core.flight.PortResult
 import org.worldofhacks.sweep.bridge.core.flight.ReportSink
@@ -153,6 +154,8 @@ class FlightExecutor(
     fun rearmAuthority() = post { controller.rearmAuthority() }
 
     fun setMapping(mapping: AxisMapping) = post { controller.mapping = mapping }
+
+    fun configureNavigation(config: NavigationConfig?): Job = scope.launch { controller.configureNavigation(config) }
 
     fun reportFailsafeSetting(value: String) = post { controller.reportFailsafeSetting(value) }
 
