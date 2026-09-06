@@ -181,6 +181,7 @@ class NavigationPlanner:
             tuple(route.arrival_slot for route in routes),
             routes,
             tuple(drone.drone_id for drone in drones),
+            artifact.semantic_sha256,
         )
 
     def revalidate(
@@ -206,6 +207,7 @@ class NavigationPlanner:
             artifact.map_pin != plan.map_pin
             or artifact.geometry_pin != plan.geometry_pin
             or artifact.navigation_pin != plan.navigation_pin
+            or artifact.semantic_sha256 != plan.artifact_sha256
             or artifact.evidence != plan.evidence
         ):
             return NavigationRefusal(
