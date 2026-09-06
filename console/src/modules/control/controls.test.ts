@@ -169,10 +169,53 @@ describe('control gating', () => {
 
   test('C1 permits altitude while holding formation controls for C2', () => {
     const withSelection = connected([1])
-    expect(formationControls(withSelection).map((s) => s.label)).toEqual(['line', 'column', 'circle', 'grid', 'V'])
-    expect(formationControls(withSelection)[2]).toMatchObject({ enabled: false, note: 'formation_set is disabled by relay capability profile c1_basic_control.', press: { name: 'formation_set', args: { name: 'circle' } } })
+    expect(formationControls(withSelection).map((s) => s.label)).toEqual([
+      'line',
+      'column',
+      'wedge',
+      'diamond',
+    ])
+    expect(formationControls(withSelection)[2]).toMatchObject({ enabled: false, note: 'formation_set is disabled by relay capability profile c1_basic_control.', press: { name: 'formation_set', args: { name: 'wedge' } } })
     expect(altitudeControls(withSelection)[0]).toMatchObject({ enabled: true, press: { name: 'altitude', args: { delta: 1 } } })
     expect(altitudeControls(connected([]))[1]).toMatchObject({ enabled: false, note: NO_SELECTION_REASON })
+  })
+
+  test('C2 formation controls enforce the exact two-to-six and four-to-six bounds', () => {
+    const c2 = {
+      capability_profile: 'c2_fleet_operations',
+      enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS],
+    }
+    const one = connected([1], c2)
+    expect(motionControls(one).find((control) => control.key === 'formation_next')).toMatchObject({
+      enabled: false,
+      note: 'formation requires at least 2 selected aircraft.',
+    })
+    expect(formationControls(one)[0]).toMatchObject({
+      enabled: false,
+      note: 'line formation requires at least 2 selected aircraft.',
+    })
+    expect(formationControls(one)[2]).toMatchObject({
+      enabled: false,
+      note: 'wedge formation requires at least 4 selected aircraft.',
+    })
+    const two = connected([1, 2], c2)
+    expect(formationControls(two).map((control) => control.enabled)).toEqual([
+      true,
+      true,
+      false,
+      false,
+    ])
+    const fourReady = fixtureAircraft(t).map((drone) => ({
+      ...drone,
+      membership: 'ready' as const,
+      readiness_reasons: [],
+      selectable: true,
+    }))
+    expect(
+      formationControls(connected([1, 2, 3, 4], { ...c2, drones: fourReady })).every(
+        (control) => control.enabled,
+      ),
+    ).toBe(true)
   })
 
   test('C2 labels disarm as a grounded session-authorization change', () => {
@@ -228,38 +271,48 @@ describe('translate pad and formation geometry', () => {
   })
 
   test('slots follow the design formulas', () => {
-    expect(formationSlots('line', 2, 1.5)).toEqual([
-      [-0.75, 0],
-      [0.75, 0],
-    ])
+    for (const name of ['line', 'column', 'wedge', 'diamond'] as const) {
+      for (const count of [4, 5, 6]) {
+        const slots = formationSlots(name, count, 1.5)
+        expect(slots).toHaveLength(count)
+        expect(slots.reduce((total, [x]) => total + x, 0)).toBeCloseTo(0)
+        expect(slots.reduce((total, [, y]) => total + y, 0)).toBeCloseTo(0)
+        const distances = slots.flatMap((first, firstIndex) =>
+          slots
+            .slice(firstIndex + 1)
+            .map((second) => Math.hypot(first[0] - second[0], first[1] - second[1])),
+        )
+        expect(Math.min(...distances)).toBeCloseTo(1.5 * 1.01)
+      }
+    }
+    expect(formationSlots('line', 2, 1.5)[0][0]).toBeCloseTo(-0.7575)
     expect(formationSlots('column', 3, 1)).toEqual([
-      [0, -1],
+      [0, -1.01],
       [0, 0],
-      [0, 1],
+      [0, 1.01],
     ])
-    const circle = formationSlots('circle', 4, 1.5)
-    const radius = 1.5 / (2 * Math.sin(Math.PI / 4))
-    expect(circle[0][0]).toBeCloseTo(0)
-    expect(circle[0][1]).toBeCloseTo(-radius)
-    expect(formationSlots('grid', 4, 1)).toEqual([
-      [-0.5, -0.5],
-      [0.5, -0.5],
-      [-0.5, 0.5],
-      [0.5, 0.5],
-    ])
-    expect(formationSlots('V', 3, 1)).toEqual([
-      [-1, 0.6],
-      [0, 0],
-      [1, 0.6],
-    ])
-    expect(formationSlots('circle', 1, 1)).toEqual([[0, 0]])
+    const wedge = formationSlots('wedge', 4, 1)
+    expect(wedge[0][0]).toBeCloseTo(-0.505)
+    expect(wedge[0][1]).toBeCloseTo(0.505)
+    const diamond = formationSlots('diamond', 4, 1)
+    expect(diamond[0][0]).toBeCloseTo(0)
+    expect(diamond[0][1]).toBeCloseTo(1.01 / Math.sqrt(2))
+    for (const invalid of ['circle', 'grid', 'V', 'unknown']) {
+      expect(formationSlots(invalid, 4, 1)).toEqual([])
+    }
+    expect(formationSlots('line', 1, 1)).toEqual([])
+    expect(formationSlots('wedge', 3, 1)).toEqual([])
+    expect(formationSlots('diamond', 7, 1)).toEqual([])
+    expect(formationSlots('line', 2, Number.NaN)).toEqual([])
   })
 
   test('the plot places the selected aircraft and labels unreported spacing honestly', () => {
     const aircraft = fixtureAircraft(t).filter((drone) => [1, 2].includes(drone.drone_id))
     const dots = formationPlot(aircraft, 'line', 1.5)
     expect(dots.map((dot) => dot.id)).toEqual(['D-01', 'D-02'])
-    expect(dots[0].left).toBe(`${50 + (-0.75 / (1.2 * 2.4)) * 100}%`)
+    expect(Number.parseFloat(dots[0].left)).toBeCloseTo(
+      50 + (-0.7575 / (1.2 * 2.4)) * 100,
+    )
     expect(dots[0].slot).toBe('slot 1 · -0.8 m, 0.0 m')
     expect(formationPlot(aircraft, 'line', null)[1].slot).toBe('slot 2 · spacing unreported')
     expect(formationPlot(aircraft, null, 1.5)).toEqual([])
@@ -268,8 +321,8 @@ describe('translate pad and formation geometry', () => {
   test('the relay note distinguishes preview from report', () => {
     expect(formationRelayNote(null, 'line')).toBe('The relay reports line.')
     expect(formationRelayNote('line', 'line')).toBe('The relay reports line.')
-    expect(formationRelayNote('circle', 'line')).toBe(
-      'Requested circle. The relay still reports line until execution completes.',
+    expect(formationRelayNote('diamond', 'line')).toBe(
+      'Requested diamond. The relay still reports line until execution completes.',
     )
     expect(formationRelayNote(null, null)).toBe('The relay has not reported a formation.')
   })

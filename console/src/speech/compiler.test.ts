@@ -88,7 +88,12 @@ describe('compileUtterance', () => {
     expect(compileUtterance('land everyone', context)).toMatchObject({ reason: 'unsupported', intent: 'land_all' })
     expect(compileUtterance('send everyone home', context)).toMatchObject({ reason: 'unsupported', intent: 'come_home' })
     expect(compileUtterance('arm the fleet', context)).toMatchObject({ reason: 'unsupported', intent: 'arm' })
-    expect(compileUtterance('circle formation', context)).toMatchObject({ reason: 'unsupported', intent: 'formation_set' })
+    for (const shape of ['line', 'column', 'wedge', 'diamond']) {
+      expect(compileUtterance(`${shape} formation`, context)).toMatchObject({
+        reason: 'unsupported',
+        intent: 'formation_set',
+      })
+    }
     expect(compileUtterance('move north two steps', context)).toMatchObject({ reason: 'unsupported', intent: 'translate' })
   })
 

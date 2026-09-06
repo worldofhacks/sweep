@@ -51,6 +51,7 @@ from relay.control_localization import (
 )
 from relay.control_localization_contracts import session_identifier
 from relay.intent_v1 import (
+    FORMATION_NAMES,
     MAX_INTENT_IDENTIFIER_CHARS,
     REGISTERED_SOURCES,
     AcceptedIntent,
@@ -99,10 +100,8 @@ class IntentSinkResult:
             not isinstance(event, Mapping) for event in self.events
         ):
             raise ValueError("sink result events must be a tuple of mappings")
-        if self.formation_update is not None and (
-            not isinstance(self.formation_update, str) or not self.formation_update
-        ):
-            raise ValueError("formation update must be a non-empty string")
+        if self.formation_update is not None and self.formation_update not in FORMATION_NAMES:
+            raise ValueError("formation update must name a supported formation")
         if self.spacing_update is not None and (
             isinstance(self.spacing_update, bool)
             or not isinstance(self.spacing_update, int | float)

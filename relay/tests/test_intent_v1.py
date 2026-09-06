@@ -6,6 +6,7 @@ from relay.capabilities import (
     IMPLEMENTED_INTENT_NAMES,
 )
 from relay.intent_v1 import (
+    FORMATION_NAMES,
     MAX_INTENT_DRONE_ID,
     MAX_INTENT_DRONE_IDS,
     MAX_INTENT_IDENTIFIER_CHARS,
@@ -128,7 +129,7 @@ def test_basic_c1_console_intents_match_the_planner_contract(
     [
         ("altitude", {"delta": 1}, False),
         ("formation_next", {}, False),
-        ("formation_set", {"name": "circle"}, False),
+        ("formation_set", {"name": "diamond"}, False),
         ("spacing", {"delta": 1}, False),
         ("sweep", {}, True),
         (
@@ -144,7 +145,7 @@ def test_m15_sim_intents_are_accepted_on_the_indoor_contract(
     args: dict[str, object],
     confirm: bool,
 ) -> None:
-    console_select_payload.update(name=name, args=args, selection=[1, 2], confirm=confirm)
+    console_select_payload.update(name=name, args=args, selection=[1, 2, 3, 4], confirm=confirm)
 
     result = validate_intent(console_select_payload, capability_profile=C2_CAPABILITY_PROFILE)
 
@@ -327,8 +328,8 @@ def test_select_ids_apply_the_same_fleet_and_int32_boundaries(
     [
         (
             "formation_set",
-            {"name": "f" * MAX_INTENT_IDENTIFIER_CHARS},
-            [1],
+            {"name": "diamond"},
+            [1, 2, 3, 4],
             False,
             None,
         ),
@@ -379,6 +380,62 @@ def test_intent_argument_identifiers_accept_the_exact_shared_ceiling(
     else:
         assert isinstance(result, RejectedIntent)
         assert result.reason is exact_reason
+
+
+@pytest.mark.parametrize("formation_name", FORMATION_NAMES)
+def test_formation_set_accepts_only_the_exact_mvp_names(
+    console_select_payload: dict[str, object], formation_name: str
+) -> None:
+    console_select_payload.update(
+        name="formation_set",
+        args={"name": formation_name},
+        selection=[1, 2, 3, 4],
+    )
+
+    assert isinstance(
+        validate_intent(console_select_payload, capability_profile=C2_CAPABILITY_PROFILE),
+        AcceptedIntent,
+    )
+
+    for legacy_name in ("circle", "grid", "V"):
+        console_select_payload["args"] = {"name": legacy_name}
+        refused = validate_intent(
+            console_select_payload,
+            capability_profile=C2_CAPABILITY_PROFILE,
+        )
+        assert isinstance(refused, RejectedIntent)
+        assert refused.reason is RejectionReason.INVALID_PAYLOAD
+
+
+@pytest.mark.parametrize(
+    ("formation_name", "selection", "accepted"),
+    [
+        ("line", [1], False),
+        ("line", [1, 2], True),
+        ("column", [1, 2, 3], True),
+        ("wedge", [1, 2, 3], False),
+        ("wedge", [1, 2, 3, 4], True),
+        ("diamond", [1, 2, 3, 4, 5, 6], True),
+    ],
+)
+def test_formation_selection_bounds_match_the_shipped_shapes(
+    console_select_payload: dict[str, object],
+    formation_name: str,
+    selection: list[int],
+    accepted: bool,
+) -> None:
+    console_select_payload.update(
+        name="formation_set",
+        args={"name": formation_name},
+        selection=selection,
+    )
+
+    result = validate_intent(
+        console_select_payload,
+        capability_profile=C2_CAPABILITY_PROFILE,
+    )
+
+    assert isinstance(result, AcceptedIntent) is accepted
 
 
 @pytest.mark.parametrize(

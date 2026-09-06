@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from math import cos, isfinite, pi, radians, sin
+from itertools import combinations, permutations
+from math import cos, dist, fsum, isfinite, radians, sin
 
 from planner.models import (
     AltitudeGrounding,
@@ -24,7 +25,9 @@ from planner.models import (
     TranslationPolicy,
 )
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
-from relay.intent_v1 import IntentName, IntentV1
+from relay.intent_v1 import FORMATION_NAMES, MAX_INTENT_DRONE_IDS, IntentName, IntentV1
+
+FORMATION_SPACING_CLEARANCE_FACTOR = 1.01
 
 SELECTION_TARGETED_INTENTS = frozenset(
     {
@@ -381,7 +384,7 @@ class DeterministicPlanner:
 
         elif intent.name in {IntentName.FORMATION_NEXT, IntentName.FORMATION_SET}:
             name = (
-                _next_formation(snapshot.formation)
+                _next_formation(snapshot.formation, len(selected))
                 if intent.name is IntentName.FORMATION_NEXT
                 else str(intent.args["name"])
             )
@@ -741,77 +744,205 @@ def _validate_selection(
     return None
 
 
-_FORMATIONS = ("line", "column", "circle", "grid", "V")
-
-
-def _next_formation(current: str) -> str:
+def _next_formation(current: str, count: int) -> str:
+    available = tuple(
+        name for name in FORMATION_NAMES if count >= (4 if name in {"wedge", "diamond"} else 2)
+    )
+    if not available:
+        return FORMATION_NAMES[0]
     try:
-        return _FORMATIONS[(_FORMATIONS.index(current) + 1) % len(_FORMATIONS)]
+        return available[(available.index(current) + 1) % len(available)]
     except ValueError:
-        return _FORMATIONS[0]
+        return available[0]
 
 
 def _formation_targets(
     name: str, selected: tuple[int, ...], snapshot: FleetSnapshot, spacing: float
 ) -> tuple[tuple[int, Position], ...] | None:
-    if name not in _FORMATIONS or len(selected) < 2:
-        return None
     count = len(selected)
+    if (
+        name not in FORMATION_NAMES
+        or not 2 <= count <= MAX_INTENT_DRONE_IDS
+        or (name in {"wedge", "diamond"} and count < 4)
+    ):
+        return None
     center_x = sum(snapshot.aircraft[drone_id].pose.x / count for drone_id in selected)
     center_y = sum(snapshot.aircraft[drone_id].pose.y / count for drone_id in selected)
     z = sum(snapshot.aircraft[drone_id].pose.z / count for drone_id in selected)
     if not all(isfinite(value) for value in (center_x, center_y, z, spacing)):
         return None
-    if name == "line":
-        offsets = tuple((index - (count - 1) / 2, 0.0) for index in range(count))
-    elif name == "column":
-        offsets = tuple((0.0, index - (count - 1) / 2) for index in range(count))
-    elif name == "circle":
-        radius = 1.01 / (2 * sin(pi / count))
-        offsets = tuple(
-            (
-                radius * cos(2 * pi * index / count),
-                radius * sin(2 * pi * index / count),
-            )
-            for index in range(count)
-        )
-    elif name == "grid":
-        width = int(count**0.5)
-        if width * width < count:
-            width += 1
-        offsets = tuple(
-            (index % width - (width - 1) / 2, index // width - (width - 1) / 2)
-            for index in range(count)
-        )
-    else:
-        offsets = tuple(
-            (index - (count - 1) / 2, abs(index - (count - 1) / 2)) for index in range(count)
-        )
+    offsets = _formation_offsets(name, count)
+    if offsets is None:
+        return None
     raw_targets = tuple((center_x + x * spacing, center_y + y * spacing, z) for x, y in offsets)
     if any(not all(isfinite(value) for value in target) for target in raw_targets):
         return None
     targets = tuple(Position(*target) for target in raw_targets)
-    remaining = set(selected)
-    assignments: list[tuple[int, Position]] = []
-    for target in targets:
-        drone_id = min(
-            remaining,
-            key=lambda candidate: (
-                snapshot.aircraft[candidate].pose.distance_to(target),
-                candidate,
-            ),
-        )
-        remaining.remove(drone_id)
-        assignments.append((drone_id, target))
-    return tuple(
-        sorted(
-            assignments,
-            key=lambda item: (
-                snapshot.aircraft[item[0]].pose.distance_to(item[1]),
-                item[0],
-            ),
-        )
+    return _minimum_cost_formation_assignment(
+        selected,
+        targets,
+        snapshot,
+        minimum_clearance=spacing,
     )
+
+
+def _formation_offsets(name: str, count: int) -> tuple[tuple[float, float], ...] | None:
+    if name == "line":
+        raw = tuple((index - (count - 1) / 2, 0.0) for index in range(count))
+    elif name == "column":
+        raw = tuple((0.0, index - (count - 1) / 2) for index in range(count))
+    elif name == "wedge" and 4 <= count <= MAX_INTENT_DRONE_IDS:
+        raw = _wedge_offsets(count)
+    elif name == "diamond" and 4 <= count <= MAX_INTENT_DRONE_IDS:
+        raw = tuple(_diamond_perimeter(4 * index / count) for index in range(count))
+    else:
+        return None
+    return _normalize_offsets(raw)
+
+
+def _wedge_offsets(count: int) -> tuple[tuple[float, float], ...]:
+    offsets: list[tuple[float, float]] = []
+    if count % 2:
+        offsets.append((0.0, 0.0))
+        first_row = 1.0
+    else:
+        first_row = 0.5
+    for row in range(count // 2):
+        distance = first_row + row
+        offsets.extend(((-distance, -distance), (distance, -distance)))
+    return tuple(offsets)
+
+
+def _diamond_perimeter(position: float) -> tuple[float, float]:
+    if position < 1:
+        return (position, 1 - position)
+    if position < 2:
+        return (2 - position, 1 - position)
+    if position < 3:
+        return (2 - position, position - 3)
+    return (position - 4, position - 3)
+
+
+def _normalize_offsets(
+    raw: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...] | None:
+    count = len(raw)
+    center_x = sum(x / count for x, _ in raw)
+    center_y = sum(y / count for _, y in raw)
+    centered = tuple((x - center_x, y - center_y) for x, y in raw)
+    minimum = min(dist(first, second) for first, second in combinations(centered, 2))
+    if not isfinite(minimum) or minimum <= 0:
+        return None
+    scale = FORMATION_SPACING_CLEARANCE_FACTOR / minimum
+    return tuple((x * scale, y * scale) for x, y in centered)
+
+
+def _minimum_cost_formation_assignment(
+    selected: tuple[int, ...],
+    targets: tuple[Position, ...],
+    snapshot: FleetSnapshot,
+    *,
+    minimum_clearance: float,
+) -> tuple[tuple[int, Position], ...] | None:
+    """Solve the bounded assignment exactly, then find a safe sequential order."""
+    drone_ids = tuple(sorted(selected))
+    ranked: list[tuple[float, tuple[int, ...], tuple[tuple[int, Position], ...]]] = []
+    for target_indices in permutations(range(len(targets))):
+        candidate = tuple(
+            (drone_id, targets[target_index])
+            for drone_id, target_index in zip(drone_ids, target_indices, strict=True)
+        )
+        if _formation_transitions_cross(candidate, snapshot):
+            continue
+        cost = fsum(
+            snapshot.aircraft[drone_id].pose.distance_to(target) for drone_id, target in candidate
+        )
+        if not isfinite(cost):
+            continue
+        ranked.append((cost, target_indices, candidate))
+    for _, _, candidate in sorted(ranked, key=lambda item: (item[0], item[1])):
+        ordered = _sequential_formation_order(
+            candidate,
+            snapshot,
+            minimum_clearance=minimum_clearance,
+        )
+        if ordered is not None:
+            return ordered
+    return None
+
+
+def _sequential_formation_order(
+    assignments: tuple[tuple[int, Position], ...],
+    snapshot: FleetSnapshot,
+    *,
+    minimum_clearance: float,
+) -> tuple[tuple[int, Position], ...] | None:
+    """Pick the lexicographically first order whose arrivals clear occupancy."""
+    occupied = {
+        drone_id: aircraft.pose
+        for drone_id, aircraft in snapshot.aircraft.items()
+        if aircraft.membership is MembershipState.READY and aircraft.airborne
+    }
+    by_drone = dict(assignments)
+    for drone_order in permutations(sorted(by_drone)):
+        projected = dict(occupied)
+        safe = True
+        for drone_id in drone_order:
+            projected.pop(drone_id, None)
+            target = by_drone[drone_id]
+            if any(target.distance_to(other) < minimum_clearance for other in projected.values()):
+                safe = False
+                break
+            projected[drone_id] = target
+        if safe:
+            return tuple((drone_id, by_drone[drone_id]) for drone_id in drone_order)
+    return None
+
+
+def _formation_transitions_cross(
+    assignments: tuple[tuple[int, Position], ...], snapshot: FleetSnapshot
+) -> bool:
+    for first, second in combinations(assignments, 2):
+        first_start = snapshot.aircraft[first[0]].pose
+        second_start = snapshot.aircraft[second[0]].pose
+        if _segments_cross_xy(first_start, first[1], second_start, second[1]):
+            return True
+    return False
+
+
+def _segments_cross_xy(
+    first_start: Position,
+    first_end: Position,
+    second_start: Position,
+    second_end: Position,
+) -> bool:
+    """Return whether two straight XY transitions have a proper crossing."""
+    points = (first_start, first_end, second_start, second_end)
+    coordinate_scale = max(1.0, *(abs(value) for point in points for value in (point.x, point.y)))
+    epsilon = coordinate_scale * coordinate_scale * 1e-12
+
+    orientations = (
+        _orientation(first_start, first_end, second_start),
+        _orientation(first_start, first_end, second_end),
+        _orientation(second_start, second_end, first_start),
+        _orientation(second_start, second_end, first_end),
+    )
+    if not all(isfinite(value) for value in orientations):
+        return True
+    first_a, first_b, second_a, second_b = orientations
+    if (first_a > epsilon and first_b < -epsilon or first_a < -epsilon and first_b > epsilon) and (
+        second_a > epsilon and second_b < -epsilon or second_a < -epsilon and second_b > epsilon
+    ):
+        return True
+    # Collinear following paths do not cross and are deliberately allowed: the
+    # dispatcher executes one GOTO at a time, with nearer moves ordered first.
+    # This is what lets an existing line contract without rejecting every
+    # assignment merely because two aircraft travel along the same axis.
+    return False
+
+
+def _orientation(first: Position, second: Position, third: Position) -> float:
+    return (second.x - first.x) * (third.y - first.y) - (second.y - first.y) * (third.x - first.x)
 
 
 def _sweep_lanes(

@@ -9,7 +9,8 @@
 export type DroneId = number
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard' | 'webcam' | 'language'
-export type FormationName = 'line' | 'column' | 'circle' | 'grid' | 'V'
+export const FORMATION_NAMES = ['line', 'column', 'wedge', 'diamond'] as const
+export type FormationName = (typeof FORMATION_NAMES)[number]
 
 // Intent producer ceilings mirrored from relay/intent_v1.py. JavaScript numbers
 // use their exact integer ceiling; the relay additionally accepts signed-Long
@@ -273,7 +274,7 @@ export interface RelayStateEvent {
   armed: boolean
   estop: boolean
   selection: DroneId[]
-  formation: string
+  formation: 'none' | FormationName
   spacing: number
   mode: string
   capability_profile: string
@@ -874,7 +875,10 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       typeof value.armed !== 'boolean' ||
       typeof value.estop !== 'boolean' ||
       !isDroneIds(value.selection) ||
-      typeof value.formation !== 'string' ||
+      !(
+        value.formation === 'none' ||
+        FORMATION_NAME_SET.has(value.formation as FormationName)
+      ) ||
       !isFiniteNumber(value.spacing) ||
       typeof value.mode !== 'string' ||
       !isCapabilityAdvertisement(value.capability_profile, value.enabled_intent_names) ||
@@ -1076,10 +1080,10 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   const selection = value.selection as DroneId[]
   if (!hasValidArgs(name, value.args)) return false
   if (requiresConfirmation(name) && !value.confirm) return false
-  return hasValidSelection(name, selection)
+  return hasValidSelection(name, selection, value.args)
 }
 
-const FORMATION_NAMES = new Set<FormationName>(['line', 'column', 'circle', 'grid', 'V'])
+const FORMATION_NAME_SET: ReadonlySet<FormationName> = new Set(FORMATION_NAMES)
 
 /** Mirrors relay/intent_v1.py _parse_args for the console-built subset. */
 function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): boolean {
@@ -1093,7 +1097,7 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
     case 'spacing':
       return keys.length === 1 && isFiniteNumber(args.delta)
     case 'formation_set':
-      return keys.length === 1 && FORMATION_NAMES.has(args.name as FormationName)
+      return keys.length === 1 && FORMATION_NAME_SET.has(args.name as FormationName)
     case 'sweep':
       return keys.length === 0 || (keys.length === 1 && isSweepBox(args.box))
     case 'capture_room':
@@ -1133,7 +1137,16 @@ function isSweepBox(value: unknown): value is SweepBox {
 }
 
 /** The brief's selection rules; capture_room's is also the relay's own scope check. */
-function hasValidSelection(name: ConsoleIntentName, selection: DroneId[]): boolean {
+function hasValidSelection(
+  name: ConsoleIntentName,
+  selection: DroneId[],
+  args: Record<string, unknown>,
+): boolean {
+  if (name === 'formation_next') return selection.length >= 2
+  if (name === 'formation_set') {
+    const minimum = args.name === 'wedge' || args.name === 'diamond' ? 4 : 2
+    return selection.length >= minimum
+  }
   switch (SELECTION_RULES[name]) {
     case 'any':
     case 'all':

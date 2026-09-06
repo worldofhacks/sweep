@@ -206,7 +206,7 @@ describe('Control › Swarm: capability-profile behavior on the fixture client',
       const button = motionGroup().getByRole('button', { name: label })
       expect(button).toBeDisabled()
     }
-    expect(screen.getByRole('button', { name: 'circle' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'diamond' })).toBeDisabled()
 
     await user.click(disarm)
     expect(clients.console.sent).toHaveLength(0)

@@ -11,6 +11,7 @@ import type { RelayClient, RelayClientEvent, RelayClientListener } from '../rela
 import type {
   ConsoleIntentName,
   DroneId,
+  FormationName,
   IntentV1,
   RelayAircraftState,
   RelayServerEvent,
@@ -57,7 +58,7 @@ interface FixtureDeparture {
 export interface FixtureScenario {
   name: FixtureScenarioName
   rosterVersion: number
-  formation: string
+  formation: 'none' | FormationName
   spacing: number
   console: FixtureLink
   keyboard: FixtureLink

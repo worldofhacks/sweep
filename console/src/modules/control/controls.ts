@@ -15,7 +15,14 @@ import type {
   RelayAircraftState,
   SelectionRule,
 } from '../../relay/contract'
-import { followsSelection, isSupportedIntent, requiresConfirmation, selectionRule } from '../../relay/contract'
+import {
+  FORMATION_NAMES as CONTRACT_FORMATION_NAMES,
+  MAX_INTENT_DRONE_IDS,
+  followsSelection,
+  isSupportedIntent,
+  requiresConfirmation,
+  selectionRule,
+} from '../../relay/contract'
 import { isLinkUp, isReady, sortedAircraft, type Tone } from '../../shell/derive'
 
 /** One control press: the intent it drafts and the aircraft it addresses. */
@@ -44,7 +51,8 @@ export interface ControlSpec {
   rule: SelectionRule
 }
 
-export const FORMATION_NAMES: readonly FormationName[] = ['line', 'column', 'circle', 'grid', 'V']
+export const FORMATION_NAMES = CONTRACT_FORMATION_NAMES
+const FORMATION_SPACING_CLEARANCE_FACTOR = 1.01
 
 export function connectionReason(state: ControlState): string | null {
   return isLinkUp(state.connection.status)
@@ -180,18 +188,51 @@ export function motionControls(state: ControlState): ControlSpec[] {
     control(state, 'sweep', 'Sweep', { name: 'sweep', args: {} }, { sel: true }),
     control(state, 'spacing-', 'Spacing tighter', { name: 'spacing', args: { delta: -1 } }, { sel: true }),
     control(state, 'spacing+', 'Spacing wider', { name: 'spacing', args: { delta: 1 } }, { sel: true }),
-    control(state, 'formation_next', 'Formation next', { name: 'formation_next', args: {} }, { sel: true }),
+    control(
+      state,
+      'formation_next',
+      'Formation next',
+      { name: 'formation_next', args: {} },
+      { sel: true, extra: formationCountReason(state.selection.length) },
+    ),
   ]
 }
 
 export const MOTION_FOOTNOTE =
   'Motion controls use the authoritative selection. Steps resolve against the room frame and every target remains subject to the arbiter.'
 
-/** Commands: the five formations and the two altitude steps. */
+/** Commands: the four MVP formations and the two altitude steps. */
 export function formationControls(state: ControlState): ControlSpec[] {
   return FORMATION_NAMES.map((name) =>
-    control(state, `formation-${name}`, name, { name: 'formation_set', args: { name } }, { sel: true }),
+    control(
+      state,
+      `formation-${name}`,
+      name,
+      { name: 'formation_set', args: { name } },
+      {
+        sel: true,
+        extra: formationSelectionReason(name, state.selection.length),
+      },
+    ),
   )
+}
+
+function formationSelectionReason(name: FormationName, count: number): string | null {
+  const minimum = name === 'wedge' || name === 'diamond' ? 4 : 2
+  return formationCountReason(count, minimum, name)
+}
+
+function formationCountReason(
+  count: number,
+  minimum = 2,
+  name?: FormationName,
+): string | null {
+  const subject = name === undefined ? 'formation' : `${name} formation`
+  if (count < minimum) return `${subject} requires at least ${minimum} selected aircraft.`
+  if (count > MAX_INTENT_DRONE_IDS) {
+    return `formation supports at most ${MAX_INTENT_DRONE_IDS} selected aircraft.`
+  }
+  return null
 }
 
 export function altitudeControls(state: ControlState): ControlSpec[] {
@@ -309,25 +350,65 @@ export function dpadBlockedReason(state: ControlState): string | null {
   )
 }
 
-/** Planner slot positions in metres, from the design's slots(name, n, spacing). */
+/** Planner slot positions in metres, mirroring planner/planner.py exactly. */
 export function formationSlots(name: string, count: number, spacing: number): Array<[number, number]> {
-  const n = Math.max(count, 1)
-  const mid = (n - 1) / 2
-  const out: Array<[number, number]> = []
-  for (let i = 0; i < n; i += 1) {
-    if (name === 'line') out.push([(i - mid) * spacing, 0])
-    else if (name === 'column') out.push([0, (i - mid) * spacing])
-    else if (name === 'circle') {
-      const r = n > 1 ? spacing / (2 * Math.sin(Math.PI / n)) : 0
-      const a = (2 * Math.PI * i) / n - Math.PI / 2
-      // Adding zero folds a negative zero from sin or cos into plain zero.
-      out.push([r * Math.cos(a) + 0, r * Math.sin(a) + 0])
-    } else if (name === 'grid') {
-      const c = Math.ceil(Math.sqrt(n))
-      out.push([((i % c) - (c - 1) / 2) * spacing, (Math.floor(i / c) - (Math.ceil(n / c) - 1) / 2) * spacing])
-    } else out.push([(i - mid) * spacing, Math.abs(i - mid) * spacing * 0.6])
+  if (
+    !FORMATION_NAMES.includes(name as FormationName) ||
+    !Number.isInteger(count) ||
+    count < 2 ||
+    count > MAX_INTENT_DRONE_IDS ||
+    !Number.isFinite(spacing) ||
+    spacing <= 0 ||
+    ((name === 'wedge' || name === 'diamond') && count < 4)
+  ) {
+    return []
   }
-  return out
+  const n = count
+  let raw: Array<[number, number]>
+  if (name === 'line') {
+    raw = Array.from({ length: n }, (_, index) => [index - (n - 1) / 2, 0])
+  } else if (name === 'column') {
+    raw = Array.from({ length: n }, (_, index) => [0, index - (n - 1) / 2])
+  } else if (name === 'wedge') {
+    raw = []
+    const firstRow = n % 2 === 0 ? 0.5 : 1
+    if (n % 2 !== 0) raw.push([0, 0])
+    for (let row = 0; row < Math.floor(n / 2); row += 1) {
+      const distance = firstRow + row
+      raw.push([-distance, -distance], [distance, -distance])
+    }
+  } else {
+    raw = Array.from({ length: n }, (_, index) => diamondPerimeter((4 * index) / n))
+  }
+  return normalizeFormationOffsets(raw).map(([x, y]) => [x * spacing + 0, y * spacing + 0])
+}
+
+function diamondPerimeter(position: number): [number, number] {
+  if (position < 1) return [position, 1 - position]
+  if (position < 2) return [2 - position, 1 - position]
+  if (position < 3) return [2 - position, position - 3]
+  return [position - 4, position - 3]
+}
+
+function normalizeFormationOffsets(raw: Array<[number, number]>): Array<[number, number]> {
+  const centerX = raw.reduce((total, [x]) => total + x / raw.length, 0)
+  const centerY = raw.reduce((total, [, y]) => total + y / raw.length, 0)
+  const centered = raw.map(([x, y]) => [x - centerX, y - centerY] as [number, number])
+  if (centered.length === 1) return [[0, 0]]
+  let minimum = Number.POSITIVE_INFINITY
+  for (let first = 0; first < centered.length; first += 1) {
+    for (let second = first + 1; second < centered.length; second += 1) {
+      minimum = Math.min(
+        minimum,
+        Math.hypot(
+          centered[first][0] - centered[second][0],
+          centered[first][1] - centered[second][1],
+        ),
+      )
+    }
+  }
+  const scale = FORMATION_SPACING_CLEARANCE_FACTOR / minimum
+  return centered.map(([x, y]) => [x * scale + 0, y * scale + 0])
 }
 
 export interface FormationDot {
@@ -350,6 +431,7 @@ export function formationPlot(
 ): FormationDot[] {
   if (name === null || aircraft.length === 0) return []
   const slots = formationSlots(name, aircraft.length, spacing ?? 1)
+  if (slots.length !== aircraft.length) return []
   const span = Math.max(1.2, ...slots.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y)))) * 2.4
   return aircraft.map((drone, i) => {
     const [x, y] = slots[i]
@@ -682,7 +764,7 @@ export const MISSION_STEPS: readonly MissionStep[] = (
     ['Open palm', 'select', 'Select every ready aircraft.'],
     ['Open palm up', 'takeoff', 'Takeoff — risky, so the relay returns a pending object.'],
     ['Thumb up', 'confirm', 'Confirm the pending takeoff. Dwell 400 ms.'],
-    ['Circle', 'formation_set', 'Formation to circle.'],
+    ['Diamond', 'formation_set', 'Formation to diamond.'],
     ['Index swipe right, twice', 'translate', 'Translate two steps east.'],
     ['Pinch and raise', 'altitude', 'Altitude up one step.'],
     ['Two fingers held', 'sweep', 'Sweep, then thumb up to confirm, then wait for the lanes.'],

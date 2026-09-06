@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   CONSOLE_INTENT_NAMES,
+  FORMATION_NAMES,
   isConsoleIntentV1,
   requiresConfirmation,
   selectionRule,
@@ -35,8 +36,8 @@ const ENVELOPES: Record<ConsoleIntentName, { args: IntentArgs; selection: number
   hold: { args: {}, selection: [1] },
   translate: { args: { dx: 2, dy: 0 }, selection: [1] },
   altitude: { args: { delta: 1 }, selection: [1] },
-  formation_next: { args: {}, selection: [1] },
-  formation_set: { args: { name: 'circle' }, selection: [1, 2] },
+  formation_next: { args: {}, selection: [1, 2] },
+  formation_set: { args: { name: 'diamond' }, selection: [1, 2, 3, 4] },
   spacing: { args: { delta: -1 }, selection: [1] },
   come_home: { args: {}, selection: [1] },
   sweep: { args: {}, selection: [1] },
@@ -103,7 +104,7 @@ describe('intent envelopes', () => {
 
   test('formation_next takes no args and translate carries dx and dy only', () => {
     const base = createIntent(
-      { name: 'formation_next', args: {}, selection: [1], source: 'console', session },
+      { name: 'formation_next', args: {}, selection: [1, 2], source: 'console', session },
       deps,
     )
     expect(isConsoleIntentV1(base)).toBe(true)
@@ -154,11 +155,37 @@ describe('intent envelopes', () => {
     )
     expect(isConsoleIntentV1({ ...spacing, args: { delta: Number.NaN } })).toBe(false)
     const formation = createIntent(
-      { name: 'formation_set', args: { name: 'grid' }, selection: [1], source: 'console', session },
+      { name: 'formation_set', args: { name: 'diamond' }, selection: [1, 2, 3, 4], source: 'console', session },
       deps,
     )
-    expect(isConsoleIntentV1({ ...formation, args: { name: 'hexagon' } as unknown as IntentArgs })).toBe(false)
+    for (const name of ['circle', 'grid', 'V', 'hexagon']) {
+      expect(isConsoleIntentV1({ ...formation, args: { name } as unknown as IntentArgs })).toBe(false)
+    }
     expect(isConsoleIntentV1({ ...formation, name: 'survey_area' as unknown as ConsoleIntentName })).toBe(false)
+  })
+
+  test('formation names and selection bounds exactly mirror the relay', () => {
+    for (const name of FORMATION_NAMES) {
+      const minimum = name === 'wedge' || name === 'diamond' ? 4 : 2
+      const intent = createIntent(
+        {
+          name: 'formation_set',
+          args: { name },
+          selection: Array.from({ length: minimum }, (_, index) => index + 1),
+          source: 'console',
+          session,
+        },
+        deps,
+      )
+      expect(isConsoleIntentV1(intent)).toBe(true)
+      expect(isConsoleIntentV1({ ...intent, selection: intent.selection.slice(1) })).toBe(false)
+    }
+    const next = createIntent(
+      { name: 'formation_next', args: {}, selection: [1, 2], source: 'console', session },
+      deps,
+    )
+    expect(isConsoleIntentV1(next)).toBe(true)
+    expect(isConsoleIntentV1({ ...next, selection: [1] })).toBe(false)
   })
 })
 

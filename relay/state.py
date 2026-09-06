@@ -19,13 +19,14 @@ from relay.contracts import (
     TelemetryV1,
     VideoPublishState,
 )
+from relay.intent_v1 import FORMATION_NAMES
 from relay.media import MediaEvidenceProvider, project_video
 
 MAX_PHYSICAL_AIRCRAFT = 4
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
-_FORMATIONS = frozenset({"line", "column", "circle", "grid", "V"})
+_FORMATIONS = frozenset(FORMATION_NAMES)
 
 
 class RegistryError(ValueError):

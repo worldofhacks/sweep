@@ -24,7 +24,7 @@ from planner.models import (
     RefusalReason,
 )
 from planner.planner import SELECTION_TARGETED_INTENTS
-from relay.intent_v1 import IntentName, IntentV1
+from relay.intent_v1 import FORMATION_NAMES, IntentName, IntentV1
 
 _CONFIRMED_INTENTS: Final = frozenset(
     {
@@ -992,7 +992,7 @@ class SafetyArbiter:
                 value is None or isinstance(value, bool)
                 for value in (plan.armed_update, plan.estop_update)
             )
-            and (plan.formation_update is None or isinstance(plan.formation_update, str))
+            and (plan.formation_update is None or plan.formation_update in FORMATION_NAMES)
             and (plan.spacing_update is None or _finite_positive(plan.spacing_update))
         )
         valid = (
@@ -1452,8 +1452,7 @@ class SafetyArbiter:
             )
         elif plan.intent_name in {IntentName.FORMATION_NEXT, IntentName.FORMATION_SET}:
             valid = (
-                isinstance(plan.formation_update, str)
-                and bool(plan.formation_update)
+                plan.formation_update in FORMATION_NAMES
                 and plan.selection_update is None
                 and plan.armed_update is None
                 and plan.estop_update is None

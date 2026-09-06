@@ -60,7 +60,9 @@ def build_transcript_service(
             )
             return TranscriptService(transcription=transcription)
         transport = AnthropicTransport(api_key=api_key)
-    capability_profile = config.planning.effective_capability_profile()
+    capability_profile = config.planning.effective_capability_profile(
+        runtime.settings.capability_profile
+    )
     qualified_voice_intents = _qualified_voice_intents(values, capability_profile)
     if not qualified_voice_intents:
         _LOGGER.warning(

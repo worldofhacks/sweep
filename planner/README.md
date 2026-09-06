@@ -81,6 +81,22 @@ The opt-in altitude path and its floor-reference contract are described in
 [Altitude controls](../docs/ALTITUDE_CONTROLS.md). It is disabled by default and
 requires explicit deployment configuration plus the existing live acceptance gates.
 
+## C2 simulator formations
+
+The explicit simulator-only C2 release adds `formation_next`, `formation_set`,
+`spacing`, and `sweep` without widening the remote Mini 3 backend. Its formation
+contract contains exactly line, column, wedge, and diamond. Line and column accept
+2–6 selected aircraft; wedge and diamond accept 4–6. Slots retain the selected
+fleet's centroid and a small clearance margin above the reported spacing.
+
+For at most six aircraft, the planner enumerates every slot assignment, sums the
+3-D Euclidean travel distance, discards assignments whose straight XY transitions
+cross, and uses slot-index order as the deterministic tie-break. It then chooses a
+sequential one-aircraft-at-a-time `goto` order whose arrivals do not violate the
+current occupancy. If no such non-crossing assignment and order exists, planning
+refuses before adapter I/O. This is bounded simulator behavior, not physical-flight
+acceptance and not a substitute for mapped route or clearance evidence.
+
 ## Known-map navigation previews
 
 `NavigationPlanner` produces deterministic, inspectable route previews. It does not
@@ -132,8 +148,8 @@ the minimum-cost deterministic result. No kitchen fallback or formation permissi
 inferred from a navigation destination.
 
 These are software-planning foundations for issues #87, #88, #143, and #144. They emit
-no command and cannot authorize flight. Public `map_area`, search, route dispatch, and
-live formation execution remain gated on their separate capability, evidence,
-confirmation, relay, arbiter, adapter, and physical-acceptance requirements.
+no command and cannot authorize flight. Public `map_area`, search, mapped route
+dispatch, and physical formation execution remain gated on their separate capability,
+evidence, confirmation, relay, arbiter, adapter, and physical-acceptance requirements.
 
 Current scope: `docs/mvp-plan.md` M3A–M3D and live issues #87, #88, and #143–#145.

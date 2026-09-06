@@ -4,13 +4,13 @@ import pytest
 
 from adapters.sim.flight import SimFlightAdapter
 from planner.models import FleetSnapshot, FlightState, LifecycleStatus, Plan
-from relay.intent_v1 import IntentName
+from relay.intent_v1 import FORMATION_NAMES, IntentName
 from relay.settings import CapabilityRelease, RelaySettings
 from relay.tests.conftest import CONSOLE_KEY
 from tests.autonomy_fixtures import make_intent, make_snapshot, make_stack, planning_config
 
 
-@pytest.mark.parametrize("count", [4, 6])
+@pytest.mark.parametrize("count", [4, 5, 6])
 def test_simulated_m15_path_reaches_confirmed_land_all(count: int) -> None:
     snapshot = make_snapshot(
         count,
@@ -49,7 +49,7 @@ def test_simulated_m15_path_reaches_confirmed_land_all(count: int) -> None:
         make_intent(
             IntentName.FORMATION_SET,
             selection=tuple(range(1, count + 1)),
-            args={"name": "circle"},
+            args={"name": "diamond"},
         ),
         make_intent(
             IntentName.TRANSLATE,
@@ -84,13 +84,43 @@ def test_simulated_m15_path_reaches_confirmed_land_all(count: int) -> None:
         result = controller.execute(
             intent,
             snapshot,
-            current_snapshot=lambda current=snapshot: _live_sim_snapshot(current, flight),
+            current_snapshot=lambda current=snapshot, current_flight=flight: _live_sim_snapshot(
+                current, current_flight
+            ),
         )
         assert result.status is LifecycleStatus.COMPLETED, result.to_dict()
         assert result.plan is not None
         snapshot = _apply_simulated_plan(snapshot, result.plan, flight)
 
     assert all(aircraft.flight_state is FlightState.LANDED for aircraft in flight.aircraft.values())
+
+
+@pytest.mark.parametrize("count", [4, 5, 6])
+def test_each_mvp_formation_executes_sequentially_in_the_simulator(count: int) -> None:
+    for name in FORMATION_NAMES:
+        snapshot = make_snapshot(count)
+        controller, _, _, _, flight, _ = make_stack(
+            snapshot,
+            capability_profile=RelaySettings(
+                relay_token=CONSOLE_KEY,
+                capability_release=CapabilityRelease.C2,
+            ).capability_profile,
+        )
+        result = controller.execute(
+            make_intent(
+                IntentName.FORMATION_SET,
+                selection=snapshot.selection,
+                args={"name": name},
+                intent_id=f"intent-formation-{name}-{count}",
+            ),
+            snapshot,
+            current_snapshot=lambda current=snapshot, current_flight=flight: _live_sim_snapshot(
+                current, current_flight
+            ),
+        )
+        assert result.status is LifecycleStatus.COMPLETED, result.to_dict()
+        assert result.plan is not None
+        assert result.plan.formation_update == name
 
 
 def _apply_simulated_plan(
