@@ -134,22 +134,22 @@
     {
       "number": 229,
       "base": "d83fda0180ee02d80a9a75f82bb2345fcdcf0f41",
-      "head": "19c7132d6d790acf5717e86fd51ad2d98d1638cb",
+      "head": "01963c8a696023255748b9eeca01ea0c9a279219",
       "diff": "pr-229.diff",
       "files": "phone_media.json#229",
       "call_chains": [
-        "recording.main -> global MediaMTX lock -> record preflight -> Compose MediaMTX -> finalized fMP4 segments -> manifest validation -> atomic durable export"
+        "recording.main -> resolved Compose project/container identities -> per-identity locks -> record preflight -> Compose MediaMTX -> finalized fMP4 segments -> manifest validation -> atomic durable export"
       ],
       "functions_checked": [
+        "recording._compose_identities",
         "recording._lock",
         "recording.record",
         "recording._prepare",
         "recording._segments",
         "recording._export"
       ],
-      "result": "fixed: one global MediaMTX lifecycle, bounded recording tree, verified durable export, and no normal-service replacement",
-      "fix_commit": "cccc7f2dac412d6331d7a1227ce3167e81e25620",
-      "followup_fix_commit": "4614cd0821ffb8038f4cb4515a67a6014ce3ac27"
+      "result": "fixed: identity-scoped MediaMTX lifecycle lock, stable startup configuration, bounded recording tree, verified durable export, and normal-service refusal",
+      "fix_commit": "979e5a44ecfe3941ec286c790cfce491d9d7272e"
     },
     {
       "number": 84,

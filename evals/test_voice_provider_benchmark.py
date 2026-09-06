@@ -73,7 +73,6 @@ def test_benchmark_calls_both_providers_and_replay_never_reports_network_latency
     assert (output / "live-results.json").exists()
 
 
-
 def test_public_stop_preflight_replays_provider_cassettes_without_http(monkeypatch) -> None:
     fixture_root = Path(__file__).parent / "fixtures" / "voice_provider_preflight"
     source = json.loads((fixture_root / "source.json").read_text())
