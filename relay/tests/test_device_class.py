@@ -10,6 +10,7 @@ from planner.models import DeviceClass
 from relay.app import RelayRuntime
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event
+from relay.autonomy import relay_snapshot
 from relay.contracts import (
     ContractError,
     DeviceIdentity,
@@ -122,6 +123,70 @@ def test_settings_reject_unkeyed_ids_and_unknown_classes(raw: str, match: str) -
                 "SWEEP_DEVICE_CLASSES_JSON": raw,
             }
         )
+
+
+def test_shared_token_requires_aircraft_ids_that_match_their_units() -> None:
+    """An ID admitted without a key takes its ID as its unit, so it must not be able to
+    take a configured aircraft's unit, D-NN label, and drone{unit} media path."""
+    environment = {
+        "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+        "SWEEP_ALLOW_SHARED_ADAPTER_TOKEN": "true",
+        "SWEEP_ADAPTER_KEYS_JSON": (
+            '{"5":"key-five-that-is-at-least-32-bytes-long",'
+            '"7":"key-seven-that-is-at-least-32-bytes-long"}'
+        ),
+    }
+
+    with pytest.raises(SettingsError, match="shared_token_unit_collision"):
+        RelaySettings.from_env(environment)
+
+    settings = RelaySettings.from_env(
+        {
+            **environment,
+            "SWEEP_ADAPTER_KEYS_JSON": (
+                '{"1":"key-one-that-is-at-least-32-bytes-longg",'
+                '"2":"key-two-that-is-at-least-32-bytes-longg",'
+                '"11":"key-eleven-that-is-at-least-32-bytes-lon"}'
+            ),
+            "SWEEP_DEVICE_CLASSES_JSON": '{"11":"ground_vehicle"}',
+        }
+    )
+
+    # Contiguous aircraft IDs make unit and ID the same number, so the fallback unit of an
+    # unkeyed joiner (3) lands above every configured aircraft unit instead of on one.
+    registry = FleetRegistry(telemetry_freshness_ms=1_000, devices=settings.device_identities())
+    assert registry.device_identity(1) == DeviceIdentity(AIRCRAFT, 1)
+    assert registry.device_identity(11) == DeviceIdentity(GROUND, 1)
+    assert registry.device_identity(3) == DeviceIdentity(AIRCRAFT, 3)
+
+
+def test_aircraft_ids_that_are_not_their_units_warn_about_the_publishers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The pilot app and the console still derive drone{id}; the relay polls drone{unit}."""
+    with caplog.at_level("WARNING", logger="relay.settings"):
+        RelaySettings.from_env(
+            {
+                "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+                "SWEEP_ADAPTER_KEYS_JSON": (
+                    '{"2":"key-two-that-is-at-least-32-bytes-longg",'
+                    '"3":"key-three-that-is-at-least-32-bytes-long"}'
+                ),
+            }
+        )
+
+    assert "configured aircraft IDs 2, 3 do not equal their units" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="relay.settings"):
+        RelaySettings.from_env(
+            {
+                "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+                "SWEEP_ADAPTER_KEYS_JSON": f'{{"1":"{ADAPTER_KEY.decode()}"}}',
+            }
+        )
+
+    assert caplog.text == ""
 
 
 def test_join_declares_its_class_through_one_capability_entry() -> None:
@@ -400,6 +465,42 @@ def test_session_and_runtime_thread_the_configured_devices_into_the_registry(
     )
     assert refused[0]["type"] == "refusal"
     assert refused[0]["reason"] == "device_class_mismatch"
+
+
+def test_ground_vehicles_are_not_in_the_planner_snapshot_yet(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    """The relay admits, projects, and labels a ground vehicle, but ``FleetSnapshot`` is
+    aircraft-shaped, so the planner and the arbiter do not see one until the per-class
+    snapshot lands. ``relay/README.md`` records the gap for a mixed session."""
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY, GROUND_ID: GROUND_KEY},
+        device_classes={GROUND_ID: GROUND},
+        log_dir=tmp_path,
+    )
+    session = RelayRuntime(settings, clock=clock, event_ids=event_ids).session(SESSION)
+    ground = Principal(source="adapter", drone_id=GROUND_ID, signing_key=GROUND_KEY)
+    aircraft = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+    session.process_frame(
+        ground_membership_payload(action="join", event_id="join-ground", timestamp=clock()), ground
+    )
+    session.process_frame(
+        membership_payload(action="join", event_id="join-aircraft", timestamp=clock()), aircraft
+    )
+    session.process_frame(
+        ground_telemetry_payload(event_id="telemetry-ground", timestamp=clock(), state="moving"),
+        ground,
+    )
+    session.process_frame(
+        telemetry_payload(event_id="telemetry-aircraft", timestamp=clock(), state="landed"),
+        aircraft,
+    )
+
+    state = session.current_state()
+    assert {drone["drone_id"] for drone in state["drones"]} == {1, GROUND_ID}
+    snapshot = relay_snapshot(state, operator_last_seen_ms=None)
+    assert set(snapshot.aircraft) == {1}
 
 
 def test_unconfigured_session_treats_every_id_as_an_aircraft_numbered_by_id(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ from relay.auth import StaticCredentialResolver
 from relay.contracts import DeviceIdentity
 from relay.media import DEFAULT_MEDIA_DEVICES
 from relay.session import RelayLimits
+
+_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CONSOLE_ORIGINS = (
     "http://localhost:5173",
@@ -126,6 +129,25 @@ class RelaySettings:
                 "SWEEP_ADAPTER_KEYS_JSON does not configure"
             )
         object.__setattr__(self, "device_classes", MappingProxyType(device_classes))
+        if self.allow_shared_adapter_token and adapter_keys:
+            # An ID admitted without a key is an aircraft whose unit is its ID
+            # (``relay.state.FleetRegistry.device_identity``), which agrees with the
+            # configured numbering only while the configured aircraft IDs are 1 through N
+            # ascending. Otherwise a shared-token joiner would take a configured aircraft's
+            # unit, its D-NN label, and its drone{unit} media path.
+            aircraft = sorted(
+                drone_id
+                for drone_id in adapter_keys
+                if device_classes.get(drone_id, DeviceClass.AIRCRAFT) is DeviceClass.AIRCRAFT
+            )
+            if aircraft != list(range(1, len(aircraft) + 1)):
+                ids = ", ".join(str(drone_id) for drone_id in aircraft)
+                raise SettingsError(
+                    "shared_token_unit_collision: SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true "
+                    "requires the configured aircraft IDs to be 1 through N ascending "
+                    f"(configured: {ids}); an ID admitted without a key takes its ID as "
+                    "its unit and would collide with a configured device"
+                )
         if (
             type(self.transcript_upload_timeout_ms) is not int
             or not 1 <= self.transcript_upload_timeout_ms <= MAX_TRANSCRIPT_UPLOAD_TIMEOUT_MS
@@ -181,7 +203,7 @@ class RelaySettings:
             values.get("SWEEP_ADAPTER_KEYS_JSON", "{}"),
             "SWEEP_ADAPTER_KEYS_JSON",
         )
-        return cls(
+        settings = cls(
             relay_token=token.encode(),
             adapter_keys=adapter_keys,
             localization_keys=_credential_keys(
@@ -267,6 +289,31 @@ class RelaySettings:
                 "SWEEP_STATE_MEMBERSHIP_HISTORY",
             ),
         )
+        settings._warn_when_aircraft_units_differ_from_ids()
+        return settings
+
+    def _warn_when_aircraft_units_differ_from_ids(self) -> None:
+        """Warn at startup about the one configuration the publishers cannot follow.
+
+        The relay derives an aircraft's MediaMTX path from its unit, while the pilot app
+        (``adapters/dji_mini3/pilot-app`` ``WhipEndpoint``/``MediaCredential``) and the
+        console player still derive ``drone{id}`` from the device ID. The two agree only
+        while the configured aircraft IDs are 1 through N ascending; otherwise an aircraft
+        publishes to one path, is polled at another, and its derived publisher password no
+        longer matches. ``relay/README.md`` and ``media/README.md`` carry the constraint.
+        """
+        drifted = sorted(
+            drone_id
+            for drone_id, identity in self.device_identities().items()
+            if identity.device_class is DeviceClass.AIRCRAFT and identity.unit != drone_id
+        )
+        if drifted:
+            _LOGGER.warning(
+                "configured aircraft IDs %s do not equal their units: the pilot app and "
+                "the console publish and play drone{id} while the relay polls drone{unit}; "
+                "configure aircraft IDs 1 through N ascending",
+                ", ".join(str(drone_id) for drone_id in drifted),
+            )
 
     def device_identities(self) -> Mapping[int, DeviceIdentity]:
         """Class and unit of every configured device id (``SWEEP_ADAPTER_KEYS_JSON``).
@@ -274,7 +321,8 @@ class RelaySettings:
         The unit is the 1-based ordinal of the id among the configured ids of its class,
         sorted ascending, so it is stable across reconnects and independent of join order.
         Ids the relay admits without a key (the shared-token demo fallback) are aircraft
-        whose unit is the id itself.
+        whose unit is the id itself, which is why that fallback requires configured
+        aircraft ids 1 through N ascending (``shared_token_unit_collision``).
         """
         by_class: dict[DeviceClass, list[int]] = {}
         for drone_id in sorted(self.adapter_keys):

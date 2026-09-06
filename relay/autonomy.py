@@ -40,6 +40,7 @@ from arbiter.safety import SafetyArbiter, SafetyConfig
 from planner.controller import AutonomyController, RelayExecution
 from planner.models import (
     CommandAcknowledgement,
+    DeviceClass,
     ExecutionResult,
     FleetSnapshot,
     FlightState,
@@ -187,7 +188,12 @@ def relay_snapshot(
 
     Aircraft without current-epoch telemetry, or whose telemetry state is not a
     ``FlightState``, are excluded: they cannot be selected or commanded until the
-    node reports.
+    node reports. A device of another class is excluded by its class, explicitly:
+    ``FleetSnapshot`` is aircraft-shaped, so a ground vehicle the relay admits,
+    projects, and labels is not visible to the planner or the arbiter, and a
+    fleet-wide stop or spacing check computed from this snapshot does not include
+    it. The per-class snapshot lands with the autonomy work; ``relay/README.md``
+    records the gap for anyone running a mixed session before then.
     """
     drones_raw = state.get("drones")
     if not isinstance(drones_raw, list):
@@ -200,6 +206,8 @@ def relay_snapshot(
         drone_id = drone.get("drone_id")
         if not isinstance(drone_id, int) or isinstance(drone_id, bool) or drone_id <= 0:
             raise ValueError("relay drone entries require a positive drone_id")
+        if drone.get("device_class") not in {None, DeviceClass.AIRCRAFT.value}:
+            continue
         telemetry = drone.get("telemetry")
         if not isinstance(telemetry, Mapping) or telemetry.get("state") not in _FLIGHT_STATES:
             continue
