@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Literal
 from unicodedata import category, normalize
 
+from language.navigation import NavigationGrounding, navigation_from_record
 from planner.models import AltitudeGrounding, TranslationGrounding, TranslationPolicy
 from relay.capabilities import CapabilityProfile
 from relay.intent_v1 import AcceptedIntent, IntentName, Mode, validate_intent
@@ -30,6 +31,7 @@ _SELECTION_TARGETED = frozenset(
         IntentName.HOLD,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
+        IntentName.NAVIGATE,
     }
 )
 _AIRBORNE_STATES = frozenset({"taking_off", "airborne", "hovering", "landing"})
@@ -45,6 +47,17 @@ _TRANSLATION_TARGET = (
 )
 _EXPLICIT_TRANSLATION_TOKEN = re.compile(r"\b(?:fly|move|go)\b", re.IGNORECASE)
 _EXPLICIT_DIRECTION_TOKEN = re.compile(rf"\b{_DIRECTION}\b", re.IGNORECASE)
+_NAVIGATION_PHRASE = re.compile(
+    r"\A(?:fly|go)\s+(?:to\s+)?(?:the\s+)?(?P<destination>[A-Za-z0-9][A-Za-z0-9 _.-]{0,127})\Z",
+    re.IGNORECASE,
+)
+_NAVIGATION_SELECT_PREFIX = re.compile(
+    rf"\Aselect\s+(?:drone|aircraft)\s+(?P<ids>{_ID_LIST})\s*,?\s+then\s+(?P<rest>.+)\Z",
+    re.IGNORECASE,
+)
+_NAVIGATION_SUBJECT = re.compile(
+    rf"\A(?:drone|aircraft)\s+(?P<ids>{_ID_LIST})\s+(?P<rest>.+)\Z", re.IGNORECASE
+)
 _TRANSLATION_SUBJECT = re.compile(
     rf"\A(?:drones?|aircraft)\s+(?P<ids>{_ID_LIST})\s+(?P<rest>.+)\Z",
     re.IGNORECASE,
@@ -75,6 +88,11 @@ _TRANSLATION_DISTANCE_FIRST = re.compile(
 _ALTITUDE_DIRECTION = r"(?:up|down)"
 _EXPLICIT_ALTITUDE_DIRECTION_TOKEN = re.compile(rf"\b{_ALTITUDE_DIRECTION}\b", re.IGNORECASE)
 _ABSOLUTE_ALTITUDE_TOKEN = re.compile(r"\bhover\s+at\b", re.IGNORECASE)
+# A negated transcript ("Do not take off.") must never reach the dock as the very
+# step it rules out. The gate runs on the normalised text after the model, next to
+# the voice-estop literal check, and turns any proposed plan into a clarification.
+_NEGATION_TOKEN = re.compile(r"\b(?:do not|not|never|cannot|no longer|\w+n[’']t)\b")
+NEGATED_TRANSCRIPT_DETAIL = "The transcript negates an action, so no step was proposed."
 _ALTITUDE_DIRECTION_FIRST = re.compile(
     rf"\A(?:fly|move|go)(?:\s+{_TRANSLATION_TARGET})?\s+"
     rf"(?P<direction>{_ALTITUDE_DIRECTION})"
@@ -182,6 +200,7 @@ class GroundingFacts:
     capability_profile: CapabilityProfile | None
     pending: Mapping[str, str] | None
     qualified_voice_intents: tuple[str, ...]
+    navigation: NavigationGrounding | None
 
     def model_dict(self) -> dict[str, object]:
         value = {
@@ -202,6 +221,7 @@ class GroundingFacts:
             ),
             "pending": None if self.pending is None else dict(self.pending),
             "qualified_voice_intents": list(self.qualified_voice_intents),
+            "navigation": None if self.navigation is None else self.navigation.model_dict(),
         }
         if self.capability_profile is not None:
             value.update(self.capability_profile.state_value())
@@ -209,11 +229,13 @@ class GroundingFacts:
         return value
 
     def record_dict(self) -> dict[str, object]:
-        return {
+        record = {
             **self.model_dict(),
             "drones": [_thaw(drone) for drone in self.drones],
             "state_digest": self.state_digest,
         }
+        record["navigation"] = None if self.navigation is None else self.navigation.record_dict()
+        return record
 
     @classmethod
     def from_record(cls, raw: object) -> GroundingFacts:
@@ -234,9 +256,12 @@ class GroundingFacts:
             "qualified_voice_intents",
         }
         profile_fields = {"capability_profile", "enabled_intent_names", "altitude"}
+        navigation_fields = {"navigation"}
         if not isinstance(raw, Mapping) or set(raw) not in (
             legacy_fields,
             legacy_fields | profile_fields,
+            legacy_fields | navigation_fields,
+            legacy_fields | profile_fields | navigation_fields,
         ):
             raise ValueError("persisted grounding facts are invalid")
         capability_profile = (
@@ -291,6 +316,21 @@ class GroundingFacts:
                     ),
                 }
             )
+        navigation = raw.get("navigation")
+        if navigation is not None:
+            if (
+                not isinstance(navigation, Mapping)
+                or not isinstance(navigation.get("capability_profile"), str)
+                or not isinstance(navigation.get("enabled_intent_names"), list)
+            ):
+                raise ValueError("persisted navigation grounding is invalid")
+            try:
+                profile = CapabilityProfile(
+                    navigation["capability_profile"], frozenset(navigation["enabled_intent_names"])
+                )
+                navigation = navigation_from_record(dict(navigation), profile)
+            except ValueError as error:
+                raise ValueError("persisted navigation grounding is invalid") from error
         facts = build_grounding_facts(
             {
                 "v": 1,
@@ -321,6 +361,7 @@ class GroundingFacts:
                 else ()
             ),
             pending=raw["pending"],
+            navigation=navigation,
         )
         if facts.state_digest != raw["state_digest"]:
             raise ValueError("persisted grounding digest does not match its facts")
@@ -337,6 +378,7 @@ def build_grounding_facts(
     capability_profile: CapabilityProfile | None = None,
     qualified_voice_intents: tuple[str, ...] = (),
     pending: object = None,
+    navigation: object = None,
 ) -> GroundingFacts:
     if not isinstance(relay_state, Mapping):
         raise ValueError("relay state must be an object")
@@ -395,10 +437,20 @@ def build_grounding_facts(
     )
     if capability_profile is not None and not isinstance(capability_profile, CapabilityProfile):
         raise ValueError("capability profile must be an immutable profile")
+    if navigation is not None and not isinstance(navigation, NavigationGrounding):
+        raise ValueError("navigation must come from the trusted planning runtime")
     if capability_profile is None:
-        capability_profile = advertised_profile
+        capability_profile = (
+            advertised_profile
+            if advertised_profile is not None
+            else None
+            if navigation is None
+            else navigation.capability_profile
+        )
     elif advertised_profile != capability_profile:
         raise ValueError("relay state and compiler capability profiles differ")
+    if navigation is not None and navigation.capability_profile != capability_profile:
+        raise ValueError("navigation grounding and the effective capability profile differ")
     if altitude is not None and (
         capability_profile is None or not capability_profile.supports(IntentName.ALTITUDE)
     ):
@@ -422,7 +474,6 @@ def build_grounding_facts(
             and pending_value["name"] in {name.value for name in IntentName}
         ):
             normalized_pending = MappingProxyType(dict(pending_value))
-
     raw_drones = relay_state.get("drones")
     if (
         not isinstance(raw_drones, Sequence)
@@ -502,6 +553,7 @@ def build_grounding_facts(
         ),
         "pending": None if normalized_pending is None else dict(normalized_pending),
         "qualified_voice_intents": list(normalized_qualified),
+        "navigation": None if navigation is None else navigation.model_dict(),
     }
     if capability_profile is not None:
         model_facts.update(capability_profile.state_value())
@@ -530,6 +582,7 @@ def build_grounding_facts(
         capability_profile=capability_profile,
         pending=normalized_pending,
         qualified_voice_intents=normalized_qualified,
+        navigation=navigation,
     )
 
 
@@ -626,9 +679,18 @@ def validate_model_outcome(
             reason=CompilerReason.CAPABILITY_UNAVAILABLE,
             source=source,
         )
+    if transcript_negates_action(transcript):
+        return CompilerOutcome(
+            kind=OutcomeKind.CLARIFY,
+            reason=CompilerReason.AMBIGUOUS_ACTION,
+            detail=NEGATED_TRANSCRIPT_DETAIL,
+            source=source,
+        )
     if not _explicit_translation_matches(intents, transcript, facts):
         return _invalid(source)
     if not _explicit_altitude_matches(intents, transcript, facts):
+        return _invalid(source)
+    if not _explicit_navigation_matches(intents, transcript, facts):
         return _invalid(source)
     return CompilerOutcome(kind=kind, intents=tuple(intents), detail=detail, source=source)
 
@@ -828,6 +890,7 @@ def _validate_proposed_intent(
         IntentName.TRANSLATE,
         IntentName.ALTITUDE,
         IntentName.COME_HOME,
+        IntentName.NAVIGATE,
     } and any(not known[drone_id]["flight_available"] for drone_id in result.intent.selection):
         return None
     if expected_estop and result.intent.name not in {
@@ -842,6 +905,26 @@ def _validate_proposed_intent(
             return None
         drone = known[result.intent.selection[0]]
         if result.intent.args["pattern"] not in drone["camera_patterns"]:
+            return None
+    if result.intent.name is IntentName.NAVIGATE:
+        if facts.navigation is None or not facts.navigation.capability_profile.supports(
+            IntentName.NAVIGATE
+        ):
+            return None
+        zones = facts.navigation.resolve(result.intent.args["zone_id"])
+        if (
+            len(zones) != 1
+            or result.intent.args["zone_id"] != zones[0].zone_id
+            or not zones[0].navigation_allowed
+            or zones[0].floor_id != facts.navigation.floor_id
+        ):
+            return None
+        if any(
+            known[drone_id]["flight_state"] not in _STABLE_MOTION_STATES
+            for drone_id in result.intent.selection
+        ):
+            return None
+        if any(known[drone_id]["position"] is None for drone_id in result.intent.selection):
             return None
     return ProposedIntent(
         name=result.intent.name,
@@ -882,7 +965,12 @@ def _fold_semantic_state(
             return None
         for drone_id in selected:
             states[drone_id] = "hovering"
-    elif name in {IntentName.TRANSLATE, IntentName.ALTITUDE, IntentName.COME_HOME}:
+    elif name in {
+        IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
+        IntentName.COME_HOME,
+        IntentName.NAVIGATE,
+    }:
         if not armed or any(states[drone_id] not in _STABLE_MOTION_STATES for drone_id in selected):
             return None
         for drone_id in selected:
@@ -1035,6 +1123,46 @@ def _normalized_motion_text(transcript: str) -> str:
     while text and category(text[-1]).startswith("P"):
         text = text[:-1].rstrip()
     return text
+
+
+def _explicit_navigation_matches(
+    intents: list[ProposedIntent], transcript: str, facts: GroundingFacts
+) -> bool:
+    if facts.navigation is None:
+        return True
+    text = _normalized_motion_text(transcript)
+    selection = facts.selection
+    selected = _NAVIGATION_SELECT_PREFIX.fullmatch(text)
+    if selected is not None:
+        selection = _translation_ids(selected["ids"])
+        text = selected["rest"]
+    else:
+        subject = _NAVIGATION_SUBJECT.fullmatch(text)
+        if subject is not None:
+            selection = _translation_ids(subject["ids"])
+            text = subject["rest"]
+    match = _NAVIGATION_PHRASE.fullmatch(text)
+    if match is None:
+        return True
+    zones = facts.navigation.resolve(match["destination"])
+    if len(zones) != 1:
+        return False
+    navigation = [intent for intent in intents if intent.name is IntentName.NAVIGATE]
+    return (
+        len(navigation) == 1
+        and navigation[0].args["zone_id"] == zones[0].zone_id
+        and tuple(sorted(navigation[0].selection)) == tuple(sorted(selection))
+        and all(intent.name is not IntentName.TAKEOFF for intent in intents)
+    )
+
+
+def transcript_negates_action(transcript: str) -> bool:
+    """True when the transcript negates an action, so no plan may come from it.
+
+    Casing, spacing, trailing punctuation and the Unicode apostrophe are
+    normalised first so "DON’T TAKE OFF!" is caught like "don't take off".
+    """
+    return _NEGATION_TOKEN.search(_normalized_motion_text(transcript)) is not None
 
 
 def _parse_translation_phrase(text: str, facts: GroundingFacts) -> _MotionPhrase | None:

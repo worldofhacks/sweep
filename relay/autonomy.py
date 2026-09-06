@@ -56,7 +56,7 @@ from planner.models import (
 from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
 from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
-from relay.app import RelayRuntime, create_app
+from relay.app import RelayRuntime, TranscriptServiceFactory, create_app
 from relay.bridge import RelayNodeLink, build_dispatcher
 from relay.capabilities import CapabilityProfile
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
@@ -1204,12 +1204,21 @@ def create_autonomy_app(
     *,
     clock: Clock | None = None,
     event_ids: EventIdFactory | None = None,
+<<<<<<< HEAD
     detection_stream_factory: StreamFactory | None = None,
     detection_detector_factory: DetectorFactory | None = None,
     detection_pose_provider_factory: PoseProviderFactory | None = None,
     detection_camera_provider_factory: CameraProviderFactory | None = None,
+=======
+    transcript_service_factory: TranscriptServiceFactory | None = None,
+>>>>>>> 50862f4
 ) -> tuple[FastAPI, AutonomyComposition]:
-    """Build the relay app with the planner and arbiter consuming every accepted intent."""
+    """Build the relay app with the planner and arbiter consuming every accepted intent.
+
+    ``transcript_service_factory`` is ``create_app``'s hook for the voice endpoint;
+    ``relay.main`` builds one that compiles transcripts against this composition's
+    planning policy and capability profile.
+    """
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
     composition = AutonomyComposition(
@@ -1232,8 +1241,12 @@ def create_autonomy_app(
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_factory=control_localization_factory,
+<<<<<<< HEAD
         startup_callback=composition.start,
         shutdown_callback=composition.close,
+=======
+        transcript_service_factory=transcript_service_factory,
+>>>>>>> 50862f4
     )
 
     @app.get("/session/{session_id}/navigation/catalog")

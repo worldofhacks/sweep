@@ -32,6 +32,14 @@ _FLIGHT_STATES = frozenset(
     {"disarmed", "landed", "armed", "taking_off", "airborne", "hovering", "landing", "emergency"}
 )
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
+_MODES = frozenset({"indoor", "outdoor"})
+VOICE_PLAN_VERSION = 1
+VOICE_PLAN_KINDS = frozenset({"plan", "clarify", "unsupported", "refuse", "cancel_pending"})
+MAX_VOICE_PLAN_STEPS = 8
+MAX_VOICE_PLAN_OPTIONS = 16
+MAX_VOICE_PLAN_NOTES = 8
+MAX_VOICE_PLAN_TEXT_CHARS = 500
+_INTENT_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
 class TranscriptionError(RuntimeError):
@@ -185,12 +193,92 @@ class RecordingTranscriptionTransport:
 
 
 @dataclass(frozen=True, slots=True)
+class VoicePlanStep:
+    """One Intent v1 draft the compiler proposes; the console builds the envelope."""
+
+    index: int
+    name: str
+    args: Mapping[str, object]
+    selection: tuple[int, ...]
+    mode: str
+    confirm_required: bool
+    notes: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "index": self.index,
+            "name": self.name,
+            "args": _thaw(self.args),
+            "selection": list(self.selection),
+            "mode": self.mode,
+            "confirm_required": self.confirm_required,
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VoicePlan:
+    """The compiler's validated preview: never an emitted intent.
+
+    ``kind`` ``plan`` carries ordered drafts the console stages one at a time after
+    operator confirmation; ``clarify`` carries options and emits nothing; ``refuse``
+    and ``unsupported`` carry a typed reason; ``cancel_pending`` names the pending
+    intent the operator may cancel. Every plan is bound to the relay state event it
+    was grounded on and a compiled plan expires at ``expires_at_ms``.
+    """
+
+    kind: str
+    transcript: str
+    reason: str | None
+    detail: str | None
+    options: tuple[str, ...]
+    steps: tuple[VoicePlanStep, ...]
+    compiled_at_ms: int
+    expires_at_ms: int | None
+    state_event_id: str
+    roster_version: int
+    session: str
+    correlation_id: str
+    plan_digest: str | None
+    model: str
+    prompt_schema_version: str
+    response_source: str
+    pending_intent_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_voice_plan_fields(self)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "v": VOICE_PLAN_VERSION,
+            "kind": self.kind,
+            "transcript": self.transcript,
+            "reason": self.reason,
+            "detail": self.detail,
+            "options": list(self.options),
+            "steps": [step.to_dict() for step in self.steps],
+            "compiled_at_ms": self.compiled_at_ms,
+            "expires_at_ms": self.expires_at_ms,
+            "state_event_id": self.state_event_id,
+            "roster_version": self.roster_version,
+            "session": self.session,
+            "correlation_id": self.correlation_id,
+            "plan_digest": self.plan_digest,
+            "model": self.model,
+            "prompt_schema_version": self.prompt_schema_version,
+            "response_source": self.response_source,
+            "pending_intent_id": self.pending_intent_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class VoiceOutcome:
     status: Literal["transcribed", "refused"]
     source: Literal["whisper", "template"]
     reason: str | None
     transcript: str | None
     emissions: tuple[()] = ()
+    plan: VoicePlan | None = None
 
     def to_dict(self, *, session_id: str, correlation_id: str) -> dict[str, object]:
         return {
@@ -203,7 +291,247 @@ class VoiceOutcome:
             "reason": self.reason,
             "transcript": self.transcript,
             "emissions": [],
+            "plan": None if self.plan is None else self.plan.to_dict(),
         }
+
+
+_VOICE_OUTCOME_FIELDS = frozenset(
+    {
+        "v",
+        "type",
+        "session",
+        "correlation_id",
+        "status",
+        "source",
+        "reason",
+        "transcript",
+        "emissions",
+        "plan",
+    }
+)
+_VOICE_PLAN_FIELDS = frozenset(
+    {
+        "v",
+        "kind",
+        "transcript",
+        "reason",
+        "detail",
+        "options",
+        "steps",
+        "compiled_at_ms",
+        "expires_at_ms",
+        "state_event_id",
+        "roster_version",
+        "session",
+        "correlation_id",
+        "plan_digest",
+        "model",
+        "prompt_schema_version",
+        "response_source",
+        "pending_intent_id",
+    }
+)
+_VOICE_PLAN_STEP_FIELDS = frozenset(
+    {"index", "name", "args", "selection", "mode", "confirm_required", "notes"}
+)
+
+
+def parse_voice_outcome(
+    raw: object, *, session_id: str | None = None, correlation_id: str | None = None
+) -> VoiceOutcome:
+    """Validate a ``voice_outcome`` wire object; the console mirror applies the same rules."""
+    if not isinstance(raw, Mapping) or set(raw) != _VOICE_OUTCOME_FIELDS:
+        raise ValueError("voice outcome has unexpected fields")
+    if raw["v"] != 1 or raw["type"] != "voice_outcome":
+        raise ValueError("voice outcome version or type is unsupported")
+    if session_id is not None and raw["session"] != session_id:
+        raise ValueError("voice outcome session does not match")
+    if correlation_id is not None and raw["correlation_id"] != correlation_id:
+        raise ValueError("voice outcome correlation does not match")
+    if raw["status"] not in {"transcribed", "refused"} or raw["source"] not in {
+        "whisper",
+        "template",
+    }:
+        raise ValueError("voice outcome status or source is invalid")
+    if raw["reason"] is not None and not isinstance(raw["reason"], str):
+        raise ValueError("voice outcome reason must be a string or null")
+    if raw["transcript"] is not None and not isinstance(raw["transcript"], str):
+        raise ValueError("voice outcome transcript must be a string or null")
+    if raw["emissions"] != []:
+        raise ValueError("voice outcome never carries emissions")
+    plan = None if raw["plan"] is None else parse_voice_plan(raw["plan"])
+    if plan is not None and (
+        raw["status"] != "transcribed"
+        or plan.session != raw["session"]
+        or plan.correlation_id != raw["correlation_id"]
+        or plan.transcript != raw["transcript"]
+    ):
+        raise ValueError("voice plan must belong to its transcribed outcome")
+    return VoiceOutcome(raw["status"], raw["source"], raw["reason"], raw["transcript"], (), plan)
+
+
+def parse_voice_plan(raw: object) -> VoicePlan:
+    """Rebuild a ``VoicePlan`` from its wire object, refusing anything outside the contract."""
+    if not isinstance(raw, Mapping) or set(raw) != _VOICE_PLAN_FIELDS:
+        raise ValueError("voice plan has unexpected fields")
+    if raw["v"] != VOICE_PLAN_VERSION:
+        raise ValueError("voice plan version is unsupported")
+    options = raw["options"]
+    steps = raw["steps"]
+    if not isinstance(options, list) or not isinstance(steps, list):
+        raise ValueError("voice plan options and steps must be lists")
+    return VoicePlan(
+        kind=raw["kind"],
+        transcript=raw["transcript"],
+        reason=raw["reason"],
+        detail=raw["detail"],
+        options=tuple(options),
+        steps=tuple(_parse_voice_plan_step(step) for step in steps),
+        compiled_at_ms=raw["compiled_at_ms"],
+        expires_at_ms=raw["expires_at_ms"],
+        state_event_id=raw["state_event_id"],
+        roster_version=raw["roster_version"],
+        session=raw["session"],
+        correlation_id=raw["correlation_id"],
+        plan_digest=raw["plan_digest"],
+        model=raw["model"],
+        prompt_schema_version=raw["prompt_schema_version"],
+        response_source=raw["response_source"],
+        pending_intent_id=raw["pending_intent_id"],
+    )
+
+
+def _parse_voice_plan_step(raw: object) -> VoicePlanStep:
+    if not isinstance(raw, Mapping) or set(raw) != _VOICE_PLAN_STEP_FIELDS:
+        raise ValueError("voice plan step has unexpected fields")
+    args = raw["args"]
+    selection = raw["selection"]
+    notes = raw["notes"]
+    if not isinstance(args, Mapping) or not isinstance(selection, list):
+        raise ValueError("voice plan step args and selection are invalid")
+    if not isinstance(notes, list):
+        raise ValueError("voice plan step notes must be a list")
+    return VoicePlanStep(
+        index=raw["index"],
+        name=raw["name"],
+        args=dict(args),
+        selection=tuple(selection),
+        mode=raw["mode"],
+        confirm_required=raw["confirm_required"],
+        notes=tuple(notes),
+    )
+
+
+def _bounded_text(value: object, *, limit: int = MAX_VOICE_PLAN_TEXT_CHARS) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= limit
+        and all(ord(character) >= 32 for character in value)
+    )
+
+
+def _validate_voice_plan_fields(plan: VoicePlan) -> None:
+    if plan.kind not in VOICE_PLAN_KINDS:
+        raise ValueError("voice plan kind is unsupported")
+    if not _bounded_text(plan.transcript, limit=MAX_TRANSCRIPT_CHARS):
+        raise ValueError("voice plan requires the transcript it compiled")
+    if not plan.transcript.strip():
+        raise ValueError("voice plan requires the transcript it compiled")
+    for text_field in ("reason", "detail", "plan_digest", "pending_intent_id"):
+        value = getattr(plan, text_field)
+        if value is not None and not _bounded_text(value):
+            raise ValueError(f"voice plan {text_field} must be a bounded string or null")
+    for text_field in (
+        "state_event_id",
+        "session",
+        "correlation_id",
+        "model",
+        "prompt_schema_version",
+        "response_source",
+    ):
+        if not _bounded_text(getattr(plan, text_field), limit=512):
+            raise ValueError(f"voice plan {text_field} must be a bounded string")
+    _nonnegative_integer(plan.compiled_at_ms)
+    _nonnegative_integer(plan.roster_version)
+    if plan.expires_at_ms is not None and (
+        _nonnegative_integer(plan.expires_at_ms) <= plan.compiled_at_ms
+    ):
+        raise ValueError("voice plan must expire after it was compiled")
+    if not isinstance(plan.options, tuple) or len(plan.options) > MAX_VOICE_PLAN_OPTIONS:
+        raise ValueError("voice plan options must be a bounded tuple")
+    if any(not _bounded_text(option) for option in plan.options):
+        raise ValueError("voice plan options must be bounded strings")
+    if len(set(plan.options)) != len(plan.options):
+        raise ValueError("voice plan options must be unique")
+    if not isinstance(plan.steps, tuple) or len(plan.steps) > MAX_VOICE_PLAN_STEPS:
+        raise ValueError("voice plan carries too many steps")
+    for index, step in enumerate(plan.steps):
+        _validate_voice_plan_step(step, index)
+    if plan.kind == "plan":
+        if not plan.steps or plan.expires_at_ms is None or plan.plan_digest is None:
+            raise ValueError("a compiled plan requires steps, an expiry, and a digest")
+        if plan.reason is not None or plan.options or plan.pending_intent_id is not None:
+            raise ValueError("a compiled plan carries no reason, options, or pending intent")
+    else:
+        if plan.steps or plan.plan_digest is not None or plan.expires_at_ms is not None:
+            raise ValueError("only a compiled plan carries steps, a digest, or an expiry")
+        if plan.kind == "cancel_pending":
+            if plan.pending_intent_id is None or plan.reason is not None or plan.options:
+                raise ValueError("cancel_pending names exactly the pending intent")
+        elif plan.reason is None or plan.pending_intent_id is not None:
+            raise ValueError("clarify, unsupported, and refuse carry a typed reason")
+
+
+def _validate_voice_plan_step(step: VoicePlanStep, index: int) -> None:
+    if not isinstance(step, VoicePlanStep):
+        raise ValueError("voice plan steps must be plan steps")
+    if not isinstance(step.index, int) or isinstance(step.index, bool) or step.index != index:
+        raise ValueError("voice plan steps must be indexed in order")
+    if not isinstance(step.name, str) or _INTENT_NAME.fullmatch(step.name) is None:
+        raise ValueError("voice plan step name must be an intent name")
+    if not isinstance(step.args, Mapping):
+        raise ValueError("voice plan step args must be an object")
+    _reject_non_json(step.args)
+    if step.mode not in _MODES:
+        raise ValueError("voice plan step mode is unsupported")
+    if not isinstance(step.confirm_required, bool):
+        raise ValueError("voice plan step confirmation requirement must be a boolean")
+    if not isinstance(step.selection, tuple):
+        raise ValueError("voice plan step selection must be a tuple")
+    _positive_ids(list(step.selection))
+    if not isinstance(step.notes, tuple) or len(step.notes) > MAX_VOICE_PLAN_NOTES:
+        raise ValueError("voice plan step notes must be a bounded tuple")
+    if any(not _bounded_text(note) for note in step.notes):
+        raise ValueError("voice plan step notes must be bounded strings")
+
+
+def _reject_non_json(value: object) -> None:
+    if value is None or isinstance(value, bool | str):
+        return
+    if isinstance(value, int | float):
+        if isinstance(value, float) and (value != value or value in (float("inf"), -float("inf"))):
+            raise ValueError("voice plan step args must be finite numbers")
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("voice plan step args keys must be strings")
+            _reject_non_json(item)
+        return
+    if isinstance(value, list | tuple):
+        for item in value:
+            _reject_non_json(item)
+        return
+    raise ValueError("voice plan step args must be JSON-native")
+
+
+def _thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_thaw(item) for item in value]
+    return value
 
 
 class TranscriptService:
@@ -230,7 +558,16 @@ class TranscriptService:
         relay_state: object,
         rooms: tuple[str, ...] = (),
         now_ms: int,
+        refresh_state: Callable[[], tuple[object, int]] | None = None,
     ) -> VoiceOutcome:
+        """Transcribe one upload and hand the transcript to the compiler.
+
+        ``relay_state`` and ``now_ms`` are validated before any provider I/O. When
+        ``refresh_state`` is given it is called after transcription and its
+        ``(relay_state, now_ms)`` pair replaces them for compilation, so the plan is
+        grounded on a state event younger than the compiler's maximum state age rather
+        than one captured before the transcription round trip.
+        """
         normalized_type = _normalized_content_type(content_type)
         failure = _upload_failure(correlation_id, normalized_type, body)
         if failure is not None:
@@ -279,6 +616,19 @@ class TranscriptService:
                 session_id=session_id,
                 cost_usd=cost_usd,
             )
+        if refresh_state is not None:
+            try:
+                fresh_state, now_ms = refresh_state()
+                grounded_state = compiler_relay_state(fresh_state)
+                capability_version = compiler_capability_version(grounded_state)
+                _nonnegative_integer(now_ms)
+            except Exception:
+                return self._complete(
+                    VoiceOutcome("refused", "template", "invalid_relay_state", transcript),
+                    correlation_id=correlation_id,
+                    session_id=session_id,
+                    cost_usd=cost_usd,
+                )
         try:
             compiler_result = self._compiler.compile(
                 transcript,
@@ -310,8 +660,21 @@ class TranscriptService:
                 session_id=session_id,
                 cost_usd=cost_usd,
             )
+        plan = compiler_result[0] if isinstance(compiler_result[0], VoicePlan) else None
+        if plan is not None and (
+            plan.transcript != transcript
+            or plan.session != session_id
+            or plan.correlation_id != correlation_id
+            or plan.state_event_id != grounded_state["event_id"]
+        ):
+            return self._complete(
+                VoiceOutcome("refused", "template", "compiler_unavailable", transcript),
+                correlation_id=correlation_id,
+                session_id=session_id,
+                cost_usd=cost_usd,
+            )
         return self._complete(
-            VoiceOutcome("transcribed", "whisper", None, transcript),
+            VoiceOutcome("transcribed", "whisper", None, transcript, (), plan),
             correlation_id=correlation_id,
             session_id=session_id,
             cost_usd=cost_usd,
@@ -399,7 +762,7 @@ def compiler_relay_state(raw: object) -> dict[str, object]:
         )
     if any(drone_id not in known_ids for drone_id in selection):
         raise ValueError("selection references an unknown drone")
-    return {
+    grounded: dict[str, object] = {
         "v": 1,
         "t": timestamp,
         "type": "state",
@@ -412,6 +775,33 @@ def compiler_relay_state(raw: object) -> dict[str, object]:
         "mode": "indoor",
         "drones": drones,
     }
+    # The advertised capability profile and the pending intent are the only other
+    # facts the compiler grounds on; both are copied only in their documented shapes.
+    if "capability_profile" in raw or "enabled_intent_names" in raw:
+        profile = raw.get("capability_profile")
+        enabled = raw.get("enabled_intent_names")
+        if (
+            not isinstance(profile, str)
+            or not profile
+            or len(profile) > 64
+            or not isinstance(enabled, list)
+            or not enabled
+            or any(
+                not isinstance(name, str) or _INTENT_NAME.fullmatch(name) is None
+                for name in enabled
+            )
+        ):
+            raise ValueError("relay capability profile advertisement is invalid")
+        grounded["capability_profile"] = profile
+        grounded["enabled_intent_names"] = sorted(set(enabled))
+    pending = raw.get("pending")
+    if (
+        isinstance(pending, Mapping)
+        and isinstance(pending.get("intent_id"), str)
+        and isinstance(pending.get("name"), str)
+    ):
+        grounded["pending"] = {"intent_id": pending["intent_id"], "name": pending["name"]}
+    return grounded
 
 
 def compiler_rooms(raw: object) -> tuple[str, ...]:

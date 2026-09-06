@@ -544,6 +544,18 @@
     "stop-pending-takeoff": {
       "kind": "cancel_pending",
       "pending_intent_id": "pending-takeoff-2"
+    },
+    "negated-take-off": {
+      "kind": "clarify",
+      "reason": "ambiguous_action"
+    },
+    "negated-land": {
+      "kind": "clarify",
+      "reason": "ambiguous_action"
+    },
+    "negated-take-off-now": {
+      "kind": "clarify",
+      "reason": "ambiguous_action"
     }
   }
 }

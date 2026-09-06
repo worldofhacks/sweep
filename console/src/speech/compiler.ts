@@ -6,9 +6,11 @@
  * nothing here emits anything: the module drafts a preview from a compiled
  * outcome and the operator confirms it in the dock like any console press.
  *
- * The relay has no compiler yet (PR #49's endpoint transcribes and returns
- * `emissions: []`), so this is the only compiler that runs and the outcome card
- * says so.
+ * When the relay carries the pinned plan compiler, its `voice_outcome.plan`
+ * replaces this matcher entirely and the Speech module previews that plan; the
+ * matcher stays the explicit, labelled fallback for typed utterances and for a
+ * relay without a compiler. `describeCompilerReason` names the relay compiler's
+ * typed reasons for the preview.
  */
 import type { CapturePattern, DroneId } from '../relay/contract'
 
@@ -206,6 +208,74 @@ function unsupported(name: string): CompileOutcome {
     reason: 'unsupported',
     intent: name,
     sentence: `The speech compiler does not emit ${name}; it names only capture_room, hold and select. Nothing was emitted.`,
+  }
+}
+
+/**
+ * Sentence for a relay compiler outcome that produced no steps. Reasons mirror
+ * language/contracts.py CompilerReason; unknown codes stay visible verbatim.
+ */
+export function describeCompilerReason(
+  reason: string | null,
+  detail: string | null,
+): { label: string; sentence: string } {
+  const suffix = detail ? ` ${detail}` : ''
+  switch (reason) {
+    case 'ambiguous_action':
+      return {
+        label: 'ambiguous action',
+        sentence: `The relay compiler could not tell which action you meant.${suffix} Say it again with one verb; nothing was emitted.`,
+      }
+    case 'ambiguous_location':
+      return {
+        label: 'ambiguous location',
+        sentence: `The relay compiler could not resolve the room.${suffix} Name one of the rooms listed; nothing was emitted.`,
+      }
+    case 'ambiguous_selection':
+      return {
+        label: 'ambiguous selection',
+        sentence: `The relay compiler could not resolve which aircraft you meant.${suffix} Name them or select first; nothing was emitted.`,
+      }
+    case 'capability_unavailable':
+      return {
+        label: 'capability unavailable',
+        sentence: `That action is not available in the current capability profile or aircraft state.${suffix} Nothing was emitted.`,
+      }
+    case 'estop_active':
+      return {
+        label: 'network stop active',
+        sentence: `The network stop is active; only hold, land, and land all are accepted.${suffix} Nothing was emitted.`,
+      }
+    case 'invalid_model_output':
+      return {
+        label: 'validation failed',
+        sentence: `The model's proposal did not pass the relay's deterministic validation.${suffix} Nothing was emitted.`,
+      }
+    case 'model_unavailable':
+      return {
+        label: 'model unavailable',
+        sentence: `The relay compiler's model is unavailable.${suffix} Nothing was emitted.`,
+      }
+    case 'no_selection':
+      return {
+        label: 'no selection',
+        sentence: `No aircraft is selected.${suffix} Select at least one ready aircraft; nothing was emitted.`,
+      }
+    case 'stale_state':
+      return {
+        label: 'stale state',
+        sentence: `The relay state was stale or changed while compiling.${suffix} Say it again; nothing was emitted.`,
+      }
+    case 'unknown_reference':
+      return {
+        label: 'unknown reference',
+        sentence: `The utterance named an aircraft or room the relay does not know.${suffix} Nothing was emitted.`,
+      }
+    default:
+      return {
+        label: reason ?? 'refused',
+        sentence: `The relay compiler returned ${reason ?? 'no reason'}.${suffix} Nothing was emitted.`,
+      }
   }
 }
 

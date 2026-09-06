@@ -54,7 +54,50 @@ The JSON value has these exact top-level fields: `relay_clock_id`, `max_clock_er
 
 Browser uploads are allowed only from the explicit origins in `SWEEP_CONSOLE_ORIGINS`, which defaults to the local Vite development origins. Configure the deployed console origin rather than using a wildcard.
 
-The endpoint requires an existing live relay session. It derives the compiler capability version from the authoritative state projection, hands the final transcript to `TranscriptCompiler.compile(transcript, relay_state, capability_version=..., rooms=..., now_ms=..., correlation_id=..., session_id=...)`, and returns a typed `voice_outcome`. The current compiler handoff is deliberately unavailable until the transcript compiler lands, so it returns `compiler_unavailable` with `emissions: []`. Upload, provider, and compiler failures use the same no-emission shape.
+The endpoint requires an existing live relay session. It derives the compiler capability version from the authoritative state projection, hands the final transcript to `TranscriptCompiler.compile(transcript, relay_state, capability_version=..., rooms=..., now_ms=..., correlation_id=..., session_id=...)`, and returns a typed `voice_outcome`. Because transcription takes seconds, the state handed to the compiler is re-read after the transcript arrives, so the compiler's two-second maximum state age is measured against the plan rather than the upload. Upload, provider, and compiler failures use the same no-emission shape. The standalone `relay.app:app` keeps the compiler handoff unavailable and returns `compiler_unavailable` with `emissions: []`; `relay.main` wires the pinned compiler (below).
+
+### Compiled plan preview
+
+`relay.main` builds the voice service with `build_transcript_service`: `language.relay_compiler.RelayTranscriptCompiler` binds one `language.compiler.TranscriptCompiler` per session to that session's append-only log through `SessionCompilerAudit`, with the planner's translation policy and the composition's capability profile, a 30 second plan TTL, and a 2 second relay-state maximum age. Two keys, both read only in the relay process, enable the two steps. `OPENAI_API_KEY` enables Whisper: without it every upload is refused `transcription_unavailable` and the console shows "Transcription is unavailable on the relay" while typed text still compiles locally. `ANTHROPIC_API_KEY` enables the compiler: without it (or when the provider is unreachable) the endpoint returns the transcript with the typed `compiler_unavailable` refusal and no plan, and the console compiles the transcript with its local fallback, labelled `compiled by local fallback · relay compiler compiler_unavailable`. Neither absence is a crash, and neither path emits.
+
+`voice_outcome` carries a versioned `plan` field (`null` in the original shape, which the console still renders). When present, `plan` is the compiler's validated preview and never an emitted intent:
+
+```json
+{
+  "v": 1,
+  "kind": "plan",
+  "transcript": "Take off.",
+  "reason": null,
+  "detail": null,
+  "options": [],
+  "steps": [
+    {
+      "index": 0,
+      "name": "takeoff",
+      "args": {},
+      "selection": [1],
+      "mode": "indoor",
+      "confirm_required": true,
+      "notes": ["Targets D-01 (the current selection).", "..."]
+    }
+  ],
+  "compiled_at_ms": 1756700003000,
+  "expires_at_ms": 1756700033000,
+  "state_event_id": "…",
+  "roster_version": 2,
+  "session": "demo",
+  "correlation_id": "…",
+  "plan_digest": "…",
+  "model": "claude-sonnet-5",
+  "prompt_schema_version": "intent-v1-compiler-8",
+  "response_source": "anthropic",
+  "pending_intent_id": null
+}
+```
+
+`kind` is `plan` (ordered Intent v1 drafts with the arbiter's confirmation requirement and the compiler's deterministic grounding notes per step; `expires_at_ms` and `plan_digest` are set), `clarify` (a typed `reason` plus `options` such as the authoritative rooms or the selectable aircraft; no steps), `unsupported` or `refuse` (a typed `reason` from the language package's `CompilerReason` and optional `detail`), or `cancel_pending` (names the pending intent). Every plan is bound to the `state_event_id` and `roster_version` it was grounded on. `relay.voice.parse_voice_outcome` and `parse_voice_plan` are the relay-side validators; `console/src/relay/contract.ts` `isVoicePlan` and `console/src/voice/client.ts` mirror them. The console stages each step through its own control flow after the operator acts, one at a time, with source `console`; the relay re-validates every emission through the intent path exactly as it does for a button press. The compiled-plan audit record (`plan_compiled`) lands in the session log without the transcript.
+
+Two deterministic gates sit on this path beyond the language package's grounding checks. A negated transcript (`Do not take off.`, `Don't land.`, `Never take off now.`) can never yield steps: when the model proposes a plan for it, `validate_model_outcome` returns `clarify` with `ambiguous_action` and the `NEGATED_TRANSCRIPT_DETAIL` sentence, no `plan_compiled` record is written, and the console shows the sentence and stages nothing. A compiled plan's `expires_at_ms` is honoured for a staged step as well as for the next one: the console copies the plan deadline into the dock preview, the dock counts it down and disables Confirm at zero, and a confirmation pressed past the deadline is invalidated with `confirmation_window_expired` instead of sent; the arbiter still re-validates live state for anything that is sent.
 
 Langfuse telemetry starts only when both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. It records opaque correlation and session identifiers, content type, byte count, model, and outcome. Audio and transcript text stay out of telemetry.
 
