@@ -61,6 +61,23 @@ class SensorRawSinkTest {
         sink.file.delete()
     }
 
+    @Test
+    fun `invalid sensor values do not stop later recording`() {
+        val writer = RecordingWriter()
+        val sink = sink(writer)
+        try {
+            assertTrue(sink.append("phone_height_raw", mapOf("height_m" to Double.NaN)))
+            assertTrue(sink.append("phone_height_raw", mapOf("height_m" to 1.5)))
+        } finally {
+            sink.close()
+        }
+        assertEquals(1L, sink.statistics.written)
+        assertEquals(1L, sink.statistics.dropped)
+        assertTrue(writer.text.contains("1.5"))
+        assertFalse(sink.append("phone_height_raw", mapOf("height_m" to 2.0)))
+        sink.file.delete()
+    }
+
     private fun sink(writer: Writer, queueCapacity: Int = 4): SensorRawSink =
         SensorRawSink.create(
             file = Files.createTempFile("sensor-raw", ".jsonl").toFile(),

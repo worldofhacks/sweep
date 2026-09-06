@@ -82,14 +82,19 @@ class SensorRawSink private constructor(
                     dropped.incrementAndGet()
                     continue
                 }
-                val line = Json.canonical(
-                    Json.json(
-                        "kind" to record.kind,
-                        "event_id" to "${record.kind}-${sequence + 1}",
-                        "received_at_monotonic_ms" to record.receivedAtMs,
-                        *record.fields.toList().toTypedArray(),
-                    ),
-                )
+                val line = try {
+                    Json.canonical(
+                        Json.json(
+                            "kind" to record.kind,
+                            "event_id" to "${record.kind}-${sequence + 1}",
+                            "received_at_monotonic_ms" to record.receivedAtMs,
+                            *record.fields.toList().toTypedArray(),
+                        ),
+                    )
+                } catch (_: Exception) {
+                    dropped.incrementAndGet()
+                    continue
+                }
                 val bytes = line.toByteArray(Charsets.UTF_8).size + 1
                 if (bytesWritten + bytes > MAX_BYTES) {
                     unavailable = true
@@ -115,6 +120,7 @@ class SensorRawSink private constructor(
             }
             if (dirty) flush()
         } finally {
+            synchronized(acceptanceLock) { closed = true }
             while (queue.poll() != null) dropped.incrementAndGet()
             runCatching { writer.close() }
         }
@@ -137,7 +143,7 @@ class SensorRawSink private constructor(
         fun open(filesDir: File): SensorRawSink? = runCatching {
             val directory = File(filesDir, "sensor-records").apply { mkdirs() }
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-            val file = File(directory, "phone-raw-$stamp.jsonl")
+            val file = File.createTempFile("phone-raw-$stamp-", ".jsonl", directory)
             SensorRawSink(file, BufferedWriter(FileWriter(file, true)), SystemClock::elapsedRealtime, QUEUE_CAPACITY)
         }.getOrNull()
 
