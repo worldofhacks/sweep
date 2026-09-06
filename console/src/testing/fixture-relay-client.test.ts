@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'vitest'
 import type { RelayClientEvent } from '../relay/client'
 import type { RelayServerEvent } from '../relay/contract'
-import { FixtureRelayClient, isFixtureScenarioName } from './fixture-relay-client'
+import {
+  FIXTURE_ROOM,
+  FixtureRelayClient,
+  isFixtureScenarioName,
+  syntheticRoomScan,
+} from './fixture-relay-client'
+import { parseRelayServerEvent } from '../relay/contract'
 
 const clock = () => 1_756_700_000_000
 
@@ -196,5 +202,52 @@ describe('design scenarios as relay data', () => {
       }),
     ).rejects.toThrow('Fixture relay is disconnected')
     expect(client.sent).toHaveLength(1)
+  })
+})
+
+describe('mixed scenario', () => {
+  test('reports two aircraft and three ground vehicles with lidar scans that pass the contract', () => {
+    expect(isFixtureScenarioName('mixed')).toBe(true)
+    const client = new FixtureRelayClient('fixture-session', clock, 'console', 'mixed')
+    const events = record(client)
+    client.start()
+
+    const [state] = states(events)
+    expect(state.drones.map((drone) => [drone.drone_id, drone.device_class, drone.unit])).toEqual([
+      [1, 'aircraft', 1],
+      [2, 'aircraft', 2],
+      [11, 'ground_vehicle', 1],
+      [12, 'ground_vehicle', 2],
+      [13, 'ground_vehicle', 3],
+    ])
+    expect(state.drones[2].sensor).toEqual({ kind: 'lidar_scan', last_scan_at: clock() - 200 })
+    expect(state.drones[4].sensor).toBeUndefined()
+    expect(state.drones[4].adapter_capabilities).not.toContain('lidar')
+
+    const scans = events.flatMap((event) =>
+      event.kind === 'server_event' && event.event.type === 'sensor' ? [event.event] : [],
+    )
+    expect(scans.map((scan) => scan.drone_id)).toEqual([11, 11, 11, 12, 12, 12])
+    for (const scan of scans) {
+      expect(parseRelayServerEvent(scan)).not.toBeNull()
+      expect(scan.ranges_cm).toHaveLength(360)
+    }
+    // The keyboard source carries no scans.
+    const keyboard = record(new FixtureRelayClient('fixture-session', clock, 'keyboard', 'mixed'))
+    expect(keyboard.some((event) => event.kind === 'server_event' && event.event.type === 'sensor')).toBe(false)
+  })
+
+  test('the synthetic room scan casts each ray to the nearest wall', () => {
+    const scan = syntheticRoomScan({ x: 0, y: 0, yaw_deg: 0 }, FIXTURE_ROOM)
+    expect(scan.ranges_cm).toHaveLength(360)
+    expect(scan.ranges_cm[0]).toBe(300) // forward, +x wall at 3 m
+    expect(scan.ranges_cm[90]).toBe(200) // left, +y wall at 2 m
+    expect(scan.ranges_cm[180]).toBe(300)
+    expect(scan.ranges_cm[270]).toBe(200)
+    const turned = syntheticRoomScan({ x: 1, y: 0, yaw_deg: 90 }, FIXTURE_ROOM)
+    expect(turned.ranges_cm[0]).toBe(200) // heading +y
+    expect(turned.ranges_cm[90]).toBe(400) // left of +y is -x: 4 m to the wall
+    const far = syntheticRoomScan({ x: 0, y: 0, yaw_deg: 0 }, { min_x: -50, max_x: 50, min_y: -50, max_y: 50 })
+    expect(far.ranges_cm.every((range) => range === 0)).toBe(true)
   })
 })

@@ -51,12 +51,40 @@ The token is sent only in the first WebSocket frame; it is never placed in a URL
 UI, or included in console logging. Without the full bootstrap, both sources remain visibly
 disconnected and network controls are unavailable.
 
+## Device classes
+
+Every device the relay reports carries `device_class` (`aircraft` or `ground_vehicle`) and `unit`,
+its 1-based ordinal within that class; a relay that omits them is read as aircraft whose unit is
+the drone id (`src/relay/contract.ts`, `normalizeRelayAircraftState`). Labels are `D-{unit}` for
+aircraft and `G-{unit}` for ground vehicles (`formatDeviceId`; `formatDroneId` stays as the
+aircraft-only alias), and operator copy takes the noun for the class in view: `aircraft`, `robot`,
+or `device` when a set is mixed or empty (`deviceNoun`, `rosterNoun`, `selectionNoun` in
+`src/control/state.ts`; the sentence tables in `src/shell/sentences.ts` take the same noun). A
+join's `class:<device_class>` capability sets the class before the first state frame arrives.
+
+The Control module marks `takeoff`, `land`, `land_all`, `altitude`, `sweep` and `capture_room`
+unsupported with "Not available for robots." when every device a control addresses is a ground
+vehicle (`deviceClassBlockedReason`); a mixed selection keeps them enabled because the relay
+decides per device, and `land_all` follows the roster, so it is unsupported only when the roster
+holds no aircraft. For a ground vehicle the registry's safety-operator line reads `Spotter` (a
+person beside the robot with its screen stop in reach) and lost authority reads `Local override`.
+
+A node's `sensor` frame (a `lidar_scan`: pose at scan time, angle origin and increment, range
+bounds, and integer centimetre ranges with 0 for no return) is parsed with the relay's bounds
+(`RelaySensorEvent`, `parseRelayServerEvent`) and kept in `src/sensor/store.ts`: the latest scan per
+device and a trail of the last twenty, read with `useSensorStore(controller.sensors)`. The control
+reducer records only `sensor.last_scan_at`, mirroring the relay's projection. `MapMetadata` and
+`parseMapMetadata` read the headers of the relay's map endpoint for the fleet map.
+
 ## Camera dashboard
 
-The Live module's walls and focus feed use the authoritative aircraft ID, connection epoch,
-telemetry, membership, readiness reasons, and a closed media status with a last-frame timestamp.
-The console derives the display name `drone{id}` and does not render adapter-provided media URLs.
-Recording and latency measurement remain held for M3.1.
+The Live module's walls and focus feed use the authoritative device ID, class, unit, connection
+epoch, telemetry, membership, readiness reasons, and a closed media status with a last-frame
+timestamp. The console derives the stream name from the class and unit, `drone{unit}` for aircraft
+and `ground{unit}` for ground vehicles (`streamName` in `src/media/playback.ts`), and does not
+render adapter-provided media URLs. The two walls hold aircraft; the Ground pane holds ground
+vehicles in unit order; the focus feed follows any device. Recording and latency measurement
+remain held for M3.1.
 
 ## Live playback
 
@@ -96,14 +124,27 @@ the working pane with its sub-tab strip; the fleet context column; and the foote
 the one pending plan with its full Intent v1 envelope. The newest warning or info notice stays on
 a line under the header row as a polite live region, the newest danger is the banner alert, and the
 session sheet keeps the capped history. `src/modules/registry.ts` declares each
-module (id, label, component, context renderer) in navigation order; module selection lives in the
-shell and a pending request survives switching. Modules the relay does not feed yet render an
-honest empty state.
+module (id, label, component, context renderer) in navigation order: Control, Live, Gesture,
+Speech, Captures, Worlds, Devices, Reference. Module selection lives in the shell and a pending
+request survives switching. Modules the relay does not feed yet render an honest empty state.
 
 Fixture scenarios are data only and exist only in development builds: `/?fixture=control`,
-`pending4`, `six6`, or `down` select a `FixtureRelayClient` scenario for the console, keyboard and
-webcam sources and the matching `FixtureCatalogClient` tables. Production runs on the real relay
-WebSocket with no fixture fallback.
+`pending4`, `six6`, `down`, or `mixed` select a `FixtureRelayClient` scenario for the console,
+keyboard and webcam sources and the matching `FixtureCatalogClient` tables. `mixed` reports two
+aircraft beside three ground vehicles (ids 11 to 13, units 1 to 3; two with the lidar kit, one
+docked without it) and emits one burst of synthetic room-shaped scans on the console source after
+the first state frame (`syntheticRoomScan`). Production runs on the real relay WebSocket with no
+fixture fallback.
+
+## Devices module
+
+`src/modules/devices/` lists every device the relay reports, connected and departed: class, unit
+and device id, adapter, advertised capabilities, link, battery and position, control authority and
+the safety operator, video state, sensor state (`no lidar` when the kit is not advertised, else
+the last scan age), readiness reasons in the class's wording, and the last refusal that named the
+device. Beside the list is the configuration a node needs to join: the relay URL from the console's
+bootstrap (or a note that none was given), the session, and a device id, as a copyable block. The
+device key is never shown; the relay never sends it, and a person enters it on the device.
 
 ## Control module
 

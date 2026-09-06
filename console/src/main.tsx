@@ -40,6 +40,7 @@ async function resolveRuntime() {
       transcriptClient: null,
       // The fixture has no relay, so only a same-origin media endpoint can enable playback.
       mediaConfigurationSource: null,
+      baseUrl: null,
       catalogClient: new FixtureCatalogClient(fixtureScenario, () => Date.now()),
     }
   }
@@ -73,6 +74,7 @@ void resolveRuntime().then((runtime) => {
           catalog={runtime.catalogClient}
           services={services}
           media={configuration ? createMediaRuntime(configuration) : undefined}
+          relayBaseUrl={runtime.baseUrl ?? undefined}
         />
       </StrictMode>,
     )

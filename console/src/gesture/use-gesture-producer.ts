@@ -8,7 +8,7 @@
  * webcam-bound relay client. Tracking is off until the operator enables it.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { formatDroneId, type ControlState, type RequestRecord } from '../control/state'
+import { deviceLabeller, rosterNoun, type ControlState, type RequestRecord } from '../control/state'
 import type { IntentV1 } from '../relay/contract'
 import { createCameraController, type CameraController, type CameraState } from './camera'
 import {
@@ -570,17 +570,23 @@ export function emissionBlockedReason(
   if (pendingRequest) {
     return 'A plan preview is already pending; confirm or cancel it before drafting another.'
   }
-  if (state.selection.length === 0) return 'Select at least one ready aircraft.'
+  const label = deviceLabeller(state.aircraft)
+  if (state.selection.length === 0) {
+    return `Select at least one ready ${rosterNoun(Object.values(state.aircraft))}.`
+  }
   const notReady = state.selection.find(
     (id) => state.aircraft[id]?.membership !== 'ready' || !state.aircraft[id]?.selectable,
   )
-  if (notReady !== undefined) return `${formatDroneId(notReady)} is not ready or selectable.`
+  if (notReady !== undefined) return `${label(notReady)} is not ready or selectable.`
   if (action.name === 'hold') return null
   if (!roomId.trim()) return 'Enter a room identifier.'
   if (state.selection.length !== 1) return 'Select exactly one ready aircraft for capture_room.'
   const selected = state.aircraft[state.selection[0]]
+  if (selected.device_class === 'ground_vehicle') {
+    return `${label(selected.drone_id)} is a robot; capture_room is not available for robots.`
+  }
   if (!selected.camera_patterns.includes(state.capturePattern)) {
-    return `${formatDroneId(selected.drone_id)} does not report ${state.capturePattern}; the console will not substitute a pattern.`
+    return `${label(selected.drone_id)} does not report ${state.capturePattern}; the console will not substitute a pattern.`
   }
   return null
 }

@@ -16,6 +16,7 @@ export type ModuleId =
   | 'speech'
   | 'captures'
   | 'worlds'
+  | 'devices'
   | 'reference'
 
 /** Browser seams for the push-to-talk recorder; tests inject fakes. */
@@ -45,6 +46,8 @@ export interface ModuleProps {
   services: ModuleServices
   /** Playback runtime; absent until the media bootstrap provides a configuration. */
   media?: MediaRuntime
+  /** Relay WebSocket base URL from the bootstrap; absent in the fixture and without a bootstrap. */
+  relayBaseUrl?: string
 }
 
 export interface ModuleDefinition {

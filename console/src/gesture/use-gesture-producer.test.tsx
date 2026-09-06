@@ -396,6 +396,7 @@ describe('emissionBlockedReason', () => {
     expect(blocked('connected', 'disconnected')).toBe(
       'The webcam relay source is not connected; no gesture intent can be sent.',
     )
-    expect(blocked('connected', 'connected')).toBe('Select at least one ready aircraft.')
+    // An empty roster has no class to name, so the reason says device.
+    expect(blocked('connected', 'connected')).toBe('Select at least one ready device.')
   })
 })

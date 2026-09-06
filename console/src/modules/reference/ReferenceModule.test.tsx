@@ -55,17 +55,17 @@ describe('Reference module', () => {
 
     const refusals = within(screen.getByRole('region', { name: 'Refusal and failure reasons' }))
     expect(refusals.getAllByRole('listitem')).toHaveLength(Object.keys(REASONS).length)
-    expect(Object.keys(REASONS)).toHaveLength(48)
+    expect(Object.keys(REASONS)).toHaveLength(49)
     expect(refusals.getByText('estop_active')).toBeInTheDocument()
     expect(refusals.getByText('estop_active').closest('li')).toHaveTextContent(REASONS.estop_active)
     expect(refusals.getByText('estop_active').closest('li')).toHaveClass('is-danger')
 
     const readiness = within(screen.getByRole('region', { name: 'Readiness reasons' }))
     expect(readiness.getAllByRole('listitem')).toHaveLength(Object.keys(READINESS).length)
-    expect(Object.keys(READINESS)).toHaveLength(10)
+    expect(Object.keys(READINESS)).toHaveLength(11)
     const membership = within(screen.getByRole('region', { name: 'Membership reasons' }))
     expect(membership.getAllByRole('listitem')).toHaveLength(Object.keys(MEMBERSHIP_REASON).length)
-    expect(Object.keys(MEMBERSHIP_REASON)).toHaveLength(8)
+    expect(Object.keys(MEMBERSHIP_REASON)).toHaveLength(9)
   })
 
   test('the gallery is the console vocabulary, so it renders the same without a catalog', async () => {

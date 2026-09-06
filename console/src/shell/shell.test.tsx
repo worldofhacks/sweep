@@ -95,9 +95,10 @@ describe('persistent shell', () => {
       'Speech',
       'Captures',
       'Worlds',
+      'Devices',
       'Reference',
     ])
-    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(7)
+    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(8)
   })
 
   test('pending confirmation: the dock shows the plan with its Intent v1 JSON expanded by default', async () => {
@@ -198,7 +199,7 @@ describe('persistent shell', () => {
     const links = within(screen.getByRole('list', { name: 'Connections' }))
     expect(links.getByTitle('Relay (console)')).toHaveTextContent(/^relay\s*disconnected$/)
     expect(links.getByTitle('Keyboard stop')).toHaveTextContent(/^keys\s*disconnected$/)
-    expect(screen.getByText('no aircraft reported')).toBeInTheDocument()
+    expect(screen.getByText('no devices reported')).toBeInTheDocument()
     expect(screen.getByText('0 of 0 ready')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Session detail' }))

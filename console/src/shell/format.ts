@@ -1,5 +1,5 @@
 import type { DroneId } from '../relay/contract'
-import { formatDroneId } from '../control/state'
+import { formatDroneId, type DeviceLabeller } from '../control/state'
 
 export function formatTime(value: number): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -18,8 +18,8 @@ export function humanizeCode(value: string): string {
   return value.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase())
 }
 
-export function formatSelection(selection: DroneId[]): string {
-  return selection.map(formatDroneId).join(', ') || 'None selected'
+export function formatSelection(selection: DroneId[], label: DeviceLabeller = formatDroneId): string {
+  return selection.map(label).join(', ') || 'None selected'
 }
 
 export function formatPercent(value: number | null): string {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, type Dispatch } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Dispatch } from 'react'
 import type { RelayClient } from '../relay/client'
 import type {
   CapturePattern,
@@ -25,12 +25,14 @@ import {
   retryIntent,
   type IntentFactoryDependencies,
 } from './intent'
+import { createSensorStore } from '../sensor/store'
 import { buildPlanPreview } from './plan'
 import {
   capabilityBlockedReason,
   controlReducer,
   createInitialControlState,
   createRequestRecord,
+  deviceLabeller,
   isIntentEnabled,
   type ControlState,
   type RequestRecord,
@@ -73,17 +75,30 @@ export function useControlConsole({
     (id) => createInitialControlState(id, intentDependencies.now()),
   )
 
+  // Scans arrive on the console connection beside telemetry and go to their
+  // own store; the reducer only records that one arrived. The ref keeps the
+  // subscription effect bound to the clients alone.
+  const [sensors] = useState(createSensorStore)
+  const sessionRef = useRef(sessionId)
+  useEffect(() => {
+    sessionRef.current = sessionId
+  }, [sessionId])
+
   useEffect(() => {
     if (state.sessionId !== sessionId) {
       dispatch({ type: 'session_changed', sessionId, t: intentDependencies.now() })
+      sensors.reset()
     }
-  }, [intentDependencies, sessionId, state.sessionId])
+  }, [intentDependencies, sensors, sessionId, state.sessionId])
 
   useEffect(() => {
     const unsubscribeConsole = clients.console.subscribe((event) => {
       if (event.kind === 'connection') {
         dispatch({ type: 'connection_changed', connection: event.connection })
       } else {
+        if (event.event.type === 'sensor' && event.event.session === sessionRef.current) {
+          sensors.apply(event.event)
+        }
         dispatch({ type: 'relay_event', event: event.event, source: 'console' })
       }
     })
@@ -138,7 +153,7 @@ export function useControlConsole({
       clients.webcam?.stop()
       clients.language?.stop()
     }
-  }, [clients])
+  }, [clients, sensors])
 
   const clientFor = useCallback(
     (source: IntentSource): RelayClient | null => {
@@ -203,11 +218,17 @@ export function useControlConsole({
         type: 'request_pending_confirmation',
         intentId: intent.intent_id,
         t,
-        plan: buildPlanPreview(intent, state.rosterVersion, expiresAt, voiceBinding),
+        plan: buildPlanPreview(
+          intent,
+          state.rosterVersion,
+          expiresAt,
+          voiceBinding,
+          deviceLabeller(state.aircraft),
+        ),
       })
       return intent
     },
-    [intentDependencies, state.requests, state.rosterVersion],
+    [intentDependencies, state.aircraft, state.requests, state.rosterVersion],
   )
 
   /**
@@ -680,6 +701,8 @@ export function useControlConsole({
 
   return {
     state,
+    /** Latest lidar scan per device and a short trail; read with useSensorStore. */
+    sensors,
     pendingRequest,
     issueIntent,
     toggleAircraft,
