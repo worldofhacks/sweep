@@ -5,8 +5,9 @@ from __future__ import annotations
 import queue
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 
 import numpy as np
 
@@ -56,6 +57,7 @@ class SyntheticFrameStream:
     def __init__(self) -> None:
         self._frames: queue.Queue[tuple[np.ndarray, float]] = queue.Queue(maxsize=8)
         self._closed = False
+        self._lock = Lock()
 
     def start(self) -> SyntheticFrameStream:
         if self._closed:
@@ -71,19 +73,28 @@ class SyntheticFrameStream:
             return None
 
     def publish(self, image: np.ndarray, *, decoded_at_s: float | None = None) -> None:
-        if self._closed:
-            raise RuntimeError("synthetic stream is closed")
-        frame = (image, time.monotonic() if decoded_at_s is None else decoded_at_s)
-        try:
-            self._frames.put_nowait(frame)
-        except queue.Full:
-            self._frames.get_nowait()
-            self._frames.put_nowait(frame)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("synthetic stream is closed")
+            frame = (image, time.monotonic() if decoded_at_s is None else decoded_at_s)
+            while True:
+                try:
+                    self._frames.put_nowait(frame)
+                    return
+                except queue.Full:
+                    try:
+                        self._frames.get_nowait()
+                    except queue.Empty:
+                        continue
 
     def close(self) -> None:
-        self._closed = True
-        while not self._frames.empty():
-            self._frames.get_nowait()
+        with self._lock:
+            self._closed = True
+            while True:
+                try:
+                    self._frames.get_nowait()
+                except queue.Empty:
+                    return
 
 
 class SyntheticDetector:
@@ -98,15 +109,18 @@ class SyntheticDetector:
         return (DetectionCandidate("person", 0, 0.99, (560, 180, 720, 680)),)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class SearchDemo:
     config: AutonomyConfig
-    stream: SyntheticFrameStream
+    _active_stream: SyntheticFrameStream | None = None
+    _stream_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     def stream_factory(self, stream_url: str) -> SyntheticFrameStream:
         if stream_url != _STREAM_URL:
             raise ValueError("unknown synthetic search stream")
-        return self.stream
+        with self._stream_lock:
+            self._active_stream = SyntheticFrameStream()
+            return self._active_stream
 
     @staticmethod
     def detector_factory(_source: DetectionSourceConfig) -> SyntheticDetector:
@@ -192,8 +206,16 @@ class SearchDemo:
 
         return provide
 
-    def publish_frame(self) -> None:
-        self.stream.publish(np.zeros((720, 1280, 3), dtype=np.uint8))
+    def publish_frame(self) -> bool:
+        with self._stream_lock:
+            stream = self._active_stream
+        if stream is None:
+            return False
+        try:
+            stream.publish(np.zeros((720, 1280, 3), dtype=np.uint8))
+        except RuntimeError:
+            return False
+        return True
 
 
 def search_demo() -> SearchDemo:
@@ -233,7 +255,6 @@ def search_demo() -> SearchDemo:
             search_runtime=search,
             search_detection=SearchDetectionConfig({1: source}),
         ),
-        SyntheticFrameStream(),
     )
 
 
