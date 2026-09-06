@@ -97,7 +97,11 @@ class NavigationExecution:
             raise ValueError("search camera preparations must cover exactly the route aircraft")
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["route"]["permission"]["permitted_zone_ids"] = sorted(
+            self.route.permission.permitted_zone_ids
+        )
+        return payload
 
     def command_specs(self) -> tuple[tuple[int, CommandOperation, dict[str, float | str]], ...]:
         result = []
