@@ -109,8 +109,8 @@ export function isSupportedIntent(name: ConsoleIntentName): boolean {
 
 /**
  * Console policy from the design brief: these intents never leave the console
- * without the operator confirming the exact envelope. The relay itself only
- * enforces confirmation for capture_room.
+ * without the operator confirming the exact envelope. The autonomy arbiter
+ * independently enforces the same set before planning and dispatch.
  */
 export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'takeoff',
