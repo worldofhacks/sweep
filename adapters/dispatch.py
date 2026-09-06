@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from math import isfinite
 from string import hexdigits
 
@@ -128,6 +129,9 @@ class AdapterDispatcher:
         preflight = self.arbiter.check_plan(plan, initial)
         if preflight is not None:
             return self._refused(plan, initial, preflight)
+
+        if self._is_fleet_hold(plan) and plan.commands:
+            return self._dispatch_fleet_hold(plan, provider, owner_still_valid=owner_still_valid)
 
         if plan.commands and all(
             command.operation is CommandOperation.ESTOP for command in plan.commands
@@ -738,6 +742,12 @@ class AdapterDispatcher:
             )
         if pending.status is not LifecycleStatus.EXECUTING or pending.plan != plan:
             return self._invalid_resume(plan, current, "result has no waiting command")
+        if self._is_fleet_hold(plan):
+            if owner_still_valid is not None and not owner_still_valid():
+                return self._invalidated_resume(
+                    plan, current, RefusalReason.CONFLICTING_MOTION, "safety hold ownership expired"
+                )
+            return self._resume_fleet_hold(plan, pending, terminal_ack, current)
         if plan.intent_name is IntentName.ESTOP:
             if plan.roster_version != current.roster_version:
                 command_index = self._estop_completion_index(plan, pending, terminal_ack)
@@ -1333,6 +1343,187 @@ class AdapterDispatcher:
                 media_files.append(media_file)
             return [self._completed_ack(command, provider())], media_files
         raise ValueError(f"dispatcher has no implementation for {operation.value}")
+
+    @staticmethod
+    def _is_fleet_hold(plan: Plan) -> bool:
+        return plan.intent_name is IntentName.HOLD and plan.hold_scope is HoldScope.FLEET_SAFETY
+
+    def _dispatch_fleet_hold(
+        self,
+        plan: Plan,
+        provider: SnapshotProvider,
+        *,
+        owner_still_valid: Callable[[], bool] | None,
+    ) -> ExecutionResult:
+        """Stops are independent: a pending result never delays another target's stop."""
+        current = provider()
+        refusal = self.arbiter.check_plan(plan, current)
+        if refusal is not None:
+            return self._refused(plan, current, refusal)
+        if owner_still_valid is not None and not owner_still_valid():
+            return self._invalidated_resume(
+                plan, current, RefusalReason.CONFLICTING_MOTION, "safety hold ownership expired"
+            )
+        acknowledgements: list[CommandAcknowledgement] = []
+        # Remote adapters send every stop before collecting any acknowledgement.
+        # Other adapters are isolated per target, including exceptions and timeouts.
+        batch = getattr(self.flight, "hold_fleet", None)
+        if callable(batch):
+            try:
+                with self._intent_scope(plan.intent_id, plan.roster_version, plan.commands):
+                    raw_by_id = {ack.drone_id: ack for ack in batch(list(plan.selection))}
+            except Exception as error:
+                raw_by_id = {}
+                detail = f"fleet hold adapter raised {type(error).__name__}"
+            else:
+                detail = "fleet hold returned no acknowledgement for this device"
+            for command in plan.commands:
+                after = provider()
+                raw = raw_by_id.get(command.drone_id)
+                acknowledgements.append(
+                    self.validate_acknowledgement(command, raw, after)
+                    if raw is not None
+                    else self._failed_ack(
+                        command,
+                        self._failure_for(command, after, RefusalReason.ADAPTER_FAILURE, detail),
+                    )
+                )
+        else:
+            for command in plan.commands:
+                current = provider()
+                refusal = self.arbiter.check_command(plan, command, current)
+                if refusal is not None:
+                    acknowledgements.append(self._failed_ack(command, refusal))
+                    continue
+                if owner_still_valid is not None and not owner_still_valid():
+                    return self._invalidated_resume(
+                        plan,
+                        current,
+                        RefusalReason.CONFLICTING_MOTION,
+                        "safety hold ownership expired",
+                        acknowledgements=acknowledgements,
+                    )
+                try:
+                    with self._intent_scope(command.intent_id, command.roster_version, (command,)):
+                        raw = self.flight.hover([command.drone_id])[0]
+                    acknowledgement = self.validate_acknowledgement(command, raw, provider())
+                except Exception as error:
+                    reason = (
+                        RefusalReason.ADAPTER_TIMEOUT
+                        if isinstance(error, AdapterTimeout)
+                        else RefusalReason.ADAPTER_FAILURE
+                    )
+                    acknowledgement = self._failed_ack(
+                        command,
+                        self._failure_for(command, current, reason, str(error)),
+                    )
+                acknowledgements.append(acknowledgement)
+        return self._fleet_hold_result(plan, tuple(acknowledgements), provider())
+
+    def _resume_fleet_hold(
+        self,
+        plan: Plan,
+        pending: ExecutionResult,
+        terminal_ack: CommandAcknowledgement,
+        current: FleetSnapshot,
+    ) -> ExecutionResult:
+        if plan.roster_version != current.roster_version:
+            return self._invalidated_resume(
+                plan,
+                current,
+                RefusalReason.STALE_ROSTER,
+                "fleet hold roster changed while awaiting completion",
+                acknowledgements=pending.acknowledgements,
+            )
+        if len(pending.acknowledgements) != len(plan.commands) or any(
+            not self._ack_matches_command(ack, command)
+            for ack, command in zip(pending.acknowledgements, plan.commands, strict=True)
+        ):
+            return self._invalid_resume(plan, current, "fleet hold acknowledgements are incomplete")
+        index = next(
+            (
+                index
+                for index, ack in enumerate(pending.acknowledgements)
+                if ack.command_id == terminal_ack.command_id
+                and ack.status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}
+            ),
+            None,
+        )
+        if index is None:
+            return self._invalid_resume(plan, current, "fleet hold completion is not pending")
+        command = plan.commands[index]
+        device = current.aircraft.get(command.drone_id)
+        if (
+            not self._ack_matches_command(terminal_ack, command)
+            or terminal_ack.status
+            not in {LifecycleStatus.COMPLETED, LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
+            or device is None
+            or device.connection_epoch != command.connection_epoch
+        ):
+            return self._invalid_resume(
+                plan, current, "fleet hold completion is stale or mismatched"
+            )
+        acknowledgements = list(pending.acknowledgements)
+        acknowledgements[index] = terminal_ack
+        # Every stop was already dispatched. Completion only updates evidence;
+        # it must never replay a suffix or issue any further operation.
+        return self._fleet_hold_result(plan, tuple(acknowledgements), current)
+
+    def _fleet_hold_result(
+        self,
+        plan: Plan,
+        acknowledgements: tuple[CommandAcknowledgement, ...],
+        current: FleetSnapshot,
+    ) -> ExecutionResult:
+        failures = tuple(
+            ack
+            for ack in acknowledgements
+            if ack.status
+            not in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING, LifecycleStatus.COMPLETED}
+        )
+        boundary = next(
+            (
+                ack
+                for ack in failures
+                if ack.reason in {RefusalReason.STALE_ROSTER, RefusalReason.STALE_CONNECTION_EPOCH}
+            ),
+            None,
+        )
+        waiting = any(
+            ack.status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}
+            for ack in acknowledgements
+        )
+        status = (
+            LifecycleStatus.REFUSED
+            if boundary is not None
+            else LifecycleStatus.EXECUTING
+            if waiting
+            else LifecycleStatus.FAILED
+            if failures
+            else LifecycleStatus.COMPLETED
+        )
+        failed = boundary or (failures[0] if failures else None)
+        refusal = (
+            self._failure_for(
+                next(command for command in plan.commands if command.drone_id == failed.drone_id),
+                current,
+                failed.reason or RefusalReason.ADAPTER_FAILURE,
+                failed.detail,
+            )
+            if failed is not None and status is not LifecycleStatus.EXECUTING
+            else None
+        )
+        if refusal is not None:
+            refusal = replace(refusal, status=status)
+        return ExecutionResult(
+            intent_id=plan.intent_id,
+            roster_version=current.roster_version,
+            status=status,
+            plan=plan,
+            acknowledgements=acknowledgements,
+            refusal=refusal,
+            degraded_aircraft=tuple(sorted(ack.drone_id for ack in failures)),
+        )
 
     def _dispatch_estop(
         self,

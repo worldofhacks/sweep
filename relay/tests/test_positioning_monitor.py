@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from queue import Queue
+from threading import Event
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.protocols import AdapterAcknowledgement, AdapterTimeout
@@ -24,6 +25,7 @@ from relay.tests.conftest import (
     acknowledgement_payload,
     ground_membership_payload,
     ground_telemetry_payload,
+    intent_payload,
     membership_payload,
     telemetry_payload,
 )
@@ -322,7 +324,9 @@ def test_late_hold_completions_resume_all_robots_through_the_session_ledger(
         assert initial.status is LifecycleStatus.EXECUTING
         for drone_id in (11, 12):
             owner = autonomy._awaiting[initial.intent_id]
-            pending = owner.pending.acknowledgements[-1]
+            pending = next(
+                ack for ack in owner.pending.acknowledgements if ack.drone_id == drone_id
+            )
             assert pending.drone_id == drone_id
             devices.pending.remove(drone_id)
             events = session.process_acknowledgement(
@@ -363,11 +367,11 @@ def test_already_expired_loss_waits_for_delayed_fleet_hold_before_landing(
         assert holding.status is LifecycleStatus.EXECUTING
         for _ in range(3):
             runtime.periodic_events(session)
-        assert devices.calls == [(CommandOperation.HOVER, 1)]
+        assert devices.calls == [(CommandOperation.HOVER, drone_id) for drone_id in (1, 11, 12, 13)]
         assert reports.empty(), "landing must not overlap a pending HOLD"
 
         owner = autonomy._awaiting[holding.intent_id]
-        pending = owner.pending.acknowledgements[-1]
+        pending = next(ack for ack in owner.pending.acknowledgements if ack.drone_id == 1)
         devices.pending.clear()
         events = session.process_acknowledgement(
             acknowledgement_payload(
@@ -389,3 +393,149 @@ def test_already_expired_loss_waits_for_delayed_fleet_hold_before_landing(
         landing = reports.get(timeout=3)
         assert landing.status is LifecycleStatus.COMPLETED
         assert devices.calls[-1] == (CommandOperation.LAND, 1)
+
+
+def test_never_terminal_hold_stops_every_device_then_expires_before_landing(
+    tmp_path, clock, event_ids, monkeypatch
+):
+    with monitor_stack(tmp_path, clock, event_ids, monkeypatch, aircraft=True) as (
+        runtime,
+        session,
+        autonomy,
+        devices,
+        reports,
+    ):
+        devices.pending = {1}
+        _ground_evidence(session, clock)
+        runtime.periodic_events(session)
+        holding = reports.get(timeout=3)
+        assert holding.status is LifecycleStatus.EXECUTING
+        assert devices.calls == [(CommandOperation.HOVER, drone_id) for drone_id in (1, 11, 12, 13)]
+        owner = autonomy._awaiting[holding.intent_id]
+        missing = next(ack for ack in holding.acknowledgements if ack.drone_id == 1)
+        assert missing.status is LifecycleStatus.EXECUTING
+        # Future LANDs complete, but the already-issued HOLD never supplies a terminal ACK.
+        devices.pending.clear()
+        events = []
+        for elapsed in range(1, 61):
+            clock.value += 1_000
+            for drone_id in (11, 12, 13):
+                _ground_evidence(session, clock, drone_id, quality=0.0 if drone_id == 11 else 0.6)
+            session.process_telemetry(
+                telemetry_payload(event_id=f"still-flying-{elapsed}", timestamp=clock.value),
+                Principal("adapter", 1, ADAPTER_KEY),
+            )
+            events.extend(runtime.periodic_events(session))
+        landing = reports.get(timeout=3)
+        assert landing.status is LifecycleStatus.COMPLETED
+        assert devices.calls[-1] == (CommandOperation.LAND, 1)
+        assert holding.intent_id not in autonomy._awaiting
+        assert owner.job.finished and owner.pending.status is LifecycleStatus.FAILED
+        assert owner.pending.refusal.reason is RefusalReason.ADAPTER_TIMEOUT
+        assert any(
+            event.get("intent_id") == holding.intent_id and event.get("reason") == "adapter_timeout"
+            for event in events
+        )
+        assert len(devices.calls) == 5
+
+        late = session.process_acknowledgement(
+            acknowledgement_payload(
+                event_id="expired-hold-late-completion",
+                timestamp=clock.value,
+                drone_id=1,
+                intent_id=missing.intent_id,
+                command_id=missing.command_id,
+                connection_epoch=missing.connection_epoch,
+                roster_version=missing.roster_version,
+                status="completed",
+            ),
+            Principal("adapter", 1, ADAPTER_KEY),
+        )
+        assert late[0]["type"] == "refusal" and late[0]["reason"] == "command_expired"
+        assert len(devices.calls) == 5
+
+
+def test_normal_motion_stays_blocked_when_position_recovers_before_hold_completion(
+    tmp_path, clock, event_ids, monkeypatch
+):
+    with monitor_stack(tmp_path, clock, event_ids, monkeypatch, aircraft=True) as (
+        runtime,
+        session,
+        _autonomy,
+        devices,
+        reports,
+    ):
+        devices.pending = {1}
+        _ground_evidence(session, clock)
+        runtime.periodic_events(session)
+        assert reports.get(timeout=3).status is LifecycleStatus.EXECUTING
+        _ground_evidence(session, clock, quality=0.6)
+        runtime.periodic_events(session)
+        session.update_control_projection(selection=(1,))
+        intent = intent_payload(timestamp=clock.value, intent_id="motion-during-safety") | {
+            "name": "translate",
+            "args": {"dx": 1, "dy": 0},
+            "selection": [1],
+        }
+        assert (
+            session.process_frame(intent, Principal("console", None, CONSOLE_KEY))[0]["status"]
+            == "accepted"
+        )
+        session.mark_pending_intent_delivered("motion-during-safety")
+        session.execute_pending_intent("motion-during-safety")
+        refused = reports.get(timeout=3)
+        assert refused.status is LifecycleStatus.REFUSED
+        assert refused.refusal.reason is RefusalReason.ACTIVE_TASK
+        assert {operation for operation, _ in devices.calls} == {CommandOperation.HOVER}
+
+
+def test_normal_motion_stays_blocked_when_position_recovers_during_hold_adapter_io(
+    tmp_path, clock, event_ids, monkeypatch
+):
+    with monitor_stack(tmp_path, clock, event_ids, monkeypatch, aircraft=True) as (
+        runtime,
+        session,
+        autonomy,
+        devices,
+        reports,
+    ):
+        entered, release = Event(), Event()
+        original_hover = devices.hover
+
+        def delayed_hover(ids):
+            if ids == [1]:
+                entered.set()
+                assert release.wait(timeout=3), "test must release the safety adapter"
+            return original_hover(ids)
+
+        monkeypatch.setattr(devices, "hover", delayed_hover)
+        try:
+            _ground_evidence(session, clock)
+            runtime.periodic_events(session)
+            assert entered.wait(timeout=3)
+            assert not autonomy._awaiting
+            _ground_evidence(session, clock, quality=0.6)
+            runtime.periodic_events(session)
+            assert not autonomy._position_loss_since
+            session.update_control_projection(selection=(1,))
+            intent_id = "motion-during-safety-io"
+            intent = intent_payload(timestamp=clock.value, intent_id=intent_id) | {
+                "name": "translate",
+                "args": {"dx": 1, "dy": 0},
+                "selection": [1],
+            }
+            assert (
+                session.process_frame(intent, Principal("console", None, CONSOLE_KEY))[0]["status"]
+                == "accepted"
+            )
+            session.mark_pending_intent_delivered(intent_id)
+            session.execute_pending_intent(intent_id)
+            refused = reports.get(timeout=3)
+            assert refused.intent_id == intent_id
+            assert refused.status is LifecycleStatus.REFUSED
+            assert refused.refusal.reason is RefusalReason.ACTIVE_TASK
+            assert devices.calls == []
+        finally:
+            release.set()
+        assert reports.get(timeout=3).status is LifecycleStatus.COMPLETED
+        assert devices.calls == [(CommandOperation.HOVER, drone_id) for drone_id in (1, 11, 12, 13)]

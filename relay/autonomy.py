@@ -402,6 +402,7 @@ class _AwaitingExecution:
     dispatcher: AdapterDispatcher
     snapshot: FleetSnapshot
     pending: ExecutionResult
+    completion_deadline_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -541,6 +542,7 @@ class AutonomySession:
         session = None if runtime is None else runtime.sessions.get(self.session_id)
         if session is None:
             return []
+        events = self._expire_position_safety(session)
         state = session.current_state()
         snapshot = self.snapshot(state)
         devices = {
@@ -589,7 +591,7 @@ class AutonomySession:
                 self._position_hold_job = None
                 self._position_land_job = None
                 self._position_landing_requested = False
-                return []
+                return events
             self._position_loss_since = {
                 key: min(self._position_loss_since.get(key, since), since)
                 for key, since in losses.items()
@@ -611,7 +613,6 @@ class AutonomySession:
                     or snapshot.now_ms - loss_since >= self.arbiter.config.positioning_loss_hold_ms
                 )
             )
-        events: list[dict[str, object]] = []
         for action, needed in (("hold", hold), ("land", land)):
             if not needed:
                 continue
@@ -642,6 +643,64 @@ class AutonomySession:
                     self._position_landing_requested = True
                     self._position_land_job = job
                 lane.ready.notify()
+        return events
+
+    def _expire_position_safety(self, session: RelaySession) -> list[dict[str, object]]:
+        """A missing terminal result may delay safety escalation only for a bounded window."""
+        now = session.clock()
+        with self._lock:
+            expired = tuple(
+                owner
+                for owner in self._awaiting.values()
+                if owner.session is session
+                and owner.completion_deadline_ms is not None
+                and now >= owner.completion_deadline_ms
+            )
+        events: list[dict[str, object]] = []
+        for owner in expired:
+            unresolved = tuple(
+                ack.command_id
+                for ack in owner.pending.acknowledgements
+                if ack.status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}
+            )
+            if not unresolved:
+                continue
+            # The relay mutation lane serializes expiry against ACK commits.
+            # Retire command IDs durably before releasing the execution owner.
+            retired = session.expire_safety_commands(owner.job.intent.intent_id, unresolved)
+            if not retired:
+                continue
+            events.extend(retired)
+            with self._lock:
+                if self._awaiting.get(owner.job.intent.intent_id) is not owner:
+                    continue
+                self._awaiting.pop(owner.job.intent.intent_id)
+                owner.job.cancelled_by = "safety_completion_timeout"
+                owner.job.finished = True
+                owner.pending = replace(
+                    owner.pending,
+                    status=LifecycleStatus.FAILED,
+                    acknowledgements=tuple(
+                        replace(
+                            ack,
+                            status=LifecycleStatus.FAILED,
+                            reason=RefusalReason.ADAPTER_TIMEOUT,
+                            detail="safety completion deadline expired",
+                        )
+                        if ack.command_id in unresolved
+                        else ack
+                        for ack in owner.pending.acknowledgements
+                    ),
+                    refusal=Refusal(
+                        intent_id=owner.job.intent.intent_id,
+                        roster_version=session.registry.roster_version,
+                        drone_id=None,
+                        connection_epoch=None,
+                        reason=RefusalReason.ADAPTER_TIMEOUT,
+                        detail="safety completion deadline expired",
+                        status=LifecycleStatus.FAILED,
+                    ),
+                )
         return events
 
     def authorize_leave(
@@ -830,7 +889,42 @@ class AutonomySession:
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
             )
-            if job.position_loss_action is None:
+            with self._lock:
+                safety_active = bool(self._position_loss_since) or any(
+                    owner.job.position_loss_action is not None for owner in self._awaiting.values()
+                )
+                # Recovered telemetry can clear the episode before adapter I/O
+                # returns and installs its ACK owner. The stop still owns the
+                # fleet throughout that queued/running interval.
+                safety_active = safety_active or any(
+                    (
+                        lane.running is not None
+                        and not lane.running.finished
+                        and lane.running.position_loss_action is not None
+                    )
+                    or any(
+                        not pending.finished
+                        and pending.cancelled_by is None
+                        and pending.position_loss_action is not None
+                        for pending in lane.pending
+                    )
+                    for lane in self._lanes
+                )
+            if job.position_loss_action is None and intent.name in HOLD_PREEMPTS and safety_active:
+                result = ExecutionResult(
+                    intent_id=intent.intent_id,
+                    roster_version=snapshot.roster_version,
+                    status=LifecycleStatus.REFUSED,
+                    refusal=Refusal(
+                        intent_id=intent.intent_id,
+                        roster_version=snapshot.roster_version,
+                        drone_id=None,
+                        connection_epoch=None,
+                        reason=RefusalReason.ACTIVE_TASK,
+                        detail="positioning-loss safety response is still active",
+                    ),
+                )
+            elif job.position_loss_action is None:
                 result = controller.execute(intent, snapshot, current_snapshot=current)
             else:
                 plan = self.planner.fleet_position_loss_plan(
@@ -858,6 +952,12 @@ class AutonomySession:
                     dispatcher=dispatcher,
                     snapshot=snapshot,
                     pending=result,
+                    completion_deadline_ms=(
+                        session.clock()
+                        + max(runtime.settings.command_deadline_ms, runtime.settings.command_ttl_ms)
+                        if job.position_loss_action is not None
+                        else None
+                    ),
                 )
                 job.finished = False
             else:
@@ -886,6 +986,10 @@ class AutonomySession:
                 or owner.session is not session
                 or owner.job.cancelled_by is not None
                 or owner.pending.status is not LifecycleStatus.EXECUTING
+                or (
+                    owner.completion_deadline_ms is not None
+                    and session.clock() >= owner.completion_deadline_ms
+                )
             ):
                 return None
             waiting = next(

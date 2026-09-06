@@ -253,6 +253,7 @@ class _IssuedCommand:
     issued_at: int
     status: LifecycleStatus | None = None
     waiter_active: bool = True
+    retired_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -1466,6 +1467,50 @@ class RelaySession:
             if issued := self._issued_commands.get(command_id):
                 issued.waiter_active = False
 
+    def expire_safety_commands(
+        self, intent_id: str, command_ids: tuple[str, ...]
+    ) -> list[dict[str, object]]:
+        """Retire unresolved internal safety commands before permitting the next phase."""
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if (
+                not intent_id.startswith("safety:")
+                or intent_id not in self._intents
+                or not command_ids
+                or any(
+                    (issued := self._issued_commands.get(command_id)) is not None
+                    and issued.intent_id != intent_id
+                    for command_id in command_ids
+                )
+            ):
+                raise ValueError("expected issued commands from one internal safety intent")
+            if self._intents[intent_id].status in _TERMINAL_STATUSES:
+                return []
+            for command_id in command_ids:
+                if command_id not in self._issued_commands:
+                    # Already-pruned command IDs are already refused at ingress.
+                    continue
+                self._remember_issued_command(command_id)
+                issued = self._issued_commands[command_id]
+                issued.retired_reason = "command_expired"
+                issued.waiter_active = False
+                self._command_waiters.pop(command_id, None)
+            events = [
+                self.record_lifecycle(
+                    intent_id=intent_id,
+                    status=LifecycleStatus.FAILED,
+                    source="autonomy",
+                    reason="adapter_timeout",
+                    detail=(
+                        "safety command completion deadline expired; late results cannot resume it"
+                    ),
+                )
+            ]
+            active = self.current_state()["accepted_plan"]
+            if active is not None and active.get("intent_id") == intent_id:
+                events.append(self.update_control_projection(accepted_plan=None))
+            return events
+
     def capture_readiness(self, drone_id: int) -> CaptureReadinessFrame | None:
         """Return the node's latest capture_readiness frame for its current epoch."""
         with self._lock:
@@ -2056,6 +2101,10 @@ class RelaySession:
             raise ContractError(
                 "unknown_command_id",
                 "acknowledgement does not reference a command issued by this relay session",
+            )
+        if issued.retired_reason is not None:
+            raise ContractError(
+                issued.retired_reason, "command ownership was retired after timeout"
             )
         if acknowledgement.intent_id != issued.intent_id:
             raise ContractError(

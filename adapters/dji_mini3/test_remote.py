@@ -556,6 +556,40 @@ def test_estop_sends_to_every_aircraft_before_waiting_and_reports_a_silent_node(
     assert validated.detail == first.detail
 
 
+def test_fleet_hold_sends_every_stop_before_waiting_for_an_unresponsive_peer() -> None:
+    snapshot = make_snapshot(2)
+    link = _SilentFirstDroneLink(epochs={1: 1, 2: 1})
+    adapter = _adapter(link)
+
+    with adapter.for_intent("safety:hold", snapshot.roster_version):
+        first, second = adapter.hold_fleet([1, 2])
+
+    assert link.calls[:2] == [("send", 1), ("send", 2)]
+    assert first.status is LifecycleStatus.FAILED
+    assert first.detail.startswith("adapter_timeout")
+    assert second.status is LifecycleStatus.COMPLETED
+
+
+def test_fleet_hold_drains_a_peer_completion_without_extending_the_shared_deadline(
+    monkeypatch,
+) -> None:
+    snapshot = make_snapshot(2)
+    link = _SilentFirstDroneLink(
+        epochs={1: 1, 2: 1},
+        scripts={CommandOperation.HOVER: [("executing", None, None), ("completed", None, None)]},
+    )
+    adapter = _adapter(link)
+    monotonic = iter((0.0, 0.001, 0.100))
+    monkeypatch.setattr("adapters.dji_mini3.remote.time.monotonic", monotonic.__next__)
+
+    with adapter.for_intent("safety:hold-deadline", snapshot.roster_version):
+        first, second = adapter.hold_fleet([1, 2])
+
+    assert first.status is LifecycleStatus.FAILED
+    assert second.status is LifecycleStatus.COMPLETED
+    assert link.calls[:2] == [("send", 1), ("send", 2)]
+
+
 class _HeartbeatLink(ScriptedLink):
     """Scripted link whose node answers every wait with another executing heartbeat."""
 
