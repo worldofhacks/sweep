@@ -138,9 +138,7 @@ def _constraints(
     return constraints
 
 
-def _add_sidestep(
-    desired: Position, constraints: list[tuple[Position, float]]
-) -> Position:
+def _add_sidestep(desired: Position, constraints: list[tuple[Position, float]]) -> Position:
     lateral = Position(0.0, 0.0, 0.0)
     for normal, limit in constraints:
         approach = _dot(desired, normal)

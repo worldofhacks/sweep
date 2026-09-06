@@ -2730,6 +2730,7 @@ _MEMBERSHIP_HISTORY_FIELDS = frozenset(
     }
 )
 _MAX_MATERIAL_DRONE_PROJECTION_BYTES = 128 * 1024
+_MAX_MATERIAL_CAPTURE_PROJECTION_BYTES = 1024 * 1024
 
 
 def _material_state_projection(state: Mapping[str, object]) -> str:
@@ -2799,7 +2800,7 @@ def _material_captures_projection(value: object) -> list[dict[str, object]]:
             size = len(json.dumps(entry, allow_nan=False).encode())
         except (TypeError, ValueError) as error:
             raise AuditLogError(f"material capture is not JSON-native: {error}") from None
-        if size > 1024 * 1024:
+        if size > _MAX_MATERIAL_CAPTURE_PROJECTION_BYTES:
             raise AuditLogError("material capture exceeds the bounded audit projection")
         projected.append(entry)
     return projected
