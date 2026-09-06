@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import stat
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,108 @@ def test_operation_batch_preserves_one_jsonl_record_per_event(tmp_path: Path) ->
     assert [record["seq"] for record in records] == [1, 2]
     assert len(log.path.read_text(encoding="utf-8").splitlines()) == 2
     assert SessionAuditLog(tmp_path, "session-1").replay() == records
+
+
+@pytest.mark.parametrize("reopen", [False, True])
+def test_schema_initialization_runs_once_per_log_with_full_durability_on_every_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reopen: bool
+) -> None:
+    if reopen:
+        SessionAuditLog(tmp_path, "session-1").append(_event("seed"))
+    connect = sqlite3.connect
+    statements: list[str] = []
+    connections = 0
+
+    def trace_connection(*args: object, **kwargs: object) -> sqlite3.Connection:
+        nonlocal connections
+        connections += 1
+        database = connect(*args, **kwargs)
+        database.set_trace_callback(statements.append)
+        return database
+
+    monkeypatch.setattr(sqlite3, "connect", trace_connection)
+    log = SessionAuditLog(tmp_path, "session-1")
+    for index in range(3):
+        log.append(_event(f"event-{index}"))
+
+    assert statements.count("PRAGMA journal_mode=WAL") == 1
+    assert sum(statement.startswith("CREATE TABLE") for statement in statements) == 2
+    # Each connection keeps FULL synchronous and foreign keys; initialization also
+    # explicitly requests FULL. Only the redundant schema connection was removed.
+    assert statements.count("PRAGMA synchronous=FULL") == connections + 1
+    assert statements.count("PRAGMA foreign_keys=ON") == connections
+    connections_before = connections
+    record = log.append(_event("last-event"))
+    assert connections - connections_before == 2
+    assert SessionAuditLog(tmp_path, "session-1").replay()[-1] == record
+
+
+@pytest.mark.parametrize("operation", ["begin", "complete", "replay"])
+@pytest.mark.parametrize("mutation", ["remove", "replace", "truncate", "corrupt", "drop_schema"])
+def test_initialized_database_changes_fail_closed_without_recreation(
+    tmp_path: Path, operation: str, mutation: str
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    operation_id = log.begin_operation() if operation == "complete" else None
+    mirror = log.path.read_bytes()
+    original_database = log.database_path.read_bytes()
+    if mutation == "remove":
+        log.database_path.unlink()
+    elif mutation == "replace":
+        replacement = tmp_path / "replacement.sqlite3"
+        replacement.write_bytes(original_database)
+        os.replace(replacement, log.database_path)
+    elif mutation == "drop_schema":
+        with closing(sqlite3.connect(log.database_path)) as database:
+            database.executescript("DROP TABLE records; DROP TABLE operations;")
+    else:
+        log.database_path.write_bytes(b"" if mutation == "truncate" else b"not a database")
+    changed_database = log.database_path.read_bytes() if log.database_path.exists() else None
+
+    with pytest.raises(AuditLogError):
+        if operation == "begin":
+            log.begin_operation()
+        elif operation == "complete":
+            log.append_batch([_event("event-2")], operation_id=operation_id)
+        else:
+            log.replay()
+
+    assert log.path.read_bytes() == mirror
+    if changed_database is None:
+        assert not log.database_path.exists()
+    else:
+        assert log.database_path.read_bytes() == changed_database
+    with pytest.raises(AuditLogError):
+        log.append(_event("later-event"))
+    with pytest.raises(AuditLogError):
+        log.replay()
+
+
+def test_database_removed_during_sqlite_open_is_not_recreated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("event-1"))
+    connect = sqlite3.connect
+
+    def remove_then_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        log.database_path.unlink()
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", remove_then_connect)
+    with pytest.raises(AuditLogError, match="cannot begin audit operation"):
+        log.begin_operation()
+    assert not log.database_path.exists()
+
+
+def test_database_uri_preserves_special_characters_in_log_directory(tmp_path: Path) -> None:
+    root = tmp_path / "audit ?mode=rwc # ü"
+    log = SessionAuditLog(root, "session-1")
+    record = log.append(_event("event-1"))
+
+    assert log.database_path.parent == root
+    assert SessionAuditLog(root, "session-1").replay() == [record]
 
 
 @pytest.mark.parametrize("reopen", [False, True])

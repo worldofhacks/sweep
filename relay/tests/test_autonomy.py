@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -10,7 +11,7 @@ from starlette.testclient import WebSocketTestSession
 
 from planner.models import ExecutionResult, LifecycleStatus, Plan, Position
 from relay.app import RelayRuntime
-from relay.auth import Principal
+from relay.auth import Principal, sign_event, verify_event_signature
 from relay.autonomy import (
     LIFECYCLE_SOURCE,
     PREEMPTED_BY_HOLD,
@@ -21,6 +22,8 @@ from relay.autonomy import (
     create_autonomy_app,
     relay_snapshot,
 )
+from relay.control_frames import sign_localization_frame
+from relay.control_localization import ControlLocalizationWire, to_wire_payload
 from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.session import RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
@@ -35,10 +38,12 @@ from relay.tests.conftest import (
     membership_payload,
     telemetry_payload,
 )
+from relay.tests.test_control_localization import mapping, snapshot
 from tests.autonomy_fixtures import camera_config, planning_config, safety_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AUTONOMY_VARIABLES = ("SWEEP_PLANNING_JSON", "SWEEP_SAFETY_JSON", "SWEEP_SIM_CAMERA_JSON")
+LOCALIZATION_KEY = b"localization-test-key-32-characters"
 
 
 def _env_example() -> dict[str, str]:
@@ -180,6 +185,87 @@ def test_missing_sim_camera_is_allowed_only_off_the_sim_backend(tmp_path: Path) 
     assert remote_app.title == "Sweep relay"
     with pytest.raises(SettingsError, match="SWEEP_SIM_CAMERA_JSON"):
         create_autonomy_app(_settings(tmp_path), config)
+
+
+def _localization_config(*, measured: bool = True) -> dict[str, object]:
+    clock_mapping = mapping().to_mapping() | {"measured": measured}
+    return {
+        "relay_clock_id": "unix_epoch_ms",
+        "max_clock_error_ms": 5,
+        "max_fix_age_ms": 500,
+        "max_velocity_age_ms": 200,
+        "max_height_age_ms": 200,
+        "max_position_uncertainty_p95_m": 0.3,
+        "pins": [
+            {
+                "drone_id": 1,
+                "map_id": "map-id",
+                "geometry_id": "geometry-id",
+                "camera_calibration_id": "camera-calibration-id",
+                "body_extrinsics_id": "body-extrinsics-id",
+                "source_ids": ["tag-camera", "msdk-velocity", "tof-height"],
+                "clock_mapping": clock_mapping,
+            }
+        ],
+    }
+
+
+def test_explicit_measured_localization_config_reaches_the_composed_relay(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    environment = _env_example() | {
+        "SWEEP_CONTROL_LOCALIZATION_JSON": json.dumps(_localization_config()),
+    }
+    config = AutonomyConfig.from_env(environment)
+    assert config.control_localization_projector is not None
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY},
+        localization_keys={1: LOCALIZATION_KEY},
+        log_dir=tmp_path,
+    )
+    app, composition = create_autonomy_app(settings, config, clock=clock, event_ids=event_ids)
+    try:
+        with TestClient(app):
+            session = app.state.relay_runtime.session(SESSION)
+            adapter = Principal("adapter", 1, ADAPTER_KEY)
+            session.process_membership(
+                membership_payload(action="join", event_id="localization-join"), adapter
+            )
+            wire = ControlLocalizationWire.from_mapping(to_wire_payload(snapshot(), mapping()))
+            raw = sign_localization_frame(
+                wire,
+                timestamp_ms=clock(),
+                event_id="localization-configured",
+                session=SESSION,
+                signing_key=LOCALIZATION_KEY,
+            )
+            projected = session.process_frame(raw, Principal("localization", 1, LOCALIZATION_KEY))
+            assert projected[0]["type"] == "control_pose"
+            assert projected[0]["flight_approved"] is False
+            unsigned = {key: value for key, value in projected[0].items() if key != "signature"}
+            assert verify_event_signature(unsigned, projected[0]["signature"], ADAPTER_KEY)
+
+            unverified = raw | {"event_id": "localization-unmeasured"}
+            unverified["clock_mapping"] = mapping().to_mapping() | {"measured": False}
+            unsigned_unverified = {
+                key: value for key, value in unverified.items() if key != "signature"
+            }
+            unverified["signature"] = sign_event(unsigned_unverified, LOCALIZATION_KEY)
+            refusal = session.process_frame(
+                unverified, Principal("localization", 1, LOCALIZATION_KEY)
+            )
+            assert refusal[0]["reason"] == "invalid_payload"
+    finally:
+        composition.close()
+
+
+def test_localization_config_rejects_an_unmeasured_clock_mapping() -> None:
+    environment = _env_example() | {
+        "SWEEP_CONTROL_LOCALIZATION_JSON": json.dumps(_localization_config(measured=False)),
+    }
+    with pytest.raises(SettingsError, match="clock mapping must be measured"):
+        AutonomyConfig.from_env(environment)
 
 
 def test_autonomy_composition_threads_one_ungrounded_profile(
@@ -582,3 +668,13 @@ def test_relay_snapshot_marks_a_requested_stop_before_the_relay_latches_it(
     assert plain.estop_active is False
     assert stopped.estop_active is True
     assert stopped.aircraft == plain.aircraft
+
+
+@pytest.mark.parametrize("field", ["max_fix_age_ms", "measured"])
+def test_localization_config_rejects_duplicate_fields(field: str) -> None:
+    raw = json.dumps(_localization_config())
+    marker = f'"{field}":'
+    assert marker in raw
+    raw = raw.replace(marker, f'"{field}": null, {marker}', 1)
+    with pytest.raises(SettingsError, match="unique fields"):
+        AutonomyConfig.from_env(_env_example() | {"SWEEP_CONTROL_LOCALIZATION_JSON": raw})

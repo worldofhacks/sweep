@@ -40,6 +40,8 @@ class SessionAuditLog:
         self._lock = RLock()
         self._append_usable = True
         self._replay_usable = True
+        self._database_initialized = False
+        self._database_identity: tuple[int, int] | None = None
         self._mirror_fingerprint: tuple[int, int, int, int, int] | None = None
         self.recovered_tail_bytes = 0
         self.had_persisted_log = (
@@ -72,7 +74,8 @@ class SessionAuditLog:
         with self._lock:
             if not self._append_usable:
                 raise AuditLogError("session log is unusable after a failed append operation")
-            self._initialize_database()
+            if not self._database_initialized:
+                self._initialize_database()
             try:
                 with closing(self._connect()) as database:
                     cursor = database.execute("INSERT INTO operations(status) VALUES ('pending')")
@@ -80,6 +83,8 @@ class SessionAuditLog:
                     assert cursor.lastrowid is not None
                     return cursor.lastrowid
             except sqlite3.Error as error:
+                self._append_usable = False
+                self._replay_usable = False
                 raise AuditLogError(f"cannot begin audit operation: {error}") from None
 
     def abandon_operation(self, operation_id: int) -> None:
@@ -180,7 +185,10 @@ class SessionAuditLog:
                     "FOREIGN KEY(operation_id) REFERENCES operations(id))"
                 )
                 database.commit()
+            self._database_initialized = True
         except sqlite3.Error as error:
+            self._append_usable = False
+            self._replay_usable = False
             raise AuditLogError(f"cannot initialize audit database: {error}") from None
 
     def _connect(self) -> sqlite3.Connection:
@@ -188,35 +196,48 @@ class SessionAuditLog:
         guard = None
         created = False
         try:
-            create_flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
-            if hasattr(os, "O_NOFOLLOW"):
-                create_flags |= os.O_NOFOLLOW
-            try:
-                descriptor = os.open(self.database_path, create_flags, 0o600)
-            except FileExistsError:
-                pass
-            else:
-                created = True
-                os.fdopen(descriptor, "rb").close()
+            if self._database_identity is None:
+                create_flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+                if hasattr(os, "O_NOFOLLOW"):
+                    create_flags |= os.O_NOFOLLOW
+                try:
+                    descriptor = os.open(self.database_path, create_flags, 0o600)
+                except FileExistsError:
+                    pass
+                else:
+                    created = True
+                    os.fdopen(descriptor, "rb").close()
             guard_flags = os.O_RDONLY
             if hasattr(os, "O_NOFOLLOW"):
                 guard_flags |= os.O_NOFOLLOW
             guard = os.fdopen(os.open(self.database_path, guard_flags), "rb")
             guarded = os.fstat(guard.fileno())
-            database = sqlite3.connect(self.database_path, timeout=30)
+            identity = (guarded.st_dev, guarded.st_ino)
+            if self._database_identity is not None and identity != self._database_identity:
+                raise OSError("audit database changed since it was initialized")
+            # Creation is explicit above. SQLite must not recreate a removed database,
+            # including if it disappears between the guarded open and SQLite's open.
+            database = sqlite3.connect(
+                f"{self.database_path.absolute().as_uri()}?mode=rw", timeout=30, uri=True
+            )
             opened = os.stat(self.database_path, follow_symlinks=False)
-            if (guarded.st_dev, guarded.st_ino) != (opened.st_dev, opened.st_ino):
+            if identity != (opened.st_dev, opened.st_ino):
                 raise OSError("audit database changed while it was opened")
             os.chmod(self.database_path, 0o600, follow_symlinks=False)
             database.execute("PRAGMA synchronous=FULL")
             database.execute("PRAGMA foreign_keys=ON")
             if created:
                 self._fsync_root()
+            self._database_identity = identity
         except OSError as error:
+            self._append_usable = False
+            self._replay_usable = False
             if database is not None:
                 database.close()
             raise sqlite3.OperationalError(str(error)) from None
         except sqlite3.Error:
+            self._append_usable = False
+            self._replay_usable = False
             if database is not None:
                 database.close()
             raise
@@ -259,7 +280,7 @@ class SessionAuditLog:
             raise AuditLogError(f"cannot complete audit operation: {error}") from None
 
     def _has_pending_operation(self) -> bool:
-        if not self.database_path.exists():
+        if self._database_identity is None and not self.database_path.exists():
             return False
         try:
             with closing(self._connect()) as database:
@@ -283,10 +304,10 @@ class SessionAuditLog:
             raise AuditLogError(f"cannot inspect audit operation: {error}") from None
 
     def _database_last_sequence(self) -> int:
-        return len(self._database_records()) if self.database_path.exists() else 0
+        return len(self._database_records())
 
     def _database_records(self) -> list[dict[str, object]]:
-        if not self.database_path.exists():
+        if self._database_identity is None and not self.database_path.exists():
             return []
         try:
             with closing(self._connect()) as database:
