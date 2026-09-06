@@ -78,6 +78,8 @@ class NavigationExecution:
     config: NavigationExecutionConfig
     prepared_at_ms: int
     intent_name: IntentName = IntentName.NAVIGATE
+    route_id: str = ""
+    phone_authorization: bool = False
     search_camera_preparations: tuple[SearchCameraPreparation, ...] = ()
 
     def __post_init__(self) -> None:
@@ -97,7 +99,7 @@ class NavigationExecution:
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
-    def command_specs(self) -> tuple[tuple[int, CommandOperation, dict[str, float]], ...]:
+    def command_specs(self) -> tuple[tuple[int, CommandOperation, dict[str, float | str]], ...]:
         result = []
         preparations = {item.drone_id: item for item in self.search_camera_preparations}
         for route in self.route.routes:
@@ -123,6 +125,11 @@ class NavigationExecution:
                             "y": segment.end.y_m,
                             "z": segment.end.z_m,
                             "speed": self.config.speed_m_s,
+                            **(
+                                {"navigation_route_id": self.route_id}
+                                if self.phone_authorization
+                                else {}
+                            ),
                         },
                     )
                 )
@@ -164,7 +171,34 @@ class NavigationRuntime:
         self.dispatch_acceptance = dispatch_acceptance
         self.planner = NavigationPlanner()
         self.control_pins: Mapping[int, object] | None = None
+        self.control_max_fix_age_ms: int | None = None
+        self.control_max_position_uncertainty_p95_m: float | None = None
         self.maximum_aircraft: int | None = None
+        self.require_phone_authorization = False
+
+    def configure_control_localization(
+        self,
+        pins: Mapping[int, object],
+        *,
+        max_fix_age_ms: int,
+        max_position_uncertainty_p95_m: float,
+    ) -> None:
+        if not isinstance(pins, Mapping) or not pins:
+            raise ValueError("control localization pins must be a nonempty mapping")
+        if type(max_fix_age_ms) is not int or max_fix_age_ms <= 0:
+            raise ValueError("control localization max fix age must be positive milliseconds")
+        if (
+            isinstance(max_position_uncertainty_p95_m, bool)
+            or not isinstance(max_position_uncertainty_p95_m, int | float)
+            or not isfinite(max_position_uncertainty_p95_m)
+            or max_position_uncertainty_p95_m <= 0
+        ):
+            raise ValueError("control localization P95 uncertainty must be positive and finite")
+        self.control_pins = dict(pins)
+        self.control_max_fix_age_ms = max_fix_age_ms
+        self.control_max_position_uncertainty_p95_m = float(
+            max_position_uncertainty_p95_m
+        )
 
     def prepare(self, intent: IntentV1, snapshot: FleetSnapshot) -> Plan | Refusal:
         try:
@@ -202,6 +236,8 @@ class NavigationRuntime:
             self.config,
             snapshot.now_ms,
             intent.name if intent_name is None else intent_name,
+            intent.intent_id,
+            self.require_phone_authorization,
             search_camera_preparations,
         )
         epochs = {drone.drone_id: drone.connection_epoch for drone in route.selected}
@@ -340,26 +376,45 @@ class NavigationRuntime:
             if self.control_pins is not None:
                 pin = self.control_pins.get(aircraft.drone_id)
                 provenance = aircraft.control_provenance
+                if pin is None or provenance is None:
+                    raise ValueError("navigation requires accepted control localization provenance")
                 if (
-                    pin is None
-                    or provenance is None
-                    or aircraft.connection_epoch != pin.connection_epoch
-                    or any(
+                    any(
                         getattr(provenance, name) != getattr(pin, name)
                         for name in (
                             "map_id",
                             "geometry_id",
                             "camera_calibration_id",
                             "body_extrinsics_id",
-                            "capture_clock_id",
-                            "relay_clock_id",
                             "source_ids",
                         )
                     )
-                    or provenance.position_uncertainty_m is None
-                    or provenance.position_uncertainty_m > self.config.motion.pose_uncertainty_m
+                    or provenance.capture_clock_id != pin.clock_mapping.capture_clock_id
+                    or provenance.relay_clock_id != pin.clock_mapping.relay_clock_id
                 ):
                     raise ValueError("navigation requires accepted control localization provenance")
+                if self.control_max_fix_age_ms is not None and (
+                    provenance.evaluated_at_relay_ms is None
+                    or not 0
+                    <= snapshot.now_ms - provenance.evaluated_at_relay_ms
+                    <= self.control_max_fix_age_ms
+                ):
+                    raise ValueError("navigation control localization fix is stale")
+                uncertainty_p95_m = getattr(
+                    provenance,
+                    "position_uncertainty_p95_m",
+                    provenance.position_uncertainty_m,
+                )
+                maximum_uncertainty_p95_m = (
+                    self.config.motion.pose_uncertainty_m
+                    if self.control_max_position_uncertainty_p95_m is None
+                    else self.control_max_position_uncertainty_p95_m
+                )
+                if (
+                    uncertainty_p95_m is None
+                    or uncertainty_p95_m > maximum_uncertainty_p95_m
+                ):
+                    raise ValueError("navigation control localization uncertainty is insufficient")
             positions.append(
                 DronePose(
                     aircraft.drone_id,

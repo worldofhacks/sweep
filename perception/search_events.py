@@ -296,17 +296,15 @@ class CoverageLedger:
         if task_id is None:
             return CoverageObservation(False, "source_mismatch", ())
         task = self._tasks[task_id]
-        if event.identity.mission_id != self._mission.frame_mission_id:
+        if event.identity.mission_id != self._mission.mission_id:
             return CoverageObservation(False, "mission_mismatch", ())
         if self._states[task_id] != "active":
             return CoverageObservation(False, "task_not_active", ())
         if event.outcome not in {"detections", "empty"}:
             return CoverageObservation(False, "processed_outcome_not_covering", ())
-        if not event.capture_time_verified:
-            return CoverageObservation(False, "capture_time_unverified", ())
         if (
-            now_s - event.processed_at_s > self._max_frame_age_s
-            or event.processed_at_s < event.frame_timestamp_s
+            now_s - event.evaluation_completed_at_monotonic_s > self._max_frame_age_s
+            or event.evaluation_completed_at_monotonic_s < event.frame_decoded_at_monotonic_s
         ):
             return CoverageObservation(False, "stale_frame", ())
         if pose.identity != event.identity:
@@ -315,7 +313,7 @@ class CoverageLedger:
             return CoverageObservation(False, "connection_epoch_mismatch", ())
         if (
             now_s - pose.observed_at_s > self._max_pose_age_s
-            or abs(pose.pose_timestamp_s - event.frame_timestamp_s) > self._max_pose_skew_s
+            or abs(pose.pose_timestamp_s - event.frame_decoded_at_monotonic_s) > self._max_pose_skew_s
         ):
             return CoverageObservation(False, "stale_pose", ())
         frame_key = (event.identity.source_id, event.identity.frame_id, event.identity.mission_id)
@@ -339,7 +337,7 @@ class CoverageLedger:
         task_id = self._task_for_source.get(event.identity.source_id)
         if (
             task_id is None
-            or event.identity.mission_id != self._mission.frame_mission_id
+            or event.identity.mission_id != self._mission.mission_id
             or (event.identity.source_id, event.identity.frame_id, event.identity.mission_id)
             not in self._accepted_frames
         ):

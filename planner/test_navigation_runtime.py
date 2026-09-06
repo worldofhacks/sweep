@@ -258,3 +258,15 @@ def test_navigation_watchdog_does_not_hold_or_return_after_owner_is_retired() ->
 
     assert result is None
     assert [call.operation for call in flight.calls] == ["goto"]
+
+
+def test_phone_authorization_binds_each_goto_to_the_frozen_route() -> None:
+    controller, dispatcher, _, snapshot, current, _, intent = stack()
+    dispatcher.navigation.require_phone_authorization = True
+
+    prepared = controller.prepare(intent, snapshot, current_snapshot=current)
+
+    assert isinstance(prepared, PreparedExecution)
+    gotos = [command for command in prepared.plan.commands if command.operation is CommandOperation.GOTO]
+    assert gotos
+    assert all(command.parameters["navigation_route_id"] == intent.intent_id for command in gotos)

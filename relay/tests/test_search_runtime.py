@@ -57,8 +57,17 @@ def _at_first_coverage(snapshot, preview: SearchMissionPreview):
 
 def _frame(task, cell, index: int) -> tuple[ProcessedFrameEvent, FramePoseEvidence]:
     timestamp = 10 + index / 10
-    identity = FrameIdentity(task.source_id, f"frame-{index}", task.task_id.rsplit(":", 1)[0])
-    event = ProcessedFrameEvent(identity, timestamp, timestamp + 0.01, "empty", 0, True)
+    identity = FrameIdentity(task.source_id, task.task_id.split(":v", 1)[0], "test-run", index + 1)
+    event = ProcessedFrameEvent(
+        identity,
+        timestamp,
+        timestamp,
+        timestamp + 0.01,
+        "empty",
+        0,
+        ("backpack",),
+        "a" * 64,
+    )
     return event, FramePoseEvidence(
         identity, task.connection_epoch, cell.pose, timestamp, timestamp + 0.02
     )

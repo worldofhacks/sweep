@@ -213,8 +213,14 @@ class MappedFormationRuntime:
             self.config.navigation,
             NavigationPermission(frozenset({destination})),
         )
+        checker.dispatch_acceptance = self.navigation.dispatch_acceptance
         checker.control_pins = self.navigation.control_pins
+        checker.control_max_fix_age_ms = self.navigation.control_max_fix_age_ms
+        checker.control_max_position_uncertainty_p95_m = (
+            self.navigation.control_max_position_uncertainty_p95_m
+        )
         checker.maximum_aircraft = self.navigation.maximum_aircraft
+        checker.require_phone_authorization = self.navigation.require_phone_authorization
         return checker.check(
             plan, command, snapshot, completed=completed, issued_at_ms=issued_at_ms
         )

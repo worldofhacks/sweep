@@ -9,6 +9,7 @@ from planner.mapped_formation_runtime import (
 )
 from planner.mapped_formations import FormationLayout, FormationPermission
 from planner.models import LifecycleStatus, Plan, Position
+from planner.navigation import NavigationDispatchAcceptance
 from planner.navigation_runtime import NavigationExecutionConfig
 from planner.test_mapped_formations import MOTION, ZONE, artifact, pose
 from relay.intent_v1 import IntentName
@@ -25,15 +26,23 @@ def runtime(current):
         {"line": ConfiguredFormation("line", ZONE, FormationLayout(pose(10, 10), 0, 2, (0, 0)))},
         NavigationExecutionConfig("level_1", MOTION, 0.5, 0.05, 500, 0.5, 5_000),
     )
-    return MappedFormationRuntime(
+    mapped = MappedFormationRuntime(
         lambda: current[0], config, FormationPermission(frozenset({"lobby"}))
     )
+    mapped.navigation.dispatch_acceptance = lambda plan, artifact: NavigationDispatchAcceptance(
+        "test-formation-acceptance",
+        plan.map_pin,
+        plan.geometry_pin,
+        plan.navigation_pin,
+        plan.plan_revision,
+    )
+    return mapped
 
 
 def test_runtime_freezes_mapped_assignments_and_refuses_revoked_permission():
     snapshot = make_snapshot(2)
-    snapshot = replace_aircraft(snapshot, 1, pose=replace(snapshot.aircraft[1].pose, x=8, y=8))
-    snapshot = replace_aircraft(snapshot, 2, pose=replace(snapshot.aircraft[2].pose, x=12, y=8))
+    snapshot = replace_aircraft(snapshot, 1, pose=replace(snapshot.aircraft[1].pose, x=8, y=8, z=1.5))
+    snapshot = replace_aircraft(snapshot, 2, pose=replace(snapshot.aircraft[2].pose, x=12, y=8, z=1.5))
     current = [artifact()]
     mapped = runtime(current)
     intent = make_intent(
@@ -87,8 +96,8 @@ def test_raw_json_parser_accepts_explicit_supported_layouts(shape, count):
 
 def test_runtime_binds_formation_name_and_revalidates_configuration():
     snapshot = make_snapshot(2)
-    snapshot = replace_aircraft(snapshot, 1, pose=replace(snapshot.aircraft[1].pose, x=8, y=8))
-    snapshot = replace_aircraft(snapshot, 2, pose=replace(snapshot.aircraft[2].pose, x=12, y=8))
+    snapshot = replace_aircraft(snapshot, 1, pose=replace(snapshot.aircraft[1].pose, x=8, y=8, z=1.5))
+    snapshot = replace_aircraft(snapshot, 2, pose=replace(snapshot.aircraft[2].pose, x=12, y=8, z=1.5))
     mapped = runtime([artifact()])
     intent = make_intent(
         IntentName.FORMATION_SET, selection=(1, 2), args={"name": "line"}, confirm=True
@@ -109,8 +118,8 @@ def test_runtime_binds_formation_name_and_revalidates_configuration():
 
 def test_runtime_revalidates_formation_zone_and_completed_navigation_evidence():
     snapshot = make_snapshot(2)
-    snapshot = replace_aircraft(snapshot, 1, pose=replace(snapshot.aircraft[1].pose, x=8, y=8))
-    snapshot = replace_aircraft(snapshot, 2, pose=replace(snapshot.aircraft[2].pose, x=12, y=8))
+    snapshot = replace_aircraft(snapshot, 1, pose=replace(snapshot.aircraft[1].pose, x=8, y=8, z=1.5))
+    snapshot = replace_aircraft(snapshot, 2, pose=replace(snapshot.aircraft[2].pose, x=12, y=8, z=1.5))
     mapped = runtime([artifact()])
     intent = make_intent(
         IntentName.FORMATION_SET, selection=(1, 2), args={"name": "line"}, confirm=True
@@ -147,8 +156,8 @@ def test_runtime_revalidates_formation_zone_and_completed_navigation_evidence():
 
 def test_controller_dispatches_mapped_formation_through_its_runtime():
     snapshot = make_snapshot(2)
-    snapshot = replace_aircraft(snapshot, 1, pose=replace(snapshot.aircraft[1].pose, x=7, y=8))
-    snapshot = replace_aircraft(snapshot, 2, pose=replace(snapshot.aircraft[2].pose, x=9, y=8))
+    snapshot = replace_aircraft(snapshot, 1, pose=replace(snapshot.aircraft[1].pose, x=7, y=8, z=1.5))
+    snapshot = replace_aircraft(snapshot, 2, pose=replace(snapshot.aircraft[2].pose, x=9, y=8, z=1.5))
     mapped = runtime([artifact()])
     configured = mapped.config.formations["line"]
     mapped.config.formations["line"] = replace(
