@@ -9,7 +9,7 @@ from planner.models import (
     Position,
     PreparedExecution,
 )
-from planner.navigation import ArrivalSlot, NavigationPermission
+from planner.navigation import ArrivalSlot, NavigationDispatchAcceptance, NavigationPermission
 from planner.navigation_runtime import NavigationExecutionConfig, NavigationRuntime
 from planner.test_navigation import MOTION, artifact, pose
 from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES, CapabilityProfile
@@ -28,10 +28,20 @@ def stack(count=1, *, blocked=frozenset()):
             snapshot, drone_id, pose=Position(0.5, 1.5 + 2 * (drone_id - 1), 1)
         )
     slots = tuple(
-        ArrivalSlot(f"atrium-{i}", "atrium", pose(6.5, 1.5 + 2 * (i - 1)), 0.5)
+        ArrivalSlot(f"atrium-{i}", "atrium", pose(6.5, 1.5 + 2 * (i - 1)), 0.5, 0.5)
         for i in snapshot.selection
     )
     current_map = [artifact(blocked, slots=slots)]
+
+    def accept(plan, map_artifact):
+        return NavigationDispatchAcceptance(
+            "test-runtime-acceptance",
+            plan.map_pin,
+            plan.geometry_pin,
+            plan.navigation_pin,
+            plan.plan_revision,
+        )
+
     runtime = NavigationRuntime(
         lambda: current_map[0],
         NavigationExecutionConfig(
@@ -44,6 +54,7 @@ def stack(count=1, *, blocked=frozenset()):
             5_000,
         ),
         NavigationPermission(frozenset({"atrium"})),
+        dispatch_acceptance=accept,
     )
     controller, planner, _, dispatcher, flight, _ = make_stack(snapshot, capability_profile=PROFILE)
     planner.navigation = runtime
@@ -162,7 +173,7 @@ def test_search_camera_prelude_is_checked_without_waypoint_arrival() -> None:
 
     _, _, _, snapshot, _, _, intent = stack()
     runtime = NavigationRuntime(
-        lambda: artifact(slots=(ArrivalSlot("atrium-1", "atrium", pose(6.5, 1.5), 0.5),)),
+        lambda: artifact(slots=(ArrivalSlot("atrium-1", "atrium", pose(6.5, 1.5), 0.5, 0.5),)),
         NavigationExecutionConfig("level_1", MOTION, 0.5, 0.05, 500, 0.5, 5_000),
         NavigationPermission(frozenset({"atrium"})),
     )
@@ -247,3 +258,17 @@ def test_navigation_watchdog_does_not_hold_or_return_after_owner_is_retired() ->
 
     assert result is None
     assert [call.operation for call in flight.calls] == ["goto"]
+
+
+def test_phone_authorization_binds_each_goto_to_the_frozen_route() -> None:
+    controller, dispatcher, _, snapshot, current, _, intent = stack()
+    dispatcher.navigation.require_phone_authorization = True
+
+    prepared = controller.prepare(intent, snapshot, current_snapshot=current)
+
+    assert isinstance(prepared, PreparedExecution)
+    gotos = [
+        command for command in prepared.plan.commands if command.operation is CommandOperation.GOTO
+    ]
+    assert gotos
+    assert all(command.parameters["navigation_route_id"] == intent.intent_id for command in gotos)

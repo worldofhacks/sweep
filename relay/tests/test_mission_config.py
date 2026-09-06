@@ -12,6 +12,7 @@ from planner.navigation import (
     MotionConfig,
     NavigationArtifact,
     NavigationPermission,
+    preview_evidence,
     Pose,
     Zone,
 )
@@ -30,9 +31,24 @@ def artifact() -> NavigationArtifact:
     return NavigationArtifact(
         PIN,
         ArtifactPin("geometry-v3", "b" * 64),
+        ArtifactPin("preview", "c" * 64),
+        preview_evidence("synthetic"),
         0.5,
+        ((0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0), (0.0, 0.0)),
+        0.0,
+        4.0,
         (GridLevel("level_1", 1.5, (0, 0), 1, 20, 20, frozenset()),),
-        (Zone("search-zone", "level_1", True, ()),),
+        (
+            Zone(
+                "search-zone",
+                "level_1",
+                True,
+                ((0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0), (0.0, 0.0)),
+                0.0,
+                4.0,
+                (),
+            ),
+        ),
     )
 
 
@@ -136,6 +152,7 @@ def test_explicit_config_builds_runtimes_and_drives_real_planners(tmp_path):
             SearchMissionIdentity("mission", search.mission_version, 7),
             search.areas["search-zone"],
             "backpack",
+            7,
             7,
             (SearchDrone(drone, search.source_by_drone[1]),),
             (drone,),

@@ -13,6 +13,7 @@ def test_environment_builds_per_aircraft_credentials(tmp_path: Path) -> None:
         {
             "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
             "SWEEP_ADAPTER_KEYS_JSON": f'{{"1":"{ADAPTER_KEY.decode()}"}}',
+            "SWEEP_LOCALIZATION_KEYS_JSON": f'{{"1":"{ADAPTER_KEY.decode()}-localization"}}',
             "SWEEP_SESSION_LOG_DIR": str(tmp_path),
             "SWEEP_CONSOLE_ORIGINS": "https://console.example,http://localhost:5173",
         }
@@ -20,15 +21,79 @@ def test_environment_builds_per_aircraft_credentials(tmp_path: Path) -> None:
 
     assert settings.adapter_keys == {1: ADAPTER_KEY}
     assert settings.allow_shared_adapter_token is False
+    assert settings.localization_keys == {1: ADAPTER_KEY + b"-localization"}
     assert settings.console_origins == ("https://console.example", "http://localhost:5173")
     assert settings.credential_resolver().resolve("adapter", 1) == ADAPTER_KEY
+    assert settings.credential_resolver().resolve("localization", 1) == (
+        ADAPTER_KEY + b"-localization"
+    )
+
+
+def test_aircraft_credential_configuration_is_immutable(tmp_path: Path) -> None:
+    adapter_keys = {1: ADAPTER_KEY}
+    localization_keys = {1: ADAPTER_KEY + b"-localization"}
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys=adapter_keys,
+        localization_keys=localization_keys,
+        log_dir=tmp_path,
+    )
+
+    adapter_keys[2] = b"adapter-two-key-that-is-at-least-32"
+    localization_keys.clear()
+
+    assert settings.adapter_keys == {1: ADAPTER_KEY}
+    assert settings.localization_keys == {1: ADAPTER_KEY + b"-localization"}
+    with pytest.raises(TypeError):
+        settings.localization_keys[2] = b"cannot-mutate-mapping"  # type: ignore[index]
+
+
+def test_aircraft_credential_maps_are_bounded_and_reject_bool_ids(tmp_path: Path) -> None:
+    with pytest.raises(SettingsError, match="bounded aircraft contract"):
+        RelaySettings(
+            relay_token=CONSOLE_KEY,
+            localization_keys={True: ADAPTER_KEY},
+            log_dir=tmp_path,
+        )
+    with pytest.raises(SettingsError, match="64-aircraft"):
+        RelaySettings(
+            relay_token=CONSOLE_KEY,
+            localization_keys={index: ADAPTER_KEY for index in range(1, 66)},
+            log_dir=tmp_path,
+        )
+
+
+@pytest.mark.parametrize(
+    ("adapter_keys", "localization_keys"),
+    [
+        ({1: CONSOLE_KEY}, {}),
+        ({1: ADAPTER_KEY, 2: ADAPTER_KEY}, {}),
+        ({1: ADAPTER_KEY}, {1: ADAPTER_KEY}),
+        ({}, {1: CONSOLE_KEY}),
+        ({}, {1: ADAPTER_KEY, 2: ADAPTER_KEY}),
+    ],
+)
+def test_principal_credentials_must_be_globally_distinct(
+    tmp_path: Path,
+    adapter_keys: dict[int, bytes],
+    localization_keys: dict[int, bytes],
+) -> None:
+    with pytest.raises(SettingsError, match="globally distinct"):
+        RelaySettings(
+            relay_token=CONSOLE_KEY,
+            adapter_keys=adapter_keys,
+            localization_keys=localization_keys,
+            log_dir=tmp_path,
+        )
 
 
 def test_missing_or_short_relay_token_fails_startup() -> None:
     with pytest.raises(SettingsError, match="required"):
         RelaySettings.from_env({})
-    with pytest.raises(SettingsError, match="at least 32"):
+    with pytest.raises(SettingsError, match="32 through 4096"):
         RelaySettings.from_env({"SWEEP_RELAY_TOKEN": "short"})
+    with pytest.raises(SettingsError, match="32 through 4096"):
+        RelaySettings(relay_token=b"x" * 4_097)
 
 
 @pytest.mark.parametrize(

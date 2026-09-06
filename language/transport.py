@@ -40,8 +40,6 @@ _COMPILER_INTENT_NAMES = (
     "capture_room",
     "survey_area",
     "map_area",
-    "navigate",
-    "search",
 )
 
 
@@ -326,25 +324,18 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "select requires args.ids, a nonempty array of known selectable IDs, and selection "
             "must equal args.ids. It changes the selection for subsequent plan steps. "
             "arm, land_all, and estop always use selection: []. They do not change selection. "
-            "takeoff, land, hold, translate, altitude, come_home, capture_room, and navigate "
-            "use the current "
+            "takeoff, land, hold, translate, altitude, come_home, and capture_room use the "
+            "current "
             "selection. "
             "To target different aircraft, first emit select. Never silently choose all aircraft "
             "when selection is empty. LAND means land the selected aircraft; LAND_ALL means "
             "explicitly land the fleet. An urgency word does not expand the target set.\n"
             "Arguments: select={ids}; translate={dx,dy}; altitude and spacing={delta}; "
             "formation_set={name}; survey_area and map_area={area_id}; sweep={} or {box}. "
-            "capture_room={room_id,pattern}; navigate={zone_id}; the host generates capture_id. "
-            "All other names "
+            "capture_room={room_id,pattern}; the host generates capture_id. All other names "
             "use args: {}. Supply only those fields. A vocabulary entry does not prove a "
             "capability is available. Capture needs exactly one selected aircraft, a known "
             "room, and a supported camera pattern. Never invent area geometry or room location.\n"
-            "Navigation resolves destination names only through facts.navigation.zones. Emit the "
-            "catalog zone_id exactly, never coordinates, map pins, arrival slots, or a substitute "
-            "destination. An alias matching multiple zones needs clarify/ambiguous_location; an "
-            "unknown, excluded, unavailable, or different-floor destination needs "
-            "refuse/unknown_reference. Navigate requires the selected aircraft to be airborne "
-            "or hovering. Never insert takeoff.\n"
             "Translation uses facts.translation.frame and step_m. dx and dy are dimensionless "
             "step multipliers. In aircraft_relative frame, forward/back is positive/negative dx "
             "and left/right is positive/negative dy. The planner rotates this local vector by "
@@ -368,8 +359,8 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "a delta. Plain hover means hold.\n"
             "Preserve order and fold state after each step: arm authorizes takeoff; takeoff "
             "requires landed/armed/disarmed selected aircraft and leads to hovering; translate, "
-            "altitude, come_home, and navigate require armed, airborne/hovering aircraft. "
-            "Hold requires airborne "
+            "altitude, and come_home require armed, airborne/hovering aircraft. Hold requires "
+            "airborne "
             "aircraft and leads to hovering; land leads to landed only for its selection; "
             "land_all lands all eligible airborne aircraft. Capture requires armed hovering. "
             "When estop is active only hold, land, land_all, and estop are allowed. Never insert "
@@ -451,8 +442,6 @@ def _tool_schema() -> dict[str, object]:
                     },
                     "room_id": {"type": "string", "minLength": 1, "maxLength": 128},
                     "area_id": {"type": "string", "minLength": 1, "maxLength": 128},
-                    "zone_id": {"type": "string", "minLength": 1, "maxLength": 128},
-                    "target_class": {"type": "string", "enum": ["backpack", "bottle", "suitcase"]},
                     "pattern": {"type": "string", "enum": ["pano_360", "reconstruct_8"]},
                 },
             },

@@ -33,7 +33,6 @@ from planner.navigation import (
     NavigationRequest,
     Pose,
     Zone,
-    _approval_digest,
 )
 from planner.navigation_runtime import NavigationRuntime, SearchCameraPreparation
 from planner.search import (
@@ -188,6 +187,7 @@ class SearchRuntime:
                     area,
                     target_class,
                     snapshot.roster_version,
+                    intent.t,
                     sources,
                     positions,
                     self.config.map_pin,
@@ -349,12 +349,15 @@ class SearchRuntime:
             artifact = self.navigation.artifact()
             positions = self.navigation._positions(snapshot)
             actual_roster = {(item.drone_id, item.connection_epoch) for item in positions}
-            frozen_roster = {
-                (item.drone_id, item.connection_epoch) for item in route.obstacle_roster
-            }
-            if not route.obstacle_roster or frozen_roster != actual_roster:
+            frozen_roster = {(item.drone_id, item.connection_epoch) for item in route.roster}
+            if not route.roster or frozen_roster != actual_roster:
                 raise ValueError("search obstacle roster changed")
-            if route.approval_digest != _approval_digest(artifact):
+            if (
+                artifact.map_pin != route.map_pin
+                or artifact.geometry_pin != route.geometry_pin
+                or artifact.navigation_pin != route.navigation_pin
+                or artifact.evidence != route.evidence
+            ):
                 raise ValueError("search navigation artifact changed")
         except (KeyError, ValueError) as error:
             return self._refusal(plan.intent_id, snapshot, str(error))
@@ -418,17 +421,20 @@ class SearchRuntime:
             routes.append(route)
             current[route.drone.drone_id] = replace(route.drone, pose=route.arrival_slot.pose)
         return NavigationPlan(
-            preview.map_pin,
-            preview.geometry_pin,
+            artifact.map_pin,
+            artifact.geometry_pin,
+            artifact.navigation_pin,
+            artifact.evidence,
             self.navigation.config.motion,
+            self.config.permission,
             preview.roster_version,
+            preview.plan_revision,
             preview.zone.zone_id,
             tuple(route.drone for route in routes),
+            tuple(sorted(positions, key=lambda drone: drone.drone_id)),
             tuple(route.arrival_slot for route in routes),
             tuple(routes),
             preview.execution_order,
-            tuple(sorted(positions, key=lambda drone: drone.drone_id)),
-            _approval_digest(artifact),
         )
 
     def _extend_assignment(
@@ -463,6 +469,7 @@ class SearchRuntime:
                 preview.zone.zone_id,
                 current.pose,
                 self.navigation.config.motion.swept_radius_m,
+                self.navigation.config.motion.swept_half_height_m,
             ),
             tuple(waypoints),
             tuple(segments),
@@ -482,11 +489,21 @@ class SearchRuntime:
             zone.zone_id,
             endpoint,
             self.navigation.config.motion.swept_radius_m,
+            self.navigation.config.motion.swept_half_height_m,
         )
         overlay = replace(
             artifact,
             zones=tuple(
-                Zone(zone.zone_id, zone.floor_id, zone.navigation_allowed, (slot,), zone.aliases)
+                Zone(
+                    zone.zone_id,
+                    zone.floor_id,
+                    zone.owner_approved,
+                    zone.polygon_xy,
+                    zone.z_min_m,
+                    zone.z_max_m,
+                    (slot,),
+                    zone.aliases,
+                )
                 if candidate.zone_id == zone.zone_id
                 else candidate
                 for candidate in artifact.zones
@@ -496,6 +513,7 @@ class SearchRuntime:
             NavigationRequest(
                 zone.zone_id,
                 preview.roster_version,
+                preview.plan_revision,
                 (drone,),
                 positions,
                 self.navigation.config.motion,

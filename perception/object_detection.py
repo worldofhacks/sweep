@@ -15,19 +15,16 @@ from perception.detection_contracts import (
     DEFAULT_TARGET_LABELS,
     FRAME_CLOCK_DOMAIN,
     FRAME_TIME_PROVENANCE,
-    DecodedFrame,
     DetectionCandidate,
     Detector,
     FrameIdentity,
     FrameOutcome,
-    FrameRead,
     FrameReader,
     PerceptionEvent,
     ProcessedFrameEvent,
     SightingEvent,
     _finite_nonnegative,
     _finite_positive,
-    _identifier,
     _identity_component,
     _sha256_digest,
     _target_labels,
@@ -52,12 +49,10 @@ __all__ = (
     "MAX_RETAINED_EVENTS",
     "YOLOX_S_ONNX_SHA256",
     "YOLOX_S_ONNX_URL",
-    "DecodedFrame",
     "DetectionCandidate",
     "Detector",
     "FrameIdentity",
     "FrameOutcome",
-    "FrameRead",
     "FrameReader",
     "LiveDetectionWorker",
     "PerceptionEvent",
@@ -85,26 +80,24 @@ class LiveDetectionWorker:
         retained_events: int = 512,
         aggregator: SightingAggregator | None = None,
         monotonic_clock: Callable[[], float] | None = None,
-        clock: Callable[[], float] | None = None,
     ) -> None:
         _identity_component(source_id, "source_id")
-        _identifier(mission_id, "mission_id", max_length=64)
+        _identity_component(mission_id, "mission_id")
         if worker_run_id is None:
             worker_run_id = uuid.uuid4().hex
         _identity_component(worker_run_id, "worker_run_id")
-        target_labels = _target_labels(
-            getattr(detector, "target_labels", DEFAULT_TARGET_LABELS), "detector target_labels"
-        )
-        detector_config_sha256 = getattr(detector, "detector_config_sha256", "0" * 64)
+        try:
+            target_labels = _target_labels(detector.target_labels, "detector target_labels")
+            detector_config_sha256 = detector.detector_config_sha256
+        except AttributeError:
+            raise ValueError(
+                "detector must declare target_labels and detector_config_sha256"
+            ) from None
         _sha256_digest(detector_config_sha256, "detector_config_sha256")
         if on_event is not None and not callable(on_event):
             raise ValueError("on_event must be callable")
         if monotonic_clock is not None and not callable(monotonic_clock):
             raise ValueError("monotonic_clock must be callable")
-        if clock is not None and not callable(clock):
-            raise ValueError("clock must be callable")
-        if monotonic_clock is not None and clock is not None:
-            raise ValueError("supply only one worker clock")
         _finite_positive(max_frame_age_s, "max_frame_age_s")
         _finite_positive(sample_interval_s, "sample_interval_s")
         if (
@@ -125,11 +118,7 @@ class LiveDetectionWorker:
         self._sample_interval_s = sample_interval_s
         self._events: deque[PerceptionEvent] = deque(maxlen=retained_events)
         self._aggregator = SightingAggregator() if aggregator is None else aggregator
-        self._monotonic_clock = (
-            time.monotonic
-            if monotonic_clock is None and clock is None
-            else (monotonic_clock if monotonic_clock is not None else clock)
-        )
+        self._monotonic_clock = time.monotonic if monotonic_clock is None else monotonic_clock
         self._frame_sequence = 0
         self._last_frame_decoded_at_monotonic_s: float | None = None
         self._stop = threading.Event()
@@ -140,17 +129,14 @@ class LiveDetectionWorker:
         self._failure_lock = threading.Lock()
         self._failure_reason: str | None = None
 
-    def poll(self, now: float | None = None) -> tuple[PerceptionEvent, ...]:
+    def poll(self) -> tuple[PerceptionEvent, ...]:
         with self._poll_lock:
-            timed_read = getattr(self._stream, "read_timed", None)
-            frame = timed_read(0) if callable(timed_read) else self._stream.read(0)
-            sample = _frame_sample(frame)
-            if sample is None:
+            frame = self._stream.read(0)
+            if frame is None:
                 return ()
-            evaluation_started_at_monotonic_s = self._now(now)
-            image, frame_decoded_at_monotonic_s, received_at_s, capture_time_verified = sample
+            evaluation_started_at_monotonic_s = self._now()
+            image, frame_decoded_at_monotonic_s = frame
             _finite_nonnegative(frame_decoded_at_monotonic_s, "frame decoded time")
-            _finite_nonnegative(received_at_s, "frame receipt time")
             self._frame_sequence += 1
             identity = FrameIdentity(
                 source_id=self._source_id,
@@ -171,21 +157,10 @@ class LiveDetectionWorker:
                     completed_at,
                     outcome,
                     candidate_count,
-                    received_at_s,
-                    capture_time_verified,
                 )
 
-            if (
-                evaluation_started_at_monotonic_s - received_at_s > self._max_frame_age_s
-                or frame_decoded_at_monotonic_s > evaluation_started_at_monotonic_s
-            ):
-                events = (
-                    processed(
-                        "dropped_stale"
-                        if evaluation_started_at_monotonic_s >= frame_decoded_at_monotonic_s
-                        else "dropped_future"
-                    ),
-                )
+            if frame_decoded_at_monotonic_s > evaluation_started_at_monotonic_s:
+                events = (processed("dropped_future"),)
             elif (
                 self._last_frame_decoded_at_monotonic_s is not None
                 and frame_decoded_at_monotonic_s < self._last_frame_decoded_at_monotonic_s
@@ -195,10 +170,13 @@ class LiveDetectionWorker:
                 evaluation_started_at_monotonic_s - frame_decoded_at_monotonic_s
                 > self._max_frame_age_s
             ):
+                self._last_frame_decoded_at_monotonic_s = frame_decoded_at_monotonic_s
                 events = (processed("dropped_stale"),)
             elif not self._valid_frame(image):
+                self._last_frame_decoded_at_monotonic_s = frame_decoded_at_monotonic_s
                 events = (processed("invalid_frame"),)
             else:
+                self._last_frame_decoded_at_monotonic_s = frame_decoded_at_monotonic_s
                 try:
                     raw_candidates = self._detector.detect(image)
                     if not isinstance(raw_candidates, Sequence) or len(raw_candidates) > 256:
@@ -206,17 +184,16 @@ class LiveDetectionWorker:
                     candidates = tuple(raw_candidates)
                     self._validate_candidates(image, candidates)
                 except Exception:
-                    evaluation_completed_at_monotonic_s = self._now(now)
+                    evaluation_completed_at_monotonic_s = self._now()
                     events = (
                         processed(
                             "detector_error", completed_at=evaluation_completed_at_monotonic_s
                         ),
                     )
                 else:
-                    evaluation_completed_at_monotonic_s = self._now(now)
+                    evaluation_completed_at_monotonic_s = self._now()
                     if (
-                        evaluation_completed_at_monotonic_s - received_at_s > self._max_frame_age_s
-                        or evaluation_completed_at_monotonic_s - frame_decoded_at_monotonic_s
+                        evaluation_completed_at_monotonic_s - frame_decoded_at_monotonic_s
                         > self._max_frame_age_s
                     ):
                         events = (
@@ -234,13 +211,13 @@ class LiveDetectionWorker:
                                     evaluation_started_at_monotonic_s,
                                     candidates,
                                     self._detector_config_sha256,
-                                    completion_clock=lambda: self._now(now),
+                                    completion_clock=self._now,
                                     max_frame_age_s=self._max_frame_age_s,
                                 )
                             )
                         except Exception:
                             self._set_failure("aggregation_failed")
-                            evaluation_completed_at_monotonic_s = self._now(now)
+                            evaluation_completed_at_monotonic_s = self._now()
                             events = (
                                 processed(
                                     "aggregation_error",
@@ -265,8 +242,6 @@ class LiveDetectionWorker:
                                     ),
                                     *sightings,
                                 )
-            if events[0].outcome in {"detections", "empty", "detector_error"}:
-                self._last_frame_decoded_at_monotonic_s = frame_decoded_at_monotonic_s
             self._publish(events)
             return events
 
@@ -289,8 +264,6 @@ class LiveDetectionWorker:
         evaluation_completed_at_monotonic_s: float,
         outcome: FrameOutcome,
         candidate_count: int,
-        received_at_s: float,
-        capture_time_verified: bool,
     ) -> ProcessedFrameEvent:
         return ProcessedFrameEvent(
             identity=identity,
@@ -301,8 +274,6 @@ class LiveDetectionWorker:
             candidate_count=candidate_count,
             target_labels=self._target_labels,
             detector_config_sha256=self._detector_config_sha256,
-            received_at_s=received_at_s,
-            capture_time_verified=capture_time_verified,
         )
 
     def _validate_candidates(
@@ -316,8 +287,8 @@ class LiveDetectionWorker:
             if candidate.bbox_xyxy[2] > frame.shape[1] or candidate.bbox_xyxy[3] > frame.shape[0]:
                 raise ValueError("detector bounding box exceeds the frame")
 
-    def _now(self, override: float | None = None) -> float:
-        value = self._monotonic_clock() if override is None else override
+    def _now(self) -> float:
+        value = self._monotonic_clock()
         _finite_nonnegative(value, "monotonic clock value")
         return value
 
@@ -384,17 +355,3 @@ class LiveDetectionWorker:
                 self._stop.set()
                 return
             self._stop.wait(self._sample_interval_s)
-
-
-def _frame_sample(frame: FrameRead) -> tuple[np.ndarray, float, float, bool] | None:
-    if frame is None:
-        return None
-    if isinstance(frame, DecodedFrame):
-        frame_timestamp_s = (
-            frame.captured_at_s if frame.capture_time_verified else frame.received_at_s
-        )
-        return frame.image, frame_timestamp_s, frame.received_at_s, frame.capture_time_verified
-    if not isinstance(frame, tuple) or len(frame) != 2:
-        raise ValueError("frame reader returned an invalid frame sample")
-    image, decoded_at_monotonic_s = frame
-    return image, decoded_at_monotonic_s, decoded_at_monotonic_s, False

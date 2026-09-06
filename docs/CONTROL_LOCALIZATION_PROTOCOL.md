@@ -1,60 +1,9 @@
-# Control localization payload
+# Control-localization diagnostic transport
 
-Set `SWEEP_LOCALIZATION_KEYS_JSON` to a JSON object mapping each positive drone ID to
-its dedicated localization-producer secret. For example, `{"1":"..."}` authorizes
-only that secret to authenticate as `source: "localization"` for drone 1. These keys
-are separate from `SWEEP_ADAPTER_KEYS_JSON`; a missing entry rejects localization input.
+This module is a fail-closed diagnostic bridge, not a navigation or flight-approval path. A host-configured `ControlLocalizationProjector` accepts `control_localization` only from the separately authenticated, aircraft-bound localization principal. Localization credentials must be distinct from all relay and adapter credentials. The producer signs the exact incoming frame. The relay verifies that signature, the current fleet-registry connection epoch, transport freshness and replay order, and the host-owned map, geometry, camera calibration, body extrinsics, ordered source identities, and measured clock mapping. Only one localization connection may be active for an aircraft in a session. The replay ledger retains every still-fresh event identity and has a hard memory bound; it fails closed if a burst fills that bound.
 
-`relay.control_localization` accepts a versioned, signed `control_localization` payload only after the relay transport authenticates its drone and connection epoch. `to_wire_payload` requires the adapter signature; the transport verifies it before calling the store. The payload is an adapter boundary for the control-localization fuser. Webcam observations cannot enter it because their capture times and publisher identity are explicitly unverified.
+The capture clock is mapped explicitly to the relay's `unix_epoch_ms` clock. READY evidence carries the fuser's fix, velocity, and height ages plus its covariance; the relay rechecks them against bounded host configuration. `position_uncertainty_mm` is the ceiling of a conservative three-dimensional Gaussian p95 envelope (`sqrt(chi-square(df=3, 0.95)) * sqrt(max_eigenvalue)`), not a one-sigma value. Output coordinates declare `position_frame: "map_enu"`. The fuser remains the trusted boundary for how tag, velocity, and height measurements produced that signed health result. The opaque `map_id` and `geometry_id` bind this diagnostic stream only; they are not the version-plus-digest navigation artifact contract and cannot activate a route.
 
-Each payload has a unique event ID and carries the map, geometry, camera-calibration, body-extrinsics, source, and capture-clock pins. It carries a measured mapping from the capture clock to the relay monotonic clock, including its maximum conversion error. The deployment pin stores that exact measured mapping. The store rejects changed offsets, rates, clock identities, duplicate event IDs, and clock uncertainty above the configured bound.
+The authenticated incoming floating-point frame is never broadcast. Its canonical unsigned fields, successful signature-verification result, and projected event ID are written to the audit log; signatures and credentials are deliberately excluded by the repository-wide audit policy. A projectable frame produces a separate relay-authored, aircraft-key-signed `control_pose` with integer milliseconds and millimetres, conservative clock-error handling, bounded coordinates and uncertainty, and its own event ID. The demo-only shared relay-token fallback is not a control-pose signing key. Its canonical unsigned fields and the fact that a signature was emitted are audited. Every ingress and output includes `flight_approved: false`. The output is routed only to the matching adapter connection. Its bounded queue conflates by safety dominance per drone: READY replaces only READY, HOLD replaces queued READY/HOLD but never LAND, and LAND replaces every older pose diagnostic; a later less-conservative state cannot hide a queued LAND. READY, HOLD, and LAND are preserved as reported; a HOLD or LAND without genuine retained pose and fix evidence records a refusal and emits no pose rather than inventing zeros.
 
-The fuser's last accepted tag capture time is the only value used for `position_last_seen_ms`. Its mapped time subtracts the measured conversion-error bound, so it never reports a future observation. The capture-clock mapping also produces `evaluated_at_relay_ms`, the valid predicted-pose timestamp. Evaluation time and relay receipt time never refresh position freshness. A ready snapshot also requires fresh verified velocity and height measurements and covariance below the deployment's position-uncertainty bound. A hold, land, stale, rejected, malformed, or mismatched payload gives the aircraft position quality `0.0`; relay telemetry cannot restore it.
-
-The relay integration uses `ControlLocalizationStore.ingest(raw, authenticated_drone_id, authenticated_connection_epoch, now_ms)`, then `apply(fleet_snapshot)`. `apply` replaces the affected aircraft's map-frame pose, quality, last-seen time, and immutable control provenance with the localization evidence. It leaves link telemetry independent. The caller owns payload signing and should call `ingest` only after authenticating the localization producer principal.
-
-The deployment pin for each drone is `ControlLocalizationPins`. It includes the selected map, geometry, camera-calibration and body-extrinsics identities, the capture and relay clock identities, connection epoch, and ordered source IDs. `ControlProvenance` is the immutable value that can be attached to the root-owned aircraft state when that field lands.
-
-## Deployment configuration
-
-When `SWEEP_LOCALIZATION_KEYS_JSON` authorizes one or more localization producers, set
-`SWEEP_CONTROL_LOCALIZATION_CONFIG` to a local JSON file. Startup rejects an absent file,
-invalid schema, or a pin set that does not exactly match the authorized producer IDs. The
-relay creates an independent `ControlLocalizationStore` for each session from that file.
-
-The file contains exactly `limits` and `drones`:
-
-```json
-{
-  "limits": {
-    "max_clock_error_ms": 5,
-    "max_fix_age_ms": 500,
-    "max_position_uncertainty_m": 0.2,
-    "land_after_fix_age_ms": 2000
-  },
-  "drones": [{
-    "drone_id": 1,
-    "connection_epoch": 1,
-    "map_id": "map-sha",
-    "geometry_id": "geometry-sha",
-    "camera_calibration_id": "camera-calibration-sha",
-    "body_extrinsics_id": "body-extrinsics-sha",
-    "capture_clock_id": "camera-clock",
-    "relay_clock_id": "relay-monotonic",
-    "source_ids": ["tag-camera", "msdk-velocity", "tof-height"],
-    "clock_mapping": {
-      "capture_clock_id": "camera-clock",
-      "relay_clock_id": "relay-monotonic",
-      "capture_reference_s": 0,
-      "relay_reference_ms": 100000,
-      "milliseconds_per_capture_second": 1000,
-      "max_error_ms": 5,
-      "measured": true
-    }
-  }]
-}
-```
-
-A frame with a stale capture time or different pinned identity is retained in the audit
-trail but marks that aircraft's localization unavailable. The next autonomy snapshot then
-has zero position quality, so position-requiring motion is refused.
+`RelaySession` retains only the latest diagnostic `ControlPose`, inside the same rollback transaction as its audit records. It does not modify `FleetSnapshot`, adapter telemetry pose, `position_quality`, planner freshness, the safety arbiter, or command dispatch. The default app has no projector, so localization frames fail closed until the host injects pins and limits through `control_localization_factory`. Physical pose/clearance arbitration, route-artifact binding, live camera timing calibration, and hardware acceptance remain blocked by the M3 evidence gates in the PRD.

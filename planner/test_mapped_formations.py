@@ -20,6 +20,7 @@ from planner.navigation import (
     MotionConfig,
     NavigationArtifact,
     Pose,
+    preview_evidence,
 )
 
 MOTION = MotionConfig(0.15, 0.2, 0.02, 0.02, 0.05, 0.05)
@@ -46,7 +47,12 @@ def artifact(blocked: frozenset[tuple[int, int]] = frozenset()) -> NavigationArt
     return NavigationArtifact(
         ArtifactPin("map-v3", "a" * 64),
         ArtifactPin("geometry-v3", "b" * 64),
+        ArtifactPin("preview", "c" * 64),
+        preview_evidence("synthetic"),
         0.5,
+        ((0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0), (0.0, 0.0)),
+        0.0,
+        4.0,
         (GridLevel("level_1", 1.5, (0.0, 0.0), 1.0, 20, 20, blocked),),
         (),
     )
@@ -55,6 +61,7 @@ def artifact(blocked: frozenset[tuple[int, int]] = frozenset()) -> NavigationArt
 def request(shape: str, *selected: DronePose, offsets: tuple[float, ...]) -> MappedFormationRequest:
     return MappedFormationRequest(
         shape,
+        9,
         9,
         selected,
         selected,
@@ -112,6 +119,7 @@ def test_polygon_boundary_and_accepted_grid_reject_invalid_slots() -> None:
         MappedFormationRequest(
             "line",
             9,
+            9,
             (drone(1, 8, 8), drone(2, 12, 8)),
             (drone(1, 8, 8), drone(2, 12, 8)),
             frozenset({1, 2}),
@@ -137,6 +145,7 @@ def test_separation_unapproved_zone_and_grounded_aircraft_are_refused() -> None:
         MappedFormationRequest(
             "line",
             9,
+            9,
             (drone(1, 8, 8), drone(2, 12, 8)),
             (drone(1, 8, 8), drone(2, 12, 8)),
             frozenset({1, 2}),
@@ -150,6 +159,7 @@ def test_separation_unapproved_zone_and_grounded_aircraft_are_refused() -> None:
     unapproved = MappedFormationPlanner().plan(
         MappedFormationRequest(
             "line",
+            9,
             9,
             (drone(1, 8, 8), drone(2, 12, 8)),
             (drone(1, 8, 8), drone(2, 12, 8)),
@@ -172,6 +182,7 @@ def test_separation_unapproved_zone_and_grounded_aircraft_are_refused() -> None:
     grounded = MappedFormationPlanner().plan(
         MappedFormationRequest(
             "line",
+            9,
             9,
             (drone(1, 8, 8), drone(2, 12, 8)),
             (drone(1, 8, 8), drone(2, 12, 8)),
