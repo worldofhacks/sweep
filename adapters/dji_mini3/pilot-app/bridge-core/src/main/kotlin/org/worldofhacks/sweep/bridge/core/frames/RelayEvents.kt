@@ -205,6 +205,118 @@ data class ControlPose(
     }
 }
 
+/** A relay-signed permit for one mapped goto. It never authorizes diagnostic `control_pose`. */
+data class NavigationRouteAuthorization(
+    val t: Long,
+    val expiresAtMs: Long,
+    val eventId: String,
+    val session: String,
+    val droneId: Int,
+    val connectionEpoch: Int,
+    val commandId: String,
+    val routeId: String,
+    val seq: Long,
+    val navigationConfigId: String,
+    val mapId: String,
+    val geometryId: String,
+    val cameraCalibrationId: String,
+    val bodyExtrinsicsId: String,
+    val startXMm: Long,
+    val startYMm: Long,
+    val startZMm: Long,
+    val targetXMm: Long,
+    val targetYMm: Long,
+    val targetZMm: Long,
+    val maxSpeedMmS: Long,
+    val horizontalToleranceMm: Long,
+    val verticalToleranceMm: Long,
+    val maxPositionUncertaintyMm: Long,
+    val tubeRadiusMm: Long,
+    val signature: String,
+) {
+    fun unsignedEvent(): JsonObject = JsonObject(linkedMapOf(
+        "v" to JsonInt(1), "type" to JsonString(TYPE), "t" to JsonInt(t), "expires_at_ms" to JsonInt(expiresAtMs),
+        "event_id" to JsonString(eventId), "session" to JsonString(session), "drone_id" to JsonInt(droneId.toLong()),
+        "connection_epoch" to JsonInt(connectionEpoch.toLong()), "command_id" to JsonString(commandId), "route_id" to JsonString(routeId),
+        "seq" to JsonInt(seq), "navigation_config_id" to JsonString(navigationConfigId), "map_id" to JsonString(mapId),
+        "geometry_id" to JsonString(geometryId), "camera_calibration_id" to JsonString(cameraCalibrationId), "body_extrinsics_id" to JsonString(bodyExtrinsicsId),
+        "start_x_mm" to JsonInt(startXMm), "start_y_mm" to JsonInt(startYMm), "start_z_mm" to JsonInt(startZMm),
+        "target_x_mm" to JsonInt(targetXMm), "target_y_mm" to JsonInt(targetYMm), "target_z_mm" to JsonInt(targetZMm),
+        "max_speed_mm_s" to JsonInt(maxSpeedMmS), "horizontal_tolerance_mm" to JsonInt(horizontalToleranceMm),
+        "vertical_tolerance_mm" to JsonInt(verticalToleranceMm), "max_position_uncertainty_mm" to JsonInt(maxPositionUncertaintyMm),
+        "tube_radius_mm" to JsonInt(tubeRadiusMm), "flight_approved" to JsonBool(true),
+    ))
+
+    fun verifies(key: ByteArray): Boolean = Signing.verify(unsignedEvent(), signature, key)
+
+    companion object {
+        const val TYPE = "navigation_route_authorization"
+        private const val CODE = "invalid_navigation_route_authorization"
+        private val FIELDS = setOf("v", "type", "t", "expires_at_ms", "event_id", "session", "drone_id", "connection_epoch", "command_id", "route_id", "seq", "navigation_config_id", "map_id", "geometry_id", "camera_calibration_id", "body_extrinsics_id", "start_x_mm", "start_y_mm", "start_z_mm", "target_x_mm", "target_y_mm", "target_z_mm", "max_speed_mm_s", "horizontal_tolerance_mm", "vertical_tolerance_mm", "max_position_uncertainty_mm", "tube_radius_mm", "flight_approved", "signature")
+
+        fun parse(json: JsonObject): NavigationRouteAuthorization {
+            Fields.exact(json, FIELDS, CODE)
+            Fields.envelope(json, TYPE, CODE)
+            if (json["flight_approved"] != JsonBool(true)) throw ContractError(CODE, "flight_approved must be true")
+            val signature = Fields.nonEmptyString(json["signature"], "signature", CODE)
+            if (!Signing.isWellFormed(signature)) throw ContractError(CODE, "signature must be lowercase HMAC-SHA256 hex")
+            val expires = Fields.positiveInt(json["expires_at_ms"], "expires_at_ms", CODE)
+            val issued = Fields.nonNegativeInt(json["t"], "t", CODE)
+            if (expires <= issued) throw ContractError(CODE, "expires_at_ms must be after t")
+            return NavigationRouteAuthorization(issued, expires, Fields.nonEmptyString(json["event_id"], "event_id", CODE), Fields.nonEmptyString(json["session"], "session", CODE), Fields.positiveInt32(json["drone_id"], "drone_id", CODE), Fields.positiveInt32(json["connection_epoch"], "connection_epoch", CODE), Fields.nonEmptyString(json["command_id"], "command_id", CODE), Fields.nonEmptyString(json["route_id"], "route_id", CODE), Fields.positiveInt(json["seq"], "seq", CODE), Fields.nonEmptyString(json["navigation_config_id"], "navigation_config_id", CODE), Fields.nonEmptyString(json["map_id"], "map_id", CODE), Fields.nonEmptyString(json["geometry_id"], "geometry_id", CODE), Fields.nonEmptyString(json["camera_calibration_id"], "camera_calibration_id", CODE), Fields.nonEmptyString(json["body_extrinsics_id"], "body_extrinsics_id", CODE), Fields.integer(json["start_x_mm"], "start_x_mm", CODE), Fields.integer(json["start_y_mm"], "start_y_mm", CODE), Fields.integer(json["start_z_mm"], "start_z_mm", CODE), Fields.integer(json["target_x_mm"], "target_x_mm", CODE), Fields.integer(json["target_y_mm"], "target_y_mm", CODE), Fields.integer(json["target_z_mm"], "target_z_mm", CODE), Fields.positiveInt(json["max_speed_mm_s"], "max_speed_mm_s", CODE), Fields.positiveInt(json["horizontal_tolerance_mm"], "horizontal_tolerance_mm", CODE), Fields.positiveInt(json["vertical_tolerance_mm"], "vertical_tolerance_mm", CODE), Fields.positiveInt(json["max_position_uncertainty_mm"], "max_position_uncertainty_mm", CODE), Fields.positiveInt(json["tube_radius_mm"], "tube_radius_mm", CODE), signature)
+        }
+    }
+}
+
+/** Relay-signed mapped pose. Non-ready status explicitly withholds a coordinate observation. */
+data class NavigationPose(
+    val t: Long, val eventId: String, val session: String, val droneId: Int, val connectionEpoch: Int,
+    val commandId: String, val routeId: String, val seq: Long, val navigationConfigId: String,
+    val mapId: String, val geometryId: String, val cameraCalibrationId: String, val bodyExtrinsicsId: String,
+    val poseTimeMs: Long?, val fixTimeMs: Long?, val xMm: Long?, val yMm: Long?, val zMm: Long?,
+    val positionUncertaintyMm: Long?, val status: Status, val signature: String,
+) {
+    enum class Status { READY, HOLD, LAND }
+
+    fun unsignedEvent(): JsonObject = JsonObject(linkedMapOf(
+        "v" to JsonInt(1), "type" to JsonString(TYPE), "t" to JsonInt(t), "event_id" to JsonString(eventId),
+        "session" to JsonString(session), "drone_id" to JsonInt(droneId.toLong()), "connection_epoch" to JsonInt(connectionEpoch.toLong()),
+        "command_id" to JsonString(commandId), "route_id" to JsonString(routeId), "seq" to JsonInt(seq), "navigation_config_id" to JsonString(navigationConfigId),
+        "map_id" to JsonString(mapId), "geometry_id" to JsonString(geometryId), "camera_calibration_id" to JsonString(cameraCalibrationId), "body_extrinsics_id" to JsonString(bodyExtrinsicsId),
+        "pose_time_ms" to nullableInt(poseTimeMs), "fix_time_ms" to nullableInt(fixTimeMs), "x_mm" to nullableInt(xMm), "y_mm" to nullableInt(yMm), "z_mm" to nullableInt(zMm), "position_uncertainty_mm" to nullableInt(positionUncertaintyMm),
+        "status" to JsonString(status.name.lowercase()), "flight_approved" to JsonBool(true),
+    ))
+
+    fun verifies(key: ByteArray): Boolean = Signing.verify(unsignedEvent(), signature, key)
+
+    companion object {
+        const val TYPE = "navigation_pose"
+        private const val CODE = "invalid_navigation_pose"
+        private val FIELDS = setOf("v", "type", "t", "event_id", "session", "drone_id", "connection_epoch", "command_id", "route_id", "seq", "navigation_config_id", "map_id", "geometry_id", "camera_calibration_id", "body_extrinsics_id", "pose_time_ms", "fix_time_ms", "x_mm", "y_mm", "z_mm", "position_uncertainty_mm", "status", "flight_approved", "signature")
+        private fun nullableInt(value: Long?) = value?.let(::JsonInt) ?: JsonNull
+        private fun parseNullable(value: JsonValue?, field: String): Long? = if (value == JsonNull) null else Fields.nonNegativeInt(value, field, CODE)
+
+        fun parse(json: JsonObject): NavigationPose {
+            Fields.exact(json, FIELDS, CODE)
+            Fields.envelope(json, TYPE, CODE)
+            if (json["flight_approved"] != JsonBool(true)) throw ContractError(CODE, "flight_approved must be true")
+            val signature = Fields.nonEmptyString(json["signature"], "signature", CODE)
+            if (!Signing.isWellFormed(signature)) throw ContractError(CODE, "signature must be lowercase HMAC-SHA256 hex")
+            val status = when (Fields.nonEmptyString(json["status"], "status", CODE)) { "ready" -> Status.READY; "hold" -> Status.HOLD; "land" -> Status.LAND; else -> throw ContractError(CODE, "status must be ready, hold, or land") }
+            val poseTime = parseNullable(json["pose_time_ms"], "pose_time_ms")
+            val fixTime = parseNullable(json["fix_time_ms"], "fix_time_ms")
+            val x = if (json["x_mm"] == JsonNull) null else Fields.integer(json["x_mm"], "x_mm", CODE)
+            val y = if (json["y_mm"] == JsonNull) null else Fields.integer(json["y_mm"], "y_mm", CODE)
+            val z = if (json["z_mm"] == JsonNull) null else Fields.integer(json["z_mm"], "z_mm", CODE)
+            val uncertainty = parseNullable(json["position_uncertainty_mm"], "position_uncertainty_mm")
+            if (status == Status.READY && listOf(poseTime, fixTime, x, y, z, uncertainty).any { it == null }) throw ContractError(CODE, "ready navigation_pose requires a complete observation")
+            if (status != Status.READY && listOf(poseTime, fixTime, x, y, z, uncertainty).any { it != null }) throw ContractError(CODE, "hold and land navigation_pose must withhold observation values")
+            if (poseTime != null && fixTime != null && poseTime < fixTime) throw ContractError(CODE, "pose_time_ms must not precede fix_time_ms")
+            return NavigationPose(Fields.nonNegativeInt(json["t"], "t", CODE), Fields.nonEmptyString(json["event_id"], "event_id", CODE), Fields.nonEmptyString(json["session"], "session", CODE), Fields.positiveInt32(json["drone_id"], "drone_id", CODE), Fields.positiveInt32(json["connection_epoch"], "connection_epoch", CODE), Fields.nonEmptyString(json["command_id"], "command_id", CODE), Fields.nonEmptyString(json["route_id"], "route_id", CODE), Fields.positiveInt(json["seq"], "seq", CODE), Fields.nonEmptyString(json["navigation_config_id"], "navigation_config_id", CODE), Fields.nonEmptyString(json["map_id"], "map_id", CODE), Fields.nonEmptyString(json["geometry_id"], "geometry_id", CODE), Fields.nonEmptyString(json["camera_calibration_id"], "camera_calibration_id", CODE), Fields.nonEmptyString(json["body_extrinsics_id"], "body_extrinsics_id", CODE), poseTime, fixTime, x, y, z, uncertainty, status, signature)
+        }
+    }
+}
+
 /** `relay.state.MembershipTransition.to_event`: the relay's answer to join and readiness. */
 data class MembershipEvent(
     val t: Long,

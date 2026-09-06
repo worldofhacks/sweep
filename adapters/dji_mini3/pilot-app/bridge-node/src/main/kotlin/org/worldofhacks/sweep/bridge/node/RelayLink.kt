@@ -32,6 +32,8 @@ import org.worldofhacks.sweep.bridge.core.frames.ControlHeartbeat
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
 import org.worldofhacks.sweep.bridge.core.frames.LifecycleStatus
 import org.worldofhacks.sweep.bridge.core.frames.MembershipEvent
+import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
 import org.worldofhacks.sweep.bridge.core.frames.MembershipFrame
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusBody
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusFrame
@@ -127,6 +129,8 @@ class RelayLink(
     private var readiness = ReadinessInput()
     private var previousEpoch: Int? = null
     private var lastControlHeartbeatSeq: Long = 0
+    private var lastNavigationAuthorizationSeq: Long = 0
+    private var lastNavigationPoseSeq: Long = 0
     private val seenControlPoseEvents = ArrayDeque<String>()
     private var lastControlPoseEventTimeMs: Long? = null
     private var lastControlPoseTimeMs: Long? = null
@@ -165,6 +169,7 @@ class RelayLink(
                 watchdog = WatchdogState.DISARMED,
                 controlPose = null,
                 controlPoseExpiresAtMs = null,
+                navigationAuthorization = null, navigationPose = null, navigationPoseFreshUntilMs = null,
                 nextAttemptAtMs = null,
                 backoffMs = null,
             )
@@ -294,6 +299,8 @@ class RelayLink(
             AuthRefused.TYPE -> onAuthRefused(json)
             ControlHeartbeat.TYPE -> onControlHeartbeat(json, now)
             ControlPose.TYPE -> onControlPose(json)
+            NavigationRouteAuthorization.TYPE -> onNavigationAuthorization(json)
+            NavigationPose.TYPE -> onNavigationPose(json)
             StateEvent.TYPE -> onState(json)
             MembershipEvent.TYPE -> onMembership(json)
             CommandFrame.TYPE -> onCommand(json)
@@ -406,6 +413,53 @@ class RelayLink(
         update { it.copy(controlPose = pose, controlPoseExpiresAtMs = clock.nowMs() + validForMs) }
     }
 
+    private fun onNavigationAuthorization(json: JsonObject) {
+        val authorization = parseOrLog("navigation_route_authorization") { NavigationRouteAuthorization.parse(json) } ?: return
+        val navigation = config.navigation
+        val current = _state.value
+        val relayNow = admission.relayNowMs()
+        val identityMatches = navigation?.enabled == true && current.authenticated && current.joined &&
+            authorization.session == config.session && authorization.droneId == config.droneId && authorization.connectionEpoch == current.connectionEpoch &&
+            authorization.navigationConfigId == navigation.navigationConfigId && authorization.mapId == navigation.mapId && authorization.geometryId == navigation.geometryId &&
+            authorization.cameraCalibrationId == navigation.cameraCalibrationId && authorization.bodyExtrinsicsId == navigation.bodyExtrinsicsId
+        if (!identityMatches || !authorization.verifies(config.key) || authorization.seq <= lastNavigationAuthorizationSeq ||
+            authorization.t > relayNow + RELAY_EVENT_FUTURE_SKEW_MS || authorization.expiresAtMs <= relayNow ||
+            authorization.expiresAtMs - authorization.t > navigation.maxAuthorizationLifetimeMs
+        ) {
+            log.log("dropping invalid, stale, or replayed navigation route authorization")
+            return
+        }
+        lastNavigationAuthorizationSeq = authorization.seq
+        lastNavigationPoseSeq = 0
+        update { it.copy(navigationAuthorization = authorization, navigationPose = null, navigationPoseFreshUntilMs = null) }
+    }
+
+    private fun onNavigationPose(json: JsonObject) {
+        val pose = parseOrLog("navigation_pose") { NavigationPose.parse(json) } ?: return
+        val navigation = config.navigation ?: run { log.log("dropping navigation pose without navigation configuration"); return }
+        val authorization = _state.value.navigationAuthorization ?: run { log.log("dropping navigation pose without route authorization"); return }
+        val current = _state.value
+        val relayNow = admission.relayNowMs()
+        val bound = navigation.enabled && current.authenticated && current.joined &&
+            pose.session == config.session && pose.droneId == config.droneId && pose.connectionEpoch == current.connectionEpoch &&
+            pose.commandId == authorization.commandId && pose.routeId == authorization.routeId && pose.navigationConfigId == navigation.navigationConfigId &&
+            pose.mapId == navigation.mapId && pose.geometryId == navigation.geometryId && pose.cameraCalibrationId == navigation.cameraCalibrationId && pose.bodyExtrinsicsId == navigation.bodyExtrinsicsId
+        val ready = pose.status == NavigationPose.Status.READY
+        val poseTime = pose.poseTimeMs
+        val fixTime = pose.fixTimeMs
+        val uncertainty = pose.positionUncertaintyMm
+        val observationFresh = !ready || (poseTime != null && fixTime != null && uncertainty != null &&
+            poseTime <= relayNow + RELAY_EVENT_FUTURE_SKEW_MS && fixTime <= relayNow + RELAY_EVENT_FUTURE_SKEW_MS &&
+            relayNow - poseTime <= navigation.poseFreshnessMs && relayNow - fixTime <= navigation.poseFreshnessMs && uncertainty <= authorization.maxPositionUncertaintyMm)
+        if (!bound || !pose.verifies(config.key) || pose.seq <= lastNavigationPoseSeq || pose.t > relayNow + RELAY_EVENT_FUTURE_SKEW_MS || !observationFresh) {
+            log.log("dropping invalid, stale, or replayed navigation pose")
+            return
+        }
+        lastNavigationPoseSeq = pose.seq
+        val freshUntil = if (ready) clock.nowMs() + minOf(navigation.poseFreshnessMs - (relayNow - poseTime!!), navigation.poseFreshnessMs - (relayNow - fixTime!!)) else null
+        update { it.copy(navigationPose = pose, navigationPoseFreshUntilMs = freshUntil) }
+    }
+
     private fun onAuthAccepted(json: JsonObject, receivedAtMs: Long) {
         val accepted = parseOrLog("auth.accepted") { AuthAccepted.parse(json) } ?: return
         val settings = accepted.node
@@ -506,6 +560,8 @@ class RelayLink(
         previousEpoch = epoch
         admission.bind(epoch, rosterVersion)
         lastControlHeartbeatSeq = 0
+        lastNavigationAuthorizationSeq = 0
+        lastNavigationPoseSeq = 0
         seenControlPoseEvents.clear()
         lastControlPoseEventTimeMs = null
         lastControlPoseTimeMs = null
@@ -525,6 +581,7 @@ class RelayLink(
                 rejoins = if (rejoin) it.rejoins + 1 else it.rejoins,
                 watchdog = dog?.state ?: WatchdogState.DISARMED,
                 controlPose = null, controlPoseExpiresAtMs = null,
+                navigationAuthorization = null, navigationPose = null, navigationPoseFreshUntilMs = null,
             )
         }
         log.log((if (rejoin) "rejoined" else "joined") + " as drone ${config.droneId}, connection epoch $epoch; watchdog armed")
@@ -552,6 +609,7 @@ class RelayLink(
                 joined = false,
                 controlPose = null,
                 controlPoseExpiresAtMs = null,
+                navigationAuthorization = null, navigationPose = null, navigationPoseFreshUntilMs = null,
                 lastError = reason,
             )
         }
@@ -576,6 +634,7 @@ class RelayLink(
                     joined = false,
                     controlPose = null,
                     controlPoseExpiresAtMs = null,
+                    navigationAuthorization = null, navigationPose = null, navigationPoseFreshUntilMs = null,
                 )
             }
         }
@@ -885,6 +944,10 @@ class RelayLink(
         val poseExpiry = _state.value.controlPoseExpiresAtMs
         if (poseExpiry != null && clock.nowMs() >= poseExpiry) {
             update { it.copy(controlPose = null, controlPoseExpiresAtMs = null) }
+        }
+        val navigationExpiry = _state.value.navigationPoseFreshUntilMs
+        if (navigationExpiry != null && clock.nowMs() >= navigationExpiry) {
+            update { it.copy(navigationPose = null, navigationPoseFreshUntilMs = null) }
         }
         checkAircraft()
         sendNodeStatusIfChanged()

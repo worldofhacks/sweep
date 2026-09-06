@@ -220,6 +220,10 @@ class FlightExecutor(
             lastRelayActivityMs = state.lastRelayActivityMs,
             controlAuthorityGranted = state.readiness.controlAuthority,
             settings = state.nodeSettings?.let { FlightSettings(it.virtualStickHz, it.watchdogHoldMs, it.watchdogFailsafeMs) },
+            navigationAuthorization = state.navigationAuthorization,
+            navigationPose = state.navigationPose,
+            navigationPoseFreshUntilMs = state.navigationPoseFreshUntilMs,
+            relayOffsetMs = state.relayOffsetMs ?: 0,
         )
     }
 }

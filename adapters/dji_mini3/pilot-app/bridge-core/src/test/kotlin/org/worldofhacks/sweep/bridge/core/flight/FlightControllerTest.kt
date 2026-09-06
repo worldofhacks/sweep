@@ -158,6 +158,17 @@ class FlightControllerTest {
     }
 
     @Test
+    fun `mapped goto never falls back to timeboxed navigation without a route authorization`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        val sink = h.run(CommandArgs.Goto(xMm = 0, yMm = 1_000, zMm = 1_200, speedMmS = 300, navigationRouteId = "route-1"), "command-1")
+        assertEquals("failed", sink.terminal?.first, sink.events.toString())
+        assertEquals(FlightReason.NAVIGATION_UNAUTHORIZED.wire, sink.terminal?.second)
+        assertTrue(h.frames.isEmpty())
+    }
+
+    @Test
     fun `deadman decays to neutral at hold and lands at failsafe reporting the contract reasons`() {
         val h = Harness()
         h.hovering()

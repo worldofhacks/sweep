@@ -1,6 +1,8 @@
 package org.worldofhacks.sweep.bridge.core.flight
 
 import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.sqrt
 import org.worldofhacks.sweep.bridge.core.admission.Clock
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.watchdog.Watchdog
@@ -65,6 +67,13 @@ class FlightController(
         data class Enabling(val sinceMs: Long) : Phase
 
         data class Running(val steps: List<MotionStep>, val index: Int, val startedMs: Long, val yawSettledSinceMs: Long?) : Phase
+
+        data class NavigationGoto(
+            val authorization: org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization,
+            val lostSinceMs: Long? = null,
+            val settledSinceMs: Long? = null,
+            val body: BodyVelocity = BodyVelocity(),
+        ) : Phase
 
         data class Settling(val untilMs: Long, val detail: String) : Phase
 
@@ -340,6 +349,25 @@ class FlightController(
             fail(sink, FlightReason.NOT_AIRBORNE, "aircraft is ${facts.flightState}; goto needs a hovering aircraft")
             return
         }
+        val routeId = args.navigationRouteId
+        if (routeId != null) {
+            val navigation = config.navigation
+            val authorization = link.navigationAuthorization
+            if (navigation == null || !navigation.enabled || !link.joined || authorization == null ||
+                !matchesAuthorization(authorization, command, args, routeId, navigation, now)
+            ) {
+                fail(sink, FlightReason.NAVIGATION_UNAUTHORIZED, "mapped goto requires a current route authorization and an enabled, joined navigation configuration")
+                return
+            }
+            val pose = freshNavigationPose(now, authorization, navigation)
+            if (pose?.status != org.worldofhacks.sweep.bridge.core.frames.NavigationPose.Status.READY || !withinStartTolerance(pose, authorization)) {
+                fail(sink, FlightReason.NAVIGATION_UNAVAILABLE, "mapped goto requires a fresh ready pose at the authorized route start")
+                return
+            }
+            active = Active(command, sink, now, "mapped goto to ${args.xMm}, ${args.yMm}, ${args.zMm} mm")
+            beginVirtualStick(now) { transition(Phase.NavigationGoto(authorization)) }
+            return
+        }
         val step = MotionPlanner.goto(args, facts, config.limits, config.minDisplacementM)
         if (step == null) {
             sink.executing("already within ${format(config.minDisplacementM)} m of the target")
@@ -569,6 +597,7 @@ class FlightController(
                 transition(Phase.Idle)
             }
             is Phase.Running -> advanceRunning(current, now)
+            is Phase.NavigationGoto -> advanceNavigationGoto(current, now)
             is Phase.Settling -> if (now >= current.untilMs) {
                 completeActive("${current.detail}; measured speed ${format(facts.speedMS)} m/s")
                 releaseVirtualStick()
@@ -613,6 +642,72 @@ class FlightController(
                 progress(now, "${describe(step, current.index + 1, current.steps.size)}: heading ${format(facts.yawDeg)}, error ${format(error)} deg, $elapsed ms")
             }
         }
+    }
+
+    private fun advanceNavigationGoto(current: Phase.NavigationGoto, now: Long) {
+        val navigation = config.navigation
+        val pose = navigation?.let { freshNavigationPose(now, current.authorization, it) }
+        if (!link.joined || pose == null || pose.status == org.worldofhacks.sweep.bridge.core.frames.NavigationPose.Status.HOLD) {
+            val lostSince = current.lostSinceMs ?: now
+            if (now - lostSince >= (navigation?.lossLandAfterMs ?: 0)) {
+                failActive(FlightReason.NAVIGATION_LOST, "mapped pose unavailable for ${now - lostSince} ms; landing")
+                startLanding(now, "navigation_lost")
+            } else {
+                phase = current.copy(lostSinceMs = lostSince, settledSinceMs = null, body = BodyVelocity())
+                progress(now, "mapped goto holding for a fresh pose")
+            }
+            return
+        }
+        if (pose.status == org.worldofhacks.sweep.bridge.core.frames.NavigationPose.Status.LAND) {
+            failActive(FlightReason.NAVIGATION_LOST, "mapped pose requested landing")
+            startLanding(now, "navigation_land")
+            return
+        }
+        val x = pose.xMm!!; val y = pose.yMm!!; val z = pose.zMm!!
+        val dx = current.authorization.targetXMm - x
+        val dy = current.authorization.targetYMm - y
+        val dz = current.authorization.targetZMm - z
+        if (outsideTube(current.authorization, x, y, z, pose.positionUncertaintyMm!!)) {
+            failActive(FlightReason.NAVIGATION_OUTSIDE_TUBE, "mapped pose is outside the authorized 3D tube")
+            releaseVirtualStick()
+            return
+        }
+        val horizontal = hypot(dx.toDouble(), dy.toDouble())
+        if (horizontal <= current.authorization.horizontalToleranceMm && abs(dz) <= current.authorization.verticalToleranceMm) {
+            val settled = current.settledSinceMs ?: now
+            if (now - settled >= config.settleMs) {
+                completeActive("mapped pose remained within the authorized target tolerance for ${config.settleMs} ms")
+                releaseVirtualStick()
+            } else phase = current.copy(lostSinceMs = null, settledSinceMs = settled, body = BodyVelocity())
+            return
+        }
+        val distance = sqrt(dx.toDouble() * dx + dy.toDouble() * dy + dz.toDouble() * dz)
+        val speed = minOf(current.authorization.maxSpeedMmS, (active?.command?.args as? CommandArgs.Goto)?.speedMmS ?: current.authorization.maxSpeedMmS) / 1000.0
+        val seconds = maxOf(horizontal / 1000.0 / config.limits.maxHorizontalMS, abs(dz) / 1000.0 / config.limits.maxVerticalMS, distance / 1000.0 / speed.coerceAtLeast(0.01))
+        val (forward, right) = GroundFrame.toBody(dx / 1000.0 / seconds, dy / 1000.0 / seconds, facts.yawDeg)
+        phase = current.copy(lostSinceMs = null, settledSinceMs = null, body = config.limits.clamp(BodyVelocity(forwardMS = forward, rightMS = right, upMS = dz / 1000.0 / seconds)))
+        progress(now, "mapped goto: ${distance.toLong()} mm remaining")
+    }
+
+    private fun matchesAuthorization(auth: org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization, command: FlightCommand, args: CommandArgs.Goto, routeId: String, navigation: NavigationConfig, now: Long): Boolean =
+        auth.commandId == command.commandId && auth.routeId == routeId && auth.navigationConfigId == navigation.navigationConfigId && auth.mapId == navigation.mapId && auth.geometryId == navigation.geometryId && auth.cameraCalibrationId == navigation.cameraCalibrationId && auth.bodyExtrinsicsId == navigation.bodyExtrinsicsId && auth.targetXMm == args.xMm && auth.targetYMm == args.yMm && auth.targetZMm == args.zMm && auth.maxSpeedMmS >= args.speedMmS && now + link.relayOffsetMs <= auth.expiresAtMs && auth.expiresAtMs - auth.t <= navigation.maxAuthorizationLifetimeMs
+
+    private fun freshNavigationPose(now: Long, auth: org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization, navigation: NavigationConfig): org.worldofhacks.sweep.bridge.core.frames.NavigationPose? = link.navigationPose?.takeIf {
+        it.commandId == auth.commandId && it.routeId == auth.routeId && it.navigationConfigId == navigation.navigationConfigId && it.mapId == navigation.mapId && it.geometryId == navigation.geometryId && it.cameraCalibrationId == navigation.cameraCalibrationId && it.bodyExtrinsicsId == navigation.bodyExtrinsicsId && (link.navigationPoseFreshUntilMs?.let { expiry -> now <= expiry } ?: false)
+    }
+
+    private fun withinStartTolerance(pose: org.worldofhacks.sweep.bridge.core.frames.NavigationPose, auth: org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization): Boolean =
+        hypot((pose.xMm!! - auth.startXMm).toDouble(), (pose.yMm!! - auth.startYMm).toDouble()) <= auth.horizontalToleranceMm && abs(pose.zMm!! - auth.startZMm) <= auth.verticalToleranceMm && pose.positionUncertaintyMm!! <= auth.maxPositionUncertaintyMm
+
+    private fun outsideTube(auth: org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization, x: Long, y: Long, z: Long, uncertainty: Long): Boolean {
+        if (uncertainty > auth.maxPositionUncertaintyMm) return true
+        val sx = auth.startXMm.toDouble(); val sy = auth.startYMm.toDouble(); val sz = auth.startZMm.toDouble()
+        val dx = auth.targetXMm - sx; val dy = auth.targetYMm - sy; val dz = auth.targetZMm - sz
+        val lengthSquared = dx * dx + dy * dy + dz * dz
+        val projection = if (lengthSquared == 0.0) 0.0 else (((x - sx) * dx + (y - sy) * dy + (z - sz) * dz) / lengthSquared).coerceIn(0.0, 1.0)
+        val px = sx + projection * dx; val py = sy + projection * dy; val pz = sz + projection * dz
+        val error = sqrt((x - px) * (x - px) + (y - py) * (y - py) + (z - pz) * (z - pz))
+        return error + uncertainty > auth.tubeRadiusMm
     }
 
     private fun nextStep(current: Phase.Running, now: Long) {
@@ -727,6 +822,7 @@ class FlightController(
         if (!vsEnabled) return
         val frame = when (val current = phase) {
             is Phase.Running -> frameFor(current.steps[current.index])
+            is Phase.NavigationGoto -> mapping.toFrame(current.body)
             is Phase.Bench -> current.frame
             else -> StickFrame.NEUTRAL
         }
@@ -879,6 +975,7 @@ class FlightController(
             is MotionStep.Velocity -> "velocity_step"
             is MotionStep.Yaw -> "yaw_step"
         }
+        is Phase.NavigationGoto -> "navigation_goto"
         is Phase.Settling -> "settling"
         is Phase.TakingOff -> "taking_off"
         is Phase.Landing -> "landing"

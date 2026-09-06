@@ -2,6 +2,9 @@ package org.worldofhacks.sweep.bridge.node
 
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusBody
 import org.worldofhacks.sweep.bridge.core.frames.RefusalEvent
@@ -17,6 +20,7 @@ data class NodeConfig(
     val adapterId: String,
     val capabilities: List<String>,
     val localizationPins: LocalizationPins? = null,
+    val navigation: NavigationConfig? = null,
 ) {
     init {
         require(relayUrl.startsWith("ws://") || relayUrl.startsWith("wss://")) { "relay URL must start with ws:// or wss://" }
@@ -27,9 +31,8 @@ data class NodeConfig(
         require(capabilities.isNotEmpty() && capabilities.toSet().size == capabilities.size) {
             "capabilities must be a non-empty list without duplicates"
         }
-        require("localized_navigation" !in capabilities) {
-            "localized_navigation is not implemented; localization input is diagnostic-only"
-        }
+        require("localized_navigation" !in capabilities || navigation != null) { "localized_navigation requires explicit navigation configuration" }
+        require(navigation == null || "localized_navigation" in capabilities) { "navigation requires the localized_navigation capability" }
     }
 
     val key: ByteArray
@@ -136,6 +139,9 @@ data class LinkState(
     val controlPose: ControlPose? = null,
     /** Local-clock deadline at which [controlPose] is cleared. */
     val controlPoseExpiresAtMs: Long? = null,
+    val navigationAuthorization: NavigationRouteAuthorization? = null,
+    val navigationPose: NavigationPose? = null,
+    val navigationPoseFreshUntilMs: Long? = null,
     val estop: Boolean = false,
     val lastRefusal: RefusalEvent? = null,
     val lastAuthRefusal: AuthRefused? = null,

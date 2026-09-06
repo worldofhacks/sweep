@@ -41,9 +41,11 @@ sealed interface CommandArgs {
         override fun toJson() = Json.json("z_mm" to zMm)
     }
 
-    data class Goto(val xMm: Long, val yMm: Long, val zMm: Long, val speedMmS: Long) : CommandArgs {
+    data class Goto(val xMm: Long, val yMm: Long, val zMm: Long, val speedMmS: Long, val navigationRouteId: String? = null) : CommandArgs {
         override val operation get() = CommandOperation.GOTO
-        override fun toJson() = Json.json("x_mm" to xMm, "y_mm" to yMm, "z_mm" to zMm, "speed_mm_s" to speedMmS)
+        override fun toJson() = Json.json("x_mm" to xMm, "y_mm" to yMm, "z_mm" to zMm, "speed_mm_s" to speedMmS).let { base ->
+            navigationRouteId?.let { base.with("navigation_route_id", Json.value(it)) } ?: base
+        }
     }
 
     data class RotateTo(val yawMdeg: Long, val speedMdegS: Long) : CommandArgs {
@@ -111,7 +113,7 @@ sealed interface CommandArgs {
                 CommandOperation.CAMERA_CAPABILITIES, CommandOperation.CAMERA_READY,
                 -> emptySet()
             }
-            if (args.keys != expected) {
+            if (args.keys != expected && !(operation == CommandOperation.GOTO && args.keys == expected + "navigation_route_id")) {
                 throw ContractError(CODE, "${operation.wire} arguments do not match the v1 contract")
             }
             fun integer(field: String) = Fields.integer(args[field], field, CODE)
@@ -119,7 +121,7 @@ sealed interface CommandArgs {
             fun id(field: String) = Fields.nonEmptyString(args[field], field, CODE)
             return when (operation) {
                 CommandOperation.TAKEOFF -> Takeoff(integer("z_mm"))
-                CommandOperation.GOTO -> Goto(integer("x_mm"), integer("y_mm"), integer("z_mm"), positive("speed_mm_s"))
+                CommandOperation.GOTO -> Goto(integer("x_mm"), integer("y_mm"), integer("z_mm"), positive("speed_mm_s"), args["navigation_route_id"]?.let { Fields.nonEmptyString(it, "navigation_route_id", CODE) })
                 CommandOperation.ROTATE_TO -> RotateTo(integer("yaw_mdeg"), positive("speed_mdeg_s"))
                 CommandOperation.HOVER -> Hover
                 CommandOperation.LAND -> Land

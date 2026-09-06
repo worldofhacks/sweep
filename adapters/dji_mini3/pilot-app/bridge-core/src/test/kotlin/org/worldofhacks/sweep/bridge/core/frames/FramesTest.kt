@@ -264,6 +264,33 @@ class FramesTest {
     }
 
     @Test
+    fun `navigation authorization and poses require signed complete route evidence`() {
+        val key = "adapter-key".toByteArray()
+        val authorization = NavigationRouteAuthorization(
+            t = 2_000, expiresAtMs = 3_000, eventId = "auth-1", session = "session-a", droneId = 1, connectionEpoch = 2,
+            commandId = "command-1", routeId = "route-1", seq = 1, navigationConfigId = "navigation-a", mapId = "map-a",
+            geometryId = "geometry-a", cameraCalibrationId = "camera-a", bodyExtrinsicsId = "body-a",
+            startXMm = 0, startYMm = 0, startZMm = 1_000, targetXMm = 1_000, targetYMm = 0, targetZMm = 1_000,
+            maxSpeedMmS = 300, horizontalToleranceMm = 100, verticalToleranceMm = 100, maxPositionUncertaintyMm = 50,
+            tubeRadiusMm = 200, signature = "0".repeat(64),
+        )
+        val signedAuthorization = authorization.unsignedEvent().with("signature", Json.value(Signing.sign(authorization.unsignedEvent(), key)))
+        assertTrue(NavigationRouteAuthorization.parse(signedAuthorization).verifies(key))
+
+        val pose = NavigationPose(
+            t = 2_010, eventId = "pose-1", session = "session-a", droneId = 1, connectionEpoch = 2,
+            commandId = "command-1", routeId = "route-1", seq = 1, navigationConfigId = "navigation-a", mapId = "map-a",
+            geometryId = "geometry-a", cameraCalibrationId = "camera-a", bodyExtrinsicsId = "body-a",
+            poseTimeMs = 2_000, fixTimeMs = 1_990, xMm = 0, yMm = 0, zMm = 1_000, positionUncertaintyMm = 20,
+            status = NavigationPose.Status.READY, signature = "0".repeat(64),
+        )
+        val signedPose = pose.unsignedEvent().with("signature", Json.value(Signing.sign(pose.unsignedEvent(), key)))
+        assertTrue(NavigationPose.parse(signedPose).verifies(key))
+        assertThrows(ContractError::class.java) { NavigationPose.parse(signedPose.with("x_mm", Json.value(null))) }
+        assertThrows(ContractError::class.java) { NavigationRouteAuthorization.parse(signedAuthorization.with("flight_approved", Json.value(false))) }
+    }
+
+    @Test
     fun `telemetry encodes and parses`() {
         val telemetry = TelemetryFrame(
             t = 2000,

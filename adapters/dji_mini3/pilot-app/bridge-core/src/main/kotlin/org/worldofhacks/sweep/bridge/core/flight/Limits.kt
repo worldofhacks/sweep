@@ -123,4 +123,22 @@ data class FlightConfig(
     /** PRD 5.5: network stop holds, then lands if the stop stays asserted this long. */
     val estopLandAfterMs: Long = 5_000,
     val defaultStickHz: Int = FlightSettings.DEFAULT_STICK_HZ,
+    val navigation: NavigationConfig? = null,
 )
+
+data class NavigationConfig(
+    val enabled: Boolean,
+    val navigationConfigId: String,
+    val mapId: String,
+    val geometryId: String,
+    val cameraCalibrationId: String,
+    val bodyExtrinsicsId: String,
+    val poseFreshnessMs: Long = 500,
+    val lossLandAfterMs: Long = 3_000,
+    val maxAuthorizationLifetimeMs: Long = 5_000,
+) {
+    init {
+        require(listOf(navigationConfigId, mapId, geometryId, cameraCalibrationId, bodyExtrinsicsId).all { it.isNotBlank() }) { "navigation identities must be pinned" }
+        require(poseFreshnessMs > 0 && lossLandAfterMs > 0 && maxAuthorizationLifetimeMs > 0) { "navigation timing bounds are invalid" }
+    }
+}
