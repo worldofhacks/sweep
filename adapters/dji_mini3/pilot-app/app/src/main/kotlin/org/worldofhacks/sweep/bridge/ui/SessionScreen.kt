@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import org.worldofhacks.sweep.bridge.BridgeNode
 import org.worldofhacks.sweep.bridge.SetupSummary
+import org.worldofhacks.sweep.bridge.camera.CaptureCard
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 import org.worldofhacks.sweep.bridge.flight.FlightCards
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
@@ -116,6 +117,7 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
             item { ReadinessCard(link, node) }
             item { NodeStatusCard(link, aircraft, now) }
             item { FlightCards(session) } // Phase E: flight loop and #85 probe cards
+            item { CaptureCard(session, now) } // Phase G: camera path, files, checksums
             item { CommandsCard(link.commands, now) }
             item { StatusCard(sdk) }
             item { IdentityCard(sdk) }

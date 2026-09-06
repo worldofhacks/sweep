@@ -36,9 +36,17 @@ data class AircraftSnapshot(
     val x: Double = 0.0,
     val y: Double = 0.0,
     val z: Double = 0.0,
+    /** True only when x/y/z came from current aircraft measurements, not defaults. */
+    val positionAvailable: Boolean = false,
+    /** Local wall-clock time of the oldest measurement used by x/y/z. */
+    val positionMeasuredAtMs: Long? = null,
     val vx: Double = 0.0,
     val vy: Double = 0.0,
     val vz: Double = 0.0,
+    /** True only when vx/vy/vz came from a current aircraft measurement. */
+    val velocityAvailable: Boolean = false,
+    /** Local wall-clock time of the velocity measurement. */
+    val velocityMeasuredAtMs: Long? = null,
     val battery: Double = 0.0,
     val state: String = FlightStates.DISARMED,
     val link: Double = 0.0,
@@ -57,6 +65,10 @@ data class AircraftSnapshot(
     // the snake_case reason the loop lost control authority (an RC takeover latched until the
     // pilot re-arms; reported as `control_authority=false` in readiness).
     val yawDeg: Double = 0.0,
+    /** True only when [yawDeg] came from a current attitude measurement. */
+    val attitudeAvailable: Boolean = false,
+    /** Local wall-clock time of the attitude measurement. */
+    val attitudeMeasuredAtMs: Long? = null,
     val virtualStickEnabled: Boolean = false,
     val authorityLostReason: String? = null,
 )

@@ -118,7 +118,8 @@ export function vocabTone(value: string): Tone {
 /** Design pose line: "x 0.41 y 1.08 z 1.42 · yaw 132.4° · gimbal −12.0° · f 3.2 mm". */
 export function formatPose(pose: CapturePose | null): string {
   if (pose === null) return 'pose unreported'
-  return `x ${pose.x.toFixed(2)} y ${pose.y.toFixed(2)} z ${pose.z.toFixed(2)} · yaw ${formatSigned(pose.yaw_deg)}° · gimbal ${formatSigned(pose.gimbal_pitch_deg)}° · f ${pose.focal_mm.toFixed(1)} mm`
+  const focal = pose.focal_mm === null ? 'f unreported' : `f ${pose.focal_mm.toFixed(1)} mm`
+  return `x ${pose.x.toFixed(2)} y ${pose.y.toFixed(2)} z ${pose.z.toFixed(2)} · yaw ${formatSigned(pose.yaw_deg)}° · gimbal ${formatSigned(pose.gimbal_pitch_deg)}° · ${focal}`
 }
 
 /** Typographic minus, as the design prints it. */

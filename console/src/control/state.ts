@@ -8,6 +8,7 @@ import type {
   IntentSource,
   MembershipAction,
   RelayAircraftState,
+  RelayCaptureRecord,
   RelayServerEvent,
 } from '../relay/contract'
 import { followsSelection } from '../relay/contract'
@@ -98,6 +99,8 @@ export interface ControlState {
   languageConnection: RelayConnection
   rosterVersion: number
   aircraft: Record<DroneId, RelayAircraftState>
+  /** The relay's retained captures, as `state.captures` lists them; empty until a state frame carries them. */
+  captures: RelayCaptureRecord[]
   selection: DroneId[]
   /** Formation and spacing the relay reports in its state frame; null until the first frame. */
   formation: string | null
@@ -163,6 +166,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     },
     rosterVersion: 0,
     aircraft: {},
+    captures: [],
     selection: [],
     formation: null,
     spacing: null,
@@ -520,6 +524,7 @@ function reduceStateEvent(
     ...state,
     rosterVersion: event.roster_version,
     aircraft,
+    captures: event.captures ?? state.captures,
     selection,
     formation: event.formation,
     spacing: event.spacing,

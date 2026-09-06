@@ -30,11 +30,11 @@ class FakeFpv(
     filesDir: File,
     phone: PhoneStatusSource?,
     private val commandedYawDeg: () -> Double,
+    override val captureProgress: CaptureProgressSource = IdleCaptureProgress,
 ) : FpvSession {
     private val tracker = StreamEvidenceTracker(filesDir, phone)
     private val _attitude = MutableStateFlow(AircraftAttitude())
     override val attitude: StateFlow<AircraftAttitude> = _attitude.asStateFlow()
-    override val captureProgress: CaptureProgressSource = IdleCaptureProgress
 
     @Volatile
     private var connected = false

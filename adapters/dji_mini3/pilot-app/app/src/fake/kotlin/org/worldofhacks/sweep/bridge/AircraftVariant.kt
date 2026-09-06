@@ -9,8 +9,8 @@ import org.worldofhacks.sweep.bridge.session.AircraftSession
 
 /** Fake flavor: no DJI dependency, nothing to install, a simulated session drives the screen. */
 object AircraftVariant {
-    /** Mirrors `adapters/dji_mini3/fake_node.py` so the console shows the same registry entry. */
-    val capabilities: List<String> = listOf("flight", "pano_360", "reconstruct_8")
+    /** The fake camera drives the same `reconstruct_8` path as the probe flavor; no native panorama either. */
+    val capabilities: List<String> = listOf("flight", "reconstruct_8")
 
     fun installSdk(application: Application) = Unit
 

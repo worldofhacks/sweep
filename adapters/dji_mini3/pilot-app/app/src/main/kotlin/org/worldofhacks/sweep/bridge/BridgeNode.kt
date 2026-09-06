@@ -161,7 +161,10 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     log = { line -> logLine(line) },
                     clientProvider = if (loopback) null else ({ wifi?.binding?.value?.client }),
                     videoPublish = { videoPublish.current() },
+                    captureReadiness = session.camera,
                 )
+                // Phase G hook: the camera path sends media_file and capture_readiness frames through the link.
+                session.camera?.frames = link.frames
                 relayLink = link
                 mirror = scope.launch {
                     link.state.collect { state ->
@@ -218,6 +221,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
             _running.value = false
             sensorRecording?.updateSensorRelayContext(null)
         }
+        session.camera?.frames = null
         link?.close()
         _link.update { LinkState(readiness = readiness) }
     }

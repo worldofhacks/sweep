@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import time
 import uuid
@@ -15,6 +16,7 @@ from planner.models import CommandOperation
 from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.captures import CaptureEntry, CaptureKey, CaptureLedger, CaptureLedgerError
 from relay.contracts import (
     NODE_FRAME_TYPES,
     AdapterAcknowledgement,
@@ -61,6 +63,9 @@ from relay.state import FleetRegistry, MembershipTransition, RegistryError
 Clock = Callable[[], int]
 EventIdFactory = Callable[[], str]
 ControlPoseSigningKey = Callable[[int], bytes | None]
+_LOGGER = logging.getLogger(__name__)
+# The composed capture bundle is recorded by the autonomy boundary, not by a node.
+LIFECYCLE_SOURCE_AUTONOMY = "autonomy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,7 +291,7 @@ class RelaySession:
         self._command_seq: dict[tuple[int, int], int] = {}
         self._issued_commands: dict[str, _IssuedCommand] = {}
         self._command_waiters: dict[str, queue.SimpleQueue[AdapterAcknowledgement]] = {}
-        self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
+        self._captures = CaptureLedger()
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._control_pose: dict[int, ControlPose] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
@@ -1088,10 +1093,11 @@ class RelaySession:
             return pose
 
     def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
-        """Accept a node-authored frame; only capabilities and node_status change state.
+        """Accept a node-authored frame and project the ones that change state.
 
-        Media files and capture bundles are audited and retained for the command wire
-        but not fanned out; capture readiness is fanned out unchanged.
+        Capabilities and node_status update the aircraft row; media files and capture
+        bundles are audited and added to the bounded ``state.captures`` live projection
+        without being fanned out themselves; capture readiness is fanned out unchanged.
         """
         now = self.clock()
         with self._lock, self._audit_operation():
@@ -1119,16 +1125,26 @@ class RelaySession:
                 elif isinstance(frame, NodeStatusFrame):
                     self.registry.apply_node_status(frame)
                 elif isinstance(frame, MediaFileFrame):
-                    self._remember_media(frame.file)
-                    self._retain_media(frame.file)
+                    capture_key = (
+                        frame.file.drone_id,
+                        frame.file.connection_epoch,
+                        frame.file.capture_id,
+                    )
+                    self._remember_capture(capture_key)
+                    evicted = self._captures.eviction_candidate(capture_key)
+                    if evicted is not None:
+                        self._remember_capture(evicted)
+                    self._captures.record_media(frame.file, t=frame.t)
                 elif isinstance(frame, CaptureBundleFrame):
-                    for record in frame.media:
-                        self._remember_media(record)
-                        self._retain_media(record)
+                    raise ContractError(
+                        "source_not_allowed",
+                        "a node cannot author capture_bundle because its command carries "
+                        "no authoritative room or pattern; send media_file records only",
+                    )
                 elif isinstance(frame, CaptureReadinessFrame):
                     self._remember_capture_readiness(drone_id)
                     self._capture_readiness[drone_id] = frame
-            except (ContractError, RegistryError) as error:
+            except (ContractError, RegistryError, CaptureLedgerError) as error:
                 return [
                     self._protocol_refusal(
                         reason=error.code,
@@ -1142,8 +1158,10 @@ class RelaySession:
             event = frame.to_event()
             self._append_audit(event)
             self._metrics["node_events"] += 1
-            if isinstance(frame, MediaFileFrame | CaptureBundleFrame):
-                return []
+            if isinstance(frame, MediaFileFrame):
+                state = self._state_event(now)
+                self._append_audit(state)
+                return [state]
             events: list[dict[str, object]] = [event]
             if isinstance(frame, CapabilitiesFrame | NodeStatusFrame):
                 state = self._state_event(now)
@@ -1348,30 +1366,136 @@ class RelaySession:
             epoch = self.registry.connection_epoch(drone_id)
             if epoch is None:
                 return ()
-            return tuple(self._media_files.get((drone_id, epoch, capture_id), ()))
+            return self._captures.media_files(drone_id, epoch, capture_id)
 
-    def _retain_media(self, record: MediaFileRecord) -> None:
-        key = (record.drone_id, record.connection_epoch, record.capture_id)
-        records = self._media_files.setdefault(key, [])
-        for index, existing in enumerate(records):
-            if existing.file_id == record.file_id:
-                records[index] = record
-                return
-        records.append(record)
+    def captures(self) -> list[dict[str, object]]:
+        """The retained captures exactly as ``state.captures`` projects them."""
+        with self._lock:
+            return self._captures.projection()
 
-    def _remember_media(self, record: MediaFileRecord) -> None:
-        key = (record.drone_id, record.connection_epoch, record.capture_id)
-        existing = self._media_files.get(key)
-        before = None if existing is None else existing.copy()
+    def _remember_capture(self, key: CaptureKey) -> None:
+        before: CaptureEntry | None = self._captures.snapshot_entry(key)
 
-        def undo_media() -> None:
-            if before is None:
-                self._media_files.pop(key, None)
-            else:
-                self._media_files[key] = before
+        def undo_captures() -> None:
+            self._captures.restore_entry(key, before)
 
         assert self._audit_undo is not None
-        self._audit_undo.append(undo_media)
+        self._audit_undo.append(undo_captures)
+
+    def _record_capture_bundle(self, result: object, now: int) -> dict[str, object] | None:
+        """Retain the bundle the dispatcher composed for a capture_room plan.
+
+        The command wire carries only ``capture_id``, so the node cannot name the room or
+        pattern; the composed bundle is the authoritative closing record. It is audited
+        with the node frame's shape plus ``source: autonomy`` so replay tells it apart.
+        """
+        bundle = getattr(result, "capture_bundle", None)
+        plan = getattr(result, "plan", None)
+        intent_name = getattr(getattr(plan, "intent_name", None), "value", None)
+        result_status = getattr(getattr(result, "status", None), "value", None)
+        if bundle is None:
+            if intent_name == "capture_room" and result_status == "completed":
+                raise CaptureLedgerError(
+                    "capture_bundle_missing",
+                    "a completed capture_room result requires an authoritative capture bundle",
+                )
+            return None
+        to_dict = getattr(bundle, "to_dict", None)
+        if not callable(to_dict):
+            raise CaptureLedgerError(
+                "invalid_capture_bundle", "the composed capture bundle is not serializable"
+            )
+        payload = to_dict()
+        if not isinstance(payload, Mapping):
+            raise CaptureLedgerError(
+                "invalid_capture_bundle", "the composed capture bundle must serialize to an object"
+            )
+        raw = {
+            "v": 1,
+            "t": now,
+            "type": "capture_bundle",
+            "event_id": self.event_ids(),
+            "session": self.session_id,
+            **payload,
+        }
+        if raw.get("detail") == "":
+            raw["detail"] = None
+        try:
+            frame = parse_capture_bundle(raw)
+        except ContractError as error:
+            raise CaptureLedgerError(error.code, error.detail) from None
+        self._validate_capture_bundle_result(result, frame)
+        key = (frame.drone_id, frame.connection_epoch, frame.capture_id)
+        self._remember_capture(key)
+        evicted = self._captures.eviction_candidate(key)
+        if evicted is not None:
+            self._remember_capture(evicted)
+        self._captures.record_bundle(frame, t=now)
+        event = {**frame.to_event(), "source": LIFECYCLE_SOURCE_AUTONOMY}
+        self._append_audit(event)
+        return event
+
+    @staticmethod
+    def _validate_capture_bundle_result(result: object, frame: CaptureBundleFrame) -> None:
+        """Bind dispatcher-composed evidence to the exact accepted capture plan."""
+        plan = getattr(result, "plan", None)
+        intent_name = getattr(getattr(plan, "intent_name", None), "value", None)
+        if intent_name != "capture_room":
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch", "only a capture_room plan may carry a capture bundle"
+            )
+        if getattr(plan, "intent_id", None) != getattr(result, "intent_id", None):
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch", "capture bundle result does not match its plan intent"
+            )
+        metadata: set[tuple[object, ...]] = set()
+        for command in getattr(plan, "commands", ()):
+            operation = getattr(getattr(command, "operation", None), "value", None)
+            if operation not in {"capture_panorama", "capture_photo"}:
+                continue
+            parameters = getattr(command, "parameters", None)
+            if not isinstance(parameters, Mapping):
+                raise CaptureLedgerError(
+                    "capture_bundle_mismatch", "capture command parameters are unavailable"
+                )
+            metadata.add(
+                (
+                    parameters.get("room_id"),
+                    parameters.get("capture_id"),
+                    parameters.get("pattern"),
+                    getattr(command, "drone_id", None),
+                    getattr(command, "connection_epoch", None),
+                )
+            )
+        actual = (
+            frame.room_id,
+            frame.capture_id,
+            frame.pattern,
+            frame.drone_id,
+            frame.connection_epoch,
+        )
+        if metadata != {actual}:
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch",
+                "capture bundle room, capture, pattern, drone, or epoch differs from its plan",
+            )
+        lifecycle_status = getattr(getattr(result, "status", None), "value", None)
+        if lifecycle_status == "completed" and frame.status != "completed":
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch",
+                "a completed capture_room lifecycle requires a completed capture bundle",
+            )
+        refusal = getattr(result, "refusal", None)
+        refusal_reason = getattr(getattr(refusal, "reason", None), "value", None)
+        if (
+            frame.status != "completed"
+            and refusal_reason is not None
+            and frame.reason != refusal_reason
+        ):
+            raise CaptureLedgerError(
+                "capture_bundle_mismatch",
+                "capture bundle reason differs from the terminal intent refusal",
+            )
 
     def _remember_capture_readiness(self, drone_id: int) -> None:
         present = drone_id in self._capture_readiness
@@ -1508,6 +1632,23 @@ class RelaySession:
                 raise ValueError("unknown intent_id")
             return self._record_execution_result(intent, result)
 
+    def record_capture_bundle(self, result: object) -> list[dict[str, object]]:
+        """Retain and audit the bundle a terminal capture_room result carries, then project it.
+
+        Returns the state event that lists the closed capture, or nothing when the result
+        carries no bundle. Invalid or conflicting evidence raises instead of allowing the
+        intent lifecycle to report a false completion. The ``capture_bundle`` record itself
+        is audited, not fanned out.
+        """
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            now = self.clock()
+            if self._record_capture_bundle(result, now) is None:
+                return []
+            state = self._state_event(now)
+            self._append_audit(state)
+            return [state]
+
     def _record_execution_result(self, intent: IntentV1, result: object) -> list[dict[str, object]]:
         raw_status = getattr(getattr(result, "status", None), "value", None)
         try:
@@ -1529,6 +1670,10 @@ class RelaySession:
             LifecycleStatus.INVALIDATED,
         }
         if status in terminal:
+            # Validate and retain capture evidence before clearing the accepted plan or
+            # recording a terminal lifecycle. A malformed/conflicting bundle must fail
+            # closed rather than leave a completed intent with no trustworthy evidence.
+            events.extend(self.record_capture_bundle(result))
             completion_pending = getattr(self.intent_sink, "completion_pending", None)
             awaiting_landing = (
                 status in {LifecycleStatus.COMPLETED, LifecycleStatus.INVALIDATED}
@@ -2291,11 +2436,13 @@ class RelaySession:
             raise AuditLogError("relay session is unusable after an audit failure")
 
     def _state_event(self, now: int) -> dict[str, object]:
-        return self.registry.state_event(
+        event = self.registry.state_event(
             session=self.session_id,
             t=now,
             event_id=self.event_ids(),
         )
+        event["captures"] = self._captures.projection()
+        return event
 
 
 def _intent_to_dict(intent: IntentV1) -> dict[str, object]:

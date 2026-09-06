@@ -8,6 +8,7 @@ import {
   groupCapturesByProject,
   type CatalogLink,
 } from '../../catalog/derive'
+import { closedRelayCaptures, openRelayCaptures, type OpenCapture } from '../../catalog/relay-captures'
 import type { CaptureRecord } from '../../catalog/types'
 import { formatDroneId } from '../../control/state'
 import { Pane } from '../../shell/Pane'
@@ -18,14 +19,22 @@ import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
 
 /**
- * Capture library: the catalog grouped by project, filtered by room, aircraft
- * and retake flag, newest first. Downloads and exports go through the catalog
- * client and report their outcome sentence; nothing is re-encoded here.
+ * Capture library: the relay's retained captures (closed sets as records, open sets as
+ * progress lines) ahead of the catalog, grouped by project, filtered by room, aircraft
+ * and retake flag, newest first. Downloads and exports go through the catalog client
+ * and report their outcome sentence; nothing is re-encoded here.
  */
 export function CapturesModule({ controller, catalog }: ModuleProps) {
   const [filterId, setFilterId] = useState('all')
   const [note, setNote] = useState<CatalogNoteState | null>(null)
-  const captures = catalog.snapshot.captures
+  const relayCaptures = controller.state.captures
+  const closed = closedRelayCaptures(relayCaptures, controller.state.sessionId)
+  const open = openRelayCaptures(relayCaptures)
+  const catalogCaptures = catalog.snapshot.captures
+  const captures =
+    catalogCaptures === null && closed.length === 0 && open.length === 0
+      ? null
+      : [...closed, ...(catalogCaptures ?? [])]
   const link = deriveCatalogLink(
     controller.state,
     'The capture library',
@@ -44,6 +53,7 @@ export function CapturesModule({ controller, catalog }: ModuleProps) {
     <Pane title="Capture library" note="Captured media by room, capture, aircraft and time.">
       <LinkNotice link={link} label="Capture library connection" />
       <CatalogNote label="Capture library notice" note={note} />
+      {open.length > 0 && <OpenCaptures captures={open} />}
       {captures === null ? (
         <EmptyModule what="captured media sets" />
       ) : (
@@ -57,6 +67,21 @@ export function CapturesModule({ controller, catalog }: ModuleProps) {
         />
       )}
     </Pane>
+  )
+}
+
+/** Captures the relay holds files for but no bundle has closed yet: progress, not records. */
+function OpenCaptures({ captures }: { captures: OpenCapture[] }) {
+  return (
+    <section aria-label="Captures in progress">
+      <p className="cat-eyebrow cap-project">In progress</p>
+      {captures.map((capture) => (
+        <p key={`${capture.drone_id}-${capture.connection_epoch}-${capture.capture_id}`} className="cap-open mono">
+          {capture.capture_id} · {formatDroneId(capture.drone_id)} · {filesLabel(capture.files)} captured,{' '}
+          {capture.retrieved} retrieved · {capture.phase} · {formatTime(capture.updated_at)}
+        </p>
+      ))}
+    </section>
   )
 }
 
