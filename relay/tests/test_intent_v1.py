@@ -1,6 +1,10 @@
 import pytest
 
-from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES, IMPLEMENTED_INTENT_NAMES
+from relay.capabilities import (
+    C1_IMPLEMENTED_INTENT_NAMES,
+    IMPLEMENTED_INTENT_NAMES,
+    CapabilityProfile,
+)
 from relay.intent_v1 import (
     REGISTERED_SOURCES,
     SOURCE_ALLOWED_NAMES,
@@ -150,6 +154,28 @@ def test_sweep_requires_confirmation_before_planning(
 
     assert isinstance(result, RejectedIntent)
     assert result.reason is RejectionReason.INVALID_PAYLOAD
+
+
+def test_search_requires_confirmed_selected_aircraft_and_an_enabled_profile(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(
+        name="search",
+        args={"zone_id": "atrium", "target_class": "backpack"},
+        selection=[1],
+        confirm=True,
+    )
+
+    disabled = validate_intent(console_select_payload)
+    enabled = validate_intent(
+        console_select_payload,
+        capability_profile=CapabilityProfile("search-enabled", frozenset({IntentName.SEARCH})),
+    )
+
+    assert isinstance(disabled, RejectedIntent)
+    assert disabled.reason is RejectionReason.UNSUPPORTED
+    assert isinstance(enabled, AcceptedIntent)
+    assert enabled.intent.args == {"zone_id": "atrium", "target_class": "backpack"}
 
 
 @pytest.mark.parametrize(
