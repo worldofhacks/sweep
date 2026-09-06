@@ -54,6 +54,28 @@ class SensorRawSinkTest {
     }
 
     @Test
+    fun `attitude callbacks retain their SDK frames and receipt-only timing`() {
+        val sink = sink()
+        sink.updateIdentity(identity())
+
+        assertEquals(SensorRawAppendResult.QUEUED, sink.recordAircraftAttitudeDegrees(10.0, -2.0, 3.0))
+        assertEquals(SensorRawAppendResult.QUEUED, sink.recordGimbalAttitudeDegrees(4.0, -20.0, 1.0))
+        sink.close()
+
+        val records = records()
+        assertEquals(2, records.size)
+        assertEquals("phone_attitude_raw", records[0].text("kind"))
+        assertEquals("KeyAircraftAttitude", records[0].text("sdk_key"))
+        assertEquals("aircraft_body_to_ned", records[0].text("attitude_frame"))
+        assertEquals("android_callback_receipt_elapsed_realtime_ms", records[0].text("time_basis"))
+        assertEquals("not_provided_by_msdk_key_listener", records[0].text("source_timestamp_status"))
+        assertEquals(10.0, records[0].number("yaw_deg"))
+        assertEquals("KeyGimbalAttitude", records[1].text("sdk_key"))
+        assertEquals("raw_sdk_axes", records[1].text("attitude_frame"))
+        assertEquals(-20.0, records[1].number("pitch_deg"))
+    }
+
+    @Test
     fun `barometric callback keeps the source value in metres without localization conversion`() {
         val sink = sink()
         sink.updateIdentity(identity())

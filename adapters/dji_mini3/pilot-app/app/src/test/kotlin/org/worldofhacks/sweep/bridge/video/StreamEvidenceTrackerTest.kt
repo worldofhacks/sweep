@@ -20,7 +20,14 @@ class StreamEvidenceTrackerTest {
     private fun frame(key: Boolean = false) = StreamFrame("video/avc", 1280, 720, 30, key, 0, 1_000)
 
     private fun tracker(directory: File? = null, publishIntervalMs: Long = 250, logIntervalMs: Long = 1_000) =
-        StreamEvidenceTracker(directory, phone = null, clock = clock, publishIntervalMs = publishIntervalMs, logIntervalMs = logIntervalMs)
+        StreamEvidenceTracker(
+            directory,
+            phone = null,
+            clock = clock,
+            publishIntervalMs = publishIntervalMs,
+            logIntervalMs = logIntervalMs,
+            receivedAtMonotonicMs = { now + 10_000 },
+        )
 
     @Test
     fun `reset clears the evidence but keeps the last frame time`() {
@@ -73,6 +80,10 @@ class StreamEvidenceTrackerTest {
             assertEquals(JsonString("video/avc"), info["mime_type"])
             assertEquals(JsonString("Main"), info["profile"])
             assertEquals(JsonString("3.1"), info["level"])
+            assertEquals(JsonString("not_exposed_by_receive_stream_listener"), records[1]["decode_time_status"])
+            assertEquals(1L, records[1].integer("frame_sequence"))
+            assertEquals(0L, records[1].integer("sdk_presentation_time_ms"))
+            assertEquals(11_000L, records[1].integer("received_at_android_elapsed_realtime_ms"))
             assertEquals(JsonString("surface detached"), records.last()["text"])
             assertEquals(file.absolutePath, tracker.logPath.value)
         } finally {
@@ -90,6 +101,8 @@ class StreamEvidenceTrackerTest {
         }
         throw AssertionError("the stream evidence log was not closed within 5 s")
     }
+
+    private fun JsonObject.integer(name: String) = (get(name) as org.worldofhacks.sweep.bridge.core.json.JsonInt).value
 
     private companion object {
         /** Annex B H.264 SPS (Main, level 3.1) and PPS, as an IDR access unit begins. */

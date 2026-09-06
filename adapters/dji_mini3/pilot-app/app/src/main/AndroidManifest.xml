@@ -43,5 +43,15 @@
             android:name=".BridgeService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.evidence"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/evidence_export_paths" />
+        </provider>
     </application>
 </manifest>
