@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 from types import MappingProxyType
 from typing import Literal
 
@@ -243,7 +244,14 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
             raise ValueError
         return MappingProxyType({})
 
-    if name in {IntentName.ALTITUDE, IntentName.SPACING}:
+    if name is IntentName.ALTITUDE:
+        if set(value) != {"delta"}:
+            raise ValueError
+        if not _is_finite_number(value["delta"]):
+            raise ValueError
+        return MappingProxyType({"delta": value["delta"]})
+
+    if name is IntentName.SPACING:
         if set(value) != {"delta"} or not _is_finite_number(value["delta"]):
             raise ValueError
         return MappingProxyType({"delta": value["delta"]})
@@ -311,7 +319,10 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
 def _is_finite_number(value: object) -> bool:
     if not isinstance(value, int | float) or isinstance(value, bool):
         return False
-    return value == value and abs(value) != float("inf")
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _freeze_json(value: object) -> object:

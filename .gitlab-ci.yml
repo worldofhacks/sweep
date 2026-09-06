@@ -52,4 +52,4 @@ bridge-jvm:
   script:
     # Pure-JVM modules only; settings.gradle.kts skips the Android module without an SDK.
     - cd adapters/dji_mini3/pilot-app
-    - ./gradlew --no-daemon :bridge-core:test :bench:test
+    - ./gradlew --no-daemon :bridge-core:test :bridge-node:test :bridge-publish:test :bench:test

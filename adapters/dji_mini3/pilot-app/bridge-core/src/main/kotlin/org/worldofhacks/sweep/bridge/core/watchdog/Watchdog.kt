@@ -2,19 +2,38 @@ package org.worldofhacks.sweep.bridge.core.watchdog
 
 import org.worldofhacks.sweep.bridge.core.admission.Clock
 
-/** Wire names are the `node_status.watchdog_state` values. */
-enum class WatchdogState(val wire: String) {
-    DISARMED("disarmed"),
-    ARMED("armed"),
+/**
+ * Node-local watchdog states. `DISARMED` and `ARMED` are the node's own bookkeeping; on
+ * the wire both are `nominal` (see [toNodeStatus]).
+ */
+enum class WatchdogState {
+    DISARMED,
+    ARMED,
+    HOLD,
+    FAILSAFE;
+
+    fun toNodeStatus(): NodeWatchdogState = when (this) {
+        DISARMED, ARMED -> NodeWatchdogState.NOMINAL
+        HOLD -> NodeWatchdogState.HOLD
+        FAILSAFE -> NodeWatchdogState.FAILSAFE
+    }
+}
+
+/** `node_status.watchdog_state` values, exactly `relay.contracts.WatchdogState`. */
+enum class NodeWatchdogState(val wire: String) {
+    NOMINAL("nominal"),
     HOLD("hold"),
     FAILSAFE("failsafe");
 
     companion object {
-        fun fromWire(value: String): WatchdogState? = entries.firstOrNull { it.wire == value }
+        fun fromWire(value: String): NodeWatchdogState? = entries.firstOrNull { it.wire == value }
     }
 }
 
-/** Same invariant as `adapters.protocols.WatchdogConfig`: `0 <= hold < failsafe`. */
+/**
+ * Relay-distributed thresholds (`auth.accepted.node.watchdog_hold_ms` and
+ * `watchdog_failsafe_ms`); same invariant as the relay settings: `0 <= hold < failsafe`.
+ */
 data class WatchdogConfig(val holdMs: Long, val failsafeMs: Long) {
     init {
         require(holdMs >= 0 && failsafeMs > holdMs) { "watchdog thresholds must satisfy 0 <= hold < failsafe" }
@@ -35,11 +54,18 @@ data class WatchdogTransition(
 )
 
 /**
- * Node-local link watchdog (Phase E3). While armed, any heartbeat or admitted command
- * resets the activity clock. [poll] moves to `hold` once `hold_ms` pass without activity
+ * Node-local link deadman. While armed, only a caller-verified control heartbeat resets the
+ * activity clock. [poll] moves to `hold` once `hold_ms` pass without activity
  * and to `failsafe` once `failsafe_ms` pass; a long silence jumps straight to failsafe.
- * Activity during `hold` recovers to `armed`; `failsafe` is terminal until [arm] is
- * called again, mirroring `NodeWatchdogState.action_at` in `adapters/protocols.py`.
+ * Activity during `hold` recovers to `armed`; `failsafe` is terminal until [arm] is called
+ * again (the node re-arms on every rejoin), mirroring `NodeWatchdogState.action_at` in
+ * `adapters/protocols.py`.
+ *
+ * The deadman is mandatory, not optional: the prior-art notes on issue #43 record that the
+ * flight controller simply hovers forever when stick frames stop, so link loss has to be
+ * detected here, on the node, from the absence of relay traffic. The action taken at each
+ * state is Phase E work; this class only decides *when*. Indoors the failsafe action is
+ * land, never return-to-home.
  */
 class Watchdog(val config: WatchdogConfig, private val clock: Clock) {
     var state: WatchdogState = WatchdogState.DISARMED
@@ -63,8 +89,6 @@ class Watchdog(val config: WatchdogConfig, private val clock: Clock) {
     }
 
     fun heartbeat() = activity()
-
-    fun command() = activity()
 
     private fun activity() {
         when (state) {

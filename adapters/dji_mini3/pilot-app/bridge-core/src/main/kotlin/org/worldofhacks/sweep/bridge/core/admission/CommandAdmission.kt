@@ -11,14 +11,22 @@ object SystemClock : Clock {
     override fun nowMs(): Long = System.currentTimeMillis()
 }
 
-/** Machine-readable rejection reasons; the wire names are acknowledgement `reason` codes. */
-enum class AdmissionReason(val wire: String) {
-    STALE_COMMAND("stale_command"),
-    OUT_OF_ORDER_COMMAND("out_of_order_command"),
-    STALE_ROSTER("stale_roster"),
-    STALE_CONNECTION_EPOCH("stale_connection_epoch"),
-    INVALID_SIGNATURE("invalid_signature"),
-    INVALID_SELECTION("invalid_selection"),
+/**
+ * Why a command was not admitted. [wire] is the acknowledgement `reason` the node returns.
+ * The relay contract fixes exactly two: `stale_command` (expired TTL, a roster version other
+ * than the last state received, or an epoch other than the current one) and
+ * `out_of_order_command` (a `seq` not above the last admitted one). A frame whose signature
+ * does not verify, or that addresses another drone, is dropped and logged locally and never
+ * acknowledged ([acknowledged] is false), so a forged frame cannot draw a response from the
+ * node.
+ */
+enum class AdmissionReason(val wire: String, val acknowledged: Boolean) {
+    STALE_COMMAND("stale_command", true),
+    OUT_OF_ORDER_COMMAND("out_of_order_command", true),
+    STALE_ROSTER("stale_command", true),
+    STALE_CONNECTION_EPOCH("stale_command", true),
+    INVALID_SIGNATURE("invalid_signature", false),
+    INVALID_SELECTION("invalid_selection", false),
 }
 
 sealed interface AdmissionResult {
@@ -30,11 +38,11 @@ sealed interface AdmissionResult {
 }
 
 /**
- * Node-side command gate (Phase E1): signature, drone identity, `connection_epoch`,
- * `roster_version`, strictly increasing `seq` per epoch, then `issued_at + ttl_ms`
- * against the relay clock reconstructed from the local clock plus the offset measured
- * at authentication. Rejections never mutate state, so a stale or out-of-order command
- * cannot poison the sequence for the commands that follow it.
+ * Node-side command gate: signature, drone identity, `connection_epoch`, `roster_version`,
+ * strictly increasing `seq` per epoch, then `issued_at + ttl_ms` against the relay clock
+ * reconstructed from the local clock plus the offset measured at authentication. Rejections
+ * never mutate state, so a stale or out-of-order command cannot poison the sequence for the
+ * commands that follow it. A rejected command is never resent by the relay.
  */
 class CommandAdmission(
     private val key: ByteArray,

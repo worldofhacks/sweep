@@ -19,6 +19,7 @@ from planner.models import (
     Position,
 )
 from planner.planner import DeterministicPlanner, PlanningConfig
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import IntentName, IntentV1, Mode
 
 NOW_MS = 100_000
@@ -36,6 +37,10 @@ def planning_config(*, translation_frame: str = "world") -> PlanningConfig:
         capture_gimbal_pitch_deg=0.0,
         reconstruct_headings_deg=tuple(float(value) for value in range(0, 360, 45)),
         translation_frame=translation_frame,
+        altitude_step_m=0.5,
+        altitude_floor_z_m=0.0,
+        altitude_configuration_id="test-floor-v1",
+        altitude_completion_tolerance_m=0.05,
     )
 
 
@@ -179,6 +184,7 @@ def make_stack(
     snapshot: FleetSnapshot,
     *,
     config: PlanningConfig | None = None,
+    capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
 ) -> tuple[
     AutonomyController,
     DeterministicPlanner,
@@ -187,7 +193,7 @@ def make_stack(
     SimFlightAdapter,
     SimCamera,
 ]:
-    planner = DeterministicPlanner(config or planning_config())
+    planner = DeterministicPlanner(config or planning_config(), capability_profile)
     arbiter = SafetyArbiter(safety_config())
     flight = SimFlightAdapter.from_snapshot(snapshot)
     camera = SimCamera(

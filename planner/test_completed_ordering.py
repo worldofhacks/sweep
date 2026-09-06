@@ -152,6 +152,7 @@ def _session_with_bridge(tmp_path) -> tuple[RelaySession, AutonomyRelayBridge]:
         audit_log=SessionAuditLog(tmp_path, "test-session"),
         limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
         clock=lambda: NOW_MS,
+        capability_profile=controller.planner.capability_profile,
     )
     _hydrate_relay_from_snapshot(session, snapshot)
     bridge = AutonomyRelayBridge(

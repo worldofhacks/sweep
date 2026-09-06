@@ -46,3 +46,10 @@ def test_no_undeclared_top_level_packages() -> None:
         "or move them inside an existing package"
     )
     assert not missing, f"declared package(s) missing from the repo: {missing}"
+
+
+def test_gitlab_runs_every_pure_jvm_bridge_suite() -> None:
+    pipeline = (REPO_ROOT / ".gitlab-ci.yml").read_text()
+    gradle_line = next(line for line in pipeline.splitlines() if "./gradlew" in line)
+    for task in (":bridge-core:test", ":bridge-node:test", ":bridge-publish:test", ":bench:test"):
+        assert task in gradle_line, f"GitLab bridge-jvm job omits {task}"

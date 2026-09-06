@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import Lock, RLock
 
-from planner.models import CommandOperation
+from planner.models import CommandOperation, FleetSnapshot
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
@@ -41,6 +41,7 @@ from relay.contracts import (
     refusal_event,
 )
 from relay.control_frames import ControlLocalizationFrame
+from relay.control_localization import ControlLocalizationStore
 from relay.intent_v1 import (
     REGISTERED_SOURCES,
     AcceptedIntent,
@@ -234,6 +235,7 @@ class RelaySession:
         intent_sink: IntentSink | None = None,
         leave_authorizer: LeaveAuthorizer | None = None,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        control_localization_store: ControlLocalizationStore | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -259,6 +261,7 @@ class RelaySession:
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._control_localization: dict[int, ControlLocalizationFrame] = {}
+        self._control_localization_store = control_localization_store
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
@@ -923,49 +926,58 @@ class RelaySession:
         self, raw: object, principal: Principal
     ) -> list[dict[str, object]]:
         now = self.clock()
-        with self._lock, self._audit_operation():
-            self._ensure_mutation_usable()
-            try:
-                if principal.source != "localization" or principal.drone_id is None:
-                    raise ContractError("source_not_allowed", "localization producer required")
-                frame = ControlLocalizationFrame.parse(raw)
-                self._check_adapter_binding(frame.wire.drone_id, principal)
-                if frame.session != self.session_id:
-                    raise ContractError("session_mismatch", "localization session differs")
-                if not verify_event_signature(
-                    frame.unsigned_event(), frame.wire.signature, principal.signing_key
-                ):
-                    raise ContractError("invalid_signature", "localization signature rejected")
-                self.registry.check_current(frame.wire.drone_id, frame.wire.connection_epoch)
-                self._claim_transport_event(frame.event_id, frame.t, principal, now)
-            except (ContractError, RegistryError) as error:
-                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
-            except (ValueError, TypeError, OverflowError):
-                return [
-                    self._protocol_refusal(
-                        reason="invalid_payload",
-                        detail="invalid localization frame",
-                        now=now,
-                    )
-                ]
-            drone_id = frame.wire.drone_id
-            previous = self._control_localization.get(drone_id)
+        with self._lock:
+            with self._audit_operation():
+                self._ensure_mutation_usable()
+                try:
+                    if principal.source != "localization" or principal.drone_id is None:
+                        raise ContractError("source_not_allowed", "localization producer required")
+                    frame = ControlLocalizationFrame.parse(raw)
+                    self._check_adapter_binding(frame.wire.drone_id, principal)
+                    if frame.session != self.session_id:
+                        raise ContractError("session_mismatch", "localization session differs")
+                    if not verify_event_signature(
+                        frame.unsigned_event(), frame.wire.signature, principal.signing_key
+                    ):
+                        raise ContractError("invalid_signature", "localization signature rejected")
+                    self.registry.check_current(frame.wire.drone_id, frame.wire.connection_epoch)
+                    self._claim_transport_event(frame.event_id, frame.t, principal, now)
+                except (ContractError, RegistryError) as error:
+                    return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
+                except (ValueError, TypeError, OverflowError):
+                    return [
+                        self._protocol_refusal(
+                            reason="invalid_payload",
+                            detail="invalid localization frame",
+                            now=now,
+                        )
+                    ]
+                drone_id = frame.wire.drone_id
+                previous = self._control_localization.get(drone_id)
 
-            def undo() -> None:
-                if previous is None:
-                    self._control_localization.pop(drone_id, None)
-                else:
-                    self._control_localization[drone_id] = previous
+                def undo() -> None:
+                    if previous is None:
+                        self._control_localization.pop(drone_id, None)
+                    else:
+                        self._control_localization[drone_id] = previous
 
-            assert self._audit_undo is not None
-            self._audit_undo.append(undo)
-            self._control_localization[drone_id] = frame
-            event = {**frame.unsigned_event(), "signature_verified": True}
-            self._append_audit(event)
+                assert self._audit_undo is not None
+                self._audit_undo.append(undo)
+                self._control_localization[drone_id] = frame
+                event = {**frame.unsigned_event(), "signature_verified": True}
+                self._append_audit(event)
+            if self._control_localization_store is not None:
+                self._control_localization_store.ingest(
+                    frame.to_event(),
+                    frame.wire.drone_id,
+                    frame.wire.connection_epoch,
+                    now,
+                )
             return [event]
 
     def control_localization(self, drone_id: int) -> ControlLocalizationFrame | None:
         with self._lock:
+            self._ensure_projection_usable()
             frame = self._control_localization.get(drone_id)
             if frame is None:
                 return None
@@ -974,6 +986,13 @@ class RelaySession:
             except RegistryError:
                 return None
             return frame
+
+    def apply_control_localization(self, snapshot: FleetSnapshot) -> FleetSnapshot:
+        with self._lock:
+            self._ensure_projection_usable()
+            if self._control_localization_store is None:
+                return snapshot
+            return self._control_localization_store.apply(snapshot)
 
     def process_node_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Accept a node-authored frame; only capabilities and node_status change state.

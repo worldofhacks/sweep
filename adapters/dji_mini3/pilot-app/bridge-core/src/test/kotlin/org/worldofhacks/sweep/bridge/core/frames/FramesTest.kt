@@ -2,6 +2,7 @@ package org.worldofhacks.sweep.bridge.core.frames
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -12,7 +13,7 @@ import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonValue
 import org.worldofhacks.sweep.bridge.core.signing.Signing
-import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
+import org.worldofhacks.sweep.bridge.core.watchdog.NodeWatchdogState
 
 /**
  * Every frame is checked three ways against the Python-generated wire vector: the typed
@@ -35,7 +36,44 @@ class FramesTest {
         val frame = AuthFrame(droneId = 1, token = "adapter-token-1")
         assertSameWire("auth", frame.toJson())
         assertEquals(frame, AuthFrame.parse(wire("auth")))
+        assertFalse(frame.toString().contains("adapter-token-1"), "toString must not leak the token")
         assertThrows(ContractError::class.java) { AuthFrame.parse(Json.json("v" to 1, "type" to "auth")) }
+    }
+
+    @Test
+    fun `auth accepted carries the relay-distributed node thresholds`() {
+        val accepted = AuthAccepted.parse(wire("auth_accepted"))
+        assertEquals("adapter", accepted.source)
+        assertEquals(1, accepted.droneId)
+        assertEquals(
+            NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 2000, watchdogFailsafeMs = 10000),
+            accepted.node,
+        )
+        assertSameWire("auth_accepted", accepted.toEvent())
+        val console = AuthAccepted.parse(
+            JsonObject(wire("auth_accepted").fields + ("source" to Json.value("console")) + ("drone_id" to Json.value(null)) + ("node" to Json.value(null))),
+        )
+        assertNull(console.node)
+        assertThrows(ContractError::class.java) {
+            NodeSettings.parse(
+                Json.json("command_ttl_ms" to 2000, "virtual_stick_hz" to 30, "watchdog_hold_ms" to 2000, "watchdog_failsafe_ms" to 10000),
+                "x",
+            )
+        }
+        assertThrows(ContractError::class.java) {
+            NodeSettings.parse(
+                Json.json("command_ttl_ms" to 2000, "virtual_stick_hz" to 10, "watchdog_hold_ms" to 10000, "watchdog_failsafe_ms" to 10000),
+                "x",
+            )
+        }
+    }
+
+    @Test
+    fun `auth refused parses the machine-readable reason`() {
+        val refused = AuthRefused.parse(wire("auth_refused"))
+        assertEquals("session_closed", refused.reason)
+        assertTrue(refused.detail.contains("new session ID"))
+        assertSameWire("auth_refused", refused.toEvent())
     }
 
     @Test
@@ -95,6 +133,79 @@ class FramesTest {
             MembershipFrame.parse(JsonObject(base.fields + ("capabilities" to Json.value(emptyList<String>()))))
         }
         assertEquals("invalid_membership", error.code)
+    }
+
+    @Test
+    fun `relay membership event parses the join answer with epoch and roster`() {
+        val event = MembershipEvent.parse(wire("membership_event"))
+        assertEquals("join", event.action)
+        assertEquals(1, event.droneId)
+        assertEquals(2, event.connectionEpoch)
+        assertEquals("registered", event.membership)
+        assertEquals(4, event.rosterVersion)
+        assertEquals("authenticated_rejoin", event.reason)
+        assertEquals(listOf("telemetry_missing", "home_pose_missing"), event.readinessReasons)
+        assertEquals("adapter_signature", event.provenance)
+        // Relay-authored events may grow fields without a node release.
+        val grown = MembershipEvent.parse(JsonObject(wire("membership_event").fields + ("future_field" to Json.value(1))))
+        assertEquals(event, grown)
+        assertThrows(ContractError::class.java) {
+            MembershipEvent.parse(JsonObject(wire("membership_event").fields - "connection_epoch"))
+        }
+    }
+
+    @Test
+    fun `state projection parses the roster stop flag and this drone's row`() {
+        val state = StateEvent.parse(wire("state"))
+        assertEquals(3, state.rosterVersion)
+        assertFalse(state.estop)
+        assertFalse(state.armed)
+        val mine = checkNotNull(state.drone(1))
+        assertEquals("ready", mine.membership)
+        assertEquals(1, mine.connectionEpoch)
+        assertEquals(emptyList<String>(), mine.readinessReasons)
+        assertEquals("landed", mine.flightState)
+        assertEquals(0.87, mine.battery)
+        assertEquals(true, mine.controlAuthority)
+        assertNull(state.drone(2))
+    }
+
+    @Test
+    fun `refusal parses with nullable context fields`() {
+        val refusal = RefusalEvent.parse(wire("refusal"))
+        assertEquals("stale_timestamp", refusal.reason)
+        assertEquals(1, refusal.droneId)
+        assertNull(refusal.intentId)
+        assertNull(refusal.commandId)
+        assertEquals(3, refusal.rosterVersion)
+    }
+
+    @Test
+    fun `control heartbeat is exact signed and bound to one connection identity`() {
+        val unsigned = Json.json(
+            "v" to 1,
+            "t" to 2500,
+            "type" to "control_heartbeat",
+            "event_id" to "evt-heartbeat-1",
+            "session" to "session-a",
+            "source" to "relay",
+            "drone_id" to 1,
+            "connection_epoch" to 2,
+            "roster_version" to 4,
+            "seq" to 7,
+        )
+        val signingKey = "adapter-key".toByteArray()
+        val wire = unsigned.with("signature", org.worldofhacks.sweep.bridge.core.json.JsonString(Signing.sign(unsigned, signingKey)))
+        val heartbeat = ControlHeartbeat.parse(wire)
+        assertEquals(1, heartbeat.droneId)
+        assertEquals(2, heartbeat.connectionEpoch)
+        assertEquals(4, heartbeat.rosterVersion)
+        assertEquals(7, heartbeat.seq)
+        assertTrue(heartbeat.verifies(signingKey))
+        assertFalse(heartbeat.verifies("wrong-key".toByteArray()))
+        assertThrows(ContractError::class.java) {
+            ControlHeartbeat.parse(JsonObject(wire.fields + ("unexpected" to Json.value(true))))
+        }
     }
 
     @Test
@@ -184,7 +295,7 @@ class FramesTest {
         assertEquals(4000L, command.issuedAt)
         assertEquals(1500L, command.ttlMs)
         assertEquals(CommandOperation.GOTO, command.operation)
-        assertEquals(CommandArgs.Goto(x = 1.0, y = 2.5, z = 1.2, speed = 0.5), command.args)
+        assertEquals(CommandArgs.Goto(xMm = 1000, yMm = 2500, zMm = 1200, speedMmS = 500), command.args)
         assertTrue(command.verify(key("command")))
         assertFalse(command.verify("wrong".toByteArray()))
         assertSameWire("command", command.toJson())
@@ -205,35 +316,46 @@ class FramesTest {
             issuedAt = 4000,
             ttlMs = 1500,
             operation = CommandOperation.GOTO,
-            args = CommandArgs.Goto(x = 1.0, y = 2.5, z = 1.2, speed = 0.5),
+            args = CommandArgs.Goto(xMm = 1000, yMm = 2500, zMm = 1200, speedMmS = 500),
         ).signed(key("command"))
         assertEquals(wire("command").string("signature"), built.signature)
         assertSameWire("command", built.toJson())
     }
 
     @Test
-    fun `every operation has typed args`() {
+    fun `every operation has integer-only typed args`() {
         val samples = frames.obj("command_args")
         for (operation in CommandOperation.entries) {
             val raw = samples.obj(operation.wire)
             val args = CommandArgs.parse(operation, raw)
             assertEquals(Json.canonical(raw), Json.canonical(args.toJson()), operation.wire)
         }
+        // Floats, non-positive speeds, and stray fields all fail exactly as the relay refuses them.
         assertThrows(ContractError::class.java) {
-            CommandArgs.parse(CommandOperation.TAKEOFF, Json.json("z" to "high"))
+            CommandArgs.parse(CommandOperation.TAKEOFF, Json.json("z_mm" to 1.2))
         }
         assertThrows(ContractError::class.java) {
-            CommandArgs.parse(CommandOperation.HOVER, Json.json("z" to 1.0))
+            CommandArgs.parse(CommandOperation.GOTO, Json.json("x_mm" to 1, "y_mm" to 2, "z_mm" to 3, "speed_mm_s" to 0))
         }
+        assertThrows(ContractError::class.java) {
+            CommandArgs.parse(CommandOperation.ROTATE_TO, Json.json("yaw" to 90, "speed" to 30))
+        }
+        assertThrows(ContractError::class.java) {
+            CommandArgs.parse(CommandOperation.HOVER, Json.json("z_mm" to 1))
+        }
+        assertEquals(CommandArgs.Takeoff(zMm = -5), CommandArgs.parse(CommandOperation.TAKEOFF, Json.json("z_mm" to -5)))
     }
 
     @Test
-    fun `command rejects unknown operation missing field and bad signature shape`() {
+    fun `command rejects unknown operation missing field zero seq and bad signature shape`() {
         val base = wire("command")
         assertThrows(ContractError::class.java) {
             CommandFrame.parse(JsonObject(base.fields + ("operation" to Json.value("fly_home"))))
         }
         assertThrows(ContractError::class.java) { CommandFrame.parse(JsonObject(base.fields - "seq")) }
+        assertThrows(ContractError::class.java) {
+            CommandFrame.parse(JsonObject(base.fields + ("seq" to Json.value(0))))
+        }
         assertThrows(ContractError::class.java) {
             CommandFrame.parse(JsonObject(base.fields + ("signature" to Json.value(""))))
         }
@@ -243,32 +365,43 @@ class FramesTest {
     }
 
     @Test
-    fun `capabilities encodes and parses`() {
+    fun `capabilities encodes and parses flat`() {
         val capabilities = CapabilitiesFrame(
             t = 5000,
             eventId = "evt-cap-1",
             session = "session-a",
             droneId = 1,
             connectionEpoch = 1,
-            nativePanoramaModes = listOf("sphere"),
-            photoCapture = true,
-            gimbalPitchMinDeg = -90.0,
-            gimbalPitchMaxDeg = 20.0,
-            horizontalFovDeg = 82.1,
-            storageRemainingBytes = 12_000_000_000L,
-            mediaRetrieval = true,
-            hardwareProfile = HardwareProfile(
+            camera = CameraProbe(
+                nativePanoramaModes = emptyList(),
+                photoCapture = true,
+                gimbalPitchMinDeg = -90.0,
+                gimbalPitchMaxDeg = 20.0,
+                horizontalFovDeg = 82.1,
+                storageRemainingBytes = 12_000_000_000L,
+                mediaRetrieval = true,
+            ),
+            hardware = HardwareProfile(
                 aircraftModel = "DJI Mini 3",
-                aircraftFirmware = null,
-                rcFirmware = null,
+                aircraftFirmware = "unreported",
+                rcFirmware = "unreported",
                 phoneModel = "Solana Seeker",
                 androidVersion = "16",
-                msdkVersion = "5.18.0",
-                horizontalFovDeg = 82.1,
+                sdkVersion = "5.18.0",
+                measuredHfovDeg = null,
             ),
         )
         assertSameWire("capabilities", capabilities.toEvent())
         assertEquals(capabilities, CapabilitiesFrame.parse(wire("capabilities")))
+        assertThrows(ContractError::class.java) {
+            CapabilitiesFrame.parse(JsonObject(wire("capabilities").fields + ("gimbal_pitch_max_deg" to Json.value(-95.0))))
+        }
+        assertThrows(ContractError::class.java) {
+            CapabilitiesFrame.parse(JsonObject(wire("capabilities").fields + ("measured_hfov_deg" to Json.value(200.0))))
+        }
+        assertThrows(ContractError::class.java) {
+            CapabilitiesFrame.parse(JsonObject(wire("capabilities").fields + ("aircraft_firmware" to Json.value(null))))
+        }
     }
 
     @Test
@@ -281,23 +414,32 @@ class FramesTest {
             connectionEpoch = 1,
             roomId = "office-101",
             captureId = "cap-0042",
-            guidanceMode = "visual_advisory",
+            guidanceMode = GuidanceMode.VISUAL_ADVISORY,
             poseSource = "operator_approved",
             poseOk = true,
             clearanceOk = true,
             cameraOk = true,
+            storageOk = true,
             motionOk = true,
             imageQualityOk = false,
-            coverageMissing = listOf(90, 135),
-            nextHeadingDeg = 90,
-            suggestedDelta = SuggestedDelta(kind = "yaw", degrees = 12.0),
+            coverageMissing = listOf(90.0, 135.0),
+            nextHeadingDeg = 90.0,
+            suggestedDelta = SuggestedDelta(kind = DeltaKind.YAW, degrees = 12.0),
         )
         assertSameWire("capture_readiness", readiness.toEvent())
         assertEquals(readiness, CaptureReadinessFrame.parse(wire("capture_readiness")))
-        val noSuggestion = CaptureReadinessFrame.parse(
-            JsonObject(wire("capture_readiness").fields + ("suggested_delta" to Json.value(null))),
+        val idle = CaptureReadinessFrame.parse(
+            JsonObject(
+                wire("capture_readiness").fields +
+                    ("room_id" to Json.value(null)) + ("capture_id" to Json.value(null)) +
+                    ("suggested_delta" to Json.value(null)) + ("next_heading_deg" to Json.value(null)),
+            ),
         )
-        assertEquals(null, noSuggestion.suggestedDelta)
+        assertNull(idle.suggestedDelta)
+        assertNull(idle.roomId)
+        assertThrows(ContractError::class.java) {
+            CaptureReadinessFrame.parse(JsonObject(wire("capture_readiness").fields + ("coverage_missing" to Json.value(listOf(360.0)))))
+        }
     }
 
     @Test
@@ -308,18 +450,29 @@ class FramesTest {
             session = "session-a",
             droneId = 1,
             connectionEpoch = 1,
-            virtualStickEnabled = false,
-            controlAuthority = true,
-            authorityChangeReason = null,
-            watchdogState = WatchdogState.ARMED,
-            videoPublishState = "idle",
-            phoneBattery = 0.72,
-            phoneThermalState = "none",
+            body = NodeStatusBody(
+                virtualStickEnabled = false,
+                controlAuthority = true,
+                authorityChangeReason = null,
+                watchdogState = NodeWatchdogState.NOMINAL,
+                videoPublishState = VideoPublishState.STOPPED,
+                phoneBatteryPercent = 72,
+                phoneThermalState = PhoneThermalState.NONE,
+            ),
         )
         assertSameWire("node_status", status.toEvent())
         assertEquals(status, NodeStatusFrame.parse(wire("node_status")))
         assertThrows(ContractError::class.java) {
-            NodeStatusFrame.parse(JsonObject(wire("node_status").fields + ("watchdog_state" to Json.value("panic"))))
+            NodeStatusFrame.parse(JsonObject(wire("node_status").fields + ("watchdog_state" to Json.value("armed"))))
+        }
+        assertThrows(ContractError::class.java) {
+            NodeStatusFrame.parse(JsonObject(wire("node_status").fields + ("phone_battery_percent" to Json.value(101))))
+        }
+        assertThrows(ContractError::class.java) {
+            NodeStatusFrame.parse(JsonObject(wire("node_status").fields + ("video_publish_state" to Json.value("idle"))))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            status.body.copy(authorityChangeReason = "Not Snake")
         }
     }
 
