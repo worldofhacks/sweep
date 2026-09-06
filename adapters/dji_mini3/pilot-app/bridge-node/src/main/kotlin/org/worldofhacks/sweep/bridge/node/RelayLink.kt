@@ -774,6 +774,12 @@ class RelayLink(
                     record(command, "failed", WATCHDOG_FAILSAFE, detail)
                     return
                 }
+                if (dog != null && dog.state == WatchdogState.HOLD && command.operation in MOTION_OPERATIONS) {
+                    val detail = "watchdog is holding after relay silence; a fresh verified control heartbeat must re-arm it before motion"
+                    sendAck(command, LifecycleStatus.FAILED, WATCHDOG_HOLD, detail)
+                    record(command, "failed", WATCHDOG_HOLD, detail)
+                    return
+                }
                 // The pilot's toggle, not the effective authority: the aircraft and RC link and
                 // the takeover latch are the flight loop's own refusals with their own reasons.
                 if (command.operation in MOTION_OPERATIONS && !readiness.controlAuthority) {
@@ -1002,6 +1008,7 @@ class RelayLink(
         const val MAX_COMMANDS = 50
         const val MAX_DETAIL = 512
         const val RATE_WINDOW_MS = 2_000L
+        const val WATCHDOG_HOLD = "watchdog_hold"
         const val WATCHDOG_FAILSAFE = "watchdog_failsafe"
         const val AUTHORITY_LOST = "authority_lost"
         const val RELAY_EVENT_FUTURE_SKEW_MS = 1_000L

@@ -209,6 +209,79 @@ class FlightControllerTest {
     }
 
     @Test
+    fun `watchdog hold rejects every new motion path until a control heartbeat re-arms it`() {
+        val h = Harness()
+        h.join()
+        h.relayAlive = false
+        h.tickMs(500)
+        assertEquals("hold", h.controller.status.watchdog)
+        assertEquals("idle", h.controller.status.phase)
+
+        val framesAtHold = h.frames.size
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_200))
+        assertEquals("watchdog_hold", takeoff.terminal?.second, takeoff.events.toString())
+        assertFalse(h.model.motorsOn, "takeoff must not reach the SDK while the deadman is holding")
+
+        h.hovering()
+        val goto = h.run(CommandArgs.Goto(xMm = 0, yMm = 2_000, zMm = 1_200, speedMmS = 500))
+        val rotate = h.run(CommandArgs.RotateTo(yawMdeg = 90_000, speedMdegS = 30_000))
+        val bench = RecordingSink()
+        assertFalse(h.controller.startBench("axis-pitch", StickFrame.NEUTRAL.copy(pitch = 0.3), 1_000, bench))
+        for (refused in listOf(goto, rotate, bench)) {
+            assertEquals("watchdog_hold", refused.terminal?.second, refused.events.toString())
+            assertTrue(refused.terminal!!.third!!.contains("fresh verified control heartbeat"), refused.events.toString())
+        }
+        h.tick(2)
+        assertEquals(framesAtHold, h.frames.size, "no stick frame is emitted by a command refused during hold")
+        assertFalse(h.model.virtualStickEnabled, "hold cannot enable Virtual Stick")
+        assertEquals(0.0, h.model.xEast, 1e-6)
+        assertEquals(0.0, h.model.yNorth, 1e-6)
+        assertEquals(0.0, h.model.yawDeg, 1e-6)
+
+        // A safety hover remains valid but does not create a new control lease or enable
+        // Virtual Stick while the deadman is holding.
+        val hover = h.run(CommandArgs.Hover)
+        assertEquals(listOf("executing", "completed"), hover.statuses, hover.events.toString())
+        assertEquals("hold", h.controller.status.watchdog)
+        assertFalse(h.model.virtualStickEnabled)
+        assertEquals(framesAtHold, h.frames.size)
+
+        // Only the caller's verified-heartbeat input recovers HOLD. Once it does, motion is
+        // admitted normally again and a non-neutral frame reaches the port.
+        h.relayAlive = true
+        h.tick(1)
+        assertEquals("armed", h.controller.status.watchdog)
+        val admitted = h.run(CommandArgs.Goto(xMm = 0, yMm = 1_000, zMm = 1_200, speedMmS = 500))
+        assertNull(admitted.terminal, admitted.events.toString())
+        h.tick(1)
+        assertTrue(h.frames.drop(framesAtHold).any { !it.isNeutral }, "motion resumes only after re-arm")
+    }
+
+    @Test
+    fun `watchdog hold preserves land and estop safety actions without enabling virtual stick`() {
+        val landing = Harness()
+        landing.hovering()
+        landing.join()
+        landing.relayAlive = false
+        landing.tickMs(500)
+        val land = landing.run(CommandArgs.Land)
+        assertTrue(landing.model.landing)
+        assertFalse(landing.model.virtualStickEnabled)
+        assertTrue(land.terminal?.second != "watchdog_hold", land.events.toString())
+
+        val stopping = Harness()
+        stopping.hovering()
+        stopping.join()
+        stopping.relayAlive = false
+        stopping.tickMs(500)
+        val estop = stopping.run(CommandArgs.Estop)
+        assertEquals(listOf("executing", "completed"), estop.statuses, estop.events.toString())
+        assertTrue(stopping.controller.status.estopLatched)
+        assertFalse(stopping.model.virtualStickEnabled)
+        assertTrue(stopping.frames.isEmpty(), "estop under watchdog hold does not start a new stick stream")
+    }
+
+    @Test
     fun `a landing in progress is never interrupted by the deadman`() {
         val h = Harness()
         h.hovering()
