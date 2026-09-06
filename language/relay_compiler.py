@@ -37,7 +37,7 @@ from language.contracts import (
 )
 from language.telemetry import TraceSink
 from language.transport import PINNED_COMPILER_MODEL, PROMPT_SCHEMA_VERSION, ModelTransport
-from planner.models import TranslationGrounding, TranslationPolicy
+from planner.models import DeviceClass, TranslationGrounding, TranslationPolicy
 from relay.capabilities import CapabilityProfile
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
 from relay.voice import CompilerUnavailable, VoicePlan, VoicePlanStep
@@ -433,12 +433,45 @@ def _voice_intent_id(plan_digest: str, index: int) -> str:
     return f"voice-{value.hex}"
 
 
-def _label(drone_id: int) -> str:
-    return f"D-{drone_id:02d}"
+Drones = Mapping[int, Mapping[str, object]]
 
 
-def _labels(ids: tuple[int, ...]) -> str:
-    return ", ".join(_label(drone_id) for drone_id in ids)
+def _device_class(drone_id: int, drones: Drones) -> DeviceClass:
+    """The state's class for a device; anything but an explicit ground vehicle is aircraft."""
+    drone = drones.get(drone_id)
+    value = None if drone is None else drone.get("device_class")
+    if value == DeviceClass.GROUND_VEHICLE.value:
+        return DeviceClass.GROUND_VEHICLE
+    return DeviceClass.AIRCRAFT
+
+
+def _label(drone_id: int, drones: Drones | None = None) -> str:
+    """``D-NN`` for aircraft and ``G-NN`` for ground vehicles, numbered by the relay's unit.
+
+    A device the state does not list is labelled as an aircraft by its id, the unit the
+    relay assigns to an unconfigured id.
+    """
+    known: Drones = {} if drones is None else drones
+    drone = known.get(drone_id)
+    unit = None if drone is None else drone.get("unit")
+    if isinstance(unit, bool) or not isinstance(unit, int) or unit <= 0:
+        unit = drone_id
+    prefix = "G" if _device_class(drone_id, known) is DeviceClass.GROUND_VEHICLE else "D"
+    return f"{prefix}-{unit:02d}"
+
+
+def _labels(ids: tuple[int, ...], drones: Drones | None = None) -> str:
+    return ", ".join(_label(drone_id, drones) for drone_id in ids)
+
+
+def _noun(ids: tuple[int, ...], drones: Drones, *, plural: bool = False) -> str:
+    """``aircraft``, ``robot(s)``, or ``device(s)`` for a selection by its classes."""
+    classes = {_device_class(drone_id, drones) for drone_id in ids}
+    if classes == {DeviceClass.GROUND_VEHICLE}:
+        return "robots" if plural else "robot"
+    if classes and classes != {DeviceClass.AIRCRAFT}:
+        return "devices" if plural else "device"
+    return "aircraft"
 
 
 def _step_notes(
@@ -447,7 +480,7 @@ def _step_notes(
     """Deterministic grounding notes from the validated intent and the relay state."""
     notes: list[str] = []
     selection = tuple(relay_state.get("selection", ()))  # type: ignore[arg-type]
-    drones = {
+    drones: Drones = {
         drone["drone_id"]: drone
         for drone in relay_state.get("drones", ())  # type: ignore[union-attr]
         if isinstance(drone, Mapping)
@@ -455,7 +488,7 @@ def _step_notes(
     name = intent.name
     if name is IntentName.SELECT:
         ids = tuple(intent.args["ids"])
-        notes.append(f"Selection membership only, no motion: {_labels(ids)}.")
+        notes.append(f"Selection membership only, no motion: {_labels(ids, drones)}.")
     elif name in {IntentName.ARM, IntentName.ESTOP, IntentName.LAND_ALL}:
         targets = tuple(
             drone_id
@@ -463,7 +496,8 @@ def _step_notes(
             if drone.get("membership") in {"ready", "degraded"}
         )
         notes.append(
-            f"Fleet-wide: targets {_labels(targets) if targets else 'no aircraft'} from the roster."
+            "Fleet-wide: targets "
+            f"{_labels(targets, drones) if targets else 'no devices'} from the roster."
         )
     else:
         origin = (
@@ -471,27 +505,35 @@ def _step_notes(
             if tuple(sorted(intent.selection)) == tuple(sorted(selection))
             else "an earlier step's selection"
         )
-        notes.append(f"Targets {_labels(intent.selection)} ({origin}).")
+        notes.append(f"Targets {_labels(intent.selection, drones)} ({origin}).")
     states = [
-        f"{_label(drone_id)} {drones[drone_id].get('flight_state') or 'unreported'}"
+        f"{_label(drone_id, drones)} {drones[drone_id].get('flight_state') or 'unreported'}"
         for drone_id in intent.selection
         if drone_id in drones
     ]
     if states and name is not IntentName.SELECT:
-        notes.append("Flight state when compiled: " + ", ".join(states) + ".")
+        noun = _noun(intent.selection, drones)
+        state_word = {"aircraft": "Flight state", "robot": "Drive state"}.get(noun, "State")
+        notes.append(f"{state_word} when compiled: " + ", ".join(states) + ".")
     if name is IntentName.TAKEOFF:
         notes.append(
             "Climbs to the configured takeoff altitude; the session must be armed"
             f" (armed {'yes' if relay_state.get('armed') else 'no'} when compiled)."
         )
     elif name is IntentName.HOLD:
-        notes.append("Each aircraft hovers at its current pose.")
+        noun = _noun(intent.selection, drones)
+        if noun == "aircraft":
+            notes.append("Each aircraft hovers at its current pose.")
+        elif noun == "robot":
+            notes.append("Each robot stops and holds its current pose.")
+        else:
+            notes.append("Each aircraft hovers and each robot stops at its current pose.")
     elif name is IntentName.LAND:
         notes.append("Lands in place.")
     elif name is IntentName.LAND_ALL:
-        notes.append("Lands every ready airborne aircraft in place.")
+        notes.append("Lands every ready airborne aircraft in place; robots are not affected.")
     elif name is IntentName.COME_HOME:
-        notes.append("Returns to each aircraft's captured home pose.")
+        notes.append(f"Returns to each {_noun(intent.selection, drones)}'s captured home pose.")
     elif name is IntentName.ARM:
         notes.append("Sets the session arm flag; motors do not spin.")
     elif name is IntentName.TRANSLATE:
@@ -519,13 +561,16 @@ def _clarify_options(
     if reason is CompilerReason.AMBIGUOUS_LOCATION:
         return tuple(rooms[:16])
     if reason is CompilerReason.AMBIGUOUS_SELECTION:
-        selectable = tuple(
-            drone["drone_id"]
+        drones: Drones = {
+            drone["drone_id"]: drone
             for drone in relay_state.get("drones", ())  # type: ignore[union-attr]
-            if isinstance(drone, Mapping) and drone.get("selectable") is True
+            if isinstance(drone, Mapping)
+        }
+        selectable = tuple(
+            drone_id for drone_id, drone in drones.items() if drone.get("selectable") is True
         )
-        options = [_label(drone_id) for drone_id in selectable[:15]]
+        options = [_label(drone_id, drones) for drone_id in selectable[:15]]
         if len(selectable) > 1:
-            options.append("all aircraft")
+            options.append(f"all {_noun(selectable, drones, plural=True)}")
         return tuple(options)
     return ()

@@ -14,7 +14,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal
 
-from planner.models import CommandOperation
+from planner.models import CommandOperation, DeviceClass
 
 
 class ContractError(ValueError):
@@ -96,6 +96,28 @@ class PhoneThermalState(StrEnum):
     SHUTDOWN = "shutdown"
 
 
+class SensorKind(StrEnum):
+    LIDAR_SCAN = "lidar_scan"
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceIdentity:
+    """A device's class and its 1-based unit ordinal among the configured ids of that class.
+
+    Labels (``D-01``, ``G-01``) and media paths (``drone1``, ``ground1``) derive from the
+    unit, never from the raw device id, so they stay stable across reconnects.
+    """
+
+    device_class: DeviceClass
+    unit: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.device_class, DeviceClass):
+            raise ValueError("device_class must be a DeviceClass")
+        if type(self.unit) is not int or self.unit <= 0:
+            raise ValueError("unit must be a positive integer")
+
+
 WIRE_MEMBERSHIP_ACTIONS = frozenset(
     {
         MembershipAction.JOIN,
@@ -105,8 +127,19 @@ WIRE_MEMBERSHIP_ACTIONS = frozenset(
 )
 
 NODE_FRAME_TYPES = frozenset(
-    {"capabilities", "capture_bundle", "media_file", "capture_readiness", "node_status"}
+    {"capabilities", "capture_bundle", "media_file", "capture_readiness", "node_status", "sensor"}
 )
+
+# A join declares its class inside the existing capability list as ``class:<name>``;
+# absent means aircraft, so the Android bridge's frames are unchanged.
+DEVICE_CLASS_CAPABILITY_PREFIX = "class:"
+
+# Sensor frames are bounded before retention: a full circle at the coarsest permitted
+# resolution is 180 bins and at the finest 720, each range an unsigned 16-bit centimetre.
+SENSOR_ANGLE_INCREMENTS_DEG = (0.5, 1.0, 2.0)
+MAX_SENSOR_RANGES = 720
+MAX_SENSOR_RANGE_CM = 65_535
+MAX_SENSOR_FRAME_CANONICAL_BYTES = 8 * 1024
 
 # Both adapter capability claims and camera panorama-mode claims become nested
 # state lists. Keep their signed/canonical representation comfortably below the
@@ -169,6 +202,9 @@ class MembershipRequest:
     home_pose_confirmed: bool | None = None
     control_authority: bool | None = None
     rc_safety_operator_present: bool | None = None
+    # The class a join declares through its ``class:`` capability; None means it declared
+    # none (an aircraft). It is derived from ``capabilities`` and never signed separately.
+    device_class: DeviceClass | None = None
 
     def unsigned_event(self) -> dict[str, object]:
         event: dict[str, object] = {
@@ -642,6 +678,98 @@ class NodeStatusFrame:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SensorPose:
+    """The device pose at scan time, in the same frame as its telemetry."""
+
+    x: float
+    y: float
+    yaw_deg: float
+
+    def to_dict(self) -> dict[str, float]:
+        return {"x": self.x, "y": self.y, "yaw_deg": self.yaw_deg}
+
+
+@dataclass(frozen=True, slots=True)
+class SensorFrame:
+    """A node-authored scan; a display feed that is fanned out to consoles and never audited
+    in full. Angle 0 points along the device's forward axis and angles increase
+    counter-clockwise; ``ranges_cm`` entries are centimetres with 0 meaning no return."""
+
+    v: Literal[1]
+    t: int
+    type: Literal["sensor"]
+    event_id: str
+    session: str
+    drone_id: int
+    connection_epoch: int
+    kind: SensorKind
+    pose: SensorPose
+    angle_min_deg: float
+    angle_increment_deg: float
+    range_min_m: float
+    range_max_m: float
+    ranges_cm: tuple[int, ...]
+
+    def to_event(self) -> dict[str, object]:
+        return {
+            "v": self.v,
+            "t": self.t,
+            "type": self.type,
+            "event_id": self.event_id,
+            "session": self.session,
+            "drone_id": self.drone_id,
+            "connection_epoch": self.connection_epoch,
+            "kind": self.kind.value,
+            "pose": self.pose.to_dict(),
+            "angle_min_deg": self.angle_min_deg,
+            "angle_increment_deg": self.angle_increment_deg,
+            "range_min_m": self.range_min_m,
+            "range_max_m": self.range_max_m,
+            "ranges_cm": list(self.ranges_cm),
+        }
+
+    def digest_event(self) -> dict[str, object]:
+        """The bounded audit record that stands in for the frame: counts and extrema only."""
+        valid = [value for value in self.ranges_cm if value > 0]
+        return {
+            "v": self.v,
+            "t": self.t,
+            "type": "sensor_digest",
+            "event_id": self.event_id,
+            "session": self.session,
+            "drone_id": self.drone_id,
+            "connection_epoch": self.connection_epoch,
+            "kind": self.kind.value,
+            "count": len(self.ranges_cm),
+            "valid": len(valid),
+            "min_cm": min(valid) if valid else None,
+            "max_cm": max(valid) if valid else None,
+        }
+
+
+def declared_device_class(capabilities: tuple[str, ...]) -> DeviceClass | None:
+    """Read the one ``class:`` entry a join may carry; absent means aircraft (``None``)."""
+    claims = [
+        capability
+        for capability in capabilities
+        if capability.startswith(DEVICE_CLASS_CAPABILITY_PREFIX)
+    ]
+    if not claims:
+        return None
+    if len(claims) > 1:
+        raise ContractError(
+            "device_class_mismatch", "join may declare at most one class: capability"
+        )
+    try:
+        return DeviceClass(claims[0][len(DEVICE_CLASS_CAPABILITY_PREFIX) :])
+    except ValueError:
+        options = ", ".join(member.value for member in DeviceClass)
+        raise ContractError(
+            "device_class_mismatch", f"class: capability must name one of {options}"
+        ) from None
+
+
 def parse_membership_request(raw: object) -> MembershipRequest:
     value = _mapping(raw, "invalid_membership", "membership frame must be an object")
     action_value = value.get("action")
@@ -692,6 +820,7 @@ def parse_membership_request(raw: object) -> MembershipRequest:
             signature,
             adapter_id=adapter_id,
             capabilities=capabilities,
+            device_class=declared_device_class(capabilities),
         )
 
     connection_epoch = _positive_int(
@@ -1151,6 +1280,83 @@ def parse_node_status(raw: object) -> NodeStatusFrame:
         battery,
         _enum(PhoneThermalState, value["phone_thermal_state"], "phone_thermal_state", code),
     )
+
+
+def parse_sensor(raw: object) -> SensorFrame:
+    code = "invalid_sensor"
+    value = _mapping(raw, code, "sensor frame must be an object")
+    fields = _ENVELOPE_FIELDS | {
+        "drone_id",
+        "connection_epoch",
+        "kind",
+        "pose",
+        "angle_min_deg",
+        "angle_increment_deg",
+        "range_min_m",
+        "range_max_m",
+        "ranges_cm",
+    }
+    _exact_fields(value, fields, code)
+    _common_envelope(value, expected_type="sensor", code=code)
+    kind = _enum(SensorKind, value["kind"], "kind", code)
+    pose = _mapping(value["pose"], code, "pose must be an object")
+    _exact_fields(pose, {"x", "y", "yaw_deg"}, code)
+    angle_min = _azimuth(value["angle_min_deg"], "angle_min_deg", code)
+    increment = _finite_number(value["angle_increment_deg"], "angle_increment_deg", code)
+    if increment not in SENSOR_ANGLE_INCREMENTS_DEG:
+        options = ", ".join(str(option) for option in SENSOR_ANGLE_INCREMENTS_DEG)
+        raise ContractError(code, f"angle_increment_deg must be one of {options}")
+    range_min = _finite_number(value["range_min_m"], "range_min_m", code)
+    range_max = _finite_number(value["range_max_m"], "range_max_m", code)
+    if range_min < 0 or range_max <= range_min:
+        raise ContractError(code, "range_min_m must be non-negative and below range_max_m")
+    ranges = value["ranges_cm"]
+    if not isinstance(ranges, list):
+        raise ContractError(code, "ranges_cm must be a list")
+    expected = round(360 / increment)
+    if len(ranges) != expected or len(ranges) > MAX_SENSOR_RANGES:
+        raise ContractError(
+            code, f"ranges_cm must contain exactly {expected} entries for this increment"
+        )
+    for item in ranges:
+        if (
+            isinstance(item, bool)
+            or not isinstance(item, int)
+            or not 0 <= item <= MAX_SENSOR_RANGE_CM
+        ):
+            raise ContractError(
+                code, f"ranges_cm entries must be integers from 0 through {MAX_SENSOR_RANGE_CM}"
+            )
+    frame = SensorFrame(
+        1,
+        value["t"],
+        "sensor",
+        value["event_id"],
+        value["session"],
+        _positive_int(value["drone_id"], "drone_id", code),
+        _positive_int(value["connection_epoch"], "connection_epoch", code),
+        kind,
+        SensorPose(
+            _finite_number(pose["x"], "x", code),
+            _finite_number(pose["y"], "y", code),
+            _azimuth(pose["yaw_deg"], "yaw_deg", code),
+        ),
+        angle_min,
+        increment,
+        range_min,
+        range_max,
+        tuple(ranges),
+    )
+    canonical = json.dumps(
+        frame.to_event(), ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    if len(canonical) > MAX_SENSOR_FRAME_CANONICAL_BYTES:
+        raise ContractError(
+            code,
+            f"sensor frame canonical JSON may contain at most "
+            f"{MAX_SENSOR_FRAME_CANONICAL_BYTES} UTF-8 bytes",
+        )
+    return frame
 
 
 def acknowledgement_event(

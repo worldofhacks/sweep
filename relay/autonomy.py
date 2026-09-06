@@ -40,6 +40,7 @@ from arbiter.safety import SafetyArbiter, SafetyConfig
 from planner.controller import AutonomyController, RelayExecution
 from planner.models import (
     CommandAcknowledgement,
+    DeviceClass,
     ExecutionResult,
     FleetSnapshot,
     FlightState,
@@ -206,6 +207,8 @@ def relay_snapshot(
         drone_id = drone.get("drone_id")
         if not isinstance(drone_id, int) or isinstance(drone_id, bool) or drone_id <= 0:
             raise ValueError("relay drone entries require a positive drone_id")
+        if drone.get("device_class") not in {None, DeviceClass.AIRCRAFT.value}:
+            continue
         telemetry = drone.get("telemetry")
         if not isinstance(telemetry, Mapping) or telemetry.get("state") not in _FLIGHT_STATES:
             fleet_observation_complete = False

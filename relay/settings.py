@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -11,10 +12,15 @@ from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
 
+from planner.models import DeviceClass
 from relay.auth import StaticCredentialResolver
 from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
+from relay.contracts import DeviceIdentity
+from relay.media import DEFAULT_MEDIA_DEVICES
 from relay.session import RelayLimits
 from relay.state import aircraft_limit_for_profile
+
+_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CONSOLE_ORIGINS = (
     "http://localhost:5173",
@@ -44,6 +50,8 @@ class RelaySettings:
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     allow_shared_adapter_token: bool = False
     localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
+    # Device class per configured id; ids absent here are aircraft.
+    device_classes: Mapping[int, DeviceClass] = field(default_factory=dict)
     log_dir: Path = Path(".sweep/session-logs")
     intent_max_age_ms: int = 5_000
     transport_event_max_age_ms: int = 5_000
@@ -110,6 +118,45 @@ class RelaySettings:
             )
         object.__setattr__(self, "adapter_keys", MappingProxyType(adapter_keys))
         object.__setattr__(self, "localization_keys", MappingProxyType(localization_keys))
+        if not isinstance(self.device_classes, Mapping):
+            raise SettingsError("SWEEP_DEVICE_CLASSES_JSON must be a mapping")
+        device_classes = dict(self.device_classes)
+        if any(
+            type(drone_id) is not int
+            or not 1 <= drone_id <= 2**31 - 1
+            or not isinstance(device_class, DeviceClass)
+            for drone_id, device_class in device_classes.items()
+        ):
+            raise SettingsError(
+                "SWEEP_DEVICE_CLASSES_JSON must map bounded device IDs to a known device class"
+            )
+        unkeyed = sorted(drone_id for drone_id in device_classes if drone_id not in adapter_keys)
+        if unkeyed:
+            ids = ", ".join(str(drone_id) for drone_id in unkeyed)
+            raise SettingsError(
+                f"device_class_without_key: SWEEP_DEVICE_CLASSES_JSON names IDs {ids} that "
+                "SWEEP_ADAPTER_KEYS_JSON does not configure"
+            )
+        object.__setattr__(self, "device_classes", MappingProxyType(device_classes))
+        if self.allow_shared_adapter_token and adapter_keys:
+            # An ID admitted without a key is an aircraft whose unit is its ID
+            # (``relay.state.FleetRegistry.device_identity``), which agrees with the
+            # configured numbering only while the configured aircraft IDs are 1 through N
+            # ascending. Otherwise a shared-token joiner would take a configured aircraft's
+            # unit, its D-NN label, and its drone{unit} media path.
+            aircraft = sorted(
+                drone_id
+                for drone_id in adapter_keys
+                if device_classes.get(drone_id, DeviceClass.AIRCRAFT) is DeviceClass.AIRCRAFT
+            )
+            if aircraft != list(range(1, len(aircraft) + 1)):
+                ids = ", ".join(str(drone_id) for drone_id in aircraft)
+                raise SettingsError(
+                    "shared_token_unit_collision: SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true "
+                    "requires the configured aircraft IDs to be 1 through N ascending "
+                    f"(configured: {ids}); an ID admitted without a key takes its ID as "
+                    "its unit and would collide with a configured device"
+                )
         if (
             type(self.transcript_upload_timeout_ms) is not int
             or not 1 <= self.transcript_upload_timeout_ms <= MAX_TRANSCRIPT_UPLOAD_TIMEOUT_MS
@@ -186,7 +233,7 @@ class RelaySettings:
             values.get("SWEEP_ADAPTER_KEYS_JSON", "{}"),
             "SWEEP_ADAPTER_KEYS_JSON",
         )
-        return cls(
+        settings = cls(
             relay_token=token.encode(),
             adapter_keys=adapter_keys,
             localization_keys=_credential_keys(
@@ -196,6 +243,9 @@ class RelaySettings:
             allow_shared_adapter_token=_boolean(
                 values.get("SWEEP_ALLOW_SHARED_ADAPTER_TOKEN", "false"),
                 "SWEEP_ALLOW_SHARED_ADAPTER_TOKEN",
+            ),
+            device_classes=_device_classes(
+                values.get("SWEEP_DEVICE_CLASSES_JSON", "{}"), "SWEEP_DEVICE_CLASSES_JSON"
             ),
             log_dir=Path(values.get("SWEEP_SESSION_LOG_DIR", ".sweep/session-logs")),
             intent_max_age_ms=_positive_integer(
@@ -273,6 +323,57 @@ class RelaySettings:
                 "SWEEP_STATE_MEMBERSHIP_HISTORY",
             ),
         )
+        settings._warn_when_aircraft_units_differ_from_ids()
+        return settings
+
+    def _warn_when_aircraft_units_differ_from_ids(self) -> None:
+        """Warn at startup about the one configuration the publishers cannot follow.
+
+        The relay derives an aircraft's MediaMTX path from its unit, while the pilot app
+        (``adapters/dji_mini3/pilot-app`` ``WhipEndpoint``/``MediaCredential``) and the
+        console player still derive ``drone{id}`` from the device ID. The two agree only
+        while the configured aircraft IDs are 1 through N ascending; otherwise an aircraft
+        publishes to one path, is polled at another, and its derived publisher password no
+        longer matches. ``relay/README.md`` and ``media/README.md`` carry the constraint.
+        """
+        drifted = sorted(
+            drone_id
+            for drone_id, identity in self.device_identities().items()
+            if identity.device_class is DeviceClass.AIRCRAFT and identity.unit != drone_id
+        )
+        if drifted:
+            _LOGGER.warning(
+                "configured aircraft IDs %s do not equal their units: the pilot app and "
+                "the console publish and play drone{id} while the relay polls drone{unit}; "
+                "configure aircraft IDs 1 through N ascending",
+                ", ".join(str(drone_id) for drone_id in drifted),
+            )
+
+    def device_identities(self) -> Mapping[int, DeviceIdentity]:
+        """Class and unit of every configured device id (``SWEEP_ADAPTER_KEYS_JSON``).
+
+        The unit is the 1-based ordinal of the id among the configured ids of its class,
+        sorted ascending, so it is stable across reconnects and independent of join order.
+        Ids the relay admits without a key (the shared-token demo fallback) are aircraft
+        whose unit is the id itself, which is why that fallback requires configured
+        aircraft ids 1 through N ascending (``shared_token_unit_collision``).
+        """
+        by_class: dict[DeviceClass, list[int]] = {}
+        for drone_id in sorted(self.adapter_keys):
+            device_class = self.device_classes.get(drone_id, DeviceClass.AIRCRAFT)
+            by_class.setdefault(device_class, []).append(drone_id)
+        identities = {
+            drone_id: DeviceIdentity(device_class, unit)
+            for device_class, ids in by_class.items()
+            for unit, drone_id in enumerate(ids, start=1)
+        }
+        return MappingProxyType(dict(sorted(identities.items())))
+
+    def media_devices(self) -> Mapping[int, DeviceIdentity]:
+        """The devices the media monitor polls: every configured one, else the four default
+        aircraft paths when no key is configured."""
+        identities = self.device_identities()
+        return identities if identities else DEFAULT_MEDIA_DEVICES
 
     def media_runtime_config(self) -> dict[str, str] | None:
         """The console's media bootstrap, or ``None`` until every value is configured."""
@@ -343,6 +444,29 @@ def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
         if not isinstance(raw_key, str) or not raw_key:
             raise SettingsError(f"{name} credentials must be non-empty strings")
         result[drone_id] = raw_key.encode()
+    return result
+
+
+def _device_classes(raw: str, name: str) -> dict[int, DeviceClass]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SettingsError(f"{name} must be valid JSON") from error
+    if not isinstance(value, dict):
+        raise SettingsError(f"{name} must be an object")
+    result: dict[int, DeviceClass] = {}
+    for raw_id, raw_class in value.items():
+        try:
+            drone_id = int(raw_id)
+        except (TypeError, ValueError):
+            raise SettingsError(f"{name} IDs must be positive integers") from None
+        if str(drone_id) != str(raw_id) or drone_id <= 0:
+            raise SettingsError(f"{name} IDs must be canonical positive integers")
+        try:
+            result[drone_id] = DeviceClass(raw_class)
+        except ValueError:
+            options = ", ".join(member.value for member in DeviceClass)
+            raise SettingsError(f"{name} classes must be one of {options}") from None
     return result
 
 

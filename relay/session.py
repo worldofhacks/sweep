@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import time
 import uuid
@@ -12,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import Lock, RLock
 
-from planner.models import CommandOperation
+from planner.models import CommandOperation, DeviceClass
 from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
@@ -25,12 +26,14 @@ from relay.contracts import (
     CaptureBundleFrame,
     CaptureReadinessFrame,
     ContractError,
+    DeviceIdentity,
     LifecycleStatus,
     MediaFileFrame,
     MediaFileRecord,
     MembershipAction,
     MembershipRequest,
     NodeStatusFrame,
+    SensorFrame,
     acknowledgement_event,
     command_event,
     parse_adapter_acknowledgement,
@@ -40,6 +43,7 @@ from relay.contracts import (
     parse_media_file,
     parse_membership_request,
     parse_node_status,
+    parse_sensor,
     parse_telemetry,
     refusal_event,
 )
@@ -63,16 +67,23 @@ from relay.intent_v1 import (
 from relay.media import MediaEvidenceProvider
 from relay.state import (
     MAX_MEMBERSHIP_HISTORY_LIMIT,
+    MAX_PHYSICAL_DEVICES,
     MAX_SIMULATED_AIRCRAFT,
     FleetRegistry,
     MembershipTransition,
     RegistryError,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 Clock = Callable[[], int]
 EventIdFactory = Callable[[], str]
 ControlPoseSigningKey = Callable[[int], bytes | None]
+SensorListener = Callable[[SensorFrame], None]
 MAX_AUDIT_STATE_INTERVAL_MS = 10_000
+# Sensor frames faster than this per device are dropped silently, never refused.
+MAX_SENSOR_FRAMES_PER_SECOND = 5
+_SENSOR_MIN_INTERVAL_MS = 1_000 // MAX_SENSOR_FRAMES_PER_SECOND
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +131,7 @@ NodeFrame = (
     | MediaFileFrame
     | CaptureReadinessFrame
     | NodeStatusFrame
+    | SensorFrame
 )
 _UNSET = object()
 _TERMINAL_STATUSES = frozenset(
@@ -136,6 +148,7 @@ _NODE_FRAME_PARSERS: dict[str, Callable[[object], NodeFrame]] = {
     "media_file": parse_media_file,
     "capture_readiness": parse_capture_readiness,
     "node_status": parse_node_status,
+    "sensor": parse_sensor,
 }
 _COMMAND_LEDGER_MAX = 4_096
 _COMMAND_RETENTION_MIN_MS = 60_000
@@ -292,6 +305,7 @@ class RelaySession:
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
+        devices: Mapping[int, DeviceIdentity] | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -320,8 +334,16 @@ class RelaySession:
             capability_profile=capability_profile,
             media_evidence=media_evidence,
             membership_history_limit=limits.state_membership_history,
+            devices=devices,
         )
         self._audit_sampling = _AuditSampling()
+        # Sensor admission is per device: the relay clock of the last accepted frame
+        # bounds the rate, and of the last audited digest bounds the audit volume.
+        self._sensor_accepted_at: dict[int, int] = {}
+        self._sensor_digest_at: dict[int, int] = {}
+        # Called with every accepted sensor frame after its operation commits, outside
+        # the session lock; a listener failure is logged and never refuses the frame.
+        self.sensor_listeners: list[SensorListener] = []
         # Values are the last instant when the exact signed event could still pass
         # the transport freshness check. This keeps replay protection bounded for
         # high-rate diagnostic producers without accepting a still-fresh replay.
@@ -347,6 +369,8 @@ class RelaySession:
             "telemetry_events": 0,
             "node_events": 0,
             "commands_issued": 0,
+            "sensor_events": 0,
+            "sensor_frames_dropped_total": 0,
         }
         self._mutation_usable = True
         self._projection_usable = True
@@ -1142,9 +1166,12 @@ class RelaySession:
         """Accept a node-authored frame; only capabilities and node_status change state.
 
         Media files and capture bundles are audited and retained for the command wire
-        but not fanned out; capture readiness is fanned out unchanged.
+        but not fanned out; capture readiness is fanned out unchanged. A sensor frame is
+        retained and fanned out, but the audit keeps only a sampled digest of it, and
+        frames above the per-device rate are dropped without a refusal.
         """
         now = self.clock()
+        accepted_sensor: SensorFrame | None = None
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             if principal.source != "adapter" or principal.drone_id is None:
@@ -1164,6 +1191,13 @@ class RelaySession:
                         "session_mismatch", "node frame session does not match the WebSocket path"
                     )
                 self._check_media_retention_capacity(frame)
+                if isinstance(frame, SensorFrame):
+                    # A well-formed frame from the current epoch that merely arrives too
+                    # fast is not evidence of anything; it is neither claimed nor refused.
+                    self.registry.check_current(drone_id, connection_epoch)
+                    if self._sensor_rate_exceeded(drone_id, now):
+                        self._metrics["sensor_frames_dropped_total"] += 1
+                        return []
                 self._claim_transport_event(frame.event_id, frame.t, principal, now)
                 self.registry.check_current(drone_id, connection_epoch)
                 if isinstance(frame, CapabilitiesFrame):
@@ -1181,6 +1215,10 @@ class RelaySession:
                 elif isinstance(frame, CaptureReadinessFrame):
                     self._remember_capture_readiness(drone_id)
                     self._capture_readiness[drone_id] = frame
+                elif isinstance(frame, SensorFrame):
+                    self._remember_sensor_admission(drone_id)
+                    self._sensor_accepted_at[drone_id] = now
+                    self.registry.apply_sensor(frame)
             except (ContractError, RegistryError) as error:
                 return [
                     self._protocol_refusal(
@@ -1192,17 +1230,62 @@ class RelaySession:
                     )
                 ]
 
-            event = frame.to_event()
-            self._append_audit(event)
-            self._metrics["node_events"] += 1
-            if isinstance(frame, MediaFileFrame | CaptureBundleFrame):
-                return []
-            events: list[dict[str, object]] = [event]
-            if isinstance(frame, CapabilitiesFrame | NodeStatusFrame):
-                state = self._state_event(now)
-                self._sample_state_audit(state, now)
-                events.append(state)
-            return events
+            if isinstance(frame, SensorFrame):
+                self._metrics["sensor_events"] += 1
+                if self._sensor_digest_due(drone_id, now):
+                    self._sensor_digest_at[drone_id] = now
+                    self._append_audit(frame.digest_event())
+                accepted_sensor = frame
+                events = [frame.to_event()]
+            else:
+                event = frame.to_event()
+                self._append_audit(event)
+                self._metrics["node_events"] += 1
+                if isinstance(frame, MediaFileFrame | CaptureBundleFrame):
+                    return []
+                events = [event]
+                if isinstance(frame, CapabilitiesFrame | NodeStatusFrame):
+                    state = self._state_event(now)
+                    self._sample_state_audit(state, now)
+                    events.append(state)
+        if accepted_sensor is not None:
+            self._notify_sensor_listeners(accepted_sensor)
+        return events
+
+    def latest_sensor(self, drone_id: int) -> SensorFrame | None:
+        """Return the node's latest accepted sensor frame for its current epoch."""
+        with self._lock:
+            frame = self.registry.latest_sensor(drone_id)
+            if frame is None:
+                return None
+            try:
+                self.registry.check_current(drone_id, frame.connection_epoch)
+            except RegistryError:
+                return None
+            return frame
+
+    def _sensor_rate_exceeded(self, drone_id: int, now: int) -> bool:
+        last = self._sensor_accepted_at.get(drone_id)
+        if last is None or now < last:
+            # A backward relay-clock step starts a fresh window at ``now`` (the caller
+            # rewrites ``_sensor_accepted_at``) instead of dropping every frame until the
+            # old timestamp catches up, the same restart ``_sensor_digest_due`` and the
+            # state-audit sampler use. The admitted frame still opens the new window.
+            return False
+        return now < last + _SENSOR_MIN_INTERVAL_MS
+
+    def _sensor_digest_due(self, drone_id: int, now: int) -> bool:
+        last = self._sensor_digest_at.get(drone_id)
+        return last is None or now < last or now - last >= self.limits.audit_state_interval_ms
+
+    def _notify_sensor_listeners(self, frame: SensorFrame) -> None:
+        for listener in tuple(self.sensor_listeners):
+            try:
+                listener(frame)
+            except Exception:
+                _LOGGER.exception(
+                    "sensor listener failed session=%s drone=%s", self.session_id, frame.drone_id
+                )
 
     def issue_command(
         self,
@@ -1466,6 +1549,23 @@ class RelaySession:
 
         assert self._audit_undo is not None
         self._audit_undo.append(undo_readiness)
+
+    def _remember_sensor_admission(self, drone_id: int) -> None:
+        accepted_before = self._sensor_accepted_at.get(drone_id)
+        digest_before = self._sensor_digest_at.get(drone_id)
+
+        def undo_sensor() -> None:
+            for ledger, before in (
+                (self._sensor_accepted_at, accepted_before),
+                (self._sensor_digest_at, digest_before),
+            ):
+                if before is None:
+                    ledger.pop(drone_id, None)
+                else:
+                    ledger[drone_id] = before
+
+        assert self._audit_undo is not None
+        self._audit_undo.append(undo_sensor)
 
     def record_lifecycle(
         self,
@@ -2446,6 +2546,8 @@ _MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
 _DRONE_STATE_KEYS = frozenset(
     {
         "drone_id",
+        "device_class",
+        "unit",
         "connection_epoch",
         "membership",
         "readiness_reasons",
@@ -2467,6 +2569,7 @@ _DRONE_STATE_KEYS = frozenset(
         "camera_capabilities",
         "node_status",
         "video",
+        "sensor",
     }
 )
 _VOLATILE_DRONE_KEYS = frozenset({"last_seen_at", "telemetry", "battery", "link", "pos_quality"})
@@ -2478,7 +2581,10 @@ _TIMESTAMPED_DRONE_REPORTS = {
     "camera_capabilities": "t",
     "node_status": "t",
     "video": "last_frame_at",
+    "sensor": "last_scan_at",
 }
+# Node reports that are null until the node has sent one; video and sensor are always objects.
+_NULLABLE_DRONE_REPORTS = frozenset({"camera_capabilities", "node_status"})
 _DRONE_REPORT_FIELDS = {
     "camera_capabilities": frozenset(
         {
@@ -2518,6 +2624,7 @@ _DRONE_REPORT_FIELDS = {
         }
     ),
     "video": frozenset({"status", "last_frame_at"}),
+    "sensor": frozenset({"kind", "last_scan_at"}),
 }
 _MEMBERSHIP_HISTORY_FIELDS = frozenset(
     {
@@ -2575,9 +2682,14 @@ def _material_state_projection(state: Mapping[str, object]) -> str:
         raise AuditLogError(f"material state is not JSON-native: {error}") from None
 
 
+_MAX_PROJECTED_DEVICES = (
+    MAX_SIMULATED_AIRCRAFT + MAX_PHYSICAL_DEVICES[DeviceClass.GROUND_VEHICLE]
+)
+
+
 def _material_drones_projection(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list) or len(value) > MAX_SIMULATED_AIRCRAFT:
-        raise AuditLogError("state drones require a bounded aircraft list")
+    if not isinstance(value, list) or len(value) > _MAX_PROJECTED_DEVICES:
+        raise AuditLogError("state drones require a bounded device list")
     if not all(isinstance(drone, Mapping) for drone in value):
         raise AuditLogError("state drones must contain objects")
     return [_material_drone_projection(drone) for drone in value]
@@ -2673,7 +2785,7 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
     projection = {key: drone[key] for key in _DRONE_STATE_KEYS - _VOLATILE_DRONE_KEYS}
     for report, timestamp in _TIMESTAMPED_DRONE_REPORTS.items():
         value = projection.get(report)
-        if value is None and report != "video":
+        if value is None and report in _NULLABLE_DRONE_REPORTS:
             continue
         if not isinstance(value, Mapping) or set(value) != _DRONE_REPORT_FIELDS[report]:
             raise AuditLogError(f"drone {report} fields do not match the bounded projection")
