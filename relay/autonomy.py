@@ -67,6 +67,8 @@ from relay.control_localization import (
     ControlLocalizationProjector,
 )
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
+from relay.search_deployment import load_search_runtime
+from relay.search_runtime import SearchRuntime
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 
@@ -123,6 +125,7 @@ class AutonomyConfig:
     sim_camera: SimCameraConfig | None = None
     control_localization_projector: ControlLocalizationProjector | None = None
     navigation_deployment: NavigationDeployment | None = None
+    search_runtime: SearchRuntime | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
@@ -156,6 +159,9 @@ class AutonomyConfig:
                 )
             ),
             navigation_deployment=navigation,
+            search_runtime=load_search_runtime(
+                values, None if navigation is None else navigation.runtime
+            ),
         )
 
 
