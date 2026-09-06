@@ -22,7 +22,7 @@ from evals.language_corpus import (
     load_synthetic_responses,
 )
 from language.compiler import TranscriptCompiler
-from language.contracts import build_grounding_facts
+from language.contracts import NEGATED_TRANSCRIPT_DETAIL, build_grounding_facts
 from language.relay_compiler import RelayTranscriptCompiler
 from language.transport import (
     PINNED_COMPILER_MODEL,
@@ -442,6 +442,41 @@ def test_unsafe_phrases_are_refused_without_steps(tmp_path: Path, clock: Mutable
     assert stopped_plan["steps"] == []
 
 
+_NEGATED_LIVE_TRANSCRIPTS = tuple(
+    case.transcript for case in load_corpus() if case.category == "negation" and case.live_demo
+)
+
+
+@pytest.mark.parametrize("transcript", _NEGATED_LIVE_TRANSCRIPTS)
+def test_negated_transcript_never_yields_steps_even_when_the_model_proposes_them(
+    tmp_path: Path, clock: MutableClock, transcript: str
+) -> None:
+    # The corpus's negated live-demo utterances, against a mocked model that wrongly
+    # answers a takeoff plan for each of them.
+    assert len(_NEGATED_LIVE_TRANSCRIPTS) == 3
+    app, runtime, session = _wired_app(
+        tmp_path, clock, transcript=transcript, payload=_takeoff_payload([1])
+    )
+    _ready_landed_aircraft(session, clock)
+
+    body = _post(app).json()
+
+    assert body["status"] == "transcribed"
+    assert body["transcript"] == transcript
+    assert body["emissions"] == []
+    plan = body["plan"]
+    assert plan["kind"] == "clarify"
+    assert plan["reason"] == "ambiguous_action"
+    assert plan["detail"] == NEGATED_TRANSCRIPT_DETAIL
+    assert plan["steps"] == []
+    assert plan["options"] == []
+    assert plan["expires_at_ms"] is None
+    assert plan["plan_digest"] is None
+    parse_voice_outcome(body, session_id=SESSION, correlation_id=_CORRELATION)
+    records = runtime.replay(SESSION)["events"]
+    assert not any(record["event"].get("event") == "plan_compiled" for record in records)
+
+
 def test_provider_outage_is_compiler_unavailable_with_the_transcript_kept(
     tmp_path: Path, clock: MutableClock
 ) -> None:
@@ -641,7 +676,7 @@ def test_live_demo_corpus_previews_through_the_relay_path_with_replay(
     corpus = load_corpus()
     responses = load_synthetic_responses(corpus=corpus)
     live = [case for case in corpus if case.live_demo]
-    assert len(live) == 20
+    assert len(live) == 23
     cassette = tmp_path / "relay-language-replay.json"
 
     for case in live:
@@ -718,7 +753,9 @@ def test_live_demo_corpus_previews_through_the_relay_path_with_replay(
                 assert step.notes, case.case_id
         else:
             assert plan.steps == ()
-            assert plan.options == tuple(case.rooms), case.case_id
+            assert plan.options == (
+                tuple(case.rooms) if plan.reason == "ambiguous_location" else ()
+            ), case.case_id
         parse_voice_outcome(outcome.to_dict(session_id=SESSION, correlation_id=case.case_id))
 
     assert seen_kinds == {"plan", "clarify"}

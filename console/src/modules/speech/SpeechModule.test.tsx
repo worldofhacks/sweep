@@ -134,6 +134,10 @@ function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Pr
       current += ms
       view.rerender(element())
     },
+    /** Moves the clock without a re-render: the gap between two one-second ticks. */
+    drift: (ms: number) => {
+      current += ms
+    },
   }
 }
 
@@ -577,6 +581,90 @@ describe('Speech module', () => {
     expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
     expect(clients.console.sent).toHaveLength(0)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+  })
+
+  test('a negated utterance the relay clarified shows the sentence and stages nothing', async () => {
+    const transcript = new QueuedTranscriptClient()
+    transcript.answer(
+      outcome({
+        transcript: 'Do not take off.',
+        plan: relayPlan({
+          kind: 'clarify',
+          transcript: 'Do not take off.',
+          reason: 'ambiguous_action',
+          detail: 'The transcript negates an action, so no step was proposed.',
+          options: [],
+          steps: [],
+          expires_at_ms: null,
+          plan_digest: null,
+        }),
+      }),
+    )
+    const { clients } = mount({ transcript })
+    await screen.findByText(/Development fixture active/i)
+
+    await record()
+    await waitFor(() => expect(planCard()).toHaveTextContent('clarify'))
+    expect(planCard()).toHaveTextContent('reason ambiguous_action')
+    expect(planCard()).toHaveTextContent(
+      'The relay compiler could not tell which action you meant. The transcript negates an action, so no step was proposed. Say it again with one verb; nothing was emitted.',
+    )
+    expect(screen.getByRole('textbox', { name: 'Utterance' })).toHaveValue('Do not take off.')
+    expect(screen.queryByRole('list', { name: 'Clarification options' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Draft for confirmation' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(0)
+  })
+
+  test('a staged relay step inherits the plan expiry: a late confirm is invalidated and the dock disables Confirm', async () => {
+    const transcript = new QueuedTranscriptClient()
+    transcript.answer(outcome({ transcript: 'Take off.', plan: relayPlan({}) }))
+    transcript.answer(
+      outcome({
+        transcript: 'Hold position.',
+        plan: relayPlan({ transcript: 'Hold position.', steps: [step(0, 'hold', [1])] }),
+      }),
+    )
+    const { clients, advance, drift } = mount({ transcript })
+    await screen.findByText(/Development fixture active/i)
+    const u = user()
+
+    // Takeoff: the dock counts the plan's 30 s down with the step.
+    await record()
+    await u.click(await screen.findByRole('button', { name: 'Stage step 1: takeoff' }))
+    const dock = screen.getByRole('region', { name: 'Pending confirmation' })
+    expect(dock).toHaveTextContent('Takeoff')
+    expect(dock).toHaveTextContent('confirm within 30 s')
+    advance(21_000)
+    expect(dock).toHaveTextContent('confirm within 9 s')
+    expect(planCard()).toHaveTextContent('plan expires in 9 s')
+
+    // The clock passes the deadline between two ticks, so Confirm is still enabled
+    // when it is pressed: the control flow refuses and sends nothing.
+    drift(10_000)
+    await u.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
+    expect(clients.console.sent).toHaveLength(0)
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    const alert = screen.getByText(/Preview invalidated, nothing sent/).closest('[role="alert"]')
+    expect(alert).toHaveTextContent('confirmation_window_expired')
+    expect(alert).toHaveTextContent('The confirmation window expired before the operator confirmed. No command was sent.')
+    expect(planCard()).toHaveTextContent('Plan halted at step 1 (invalidated, confirmation_window_expired).')
+    expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
+
+    // Hold: once the rendered countdown reaches zero the dock disables Confirm outright.
+    await record()
+    await u.click(await screen.findByRole('button', { name: 'Stage step 1: hold' }))
+    const holdDock = screen.getByRole('region', { name: 'Pending confirmation' })
+    expect(holdDock).toHaveTextContent('confirm within 30 s')
+    advance(31_000)
+    expect(holdDock).toHaveTextContent('confirmation window expired — cancel and say it again')
+    expect(within(holdDock).getByRole('button', { name: 'Confirm and send' })).toBeDisabled()
+    expect(planCard()).toHaveTextContent('plan expired')
+    await u.click(within(holdDock).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(planCard()).toHaveTextContent('Plan halted at step 1 (cancelled).')
+    expect(clients.console.sent).toHaveLength(0)
   })
 
   test('typing after a relay plan returns to the labelled local fallback', async () => {
