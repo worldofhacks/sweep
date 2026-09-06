@@ -26,6 +26,9 @@ import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.ProbeReport
+import org.worldofhacks.sweep.bridge.session.ProductConnection
+import org.worldofhacks.sweep.bridge.session.SensorRecordingSession
+import org.worldofhacks.sweep.bridge.session.SensorRelayContext
 import org.worldofhacks.sweep.bridge.session.SessionModel
 import org.worldofhacks.sweep.bridge.session.SessionState
 import org.worldofhacks.sweep.bridge.video.DjiFpv
@@ -43,20 +46,117 @@ import org.worldofhacks.sweep.bridge.video.FpvSessionHost
  * instead of overwriting the current one. The capture matrix and camera probing of the
  * original are not carried over.
  */
-class SdkSession(private val application: Application) : AircraftSession, FpvSessionHost {
+internal class SdkSession(private val application: Application) :
+    AircraftSession,
+    FpvSessionHost,
+    SensorRecordingSession {
     private val model = SessionModel()
-    private val sensorRaw: SensorRawSink? =
-        SensorRawSink.open(application.filesDir).also { sink ->
-            model.event("Sensor raw log", sink?.file?.absolutePath ?: "could not open sensor raw log")
-        }
+    private val sensorRawLock = Any()
+    private var sensorRelayContext: SensorRelayContext? = null
+
+    @Volatile
+    private var sensorRaw: SensorRawSink? = null
+    private var sensorRawUnavailable = false
+
+    private val recorderConfigSha256 = SensorRawSink.recorderConfigSha256(
+        BuildConfig.APPLICATION_ID,
+        "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+        BuildConfig.AIRCRAFT,
+    )
+    private val rawRecorder = object : SensorRawRecorder {
+        override fun recordVelocityNedMps(
+            northMps: Double,
+            eastMps: Double,
+            downMps: Double,
+        ): SensorRawAppendResult =
+            sensorRaw?.recordVelocityNedMps(northMps, eastMps, downMps)
+                ?: SensorRawAppendResult.NO_IDENTITY
+
+        override fun recordBarometricHeightM(heightM: Double): SensorRawAppendResult =
+            sensorRaw?.recordBarometricHeightM(heightM) ?: SensorRawAppendResult.NO_IDENTITY
+
+        override fun recordUltrasonicHeightDm(heightDm: Int): SensorRawAppendResult =
+            sensorRaw?.recordUltrasonicHeightDm(heightDm) ?: SensorRawAppendResult.NO_IDENTITY
+    }
     private val probe = ProbeAircraft(
         phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
         androidVersion = Build.VERSION.RELEASE ?: "",
         sdkVersion = { runCatching { SDKManager.getInstance().sdkVersion }.getOrNull().orEmpty() },
         log = { name, detail -> model.event(name, detail) },
         record = { key, event, status -> recordKey(key, event, status) },
-        recordRaw = { kind, fields -> sensorRaw?.append(kind, fields) },
+        rawRecorder = rawRecorder,
     )
+
+    override fun updateSensorRelayContext(context: SensorRelayContext?) {
+        val old = synchronized(sensorRawLock) {
+            if (sensorRelayContext == context && (context == null || sensorRaw != null)) {
+                refreshSensorRawIdentityLocked()
+                return
+            }
+            sensorRelayContext = context
+            sensorRaw.also { sensorRaw = null }
+        }
+        old?.updateIdentity(null)
+        old?.close()
+        val oldMetrics = old?.metrics()
+        oldMetrics?.let { model.event("Sensor raw log", "recorder closed; ${it.summary()}") }
+        if (oldMetrics?.workerAlive == true) {
+            synchronized(sensorRawLock) { sensorRawUnavailable = true }
+            model.event("Sensor raw log", "recorder disabled for this app process after a close timeout")
+        }
+        if (context == null || synchronized(sensorRawLock) { sensorRawUnavailable }) return
+
+        val opened = SensorRawSink.open(application.filesDir) { detail -> model.event("Sensor raw log", detail) }
+        if (opened == null) {
+            synchronized(sensorRawLock) { sensorRawUnavailable = true }
+            return
+        }
+        var stale = false
+        synchronized(sensorRawLock) {
+            if (sensorRelayContext == context && sensorRaw == null) {
+                sensorRaw = opened
+                refreshSensorRawIdentityLocked()
+            } else {
+                stale = true
+            }
+        }
+        if (stale) {
+            opened.close()
+            model.event("Sensor raw log", "stale recorder closed; ${opened.metrics().summary()}")
+        }
+    }
+
+    private fun refreshSensorRawIdentity() {
+        synchronized(sensorRawLock) { refreshSensorRawIdentityLocked() }
+    }
+
+    private fun refreshSensorRawIdentityLocked() {
+        val relay = sensorRelayContext
+        val state = model.current
+        val productId = state.productId
+        val next = if (relay == null || state.product != ProductConnection.CONNECTED || productId == null) {
+            null
+        } else {
+            val identity = state.identity
+            SensorRawIdentity(
+                session = relay.session,
+                productId = productId,
+                droneId = relay.droneId,
+                connectionGeneration = state.generation,
+                connectionEpoch = relay.connectionEpoch,
+                productType = boundedSensorProvenance(identity.productType),
+                aircraftFirmware = boundedSensorProvenance(identity.aircraftFirmware),
+                rcFirmware = boundedSensorProvenance(identity.rcFirmware),
+                sdkVersion = boundedSensorProvenance(runCatching { SDKManager.getInstance().sdkVersion }.getOrNull()),
+                recorderConfigSha256 = recorderConfigSha256,
+            )
+        }
+        sensorRaw?.updateIdentity(next)
+    }
+
+    private fun clearSensorRawIdentity() {
+        synchronized(sensorRawLock) { sensorRaw?.updateIdentity(null) }
+    }
 
     /**
      * Phase C follow-up: `filesDir/bench/telemetry-keys-<stamp>.jsonl`, one `telemetry_key`
@@ -116,6 +216,7 @@ class SdkSession(private val application: Application) : AircraftSession, FpvSes
         }
 
         override fun onProductDisconnect(productId: Int) {
+            clearSensorRawIdentity()
             model.productDisconnected(productId)
             probe.productConnected(false)
             fpv.productConnected(false)
@@ -124,6 +225,7 @@ class SdkSession(private val application: Application) : AircraftSession, FpvSes
 
         override fun onProductConnect(productId: Int) {
             val generation = model.productConnected(productId)
+            refreshSensorRawIdentity()
             probe.attach()
             fpv.attach()
             probe.productConnected(true)
@@ -132,7 +234,9 @@ class SdkSession(private val application: Application) : AircraftSession, FpvSes
         }
 
         override fun onProductChanged(productId: Int) {
+            clearSensorRawIdentity()
             val generation = model.productChanged(productId)
+            refreshSensorRawIdentity()
             probe.productConnected(true)
             fpv.productConnected(true)
             queryIdentity(generation)
@@ -204,7 +308,10 @@ class SdkSession(private val application: Application) : AircraftSession, FpvSes
             object : CommonCallbacks.CompletionCallbackWithParam<T> {
                 override fun onSuccess(value: T) {
                     val (detail, transform) = onValue(value)
-                    if (model.identity(generation, name, detail, transform)) probe.updateIdentity(model.current.identity)
+                    if (model.identity(generation, name, detail, transform)) {
+                        probe.updateIdentity(model.current.identity)
+                        refreshSensorRawIdentity()
+                    }
                 }
 
                 override fun onFailure(error: IDJIError) {
