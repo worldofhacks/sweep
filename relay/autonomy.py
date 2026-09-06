@@ -67,7 +67,10 @@ from relay.control_localization import (
     ControlLocalizationProjector,
 )
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
+<<<<<<< HEAD
 from relay.search_deployment import load_search_runtime
+=======
+>>>>>>> e9f8723 (feat(relay): bind configured search previews)
 from relay.search_runtime import SearchRuntime
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
@@ -585,6 +588,15 @@ class AutonomySession:
             preview = self._navigation_previews.get(intent_id)
             return None if preview is None else preview[0]
 
+    def preview_search(self, intent: IntentV1, state: Mapping[str, object]):
+        runtime = self._composition.search_runtime
+        if intent.name is not IntentName.SEARCH or runtime is None:
+            return Refusal(
+                intent.intent_id, 0, None, None, RefusalReason.UNSUPPORTED, "search is unavailable"
+            )
+        snapshot = self.snapshot(state)
+        return runtime.prepare(intent, snapshot)
+
     def navigation_catalog(self) -> dict[str, object] | None:
         runtime = self._composition.navigation_runtime
         if runtime is None:
@@ -1026,6 +1038,11 @@ class AutonomyComposition:
                 base_profile.enabled_intent_names | {IntentName.NAVIGATE},
             )
         )
+        if config.search_runtime is not None and config.navigation_deployment is not None:
+            self.capability_profile = CapabilityProfile(
+                f"{self.capability_profile.name}.search",
+                self.capability_profile.enabled_intent_names | {IntentName.SEARCH},
+            )
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -1058,6 +1075,10 @@ class AutonomyComposition:
     def navigation_runtime(self):
         deployment = self.config.navigation_deployment
         return None if deployment is None else deployment.runtime
+
+    @property
+    def search_runtime(self) -> SearchRuntime | None:
+        return self.config.search_runtime
 
     def intent_sink_factory(self, session: RelaySession) -> IntentSink:
         return self.session(session.session_id)
