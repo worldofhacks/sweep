@@ -7,7 +7,6 @@ import hashlib
 import json
 import math
 import sys
-import time
 from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ from perception.control_publisher import (
     ControlPublisher,
     ControlPublisherConfig,
     WebSocketPublisherTransport,
+    _run_live,
 )
 from perception.sensor_records import SensorRecordAdapter
 from perception.tag_localization import TagLocalizer
@@ -101,17 +101,44 @@ def _covariance(value: object, name: str) -> tuple[tuple[float, ...], ...]:
     return tuple(tuple(float(item) for item in row) for row in matrix)
 
 
-def _measured(raw: object, name: str) -> str:
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode()
+
+
+def _measured(raw: object, name: str, value: object) -> str:
     if not isinstance(raw, Mapping) or set(raw) != {
         "measurement_id",
         "measured",
         "artifact_sha256",
+        "artifact_path",
     }:
         raise ValueError(f"{name} must name a measured artifact")
     if raw["measured"] is not True:
         raise ValueError(f"{name} must be measured")
-    _sha256(raw["artifact_sha256"], f"{name} artifact_sha256")
-    return _text(raw["measurement_id"], f"{name} measurement_id")
+    measurement_id = _text(raw["measurement_id"], f"{name} measurement_id")
+    path = Path(_text(raw["artifact_path"], f"{name} artifact_path"))
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"{name} artifact cannot be read") from error
+    if hashlib.sha256(payload).hexdigest() != _sha256(
+        raw["artifact_sha256"], f"{name} artifact_sha256"
+    ):
+        raise ValueError(f"{name} artifact digest does not match")
+    try:
+        artifact = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{name} artifact is not JSON") from error
+    if (
+        not isinstance(artifact, Mapping)
+        or set(artifact) != {"measurement_id", "value"}
+        or artifact["measurement_id"] != measurement_id
+        or _canonical_json(artifact["value"]) != _canonical_json(value)
+    ):
+        raise ValueError(f"{name} artifact does not bind the configured value")
+    return measurement_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +162,16 @@ class _Timing:
         if raw["capture_clock_id"] != _ANDROID_CLOCK:
             raise ValueError(f"{name} timing clock is unsupported")
         return cls(
-            _measured(raw["measurement"], f"{name} timing"),
+            _measured(
+                raw["measurement"],
+                f"{name} timing",
+                {
+                    "capture_clock_id": raw["capture_clock_id"],
+                    "boot_id": raw["boot_id"],
+                    "receipt_to_capture_s": raw["receipt_to_capture_s"],
+                    "max_error_s": raw["max_error_s"],
+                },
+            ),
             _text(raw["boot_id"], f"{name} timing boot_id"),
             _number(raw["receipt_to_capture_s"], f"{name} receipt_to_capture_s"),
             _number(raw["max_error_s"], f"{name} max_error_s", positive=True),
@@ -162,6 +198,7 @@ class VerifiedLocalizationIngestion:
             "identity",
             "timing",
             "camera",
+            "evidence_scope",
         }:
             raise ValueError("verified ingestion configuration fields do not match the contract")
         self.publisher_config = ControlPublisherConfig.from_mapping(raw["publisher"])
@@ -170,9 +207,15 @@ class VerifiedLocalizationIngestion:
             raise ValueError("sensor and verified publisher configurations differ")
         if self.publisher_config.mode not in {"live", "replay"}:
             raise ValueError("publisher mode is unsupported")
+        evidence_scope = _text(raw["evidence_scope"], "evidence_scope")
+        if evidence_scope not in {"hardware", "test_double"}:
+            raise ValueError("evidence_scope is unsupported")
+        if evidence_scope == "test_double" and self.publisher_config.mode != "replay":
+            raise ValueError("test-double evidence cannot use a live publisher")
+        self.evidence_scope = evidence_scope
         if not isinstance(raw["identity"], Mapping) or set(raw["identity"]) != set(
             _RAW_IDENTITY_FIELDS
-        ) | {"pipeline_sha256", "camera_configuration_id"}:
+        ) | {"pipeline_sha256", "camera_configuration_id", "raw_run"}:
             raise ValueError("run identity fields do not match the contract")
         self.identity = dict(raw["identity"])
         for name in _RAW_IDENTITY_FIELDS:
@@ -204,6 +247,7 @@ class VerifiedLocalizationIngestion:
             "frame",
             "attitude",
             "telemetry",
+            "max_telemetry_timing_error_s",
         }:
             raise ValueError("timing fields do not match the contract")
         self.frame_timing = _Timing.from_mapping(raw["timing"]["frame"], "frame")
@@ -220,6 +264,14 @@ class VerifiedLocalizationIngestion:
             != 1
         ):
             raise ValueError("timing artifacts belong to different Android boots")
+        _measured(
+            self.identity["raw_run"],
+            "raw run",
+            {
+                "identity": {name: self.identity[name] for name in _RAW_IDENTITY_FIELDS},
+                "android_boot_id": self.frame_timing.boot_id,
+            },
+        )
         if not isinstance(raw["camera"], Mapping) or set(raw["camera"]) != {
             "source_id",
             "camera_serial",
@@ -262,7 +314,7 @@ class VerifiedLocalizationIngestion:
         self.localizer = TagLocalizer(**self.localizer_config)
         if fuser.map_id != self.localizer.manifest["content_sha256"]:
             raise ValueError("publisher map identity is not the validated bundle content hash")
-        if self.localizer.evidence_kind != "recorded_live":
+        if self.evidence_scope == "hardware" and self.localizer.evidence_kind != "recorded_live":
             raise ValueError("verified ingestion rejects synthetic camera calibration evidence")
         self.body_gimbal_mount = np.asarray(
             self._measured_transform(camera["body_gimbal_mount"], "body_gimbal_mount")
@@ -290,8 +342,15 @@ class VerifiedLocalizationIngestion:
         covariance = camera["position_covariance_map_enu_m2"]
         if not isinstance(covariance, Mapping) or set(covariance) != {"measurement", "matrix"}:
             raise ValueError("position covariance fields do not match the contract")
-        _measured(covariance["measurement"], "position covariance")
+        _measured(covariance["measurement"], "position covariance", covariance["matrix"])
         self.position_covariance = _covariance(covariance["matrix"], "position covariance")
+        max_telemetry_error = _number(
+            raw["timing"].get("max_telemetry_timing_error_s"),
+            "max_telemetry_timing_error_s",
+            positive=True,
+        )
+        if self.telemetry_timing.max_error_s > max_telemetry_error:
+            raise ValueError("telemetry timing uncertainty exceeds its configured bound")
         self._body: deque[_Attitude] = deque(maxlen=128)
         self._gimbal: deque[_Attitude] = deque(maxlen=128)
         self._live_epoch: int | None = None
@@ -300,14 +359,14 @@ class VerifiedLocalizationIngestion:
     def _measured_transform(raw: object, name: str) -> tuple[tuple[float, ...], ...]:
         if not isinstance(raw, Mapping) or set(raw) != {"measurement", "matrix"}:
             raise ValueError(f"{name} fields do not match the contract")
-        _measured(raw["measurement"], name)
+        _measured(raw["measurement"], name, raw["matrix"])
         return _rigid(raw["matrix"], name)
 
     @staticmethod
     def _measured_rotation(raw: object, name: str) -> tuple[tuple[float, ...], ...]:
         if not isinstance(raw, Mapping) or set(raw) != {"measurement", "matrix"}:
             raise ValueError(f"{name} fields do not match the contract")
-        _measured(raw["measurement"], name)
+        _measured(raw["measurement"], name, raw["matrix"])
         return _rotation(raw["matrix"], name)
 
     def bind_live_epoch(self, epoch: object) -> None:
@@ -340,7 +399,6 @@ class VerifiedLocalizationIngestion:
                 }
             ]
         if kind == "phone_attitude_raw":
-            self.sensor.record_if_selected(raw)
             self._store_attitude(raw)
             return []
         if kind == "decoded_frame":
@@ -353,6 +411,11 @@ class VerifiedLocalizationIngestion:
                 raise ValueError(f"raw input {name} is not pinned")
 
     def _store_attitude(self, raw: Mapping[str, object]) -> None:
+        self.sensor.record_if_selected(raw)
+        if raw["sdk_key"] == "KeyGimbalAttitude":
+            raise ValueError(
+                "raw SDK gimbal axes require a measured body-relative attitude adapter"
+            )
         timestamp = self.attitude_timing.capture_time(
             raw["received_at_android_elapsed_realtime_ms"]
         )
@@ -360,8 +423,7 @@ class VerifiedLocalizationIngestion:
         sample = _Attitude(
             timestamp, tuple(tuple(float(value) for value in row) for row in rotation)
         )
-        target = self._body if raw["sdk_key"] == "KeyAircraftAttitude" else self._gimbal
-        target.append(sample)
+        self._body.append(sample)
 
     def _frame(self, raw: Mapping[str, object]) -> list[dict[str, object]]:
         expected = set(_RAW_IDENTITY_FIELDS) | {
@@ -401,7 +463,7 @@ class VerifiedLocalizationIngestion:
         payload = path.read_bytes()
         if hashlib.sha256(payload).hexdigest() != _sha256(raw["frame_sha256"], "frame_sha256"):
             raise ValueError("decoded frame hash does not match")
-        image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
         if image is None:
             raise ValueError("decoded frame cannot be read")
         decode_time = decoded / 1000
@@ -414,6 +476,12 @@ class VerifiedLocalizationIngestion:
         expected_rotation = self.map_ned_rotation @ np.asarray(body.rotation)
         if _angle_deg(observed, expected_rotation) > self.max_body_orientation_error_deg:
             raise ValueError("tag body orientation contradicts measured aircraft attitude")
+        timing_position_error_m = self.publisher_config.drones[
+            self.identity["drone_id"]
+        ].fuser.max_speed_mps * (
+            self.frame_timing.max_error_s + 2 * self.attitude_timing.max_error_s
+        )
+        covariance = np.asarray(self.position_covariance) + np.eye(3) * timing_position_error_m**2
         extrinsics = BodyExtrinsics(
             self.body_extrinsics_id,
             self.tag_source_id,
@@ -438,7 +506,7 @@ class VerifiedLocalizationIngestion:
                 "position_map_enu_m": [
                     float(item) for item in np.asarray(result["T_map_body"])[:3, 3]
                 ],
-                "covariance_map_enu_m2": [list(row) for row in self.position_covariance],
+                "covariance_map_enu_m2": [list(row) for row in covariance],
                 "source_id": self.tag_source_id,
                 "camera_calibration_id": self.calibration_id,
                 "source_verified": True,
@@ -529,11 +597,14 @@ def run_live(ingestion: VerifiedLocalizationIngestion, lines: Iterable[str]) -> 
     try:
         publisher.bind_credentials()
         ingestion.bind_live_epoch(publisher.bound_epoch(ingestion.identity["drone_id"]))
-        for line in lines:
-            raw = json.loads(line)
-            for record in ingestion.records(raw):
-                publisher.enqueue(record)
-                publisher.publish_live(record["drone_id"], time.monotonic())
+
+        def publisher_lines() -> Iterable[str]:
+            for line in lines:
+                raw = json.loads(line)
+                for record in ingestion.records(raw):
+                    yield _canonical_json(record).decode()
+
+        _run_live(publisher, publisher_lines())
     finally:
         publisher.close()
 

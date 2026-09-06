@@ -32,6 +32,7 @@ def config(tmp_path):
         "publisher": publisher,
         "sensor": sensor,
         "localizer": localizer,
+        "evidence_scope": "test_double",
         "identity": {
             **{
                 name: raw_common("phone_velocity_raw")[name]
@@ -51,6 +52,7 @@ def config(tmp_path):
             },
             "pipeline_sha256": pipeline_sha256,
             "camera_configuration_id": "camera-config-1",
+            "raw_run": {"measurement_id": "raw-run", "measured": True},
         },
         "timing": {
             name: {
@@ -65,7 +67,8 @@ def config(tmp_path):
                 "max_error_s": 0.01,
             }
             for name in ("frame", "attitude", "telemetry")
-        },
+        }
+        | {"max_telemetry_timing_error_s": 0.02},
         "camera": {
             "source_id": "tag-camera",
             "camera_serial": "test",
@@ -91,6 +94,7 @@ def config(tmp_path):
     }
     frame = tmp_path / "recorded-720p.png"
     assert cv2.imwrite(str(frame), image)
+    bind_evidence(raw, tmp_path)
     return raw, frame, body_pose
 
 
@@ -103,6 +107,64 @@ def measured(measurement_id, matrix):
         },
         "matrix": matrix,
     }
+
+
+def bind_measurement(tmp_path, measurement, value):
+    artifact = tmp_path / f"{measurement['measurement_id']}.json"
+    payload = json.dumps(
+        {"measurement_id": measurement["measurement_id"], "value": value},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    artifact.write_bytes(payload)
+    measurement["artifact_path"] = str(artifact)
+    measurement["artifact_sha256"] = hashlib.sha256(payload).hexdigest()
+
+
+def bind_evidence(raw, tmp_path):
+    for name in ("frame", "attitude", "telemetry"):
+        timing = raw["timing"][name]
+        bind_measurement(
+            tmp_path,
+            timing["measurement"],
+            {
+                "capture_clock_id": timing["capture_clock_id"],
+                "boot_id": timing["boot_id"],
+                "receipt_to_capture_s": timing["receipt_to_capture_s"],
+                "max_error_s": timing["max_error_s"],
+            },
+        )
+    bind_measurement(
+        tmp_path,
+        raw["identity"]["raw_run"],
+        {
+            "identity": {
+                name: raw["identity"][name]
+                for name in (
+                    "recording_run_id",
+                    "session",
+                    "product_id",
+                    "drone_id",
+                    "connection_generation",
+                    "connection_epoch",
+                    "product_type",
+                    "aircraft_firmware",
+                    "rc_firmware",
+                    "sdk_version",
+                    "recorder_config_sha256",
+                )
+            },
+            "android_boot_id": raw["timing"]["frame"]["boot_id"],
+        },
+    )
+    camera = raw["camera"]
+    for name in ("body_gimbal_mount", "gimbal_camera", "map_ned_rotation"):
+        bind_measurement(tmp_path, camera[name]["measurement"], camera[name]["matrix"])
+    bind_measurement(
+        tmp_path,
+        camera["position_covariance_map_enu_m2"]["measurement"],
+        camera["position_covariance_map_enu_m2"]["matrix"],
+    )
 
 
 def attitude(kind: str, receipt_ms: int = 1000):
@@ -164,29 +226,17 @@ def sensor_samples(receipt_ms: int = 1000):
     return result
 
 
-def test_720p_tag_pixels_flow_through_verified_adapter_and_signed_publisher(tmp_path, monkeypatch):
-    raw, frame, expected_body = config(tmp_path)
+def test_raw_gimbal_axes_never_create_a_signed_ready_pose(tmp_path, monkeypatch):
+    raw, frame, _ = config(tmp_path)
     monkeypatch.setenv("LOCALIZATION_KEY_1", "x" * 32)
     ingestion = VerifiedLocalizationIngestion(raw)
-    emitted = []
-    for sample in [
-        attitude("KeyAircraftAttitude"),
-        attitude("KeyGimbalAttitude"),
-        *sensor_samples(),
-        frame_record(raw, frame),
-    ]:
-        emitted.extend(ingestion.records(sample))
-    assert [record["kind"] for record in emitted] == ["velocity", "height", "tag"]
-    assert all(record["source_verified"] and record["timing_verified"] for record in emitted)
-    assert emitted[-1]["position_map_enu_m"] == pytest.approx(expected_body[:3, 3], abs=0.03)
+    with pytest.raises(ValueError, match="body-relative attitude adapter"):
+        ingestion.records(attitude("KeyGimbalAttitude"))
 
     replay = "\n".join(
         json.dumps({"now_s": 1.01, "raw": sample})
         for sample in [
-            attitude("KeyAircraftAttitude"),
-            attitude("KeyGimbalAttitude"),
             *sensor_samples(),
-            frame_record(raw, frame),
         ]
     )
     output = []
@@ -197,10 +247,9 @@ def test_720p_tag_pixels_flow_through_verified_adapter_and_signed_publisher(tmp_
 
     run_replay(VerifiedLocalizationIngestion(raw), replay.splitlines(), Sink())
     signed = [json.loads(value) for value in output]
-    assert len(signed) == 3
-    assert signed[-1]["type"] == "control_localization"
-    assert signed[-1]["localization_status"] == "ready"
-    assert signed[-1]["flight_approved"] is False
+    assert len(signed) == 2
+    assert all(frame["type"] == "control_localization" for frame in signed)
+    assert all(frame["localization_status"] != "ready" for frame in signed)
 
 
 def test_missing_or_asynchronous_attitude_and_wrong_pins_fail_closed(tmp_path):
@@ -211,9 +260,8 @@ def test_missing_or_asynchronous_attitude_and_wrong_pins_fail_closed(tmp_path):
     raw["camera"]["max_attitude_skew_s"] = 0.01
     ingestion = VerifiedLocalizationIngestion(raw)
     ingestion.records(attitude("KeyAircraftAttitude", 980))
-    ingestion.records(attitude("KeyGimbalAttitude", 1000))
-    with pytest.raises(ValueError, match="asynchronous"):
-        ingestion.records(frame_record(raw, frame))
+    with pytest.raises(ValueError, match="body-relative attitude adapter"):
+        ingestion.records(attitude("KeyGimbalAttitude", 1000))
     changed = deepcopy(raw)
     changed["identity"]["pipeline_sha256"] = "d" * 64
     with pytest.raises(ValueError, match="camera evidence"):
@@ -227,6 +275,7 @@ def test_missing_or_asynchronous_attitude_and_wrong_pins_fail_closed(tmp_path):
     calibration["evidence_kind"] = "synthetic"
     calibration_path.write_text(json.dumps(calibration))
     changed = deepcopy(raw)
+    changed["evidence_scope"] = "hardware"
     changed["localizer"]["calibration_sha256"] = hashlib.sha256(
         calibration_path.read_bytes()
     ).hexdigest()
@@ -237,6 +286,18 @@ def test_missing_or_asynchronous_attitude_and_wrong_pins_fail_closed(tmp_path):
     calibration_path.write_text(json.dumps(calibration))
     ingestion = VerifiedLocalizationIngestion(raw)
     ingestion.records(attitude("KeyAircraftAttitude", 800))
-    ingestion.records(attitude("KeyGimbalAttitude", 800))
     with pytest.raises(ValueError, match="stale"):
         ingestion.records(frame_record(raw, frame))
+
+
+def test_artifacts_bind_values_and_telemetry_timing_bound(tmp_path):
+    raw, _, _ = config(tmp_path / "altered")
+    raw["timing"]["telemetry"]["max_error_s"] = 0.03
+    bind_evidence(raw, tmp_path)
+    with pytest.raises(ValueError, match="telemetry timing uncertainty"):
+        VerifiedLocalizationIngestion(raw)
+
+    raw, _, _ = config(tmp_path)
+    raw["camera"]["body_gimbal_mount"]["matrix"][0][3] = 2
+    with pytest.raises(ValueError, match="does not bind"):
+        VerifiedLocalizationIngestion(raw)
