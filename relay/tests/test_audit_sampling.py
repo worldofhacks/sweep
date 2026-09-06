@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import copy
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from relay.audit import AuditLogError, SessionAuditLog
+from relay.audit import MAX_AUDIT_RECORD_BYTES, AuditLogError, SessionAuditLog
 from relay.auth import Principal
-from relay.contracts import MembershipRequest, parse_membership_request
+from relay.contracts import (
+    MAX_CAPABILITY_LIST_CANONICAL_BYTES,
+    MAX_CAPABILITY_LIST_ITEMS,
+    MAX_STORAGE_REMAINING_BYTES,
+    MembershipRequest,
+    parse_membership_request,
+)
 from relay.session import (
     MAX_AUDIT_STATE_INTERVAL_MS,
+    MAX_MATERIAL_CONTROL_PROJECTION_BYTES,
     RelayLimits,
     RelaySession,
     _material_state_projection,
@@ -20,6 +30,7 @@ from relay.tests.conftest import (
     SESSION,
     EventIds,
     MutableClock,
+    capabilities_payload,
     membership_payload,
     node_status_payload,
     profiled_sink,
@@ -59,6 +70,15 @@ def _audited(session: RelaySession) -> list[dict[str, object]]:
 
 def _audited_types(session: RelaySession) -> list[str]:
     return [str(event["type"]) for event in _audited(session)]
+
+
+def _exact_control_projection(size: int) -> dict[str, object]:
+    value: dict[str, object] = {"payload": ""}
+    empty_size = len(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+    assert size >= empty_size
+    value["payload"] = "x" * (size - empty_size)
+    assert len(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()) == size
+    return value
 
 
 def _telemetry(
@@ -289,6 +309,176 @@ def test_state_is_audited_when_a_node_report_changes_it_and_not_for_a_duplicate(
     ]
 
 
+def test_worst_case_unicode_drone_projection_is_serialized_without_fencing(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    adapter_principal: Principal,
+) -> None:
+    # Exactly 64 unique items and 8 KiB as canonical unescaped UTF-8 JSON.
+    # Non-ASCII text expands threefold under the audit serializer's escaped JSON,
+    # so this exercises the actual worst-case representation, not just item count.
+    capability_list = (
+        ["flight"]
+        + [f"{index:02d}xx" + "😀" * 30 for index in range(1, 63)]
+        + ["last-" + "😀" * 75]
+    )
+    assert len(capability_list) == MAX_CAPABILITY_LIST_ITEMS
+    assert (
+        len(json.dumps(capability_list, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        == MAX_CAPABILITY_LIST_CANONICAL_BYTES
+    )
+
+    session = _session(
+        tmp_path,
+        clock,
+        event_ids,
+        state_membership_history=MAX_MEMBERSHIP_HISTORY_LIMIT,
+    )
+    joined = session.process_membership(
+        membership_payload(
+            action="join",
+            event_id="join-max-projection",
+            timestamp=clock.value,
+            adapter_id="😀" * 128,
+            capabilities=capability_list,
+        ),
+        adapter_principal,
+    )
+    assert [event["type"] for event in joined] == ["membership", "state"]
+
+    clock.advance(1)
+    telemetry = _telemetry(
+        session,
+        adapter_principal,
+        "telemetry-max-projection",
+        state="😀" * 32,
+        x=1.7976931348623157e308,
+        y=-1.7976931348623157e308,
+        z=1.7976931348623157e308,
+    )
+    assert [event["type"] for event in telemetry] == ["telemetry", "state"]
+
+    # Fill the retained transition window while the maximum telemetry state is
+    # attached, so the final projection combines every bounded nested dimension.
+    for index in range(MAX_MEMBERSHIP_HISTORY_LIMIT - 1):
+        clock.advance(1)
+        readiness = session.process_membership(
+            membership_payload(
+                action="readiness",
+                event_id=f"readiness-max-projection-{index}",
+                timestamp=clock.value,
+                control_authority=index % 2 == 0,
+            ),
+            adapter_principal,
+        )
+        assert [event["type"] for event in readiness] == ["membership", "state"]
+
+    clock.advance(1)
+    capabilities = session.process_frame(
+        capabilities_payload(
+            event_id="capabilities-max-projection",
+            timestamp=clock.value,
+            native_panorama_modes=capability_list,
+            storage_remaining_bytes=MAX_STORAGE_REMAINING_BYTES,
+            aircraft_model="😀" * 128,
+            aircraft_firmware="😀" * 128,
+            rc_firmware="😀" * 128,
+            phone_model="😀" * 128,
+            android_version="😀" * 128,
+            sdk_version="😀" * 128,
+        ),
+        adapter_principal,
+    )
+    assert [event["type"] for event in capabilities] == ["capabilities", "state"]
+
+    clock.advance(1)
+    status = session.process_frame(
+        node_status_payload(
+            event_id="status-max-projection",
+            timestamp=clock.value,
+            authority_change_reason="a" * 512,
+        ),
+        adapter_principal,
+    )
+    assert [event["type"] for event in status] == ["node_status", "state"]
+
+    replayed = session.replay()["events"]
+    latest_state = next(
+        record["event"] for record in reversed(replayed) if record["event"]["type"] == "state"
+    )
+    drone = latest_state["drones"][0]
+    assert len(drone["membership_history"]) == MAX_MEMBERSHIP_HISTORY_LIMIT
+    assert drone["adapter_capabilities"] == capability_list
+    assert drone["camera_capabilities"]["native_panorama_modes"] == capability_list
+    assert drone["camera_capabilities"]["storage_remaining_bytes"] == MAX_STORAGE_REMAINING_BYTES
+    assert drone["node_status"]["authority_change_reason"] == "a" * 512
+
+    # The global ceiling has a concrete composition proof: all four supported
+    # aircraft at this same maximum projection plus both exact 128 KiB control
+    # objects still leave one future projector-sized block for the capture lane.
+    budget_state = copy.deepcopy(latest_state)
+    budget_state["event_id"] = "state-full-record-budget"
+    budget_state["selection"] = [1, 2, 3, 4]
+    budget_state["pending"] = _exact_control_projection(MAX_MATERIAL_CONTROL_PROJECTION_BYTES)
+    budget_state["accepted_plan"] = _exact_control_projection(MAX_MATERIAL_CONTROL_PROJECTION_BYTES)
+    drones = []
+    for drone_id in range(1, 5):
+        retained = copy.deepcopy(drone)
+        retained["drone_id"] = drone_id
+        retained["telemetry"]["drone"] = drone_id
+        retained["camera_capabilities"]["drone_id"] = drone_id
+        retained["node_status"]["drone_id"] = drone_id
+        drones.append(retained)
+    budget_state["drones"] = drones
+    _material_state_projection(budget_state)
+    budget_log = SessionAuditLog(tmp_path / "full-budget", SESSION)
+    budget_log.append(budget_state)
+    encoded_size = budget_log.path.stat().st_size
+    assert encoded_size <= MAX_AUDIT_RECORD_BYTES
+    assert MAX_AUDIT_RECORD_BYTES - encoded_size >= MAX_MATERIAL_CONTROL_PROJECTION_BYTES
+
+    # A successful operation after replay proves the accepted maximum projection
+    # neither fenced mutation nor left an incomplete audit transaction.
+    clock.advance(1)
+    assert (
+        _telemetry(session, adapter_principal, "telemetry-after-max-projection")[0]["type"]
+        == "telemetry"
+    )
+
+
+@pytest.mark.parametrize("field", ["pending", "accepted_plan"])
+def test_control_projection_size_is_snapshotted_before_operation_or_mutation(
+    tmp_path: Path,
+    clock: MutableClock,
+    event_ids: EventIds,
+    field: str,
+) -> None:
+    session = _session(tmp_path, clock, event_ids)
+    exact = _exact_control_projection(MAX_MATERIAL_CONTROL_PROJECTION_BYTES)
+    projected = session.update_control_projection(**{field: exact})
+    assert projected[field] == exact
+    exact["payload"] = "caller-mutated-after-return"
+    assert session.current_state()[field] != exact
+    committed = session.audit_log.path.read_bytes()
+    with sqlite3.connect(session.audit_log.database_path) as database:
+        operations_before = database.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
+
+    oversized = _exact_control_projection(MAX_MATERIAL_CONTROL_PROJECTION_BYTES + 1)
+    with pytest.raises(ValueError, match=f"{field} exceeds"):
+        session.update_control_projection(selection=(1,), **{field: oversized})
+
+    assert session.audit_log.path.read_bytes() == committed
+    with sqlite3.connect(session.audit_log.database_path) as database:
+        assert (
+            database.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == operations_before
+        )
+    state = session.current_state()
+    assert state["selection"] == []
+    assert state[field] != oversized
+    assert session.update_control_projection(estop=True)["estop"] is True
+
+
 def test_video_frame_timestamp_is_volatile_but_video_status_is_material() -> None:
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
     registry.apply_join(_join_request("join-1", 1_000))
@@ -326,11 +516,11 @@ def test_material_state_projection_fails_closed_for_unbounded_or_non_json_extens
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
     state = registry.state_event(session=SESSION, t=1_000, event_id="state-1")
 
-    state["future_collection"] = []
-    with pytest.raises(AuditLogError, match="bounded audit projectors: future_collection"):
+    state["captures"] = []
+    with pytest.raises(AuditLogError, match="bounded audit projectors: captures"):
         _material_state_projection(state)
 
-    state.pop("future_collection")
+    state.pop("captures")
     registry.apply_join(_join_request("join-projection", 1_000))
     state = registry.state_event(session=SESSION, t=1_000, event_id="state-2")
     state["drones"][0]["unbounded_future_history"] = [{"value": index} for index in range(10_000)]
@@ -349,7 +539,7 @@ def test_material_state_projection_fails_closed_for_unbounded_or_non_json_extens
 
     state["drones"] = []
     state["accepted_plan"] = {"unsafe": object()}
-    with pytest.raises(AuditLogError, match="material state is not JSON-native"):
+    with pytest.raises(AuditLogError, match="accepted_plan is not JSON-native"):
         _material_state_projection(state)
 
 

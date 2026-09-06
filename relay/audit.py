@@ -23,6 +23,12 @@ _FORBIDDEN_KEYS = frozenset(
 _LOGGER = logging.getLogger(__name__)
 LIVE_REPLAY_TIMEOUT_SECONDS = 1.0
 _MIRROR_READ_BUFFER = 1 << 20
+# Four maximum 128 KiB aircraft projections plus both maximum 128 KiB control
+# projections remain below this ceiling, leaving space for the state envelope.
+# The same bound applies before any persisted length can drive a sized read.
+MAX_AUDIT_RECORD_BYTES = 1 << 20
+_MAX_SQLITE_INTEGER = (1 << 63) - 1
+_MAX_PENDING_CURSOR_BYTES = len(str(_MAX_SQLITE_INTEGER)) + 1
 _RECORDS_TABLE = (
     "seq INTEGER PRIMARY KEY, operation_id INTEGER NOT NULL, "
     "digest BLOB NOT NULL, length INTEGER NOT NULL, line BLOB, "
@@ -112,6 +118,7 @@ class SessionAuditLog:
                 raise AuditLogError(f"cannot begin audit operation: {error}") from None
 
     def abandon_operation(self, operation_id: int) -> None:
+        _require_sqlite_operation_id(operation_id)
         with self._lock:
             if self._operation_status(operation_id) == "pending":
                 self._append_usable = False
@@ -129,6 +136,8 @@ class SessionAuditLog:
         operation_id: int | None = None,
     ) -> list[dict[str, object]]:
         """Durably append and complete one outer relay operation."""
+        if operation_id is not None:
+            _require_sqlite_operation_id(operation_id)
         with self._lock:
             if not self._append_usable:
                 raise AuditLogError("session log is unusable after a failed append operation")
@@ -200,7 +209,10 @@ class SessionAuditLog:
         records: list[dict[str, object]] = []
         for offset, event in enumerate(events):
             self._validate_event(event)
-            records.append({"seq": self._next_sequence + offset, "event": dict(event)})
+            sequence = self._next_sequence + offset
+            if sequence > _MAX_SQLITE_INTEGER:
+                raise AuditLogError("audit sequence exceeds SQLite's signed integer range")
+            records.append({"seq": sequence, "event": dict(event)})
         return [(record, self._encode_record(record)) for record in records]
 
     def _validate_event(self, event: Mapping[str, object]) -> None:
@@ -214,11 +226,14 @@ class SessionAuditLog:
     @staticmethod
     def _encode_record(record: Mapping[str, object]) -> bytes:
         try:
-            return (
+            encoded = (
                 json.dumps(record, allow_nan=False, separators=(",", ":"), sort_keys=True) + "\n"
             ).encode()
         except (TypeError, ValueError) as error:
             raise AuditLogError(f"event is not JSON-native: {error}") from None
+        if len(encoded) > MAX_AUDIT_RECORD_BYTES:
+            raise AuditLogError(f"encoded audit record exceeds {MAX_AUDIT_RECORD_BYTES} bytes")
+        return encoded
 
     def _initialize_database(self) -> None:
         try:
@@ -234,6 +249,10 @@ class SessionAuditLog:
                 database.execute(
                     "CREATE INDEX IF NOT EXISTS records_retained_lines "
                     "ON records(seq) WHERE line IS NOT NULL"
+                )
+                database.execute(
+                    "CREATE INDEX IF NOT EXISTS operations_pending "
+                    "ON operations(status) WHERE status = 'pending'"
                 )
                 database.commit()
             self._database_initialized = True
@@ -305,7 +324,10 @@ class SessionAuditLog:
             with closing(self._connect()) as database:
                 database.execute("BEGIN IMMEDIATE")
                 status = database.execute(
-                    "SELECT status FROM operations WHERE id = ?", (operation_id,)
+                    "SELECT CASE WHEN typeof(status) = 'text' "
+                    "AND status IN ('pending', 'complete') THEN status ELSE NULL END "
+                    "FROM operations WHERE id = ?",
+                    (operation_id,),
                 ).fetchone()
                 if status != ("pending",):
                     raise AuditLogError("audit operation is missing or already complete")
@@ -351,9 +373,16 @@ class SessionAuditLog:
         try:
             with closing(self._connect()) as database:
                 row = database.execute(
-                    "SELECT status FROM operations WHERE id = ?", (operation_id,)
+                    "SELECT CASE WHEN typeof(status) = 'text' "
+                    "AND status IN ('pending', 'complete') THEN status ELSE NULL END "
+                    "FROM operations WHERE id = ?",
+                    (operation_id,),
                 ).fetchone()
-                return None if row is None else str(row[0])
+                if row is None:
+                    return None
+                if row[0] not in {"pending", "complete"}:
+                    raise AuditLogError("invalid audit operation metadata")
+                return row[0]
         except sqlite3.Error as error:
             raise AuditLogError(f"cannot inspect audit operation: {error}") from None
 
@@ -368,7 +397,11 @@ class SessionAuditLog:
         last = None if row is None else row[0]
         if last is None:
             return 0
-        if not isinstance(last, int) or isinstance(last, bool) or last < 0:
+        if (
+            not isinstance(last, int)
+            or isinstance(last, bool)
+            or not 0 <= last <= _MAX_SQLITE_INTEGER
+        ):
             raise AuditLogError(f"cannot replay {self.path.name}: invalid audit sequence")
         return last
 
@@ -388,14 +421,7 @@ class SessionAuditLog:
                 schema = self._database_schema(database)
                 if schema == "empty":
                     return
-                if schema == "legacy":
-                    cursor = database.execute(
-                        "SELECT seq, operation_id, event_json FROM records ORDER BY seq"
-                    )
-                else:
-                    cursor = database.execute(
-                        "SELECT seq, operation_id, digest, length, line FROM records ORDER BY seq"
-                    )
+                cursor = self._bounded_record_cursor(database, schema)
                 for expected, row in enumerate(cursor, start=1):
                     yield self._committed_row(schema, row, expected)
         except sqlite3.Error as error:
@@ -408,11 +434,28 @@ class SessionAuditLog:
         if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence != expected:
             raise AuditLogError(f"cannot replay {self.path.name}: non-contiguous audit database")
         operation_id = row[1]
-        if not isinstance(operation_id, int) or isinstance(operation_id, bool):
+        if (
+            not isinstance(operation_id, int)
+            or isinstance(operation_id, bool)
+            or not 1 <= operation_id <= _MAX_SQLITE_INTEGER
+        ):
+            raise AuditLogError(f"cannot replay {self.path.name}: invalid audit operation")
+        if row[-1] != "complete":
             raise AuditLogError(f"cannot replay {self.path.name}: invalid audit operation")
         if schema == "legacy":
+            event_json, value_type, encoded_length = row[2], row[3], row[4]
+            if (
+                value_type != "text"
+                or not isinstance(encoded_length, int)
+                or isinstance(encoded_length, bool)
+                or not 1 <= encoded_length <= MAX_AUDIT_RECORD_BYTES
+                or not isinstance(event_json, str)
+            ):
+                raise AuditLogError(
+                    f"cannot replay {self.path.name}: invalid legacy audit record metadata"
+                )
             try:
-                record = {"seq": sequence, "event": json.loads(str(row[2]))}
+                record = {"seq": sequence, "event": json.loads(event_json)}
                 _validate_record(record, expected, self.session, expected)
                 line = self._encode_record(record)
             except (TypeError, UnicodeError, ValueError, RecursionError, AuditLogError) as error:
@@ -424,18 +467,30 @@ class SessionAuditLog:
                 length=len(line),
                 line=line,
             )
-        digest, length, line = row[2], row[3], row[4]
+        digest, length, line, retained_length = row[2], row[3], row[4], row[5]
         if (
             not isinstance(digest, bytes)
             or len(digest) != hashlib.sha256().digest_size
             or not isinstance(length, int)
             or isinstance(length, bool)
-            or length <= 0
+            or not 1 <= length <= MAX_AUDIT_RECORD_BYTES
             or not (line is None or isinstance(line, bytes))
+            or not (
+                retained_length is None
+                or (
+                    isinstance(retained_length, int)
+                    and not isinstance(retained_length, bool)
+                    and 1 <= retained_length <= MAX_AUDIT_RECORD_BYTES
+                )
+            )
         ):
             raise AuditLogError(f"cannot replay {self.path.name}: invalid audit record metadata")
         if line is not None:
-            if len(line) != length or hashlib.sha256(line).digest() != digest:
+            if (
+                retained_length != length
+                or len(line) != length
+                or hashlib.sha256(line).digest() != digest
+            ):
                 raise AuditLogError(f"cannot replay {self.path.name}: invalid retained audit line")
             try:
                 record = json.loads(line)
@@ -457,6 +512,42 @@ class SessionAuditLog:
             line=line,
         )
 
+    @staticmethod
+    def _bounded_record_cursor(database: sqlite3.Connection, schema: str) -> sqlite3.Cursor:
+        """Select bodies only after SQLite proves their stored byte length is bounded."""
+        if schema == "legacy":
+            return database.execute(
+                "SELECT records.seq, "
+                "CASE WHEN typeof(records.operation_id) = 'integer' "
+                "THEN records.operation_id ELSE NULL END, "
+                "CASE WHEN typeof(event_json) = 'text' "
+                "AND length(CAST(event_json AS BLOB)) <= ? THEN event_json ELSE NULL END, "
+                "typeof(event_json), length(CAST(event_json AS BLOB)), "
+                "CASE WHEN typeof(operations.status) = 'text' "
+                "AND operations.status IN ('pending', 'complete') "
+                "THEN operations.status ELSE NULL END "
+                "FROM records LEFT JOIN operations ON operations.id = records.operation_id "
+                "ORDER BY records.seq",
+                (MAX_AUDIT_RECORD_BYTES,),
+            )
+        return database.execute(
+            "SELECT records.seq, "
+            "CASE WHEN typeof(records.operation_id) = 'integer' "
+            "THEN records.operation_id ELSE NULL END, "
+            "CASE WHEN typeof(digest) = 'blob' AND length(digest) = ? "
+            "THEN digest ELSE zeroblob(0) END, "
+            "CASE WHEN typeof(records.length) = 'integer' THEN records.length ELSE NULL END, "
+            "CASE WHEN line IS NULL THEN NULL "
+            "WHEN length(line) <= ? THEN line ELSE zeroblob(0) END, "
+            "CASE WHEN line IS NULL THEN NULL ELSE length(line) END, "
+            "CASE WHEN typeof(operations.status) = 'text' "
+            "AND operations.status IN ('pending', 'complete') "
+            "THEN operations.status ELSE NULL END "
+            "FROM records LEFT JOIN operations ON operations.id = records.operation_id "
+            "ORDER BY records.seq",
+            (hashlib.sha256().digest_size, MAX_AUDIT_RECORD_BYTES),
+        )
+
     def _migrate_legacy_database(self) -> None:
         """Recover the mirror before discarding legacy event bodies."""
         try:
@@ -474,11 +565,18 @@ class SessionAuditLog:
                     return
                 database.execute(f"CREATE TABLE records_digest ({_RECORDS_TABLE})")
                 last_operation = database.execute(
-                    "SELECT MAX(operation_id) FROM records"
-                ).fetchone()[0]
-                reader = database.execute(
-                    "SELECT seq, operation_id, event_json FROM records ORDER BY seq"
-                )
+                    "SELECT CASE WHEN typeof(operation_id) = 'integer' "
+                    "THEN operation_id ELSE NULL END "
+                    "FROM records ORDER BY seq DESC LIMIT 1"
+                ).fetchone()
+                last_operation = None if last_operation is None else last_operation[0]
+                if last_operation is not None and (
+                    not isinstance(last_operation, int)
+                    or isinstance(last_operation, bool)
+                    or not 1 <= last_operation <= _MAX_SQLITE_INTEGER
+                ):
+                    raise AuditLogError("legacy audit database has an invalid operation ID")
+                reader = self._bounded_record_cursor(database, "legacy")
                 for expected, row in enumerate(reader, start=1):
                     record = self._committed_row("legacy", row, expected)
                     database.execute(
@@ -579,42 +677,52 @@ class SessionAuditLog:
                 raise AuditLogError(
                     f"cannot replay {self.path.name}: mirror differs from committed audit"
                 )
-            retained = [divergent]
-            retained.extend(rows)
-            if any(
-                row.line is None
-                or (not all_lines_recoverable and row.operation_id != divergent.operation_id)
-                for row in retained
-            ):
-                if mirror is None:
-                    raise AuditLogError(f"cannot replay {self.path.name}: audit mirror is missing")
-                raise AuditLogError(
-                    f"cannot replay {self.path.name}: mirror differs from committed audit"
-                )
-            retained_lines = tuple(row.line for row in retained if row.line is not None)
-            if not self._mirror_suffix_is_prefix(mirror, offset, retained_lines):
-                raise AuditLogError(
-                    f"cannot replay {self.path.name}: mirror differs from committed audit"
-                )
-            self._replace_mirror_parts(mirror, offset, retained_lines)
+            recovery_operation = divergent.operation_id
+
+            def retained_lines() -> Iterator[bytes]:
+                mirror_exhausted = mirror is None
+
+                def retained_rows() -> Iterator[_CommittedRecord]:
+                    yield divergent
+                    yield from rows
+
+                for row in retained_rows():
+                    if row.line is None or (
+                        not all_lines_recoverable and row.operation_id != recovery_operation
+                    ):
+                        detail = (
+                            "audit mirror is missing"
+                            if mirror is None
+                            else "mirror differs from committed audit"
+                        )
+                        raise AuditLogError(f"cannot replay {self.path.name}: {detail}")
+                    if not mirror_exhausted:
+                        assert mirror is not None
+                        actual = mirror.read(len(row.line))
+                        if row.line[: len(actual)] != actual:
+                            raise AuditLogError(
+                                f"cannot replay {self.path.name}: "
+                                "mirror differs from committed audit"
+                            )
+                        if len(actual) < len(row.line):
+                            if mirror.read(1):
+                                raise AuditLogError(
+                                    f"cannot replay {self.path.name}: "
+                                    "mirror differs from committed audit"
+                                )
+                            mirror_exhausted = True
+                    yield row.line
+                if not mirror_exhausted:
+                    assert mirror is not None
+                    if mirror.read(1):
+                        raise AuditLogError(
+                            f"cannot replay {self.path.name}: mirror differs from committed audit"
+                        )
+
+            self._replace_mirror_parts(mirror, offset, retained_lines())
         finally:
             if mirror is not None:
                 mirror.close()
-
-    @staticmethod
-    def _mirror_suffix_is_prefix(
-        mirror: BinaryIO | None, offset: int, expected_lines: tuple[bytes, ...]
-    ) -> bool:
-        if mirror is None:
-            return offset == 0
-        mirror.seek(offset)
-        for expected in expected_lines:
-            actual = mirror.read(len(expected))
-            if expected[: len(actual)] != actual:
-                return False
-            if len(actual) < len(expected):
-                return mirror.read(1) == b""
-        return mirror.read(1) == b""
 
     def _committed_records(self, *, parse: bool) -> list[dict[str, object]]:
         """Verify every mirror line against its committed digest, parsing on request."""
@@ -747,10 +855,11 @@ class SessionAuditLog:
             )
             temporary_path = Path(temporary_name)
             with os.fdopen(descriptor, "wb") as stream:
+                if source is not None:
+                    source.seek(0)
                 if prefix_length:
                     if source is None:
                         raise OSError("mirror repair source is missing")
-                    source.seek(0)
                     remaining_prefix = prefix_length
                     while remaining_prefix:
                         chunk = source.read(min(_MIRROR_READ_BUFFER, remaining_prefix))
@@ -763,6 +872,10 @@ class SessionAuditLog:
                 os.fsync(stream.fileno())
             os.replace(temporary_path, self.path)
             self._fsync_root()
+        except AuditLogError:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
         except OSError as error:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
@@ -819,7 +932,12 @@ class SessionAuditLog:
         try:
             with open(self.path, "rb", buffering=_MIRROR_READ_BUFFER) as stream:
                 line_number = 0
-                while raw := stream.readline():
+                while raw := stream.readline(MAX_AUDIT_RECORD_BYTES + 1):
+                    if len(raw) > MAX_AUDIT_RECORD_BYTES:
+                        raise AuditLogError(
+                            f"cannot replay {self.path.name}: audit record exceeds "
+                            f"{MAX_AUDIT_RECORD_BYTES} bytes"
+                        )
                     if repair_tail and not raw.endswith(b"\n"):
                         removed = len(raw)
                         break
@@ -847,9 +965,11 @@ class SessionAuditLog:
                 flags |= os.O_NOFOLLOW
             descriptor = os.open(self.pending_path, flags)
             with os.fdopen(descriptor, encoding="ascii") as stream:
-                text = stream.read()
+                text = stream.read(_MAX_PENDING_CURSOR_BYTES + 1)
+                if len(text) > _MAX_PENDING_CURSOR_BYTES or stream.read(1):
+                    raise ValueError
             original_size = int(text)
-            if original_size < 0 or text != f"{original_size}\n":
+            if not 0 <= original_size <= _MAX_SQLITE_INTEGER or text != f"{original_size}\n":
                 raise ValueError
             if not self.path.exists():
                 if original_size != 0:
@@ -878,6 +998,15 @@ def _validate_record(record: object, expected: int, session: str, line_number: i
         raise AuditLogError(f"missing event_id at line {line_number}")
     _reject_nonfinite_numbers(event)
     _reject_sensitive_fields(event)
+
+
+def _require_sqlite_operation_id(operation_id: object) -> None:
+    if (
+        not isinstance(operation_id, int)
+        or isinstance(operation_id, bool)
+        or not 1 <= operation_id <= _MAX_SQLITE_INTEGER
+    ):
+        raise AuditLogError("audit operation ID must be a positive signed 64-bit integer")
 
 
 def _reject_nonfinite_numbers(value: object) -> None:

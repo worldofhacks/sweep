@@ -26,6 +26,7 @@ from relay.captures import (
     CaptureLedgerError,
 )
 from relay.contracts import (
+    MAX_CAPABILITY_LIST_ITEMS,
     NODE_FRAME_TYPES,
     AdapterAcknowledgement,
     CapabilitiesFrame,
@@ -1994,6 +1995,10 @@ class RelaySession:
         spacing: float | None = None,
     ) -> dict[str, object]:
         """Apply accepted control state; failure after the durable marker disables the session."""
+        if accepted_plan is not _UNSET:
+            accepted_plan = _bounded_control_projection_snapshot(accepted_plan, "accepted_plan")
+        if pending is not _UNSET:
+            pending = _bounded_control_projection_snapshot(pending, "pending")
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
@@ -2618,6 +2623,9 @@ class RelaySession:
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
+# These two planner-owned objects share the per-aircraft projection budget. Four
+# maximum aircraft plus both maximum control objects still fit one 1 MiB record.
+MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024
 _MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
     {
         "v",
@@ -2632,8 +2640,6 @@ _MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
         "mode",
         "capability_profile",
         "enabled_intent_names",
-        "pending",
-        "accepted_plan",
         "invalidated_intent_ids",
         "invalidation_reason",
         "prior_roster_version",
@@ -2667,7 +2673,7 @@ _DRONE_STATE_KEYS = frozenset(
     }
 )
 _VOLATILE_DRONE_KEYS = frozenset({"last_seen_at", "telemetry", "battery", "link", "pos_quality"})
-_MAX_DRONE_PROJECTION_LIST_ITEMS = 64
+_MAX_DRONE_PROJECTION_LIST_ITEMS = MAX_CAPABILITY_LIST_ITEMS
 _BOUNDED_DRONE_LIST_FIELDS = frozenset(
     {"readiness_reasons", "camera_patterns", "adapter_capabilities", "membership_history"}
 )
@@ -2772,6 +2778,14 @@ def _material_drones_projection(value: object) -> list[dict[str, object]]:
     return [_material_drone_projection(drone) for drone in value]
 
 
+def _material_pending_projection(value: object) -> dict[str, object] | None:
+    return _material_control_projection(value, "pending")
+
+
+def _material_accepted_plan_projection(value: object) -> dict[str, object] | None:
+    return _material_control_projection(value, "accepted_plan")
+
+
 def _material_captures_projection(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list) or len(value) > MAX_CAPTURE_ENTRIES:
         raise AuditLogError("state captures require a bounded capture list")
@@ -2809,7 +2823,52 @@ def _material_captures_projection(value: object) -> list[dict[str, object]]:
 _MATERIAL_STATE_FIELD_PROJECTORS: dict[str, Callable[[object], object]] = {
     "drones": _material_drones_projection,
     "captures": _material_captures_projection,
+    "pending": _material_pending_projection,
+    "accepted_plan": _material_accepted_plan_projection,
 }
+
+
+def _material_control_projection(value: object, field: str) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AuditLogError(f"state {field} must be an object or null")
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    except (TypeError, ValueError) as error:
+        raise AuditLogError(f"state {field} is not JSON-native: {error}") from None
+    if len(encoded) > MAX_MATERIAL_CONTROL_PROJECTION_BYTES:
+        raise AuditLogError(f"state {field} exceeds {MAX_MATERIAL_CONTROL_PROJECTION_BYTES} bytes")
+    return value
+
+
+def _bounded_control_projection_snapshot(value: object, field: str) -> object:
+    """Return the exact bounded snapshot that a later control transaction may retain."""
+    if not isinstance(value, dict):
+        return value
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    except (TypeError, ValueError):
+        # Preserve the existing fail-closed transaction behavior for malformed
+        # internal objects; this preflight exists only for the explicit size bound.
+        return value
+    if len(encoded) > MAX_MATERIAL_CONTROL_PROJECTION_BYTES:
+        raise ValueError(
+            f"{field} exceeds the {MAX_MATERIAL_CONTROL_PROJECTION_BYTES}-byte state bound"
+        )
+    decoded = json.loads(encoded)
+    assert isinstance(decoded, dict)
+    return decoded
 
 
 def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
