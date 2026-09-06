@@ -854,6 +854,36 @@ def test_operator_presence_watchdog_uses_receipt_time_and_confirms_one_hold(
     ]
 
 
+def test_presence_safety_audit_supports_the_six_aircraft_sim_ceiling(
+    relay_session: RelaySession,
+) -> None:
+    targets = tuple((drone_id, 1) for drone_id in range(1, 7))
+
+    event = relay_session.record_safety_action(
+        reason="operator_presence_expired",
+        action="hold",
+        operator_last_seen_ms=900,
+        status="requested",
+        attempt=1,
+        intent_id="safety:operator-presence:900:1",
+        targets=targets,
+    )
+
+    assert event["targets"] == [
+        {"drone_id": drone_id, "connection_epoch": 1} for drone_id in range(1, 7)
+    ]
+    with pytest.raises(ValueError, match="bounded to 6 aircraft"):
+        relay_session.record_safety_action(
+            reason="operator_presence_expired",
+            action="hold",
+            operator_last_seen_ms=900,
+            status="requested",
+            attempt=2,
+            intent_id="safety:operator-presence:900:2",
+            targets=(*targets, (7, 1)),
+        )
+
+
 def test_graceful_leave_is_authorized_only_for_a_landed_disarmed_aircraft(
     tmp_path: Path, clock: MutableClock, event_ids: EventIds
 ) -> None:

@@ -175,6 +175,66 @@ def test_incomplete_shutdown_is_explicit(tmp_path: Path) -> None:
     assert json.loads(output.read_text())["completion"]["status"] == "incomplete"
 
 
+def test_report_accepts_presence_evidence_through_the_six_aircraft_sim_ceiling(
+    tmp_path: Path,
+) -> None:
+    audit = SessionAuditLog(tmp_path, SESSION)
+    targets = [{"drone_id": drone_id, "connection_epoch": 1} for drone_id in range(1, 7)]
+    audit.append(
+        {
+            "v": 1,
+            "t": 1_000,
+            "type": "safety_action",
+            "event_id": "presence-six",
+            "session": SESSION,
+            "reason": "operator_presence_expired",
+            "action": "hold",
+            "operator_last_seen_ms": 900,
+            "status": "requested",
+            "attempt": 1,
+            "intent_id": "safety:operator-presence:900:1",
+            "targets": targets,
+        }
+    )
+
+    output = write_session_report(
+        audit,
+        generated_at_ms=1_001,
+        complete=True,
+        completion_reason="orderly_shutdown",
+    )
+
+    assert json.loads(output.read_text())["safety_actions"][0]["targets"] == targets
+
+
+def test_report_rejects_presence_evidence_above_the_simulator_ceiling(tmp_path: Path) -> None:
+    audit = SessionAuditLog(tmp_path, SESSION)
+    audit.append(
+        {
+            "v": 1,
+            "t": 1_000,
+            "type": "safety_action",
+            "event_id": "presence-seven",
+            "session": SESSION,
+            "reason": "operator_presence_expired",
+            "action": "hold",
+            "operator_last_seen_ms": 900,
+            "status": "requested",
+            "attempt": 1,
+            "intent_id": "safety:operator-presence:900:1",
+            "targets": [{"drone_id": drone_id, "connection_epoch": 1} for drone_id in range(1, 8)],
+        }
+    )
+
+    with pytest.raises(ValueError, match="invalid presence safety action"):
+        write_session_report(
+            audit,
+            generated_at_ms=1_001,
+            complete=True,
+            completion_reason="orderly_shutdown",
+        )
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [

@@ -421,6 +421,17 @@ describe('M1.1 wire compatibility', () => {
     expect(parseRelayServerEvent({ ...raw, unexpected: true })).toBeNull()
     expect(parseRelayServerEvent({ ...raw, attempt: 0 })).toBeNull()
     expect(parseRelayServerEvent({ ...raw, targets: [] })).toBeNull()
+    const sixTargets = Array.from({ length: 6 }, (_, index) => ({
+      drone_id: index + 1,
+      connection_epoch: 2,
+    }))
+    expect(parseRelayServerEvent({ ...raw, targets: sixTargets })).not.toBeNull()
+    expect(
+      parseRelayServerEvent({
+        ...raw,
+        targets: [...sixTargets, { drone_id: 7, connection_epoch: 2 }],
+      }),
+    ).toBeNull()
     expect(
       parseRelayServerEvent({
         ...raw,

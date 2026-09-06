@@ -13,6 +13,7 @@ from time import monotonic
 
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.contracts import ContractError, parse_command, parse_telemetry
+from relay.state import MAX_SIMULATED_AIRCRAFT
 
 MAX_REPORT_RECORDS = 50_000
 MAX_REPORT_SOURCE_BYTES = 32 * 1024 * 1024
@@ -371,7 +372,7 @@ def _validate_safety_action(event: Mapping[str, object]) -> None:
         or not _nullable_nonnegative_int(event.get("operator_last_seen_ms"))
         or not _nonnegative_int(attempt)
         or not isinstance(targets, list)
-        or len(targets) > 4
+        or len(targets) > MAX_SIMULATED_AIRCRAFT
     ):
         raise ValueError("audit snapshot contains an invalid presence safety action")
     seen: set[int] = set()

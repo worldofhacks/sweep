@@ -1032,7 +1032,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
         !Number.isSafeInteger(value.attempt) ||
         Number(value.attempt) < 0 ||
         !Array.isArray(targets) ||
-        targets.length > 4 ||
+        targets.length > MAX_INTENT_DRONE_IDS ||
         !targets.every(isOperatorPresenceTarget) ||
         new Set(targets.map((target) => target.drone_id)).size !== targets.length
       ) {

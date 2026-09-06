@@ -1678,8 +1678,8 @@ class RelaySession:
             raise ValueError("active safety actions require an attempt, intent, and targets")
         normalized_targets: list[dict[str, int]] = []
         seen_targets: set[int] = set()
-        if len(targets) > 4:
-            raise ValueError("safety actions are bounded to four aircraft")
+        if len(targets) > MAX_SIMULATED_AIRCRAFT:
+            raise ValueError(f"safety actions are bounded to {MAX_SIMULATED_AIRCRAFT} aircraft")
         for drone_id, connection_epoch in targets:
             if (
                 not isinstance(drone_id, int)
