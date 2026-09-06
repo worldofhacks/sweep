@@ -240,6 +240,50 @@ class RemoteBridgeAdapter:
     def hover(self, ids: list[int]) -> tuple[AdapterAcknowledgement, ...]:
         return tuple(self._flight(drone_id, CommandOperation.HOVER, {}) for drone_id in ids)
 
+    def hold_fleet(self, ids: list[int]) -> tuple[AdapterAcknowledgement, ...]:
+        """Send independent fleet holds before waiting, with one collection deadline."""
+        deadline = time.monotonic() + (self._deadline_ms or self._timeout_ms) / 1000
+        issued: list[CommandRequest | _Reply | AdapterAcknowledgement] = []
+        for drone_id in ids:
+            try:
+                issued.append(self._issue(drone_id, CommandOperation.HOVER, {}))
+            except Exception as error:
+                issued.append(
+                    AdapterAcknowledgement(
+                        drone_id,
+                        self._epochs[drone_id],
+                        CommandOperation.HOVER,
+                        LifecycleStatus.FAILED,
+                        f"fleet hold send failed: {type(error).__name__}",
+                    )
+                )
+        acknowledgements: list[AdapterAcknowledgement] = []
+        for item in issued:
+            if isinstance(item, AdapterAcknowledgement):
+                acknowledgements.append(item)
+                continue
+            if isinstance(item, _Reply):
+                acknowledgements.append(item.acknowledgement())
+                continue
+            try:
+                acknowledgements.append(
+                    self._collect(item, deadline_monotonic=deadline).acknowledgement()
+                )
+            except Exception as error:
+                reason = (
+                    "adapter_timeout" if isinstance(error, AdapterTimeout) else "adapter_failure"
+                )
+                acknowledgements.append(
+                    AdapterAcknowledgement(
+                        item.drone_id,
+                        item.connection_epoch,
+                        CommandOperation.HOVER,
+                        LifecycleStatus.FAILED,
+                        f"{reason}: {error}",
+                    )
+                )
+        return tuple(acknowledgements)
+
     def land(self, ids: list[int]) -> tuple[AdapterAcknowledgement, ...]:
         return tuple(self._flight(drone_id, CommandOperation.LAND, {}) for drone_id in ids)
 
@@ -446,7 +490,9 @@ class RemoteBridgeAdapter:
         self._link.send(request)
         return request
 
-    def _collect(self, request: CommandRequest) -> _Reply:
+    def _collect(
+        self, request: CommandRequest, *, deadline_monotonic: float | None = None
+    ) -> _Reply:
         """Wait for the command's acknowledgements until a terminal one, silence, or the deadline.
 
         Each wait is bounded by the acknowledgement timeout and the whole command by
@@ -455,7 +501,11 @@ class RemoteBridgeAdapter:
         deadline the latest non-terminal acknowledgement is returned as is.
         """
         deadline = (
-            None if self._deadline_ms is None else time.monotonic() + self._deadline_ms / 1000
+            deadline_monotonic
+            if deadline_monotonic is not None
+            else (
+                None if self._deadline_ms is None else time.monotonic() + self._deadline_ms / 1000
+            )
         )
         latest: WireAcknowledgement | None = None
         while True:
@@ -463,6 +513,25 @@ class RemoteBridgeAdapter:
             if deadline is not None:
                 remaining_ms = int((deadline - time.monotonic()) * 1000)
                 if remaining_ms <= 0:
+                    # A fleet peer may already have replied while another
+                    # device consumed the shared budget. Drain buffered evidence
+                    # through its terminal ACK without extending the deadline.
+                    # Bound the drain even if a faulty node keeps producing ACKs.
+                    for _ in range(64):
+                        buffered = self._link.await_acknowledgement(
+                            request.command_id, timeout_ms=0
+                        )
+                        if buffered is None:
+                            break
+                        if (
+                            buffered.command_id != request.command_id
+                            or buffered.drone_id != request.drone_id
+                            or buffered.intent_id != request.intent_id
+                        ):
+                            raise AdapterError("acknowledgement does not correlate with command")
+                        latest = buffered
+                        if buffered.status.value in _TERMINAL_STATUSES:
+                            break
                     if latest is None:
                         raise AdapterTimeout(request.drone_id, request.operation)
                     return _reply(request, latest)
