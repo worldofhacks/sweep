@@ -54,6 +54,34 @@ class TranslationGrounding:
         object.__setattr__(self, "headings", MappingProxyType(normalized))
 
 
+@dataclass(frozen=True, slots=True)
+class AltitudeGrounding:
+    """Deployment scale, floor, and completion evidence policy."""
+
+    step_m: float
+    floor_z_m: float | None
+    configuration_id: str
+    completion_tolerance_m: float
+
+    def __post_init__(self) -> None:
+        if not _is_finite_number(self.step_m) or self.step_m <= 0:
+            raise ValueError("altitude step must be finite and positive")
+        if self.floor_z_m is not None and not _is_finite_number(self.floor_z_m):
+            raise ValueError("altitude floor reference must be finite")
+        if not isinstance(self.configuration_id, str) or not self.configuration_id.strip():
+            raise ValueError("altitude requires an explicit configuration identity")
+        if not _is_finite_number(self.completion_tolerance_m) or self.completion_tolerance_m <= 0:
+            raise ValueError("altitude completion tolerance must be finite and positive")
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {
+            "step_m": self.step_m,
+            "floor_z_m": self.floor_z_m,
+            "configuration_id": self.configuration_id,
+            "completion_tolerance_m": self.completion_tolerance_m,
+        }
+
+
 class MembershipState(StrEnum):
     REGISTERED = "registered"
     READY = "ready"
@@ -655,9 +683,15 @@ class Plan:
     spacing_update: float | None = None
     hold_scope: HoldScope | None = None
     status: LifecycleStatus = LifecycleStatus.ACCEPTED
+    altitude_grounding: AltitudeGrounding | None = None
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {
+            **(
+                {"altitude_grounding": self.altitude_grounding.to_dict()}
+                if self.altitude_grounding is not None
+                else {}
+            ),
             "plan_id": self.plan_id,
             "intent_id": self.intent_id,
             "intent_name": self.intent_name.value,
@@ -904,7 +938,12 @@ def _number_or_default(raw: Mapping[str, object], key: str, default: float) -> f
 
 
 def _is_finite_number(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and isfinite(value)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _is_nonnegative_int(value: object) -> bool:

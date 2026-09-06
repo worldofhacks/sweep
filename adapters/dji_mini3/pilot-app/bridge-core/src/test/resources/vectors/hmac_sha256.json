@@ -57,16 +57,16 @@
       }
     },
     {
-      "canonical": "{\"args\":{\"speed\":0.5,\"x\":1.0,\"y\":2.5,\"z\":1.2},\"command_id\":\"cmd-1\",\"connection_epoch\":1,\"drone_id\":1,\"event_id\":\"evt-cmd-1\",\"intent_id\":\"intent-1\",\"issued_at\":4000,\"operation\":\"goto\",\"roster_version\":3,\"seq\":7,\"session\":\"session-a\",\"t\":4000,\"ttl_ms\":1500,\"type\":\"command\",\"v\":1}",
+      "canonical": "{\"args\":{\"speed_mm_s\":500,\"x_mm\":1000,\"y_mm\":2500,\"z_mm\":1200},\"command_id\":\"cmd-1\",\"connection_epoch\":1,\"drone_id\":1,\"event_id\":\"evt-cmd-1\",\"intent_id\":\"intent-1\",\"issued_at\":4000,\"operation\":\"goto\",\"roster_version\":3,\"seq\":7,\"session\":\"session-a\",\"t\":4000,\"ttl_ms\":1500,\"type\":\"command\",\"v\":1}",
       "key": "adapter-key-0123456789abcdef0123456789abcdef",
       "name": "command",
-      "signature": "3f807e48f50d46a07d48ed65ae9d2bdb738ed6a375ed3c4c579fc820e0766e63",
+      "signature": "3b3030a0bb9f83c766af97fbad5f1134e8e994c91655a5560e9c2763f7d39189",
       "unsigned_event": {
         "args": {
-          "speed": 0.5,
-          "x": 1.0,
-          "y": 2.5,
-          "z": 1.2
+          "speed_mm_s": 500,
+          "x_mm": 1000,
+          "y_mm": 2500,
+          "z_mm": 1200
         },
         "command_id": "cmd-1",
         "connection_epoch": 1,

@@ -53,7 +53,7 @@ from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
 from relay.app import RelayRuntime, create_app
 from relay.bridge import RelayNodeLink, build_dispatcher
-from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.capabilities import CapabilityProfile
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
 from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
@@ -66,7 +66,13 @@ LIFECYCLE_SOURCE = "autonomy"
 PREEMPTED_BY_ESTOP = "preempted_by_estop"
 PREEMPTED_BY_HOLD = "preempted_by_hold"
 HOLD_PREEMPTS = frozenset(
-    {IntentName.TAKEOFF, IntentName.TRANSLATE, IntentName.COME_HOME, IntentName.CAPTURE_ROOM}
+    {
+        IntentName.TAKEOFF,
+        IntentName.TRANSLATE,
+        IntentName.ALTITUDE,
+        IntentName.COME_HOME,
+        IntentName.CAPTURE_ROOM,
+    }
 )
 """Operator motion and camera plans a hold cancels; a running safety plan finishes first."""
 ReadinessSource = Callable[[int], CaptureReadinessFrame | None]
@@ -419,12 +425,14 @@ class AutonomySession:
     the session's ``estop`` in the same operation that accepted it.
     """
 
-    capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
-
     def __init__(self, composition: AutonomyComposition, session_id: str) -> None:
         self.session_id = session_id
         self._composition = composition
-        self.planner = DeterministicPlanner(composition.config.planning)
+        self.capability_profile = composition.capability_profile
+        self.planner = DeterministicPlanner(
+            composition.config.planning,
+            self.capability_profile,
+        )
         self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
         self._operator_last_seen_ms: int | None = None
@@ -866,6 +874,7 @@ class AutonomyComposition:
 
     def __init__(self, config: AutonomyConfig) -> None:
         self.config = config
+        self.capability_profile: CapabilityProfile = config.planning.effective_capability_profile()
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -940,6 +949,7 @@ def create_autonomy_app(
         clock=clock,
         event_ids=event_ids,
         intent_sink_factory=composition.intent_sink_factory,
+        capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_store_factory=(
             None

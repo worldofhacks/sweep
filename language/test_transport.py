@@ -207,6 +207,7 @@ def test_compiler_uses_active_pinned_model_and_strict_tool_schema(monkeypatch) -
         "area_id",
         "pattern",
     } <= intent_schema["properties"]["args"]["properties"].keys()
+    assert "height_m" not in intent_schema["properties"]["args"]["properties"]
     assert "capture_id" not in intent_schema["properties"]["args"]["properties"]
     outcome_schema = tools[0]["input_schema"]["properties"]
     assert "cancel_pending" in outcome_schema["kind"]["enum"]

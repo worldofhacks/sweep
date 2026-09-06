@@ -56,6 +56,27 @@ class BenchRecorderTest {
         assertTrue(out.toString().contains(""""rtt_ms":null"""))
         assertTrue(out.toString().contains(""""waited_ms":2000"""))
     }
+
+    @Test
+    fun `telemetry key records carry the support answers and the first value time`() {
+        val out = StringBuilder()
+        val recorder = BenchRecorder(out, StepClock(5_000))
+        recorder.telemetryKey("KeyAltitude", "attached", supportedAtAttach = false, supportedAtConnect = null, firstValueAtMs = null)
+        recorder.telemetryKey("KeyAltitude", "product_connected", supportedAtAttach = false, supportedAtConnect = true, firstValueAtMs = null)
+        recorder.telemetryKey("KeyAltitude", "first_value", supportedAtAttach = false, supportedAtConnect = true, firstValueAtMs = 5_000)
+        assertEquals(
+            listOf(
+                """{"event":"attached","first_value_at_ms":null,"key":"KeyAltitude","kind":"telemetry_key","supported_at_attach":false,"supported_at_connect":null,"t_ms":5000}""",
+                """{"event":"product_connected","first_value_at_ms":null,"key":"KeyAltitude","kind":"telemetry_key","supported_at_attach":false,"supported_at_connect":true,"t_ms":5000}""",
+                """{"event":"first_value","first_value_at_ms":5000,"key":"KeyAltitude","kind":"telemetry_key","supported_at_attach":false,"supported_at_connect":true,"t_ms":5000}""",
+            ),
+            out.toString().trimEnd().lines(),
+        )
+        val report = BenchAnalysis.analyze(out.toString())
+        assertEquals(3, report.records)
+        assertEquals(0, report.skippedLines)
+        assertEquals(listOf("telemetry key KeyAltitude first value"), report.notes)
+    }
 }
 
 class BenchAnalysisTest {
@@ -161,10 +182,46 @@ class BenchAnalysisTest {
     }
 
     @Test
+    fun `video publish windows record the transport legs and fold into the report`() {
+        val clock = StepClock(50_000)
+        val out = StringBuilder()
+        val recorder = BenchRecorder(out, clock)
+        recorder.videoPublish("passthrough", bitrateKbps = null, fps = null, framesSent = 0, droppedFrames = 0, iceState = "checking", rttMs = null)
+        clock.advance(1_000)
+        recorder.videoPublish("passthrough", 4_000.0, 30.0, 30, 0, "connected", 4.0, processingMs = 0.5, codec = "H264 High 4.0", width = 1280, height = 720, keyframeIntervalMs = 1_000)
+        clock.advance(1_000)
+        recorder.videoPublish("passthrough", 6_000.0, 29.0, 59, 2, "connected", 6.0, processingMs = 0.7, codec = "H264 High 4.0", width = 1280, height = 720, keyframeIntervalMs = 1_000)
+        val lines = out.toString().trimEnd().lines()
+        assertEquals(
+            """{"bitrate_kbps":null,"codec":null,"dropped_frames":0,"fps":null,"frames_sent":0,"height":0,"ice_state":"checking","keyframe_interval_ms":null,"kind":"video_publish","processing_ms":null,"rtt_ms":null,"source":"passthrough","t_ms":50000,"width":0}""",
+            lines[0],
+        )
+        assertTrue(lines[1].contains(""""bitrate_kbps":4000.0"""), lines[1])
+        assertTrue(lines[1].contains(""""rtt_ms":4.0"""), lines[1])
+        val report = BenchAnalysis.analyze(out.toString())
+        assertEquals(3, report.publish.windows)
+        assertEquals(2, report.publish.connectedWindows)
+        assertEquals(5_000.0, report.publish.meanBitrateKbps!!, 1e-9)
+        assertEquals(29.5, report.publish.meanFps!!, 1e-9)
+        assertEquals(2L, report.publish.droppedFrames)
+        assertEquals(6L, report.publish.rtt!!.p95Ms)
+        assertEquals(0.6, report.publish.meanProcessingMs!!, 1e-9)
+        assertEquals(listOf("passthrough"), report.publish.sources)
+        assertEquals(listOf("H264 High 4.0"), report.publish.codecs)
+        val text = ReportWriter.text(report)
+        assertTrue(text.contains("video publish"))
+        assertTrue(text.contains("windows: 3 (ice connected: 2)"))
+        assertTrue(text.contains("mean_bitrate_kbps: 5000.00"))
+        val empty = BenchAnalysis.analyze("")
+        assertEquals(0, empty.publish.windows)
+        assertNull(empty.publish.rtt)
+    }
+
+    @Test
     fun `report writers produce json and text`() {
         val report = BenchAnalysis.analyze(log())
         val json = Json.parse(ReportWriter.json(report)) as JsonObject
-        assertEquals(setOf("commands", "sticks", "telemetry", "video", "notes", "records", "skipped_lines", "first_t_ms", "last_t_ms"), json.keys)
+        assertEquals(setOf("commands", "sticks", "telemetry", "video", "video_publish", "notes", "records", "skipped_lines", "first_t_ms", "last_t_ms"), json.keys)
         val text = ReportWriter.text(report)
         assertTrue(text.contains("sent: 6"))
         assertTrue(text.contains("p95=100"))

@@ -110,6 +110,7 @@ def test_prepared_router_returns_executing_without_relabelling_it(monkeypatch, t
         limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
         clock=lambda: snapshot.now_ms,
         intent_sink=router,
+        capability_profile=router.capability_profile,
     )
     _hydrate_relay_from_snapshot(relay, snapshot)
     events = router.relay_emitter(
@@ -166,6 +167,7 @@ def test_prepared_router_returns_relay_events_from_terminal_resume(monkeypatch, 
         limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
         clock=lambda: snapshot.now_ms,
         intent_sink=router,
+        capability_profile=router.capability_profile,
     )
     _hydrate_relay_from_snapshot(relay, snapshot)
     events = router.relay_emitter(
