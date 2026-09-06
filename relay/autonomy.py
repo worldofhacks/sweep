@@ -119,7 +119,7 @@ class AutonomyConfig:
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
-        """Load exact deployment contracts; optional localization requires measured pins and bounds."""
+        """Load exact deployment contracts; localization requires measured pins and bounds."""
         values = os.environ if environ is None else environ
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
         localization_raw = values.get("SWEEP_CONTROL_LOCALIZATION_JSON", "")
