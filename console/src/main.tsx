@@ -33,6 +33,7 @@ async function resolveRuntime() {
       webcamClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'webcam', fixtureScenario),
       // The fixture has no transcription endpoint; the Speech module says so and accepts typed text.
       transcriptClient: null,
+      navigationClient: null,
       catalogClient: new FixtureCatalogClient(fixtureScenario, () => Date.now()),
     }
   }
@@ -45,7 +46,7 @@ void resolveRuntime().then((runtime) => {
     keyboard: runtime.keyboardClient,
     webcam: runtime.webcamClient,
   }
-  const services = { transcript: runtime.transcriptClient ?? undefined }
+  const services = { transcript: runtime.transcriptClient ?? undefined, navigation: runtime.navigationClient ?? undefined }
 
   // The console renders at once without media; a valid runtime configuration
   // re-renders the same tree with playback enabled. Relay state is unaffected.

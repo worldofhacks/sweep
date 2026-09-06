@@ -1,3 +1,4 @@
+import { HttpNavigationClient, type NavigationClient } from '../navigation/client'
 import { UnavailableRelayClient, WebSocketRelayClient, type RelayClient } from './client'
 import { HttpTranscriptClient, type TranscriptClient } from '../voice/client'
 
@@ -8,6 +9,7 @@ export interface SweepRelayRuntimeConfig {
 }
 
 export interface ConsoleRuntime {
+  navigationClient: NavigationClient | null
   client: RelayClient
   keyboardClient: RelayClient
   webcamClient: RelayClient
@@ -36,6 +38,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
         'Relay bootstrap is not configured. Webcam gesture source is unavailable; use the console controls and the physical RC safety path.',
       ),
       transcriptClient: null,
+      navigationClient: null,
     }
   }
 
@@ -59,6 +62,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       source: 'webcam',
       token: config.token,
     }),
+    navigationClient: new HttpNavigationClient(config),
     transcriptClient: new HttpTranscriptClient({ baseUrl: config.baseUrl, token: config.token }),
   }
 }

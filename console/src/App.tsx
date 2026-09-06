@@ -32,7 +32,7 @@ export default function App({
   services,
   media,
 }: AppProps) {
-  const controller = useControlConsole({ sessionId, clients, intentDependencies })
+  const controller = useControlConsole({ sessionId, clients, intentDependencies, navigation: services?.navigation })
   const [fallbackCatalog] = useState(() => new UnreportedCatalogClient())
   const catalogController = useCatalog(catalog ?? fallbackCatalog)
   return (

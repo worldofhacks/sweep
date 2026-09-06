@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useReducer, type Dispatch } from 'react'
+import type { NavigationClient, NavigationPreview } from '../navigation/client'
+import { useCallback, useEffect, useMemo, useReducer, useRef, type Dispatch } from 'react'
 import type { RelayClient } from '../relay/client'
 import type {
   CapturePattern,
@@ -42,6 +43,7 @@ export interface UseControlConsoleOptions {
   sessionId: string
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
+  navigation?: NavigationClient
 }
 
 /** One control press: an intent name, its args, and the aircraft it addresses. */
@@ -55,6 +57,7 @@ export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> 
 export function useControlConsole({
   sessionId,
   clients,
+  navigation,
   intentDependencies = browserIntentDependencies,
 }: UseControlConsoleOptions) {
   const [state, dispatch] = useReducer(
@@ -62,6 +65,10 @@ export function useControlConsole({
     sessionId,
     (id) => createInitialControlState(id, intentDependencies.now()),
   )
+
+  const latestState = useRef(state)
+  const previewSequence = useRef(0)
+  useEffect(() => { latestState.current = state }, [state])
 
   useEffect(() => {
     const unsubscribeConsole = clients.console.subscribe((event) => {
@@ -156,7 +163,8 @@ export function useControlConsole({
    * carries it so the dock counts it down and confirmRequest honours it.
    */
   const stageForConfirmation = useCallback(
-    (intent: IntentV1, expiresAt?: number): IntentV1 => {
+    (intent: IntentV1, expiresAt?: number, route?: NavigationPreview): IntentV1 => {
+      previewSequence.current += 1
       const t = intentDependencies.now()
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
@@ -168,7 +176,7 @@ export function useControlConsole({
         type: 'request_pending_confirmation',
         intentId: intent.intent_id,
         t,
-        plan: buildPlanPreview(intent, state.rosterVersion, expiresAt),
+        plan: { ...buildPlanPreview(intent, state.rosterVersion, expiresAt), ...(route ? { route } : {}) },
       })
       return intent
     },
@@ -209,6 +217,8 @@ export function useControlConsole({
 
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
+      if (request.name === 'navigate' || request.name === 'search') return null
+      previewSequence.current += 1
       if (!isIntentEnabled(state, request.name)) return null
       const intent = createIntent(
         {
@@ -226,6 +236,29 @@ export function useControlConsole({
     [intentDependencies, stageIntent, state],
   )
 
+  const prepareNavigation = useCallback(async (zoneId: string): Promise<IntentV1> => {
+    const current = latestState.current
+    if (!navigation || !isIntentEnabled(current, 'navigate') || current.connection.status !== 'connected' ||
+      current.selection.length === 0 || !selectionReady(current, current.selection)) {
+      throw new Error('Select ready aircraft and connect to a relay with navigation configured.')
+    }
+    const sequence = ++previewSequence.current
+    const draft = createIntent({ name: 'navigate', args: { zone_id: zoneId },
+      selection: current.selection, source: 'console', session: current.sessionId }, intentDependencies)
+    const startedAt = intentDependencies.now()
+    const preview = await navigation.preview(draft)
+    const latest = latestState.current
+    if (sequence !== previewSequence.current || latest.rosterVersion !== current.rosterVersion ||
+      latest.connection !== current.connection || JSON.stringify(latest.selection) !== JSON.stringify(current.selection) ||
+      !isIntentEnabled(latest, 'navigate') || !selectionReady(latest, current.selection) ||
+      preview.plan.roster_version !== current.rosterVersion) {
+      throw new Error('The fleet changed while preparing the route. Preview it again.')
+    }
+    const expiresAt = startedAt + preview.expires_at_ms - preview.t
+    if (intentDependencies.now() >= expiresAt) throw new Error('The route preview expired. Preview it again.')
+    return stageForConfirmation(draft, expiresAt, preview)
+  }, [navigation, intentDependencies, stageForConfirmation])
+
   /**
    * A select intent addresses the aircraft it names: `selection` carries the
    * desired ids, the same as `args.ids`, so selecting from an empty selection
@@ -233,6 +266,7 @@ export function useControlConsole({
    */
   const sendSelection = useCallback(
     (desired: DroneId[]) => {
+      previewSequence.current += 1
       if (!isIntentEnabled(state, 'select') || desired.length === 0) return
       const intent = createIntent(
         {
@@ -378,6 +412,7 @@ export function useControlConsole({
       source: DraftSource = 'console',
       expiresAt?: number,
     ): IntentV1 | null => {
+      if (request.name === 'navigate' || request.name === 'search') return null
       if (!isIntentEnabled(state, request.name)) return null
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
@@ -423,6 +458,7 @@ export function useControlConsole({
 
   const confirmRequest = useCallback(
     (intentId: string): IntentV1 | null => {
+      previewSequence.current += 1
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
       if (!request || request.status !== 'pending_confirmation') return null
       if (!isIntentEnabled(state, request.intent.name)) {
@@ -489,6 +525,7 @@ export function useControlConsole({
 
   const cancelRequest = useCallback(
     (intentId: string) => {
+      previewSequence.current += 1
       dispatch({ type: 'request_cancelled', intentId, t: intentDependencies.now() })
     },
     [intentDependencies],
@@ -501,6 +538,7 @@ export function useControlConsole({
 
   const issueNetworkStop = useCallback(
     (source: Extract<IntentSource, 'console' | 'keyboard'>) => {
+      previewSequence.current += 1
       const intent = createIntent(
         {
           name: 'estop',
@@ -574,6 +612,7 @@ export function useControlConsole({
   const retryRequest = useCallback(
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
+      if (request.intent.name === 'navigate' || request.intent.name === 'search') return
       const intent = retryIntent(request.intent, intentDependencies)
       if (['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
         stageForConfirmation({ ...intent, confirm: false })
@@ -599,6 +638,7 @@ export function useControlConsole({
     selectAircraft,
     selectAllReady,
     prepareCapture,
+    prepareNavigation,
     prepareHold,
     prepareIntent,
     prepareSelect,

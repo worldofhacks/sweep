@@ -32,6 +32,8 @@ export type ConsoleIntentName =
   | 'come_home'
   | 'sweep'
   | 'capture_room'
+  | 'navigate'
+  | 'search'
 
 export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'arm',
@@ -50,6 +52,8 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'come_home',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ]
 
 /**
@@ -68,6 +72,8 @@ export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Console
   'land_all',
   'estop',
   'capture_room',
+  'navigate',
+  'search',
   'altitude',
   'formation_next',
   'formation_set',
@@ -109,6 +115,8 @@ export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<
   'land_all',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ])
 
 export function requiresConfirmation(name: ConsoleIntentName): boolean {
@@ -135,6 +143,8 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   come_home: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
+  navigate: 'selected',
+  search: 'selected',
 }
 
 export function selectionRule(name: ConsoleIntentName): SelectionRule {
@@ -205,6 +215,8 @@ export interface IntentArgsByName {
   come_home: EmptyArgs
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
+  navigate: { zone_id: string }
+  search: { zone_id: string; target_class: string }
 }
 
 export type IntentArgs = IntentArgsByName[ConsoleIntentName]
@@ -958,6 +970,7 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
     return false
   }
   const name = value.name as ConsoleIntentName
+  if ((name === 'navigate' || name === 'search') && value.source !== 'console') return false
   const selection = value.selection as DroneId[]
   if (!hasValidArgs(name, value.args)) return false
   if (requiresConfirmation(name) && !value.confirm) return false
@@ -981,6 +994,11 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
       return keys.length === 1 && FORMATION_NAMES.has(args.name as FormationName)
     case 'sweep':
       return keys.length === 0 || (keys.length === 1 && isSweepBox(args.box))
+    case 'navigate':
+      return keys.length === 1 && typeof args.zone_id === 'string' && args.zone_id.trim().length > 0
+    case 'search':
+      return keys.length === 2 && typeof args.zone_id === 'string' && args.zone_id.trim().length > 0 &&
+        typeof args.target_class === 'string' && args.target_class.trim().length > 0
     case 'capture_room':
       return (
         keys.length === 3 &&

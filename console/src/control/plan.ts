@@ -3,6 +3,8 @@ import { formatDroneId, type PlanPreview } from './state'
 
 const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
   capture_room: 'Capture room',
+  navigate: 'Navigate to destination',
+  search: 'Search for an object',
   takeoff: 'Takeoff',
   land: 'Land',
   land_all: 'Land all fleet',
@@ -27,6 +29,9 @@ export function planSteps(intent: IntentV1): string[] {
         : 'Produce eight overlapping frames with incomplete_vertical_coverage.',
       'Download the file set to the ground station and record checksums and pose metadata.',
     ]
+  }
+  if (intent.name === 'navigate' && 'zone_id' in intent.args) {
+    return [`Fly ${ids} along the previewed route to ${intent.args.zone_id}.`, 'Hold on arrival.']
   }
   if (intent.name === 'takeoff') {
     return [

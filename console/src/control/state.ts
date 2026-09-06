@@ -1,3 +1,4 @@
+import type { NavigationPreview } from '../navigation/client'
 import type {
   BackendIntentStatus,
   CapturePattern,
@@ -27,6 +28,7 @@ export interface RelayConnection {
 }
 
 export interface PlanPreview {
+  route?: NavigationPreview
   title: string
   steps: string[]
   rosterVersion: number
