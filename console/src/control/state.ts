@@ -755,6 +755,7 @@ function projectMembershipEvent(
     rc_safety_operator_present: previous?.rc_safety_operator_present ?? false,
     telemetry: previous?.telemetry ?? null,
     membership_history: previous?.membership_history ?? [],
+    membership_history_truncated: previous?.membership_history_truncated ?? 0,
     video: previous?.connection_epoch === event.connection_epoch ? previous.video : undefined,
   }
 }

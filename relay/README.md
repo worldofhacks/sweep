@@ -195,8 +195,10 @@ drone_id, connection_epoch, membership, readiness_reasons, flight_state,
 battery, link, pos_quality, control_authority, last_seen_at, camera_patterns,
 selectable, adapter_id, adapter_capabilities, home_pose,
 rc_safety_operator_present, telemetry, membership_history,
-camera_capabilities, node_status, video
+membership_history_truncated, camera_capabilities, node_status, video
 ```
+
+`membership_history` retains only the newest `SWEEP_STATE_MEMBERSHIP_HISTORY` transitions (default 8, maximum 64) for that aircraft, bounding both relay memory and frame size for the life of a session. `membership_history_truncated` counts the older entries no longer retained in memory or the frame. Every transition remains its own `membership` record in the audit log and the replay endpoint, so the durable transition history is complete.
 
 `flight_state`, battery/link/position aliases, and `last_seen_at` are a normalized console projection and are nullable until current telemetry exists. The nested `telemetry` object is the authoritative Appendix B snapshot; its transport-only event ID, session, and connection epoch are represented by the containing drone/event. `camera_patterns` is derived from the signed capability list and does not assert camera readiness. The relay does not invent storage, camera-ready, active-task, or operator-presence/timing facts absent from Appendix B. The autonomy boundary must enrich those inputs explicitly and fail closed when they are missing.
 
@@ -294,9 +296,23 @@ Each normalized event is one append-only JSONL record shaped as `{"seq": N, "eve
 
 Events from one relay operation are committed as a single audit batch. A per-session SQLite database in WAL mode records the pending operation before irreversible work begins and makes its events visible only when the whole operation completes. JSONL remains the public replay mirror with the same per-event record shape. An incomplete operation fences replay across restart.
 
+The database holds fencing metadata, not a second copy of the log: one row per record with its operation, the SHA-256 digest of its exact JSONL line, and the line length. The newest non-empty operation's canonical lines are retained until a successor commits, long enough to rebuild a mirror tail the process did not finish writing; a mirror that is damaged inside older history fails closed instead of being rebuilt. Retained bytes are parsed and checked against their sequence, session, event contract, and canonical JSON encoding before recovery. Comparison and repair stream the existing mirror in bounded chunks rather than loading the complete history into memory. A database written by the earlier writer, which stored every event body, is migrated to digest rows on first reopen and vacuumed.
+
 Control projection updates record their pending operation before changing any field. If copying a later field fails, the session rejects further mutations, state reads, and replay, including when a planner callback catches the original exception.
 
-Live appends compare the mirror's file identity, size, and modification metadata with the last verified append. An unchanged mirror requires no history reads; a changed mirror receives full validation. Reopen and replay always verify the complete history.
+Live appends compare the mirror's file identity, size, and modification metadata with the last verified append. An unchanged mirror requires no history reads; a changed mirror receives full validation. Reopen and replay always verify the complete history against the committed digests.
+
+### Log volume
+
+The console receives every state frame and telemetry frame live. The audit retains every accepted telemetry input so a transient battery, link, pose, velocity, or flight-state value cannot disappear before a safety or autonomy decision is investigated. Every intent, plan, command, acknowledgement, refusal, membership transition, readiness change, estop and safety action is also recorded. A control projection mutation records the exact resulting state even when its material projection matches the previous snapshot. Only redundant state snapshots are sampled:
+
+- A `state` record is written when the projection changes in a way that matters: anything other than `t`, `event_id`, `state_sequence`, the per-aircraft `last_seen_at`, `telemetry`, `battery`, `link` and `pos_quality` aliases, a node report's own timestamp, and `video.last_frame_at`. Membership, readiness reasons, flight state, selection, arming, estop, formation, spacing, plans, node reports, and video status all count. Otherwise a keepalive snapshot is written after `SWEEP_AUDIT_STATE_INTERVAL_MS` (default and maximum 10000) elapses. The configured value must be 1 through 10000 milliseconds. A backward relay-clock step immediately starts a fresh sampling baseline instead of suppressing records until the old timestamp catches up.
+- Every accepted `telemetry` record is written in full; there is no telemetry sampling knob.
+- `SWEEP_STATE_MEMBERSHIP_HISTORY` (default 8, maximum 64) bounds the membership history retained in memory and embedded in each frame, as described above.
+
+With the defaults, redundant periodic state contributes at most one keepalive every ten seconds; the telemetry rate remains the evidence rate. Nested drone projection is an exact, bounded contract, so a future field or oversized collection fails closed until it has an explicit bounded projection.
+
+This storage remains the JSONL replay contract only. It does not write MCAP or establish the ENU/Foxglove acceptance tracked separately in issue #93.
 
 Authenticate HTTP requests with `Authorization: Bearer $SWEEP_RELAY_TOKEN`. `GET /metrics` returns relay/session counters; `GET /runtime-config.json` returns the console's media bootstrap (see "Run the relay"). `GET /session/{id}?after_sequence=N` returns a `replay` envelope whose `events` are the ordered JSONL records after `N`. `intent_record` is log-only and pairs the normalized Intent v1 request with its accepted/refused outcome; membership, telemetry, state, acknowledgement, and refusal records use the same event shapes delivered live. Replay UI remains outside M2.0.
 

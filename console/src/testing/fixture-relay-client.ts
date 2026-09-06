@@ -955,6 +955,7 @@ function designDrone(now: number, id: DroneId, overrides: Partial<RelayAircraftS
     home_pose: { x: 0, y: 0, z: 0 },
     telemetry: { x: 0.4, y: 1.1, z: 1.4 },
     membership_history: [],
+    membership_history_truncated: 0,
     video: { status: 'live', last_frame_at: now - 400 },
     ...overrides,
   }
@@ -1069,6 +1070,7 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
       home_pose: { x: 0, y: 0, z: 0 },
       telemetry: { fresh: true },
       membership_history: [],
+      membership_history_truncated: 0,
       video: { status: 'live', last_frame_at: now - 180 },
     },
     {
@@ -1090,6 +1092,7 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
       home_pose: { x: 0.8, y: 0, z: 0 },
       telemetry: { fresh: true },
       membership_history: [],
+      membership_history_truncated: 0,
       video: { status: 'offline', last_frame_at: now - 12_000 },
     },
     {
@@ -1111,6 +1114,7 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
       home_pose: { x: 1.6, y: 0, z: 0 },
       telemetry: { fresh: false },
       membership_history: [],
+      membership_history_truncated: 0,
       video: { status: 'offline', last_frame_at: now - 5_100 },
     },
     {
@@ -1132,6 +1136,7 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
       home_pose: { x: 2.4, y: 0, z: 0 },
       telemetry: { fresh: true },
       membership_history: [],
+      membership_history_truncated: 0,
     },
   ]
   if (fleetSize === 4) return fleet
@@ -1156,6 +1161,7 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
       home_pose: { x: 3.2, y: 0, z: 0 },
       telemetry: { fresh: true },
       membership_history: [],
+      membership_history_truncated: 0,
       video: { status: 'live', last_frame_at: now - 140 },
     },
     {
@@ -1177,6 +1183,7 @@ export function fixtureAircraft(now: number, fleetSize: FixtureFleetSize = 4): R
       home_pose: { x: 4, y: 0, z: 0 },
       telemetry: { fresh: true },
       membership_history: [],
+      membership_history_truncated: 0,
       video: { status: 'unreported', last_frame_at: null },
     },
   ]

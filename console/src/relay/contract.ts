@@ -281,6 +281,7 @@ export interface RelayAircraftState {
   home_pose: unknown
   telemetry: unknown
   membership_history: unknown[]
+  membership_history_truncated: number
   video?: MediaStreamState
 }
 
@@ -867,6 +868,7 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
     'home_pose' in value &&
     'telemetry' in value &&
     Array.isArray(value.membership_history) &&
+    isNonNegativeInteger(value.membership_history_truncated) &&
     isVideoStreamState(value.video)
   )
 }
