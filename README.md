@@ -10,6 +10,8 @@ As of September 6, 2026, the integrated PR stack passes 2,201 Python tests, 528 
 
 Physical flight authorization remains pending. One real aircraft must supply measured camera, velocity, height, attitude/gimbal and timing evidence, including dropouts. Five mapped-route rehearsals must show p95 position error at or below 0.25 m against independent reference measurements, with no unhandled update gap over 500 ms. Map/calibration binding, stale-data refusal, hold/land behavior and physical RC takeover must pass their deployment and failure trials. Estimator confidence and synthetic tests cannot substitute for those measurements.
 
+The remaining input integration is concrete: Android sensor callbacks expose receipt time, and the current camera path lacks verified capture-time and synchronized body/gimbal transforms. Recording and diagnostic conversion preserve that distinction. The live ingestion and estimator timing contract must be completed against measured source behavior before those inputs can earn control authority. [Acceptance evaluator #226](https://github.com/worldofhacks/sweep/pull/226) compares recorded poses with independent references; it does not certify raw sensor timing.
+
 The current work prioritizes autonomous destination navigation and object search. Lobby and atrium-front are candidate formation volumes pending measured approval; kitchen remains a named destination/transit area and is not a formation fallback. Capture/Worlds continues in its separate lane.
 
 ## Read first
