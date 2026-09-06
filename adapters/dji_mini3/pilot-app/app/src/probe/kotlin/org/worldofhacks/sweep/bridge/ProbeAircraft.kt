@@ -20,13 +20,10 @@ import kotlin.math.hypot
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
-import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
+import org.worldofhacks.sweep.bridge.core.frames.CameraProbe
 import org.worldofhacks.sweep.bridge.core.frames.HardwareProfile
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
 import org.worldofhacks.sweep.bridge.node.AircraftSource
-import org.worldofhacks.sweep.bridge.node.CommandExecutor
-import org.worldofhacks.sweep.bridge.node.CommandReport
 import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.TelemetryKeyLedger
 import org.worldofhacks.sweep.bridge.node.TelemetryKeyStatus
@@ -59,9 +56,9 @@ import org.worldofhacks.sweep.bridge.session.AircraftIdentity
  * - `state` follows motors and flying flags plus the flight mode name (`taking_off`,
  *   `landing`, `hovering` below 0.2 m/s, else `airborne`).
  *
- * Flight commands are routed to the Phase E `FlightExecutor` before they reach this class;
- * the camera and media commands fail with `unsupported` until Phase G, so the node never
- * claims it executed something it cannot drive.
+ * Flight commands run in the Phase E `FlightExecutor` and the camera and media commands in
+ * the Phase G `CameraExecutor`; this class only assembles the snapshot both report from,
+ * including the camera facts the executor probes ([setCamera]).
  */
 internal class ProbeAircraft(
     phoneModel: String,
@@ -71,7 +68,7 @@ internal class ProbeAircraft(
     /** Bench log hook: one call per key and listener event (`attached`, `product_connected`, `first_value`). */
     private val record: (key: String, event: String, status: TelemetryKeyStatus) -> Unit = { _, _, _ -> },
     private val rawRecorder: SensorRawRecorder = SensorRawRecorder.NONE,
-) : AircraftSource, CommandExecutor {
+) : AircraftSource {
     private val lock = Any()
 
     /** The one holder every listener is registered with; `cancelListen(holder)` removes them all. */
@@ -94,6 +91,7 @@ internal class ProbeAircraft(
     private var signalQuality: Int? = null
     private var virtualStickEnabled = false
     private var authorityLostReason: String? = null
+    private var camera = CameraProbe()
     private var hardware = HardwareProfile(
         aircraftModel = HardwareProfile.UNREPORTED,
         aircraftFirmware = HardwareProfile.UNREPORTED,
@@ -223,16 +221,10 @@ internal class ProbeAircraft(
         publish()
     }
 
-    override fun execute(command: CommandFrame, report: CommandReport) {
-        when (command.args) {
-            CommandArgs.CameraCapabilities -> {
-                report.executing("capabilities frame sent by the link")
-                report.completed("probed camera capabilities reported")
-            }
-            is CommandArgs.Takeoff, is CommandArgs.Goto, is CommandArgs.RotateTo, CommandArgs.Hover, CommandArgs.Land, CommandArgs.Estop ->
-                report.failed("control_loop_unavailable", "flight commands are routed to the Virtual Stick loop; this executor never drives motion")
-            else -> report.failed("unsupported", "the camera and media path lands with Phase G")
-        }
+    /** Phase G: the camera facts the `CameraExecutor` probed, reported in `capabilities`. */
+    fun setCamera(camera: CameraProbe) {
+        synchronized(lock) { this.camera = camera }
+        publish()
     }
 
     /** One listened key: its name, the DJI key (created lazily), and where its value goes. */
@@ -327,6 +319,7 @@ internal class ProbeAircraft(
             // Provisional until the indoor positioning mapping is measured (issue #43, Phase C2).
             posQuality = if (fix != null) PROVISIONAL_FIX_QUALITY else 0.0,
             hardware = hardware,
+            camera = camera,
             keyRatesHz = rates.snapshot(now),
             telemetryKeys = ledger.snapshot(),
             yawDeg = yaw,

@@ -1,6 +1,6 @@
 # DJI Mini 3 bridge
 
-Capability area: Autonomy, with Platform support. Issue #43 (M1.9), Phases B3, B4, C, and E.
+Capability area: Autonomy, with Platform support. Issue #43 (M1.9), Phases B3, B4, C, D, E, F, and G.
 
 One Android phone per DJI Mini 3 and RC-N1 pair runs the pilot app under `pilot-app/`. The
 app registers with the DJI Mobile SDK, proves the aircraft identity, and keeps one
@@ -28,10 +28,10 @@ aircraft/RC/phone tuple before describing this bridge as flight-proven.
 
 | Module | Kind | Contents |
 |---|---|---|
-| `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, relay-signed `command`, exact per-node `control_heartbeat`, `capabilities`, `capture_readiness`, `node_status`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; the staged diagnostic-only `control_pose` contract; canonical JSON and HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence; `core/flight`, the Phase E Virtual Stick loop as a pure tick-driven state machine (axis mapping, time-boxed steps from millimetre arguments, deadman actions, estop and takeover latches), the kinematic `FakeFlightModel`, and the #85 axis-probe classifier |
-| `bridge-node` | Kotlin/JVM | `RelayLink`, the node's OkHttp WebSocket client: auth, join, readiness, telemetry at 10 Hz, capabilities, node_status, command admission and acknowledgement, bounded diagnostic pose ingestion, reconnect with bounded backoff, the watchdog under relay silence; `FakeAircraft`, the kinematic fixture with the command semantics of `fake_node.py`; `flight/FlightExecutor`, the loop's coroutine ticker and command executor, and `FakeFlightAircraft`, the fixture flown by the loop; tested against a stub relay on MockWebServer |
+| `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, relay-signed `command`, exact per-node `control_heartbeat`, `capabilities`, `capture_readiness`, `node_status`, `media_file`, `capture_bundle`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; the staged diagnostic-only `control_pose` contract; canonical JSON and HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence; `core/flight`, the Phase E Virtual Stick loop as a pure tick-driven state machine (axis mapping, time-boxed steps from millimetre arguments, deadman actions, estop and takeover latches), the kinematic `FakeFlightModel`, and the #85 axis-probe classifier |
+| `bridge-node` | Kotlin/JVM | `RelayLink`, the node's OkHttp WebSocket client: auth, join, readiness, telemetry at 10 Hz, capabilities, node_status, command admission and acknowledgement, bounded diagnostic pose ingestion, reconnect with bounded backoff, the watchdog under relay silence; `FakeAircraft`, the kinematic fixture with the command semantics of `fake_node.py`; `flight/FlightExecutor`, the loop's coroutine ticker and command executor, and `FakeFlightAircraft`, the fixture flown by the loop; `camera/CameraExecutor`, the Phase G camera and media path on a `CameraPort`, with `FakeCameraPort` writing synthetic files; tested against a stub relay on MockWebServer |
 | `bench` | Kotlin/JVM | JSONL recorder for command round-trip time, jitter, drops, stick send rate, telemetry rate, video frame stats, and the #85 `probe` entries, plus the report writer |
-| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates, and `DjiFlightPort` on `IVirtualStickManager`) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`, including one atomic versioned localization-diagnostic pin set; the Compose page with Setup, Connectivity, Readiness, node status, the Flight and First-flight probes cards, the command log, and the Phase B4 registration and identity cards |
+| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates, `DjiFlightPort` on `IVirtualStickManager`, and `DjiCameraPort` on the camera, gimbal, and media-manager APIs) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`, including one atomic versioned localization-diagnostic pin set; the Compose page with Setup, Connectivity, Readiness, node status, the Flight, First-flight probes, and Capture cards, the command log, and the Phase B4 registration and identity cards |
 
 The JVM tests read fixtures under `bridge-core/src/test/resources/vectors/` that
 `adapters/dji_mini3/vectors.py` generates from the relay code itself; `test_vectors.py`
@@ -192,8 +192,7 @@ values, and shows each key's measured update rate on the node status card. The `
 `KeyAircraftVelocity` is N-E-D, so its `y` is the planner's `vx` (east) and its `x` the
 planner's `vy` (north); `KeyAircraftAttitude.yaw` (degrees, 0 north, clockwise) is the
 heading the flight loop rotates body-frame steps with. Flight commands run in the Phase E
-loop below; the camera and media commands acknowledge `failed` with `unsupported` until
-Phase G.
+loop below; the camera and media commands run in the Phase G camera path below.
 
 The listeners are registered when the SDK registers, before the RC and aircraft are
 connected, and `isKeySupported` is not allowed to skip a key: its answer is per connected
@@ -549,7 +548,7 @@ display is open; leaving the display (Session button or back) releases the Surfa
   - the center reticle; around it the coverage compass drawn heading-up: eight 45° sectors
     while `measured_hfov_deg` is null (the label says "field of view unmeasured"; the
     published 82.1° lens value is never used as a horizontal field of view), all hollow
-    (unseen) until Phase G marks them dashed (weak) or solid (accepted);
+    (unseen) until the camera path marks the heading of each accepted frame solid;
   - the amber next-heading marker on the ring and the `yaw +n°` / `yaw −n°` label under
     the reticle; the first heading is the sector the aircraft already looks at, so the
     delta starts small and follows the yaw;
@@ -570,10 +569,10 @@ display is open; leaving the display (Session button or back) releases the Surfa
   and tier, the keyframe cadence in milliseconds and frames, the yaw, and the bench log
   path. This is the codec evidence to quote on #51.
 
-`Capturing`, `Downloading`, and `Needs retake` are driven by `CaptureProgressSource`, which
-Phase G fills; Phase D ships the idle source, so the fake flavor shows `Ready` and
-`Disconnected`. Arrows on the overlay mean yaw or gimbal only; nothing suggests a
-translation in `visual_advisory`.
+`Capturing` and `Downloading` are driven by the camera path's progress (Phase G below);
+`Needs retake` is reserved for a relay-side quality verdict the node does not receive yet.
+Arrows on the overlay mean yaw or gimbal only; nothing suggests a translation in
+`visual_advisory`.
 
 ### What the bench log records
 
@@ -626,6 +625,114 @@ evidence is also just `grep stream_info <log> | tail -1`.
 5. Pull the log and record in the PR the last `stream_info`: mime type, size, nominal and
    measured frame rate, keyframe interval, profile and level, and the thermal state at the
    end of the run.
+
+## Phase G: camera operations and media retrieval for `capture_room`
+
+Phase G runs the camera half of a confirmed `capture_room` on the real Mini 3, so the
+planner's sequence (`camera_capabilities`, `set_gimbal_pitch`, `camera_ready`, then per
+heading `rotate_to`, `camera_ready`, `capture_photo`, `retrieve_media`) completes end to end
+and the relay holds every file's pose-anchored record and checksum. The path lives in
+`bridge-node/.../camera` (`CameraPort`, `CameraExecutor`, `FakeCameraPort`; plain JVM,
+tested in `CameraExecutorTest` behind `RelayLink` on the stub relay) and
+`app/src/probe/.../camera/DjiCameraPort.kt` (MSDK 5.18.0). `FlightExecutor` still owns
+`rotate_to` and every motion; the camera path never enables Virtual Stick and never yaws
+the aircraft.
+
+### Operations and acknowledgements
+
+| Operation | What the camera path does | Completes on |
+|---|---|---|
+| `camera_capabilities` | reads `KeyCameraStorageInfos`, the gimbal range, and the flat-mode and panorama facts, pushes them into the aircraft snapshot; the link then sends a fresh `capabilities` frame before the terminal acknowledgement | facts reported (`storage_remaining_bytes` from the current storage's remaining MB) |
+| `set_gimbal_pitch {pitch_mdeg}` | `KeyRotateByAngle`, absolute pitch, roll and yaw ignored, 1 s; then polls `KeyGimbalAttitude` | reported pitch within 1° of the target (the arbiter's `max_capture_gimbal_error_deg`); `camera_failure` past 6 s, `camera_unsupported` when no gimbal attitude has ever been reported |
+| `camera_ready` | releases the media manager if a download left it enabled, sets `PHOTO_NORMAL` (`KeyCameraFlatMode`, or `KeyCameraMode` on a camera without flat modes), rereads storage, and sends a `capture_readiness` frame with `camera_ok` (aircraft and camera connected, photo mode) and `storage_ok` (storage inserted with at least 1 MB free) | both gates true; `camera_not_ready` otherwise, the detail naming each failed gate |
+| `capture_photo {capture_id}` | records the aircraft pose, heading, and gimbal pitch, fires `KeyStartShootPhoto`, waits for `KeyNewlyGeneratedMediaFile`, and sends a `media_file` record with `retrieval_status: pending`, an all-zero checksum, and the aircraft file as `storage_ref`, before the terminal acknowledgement | the camera announced the file (8 s); `camera_not_ready` before `camera_ready`, `camera_failure` on a refused shutter or no announcement |
+| `retrieve_media {file_id}` | `IMediaManager.enable`, pulls the photo list from the current storage, finds the announced index, `pullOriginalMediaFileFromCamera` into `filesDir/captures/<capture_id>/DJI_<n>.JPG` with `executing` progress once a second, hashes the file, `disable`, and sends the `completed` `media_file` record (SHA-256 of the bytes, `file://` path as `storage_ref`) before the terminal acknowledgement | the file is on the phone and its record was sent; `download_failure` on an unknown file, a changed connection epoch, a media-manager or download error, or the 120 s deadline |
+| `capture_panorama {capture_id}` | nothing | never: `camera_unsupported`, because a native panorama yaws the aircraft under the flight controller, outside the Virtual Stick loop and the arbiter's pose lock; `reconstruct_8` is the working pattern |
+
+Both flavors therefore join with `capabilities: [flight, reconstruct_8]` and report
+`native_panorama_modes: []` whatever the camera advertises (the Capture card and the SDK
+events show what it advertises, for the record). The console offers `reconstruct_8` for the
+node and refuses a `pano_360` draft against it; a `pano_360` plan that reaches the node fails
+at `capture_panorama` with the reason above. The command wire carries only `capture_id`, so
+the node cannot name the room or pattern: the relay's autonomy composition records the
+`capture_bundle` the dispatcher validated (room, pattern, coverage, status) and projects it
+with the node's `media_file` records into `state.captures` (see `relay/README.md`).
+
+Per-file frame numbering is `<capture_id>-frame-NN` in shutter order for that capture id and
+connection epoch; a rejoin starts a new ledger, and a `retrieve_media` for a file captured in
+an earlier epoch fails `download_failure`. The relay bounds each command by
+`SWEEP_COMMAND_DEADLINE_MS` (10 s by default); a retrieval that needs longer over the RC link
+must have that value raised before the session, because a retrieval the relay times out
+cannot be resumed.
+
+`capture_readiness` cadence: the link sends one frame on join (with the fake camera:
+`camera_ok=false` until `camera_ready` puts it in photo mode; with the aircraft: whatever the
+keys report), one whenever a gate, the active capture id, or the missing-coverage sectors
+change (checked every 100 ms), and one at every `camera_ready`. `coverage_missing` lists the
+45° sectors of `reconstruct_8` no accepted frame falls into; `next_heading_deg` and
+`suggested_delta` stay null because the planner, not the node, chooses the next heading.
+
+### On the phone
+
+- Capture card (session page): `Ready`, `Capturing n of 8`, or `Downloading file n of m`,
+  the active operation, the reported gimbal pitch, the camera and storage facts behind
+  `capabilities`, the accepted headings, and every file captured this epoch with its
+  heading, gimbal, pose, and either its aircraft reference (pending) or its path on the phone
+  and SHA-256 (completed).
+- Flight display: the capture pill reads `Capturing` while a shutter command runs and
+  `Downloading` during a retrieval, and the compass sector of each accepted heading turns
+  solid.
+- Files: `filesDir/captures/<capture_id>/DJI_<n>.JPG`, that is
+  `/data/user/0/org.worldofhacks.sweep.bridge/files/captures/<capture_id>/`. Copy one with
+  `adb shell run-as org.worldofhacks.sweep.bridge cat files/captures/<capture_id>/DJI_0001.JPG > DJI_0001.JPG`
+  and check it with `shasum -a 256 DJI_0001.JPG` against the `checksum_sha256` in the relay's
+  `media_file` record (`state.captures`, the audit JSONL, or
+  `SWEEP_SESSION_LOG_DIR/<sha256 of the session id>-captures/drone-<n>/epoch-<e>/<capture_id>/<file_id>.json`).
+  On the phone, `adb shell run-as org.worldofhacks.sweep.bridge sha256sum files/captures/<capture_id>/DJI_0001.JPG`
+  gives the same digest without copying.
+- Fake flavor: the same path on synthetic files (`FAKE_<n>.JPG`, a header plus 4 KiB of
+  seeded bytes); the checksums in the relay match the files under `files/captures/`.
+
+### Live checklist (aircraft hovering, RC operator present)
+
+Preconditions, as for the guarded-hover checklist: relay on the `remote` backend with
+`SWEEP_PLANNING_JSON` and `SWEEP_SAFETY_JSON` set, the phone joined and `ready` (all three
+readiness toggles), the RC operator holding the aircraft at the approved hover pose, the
+console connected with the aircraft selected and the room id typed. `capture_gimbal_pitch_deg`
+in the planning JSON is the pitch the gimbal is driven to; keep it inside the range the
+Capture card reports.
+
+Button path: Control module, pattern `reconstruct_8`, Capture room; review the preview
+(34 steps), Confirm and send in the dock. Gesture path: Gesture module with tracking on,
+hold an open palm 600 ms to draft `capture_room` for the typed room id and the selected
+pattern, then a thumbs up for 400 ms confirms the draft (or press Confirm and send in the
+dock). Either way the same `intent_id` runs through the relay, planner, arbiter, and node.
+
+What to watch:
+
+1. Commands card: `camera_capabilities` and `set_gimbal_pitch` complete; the Capture card
+   shows the gimbal pitch reached.
+2. Per heading: `rotate_to` (Flight card: Virtual Stick on for the yaw, then off),
+   `camera_ready` completes with `capture_readiness sent`, `capture_photo` completes with
+   `captured <capture_id>-frame-NN`, the flight display pill reads `Capturing`, then
+   `retrieve_media` shows `downloading ... n%` progress with the pill at `Downloading`, and
+   completes with the path and SHA-256. The RC operator hears the shutter each time.
+3. After the eighth retrieval the console's Requests pane shows the intent `completed`
+   and the Captures module lists the capture under the session with 8 files, `pass`, and
+   the pose of the first frame; while frames are still arriving the same module shows it
+   under `In progress` with the captured and retrieved counts.
+4. The relay's audit JSONL holds 16 `media_file` records (pending, then completed, per
+   frame) and one `capture_bundle` with `source: "autonomy"`; the JSON files are under
+   `SWEEP_SESSION_LOG_DIR/<sha256 of the session id>-captures/drone-<n>/epoch-<e>/<capture_id>/`.
+5. Checksums: pick any frame, copy it from the phone as above, and compare
+   `shasum -a 256` with `checksum_sha256` in that frame's JSON file.
+
+Abort and failure behavior: a stick past a third of its travel or the pause button ends the
+`rotate_to` in progress with `authority_lost` and the plan fails closed; the camera commands
+never move the aircraft, so a takeover during a shutter or download only ends the plan at
+its next `rotate_to`. A `camera_not_ready` or `download_failure` fails the plan with that
+reason; the files already on the phone stay where they are and the relay keeps their records.
+The room-world generation step (Marble) is separate and not started by this path.
 
 ## Phase B4 exit procedure on the phone (not yet evidenced)
 

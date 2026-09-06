@@ -4,6 +4,8 @@ import android.os.Build
 import java.io.File
 import kotlin.concurrent.fixedRateTimer
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.camera.CameraExecutor
+import org.worldofhacks.sweep.bridge.camera.FakeCameraPort
 import org.worldofhacks.sweep.bridge.core.frames.HardwareProfile
 import org.worldofhacks.sweep.bridge.flight.FakeFlightAircraft
 import org.worldofhacks.sweep.bridge.flight.FlightExecutor
@@ -20,6 +22,7 @@ import org.worldofhacks.sweep.bridge.session.SessionModel
 import org.worldofhacks.sweep.bridge.session.SessionState
 import org.worldofhacks.sweep.bridge.session.SimulationControls
 import org.worldofhacks.sweep.bridge.video.FakeFpv
+import org.worldofhacks.sweep.bridge.video.FlowCaptureProgress
 import org.worldofhacks.sweep.bridge.video.FpvSessionHost
 
 /**
@@ -45,8 +48,20 @@ class FakeAircraftSession(private val filesDir: File, phone: PhoneStatusSource? 
         ),
     )
 
+    // Phase G: the fake camera writes synthetic files under filesDir/captures so the whole
+    // capture path (records, checksums, the display's Capturing and Downloading states) runs
+    // on a phone without an aircraft.
+    private val cameraPort = FakeCameraPort(connected = { fake.snapshot.value.aircraftConnected })
+    override val camera: CameraExecutor = CameraExecutor(
+        cameraPort,
+        fake,
+        File(filesDir, "captures"),
+        log = { line -> model.event("Camera", line) },
+        onFacts = { probe -> fake.update { it.copy(camera = probe) } },
+    )
+
     // Phase D hook: synthetic FPV picture, yaw sweep, and codec evidence for the flight display.
-    override val fpv: FakeFpv = FakeFpv(filesDir, phone) { fake.yawDeg }
+    override val fpv: FakeFpv = FakeFpv(filesDir, phone, { fake.yawDeg }, captureProgress = FlowCaptureProgress(camera.progress))
 
     override val state: StateFlow<SessionState> = model.state
 
@@ -61,7 +76,7 @@ class FakeAircraftSession(private val filesDir: File, phone: PhoneStatusSource? 
     // path, deadman, and takeover run end to end on a phone without an aircraft. Non-flight
     // commands still reach the Phase C fixture; the simulation buttons stand in for the RC.
     private val flightAircraft = FakeFlightAircraft(fake)
-    private val flightExecutor = FlightExecutor(flightAircraft, flightAircraft, fallback = fake, log = { line -> model.event("Flight", line) })
+    private val flightExecutor = FlightExecutor(flightAircraft, flightAircraft, fallback = camera, log = { line -> model.event("Flight", line) })
     override val flight: FlightNode = FlightNode(
         flightExecutor,
         flightAircraft,

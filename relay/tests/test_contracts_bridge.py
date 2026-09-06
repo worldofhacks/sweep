@@ -163,6 +163,22 @@ def test_media_file_frame_mirrors_the_adapter_media_file_shape() -> None:
     assert frame.to_event() == raw
 
 
+def test_media_file_frame_accepts_a_pending_capture_time_record() -> None:
+    raw = media_file_payload(
+        event_id="media-pending", retrieval_status="pending", checksum_sha256="0" * 64
+    )
+
+    frame = parse_media_file(raw)
+
+    assert frame.file.retrieval_status == "pending"
+    assert frame.file.checksum_sha256 == "0" * 64
+    with pytest.raises(ContractError, match="retrieval_status"):
+        parse_media_file(media_file_payload(event_id="media-bad", retrieval_status="queued"))
+    # A bundle closes a set; its status vocabulary has no pending value.
+    with pytest.raises(ContractError, match="status"):
+        parse_capture_bundle(capture_bundle_payload(event_id="bundle-bad", status="pending"))
+
+
 def test_media_file_frame_rejects_a_malformed_checksum() -> None:
     raw = media_file_payload(event_id="media-bad", checksum_sha256="abc")
 

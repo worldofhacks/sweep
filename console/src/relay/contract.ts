@@ -253,6 +253,46 @@ export interface RelayAircraftState {
   video?: MediaStreamState
 }
 
+export type MediaRetrievalStatus = 'pending' | 'completed' | 'unsupported' | 'failed'
+export type CaptureBundleStatus = 'completed' | 'unsupported' | 'failed'
+export type CaptureCoverage = 'full_equirectangular' | 'incomplete_vertical_coverage'
+
+/** One node-authored `media_file` record as `state.captures[].files` carries it verbatim. */
+export interface RelayCaptureFile {
+  capture_id: string
+  file_id: string
+  timestamp_ms: number
+  drone_id: DroneId
+  connection_epoch: number
+  pose: { x: number; y: number; z: number }
+  actual_yaw_deg: number
+  gimbal_pitch_deg: number
+  intrinsics: { width_px: number; height_px: number; horizontal_fov_deg: number; projection: string }
+  /** Sixty-four lowercase hex characters; all zeros while `retrieval_status` is `pending`. */
+  checksum_sha256: string
+  storage_ref: string
+  retrieval_status: MediaRetrievalStatus
+}
+
+/**
+ * One retained capture in the relay's `state.captures` projection. `room_id`, `pattern`,
+ * `coverage`, `status`, `reason`, and `detail` stay null until a `capture_bundle` closes
+ * the set; an open capture is only its files so far.
+ */
+export interface RelayCaptureRecord {
+  capture_id: string
+  drone_id: DroneId
+  connection_epoch: number
+  room_id: string | null
+  pattern: CapturePattern | null
+  coverage: CaptureCoverage | null
+  status: CaptureBundleStatus | null
+  reason: string | null
+  detail: string | null
+  files: RelayCaptureFile[]
+  updated_at: number
+}
+
 export interface RelayStateEvent {
   v: 1
   t: number
@@ -272,6 +312,8 @@ export interface RelayStateEvent {
   pending: Record<string, unknown> | null
   accepted_plan: Record<string, unknown> | null
   drones: RelayAircraftState[]
+  /** The relay always sends it; fixtures that predate it may omit it. */
+  captures?: RelayCaptureRecord[]
   invalidated_intent_ids?: string[]
   invalidation_reason?: 'graceful_leave_roster_change'
   prior_roster_version?: number
@@ -793,6 +835,63 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
   )
 }
 
+const MEDIA_RETRIEVAL_STATUSES: ReadonlySet<string> = new Set(['pending', 'completed', 'unsupported', 'failed'])
+const CAPTURE_BUNDLE_STATUSES: ReadonlySet<string> = new Set(['completed', 'unsupported', 'failed'])
+const CAPTURE_COVERAGES: ReadonlySet<string> = new Set(['full_equirectangular', 'incomplete_vertical_coverage'])
+
+function isNullableChoice(value: unknown, choices: ReadonlySet<string>): boolean {
+  return value === null || (typeof value === 'string' && choices.has(value))
+}
+
+export function isRelayCaptureFile(value: unknown): value is RelayCaptureFile {
+  if (!isRecord(value)) return false
+  const pose = value.pose
+  const intrinsics = value.intrinsics
+  return (
+    typeof value.capture_id === 'string' &&
+    value.capture_id.length > 0 &&
+    typeof value.file_id === 'string' &&
+    value.file_id.length > 0 &&
+    isNonNegativeInteger(value.timestamp_ms) &&
+    isDroneId(value.drone_id) &&
+    isNonNegativeInteger(value.connection_epoch) &&
+    isRecord(pose) &&
+    ['x', 'y', 'z'].every((axis) => isFiniteNumber(pose[axis])) &&
+    isFiniteNumber(value.actual_yaw_deg) &&
+    isFiniteNumber(value.gimbal_pitch_deg) &&
+    isRecord(intrinsics) &&
+    isDroneId(intrinsics.width_px) &&
+    isDroneId(intrinsics.height_px) &&
+    isFiniteNumber(intrinsics.horizontal_fov_deg) &&
+    typeof intrinsics.projection === 'string' &&
+    typeof value.checksum_sha256 === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.checksum_sha256) &&
+    typeof value.storage_ref === 'string' &&
+    value.storage_ref.length > 0 &&
+    typeof value.retrieval_status === 'string' &&
+    MEDIA_RETRIEVAL_STATUSES.has(value.retrieval_status)
+  )
+}
+
+export function isRelayCaptureRecord(value: unknown): value is RelayCaptureRecord {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.capture_id === 'string' &&
+    value.capture_id.length > 0 &&
+    isDroneId(value.drone_id) &&
+    isNonNegativeInteger(value.connection_epoch) &&
+    isNullableString(value.room_id) &&
+    (value.pattern === null || CAPTURE_PATTERNS.has(value.pattern as CapturePattern)) &&
+    isNullableChoice(value.coverage, CAPTURE_COVERAGES) &&
+    isNullableChoice(value.status, CAPTURE_BUNDLE_STATUSES) &&
+    isNullableString(value.reason) &&
+    isNullableString(value.detail) &&
+    Array.isArray(value.files) &&
+    value.files.every(isRelayCaptureFile) &&
+    isNonNegativeInteger(value.updated_at)
+  )
+}
+
 function isVideoStreamState(value: unknown): value is MediaStreamState | undefined {
   if (value === undefined) return true
   if (!isRecord(value)) return false
@@ -836,6 +935,8 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isNullableRecord(value.accepted_plan) ||
       !Array.isArray(value.drones) ||
       !value.drones.every(isRelayAircraftState) ||
+      (value.captures !== undefined &&
+        (!Array.isArray(value.captures) || !value.captures.every(isRelayCaptureRecord))) ||
       (value.invalidated_intent_ids !== undefined && !isStringArray(value.invalidated_intent_ids)) ||
       (value.invalidation_reason !== undefined &&
         value.invalidation_reason !== 'graceful_leave_roster_change') ||

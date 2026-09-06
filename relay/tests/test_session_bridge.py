@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from planner.models import CommandOperation
+from adapters.protocols import (
+    CameraIntrinsics,
+    CameraResultStatus,
+    CaptureBundle,
+    CaptureCoverage,
+    CapturePattern,
+    MediaFile,
+)
+from planner.models import CommandOperation, ExecutionResult, Plan, Position
 from relay.auth import Principal, verify_event_signature
 from relay.contracts import LifecycleStatus, parse_command
+from relay.intent_v1 import AcceptedIntent, IntentName, validate_intent
 from relay.session import RelaySession
 from relay.state import RegistryError
 from relay.tests.conftest import (
@@ -17,8 +27,10 @@ from relay.tests.conftest import (
     capture_readiness_payload,
     intent_payload,
     media_file_payload,
+    media_record,
     membership_payload,
     node_status_payload,
+    profiled_sink,
     telemetry_payload,
 )
 
@@ -81,24 +93,180 @@ def test_capture_readiness_is_fanned_out_without_a_state_change(
     assert relay_session.replay()["events"][-1]["event"]["type"] == "capture_readiness"
 
 
-def test_media_file_and_capture_bundle_are_audited_and_retained_for_the_wire(
+def test_media_file_and_capture_bundle_are_audited_retained_and_projected(
     relay_session: RelaySession, adapter_principal: Principal
 ) -> None:
     _join(relay_session, adapter_principal)
 
-    media = relay_session.process_frame(media_file_payload(event_id="media-1"), adapter_principal)
+    pending = relay_session.process_frame(
+        media_file_payload(
+            event_id="media-1", retrieval_status="pending", checksum_sha256="0" * 64
+        ),
+        adapter_principal,
+    )
+    retrieved = relay_session.process_frame(
+        media_file_payload(event_id="media-2", timestamp=1_756_700_000_001),
+        adapter_principal,
+    )
     bundle = relay_session.process_frame(
-        capture_bundle_payload(event_id="bundle-1", timestamp=1_756_700_000_001),
+        capture_bundle_payload(event_id="bundle-1", timestamp=1_756_700_000_002),
         adapter_principal,
     )
 
-    assert media == []
-    assert bundle == []
+    # The frames themselves are not fanned out; the state projection carries the capture.
+    assert [event["type"] for event in pending] == ["state"]
+    (open_capture,) = pending[0]["captures"]
+    assert open_capture["status"] is None and open_capture["room_id"] is None
+    assert open_capture["files"][0]["retrieval_status"] == "pending"
+    (after_retrieval,) = retrieved[0]["captures"]
+    assert [file["retrieval_status"] for file in after_retrieval["files"]] == ["completed"]
+    (closed,) = bundle[0]["captures"]
+    assert (closed["room_id"], closed["pattern"], closed["status"]) == (
+        "room-1",
+        "pano_360",
+        "completed",
+    )
+    assert closed["updated_at"] == 1_756_700_000_002
+    assert relay_session.captures() == bundle[0]["captures"]
     replayed = [record["event"]["type"] for record in relay_session.replay()["events"]]
-    assert replayed[-2:] == ["media_file", "capture_bundle"]
+    assert replayed[-6:] == [
+        "media_file",
+        "state",
+        "media_file",
+        "state",
+        "capture_bundle",
+        "state",
+    ]
     files = relay_session.media_files(1, "capture-1")
     assert [record.file_id for record in files] == ["capture-1-pano-360"]
+    assert files[0].retrieval_status == "completed"
     assert relay_session.media_files(1, "capture-unknown") == ()
+
+    captures_dir = relay_session.audit_log.captures_dir / "drone-1" / "epoch-1" / "capture-1"
+    written = sorted(path.name for path in captures_dir.iterdir())
+    assert written == ["bundle.json", "capture-1-pano-360.json"]
+    record = json.loads((captures_dir / "capture-1-pano-360.json").read_text())
+    assert record["retrieval_status"] == "completed"
+    assert json.loads((captures_dir / "bundle.json").read_text())["type"] == "capture_bundle"
+
+
+def test_the_composed_capture_bundle_closes_the_capture_from_the_autonomy_result(
+    relay_session: RelaySession, adapter_principal: Principal, console_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    relay_session.intent_sink = profiled_sink(lambda _intent, _state: None)
+    capture_intent = {
+        **intent_payload(intent_id="intent-capture"),
+        "name": "capture_room",
+        "args": {"room_id": "room-1", "capture_id": "capture-1", "pattern": "reconstruct_8"},
+        "confirm": True,
+    }
+    accepted = relay_session.process_frame(capture_intent, console_principal)
+    assert accepted[0]["status"] == "accepted"
+    relay_session.process_frame(
+        media_file_payload(
+            event_id="media-1",
+            file_id="capture-1-frame-01",
+            retrieval_status="pending",
+            checksum_sha256="0" * 64,
+        ),
+        adapter_principal,
+    )
+    record = media_record(
+        timestamp=1_756_700_000_001,
+        file_id="capture-1-frame-01",
+        intrinsics={
+            "width_px": 4000,
+            "height_px": 3000,
+            "horizontal_fov_deg": 82.1,
+            "projection": "rectilinear",
+        },
+    )
+    bundle = CaptureBundle(
+        room_id="room-1",
+        capture_id="capture-1",
+        drone_id=1,
+        connection_epoch=1,
+        pattern=CapturePattern.RECONSTRUCT_8,
+        coverage=CaptureCoverage.INCOMPLETE_VERTICAL,
+        status=CameraResultStatus.COMPLETED,
+        media=(
+            MediaFile(
+                capture_id="capture-1",
+                file_id="capture-1-frame-01",
+                timestamp_ms=1_756_700_000_001,
+                drone_id=1,
+                connection_epoch=1,
+                pose=Position(1.0, 2.0, 1.0),
+                actual_yaw_deg=0.0,
+                gimbal_pitch_deg=0.0,
+                intrinsics=CameraIntrinsics(4000, 3000, 82.1, "rectilinear"),
+                checksum_sha256="a" * 64,
+                storage_ref="file:///captures/capture-1/DJI_0001.JPG",
+                retrieval_status=CameraResultStatus.COMPLETED,
+            ),
+        ),
+    )
+    validated = validate_intent(capture_intent)
+    assert isinstance(validated, AcceptedIntent)
+    intent = validated.intent
+    result = ExecutionResult(
+        intent_id="intent-capture",
+        roster_version=relay_session.registry.roster_version,
+        status=LifecycleStatus.COMPLETED,
+        plan=Plan(
+            plan_id="plan:intent-capture",
+            intent_id="intent-capture",
+            intent_name=IntentName.CAPTURE_ROOM,
+            roster_version=relay_session.registry.roster_version,
+            selection=(1,),
+            confirmed=True,
+            commands=(),
+        ),
+        capture_bundle=bundle,
+    )
+
+    events = relay_session.record_execution_result(intent, result)
+
+    types = [event["type"] for event in events]
+    assert types == ["state", "state", "acknowledgement"], "the bundle is audited, not fanned out"
+    (closed,) = events[1]["captures"]
+    assert (closed["room_id"], closed["pattern"], closed["coverage"], closed["status"]) == (
+        "room-1",
+        "reconstruct_8",
+        "incomplete_vertical_coverage",
+        "completed",
+    )
+    (file,) = closed["files"]
+    assert file["retrieval_status"] == "completed" and file["checksum_sha256"] == "a" * 64
+    assert record["file_id"] == file["file_id"]
+    audited = [record["event"] for record in relay_session.replay()["events"]]
+    assert [event["type"] for event in audited[-3:]] == [
+        "capture_bundle",
+        "state",
+        "acknowledgement",
+    ]
+    assert audited[-3]["source"] == "autonomy" and audited[-3]["status"] == "completed"
+    bundle_path = (
+        relay_session.audit_log.captures_dir / "drone-1" / "epoch-1" / "capture-1" / "bundle.json"
+    )
+    assert json.loads(bundle_path.read_text())["status"] == "completed"
+
+
+def test_a_refused_media_frame_leaves_the_capture_ledger_untouched(
+    relay_session: RelaySession, adapter_principal: Principal
+) -> None:
+    _join(relay_session, adapter_principal)
+    relay_session.process_frame(media_file_payload(event_id="media-1"), adapter_principal)
+
+    stale = relay_session.process_frame(
+        media_file_payload(event_id="media-2", connection_epoch=2), adapter_principal
+    )
+
+    assert stale[0]["type"] == "refusal"
+    assert stale[0]["reason"] == "stale_connection_epoch"
+    (capture,) = relay_session.captures()
+    assert [file["file_id"] for file in capture["files"]] == ["capture-1-pano-360"]
 
 
 def test_node_frames_require_binding_current_epoch_and_fresh_event_ids(

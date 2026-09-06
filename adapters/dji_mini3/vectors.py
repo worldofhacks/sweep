@@ -6,7 +6,8 @@ port, this module produces the vectors from the relay code itself and writes the
 ``pilot-app/bridge-core/src/test/resources/vectors/``.  ``test_vectors.py`` fails whenever
 the committed files drift from what this module renders.
 
-The command, capabilities, capture_readiness, node_status, auth.accepted, membership event,
+The command, capabilities, capture_readiness, node_status, media_file, capture_bundle,
+auth.accepted, membership event,
 state, and refusal shapes follow the node protocol in ``relay/README.md`` (integer-only
 command arguments, flat capabilities with a hardware profile, ``phone_battery_percent``,
 ``nominal`` as the quiet watchdog state).
@@ -313,6 +314,57 @@ def frame_vectors() -> dict[str, object]:
         "next_heading_deg": 90.0,
         "suggested_delta": {"kind": "yaw", "degrees": 12.0},
     }
+    media_record = {
+        "capture_id": "cap-0042",
+        "file_id": "cap-0042-frame-01",
+        "timestamp_ms": 8000,
+        "drone_id": 1,
+        "connection_epoch": 1,
+        "pose": {"x": 1.5, "y": -0.25, "z": 1.0},
+        "actual_yaw_deg": 45.0,
+        "gimbal_pitch_deg": 0.0,
+        "intrinsics": {
+            "width_px": 4000,
+            "height_px": 3000,
+            "horizontal_fov_deg": 82.1,
+            "projection": "rectilinear",
+        },
+        "checksum_sha256": "0" * 64,
+        "storage_ref": "aircraft://sdcard/DJI_0001.JPG",
+        "retrieval_status": "pending",
+    }
+    media_file = {
+        "v": 1,
+        "t": 8000,
+        "type": "media_file",
+        "event_id": "evt-media-1",
+        "session": SESSION,
+        **media_record,
+    }
+    retrieved_record = {
+        **media_record,
+        "timestamp_ms": 8001,
+        "checksum_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        "storage_ref": "file:///data/user/0/org.worldofhacks.sweep.bridge/files/captures/cap-0042/DJI_0001.JPG",
+        "retrieval_status": "completed",
+    }
+    capture_bundle = {
+        "v": 1,
+        "t": 9000,
+        "type": "capture_bundle",
+        "event_id": "evt-bundle-1",
+        "session": SESSION,
+        "room_id": "office-101",
+        "capture_id": "cap-0042",
+        "drone_id": 1,
+        "connection_epoch": 1,
+        "pattern": "reconstruct_8",
+        "coverage": "incomplete_vertical_coverage",
+        "status": "completed",
+        "media": [retrieved_record],
+        "reason": None,
+        "detail": None,
+    }
     node_status = {
         "v": 1,
         "t": 7000,
@@ -454,6 +506,8 @@ def frame_vectors() -> dict[str, object]:
         "capabilities": {"wire": capabilities},
         "capture_readiness": {"wire": capture_readiness},
         "node_status": {"wire": node_status},
+        "media_file": {"wire": media_file},
+        "capture_bundle": {"wire": capture_bundle},
     }
 
 

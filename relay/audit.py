@@ -39,6 +39,8 @@ class SessionAuditLog:
         self.path = self.root / f"{digest}.jsonl"
         self.database_path = self.root / f"{digest}.sqlite3"
         self.pending_path = self.root / f"{digest}.pending"
+        # Capture media records and bundles as JSON files, beside the session's audit log.
+        self.captures_dir = self.root / f"{digest}-captures"
         self._lock = RLock()
         self._operation_complete = Condition(self._lock)
         self._append_usable = True

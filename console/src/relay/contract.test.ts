@@ -226,6 +226,71 @@ describe('M1.1 wire compatibility', () => {
     })
   })
 
+  test('accepts the relay captures projection and refuses a malformed record', () => {
+    const file = {
+      capture_id: 'cap-1',
+      file_id: 'cap-1-frame-01',
+      timestamp_ms: 1_756_700_000_001,
+      drone_id: 1,
+      connection_epoch: 2,
+      pose: { x: 1.5, y: -0.25, z: 1.2 },
+      actual_yaw_deg: 45,
+      gimbal_pitch_deg: -15,
+      intrinsics: { width_px: 4000, height_px: 3000, horizontal_fov_deg: 82.1, projection: 'rectilinear' },
+      checksum_sha256: '0'.repeat(64),
+      storage_ref: 'aircraft://camera/12/DJI_0012.JPG',
+      retrieval_status: 'pending',
+    }
+    const base = {
+      v: 1,
+      t: 1_756_700_000_002,
+      type: 'state',
+      event_id: 'state-captures',
+      session,
+      roster_version: 4,
+      armed: true,
+      estop: false,
+      selection: [1],
+      formation: 'line',
+      spacing: 0.8,
+      mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null,
+      accepted_plan: null,
+      drones: [aircraft()],
+    }
+    const open = {
+      capture_id: 'cap-1',
+      drone_id: 1,
+      connection_epoch: 2,
+      room_id: null,
+      pattern: null,
+      coverage: null,
+      status: null,
+      reason: null,
+      detail: null,
+      files: [file],
+      updated_at: 1_756_700_000_001,
+    }
+    const closed = {
+      ...open,
+      room_id: 'room-1',
+      pattern: 'reconstruct_8',
+      coverage: 'incomplete_vertical_coverage',
+      status: 'completed',
+      files: [{ ...file, checksum_sha256: 'a'.repeat(64), retrieval_status: 'completed', storage_ref: 'file:///captures/cap-1/DJI_0012.JPG' }],
+    }
+    const event = parseRelayServerEvent({ ...base, captures: [open, closed] })
+    expect(event).toMatchObject({ type: 'state', captures: [open, closed] })
+    expect(parseRelayServerEvent(base)).not.toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...open, status: 'pending' }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...open, files: [{ ...file, checksum_sha256: 'abc' }] }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...open, files: [{ ...file, retrieval_status: 'queued' }] }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: [{ ...closed, pattern: 'pano_720' }] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, captures: {} })).toBeNull()
+  })
+
   test('accepts flat membership transitions and retains signed provenance', () => {
     const event = parseRelayServerEvent({
       v: 1,

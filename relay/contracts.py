@@ -134,6 +134,10 @@ COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingP
 _CAPTURE_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
 _CAPTURE_COVERAGES = frozenset({"full_equirectangular", "incomplete_vertical_coverage"})
 _CAMERA_RESULT_STATUSES = frozenset({"completed", "unsupported", "failed"})
+# A media_file reported at capture time, before the node has downloaded the bytes, is
+# ``pending``: its checksum is all zeros until the retrieval record replaces it.
+_MEDIA_RETRIEVAL_STATUSES = _CAMERA_RESULT_STATUSES | {"pending"}
+MEDIA_PENDING_CHECKSUM = "0" * 64
 _ENVELOPE_FIELDS = frozenset({"v", "t", "type", "event_id", "session"})
 
 
@@ -1410,7 +1414,7 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         ),
         checksum,
         _nonempty_string(value["storage_ref"], "storage_ref", code),
-        _choice(value["retrieval_status"], "retrieval_status", _CAMERA_RESULT_STATUSES, code),
+        _choice(value["retrieval_status"], "retrieval_status", _MEDIA_RETRIEVAL_STATUSES, code),
     )
 
 

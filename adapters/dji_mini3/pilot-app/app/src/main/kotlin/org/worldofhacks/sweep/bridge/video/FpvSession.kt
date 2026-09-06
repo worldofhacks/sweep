@@ -40,10 +40,13 @@ interface CameraStream {
     fun detachSurface(surface: Surface)
 }
 
-/** Phase G fills this from the capture path; Phase D ships [IdleCaptureProgress]. */
+/** The capture path (Phase G, `CameraExecutor.progress`) feeds this; [IdleCaptureProgress] is the no-camera default. */
 interface CaptureProgressSource {
     val progress: StateFlow<CaptureProgress>
 }
+
+/** Wraps a live progress flow, such as the camera executor's, for the flight display. */
+class FlowCaptureProgress(override val progress: StateFlow<CaptureProgress>) : CaptureProgressSource
 
 object IdleCaptureProgress : CaptureProgressSource {
     override val progress: StateFlow<CaptureProgress> = MutableStateFlow(CaptureProgress()).asStateFlow()

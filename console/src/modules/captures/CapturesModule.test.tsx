@@ -1,8 +1,64 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
+import { C1_BASIC_CONTROL_INTENTS, type RelayCaptureRecord } from '../../relay/contract'
 import { formatTime } from '../../shell/format'
-import { CATALOG_CLOCK, openModule, renderCatalogConsole } from '../../testing/catalog-console'
+import { CATALOG_CLOCK, CATALOG_SESSION, openModule, renderCatalogConsole } from '../../testing/catalog-console'
+import { fixtureAircraft, type FixtureRelayClient } from '../../testing/fixture-relay-client'
+
+function relayCapture(overrides: Partial<RelayCaptureRecord>): RelayCaptureRecord {
+  const file = {
+    capture_id: 'cap-relay',
+    file_id: 'cap-relay-frame-01',
+    timestamp_ms: CATALOG_CLOCK - 30_000,
+    drone_id: 1,
+    connection_epoch: 1,
+    pose: { x: 1.5, y: -0.25, z: 1.2 },
+    actual_yaw_deg: 45,
+    gimbal_pitch_deg: -15,
+    intrinsics: { width_px: 4000, height_px: 3000, horizontal_fov_deg: 82.1, projection: 'rectilinear' },
+    checksum_sha256: 'a'.repeat(64),
+    storage_ref: 'file:///data/user/0/org.worldofhacks.sweep.bridge/files/captures/cap-relay/DJI_0001.JPG',
+    retrieval_status: 'completed' as const,
+  }
+  return {
+    capture_id: 'cap-relay',
+    drone_id: 1,
+    connection_epoch: 1,
+    room_id: 'room-1',
+    pattern: 'reconstruct_8',
+    coverage: 'incomplete_vertical_coverage',
+    status: 'completed',
+    reason: null,
+    detail: null,
+    files: [file],
+    updated_at: CATALOG_CLOCK - 20_000,
+    ...overrides,
+  }
+}
+
+function emitCaptures(client: FixtureRelayClient, captures: RelayCaptureRecord[]) {
+  client.emitServer({
+    v: 1,
+    t: CATALOG_CLOCK + 1,
+    type: 'state',
+    event_id: `state-captures-${captures.length}`,
+    session: CATALOG_SESSION,
+    roster_version: 7,
+    armed: true,
+    estop: false,
+    selection: [1],
+    formation: 'none',
+    spacing: 0.8,
+    mode: 'indoor',
+    capability_profile: 'c1_basic_control',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+    pending: null,
+    accepted_plan: null,
+    drones: fixtureAircraft(CATALOG_CLOCK, 4),
+    captures,
+  })
+}
 
 async function openCaptures(user: ReturnType<typeof userEvent.setup>) {
   await openModule(user, 'Captures')
@@ -108,6 +164,51 @@ describe('Captures module', () => {
     expect(item.getByRole('button', { name: 'Download set' })).toHaveAttribute(
       'title',
       'The console connection is disconnected. Nothing can be sent.',
+    )
+  })
+
+  test('relay captures: a closed set is listed under the session and an open set as progress', async () => {
+    const user = userEvent.setup()
+    const { clients } = renderCatalogConsole({ scenario: 4, catalog: 'unreported' })
+    await openCaptures(user)
+    expect(screen.getByText(/The relay does not report captured media sets/)).toBeInTheDocument()
+
+    emitCaptures(clients.console, [
+      relayCapture({}),
+      relayCapture({
+        capture_id: 'cap-open',
+        room_id: null,
+        pattern: null,
+        coverage: null,
+        status: null,
+        files: [
+          { ...relayCapture({}).files[0], capture_id: 'cap-open', file_id: 'cap-open-frame-01' },
+          {
+            ...relayCapture({}).files[0],
+            capture_id: 'cap-open',
+            file_id: 'cap-open-frame-02',
+            checksum_sha256: '0'.repeat(64),
+            retrieval_status: 'pending',
+          },
+        ],
+        updated_at: CATALOG_CLOCK - 1_000,
+      }),
+    ])
+
+    const progress = within(await screen.findByRole('region', { name: 'Captures in progress' }))
+    expect(progress.getByText(/cap-open · D-01 · 2 files captured, 1 retrieved · downloading/)).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: `Project ${CATALOG_SESSION}` })).toBeInTheDocument()
+    const item = within(screen.getByRole('article', { name: 'Capture cap-relay' }))
+    expect(item.getByText(`room-1 · D-01 · ${formatTime(CATALOG_CLOCK - 30_000)}`)).toBeInTheDocument()
+    expect(item.getByText('reconstruct_8')).toBeInTheDocument()
+    expect(item.getByText(/1 file · quality/)).toHaveTextContent('pass')
+    expect(item.getByText(`sha256:${'a'.repeat(64)}`)).toBeInTheDocument()
+    expect(item.getByText('x 1.50 y -0.25 z 1.20 · yaw 45.0° · gimbal −15.0° · f unreported')).toBeInTheDocument()
+    expect(screen.queryByRole('article', { name: 'Capture cap-open' })).not.toBeInTheDocument()
+    // The catalog is still unreported, so the actions refuse honestly.
+    await user.click(item.getByRole('button', { name: 'Download set' }))
+    expect(screen.getByRole('status', { name: 'Capture library notice' })).toHaveTextContent(
+      'The relay reports no catalog endpoint on this console; nothing was sent.',
     )
   })
 

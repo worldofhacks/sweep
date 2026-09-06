@@ -327,6 +327,9 @@ def apply_result(
     events: list[dict[str, object]] = []
     if projection:
         events.append(session.update_control_projection(**projection))  # type: ignore[arg-type]
+    if result.status is not LifecycleStatus.EXECUTING:
+        # The dispatcher's validated capture bundle is the closing record for the capture.
+        events.extend(session.record_capture_bundle(result))
     events.append(record_result(session, result))
     return events
 

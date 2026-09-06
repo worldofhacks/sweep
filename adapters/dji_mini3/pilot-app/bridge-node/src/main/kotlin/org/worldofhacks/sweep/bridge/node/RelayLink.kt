@@ -1,11 +1,14 @@
 package org.worldofhacks.sweep.bridge.node
 
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.math.min
 import kotlin.random.Random
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,13 +27,21 @@ import org.worldofhacks.sweep.bridge.core.frames.AcknowledgementFrame
 import org.worldofhacks.sweep.bridge.core.frames.AuthAccepted
 import org.worldofhacks.sweep.bridge.core.frames.AuthFrame
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
+import org.worldofhacks.sweep.bridge.camera.CaptureReadinessBody
+import org.worldofhacks.sweep.bridge.camera.CaptureReadinessSource
+import org.worldofhacks.sweep.bridge.camera.NodeFrameSink
+import org.worldofhacks.sweep.bridge.camera.NodeIdentity
 import org.worldofhacks.sweep.bridge.core.frames.CapabilitiesFrame
+import org.worldofhacks.sweep.bridge.core.frames.CaptureReadinessFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandOperation
 import org.worldofhacks.sweep.bridge.core.frames.ContractError
 import org.worldofhacks.sweep.bridge.core.frames.ControlHeartbeat
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
+import org.worldofhacks.sweep.bridge.core.frames.GuidanceMode
 import org.worldofhacks.sweep.bridge.core.frames.LifecycleStatus
+import org.worldofhacks.sweep.bridge.core.frames.MediaFileFrame
+import org.worldofhacks.sweep.bridge.core.frames.MediaFileRecord
 import org.worldofhacks.sweep.bridge.core.frames.MembershipEvent
 import org.worldofhacks.sweep.bridge.core.frames.MembershipFrame
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusBody
@@ -63,7 +74,10 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  * 5. Telemetry streams at [LinkTiming.telemetryHz] while an aircraft is connected;
  *    `node_status` is resent whenever its body changes; `readiness` is resent when a pilot
  *    toggle or the aircraft/RC connection changes (aircraft or RC loss reports
- *    `control_authority=false` while the socket stays up).
+ *    `control_authority=false` while the socket stays up). With a [captureReadiness]
+ *    source (Phase G), `capture_readiness` goes out on join and whenever its gates change,
+ *    and the camera path sends `media_file` frames through [frames] before the terminal
+ *    acknowledgement of the capture or retrieval command that produced them.
  * 6. `command` frames are verified and admitted; `accepted` is acknowledged on admission and
  *    the [CommandExecutor] reports `executing` then `completed` or `failed`. Rejections
  *    acknowledge `failed` with `stale_command` or `out_of_order_command`; forged frames are
@@ -98,6 +112,7 @@ class RelayLink(
     client: OkHttpClient? = null,
     clientProvider: (() -> OkHttpClient?)? = null,
     private val videoPublish: VideoPublishSource = VideoPublishSource { VideoPublishState.STOPPED },
+    private val captureReadiness: CaptureReadinessSource? = null,
 ) : AutoCloseable {
     init {
         require(client == null || clientProvider == null) { "supply either a fixed client or a client provider, not both" }
@@ -106,7 +121,7 @@ class RelayLink(
     private val ownedClient: OkHttpClient? = if (client == null && clientProvider == null) RelayClients.build(timing) else null
     private val clientProvider: () -> OkHttpClient? = clientProvider ?: { client ?: ownedClient }
     private val loop: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
-        Thread(runnable, "relay-link").apply { isDaemon = true }
+        Thread(runnable, LOOP_THREAD).apply { isDaemon = true }
     }
 
     private val _state = MutableStateFlow(LinkState())
@@ -136,6 +151,7 @@ class RelayLink(
     private var lastRcConnected: Boolean? = null
     private var lastAuthorityLost: String? = null
     private var lastNodeStatus: NodeStatusBody? = null
+    private var lastCaptureReadiness: CaptureReadinessBody? = null
     private val telemetryTimes = ArrayDeque<Long>()
     private val commands = LinkedHashMap<String, CommandRecord>()
 
@@ -528,10 +544,12 @@ class RelayLink(
             )
         }
         log.log((if (rejoin) "rejoined" else "joined") + " as drone ${config.droneId}, connection epoch $epoch; watchdog armed")
+        lastCaptureReadiness = null
         if (snapshot.aircraftConnected) sendTelemetry(snapshot)
         sendReadiness()
         sendCapabilities(snapshot)
         sendNodeStatusIfChanged(force = true)
+        sendCaptureReadinessIfChanged(force = true)
     }
 
     private fun onRefusal(json: JsonObject) {
@@ -723,6 +741,102 @@ class RelayLink(
         }
     }
 
+    private fun captureReadinessFrame(body: CaptureReadinessBody, epoch: Int): CaptureReadinessFrame = CaptureReadinessFrame(
+        t = nextT(),
+        eventId = eventId(),
+        session = config.session,
+        droneId = config.droneId,
+        connectionEpoch = epoch,
+        roomId = body.roomId,
+        captureId = body.captureId,
+        guidanceMode = GuidanceMode.VISUAL_ADVISORY,
+        poseSource = POSE_SOURCE,
+        poseOk = true,
+        clearanceOk = true,
+        cameraOk = body.cameraOk,
+        storageOk = body.storageOk,
+        motionOk = body.motionOk,
+        imageQualityOk = body.imageQualityOk,
+        coverageMissing = body.coverageMissing,
+        nextHeadingDeg = body.nextHeadingDeg,
+        suggestedDelta = body.suggestedDelta,
+    )
+
+    private fun sendCaptureReadinessIfChanged(force: Boolean = false) {
+        val source = captureReadiness ?: return
+        val current = _state.value
+        if (!current.joined) return
+        val epoch = current.connectionEpoch ?: return
+        val body = source.current()
+        if (!force && body == lastCaptureReadiness) return
+        if (send(captureReadinessFrame(body, epoch).toEvent())) {
+            lastCaptureReadiness = body
+            log.log("capture_readiness sent: camera_ok=${body.cameraOk} storage_ok=${body.storageOk} capture=${body.captureId} missing=${body.coverageMissing.size} sectors")
+        }
+    }
+
+    /** The camera path's outlet for node-authored frames; every send runs on the loop thread. */
+    val frames: NodeFrameSink = object : NodeFrameSink {
+        override fun identity(): NodeIdentity? {
+            val current = _state.value
+            val epoch = current.connectionEpoch ?: return null
+            return if (current.joined) NodeIdentity(config.droneId, epoch) else null
+        }
+
+        override fun sendCaptureReadiness(body: CaptureReadinessBody): Boolean = onLoop {
+            val current = _state.value
+            val epoch = current.connectionEpoch
+            if (!current.joined || epoch == null) {
+                false
+            } else {
+                send(captureReadinessFrame(body, epoch).toEvent()).also { sent ->
+                    if (sent) {
+                        lastCaptureReadiness = body
+                        log.log("capture_readiness sent: camera_ok=${body.cameraOk} storage_ok=${body.storageOk} capture=${body.captureId}")
+                    }
+                }
+            }
+        }
+
+        override fun sendMediaFile(record: MediaFileRecord): Boolean = onLoop {
+            val current = _state.value
+            if (!current.joined || current.connectionEpoch != record.connectionEpoch || record.droneId != config.droneId) {
+                log.log("media_file ${record.fileId} not sent: connection identity is not current")
+                false
+            } else {
+                val frame = MediaFileFrame(t = nextT(), eventId = eventId(), session = config.session, file = record)
+                send(frame.toEvent()).also { sent ->
+                    if (sent) log.log("media_file sent: ${record.fileId} ${record.retrievalStatus.wire} sha256 ${record.checksumSha256.take(12)}")
+                }
+            }
+        }
+    }
+
+    /** Runs [block] on the loop thread and waits for its answer; false when the link is closed. */
+    private fun onLoop(block: () -> Boolean): Boolean {
+        if (Thread.currentThread().name == LOOP_THREAD) return block()
+        val future = CompletableFuture<Boolean>()
+        try {
+            loop.execute {
+                try {
+                    future.complete(block())
+                } catch (error: RuntimeException) {
+                    log.log("relay link task failed: $error")
+                    future.complete(false)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            return false
+        }
+        return try {
+            future.get(LOOP_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            false
+        } catch (_: ExecutionException) {
+            false
+        }
+    }
+
     private fun sendAck(command: CommandFrame, status: LifecycleStatus, reason: String? = null, detail: String? = null) {
         val frame = AcknowledgementFrame(
             t = nextT(),
@@ -784,7 +898,6 @@ class RelayLink(
                 }
                 sendAck(command, LifecycleStatus.ACCEPTED)
                 record(command, "accepted")
-                if (command.operation == CommandOperation.CAMERA_CAPABILITIES) sendCapabilities(aircraft.snapshot.value)
                 val report = Report(command)
                 try {
                     executor.execute(command, report)
@@ -808,6 +921,9 @@ class RelayLink(
         override fun completed(detail: String?) = post {
             if (live()) {
                 terminal = true
+                // The capabilities frame carries the facts the executor just refreshed and,
+                // like a media_file, precedes the terminal acknowledgement that reports them.
+                if (command.operation == CommandOperation.CAMERA_CAPABILITIES) sendCapabilities(aircraft.snapshot.value)
                 sendAck(command, LifecycleStatus.COMPLETED, detail = detail)
                 record(command, "completed", detail = detail)
             }
@@ -888,6 +1004,7 @@ class RelayLink(
         }
         checkAircraft()
         sendNodeStatusIfChanged()
+        sendCaptureReadinessIfChanged()
     }
 
     /**
@@ -1008,6 +1125,10 @@ class RelayLink(
         const val CONTROL_POSE_EVENT_MAX_AGE_MS = 1_000L
         const val CONTROL_POSE_READY_FRESHNESS_MS = 500L
         const val MAX_CONTROL_POSE_EVENTS = 256
+        const val LOOP_CALL_TIMEOUT_MS = 5_000L
+        const val LOOP_THREAD = "relay-link"
+        /** The only pose source this node has: the operator-approved hover pose (visual_advisory). */
+        const val POSE_SOURCE = "operator_approved"
         val MOTION_OPERATIONS = setOf(CommandOperation.TAKEOFF, CommandOperation.GOTO, CommandOperation.ROTATE_TO)
         val HALT_REASONS = setOf("session_closed", "authentication_failed", "invalid_auth", "unknown_source")
     }
