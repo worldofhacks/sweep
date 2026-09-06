@@ -29,6 +29,7 @@ import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandOperation
 import org.worldofhacks.sweep.bridge.core.frames.ContractError
 import org.worldofhacks.sweep.bridge.core.frames.ControlHeartbeat
+import org.worldofhacks.sweep.bridge.core.frames.ControlPose
 import org.worldofhacks.sweep.bridge.core.frames.LifecycleStatus
 import org.worldofhacks.sweep.bridge.core.frames.MembershipEvent
 import org.worldofhacks.sweep.bridge.core.frames.MembershipFrame
@@ -126,6 +127,11 @@ class RelayLink(
     private var readiness = ReadinessInput()
     private var previousEpoch: Int? = null
     private var lastControlHeartbeatSeq: Long = 0
+    private val seenControlPoseEvents = ArrayDeque<String>()
+    private var lastControlPoseEventTimeMs: Long? = null
+    private var lastControlPoseTimeMs: Long? = null
+    private var lastControlFixTimeMs: Long? = null
+    private var lastControlPoseStatus: ControlPose.Status? = null
     private var lastAircraftConnected: Boolean? = null
     private var lastRcConnected: Boolean? = null
     private var lastAuthorityLost: String? = null
@@ -157,6 +163,8 @@ class RelayLink(
                 authenticated = false,
                 joined = false,
                 watchdog = WatchdogState.DISARMED,
+                controlPose = null,
+                controlPoseExpiresAtMs = null,
                 nextAttemptAtMs = null,
                 backoffMs = null,
             )
@@ -285,6 +293,7 @@ class RelayLink(
             AuthAccepted.TYPE -> onAuthAccepted(json, now)
             AuthRefused.TYPE -> onAuthRefused(json)
             ControlHeartbeat.TYPE -> onControlHeartbeat(json, now)
+            ControlPose.TYPE -> onControlPose(json)
             StateEvent.TYPE -> onState(json)
             MembershipEvent.TYPE -> onMembership(json)
             CommandFrame.TYPE -> onCommand(json)
@@ -320,12 +329,81 @@ class RelayLink(
             log.log("dropping replayed control_heartbeat sequence ${heartbeat.seq}")
             return
         }
-        if (age >= holdMs || age < -HEARTBEAT_FUTURE_SKEW_MS) {
+        if (age >= holdMs || age < -RELAY_EVENT_FUTURE_SKEW_MS) {
             log.log("dropping stale or future control_heartbeat (${age} ms old)")
             return
         }
         lastControlHeartbeatSeq = heartbeat.seq
         relayActivity(receivedAtMs)
+    }
+
+    private fun onControlPose(json: JsonObject) {
+        val pose = parseOrLog("control_pose") { ControlPose.parse(json) } ?: return
+        val current = _state.value
+        val relayNow = admission.relayNowMs()
+        val identityMatches = current.authenticated && current.joined && pose.session == config.session &&
+            pose.droneId == config.droneId && pose.connectionEpoch == current.connectionEpoch
+        if (!identityMatches || !pose.verifies(config.key)) {
+            log.log("dropping control_pose with invalid signature or connection identity")
+            return
+        }
+        val pins = config.localizationPins
+        if (pins == null || pose.mapId != pins.mapId || pose.geometryId != pins.geometryId ||
+            pose.cameraCalibrationId != pins.cameraCalibrationId || pose.bodyExtrinsicsId != pins.bodyExtrinsicsId
+        ) {
+            log.log("dropping control_pose whose localization identities are not pinned for this node")
+            return
+        }
+        val eventAgeMs = relayNow - pose.t
+        if (eventAgeMs < -RELAY_EVENT_FUTURE_SKEW_MS || eventAgeMs >= CONTROL_POSE_EVENT_MAX_AGE_MS) {
+            log.log("dropping stale or future control_pose event (${eventAgeMs} ms old)")
+            return
+        }
+        val poseAgeMs = relayNow - pose.poseTimeMs
+        val fixAgeMs = relayNow - pose.fixTimeMs
+        if (pose.status == ControlPose.Status.READY &&
+            (poseAgeMs < -RELAY_EVENT_FUTURE_SKEW_MS || poseAgeMs >= CONTROL_POSE_READY_FRESHNESS_MS ||
+                fixAgeMs < -RELAY_EVENT_FUTURE_SKEW_MS || fixAgeMs >= CONTROL_POSE_READY_FRESHNESS_MS)
+        ) {
+            log.log("dropping control_pose whose ready observation is stale or future")
+            return
+        }
+        val previousEvent = lastControlPoseEventTimeMs
+        val previousPose = lastControlPoseTimeMs
+        val previousFix = lastControlFixTimeMs
+        val previousStatus = lastControlPoseStatus
+        val repeatsEvidenceTime = previousPose == pose.poseTimeMs && previousFix == pose.fixTimeMs
+        val weakensSameEvidence = repeatsEvidenceTime && previousStatus != null && when (previousStatus) {
+            ControlPose.Status.READY -> false
+            ControlPose.Status.HOLD -> pose.status == ControlPose.Status.READY
+            ControlPose.Status.LAND -> pose.status != ControlPose.Status.LAND
+        }
+        if (pose.eventId in seenControlPoseEvents ||
+            (previousEvent != null && pose.t < previousEvent) ||
+            (previousPose != null && pose.poseTimeMs < previousPose) ||
+            (previousFix != null && pose.fixTimeMs < previousFix) ||
+            weakensSameEvidence
+        ) {
+            log.log("dropping replayed, regressed, or same-evidence less-conservative control_pose")
+            return
+        }
+        seenControlPoseEvents.addLast(pose.eventId)
+        while (seenControlPoseEvents.size > MAX_CONTROL_POSE_EVENTS) seenControlPoseEvents.removeFirst()
+        lastControlPoseEventTimeMs = pose.t
+        lastControlPoseTimeMs = pose.poseTimeMs
+        lastControlFixTimeMs = pose.fixTimeMs
+        lastControlPoseStatus = pose.status
+        val eventRemainingMs = CONTROL_POSE_EVENT_MAX_AGE_MS - maxOf(eventAgeMs, 0)
+        val validForMs = if (pose.status == ControlPose.Status.READY) {
+            minOf(
+                eventRemainingMs,
+                CONTROL_POSE_READY_FRESHNESS_MS - maxOf(poseAgeMs, 0),
+                CONTROL_POSE_READY_FRESHNESS_MS - maxOf(fixAgeMs, 0),
+            )
+        } else {
+            eventRemainingMs
+        }
+        update { it.copy(controlPose = pose, controlPoseExpiresAtMs = clock.nowMs() + validForMs) }
     }
 
     private fun onAuthAccepted(json: JsonObject, receivedAtMs: Long) {
@@ -428,6 +506,11 @@ class RelayLink(
         previousEpoch = epoch
         admission.bind(epoch, rosterVersion)
         lastControlHeartbeatSeq = 0
+        seenControlPoseEvents.clear()
+        lastControlPoseEventTimeMs = null
+        lastControlPoseTimeMs = null
+        lastControlFixTimeMs = null
+        lastControlPoseStatus = null
         val dog = watchdog
         dog?.arm()
         lastNodeStatus = null
@@ -441,6 +524,7 @@ class RelayLink(
                 connectionEpoch = epoch,
                 rejoins = if (rejoin) it.rejoins + 1 else it.rejoins,
                 watchdog = dog?.state ?: WatchdogState.DISARMED,
+                controlPose = null, controlPoseExpiresAtMs = null,
             )
         }
         log.log((if (rejoin) "rejoined" else "joined") + " as drone ${config.droneId}, connection epoch $epoch; watchdog armed")
@@ -461,7 +545,16 @@ class RelayLink(
         socket = null
         joinPending = false
         authSentAtMs = null
-        update { it.copy(connection = RelayConnection.DISCONNECTED, authenticated = false, joined = false, lastError = reason) }
+        update {
+            it.copy(
+                connection = RelayConnection.DISCONNECTED,
+                authenticated = false,
+                joined = false,
+                controlPose = null,
+                controlPoseExpiresAtMs = null,
+                lastError = reason,
+            )
+        }
         val dog = watchdog
         log.log(
             "relay link down: $reason" +
@@ -476,7 +569,15 @@ class RelayLink(
         socket = null
         joinPending = false
         if (_state.value.connection != RelayConnection.DISCONNECTED) {
-            update { it.copy(connection = RelayConnection.DISCONNECTED, authenticated = false, joined = false) }
+            update {
+                it.copy(
+                    connection = RelayConnection.DISCONNECTED,
+                    authenticated = false,
+                    joined = false,
+                    controlPose = null,
+                    controlPoseExpiresAtMs = null,
+                )
+            }
         }
     }
 
@@ -781,6 +882,10 @@ class RelayLink(
             log.log("watchdog ${transition.from} -> ${transition.to} after ${transition.elapsedMs} ms without an authorized control heartbeat$action")
             update { it.copy(watchdog = transition.to) }
         }
+        val poseExpiry = _state.value.controlPoseExpiresAtMs
+        if (poseExpiry != null && clock.nowMs() >= poseExpiry) {
+            update { it.copy(controlPose = null, controlPoseExpiresAtMs = null) }
+        }
         checkAircraft()
         sendNodeStatusIfChanged()
     }
@@ -899,7 +1004,10 @@ class RelayLink(
         const val RATE_WINDOW_MS = 2_000L
         const val WATCHDOG_FAILSAFE = "watchdog_failsafe"
         const val AUTHORITY_LOST = "authority_lost"
-        const val HEARTBEAT_FUTURE_SKEW_MS = 1_000L
+        const val RELAY_EVENT_FUTURE_SKEW_MS = 1_000L
+        const val CONTROL_POSE_EVENT_MAX_AGE_MS = 1_000L
+        const val CONTROL_POSE_READY_FRESHNESS_MS = 500L
+        const val MAX_CONTROL_POSE_EVENTS = 256
         val MOTION_OPERATIONS = setOf(CommandOperation.TAKEOFF, CommandOperation.GOTO, CommandOperation.ROTATE_TO)
         val HALT_REASONS = setOf("session_closed", "authentication_failed", "invalid_auth", "unknown_source")
     }

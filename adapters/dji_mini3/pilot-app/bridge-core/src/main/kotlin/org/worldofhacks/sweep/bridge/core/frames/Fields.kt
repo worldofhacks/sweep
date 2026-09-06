@@ -30,7 +30,11 @@ internal object Fields {
     }
 
     fun nonEmptyString(value: JsonValue?, field: String, code: String): String {
-        if (value !is JsonString || value.value.isEmpty() || value.value.length > MAX_STRING) {
+        if (
+            value !is JsonString ||
+            value.value.isEmpty() ||
+            value.value.codePointCount(0, value.value.length) > MAX_STRING
+        ) {
             throw ContractError(code, "$field must be a non-empty string of at most $MAX_STRING chars")
         }
         return value.value
@@ -125,4 +129,28 @@ internal object Fields {
 
     fun isMachineCode(value: String): Boolean =
         value.isNotEmpty() && value.all { it in 'a'..'z' || it in '0'..'9' || it == '_' }
+
+    /** Mirrors Python's trimmed `str.isprintable()` identifier rule. */
+    fun isCanonicalPrintable(value: String, maxLength: Int): Boolean {
+        if (value.isEmpty() || value != value.trim() || value.codePointCount(0, value.length) > maxLength) return false
+        var index = 0
+        while (index < value.length) {
+            val codePoint = value.codePointAt(index)
+            val nonPrintable = codePoint != 0x20 && when (Character.getType(codePoint)) {
+                Character.CONTROL.toInt(),
+                Character.FORMAT.toInt(),
+                Character.SURROGATE.toInt(),
+                Character.PRIVATE_USE.toInt(),
+                Character.UNASSIGNED.toInt(),
+                Character.LINE_SEPARATOR.toInt(),
+                Character.PARAGRAPH_SEPARATOR.toInt(),
+                Character.SPACE_SEPARATOR.toInt(),
+                -> true
+                else -> false
+            }
+            if (nonPrintable) return false
+            index += Character.charCount(codePoint)
+        }
+        return true
+    }
 }

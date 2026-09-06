@@ -41,9 +41,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import org.worldofhacks.sweep.bridge.BridgeNode
 import org.worldofhacks.sweep.bridge.SetupSummary
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 import org.worldofhacks.sweep.bridge.flight.FlightCards
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
 import org.worldofhacks.sweep.bridge.node.CommandRecord
+import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.ReadinessInput
 import org.worldofhacks.sweep.bridge.node.RelayConnection
@@ -106,7 +108,7 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
                     if (fpv != null) Button(onClick = { flightDisplay = true }) { Text("Flight display") }
                 }
             }
-            item { SetupCard(setup, running, node) }
+            item { SetupCard(setup, running, aircraft, node) }
             item { ConnectivityCard(link, running, now, node) }
             if (fpv != null) {
                 item { StreamEvidenceCard(fpv, now) { flightDisplay = true } }
@@ -146,7 +148,12 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
 }
 
 @Composable
-private fun SetupCard(setup: SetupSummary, running: Boolean, node: BridgeNode) {
+private fun SetupCard(
+    setup: SetupSummary,
+    running: Boolean,
+    aircraft: AircraftSnapshot,
+    node: BridgeNode,
+) {
     var relayUrl by remember(setup.loaded) { mutableStateOf(setup.relayUrl) }
     var session by remember(setup.loaded) { mutableStateOf(setup.session) }
     var droneId by remember(setup.loaded) { mutableStateOf(setup.droneId.toString()) }
@@ -208,11 +215,74 @@ private fun SetupCard(setup: SetupSummary, running: Boolean, node: BridgeNode) {
                 if (running) OutlinedButton(onClick = node::disconnect) { Text("Disconnect") }
             }
             disabledReason?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            LocalizationDiagnosticsCard(setup, running, aircraft, node)
             BatteryOptimizationRow()
         }
     }
 }
 
+
+@Composable
+private fun LocalizationDiagnosticsCard(
+    setup: SetupSummary,
+    running: Boolean,
+    aircraft: AircraftSnapshot,
+    node: BridgeNode,
+) {
+    var importedJson by rememberSaveable { mutableStateOf("") }
+    var message by rememberSaveable { mutableStateOf<String?>(null) }
+    val writable = setup.loaded && !running && aircraft.state == FlightStates.LANDED
+    val blockedReason = when {
+        running -> "Disconnect the relay before changing localization."
+        aircraft.state != FlightStates.LANDED -> "Land the aircraft before changing localization."
+        !setup.loaded -> "Loading encrypted setup."
+        else -> null
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Localization diagnostics (staged)", style = MaterialTheme.typography.titleMedium)
+        val active = setup.localizationPins
+        if (active == null) {
+            Text("Inactive. Import versioned identity pins to stage signed relay-pose validation. This cannot move the aircraft.")
+        } else {
+            Text("Pins configured for diagnostic ingestion only; navigation remains disabled.")
+            Text("Map ${active.mapId} · geometry ${active.geometryId}", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "Camera ${active.cameraCalibrationId} · body ${active.bodyExtrinsicsId}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        OutlinedTextField(
+            value = importedJson,
+            onValueChange = { importedJson = it.take(4_096) },
+            label = { Text("Paste localization config JSON (v1)") },
+            minLines = 4,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = writable && importedJson.isNotBlank(),
+                onClick = {
+                    runCatching { LocalizationPinsJson.parse(importedJson) }
+                        .onSuccess {
+                            node.saveLocalizationPins(it)
+                            message = "Diagnostic pins submitted. Reconnect after they appear above."
+                            importedJson = ""
+                        }
+                        .onFailure { message = "Import rejected: ${it.message ?: "invalid JSON"}" }
+                },
+            ) { Text("Import pins") }
+            OutlinedButton(
+                enabled = writable && active != null,
+                onClick = {
+                    node.saveLocalizationPins(null)
+                    message = "Diagnostic pin clear submitted."
+                },
+            ) { Text("Clear config") }
+        }
+        blockedReason?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
 @Composable
 private fun BatteryOptimizationRow() {
     val context = LocalContext.current

@@ -4,9 +4,17 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 
-/** The four Setup values. The token is the per-node relay credential and HMAC key. */
-data class BridgeSetup(val relayUrl: String, val session: String, val droneId: Int, val token: String) {
+/** The four relay Setup values plus optional diagnostic pins. The token is also the HMAC key. */
+data class BridgeSetup(
+    val relayUrl: String,
+    val session: String,
+    val droneId: Int,
+    val token: String,
+    val localizationPins: LocalizationPins? = null,
+) {
     /** Never includes the token. */
     override fun toString(): String = "BridgeSetup(relayUrl=$relayUrl, session=$session, droneId=$droneId, token=<redacted>)"
 }
@@ -19,6 +27,7 @@ data class SetupSummary(
     val tokenStored: Boolean = false,
     val tokenLength: Int = 0,
     val loaded: Boolean = false,
+    val localizationPins: LocalizationPins? = null,
 ) {
     val complete: Boolean
         get() = tokenStored && relayUrl.isNotBlank() && session.isNotBlank() && droneId > 0
@@ -40,6 +49,7 @@ class BridgeSetupStore(context: Context) {
             session = prefs.getString(KEY_SESSION, DEFAULT_SESSION) ?: DEFAULT_SESSION,
             droneId = prefs.getInt(KEY_DRONE_ID, 1),
             token = token,
+            localizationPins = localizationPins(),
         )
     }
 
@@ -52,6 +62,7 @@ class BridgeSetupStore(context: Context) {
             tokenStored = !token.isNullOrEmpty(),
             tokenLength = token?.length ?: 0,
             loaded = true,
+            localizationPins = localizationPins(),
         )
     }
 
@@ -68,6 +79,17 @@ class BridgeSetupStore(context: Context) {
     fun clearToken() {
         prefs.edit().remove(KEY_TOKEN).apply()
     }
+
+    /** Stores the exact versioned import atomically; it remains diagnostic-only. */
+    fun saveLocalizationPins(pins: LocalizationPins?) {
+        val editor = prefs.edit()
+        if (pins == null) editor.remove(KEY_LOCALIZATION_CONFIG)
+        else editor.putString(KEY_LOCALIZATION_CONFIG, LocalizationPinsJson.encode(pins))
+        editor.apply()
+    }
+
+    private fun localizationPins(): LocalizationPins? = prefs.getString(KEY_LOCALIZATION_CONFIG, null)
+        ?.let { runCatching { LocalizationPinsJson.parse(it) }.getOrNull() }
 
     @Suppress("DEPRECATION")
     private fun open(): SharedPreferences {
@@ -91,5 +113,6 @@ class BridgeSetupStore(context: Context) {
         private const val KEY_SESSION = "session"
         private const val KEY_DRONE_ID = "drone_id"
         private const val KEY_TOKEN = "token"
+        private const val KEY_LOCALIZATION_CONFIG = "localization_diagnostic_pins_json"
     }
 }

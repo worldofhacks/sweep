@@ -164,6 +164,56 @@ class StubRelay(
         return event
     }
 
+    fun sendControlPose(
+        timestamp: Long = relayNow(),
+        poseEventId: String = eventId(),
+        connectionEpoch: Int = epoch.get(),
+        targetDroneId: Int = droneId,
+        targetSession: String = session,
+        mapId: String = "map-a",
+        geometryId: String = "geometry-a",
+        cameraCalibrationId: String = "camera-a",
+        bodyExtrinsicsId: String = "body-a",
+        poseTimeMs: Long = timestamp,
+        fixTimeMs: Long = poseTimeMs,
+        positionFrame: String = "map_enu",
+        xMm: Long = 0,
+        yMm: Long = 0,
+        zMm: Long = 1_000,
+        positionUncertaintyMm: Long = 25,
+        status: String = "ready",
+        flightApproved: Boolean = false,
+        signingKey: ByteArray = key,
+    ): JsonObject {
+        val unsigned = Json.value(
+            linkedMapOf(
+                "v" to 1,
+                "t" to timestamp,
+                "type" to "control_pose",
+                "event_id" to poseEventId,
+                "session" to targetSession,
+                "drone_id" to targetDroneId,
+                "connection_epoch" to connectionEpoch,
+                "map_id" to mapId,
+                "geometry_id" to geometryId,
+                "camera_calibration_id" to cameraCalibrationId,
+                "body_extrinsics_id" to bodyExtrinsicsId,
+                "pose_time_ms" to poseTimeMs,
+                "fix_time_ms" to fixTimeMs,
+                "position_frame" to positionFrame,
+                "x_mm" to xMm,
+                "y_mm" to yMm,
+                "z_mm" to zMm,
+                "position_uncertainty_mm" to positionUncertaintyMm,
+                "status" to status,
+                "flight_approved" to flightApproved,
+            ),
+        ) as JsonObject
+        val event = unsigned.with("signature", JsonString(Signing.sign(unsigned, signingKey)))
+        broadcast(event)
+        return event
+    }
+
     fun dropConnections() {
         sockets.forEach { it.close(1001, "relay going away") }
     }

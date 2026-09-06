@@ -28,10 +28,10 @@ aircraft/RC/phone tuple before describing this bridge as flight-proven.
 
 | Module | Kind | Contents |
 |---|---|---|
-| `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, relay-signed `command` and exact per-node `control_heartbeat`, `capabilities`, `capture_readiness`, `node_status`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; canonical JSON and HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence; `core/flight`, the Phase E Virtual Stick loop as a pure tick-driven state machine (axis mapping, time-boxed steps from millimetre arguments, deadman actions, estop and takeover latches), the kinematic `FakeFlightModel`, and the #85 axis-probe classifier |
-| `bridge-node` | Kotlin/JVM | `RelayLink`, the node's OkHttp WebSocket client: auth, join, readiness, telemetry at 10 Hz, capabilities, node_status, command admission and acknowledgement, reconnect with bounded backoff, the watchdog under relay silence; `FakeAircraft`, the kinematic fixture with the command semantics of `fake_node.py`; `flight/FlightExecutor`, the loop's coroutine ticker and command executor, and `FakeFlightAircraft`, the fixture flown by the loop; tested against a stub relay on MockWebServer |
+| `bridge-core` | Kotlin/JVM | Frame models mirroring `relay/contracts.py`: signed membership, telemetry, acknowledgement, relay-signed `command`, exact per-node `control_heartbeat`, `capabilities`, `capture_readiness`, `node_status`, `auth.accepted` with its `node` thresholds, and the relay-authored `membership`, `state`, and `refusal` events; the staged diagnostic-only `control_pose` contract; canonical JSON and HMAC-SHA256 signing; command admission (signature, drone, epoch, roster, monotonic `seq`, `issued_at + ttl_ms` against a measured clock offset); the watchdog state machine (`armed`, `hold`, `failsafe`; `nominal` on the wire); the H.264/H.265 SPS parser for codec evidence; `core/flight`, the Phase E Virtual Stick loop as a pure tick-driven state machine (axis mapping, time-boxed steps from millimetre arguments, deadman actions, estop and takeover latches), the kinematic `FakeFlightModel`, and the #85 axis-probe classifier |
+| `bridge-node` | Kotlin/JVM | `RelayLink`, the node's OkHttp WebSocket client: auth, join, readiness, telemetry at 10 Hz, capabilities, node_status, command admission and acknowledgement, bounded diagnostic pose ingestion, reconnect with bounded backoff, the watchdog under relay silence; `FakeAircraft`, the kinematic fixture with the command semantics of `fake_node.py`; `flight/FlightExecutor`, the loop's coroutine ticker and command executor, and `FakeFlightAircraft`, the fixture flown by the loop; tested against a stub relay on MockWebServer |
 | `bench` | Kotlin/JVM | JSONL recorder for command round-trip time, jitter, drops, stick send rate, telemetry rate, video frame stats, and the #85 `probe` entries, plus the report writer |
-| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates, and `DjiFlightPort` on `IVirtualStickManager`) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`; the Compose page with Setup, Connectivity, Readiness, node status, the Flight and First-flight probes cards, the command log, and the Phase B4 registration and identity cards |
+| `app` | Android | `SdkSession` (probe, with `ProbeAircraft` reading `KeyManager` telemetry and measuring per-key rates, and `DjiFlightPort` on `IVirtualStickManager`) and `FakeAircraftSession` (fake) behind one `AircraftSession` interface; the foreground `BridgeService` that owns the link; `BridgeSetupStore` on `EncryptedSharedPreferences`, including one atomic versioned localization-diagnostic pin set; the Compose page with Setup, Connectivity, Readiness, node status, the Flight and First-flight probes cards, the command log, and the Phase B4 registration and identity cards |
 
 The JVM tests read fixtures under `bridge-core/src/test/resources/vectors/` that
 `adapters/dji_mini3/vectors.py` generates from the relay code itself; `test_vectors.py`
@@ -205,6 +205,31 @@ in the exported probe report, and in `filesDir/bench/telemetry-keys-<stamp>.json
 pull it like the Phase D logs; `BenchAnalysis` lists the first values under `notes`). An
 aircraft power cycle asks support again without registering a second listener: every
 listener shares one holder object and is cancelled by it.
+
+### Staged localization diagnostics (non-flight)
+
+The Setup page may store one exact v1 JSON object containing `map_id`, `geometry_id`,
+`camera_calibration_id`, and `body_extrinsics_id`. The encrypted store keeps that versioned
+object atomically. These strings only select diagnostic input; storing them neither verifies
+the referenced artifacts nor enables a navigation mode.
+
+With pins present, `RelayLink` may retain a `control_pose` only after its HMAC, session,
+drone id, current connection epoch, and all four identities match. The event is exact-schema,
+uses bounded integer millimetres, has a one-second event lifetime, and requires
+`t >= pose_time_ms >= fix_time_ms`. A `ready` observation also requires both pose and fix to
+be less than 500 ms old. Every v1 event contains the exact boolean
+`flight_approved: false`; `true` is rejected. `hold` and `land` are diagnostic status words,
+not aircraft commands. Positions use the explicit `position_frame: "map_enu"`, and
+`position_uncertainty_mm` is the publisher's conservative 3D p95 margin, not one standard
+deviation. Retained diagnostics expire locally. A publisher must decline to
+emit a frame when it has no real pose/fix evidence rather than fabricate zero values.
+
+This staging does **not** advertise `localized_navigation`, does not enter `LinkFacts` or
+`FlightController`, and cannot change Virtual Stick, landing, or command admission. `goto`
+therefore keeps the existing bounded time-boxed behavior described below. Flight use still
+requires a canonical map and calibration artifact path, an accepted-route and explicit
+flight-approval gate, uncertainty and full 3D route-tube policy, loss handling, and guarded
+hardware evidence. None of those are claimed here.
 
 ## Phase E: Virtual Stick loop, deadman, and RC takeover
 

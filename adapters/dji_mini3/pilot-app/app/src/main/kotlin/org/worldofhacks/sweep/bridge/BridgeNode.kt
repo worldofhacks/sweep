@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
+import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.NodeConfig
 import org.worldofhacks.sweep.bridge.node.ReadinessInput
@@ -87,6 +89,21 @@ class BridgeNode(private val application: Application, val session: AircraftSess
         }
     }
 
+    fun saveLocalizationPins(pins: LocalizationPins?) {
+        scope.launch(Dispatchers.IO) {
+            if (_running.value || session.aircraft.snapshot.value.state != FlightStates.LANDED) {
+                logLine("localization configuration requires a disconnected, landed aircraft")
+                return@launch
+            }
+            store.saveLocalizationPins(pins)
+            _setup.value = store.summary()
+            logLine(
+                if (pins == null) "localization diagnostic pins cleared"
+                else "localization diagnostic pins saved; reconnect to apply them",
+            )
+        }
+    }
+
     fun connect() = BridgeService.start(application)
 
     fun disconnect() = BridgeService.stop(application)
@@ -131,6 +148,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     token = setup.token,
                     adapterId = "${BuildConfig.AIRCRAFT}-${setup.droneId}",
                     capabilities = AircraftVariant.capabilities,
+                    localizationPins = setup.localizationPins,
                 )
                 val link = RelayLink(
                     config = config,
