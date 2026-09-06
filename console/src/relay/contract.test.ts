@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest'
 import {
   C1_BASIC_CONTROL_INTENTS,
+  MAX_INTENT_DRONE_ID,
+  MAX_INTENT_DRONE_IDS,
+  MAX_INTENT_IDENTIFIER_CODE_POINTS,
+  MAX_INTENT_SESSION_CODE_POINTS,
   intentFromVoicePlanStep,
   isConsoleIntentV1,
   isVoicePlan,
@@ -32,6 +36,7 @@ function aircraft(overrides: Record<string, unknown> = {}) {
     rc_safety_operator_present: true,
     telemetry: { state: 'hovering' },
     membership_history: [],
+    membership_history_truncated: 0,
     ...overrides,
   }
 }
@@ -51,6 +56,47 @@ describe('M1.1 wire compatibility', () => {
     } else {
       expect(event).toBeNull()
     }
+  })
+
+  test.each([
+    [0, true],
+    [12, true],
+    [undefined, false],
+    [-1, false],
+    [1.5, false],
+    ['1', false],
+    [true, false],
+  ])('validates the membership history truncation count %s', (truncated, accepted) => {
+    const event = parseRelayServerEvent({
+      v: 1, t: 100, type: 'state', event_id: 'history-truncation-test', session,
+      roster_version: 1, state_sequence: 1, armed: false, estop: false,
+      selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null,
+      drones: [aircraft({ membership_history_truncated: truncated })],
+    })
+
+    expect(event !== null).toBe(accepted)
+  })
+
+  test('normalizes the missing truncation count on persisted pre-change state', () => {
+    const historicalAircraft = { ...aircraft() } as Record<string, unknown>
+    delete historicalAircraft.membership_history_truncated
+
+    const event = parseRelayServerEvent({
+      v: 1, t: 100, type: 'state', event_id: 'historical-state', session,
+      roster_version: 1, state_sequence: 1, armed: false, estop: false,
+      selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null, drones: [historicalAircraft],
+    })
+
+    expect(event).not.toBeNull()
+    expect(event?.type).toBe('state')
+    if (event?.type !== 'state') throw new Error('expected a state event')
+    expect(event.drones[0].membership_history_truncated).toBe(0)
   })
 
   test('refuses an adapter-supplied media URL', () => {
@@ -551,6 +597,91 @@ describe('console Intent v1 mirror', () => {
       isConsoleIntentV1({
         ...base,
         args: { box: { min_x: 1, max_x: -1, min_y: -1, max_y: 1 } },
+      }),
+    ).toBe(false)
+  })
+
+  test('accepts exact Unicode, identifier, integer, and simulator-fleet ceilings', () => {
+    expect(
+      isConsoleIntentV1({
+        v: 1,
+        t: Number.MAX_SAFE_INTEGER,
+        type: 'intent',
+        intent_id: '🚁'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS),
+        retry_of: 'r'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS),
+        source: 'console',
+        session: '🚁'.repeat(MAX_INTENT_SESSION_CODE_POINTS),
+        name: 'select',
+        args: { ids: Array.from({ length: MAX_INTENT_DRONE_IDS }, (_, index) => index + 1) },
+        selection: Array.from({ length: MAX_INTENT_DRONE_IDS }, (_, index) => index + 1),
+        mode: 'indoor',
+        confirm: false,
+      }),
+    ).toBe(true)
+  })
+
+  test.each([
+    { intent_id: 'i'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS + 1) },
+    { retry_of: 'r'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS + 1) },
+    { session: 's'.repeat(MAX_INTENT_SESSION_CODE_POINTS + 1) },
+    { t: Number.MAX_SAFE_INTEGER + 1 },
+    { selection: Array.from({ length: MAX_INTENT_DRONE_IDS + 1 }, (_, index) => index + 1) },
+    { selection: [MAX_INTENT_DRONE_ID + 1] },
+    { args: { ids: Array.from({ length: MAX_INTENT_DRONE_IDS + 1 }, (_, index) => index + 1) } },
+    { intent_id: ' padded' },
+    { intent_id: 'zero\u200bwidth' },
+  ])('rejects Intent v1 producer values outside the relay boundary: %o', (override) => {
+    expect(
+      isConsoleIntentV1({
+        v: 1,
+        t,
+        type: 'intent',
+        intent_id: 'bounded-intent',
+        retry_of: null,
+        source: 'console',
+        session,
+        name: 'select',
+        args: { ids: [1] },
+        selection: [1],
+        mode: 'indoor',
+        confirm: false,
+        ...override,
+      }),
+    ).toBe(false)
+  })
+
+  test('bounds capture identifiers at the shared relay ceiling', () => {
+    const base = {
+      v: 1,
+      t,
+      type: 'intent',
+      intent_id: 'bounded-capture',
+      retry_of: null,
+      source: 'console',
+      session,
+      name: 'capture_room',
+      selection: [1],
+      mode: 'indoor',
+      confirm: true,
+    }
+    expect(
+      isConsoleIntentV1({
+        ...base,
+        args: {
+          room_id: 'r'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS),
+          capture_id: 'c'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS),
+          pattern: 'reconstruct_8',
+        },
+      }),
+    ).toBe(true)
+    expect(
+      isConsoleIntentV1({
+        ...base,
+        args: {
+          room_id: 'r'.repeat(MAX_INTENT_IDENTIFIER_CODE_POINTS + 1),
+          capture_id: 'capture',
+          pattern: 'reconstruct_8',
+        },
       }),
     ).toBe(false)
   })

@@ -21,6 +21,10 @@ data class TelemetryFrame(
     val link: Double,
     val posQuality: Double,
 ) {
+    init {
+        Fields.requireBoundedStateText(state, "state", MAX_STATE_UTF8_BYTES)
+    }
+
     fun toEvent(): JsonObject = Json.json(
         "v" to Fields.PROTOCOL_VERSION,
         "t" to t,
@@ -43,6 +47,7 @@ data class TelemetryFrame(
 
     companion object {
         const val TYPE = "telemetry"
+        const val MAX_STATE_UTF8_BYTES = 128
         private const val CODE = "invalid_telemetry"
         private val FIELDS = setOf(
             "v", "t", "type", "event_id", "session", "drone", "connection_epoch",
@@ -65,7 +70,12 @@ data class TelemetryFrame(
                 vy = Fields.finiteNumber(json["vy"], "vy", CODE),
                 vz = Fields.finiteNumber(json["vz"], "vz", CODE),
                 battery = Fields.unitInterval(json["battery"], "battery", CODE),
-                state = Fields.nonEmptyString(json["state"], "state", CODE),
+                state = Fields.boundedStateText(
+                    json["state"],
+                    "state",
+                    CODE,
+                    maximumUtf8Bytes = MAX_STATE_UTF8_BYTES,
+                ),
                 link = Fields.unitInterval(json["link"], "link", CODE),
                 posQuality = Fields.unitInterval(json["pos_quality"], "pos_quality", CODE),
             )

@@ -88,6 +88,60 @@ class FramesTest {
         )
         assertSameWire("membership_join", join.signed(key("membership_join")))
         assertEquals(join, MembershipFrame.parse(wire("membership_join")))
+
+        val maximumCapabilities = (0 until Fields.MAX_CAPABILITY_LIST_ITEMS).map { "capability_$it" }
+        assertEquals(
+            maximumCapabilities,
+            MembershipFrame.Join(1000, "max", "session-a", 1, "dji_mini3", maximumCapabilities)
+                .capabilities,
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            MembershipFrame.Join(
+                1000,
+                "too-many",
+                "session-a",
+                1,
+                "dji_mini3",
+                maximumCapabilities + "one_more",
+            )
+        }
+        assertThrows(ContractError::class.java) {
+            MembershipFrame.parse(
+                JsonObject(
+                    wire("membership_join").fields +
+                        ("capabilities" to Json.value(maximumCapabilities + "one_more")),
+                ),
+            )
+        }
+        assertThrows(ContractError::class.java) {
+            MembershipFrame.parse(
+                JsonObject(wire("membership_join").fields + ("adapter_id" to Json.value(" padded "))),
+            )
+        }
+        val mutableCapabilities = mutableListOf("telemetry")
+        val mutableJoin = join.copy(capabilities = mutableCapabilities)
+        mutableCapabilities[0] = " padded "
+        assertThrows(IllegalArgumentException::class.java) { mutableJoin.unsignedEvent() }
+
+        val changingCapabilities = object : AbstractList<String>() {
+            var reads = 0
+            override val size: Int get() = 1
+
+            override fun get(index: Int): String {
+                require(index == 0)
+                return if (reads++ % 2 == 0) "flight" else "camera"
+            }
+        }
+        val changingJoin = join.copy(capabilities = changingCapabilities)
+        changingCapabilities.reads = 0
+        val changingSigned = changingJoin.signed(key("membership_join"))
+        assertTrue(
+            Signing.verify(
+                changingSigned.without("signature"),
+                changingSigned.string("signature"),
+                key("membership_join"),
+            ),
+        )
         assertEquals(wire("membership_join").string("signature"), join.sign(key("membership_join")))
     }
 
@@ -304,6 +358,20 @@ class FramesTest {
         assertThrows(ContractError::class.java) {
             TelemetryFrame.parse(JsonObject(base.fields - "link"))
         }
+        val maximumState = "é".repeat(TelemetryFrame.MAX_STATE_UTF8_BYTES / 2)
+        assertEquals(
+            maximumState,
+            TelemetryFrame.parse(JsonObject(base.fields + ("state" to Json.value(maximumState)))).state,
+        )
+        assertThrows(ContractError::class.java) {
+            TelemetryFrame.parse(JsonObject(base.fields + ("state" to Json.value("${maximumState}é"))))
+        }
+        assertThrows(ContractError::class.java) {
+            TelemetryFrame.parse(JsonObject(base.fields + ("state" to Json.value(" padded "))))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            TelemetryFrame.parse(base).copy(state = "${maximumState}é")
+        }
     }
 
     @Test
@@ -462,6 +530,54 @@ class FramesTest {
         assertThrows(ContractError::class.java) {
             CapabilitiesFrame.parse(JsonObject(wire("capabilities").fields + ("aircraft_firmware" to Json.value(null))))
         }
+
+        val maximumModes = (0 until Fields.MAX_CAPABILITY_LIST_ITEMS).map { "mode_$it" }
+        val maximumWire = JsonObject(
+            wire("capabilities").fields + ("native_panorama_modes" to Json.value(maximumModes)),
+        )
+        assertEquals(maximumModes, CapabilitiesFrame.parse(maximumWire).camera.nativePanoramaModes)
+        assertThrows(ContractError::class.java) {
+            CapabilitiesFrame.parse(
+                JsonObject(
+                    maximumWire.fields +
+                        ("native_panorama_modes" to Json.value(maximumModes + "one_more")),
+                ),
+            )
+        }
+        val mutableModes = mutableListOf("pano_360")
+        val mutableCapabilities = capabilities.copy(
+            camera = capabilities.camera.copy(nativePanoramaModes = mutableModes),
+        )
+        mutableModes[0] = " padded "
+        assertThrows(IllegalArgumentException::class.java) { mutableCapabilities.toEvent() }
+        assertThrows(IllegalArgumentException::class.java) {
+            CameraProbe(nativePanoramaModes = maximumModes + "one_more")
+        }
+        assertThrows(ContractError::class.java) {
+            CapabilitiesFrame.parse(
+                JsonObject(wire("capabilities").fields + ("aircraft_model" to Json.value(" padded "))),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            HardwareProfile(" padded ", "1", "1", "phone", "16", "5.18.0", null)
+        }
+        val oversizedUtf8 = "é".repeat(Fields.MAX_CAPABILITY_ITEM_UTF8_BYTES / 2 + 1)
+        assertThrows(ContractError::class.java) {
+            CapabilitiesFrame.parse(
+                JsonObject(wire("capabilities").fields + ("aircraft_model" to Json.value(oversizedUtf8))),
+            )
+        }
+        val aggregateOverflow = (0 until Fields.MAX_CAPABILITY_LIST_ITEMS).map {
+            "mode_${it}_" + "x".repeat(125)
+        }
+        assertThrows(ContractError::class.java) {
+            CapabilitiesFrame.parse(
+                JsonObject(
+                    wire("capabilities").fields +
+                        ("native_panorama_modes" to Json.value(aggregateOverflow)),
+                ),
+            )
+        }
     }
 
     @Test
@@ -500,6 +616,40 @@ class FramesTest {
         assertThrows(ContractError::class.java) {
             CaptureReadinessFrame.parse(JsonObject(wire("capture_readiness").fields + ("coverage_missing" to Json.value(listOf(360.0)))))
         }
+    }
+
+    @Test
+    fun `capture readiness bounds unique missing coverage at reconstruct eight`() {
+        val headings = List(CaptureReadinessFrame.MAX_COVERAGE_MISSING_ITEMS) { it * 45.0 }
+        val exact = JsonObject(
+            wire("capture_readiness").fields + ("coverage_missing" to Json.value(headings)),
+        )
+        assertEquals(headings, CaptureReadinessFrame.parse(exact).coverageMissing)
+
+        val oversized = List(CaptureReadinessFrame.MAX_COVERAGE_MISSING_ITEMS + 1) { it * 40.0 }
+        assertThrows(ContractError::class.java) {
+            CaptureReadinessFrame.parse(
+                JsonObject(
+                    wire("capture_readiness").fields +
+                        ("coverage_missing" to Json.value(oversized)),
+                ),
+            )
+        }
+        assertThrows(ContractError::class.java) {
+            CaptureReadinessFrame.parse(
+                JsonObject(
+                    wire("capture_readiness").fields +
+                        ("coverage_missing" to Json.value(listOf(0.0, -0.0))),
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CaptureReadinessFrame.parse(exact).copy(coverageMissing = oversized)
+        }
+        val mutableHeadings = mutableListOf(0.0)
+        val mutableReadiness = CaptureReadinessFrame.parse(exact).copy(coverageMissing = mutableHeadings)
+        mutableHeadings += 360.0
+        assertThrows(IllegalArgumentException::class.java) { mutableReadiness.toEvent() }
     }
 
     @Test

@@ -41,7 +41,10 @@ sealed interface MembershipFrame {
 
     fun sign(key: ByteArray): String = Signing.sign(unsignedEvent(), key)
 
-    fun signed(key: ByteArray): JsonObject = unsignedEvent().with("signature", JsonString(sign(key)))
+    fun signed(key: ByteArray): JsonObject {
+        val unsigned = unsignedEvent()
+        return unsigned.with("signature", JsonString(Signing.sign(unsigned, key)))
+    }
 
     data class Join(
         override val t: Long,
@@ -51,9 +54,21 @@ sealed interface MembershipFrame {
         val adapterId: String,
         val capabilities: List<String>,
     ) : MembershipFrame {
+        init {
+            Fields.requireBoundedStateText(adapterId, "adapter_id")
+            Fields.validatedStringListSnapshot(capabilities, "capabilities", allowEmpty = false)
+        }
+
         override val action: MembershipAction get() = MembershipAction.JOIN
 
-        override fun actionFields(): JsonObject = Json.json("adapter_id" to adapterId, "capabilities" to capabilities)
+        override fun actionFields(): JsonObject {
+            val capabilitySnapshot = Fields.validatedStringListSnapshot(
+                capabilities,
+                "capabilities",
+                allowEmpty = false,
+            )
+            return Json.json("adapter_id" to adapterId, "capabilities" to capabilitySnapshot)
+        }
     }
 
     data class Readiness(
@@ -122,7 +137,7 @@ sealed interface MembershipFrame {
                     eventId = eventId,
                     session = session,
                     droneId = droneId,
-                    adapterId = Fields.nonEmptyString(json["adapter_id"], "adapter_id", CODE),
+                    adapterId = Fields.boundedStateText(json["adapter_id"], "adapter_id", CODE),
                     capabilities = Fields.stringList(json["capabilities"], "capabilities", CODE, allowEmpty = false),
                 )
                 MembershipAction.READINESS -> Readiness(
