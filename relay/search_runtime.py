@@ -390,7 +390,9 @@ class SearchRuntime:
                 last_pose = None
                 last_camera = None
                 if pose := pose_for_frame(event):
-                    observation = self.observe_processed_frame(intent_id, event, pose, now_s=now_s())
+                    observation = self.observe_processed_frame(
+                        intent_id, event, pose, now_s=now_s()
+                    )
                     if observation.accepted:
                         last_pose = pose
                         if camera_for_frame is not None:
