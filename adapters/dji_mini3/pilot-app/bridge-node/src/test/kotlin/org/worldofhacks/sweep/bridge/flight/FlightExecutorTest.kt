@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.flight.FlightConfig
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
 import org.worldofhacks.sweep.bridge.core.flight.FlightReason
 import org.worldofhacks.sweep.bridge.core.flight.ReportSink
 import org.worldofhacks.sweep.bridge.core.flight.StickFrame
@@ -47,19 +48,26 @@ class FlightExecutorTest {
     }
 
     /** The stub emits the real relay's signed control heartbeat unless a silence test disables it. */
-    private fun node(stub: StubRelay, flying: Boolean, localizationPins: LocalizationPins? = null): Node {
+    private fun node(
+        stub: StubRelay,
+        flying: Boolean,
+        localizationPins: LocalizationPins? = null,
+        navigationConfig: NavigationConfig? = null,
+    ): Node {
         val aircraft = FakeFlightAircraft()
         aircraft.setConnected(true)
         if (flying) aircraft.place(zUp = 1.2, flying = true)
         val executor = FlightExecutor(aircraft, aircraft, aircraft.fake, config = config, log = { logs += it })
+        executor.configureNavigation(navigationConfig)
         val nodeConfig = NodeConfig(
             stub.url,
             stub.session,
             1,
             String(key, Charsets.UTF_8),
             "test-node-1",
-            listOf("flight"),
+            listOf("flight") + if (navigationConfig == null) emptyList() else listOf("localized_navigation"),
             localizationPins,
+            navigationConfig,
         )
         val link = RelayLink(nodeConfig, aircraft, executor, phone, timing = timing, log = { logs += it })
         // The loop's status feeds the snapshot fields the link reports (the sessions do this on the phone).
@@ -104,6 +112,56 @@ class FlightExecutorTest {
         awaitFrame("acknowledgement", timeoutMs) { it.str("command_id") == commandId && it.str("status") == status }
 
     private fun StubRelay.acks(commandId: String): List<JsonObject> = frames("acknowledgement") { it.str("command_id") == commandId }
+
+    private fun navigationConfig() = NavigationConfig(
+        navigationConfigId = "navigation-a",
+        mapId = "map-a",
+        geometryId = "geometry-a",
+        cameraCalibrationId = "camera-a",
+        bodyExtrinsicsId = "body-a",
+        poseFreshnessMs = 500,
+        authorizationLifetimeMs = 1_000,
+        lossLandAfterMs = 500,
+        arrivalHorizontalToleranceM = 0.1,
+        arrivalVerticalToleranceM = 0.1,
+        maxPositionUncertaintyM = 0.05,
+    )
+
+    @Test
+    fun `measured navigation config carries an admitted signed route through the executor to virtual stick`() {
+        StubRelay(key).use { stub ->
+            node(stub, flying = true, navigationConfig = navigationConfig()).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                stub.sendNavigationAuthorization()
+                await("route authorization") { node.link.state.value.navigationAuthorization?.routeId == "route-1" }
+                stub.sendNavigationPose()
+                await("route pose") { node.link.state.value.navigationPose?.status?.name == "READY" }
+                Thread.sleep(100)
+                val route = stub.issueCommand(
+                    CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-1"),
+                    commandId = "route-command-1",
+                )
+                stub.awaitAck(route.commandId, "executing")
+                await("route velocity reaches virtual stick") { node.aircraft.model.virtualStickEnabled }
+                assertTrue(node.executor.status.value.phase == "navigating" || node.executor.status.value.phase == "navigation_hold")
+            }
+        }
+    }
+
+    @Test
+    fun `without measured navigation config signed route commands stay rejected before virtual stick`() {
+        StubRelay(key).use { stub ->
+            node(stub, flying = true).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                stub.sendNavigationAuthorization()
+                Thread.sleep(100)
+                assertEquals(null, node.link.state.value.navigationAuthorization)
+                val route = stub.issueCommand(CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-1"))
+                assertEquals("navigation_not_authorized", stub.awaitAck(route.commandId, "failed").str("reason"))
+                assertTrue(!node.aircraft.model.virtualStickEnabled)
+            }
+        }
+    }
 
     @Test
     fun `diagnostic localization cannot advertise navigation or alter the existing goto path`() {

@@ -41,6 +41,7 @@ from arbiter.safety import SafetyArbiter, SafetyConfig
 from perception.object_detection import DEFAULT_TARGET_LABELS
 from planner.controller import AutonomyController, RelayExecution
 from planner.models import (
+    Command,
     CommandAcknowledgement,
     ExecutionResult,
     FleetSnapshot,
@@ -68,6 +69,7 @@ from relay.control_localization import (
     ControlLocalizationProjector,
 )
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
+from relay.navigation_control import NavigationControl, NavigationControlConfig
 from relay.search_deployment import load_search_runtime
 from relay.search_detection import (
     CameraProviderFactory,
@@ -458,6 +460,10 @@ class _PreemptibleLink:
         self._job.check()
         self._inner.send(request)
 
+    def authorize_navigation(self, plan: Plan, command: Command, snapshot: FleetSnapshot) -> None:
+        self._job.check()
+        self._inner.authorize_navigation(plan, command, snapshot)
+
     def await_acknowledgement(
         self, command_id: str, *, timeout_ms: int
     ) -> WireAcknowledgement | None:
@@ -498,6 +504,20 @@ class AutonomySession:
             navigation=composition.navigation_runtime,
         )
         self.arbiter = SafetyArbiter(composition.config.safety)
+        deployment = composition.config.navigation_deployment
+        projector = composition.config.control_localization_projector
+        self.navigation_control = (
+            None
+            if deployment is None or projector is None
+            else NavigationControl(
+                NavigationControlConfig(
+                    deployment.runtime,
+                    projector,
+                    deployment.configuration_id,
+                    composition.node_keys,
+                )
+            )
+        )
         self._lock = threading.Lock()
         self._operator_last_seen_ms: int | None = None
         self._stop_requested = False
@@ -680,12 +700,30 @@ class AutonomySession:
         with self._lock:
             operator_last_seen_ms = self._operator_last_seen_ms
             estop_requested = self._stop_requested
-        return relay_snapshot(
+        snapshot = relay_snapshot(
             state,
             operator_last_seen_ms=operator_last_seen_ms,
             estop_requested=estop_requested,
             capture_readiness=capture_readiness,
         )
+        runtime = self._composition.runtime_if_bound()
+        session = None if runtime is None else runtime.sessions.get(self.session_id)
+        if session is None or self.navigation_control is None:
+            return snapshot
+        return self.navigation_control.approved_snapshot(snapshot, session)
+
+    def periodic_events(self, state: dict[str, object]) -> list[dict[str, object]]:
+        if self.navigation_control is None:
+            return []
+        now_ms = state.get("t")
+        runtime = self._composition.runtime_if_bound()
+        session = None if runtime is None else runtime.sessions.get(self.session_id)
+        if type(now_ms) is not int or session is None:
+            return []
+        return [
+            session.record_navigation_packet(packet)
+            for packet in self.navigation_control.periodic_poses(session, now_ms)
+        ]
 
     def close(self, timeout_s: float) -> None:
         for lane in self._lanes:
@@ -787,6 +825,8 @@ class AutonomySession:
             with self._lock:
                 victim.cancelled_by = reason
                 self._awaiting.pop(victim.intent.intent_id, None)
+            if self.navigation_control is not None:
+                self.navigation_control.invalidate(victim.intent.intent_id)
             stop.publications.append(event)
 
     def _run(self, lane: _Lane) -> None:
@@ -872,6 +912,7 @@ class AutonomySession:
                 sim_camera_config=self._composition.config.sim_camera,
                 link_wrapper=gate,
                 navigation=self._composition.navigation_runtime,
+                navigation_control=self.navigation_control,
             )
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
@@ -1049,6 +1090,8 @@ class AutonomySession:
             if owner.job.cancelled_by is None:
                 raise
             return None
+        if result.status in _TERMINAL and self.navigation_control is not None:
+            self.navigation_control.invalidate(result.intent_id)
         return RelayExecution(result, tuple(events))
 
     def resume_after_acknowledgement(
@@ -1072,12 +1115,15 @@ class AutonomySession:
     ) -> None:
         def operation() -> list[dict[str, object]]:
             try:
-                return apply_result(session, job.intent, result)
+                events = apply_result(session, job.intent, result)
             except ValueError:
                 if job.cancelled_by is None:
                     raise
                 _LOGGER.info("intent %s was cancelled as it completed", job.intent.intent_id)
                 return []
+            if result.status in _TERMINAL and self.navigation_control is not None:
+                self.navigation_control.invalidate(result.intent_id)
+            return events
 
         self._publish(runtime, operation)
 
@@ -1125,12 +1171,25 @@ class AutonomyComposition:
         config: AutonomyConfig,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         *,
+        node_keys: Mapping[int, bytes] | None = None,
         detection_stream_factory: StreamFactory | None = None,
         detection_detector_factory: DetectorFactory | None = None,
         detection_pose_provider_factory: PoseProviderFactory | None = None,
         detection_camera_provider_factory: CameraProviderFactory | None = None,
     ) -> None:
         self.config = config
+        self.node_keys = dict(node_keys or {})
+        if (
+            config.navigation_deployment is not None
+            and config.control_localization_projector is not None
+        ):
+            config.navigation_deployment.runtime.configure_control_localization(
+                config.control_localization_projector.pins,
+                max_fix_age_ms=config.control_localization_projector.max_fix_age_ms,
+                max_position_uncertainty_p95_m=(
+                    config.control_localization_projector.max_position_uncertainty_p95_m
+                ),
+            )
         self.capability_profile = config.effective_capability_profile(capability_profile)
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
@@ -1239,6 +1298,7 @@ def create_autonomy_app(
     composition = AutonomyComposition(
         config,
         settings.capability_profile,
+        node_keys=settings.adapter_keys,
         detection_stream_factory=detection_stream_factory,
         detection_detector_factory=detection_detector_factory,
         detection_pose_provider_factory=detection_pose_provider_factory,

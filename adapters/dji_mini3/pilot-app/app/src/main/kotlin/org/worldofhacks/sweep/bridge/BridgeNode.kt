@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
 import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.LinkState
@@ -92,6 +93,18 @@ class BridgeNode(private val application: Application, val session: AircraftSess
         }
     }
 
+    fun saveNavigationConfig(config: NavigationConfig?) {
+        scope.launch(Dispatchers.IO) {
+            if (_running.value || session.aircraft.snapshot.value.state != FlightStates.LANDED) {
+                logLine("navigation configuration requires a disconnected, landed aircraft")
+                return@launch
+            }
+            store.saveNavigationConfig(config)
+            _setup.value = store.summary()
+            logLine(if (config == null) "measured navigation configuration cleared" else "measured navigation configuration saved; reconnect to apply it")
+        }
+    }
+
     fun saveLocalizationPins(pins: LocalizationPins?) {
         scope.launch(Dispatchers.IO) {
             if (_running.value || session.aircraft.snapshot.value.state != FlightStates.LANDED) {
@@ -142,6 +155,8 @@ class BridgeNode(private val application: Application, val session: AircraftSess
             }
             _relayNetwork.value = networkLabel
             logLine("relay network: $networkLabel")
+            val navigationConfig = setup.navigationConfig
+            session.flight?.executor?.configureNavigation(navigationConfig)?.join()
             synchronized(lock) {
                 if (relayLink != null) return@launch
                 val config = NodeConfig(
@@ -150,8 +165,9 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     droneId = setup.droneId,
                     token = setup.token,
                     adapterId = "${BuildConfig.AIRCRAFT}-${setup.droneId}",
-                    capabilities = AircraftVariant.capabilities,
+                    capabilities = AircraftVariant.capabilities + if (navigationConfig == null) emptyList() else listOf("localized_navigation"),
                     localizationPins = setup.localizationPins,
+                    navigationConfig = navigationConfig,
                 )
                 val link = RelayLink(
                     config = config,

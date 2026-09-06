@@ -2,7 +2,10 @@ package org.worldofhacks.sweep.bridge.node
 
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusBody
 import org.worldofhacks.sweep.bridge.core.frames.RefusalEvent
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
@@ -17,6 +20,7 @@ data class NodeConfig(
     val adapterId: String,
     val capabilities: List<String>,
     val localizationPins: LocalizationPins? = null,
+    val navigationConfig: NavigationConfig? = null,
 ) {
     init {
         require(relayUrl.startsWith("ws://") || relayUrl.startsWith("wss://")) { "relay URL must start with ws:// or wss://" }
@@ -27,13 +31,16 @@ data class NodeConfig(
         require(capabilities.isNotEmpty() && capabilities.toSet().size == capabilities.size) {
             "capabilities must be a non-empty list without duplicates"
         }
-        require("localized_navigation" !in capabilities) {
-            "localized_navigation is not implemented; localization input is diagnostic-only"
+        require(("localized_navigation" in capabilities) == (navigationConfig != null)) {
+            "localized_navigation capability must match the measured navigation configuration"
         }
     }
 
     val key: ByteArray
         get() = token.toByteArray(Charsets.UTF_8)
+
+    val navigationAdmission: NavigationAdmissionConfig?
+        get() = navigationConfig?.let(::NavigationAdmissionConfig)
 
     /** `<relay>/ws/{session}`; the token never appears in the URL. */
     val socketUrl: String
@@ -52,6 +59,17 @@ data class NodeConfig(
             }
         }
     }
+}
+
+class NavigationAdmissionConfig(val measured: NavigationConfig) {
+    val navigationConfigId: String
+        get() = measured.navigationConfigId
+
+    val poseFreshnessMs: Long
+        get() = measured.poseFreshnessMs
+
+    val maxAuthorizationLifetimeMs: Long
+        get() = measured.authorizationLifetimeMs
 }
 
 /**
@@ -136,6 +154,9 @@ data class LinkState(
     val controlPose: ControlPose? = null,
     /** Local-clock deadline at which [controlPose] is cleared. */
     val controlPoseExpiresAtMs: Long? = null,
+    val navigationAuthorization: NavigationRouteAuthorization? = null,
+    val navigationPose: NavigationPose? = null,
+    val navigationPoseFreshUntilMs: Long? = null,
     val estop: Boolean = false,
     val lastRefusal: RefusalEvent? = null,
     val lastAuthRefusal: AuthRefused? = null,

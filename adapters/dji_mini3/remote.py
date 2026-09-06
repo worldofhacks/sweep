@@ -31,6 +31,7 @@ from planner.models import (
     CommandOperation,
     FleetSnapshot,
     LifecycleStatus,
+    Plan,
     Position,
     RefusalReason,
 )
@@ -64,6 +65,10 @@ class NodeLink(Protocol):
     def connection_epoch(self, drone_id: int) -> int | None: ...
 
     def send(self, request: CommandRequest) -> None: ...
+
+    def authorize_navigation(
+        self, plan: Plan, command: Command, snapshot: FleetSnapshot
+    ) -> None: ...
 
     def await_acknowledgement(
         self, command_id: str, *, timeout_ms: int
@@ -143,6 +148,7 @@ class RemoteBridgeAdapter:
         self._context: _IntentContext | None = None
         self._captures: dict[tuple[int, str], str] = {}
         self._reported_files: set[tuple[int, str, str]] = set()
+        self._navigation_routes: dict[tuple[int, str], str] = {}
 
     @classmethod
     def from_snapshot(
@@ -270,6 +276,10 @@ class RemoteBridgeAdapter:
                     )
                 )
         return tuple(reply.acknowledgement() for reply in replies)
+
+    def authorize_navigation(self, plan: Plan, command: Command, snapshot: FleetSnapshot) -> None:
+        self._link.authorize_navigation(plan, command, snapshot)
+        self._navigation_routes[(command.drone_id, command.command_id)] = plan.intent_id
 
     def telemetry(self) -> Iterator[Telemetry]:
         """Yield nothing: node telemetry reaches the relay registry over the node socket."""
@@ -424,14 +434,20 @@ class RemoteBridgeAdapter:
             raise AdapterError("no intent context is bound; open for_intent first")
         expected_epoch = self._require_aircraft(drone_id)
         scoped_command_id = context.command_ids.get((drone_id, operation))
+        command_id = scoped_command_id or self._command_ids()
+        request_args = dict(args)
+        if operation is CommandOperation.GOTO:
+            route_id = self._navigation_routes.pop((drone_id, command_id), None)
+            if route_id is not None:
+                request_args["navigation_route_id"] = route_id
         request = CommandRequest(
-            command_id=scoped_command_id or self._command_ids(),
+            command_id=command_id,
             intent_id=context.intent_id,
             roster_version=context.roster_version,
             drone_id=drone_id,
             connection_epoch=expected_epoch,
             operation=operation,
-            args=MappingProxyType(dict(args)),
+            args=MappingProxyType(request_args),
         )
         live_epoch = self._link.connection_epoch(drone_id)
         if live_epoch != expected_epoch:

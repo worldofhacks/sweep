@@ -204,6 +204,13 @@ def test_hover_round_trips_through_the_node_socket_and_remote_adapter(
         result = dispatcher.dispatch(plan, snapshot, current_snapshot=current)
         with adapter.for_intent("intent-1", state["roster_version"] + 100):
             (stale,) = adapter.hover([1])
+        _wait_until(
+            lambda: session.current_state()["drones"][0]["node_status"] is not None,
+            what="node watchdog status",
+        )
+        drone = session.current_state()["drones"][0]
+        assert drone["camera_capabilities"]["aircraft_model"] == "fake-mini3"
+        assert drone["node_status"]["watchdog_state"] == "nominal"
     finally:
         node.stop()
         console.stop()
@@ -218,9 +225,6 @@ def test_hover_round_trips_through_the_node_socket_and_remote_adapter(
     assert hold.detail == ""
     assert stale.status.value == "failed"
     assert stale.detail.startswith("stale_command")
-    assert drone["camera_capabilities"]["aircraft_model"] == "fake-mini3"
-    assert drone["node_status"]["watchdog_state"] == "nominal"
-
     records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
     commands = [record for record in records if record["type"] == "command"]
     issued = [(command["operation"], command["intent_id"], command["seq"]) for command in commands]

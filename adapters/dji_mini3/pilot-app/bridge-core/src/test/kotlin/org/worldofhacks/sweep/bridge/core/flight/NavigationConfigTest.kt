@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
 class NavigationConfigTest {
@@ -26,6 +27,19 @@ class NavigationConfigTest {
     fun `navigation limits must be finite and positive`() {
         assertThrows(IllegalArgumentException::class.java) {
             config(maxPositionUncertaintyM = Double.POSITIVE_INFINITY)
+        }
+    }
+
+    @Test
+    fun `deployment configuration uses an exact versioned millimetre codec`() {
+        val config = config()
+        val encoded = NavigationConfigJson.encode(config)
+        assertEquals(config, NavigationConfigJson.parse(encoded))
+        assertThrows(IllegalArgumentException::class.java) {
+            NavigationConfigJson.parse(encoded.replace("\"v\":1", "\"v\":2"))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            NavigationConfigJson.parse(encoded.dropLast(1) + ",\"extra\":1}")
         }
     }
 
