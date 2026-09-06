@@ -799,10 +799,15 @@ class AutonomySession:
             return  # cancelled while queued; the stop recorded its invalidation
         if job.refusal_detail is not None:
             roster_version = session.registry.roster_version
+            status = (
+                LifecycleStatus.FAILED
+                if intent.name is IntentName.SEARCH
+                else LifecycleStatus.REFUSED
+            )
             result = ExecutionResult(
                 intent_id=intent.intent_id,
                 roster_version=roster_version,
-                status=LifecycleStatus.FAILED,
+                status=status,
                 refusal=Refusal(
                     intent_id=intent.intent_id,
                     roster_version=roster_version,
@@ -810,7 +815,7 @@ class AutonomySession:
                     connection_epoch=None,
                     reason=RefusalReason.INVALID_PLAN,
                     detail=job.refusal_detail,
-                    status=LifecycleStatus.FAILED,
+                    status=status,
                 ),
             )
             with self._lock:
