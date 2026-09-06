@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -315,3 +316,155 @@ def test_a_failed_localization_audit_cannot_enter_retention_or_control_runtime(
     assert control_relay.session._control_localization == {}
     assert payload["event_id"] not in control_relay.session._seen_transport_event_ids
     assert control_relay.composition.session(SESSION).control.store._patches == {}
+
+
+def test_route_authorization_and_initial_pose_reach_node_before_mapped_goto(
+    control_relay: ControlRelay,
+) -> None:
+    from planner.control_provenance import ControlProvenance
+    from planner.models import CommandOperation
+    from planner.test_navigation_runtime import stack
+    from relay.bridge import RelayNodeLink
+    from relay.navigation_control import NavigationControl, NavigationControlConfig
+
+    controller, _, _, snapshot, current, _, intent = stack()
+    navigation = controller.planner.navigation
+    navigation.require_phone_authorization = True
+    prepared = controller.prepare(intent, snapshot, current_snapshot=current)
+    command = next(
+        item for item in prepared.plan.commands if item.operation is CommandOperation.GOTO
+    )
+    aircraft = snapshot.aircraft[1]
+    localized = replace(
+        snapshot,
+        aircraft={
+            1: replace(
+                aircraft,
+                control_provenance=ControlProvenance(
+                    "map-sha",
+                    "geometry-sha",
+                    "camera-calibration-sha",
+                    "body-extrinsics-sha",
+                    "camera-clock",
+                    "relay-clock",
+                    ("tag-camera", "msdk-velocity", "tof-height"),
+                    1.0,
+                    5,
+                    "ready",
+                    snapshot.now_ms,
+                    0.01,
+                ),
+            )
+        },
+    )
+    control = NavigationControl(
+        NavigationControlConfig(
+            navigation,
+            _control_config(control_relay.clock),
+            "navigation-config",
+            {1: ADAPTER_KEY},
+        )
+    )
+    request = {
+        "x_mm": round(float(command.parameters["x"]) * 1_000),
+        "y_mm": round(float(command.parameters["y"]) * 1_000),
+        "z_mm": round(float(command.parameters["z"]) * 1_000),
+        "speed_mm_s": round(float(command.parameters["speed"]) * 1_000),
+        "navigation_route_id": intent.intent_id,
+    }
+
+    with control_relay.client.websocket_connect(f"/ws/{SESSION}") as adapter:
+        _authenticate(adapter, source="adapter")
+        link = RelayNodeLink(
+            control_relay.runtime,
+            SESSION,
+            delivery_timeout_ms=100,
+            navigation_control=control,
+        )
+        from adapters.dji_mini3.remote import CommandRequest
+
+        asyncio.run(asyncio.to_thread(link.authorize_navigation, prepared.plan, command, localized))
+        asyncio.run(
+            asyncio.to_thread(
+                link.send,
+                CommandRequest(
+                    command.command_id,
+                    command.intent_id,
+                    command.roster_version,
+                    command.drone_id,
+                    command.connection_epoch,
+                    command.operation,
+                    request,
+                ),
+            )
+        )
+
+        authorization = _receive_until(
+            adapter, lambda event: event["type"] == "navigation_route_authorization"
+        )
+        initial_pose = _receive_until(adapter, lambda event: event["type"] == "navigation_pose")
+        goto = _receive_until(adapter, lambda event: event["type"] == "command")
+
+    assert authorization["command_id"] == command.command_id
+    assert initial_pose["status"] == "ready"
+    assert initial_pose["command_id"] == command.command_id
+    assert goto["operation"] == "goto"
+    assert goto["args"] == request
+
+
+def test_authorization_delivery_failure_prevents_mapped_goto(
+    control_relay: ControlRelay, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from planner.control_provenance import ControlProvenance
+    from planner.models import CommandOperation
+    from planner.test_navigation_runtime import stack
+    from relay.bridge import RelayNodeLink
+    from relay.navigation_control import NavigationControl, NavigationControlConfig
+
+    controller, _, _, snapshot, current, _, intent = stack()
+    navigation = controller.planner.navigation
+    navigation.require_phone_authorization = True
+    prepared = controller.prepare(intent, snapshot, current_snapshot=current)
+    command = next(
+        item for item in prepared.plan.commands if item.operation is CommandOperation.GOTO
+    )
+    localized = replace(
+        snapshot,
+        aircraft={
+            1: replace(
+                snapshot.aircraft[1],
+                control_provenance=ControlProvenance(
+                    "map-sha",
+                    "geometry-sha",
+                    "camera-calibration-sha",
+                    "body-extrinsics-sha",
+                    "camera-clock",
+                    "relay-clock",
+                    ("tag-camera", "msdk-velocity", "tof-height"),
+                    1.0,
+                    5,
+                    "ready",
+                    snapshot.now_ms,
+                    0.01,
+                ),
+            )
+        },
+    )
+    control = NavigationControl(
+        NavigationControlConfig(
+            navigation, _control_config(control_relay.clock), "navigation-config", {1: ADAPTER_KEY}
+        )
+    )
+
+    async def undeliver(*args: object, **kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(control_relay.runtime, "deliver_to_node", undeliver)
+    link = RelayNodeLink(
+        control_relay.runtime, SESSION, delivery_timeout_ms=100, navigation_control=control
+    )
+    from adapters.protocols import AdapterError
+
+    with pytest.raises(AdapterError, match="authorization could not be delivered"):
+        asyncio.run(asyncio.to_thread(link.authorize_navigation, prepared.plan, command, localized))
+    assert control_relay.session.metrics()["commands_issued"] == 0

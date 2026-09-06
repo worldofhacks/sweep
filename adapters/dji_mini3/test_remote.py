@@ -60,11 +60,15 @@ class ScriptedLink:
         self._capabilities = dict(capabilities or {})
         self._media = dict(media or {})
         self.sent: list[CommandRequest] = []
+        self.authorizations: list[tuple[Plan, Command, object]] = []
         self._pending: dict[str, deque[WireAcknowledgement]] = {}
         self._clock = 100_000
 
     def connection_epoch(self, drone_id: int) -> int | None:
         return self.epochs.get(drone_id)
+
+    def authorize_navigation(self, plan: Plan, command: Command, snapshot: object) -> None:
+        self.authorizations.append((plan, command, snapshot))
 
     def send(self, request: CommandRequest) -> None:
         self.sent.append(request)
@@ -602,3 +606,30 @@ def test_command_deadline_bounds_a_node_that_only_heartbeats() -> None:
         RemoteBridgeAdapter(
             link, epochs=link.epochs, acknowledgement_timeout_ms=TIMEOUT_MS, command_deadline_ms=10
         )
+
+
+def test_mapped_goto_retains_its_authorized_route_id_on_the_wire() -> None:
+    from planner.test_navigation_runtime import stack
+
+    controller, _, _, snapshot, current, _, intent = stack()
+    runtime = controller.planner.navigation
+    runtime.require_phone_authorization = True
+    prepared = controller.prepare(intent, snapshot, current_snapshot=current)
+    command = next(
+        item for item in prepared.plan.commands if item.operation is CommandOperation.GOTO
+    )
+    link = ScriptedLink(epochs={1: 1})
+    adapter = _adapter(link)
+
+    with adapter.for_commands(intent.intent_id, snapshot.roster_version, prepared.plan.commands):
+        adapter.authorize_navigation(prepared.plan, command, snapshot)
+        adapter.goto(
+            command.drone_id,
+            float(command.parameters["x"]),
+            float(command.parameters["y"]),
+            float(command.parameters["z"]),
+            float(command.parameters["speed"]),
+        )
+
+    assert link.authorizations == [(prepared.plan, command, snapshot)]
+    assert link.sent[0].args["navigation_route_id"] == intent.intent_id

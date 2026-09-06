@@ -6,6 +6,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
@@ -27,6 +28,7 @@ class NavigationDeployment:
     max_aircraft: int
     control_store_identity: str
     backend: str
+    configuration_id: str
 
 
 def load_navigation_deployment(
@@ -77,7 +79,11 @@ def load_navigation_deployment(
         return NavigationArtifact.from_geometry_directory(bundle, geometry, accepted, zones)
 
     deployment = NavigationDeployment(
-        NavigationRuntime(artifact, execution, permission), max_aircraft, identity, backend
+        NavigationRuntime(artifact, execution, permission),
+        max_aircraft,
+        identity,
+        backend,
+        sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
     )
     if backend == "remote":
         report = _object(_read(geometry / "geometry.json"), "geometry report")
