@@ -64,6 +64,7 @@ from relay.control_localization import (
     ControlLocalizationProjector,
 )
 from relay.intent_v1 import IntentName, IntentV1
+from relay.mapping import SessionMapper
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 
@@ -960,6 +961,11 @@ def create_autonomy_app(
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_factory=control_localization_factory,
         transcript_service_factory=transcript_service_factory,
+        # The occupancy grid covers the floor this composition is allowed to command,
+        # taken from the same safety configuration the arbiter enforces.
+        mapper_factory=lambda _settings, mapper_clock: SessionMapper(
+            geofence=config.safety.geofence, clock=mapper_clock
+        ),
     )
     composition.bind(app)
     return app, composition

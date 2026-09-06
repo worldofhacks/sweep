@@ -17,8 +17,9 @@ from threading import Lock, RLock
 from anyio import CancelScope
 from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
+from planner.models import Geofence
 from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import (
     AuthenticationError,
@@ -30,6 +31,7 @@ from relay.auth import (
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.control_localization import ControlLocalizationProjector
 from relay.intent_v1 import REGISTERED_SOURCES
+from relay.mapping import SessionMapper
 from relay.media import MediaEvidence, MediaMonitor, MediaMtxClient
 from relay.session import (
     Clock,
@@ -39,7 +41,7 @@ from relay.session import (
     LeaveAuthorizer,
     RelaySession,
 )
-from relay.settings import RelaySettings, console_origins_from_env
+from relay.settings import RelaySettings, SettingsError, console_origins_from_env
 from relay.voice import MAX_AUDIO_BYTES, MAX_AUDIO_DURATION_MS, TranscriptService, VoiceOutcome
 
 IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
@@ -54,6 +56,7 @@ TranscriptServiceFactory = Callable[["RelayRuntime"], TranscriptService]
 AuthoritativeRoomsFactory = Callable[[RelaySession], tuple[str, ...]]
 ControlLocalizationFactory = Callable[[str], ControlLocalizationProjector | None]
 MediaMonitorFactory = Callable[[RelaySettings, Clock], MediaMonitor | None]
+MapperFactory = Callable[[RelaySettings, Clock], SessionMapper | None]
 
 
 def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor | None:
@@ -73,6 +76,27 @@ def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor
         poll_interval_ms=settings.media_poll_interval_ms,
         stale_after_ms=settings.media_stale_after_ms,
     )
+
+
+def default_session_mapper(settings: RelaySettings, clock: Clock) -> SessionMapper | None:
+    """The occupancy mapper behind the map endpoint, sized from the configured geofence."""
+    return SessionMapper(geofence=_configured_geofence(), clock=clock)
+
+
+def _configured_geofence() -> Geofence | None:
+    """The safety geofence this process is configured with, or ``None`` without one.
+
+    ``relay.autonomy`` composes this module, so the import is deferred to call time. A
+    relay run without the autonomy configuration (``relay.app:app`` on its own, and every
+    test that builds the app directly) has no geofence, and the mapper falls back to its
+    fixed extent rather than guessing at the room.
+    """
+    from relay.autonomy import AutonomyConfig
+
+    try:
+        return AutonomyConfig.from_env().safety.geofence
+    except SettingsError:
+        return None
 
 
 @dataclass(eq=False, slots=True)
@@ -167,9 +191,11 @@ class RelayRuntime:
         control_localization_factory: ControlLocalizationFactory | None = None,
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         media_monitor: MediaMonitor | None = None,
+        mapper: SessionMapper | None = None,
     ) -> None:
         self.settings = settings
         self.media_monitor = media_monitor
+        self.mapper = mapper
         self.credential_resolver = credential_resolver or settings.credential_resolver()
         self.clock = clock or _epoch_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
@@ -244,6 +270,8 @@ class RelayRuntime:
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
+                if self.mapper is not None:
+                    self.mapper.attach(session)
                 self.sessions[session_id] = session
             return session
 
@@ -912,6 +940,7 @@ def create_app(
     transcript_service_factory: TranscriptServiceFactory | None = None,
     shutdown_callback: ShutdownCallback | None = None,
     media_monitor_factory: MediaMonitorFactory | None = None,
+    mapper_factory: MapperFactory | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -920,6 +949,7 @@ def create_app(
         build_monitor = (
             default_media_monitor if media_monitor_factory is None else media_monitor_factory
         )
+        build_mapper = default_session_mapper if mapper_factory is None else mapper_factory
         runtime = RelayRuntime(
             active_settings,
             credential_resolver=credential_resolver,
@@ -932,6 +962,7 @@ def create_app(
             control_localization_factory=control_localization_factory,
             control_pose_signing_key=control_pose_signing_key,
             media_monitor=build_monitor(active_settings, active_clock),
+            mapper=build_mapper(active_settings, active_clock),
         )
         application.state.relay_runtime = runtime
         application.state.transcript_service = (
@@ -1117,6 +1148,48 @@ def create_app(
         if media is None:
             return JSONResponse({"media": None}, status_code=503, headers=headers)
         return JSONResponse({"media": media}, headers=headers)
+
+    @application.get("/api/sessions/{session_id}/map", response_class=Response)
+    def session_map(session_id: str, authorization: str | None = Header(default=None)) -> Response:
+        """The session's occupancy grid as an 8-bit grayscale PNG.
+
+        0 is occupied, 255 free, 128 unknown. Row 0 of the image is the maximum y, so a
+        viewer drawing it top-down onto a canvas needs no flip; the ``X-Sweep-Map-Origin``
+        headers give the world position of the bottom-left cell corner. A session that has
+        received no scan yet has no grid and answers 404 rather than an empty image.
+        """
+        runtime = authorized_runtime(authorization)
+        try:
+            _validate_session_id(session_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid session ID") from None
+        image = None if runtime.mapper is None else runtime.mapper.render(session_id)
+        if image is None:
+            raise HTTPException(status_code=404, detail="the session has no occupancy grid")
+        return Response(
+            content=image.png,
+            media_type="image/png",
+            headers={**image.headers(), "Cache-Control": "no-store"},
+        )
+
+    @application.post("/api/sessions/{session_id}/map/reset")
+    def session_map_reset(
+        session_id: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, object]:
+        """Clear the session's occupancy grid and record who cleared it in the audit."""
+        runtime = authorized_runtime(authorization)
+        try:
+            _validate_session_id(session_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid session ID") from None
+        session = runtime.sessions.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="the session is not live")
+        cleared = runtime.mapper is not None and runtime.mapper.reset(session_id)
+        try:
+            return session.record_map_reset(cleared=cleared)
+        except AuditLogError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from None
 
     @application.get("/session/{session_id}")
     def replay(
