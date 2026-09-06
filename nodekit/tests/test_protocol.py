@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -260,8 +261,42 @@ def test_an_unknown_hardware_profile_field_is_refused_rather_than_dropped() -> N
         )
 
 
+# Everything the kit ships to a device. ``vectors.py`` is a development tool that
+# regenerates the wire vectors from the relay and never runs there.
+SHIPPED = ("__init__.py", "protocol.py", "device.py", "node.py", "fake.py", "cli.py")
+
+
+def shipped_sources() -> list[Path]:
+    package = Path(__file__).resolve().parent.parent
+    return [package / name for name in SHIPPED]
+
+
 def test_the_kit_stays_within_python_3_9_syntax() -> None:
     """The kit runs on the robot's own interpreter, which is older than the repo's."""
     package = Path(__file__).resolve().parent.parent
     for path in sorted(package.glob("*.py")):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path), feature_version=(3, 9))
+
+
+def test_the_kit_imports_nothing_from_this_repository_but_itself() -> None:
+    """The kit is copied onto the robot on its own: only the standard library and
+    ``websockets`` are there with it. Equivalence with the relay is proven by the
+    generated vectors, never by importing it."""
+    allowed = {"nodekit", "websockets"}
+    for path in shipped_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                roots = [(node.module or "").split(".")[0]] if node.level == 0 else []
+            else:
+                continue
+            for root in roots:
+                assert root in allowed or _is_standard_library(root), (
+                    f"{path.name} imports {root}, which will not exist on the device"
+                )
+
+
+def _is_standard_library(name: str) -> bool:
+    return name in sys.stdlib_module_names
