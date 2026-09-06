@@ -313,7 +313,8 @@ class CoverageLedger:
             return CoverageObservation(False, "connection_epoch_mismatch", ())
         if (
             now_s - pose.observed_at_s > self._max_pose_age_s
-            or abs(pose.pose_timestamp_s - event.frame_decoded_at_monotonic_s) > self._max_pose_skew_s
+            or abs(pose.pose_timestamp_s - event.frame_decoded_at_monotonic_s)
+            > self._max_pose_skew_s
         ):
             return CoverageObservation(False, "stale_pose", ())
         frame_key = (event.identity.source_id, event.identity.frame_id, event.identity.mission_id)

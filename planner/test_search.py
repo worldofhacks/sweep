@@ -13,11 +13,10 @@ from planner.navigation import (
     GridLevel,
     MotionConfig,
     NavigationArtifact,
-    NavigationEvidence,
-    preview_evidence,
     NavigationPermission,
     Pose,
     Zone,
+    preview_evidence,
 )
 from planner.search import SearchArea, SearchDrone, SearchPlanner, SearchRefusal, SearchRequest
 
@@ -33,11 +32,26 @@ def pose(x: float, y: float) -> Pose:
 
 def artifact(blocked: frozenset[tuple[int, int]] = frozenset()) -> NavigationArtifact:
     return NavigationArtifact(
-        ArtifactPin("map-v3", "a" * 64), ArtifactPin("geometry-v3", "b" * 64),
-        ArtifactPin("preview", "c" * 64), preview_evidence("synthetic"),
-        0.5, ((0.0, 0.0), (14.0, 0.0), (14.0, 5.0), (0.0, 5.0), (0.0, 0.0)), 0.0, 3.0,
+        ArtifactPin("map-v3", "a" * 64),
+        ArtifactPin("geometry-v3", "b" * 64),
+        ArtifactPin("preview", "c" * 64),
+        preview_evidence("synthetic"),
+        0.5,
+        ((0.0, 0.0), (14.0, 0.0), (14.0, 5.0), (0.0, 5.0), (0.0, 0.0)),
+        0.0,
+        3.0,
         (GridLevel("level_1", 1, (0, 0), 1, 14, 5, blocked),),
-        (Zone("search-zone", "level_1", True, ((0.0, 0.0), (14.0, 0.0), (14.0, 5.0), (0.0, 5.0), (0.0, 0.0)), 0.0, 3.0, ()),),
+        (
+            Zone(
+                "search-zone",
+                "level_1",
+                True,
+                ((0.0, 0.0), (14.0, 0.0), (14.0, 5.0), (0.0, 5.0), (0.0, 0.0)),
+                0.0,
+                3.0,
+                (),
+            ),
+        ),
     )
 
 

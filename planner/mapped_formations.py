@@ -303,7 +303,11 @@ def _formation_artifact(
         zone.z_max_m,
         tuple(
             ArrivalSlot(
-                f"route-{index:02d}", route_zone_id, assignment.slot.pose, motion.swept_radius_m, motion.swept_half_height_m
+                f"route-{index:02d}",
+                route_zone_id,
+                assignment.slot.pose,
+                motion.swept_radius_m,
+                motion.swept_half_height_m,
             )
             for index, assignment in enumerate(assignments)
         ),

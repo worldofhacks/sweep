@@ -13,19 +13,19 @@ from planner.models import (
     Refusal,
     RefusalReason,
 )
-from planner.navigation_acceptance import NavigationDispatchAcceptance
 from planner.navigation import (
     DronePose,
     MotionConfig,
     NavigationArtifact,
+    NavigationLiveState,
     NavigationPermission,
     NavigationPlan,
-    NavigationLiveState,
     NavigationPlanner,
     NavigationRefusal,
     NavigationRequest,
     Pose,
 )
+from planner.navigation_acceptance import NavigationDispatchAcceptance
 from relay.intent_v1 import IntentName, IntentV1
 
 
@@ -163,7 +163,10 @@ class NavigationRuntime:
         artifact: Callable[[], NavigationArtifact],
         config: NavigationExecutionConfig,
         permission: NavigationPermission,
-        dispatch_acceptance: Callable[[NavigationPlan, NavigationArtifact], NavigationDispatchAcceptance | None] | None = None,
+        dispatch_acceptance: Callable[
+            [NavigationPlan, NavigationArtifact], NavigationDispatchAcceptance | None
+        ]
+        | None = None,
     ) -> None:
         self.artifact = artifact
         self.config = config
@@ -196,9 +199,7 @@ class NavigationRuntime:
             raise ValueError("control localization P95 uncertainty must be positive and finite")
         self.control_pins = dict(pins)
         self.control_max_fix_age_ms = max_fix_age_ms
-        self.control_max_position_uncertainty_p95_m = float(
-            max_position_uncertainty_p95_m
-        )
+        self.control_max_position_uncertainty_p95_m = float(max_position_uncertainty_p95_m)
 
     def prepare(self, intent: IntentV1, snapshot: FleetSnapshot) -> Plan | Refusal:
         try:
@@ -283,7 +284,9 @@ class NavigationRuntime:
             return self._refusal(plan.intent_id, snapshot, "destination permission changed")
         try:
             artifact = self.artifact()
-            acceptance = self.dispatch_acceptance(route_plan, artifact) if self.dispatch_acceptance else None
+            acceptance = (
+                self.dispatch_acceptance(route_plan, artifact) if self.dispatch_acceptance else None
+            )
             positions = self._positions(snapshot)
             if (artifact.map_pin, artifact.geometry_pin) != (
                 route_plan.map_pin,
@@ -343,9 +346,12 @@ class NavigationRuntime:
                     route_plan,
                     artifact,
                     NavigationLiveState(
-                        route_plan.roster_version, route_plan.plan_revision,
-                        tuple(drone.drone_id for drone in route_plan.selected), positions,
-                        route_plan.config, route_plan.permission,
+                        route_plan.roster_version,
+                        route_plan.plan_revision,
+                        tuple(drone.drone_id for drone in route_plan.selected),
+                        positions,
+                        route_plan.config,
+                        route_plan.permission,
                     ),
                     route_index,
                     cursor,
@@ -410,10 +416,7 @@ class NavigationRuntime:
                     if self.control_max_position_uncertainty_p95_m is None
                     else self.control_max_position_uncertainty_p95_m
                 )
-                if (
-                    uncertainty_p95_m is None
-                    or uncertainty_p95_m > maximum_uncertainty_p95_m
-                ):
+                if uncertainty_p95_m is None or uncertainty_p95_m > maximum_uncertainty_p95_m:
                     raise ValueError("navigation control localization uncertainty is insufficient")
             positions.append(
                 DronePose(

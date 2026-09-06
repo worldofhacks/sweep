@@ -19,9 +19,8 @@ from planner.navigation import (
     GridLevel,
     MotionConfig,
     NavigationArtifact,
-    NavigationEvidence,
-    preview_evidence,
     Pose,
+    preview_evidence,
 )
 
 MOTION = MotionConfig(0.15, 0.2, 0.02, 0.02, 0.05, 0.05)
@@ -46,10 +45,16 @@ def drone(identity: int, x: float, y: float, z: float = 1.5) -> DronePose:
 
 def artifact(blocked: frozenset[tuple[int, int]] = frozenset()) -> NavigationArtifact:
     return NavigationArtifact(
-        ArtifactPin("map-v3", "a" * 64), ArtifactPin("geometry-v3", "b" * 64),
-        ArtifactPin("preview", "c" * 64), preview_evidence("synthetic"),
-        0.5, ((0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0), (0.0, 0.0)),
-        0.0, 4.0, (GridLevel("level_1", 1.5, (0.0, 0.0), 1.0, 20, 20, blocked),), (),
+        ArtifactPin("map-v3", "a" * 64),
+        ArtifactPin("geometry-v3", "b" * 64),
+        ArtifactPin("preview", "c" * 64),
+        preview_evidence("synthetic"),
+        0.5,
+        ((0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0), (0.0, 0.0)),
+        0.0,
+        4.0,
+        (GridLevel("level_1", 1.5, (0.0, 0.0), 1.0, 20, 20, blocked),),
+        (),
     )
 
 

@@ -267,6 +267,8 @@ def test_phone_authorization_binds_each_goto_to_the_frozen_route() -> None:
     prepared = controller.prepare(intent, snapshot, current_snapshot=current)
 
     assert isinstance(prepared, PreparedExecution)
-    gotos = [command for command in prepared.plan.commands if command.operation is CommandOperation.GOTO]
+    gotos = [
+        command for command in prepared.plan.commands if command.operation is CommandOperation.GOTO
+    ]
     assert gotos
     assert all(command.parameters["navigation_route_id"] == intent.intent_id for command in gotos)

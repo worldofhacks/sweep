@@ -15,7 +15,6 @@ from planner.navigation import (
     NavigationArtifact,
     NavigationPermission,
     Pose,
-    Zone,
 )
 from planner.navigation_runtime import NavigationExecutionConfig, NavigationRuntime
 from relay.settings import SettingsError
@@ -140,11 +139,20 @@ def _arrival_slots(value: object) -> tuple[ArrivalSlot, ...]:
             data = _object(slot, "arrival slot")
             _only(data, {"id", "x_m", "y_m", "z_m", "radius_m", "half_height_m"})
             try:
-                slots.append(ArrivalSlot(
-                    _text(data.get("id"), "slot id"), _text(item.get("id"), "zone id"),
-                    Pose(_number(data.get("x_m"), "x_m"), _number(data.get("y_m"), "y_m"), _number(data.get("z_m"), "z_m"), _text(item.get("floor_id"), "floor_id")),
-                    _positive(data.get("radius_m"), "radius_m"), _positive(data.get("half_height_m"), "half_height_m"),
-                ))
+                slots.append(
+                    ArrivalSlot(
+                        _text(data.get("id"), "slot id"),
+                        _text(item.get("id"), "zone id"),
+                        Pose(
+                            _number(data.get("x_m"), "x_m"),
+                            _number(data.get("y_m"), "y_m"),
+                            _number(data.get("z_m"), "z_m"),
+                            _text(item.get("floor_id"), "floor_id"),
+                        ),
+                        _positive(data.get("radius_m"), "radius_m"),
+                        _positive(data.get("half_height_m"), "half_height_m"),
+                    )
+                )
             except ValueError as error:
                 raise SettingsError(f"invalid arrival slot: {error}") from error
     if len({slot.slot_id for slot in slots}) != len(slots):

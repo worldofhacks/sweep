@@ -349,9 +349,7 @@ class SearchRuntime:
             artifact = self.navigation.artifact()
             positions = self.navigation._positions(snapshot)
             actual_roster = {(item.drone_id, item.connection_epoch) for item in positions}
-            frozen_roster = {
-                (item.drone_id, item.connection_epoch) for item in route.roster
-            }
+            frozen_roster = {(item.drone_id, item.connection_epoch) for item in route.roster}
             if not route.roster or frozen_roster != actual_roster:
                 raise ValueError("search obstacle roster changed")
             if (
