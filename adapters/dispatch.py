@@ -622,8 +622,29 @@ class AdapterDispatcher:
                     )
                 )
             else:
-            raw_refusal = self._navigation_check(plan, command, current)
-            raw_refusal = raw_refusal or self.arbiter.check_command(
+                completed_snapshot = provider()
+                post_io_refusal = self._navigation_check(
+                    plan, command, completed_snapshot, completed=True
+                )
+                if post_io_refusal is not None:
+                    affected[command.drone_id] = command
+                    acknowledgements.extend(
+                        self._hold_affected(
+                            plan, affected, provider, owner_still_valid=owner_still_valid
+                        )
+                    )
+                    return self._refused(
+                        plan,
+                        provider(),
+                        post_io_refusal,
+                        acknowledgements=acknowledgements,
+                        degraded=degraded,
+                    )
+                if plan.navigation is not None and self.on_navigation_command_completed is not None:
+                    self.on_navigation_command_completed(plan, command, completed_snapshot)
+                target = self.arbiter.command_position(
+                    effective_command, current.aircraft[effective_command.drone_id]
+                )
                 if target is not None:
                     projected[effective_command.drone_id] = target
                 if command.operation not in {
