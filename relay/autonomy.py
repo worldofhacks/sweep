@@ -28,6 +28,7 @@ import os
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import get_origin, get_type_hints
 
@@ -46,6 +47,7 @@ from planner.models import (
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
+    MembershipState,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
@@ -64,7 +66,7 @@ from relay.control_localization import (
     ControlLocalizationPins,
     ControlLocalizationProjector,
 )
-from relay.intent_v1 import IntentName, IntentV1
+from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.mapping import SessionMapper
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
@@ -386,6 +388,7 @@ class _Job:
     publications: list[dict[str, object]] = field(default_factory=list)
     cancelled_by: str | None = None
     finished: bool = False
+    position_loss_action: str | None = None
 
     def check(self) -> None:
         if self.cancelled_by is not None:
@@ -488,6 +491,12 @@ class AutonomySession:
         self._estop = _Lane("estop", self._lock)
         self._lanes = (self._normal, self._hold, self._estop)
         self._awaiting: dict[str, _AwaitingExecution] = {}
+        self._position_loss_since: dict[tuple[int, int], int] = {}
+        self._position_hold_targets: frozenset[tuple[int, int]] = frozenset()
+        self._position_hold_roster: int | None = None
+        self._position_hold_job: _Job | None = None
+        self._position_land_job: _Job | None = None
+        self._position_landing_requested = False
         self._workers = [
             threading.Thread(
                 target=self._run,
@@ -519,6 +528,121 @@ class AutonomySession:
 
     def __call__(self, intent: IntentV1, state: dict[str, object]) -> None:
         self.submit(intent, state)
+
+    def periodic_ingress(self) -> list[dict[str, object]]:
+        """Queue bounded fleet safety work without blocking the relay on adapter I/O.
+
+        Each loss episode produces a hold and, after the configured dwell, an
+        aircraft-only landing. Fresh poor-quality telemetry does not restart the
+        dwell. Jobs use the same lanes, preemption, audit and late-ACK ownership as
+        operator work, but do not refresh operator presence or change selection.
+        """
+        runtime = self._composition.runtime_if_bound()
+        session = None if runtime is None else runtime.sessions.get(self.session_id)
+        if session is None:
+            return []
+        state = session.current_state()
+        snapshot = self.snapshot(state)
+        devices = {
+            (aircraft.drone_id, aircraft.connection_epoch): aircraft
+            for aircraft in snapshot.aircraft.values()
+            if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+            and aircraft.mobile
+        }
+        # Ground nodes remain mobile while idle before arm. Those stationary
+        # devices must not trigger safety work during bring-up.
+        active = snapshot.armed or any(
+            aircraft.airborne or aircraft.drive_state is DriveState.MOVING
+            for aircraft in devices.values()
+        )
+        losses: dict[tuple[int, int], int] = {}
+        invalid_clock = False
+        if active and not snapshot.estop_active:
+            for key, aircraft in devices.items():
+                future = self.arbiter.timestamp_exceeds_future_skew(
+                    snapshot, aircraft.position_last_seen_ms
+                )
+                stale = (
+                    snapshot.now_ms - aircraft.position_last_seen_ms
+                    > self.arbiter.config.max_position_age_ms
+                )
+                if (
+                    aircraft.position_quality < self.arbiter.config.min_position_quality
+                    or future
+                    or stale
+                ):
+                    invalid_clock |= future
+                    losses[key] = (
+                        min(
+                            snapshot.now_ms,
+                            aircraft.position_last_seen_ms
+                            + self.arbiter.config.max_position_age_ms,
+                        )
+                        if stale
+                        else snapshot.now_ms
+                    )
+        with self._lock:
+            if not losses:
+                self._position_loss_since.clear()
+                self._position_hold_targets = frozenset()
+                self._position_hold_roster = None
+                self._position_hold_job = None
+                self._position_land_job = None
+                self._position_landing_requested = False
+                return []
+            self._position_loss_since = {
+                key: min(self._position_loss_since.get(key, since), since)
+                for key, since in losses.items()
+            }
+            loss_since = min(self._position_loss_since.values())
+            targets = frozenset(devices)
+            hold = (
+                targets != self._position_hold_targets
+                or snapshot.roster_version != self._position_hold_roster
+            )
+            land = (
+                not self._position_landing_requested
+                and not hold
+                and self._position_hold_job is not None
+                and self._position_hold_job.finished
+                and any(aircraft.airborne for aircraft in devices.values())
+                and (
+                    invalid_clock
+                    or snapshot.now_ms - loss_since >= self.arbiter.config.positioning_loss_hold_ms
+                )
+            )
+        events: list[dict[str, object]] = []
+        for action, needed in (("hold", hold), ("land", land)):
+            if not needed:
+                continue
+            intent = IntentV1(
+                v=1,
+                t=snapshot.now_ms,
+                type="intent",
+                intent_id=f"safety:position-loss:{action}:{session.event_ids()}",
+                retry_of=None,
+                source="console",
+                session=self.session_id,
+                name=IntentName.HOLD if action == "hold" else IntentName.LAND_ALL,
+                args={},
+                selection=tuple(sorted(aircraft.drone_id for aircraft in devices.values())),
+                mode=Mode(state.get("mode", "indoor")),
+                confirm=True,
+            )
+            events.append(session.admit_safety_stop(intent))
+            job = _Job(intent, session, position_loss_action=action)
+            lane = self._route(job)
+            with lane.ready:
+                lane.pending.append(job)
+                if action == "hold":
+                    self._position_hold_targets = targets
+                    self._position_hold_roster = snapshot.roster_version
+                    self._position_hold_job = job
+                else:
+                    self._position_landing_requested = True
+                    self._position_land_job = job
+                lane.ready.notify()
+        return events
 
     def authorize_leave(
         self, drone_id: int, connection_epoch: int, state: dict[str, object]
@@ -706,7 +830,16 @@ class AutonomySession:
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
             )
-            result = controller.execute(intent, snapshot, current_snapshot=current)
+            if job.position_loss_action is None:
+                result = controller.execute(intent, snapshot, current_snapshot=current)
+            else:
+                plan = self.planner.fleet_position_loss_plan(
+                    intent_id=intent.intent_id,
+                    snapshot=snapshot,
+                    land=job.position_loss_action == "land",
+                )
+                with dispatcher.observe_commands(session.register_dispatched_command):
+                    result = dispatcher.dispatch(plan, snapshot, current_snapshot=current)
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -730,6 +863,7 @@ class AutonomySession:
             else:
                 self._awaiting.pop(intent.intent_id, None)
                 job.finished = True
+            self._retry_changed_position_safety(job, result)
             cancelled = job.cancelled_by
         if cancelled is not None:
             return  # a stop already recorded this plan's terminal lifecycle
@@ -809,19 +943,33 @@ class AutonomySession:
 
         try:
             assert owner.pending.plan is not None
-            return owner.dispatcher.resume_after_completion(
-                owner.pending.plan,
-                owner.pending,
-                token.acknowledgement,
-                owner.snapshot,
-                current_snapshot=current,
-                owner_still_valid=lambda: self._owns_resume(token),
+            observation = (
+                owner.dispatcher.observe_commands(owner.session.register_dispatched_command)
+                if owner.job.position_loss_action is not None
+                else nullcontext()
             )
+            with observation:
+                return owner.dispatcher.resume_after_completion(
+                    owner.pending.plan,
+                    owner.pending,
+                    token.acknowledgement,
+                    owner.snapshot,
+                    current_snapshot=current,
+                    owner_still_valid=lambda: self._owns_resume(token),
+                )
         except Exception as error:
             return _resume_failure(token, error)
 
     def commit_resume(self, token: _ResumeToken, result: ExecutionResult) -> RelayExecution | None:
         """Commit a still-owned late result and retain ownership if another command waits."""
+        updated_snapshot = (
+            self.snapshot(
+                token.owner.session.current_state(),
+                capture_readiness=token.owner.session.capture_readiness,
+            )
+            if result.status is LifecycleStatus.EXECUTING
+            else None
+        )
         with self._lock:
             if (
                 self._awaiting.get(token.intent_id) is not token.owner
@@ -831,13 +979,12 @@ class AutonomySession:
             owner = token.owner
             owner.pending = result
             if result.status is LifecycleStatus.EXECUTING:
-                owner.snapshot = self.snapshot(
-                    owner.session.current_state(),
-                    capture_readiness=owner.session.capture_readiness,
-                )
+                assert updated_snapshot is not None
+                owner.snapshot = updated_snapshot
             else:
                 self._awaiting.pop(token.intent_id, None)
                 owner.job.finished = True
+            self._retry_changed_position_safety(owner.job, result)
         try:
             events = apply_result(owner.session, owner.job.intent, result)
         except ValueError:
@@ -845,6 +992,21 @@ class AutonomySession:
                 raise
             return None
         return RelayExecution(result, tuple(events))
+
+    def _retry_changed_position_safety(self, job: _Job, result: ExecutionResult) -> None:
+        """A roster/epoch race retires a stop plan, not the continuing loss episode.
+
+        Called with the worker lock held. Ordinary device failures stay visible
+        without creating a 10 Hz retry loop.
+        """
+        if result.refusal is None or result.refusal.reason not in {
+            RefusalReason.STALE_ROSTER, RefusalReason.STALE_CONNECTION_EPOCH
+        }:
+            return
+        if job is self._position_hold_job:
+            self._position_hold_roster = None
+        if job is self._position_land_job:
+            self._position_landing_requested = False
 
     def resume_after_acknowledgement(
         self, session: RelaySession, acknowledgement: WireAcknowledgement

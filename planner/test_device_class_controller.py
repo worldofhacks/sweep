@@ -16,6 +16,7 @@ class SafetyDevices:
         self.snapshot = snapshot
         self.fail_hold = fail_hold
         self.calls: list[tuple[CommandOperation, int]] = []
+        self.pending = False
 
     def hover(self, ids: list[int]) -> tuple[AdapterAcknowledgement, ...]:
         return self._acknowledge(ids, CommandOperation.HOVER)
@@ -33,7 +34,9 @@ class SafetyDevices:
                 drone_id,
                 self.snapshot.aircraft[drone_id].connection_epoch,
                 operation,
-                LifecycleStatus.FAILED
+                LifecycleStatus.EXECUTING
+                if self.pending
+                else LifecycleStatus.FAILED
                 if self.fail_hold and operation is CommandOperation.HOVER
                 else LifecycleStatus.COMPLETED,
             )
@@ -98,3 +101,20 @@ def test_current_position_evidence_does_not_stop_a_mixed_fleet() -> None:
     assert not result.detected
     assert result.execution is None and result.hold_execution is None
     assert devices.calls == []
+
+
+def test_pending_hold_cannot_be_overtaken_by_position_loss_landing() -> None:
+    snapshot = replace_aircraft(
+        make_mixed_snapshot(), 11, position_last_seen_ms=NOW_MS - 4_000
+    )
+    controller, _, _, dispatcher, _, _ = make_stack(snapshot)
+    devices = SafetyDevices(snapshot)
+    devices.pending = True
+    dispatcher.flight = devices
+
+    result = controller.handle_positioning_loss(snapshot)
+
+    assert result.action == "hold"
+    assert result.execution is not None
+    assert result.execution.status is LifecycleStatus.EXECUTING
+    assert all(operation is CommandOperation.HOVER for operation, _ in devices.calls)
