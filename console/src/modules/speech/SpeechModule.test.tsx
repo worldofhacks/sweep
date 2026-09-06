@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test, vi } from 'vitest'
 import App from '../../App'
-import { FixtureRelayClient } from '../../testing/fixture-relay-client'
-import type { VoicePlan, VoicePlanStep } from '../../relay/contract'
+import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
+import { C1_BASIC_CONTROL_INTENTS, type VoicePlan, type VoicePlanStep } from '../../relay/contract'
+import type { NavigationClient, NavigationPreview } from '../../navigation/client'
 import type { TranscriptClient, TranscriptRequest, VoiceOutcome } from '../../voice/client'
 import type { RecorderFactory } from '../../voice/use-push-to-talk'
 import type { VoiceDependencies } from '../types'
@@ -98,7 +99,11 @@ function outcome(overrides: Partial<VoiceOutcome>): VoiceOutcome {
   }
 }
 
-function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Promise<MediaStream> } = {}) {
+function mount(options: {
+  transcript?: TranscriptClient
+  navigation?: NavigationClient
+  requestAudio?: () => Promise<MediaStream>
+} = {}) {
   let current = T0
   const now = () => current
   let sequence = 0
@@ -122,7 +127,7 @@ function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Pr
       clients={clients}
       intentDependencies={{ now, nextId: () => `speech-intent-${++sequence}` }}
       initialModule="speech"
-      services={{ transcript: options.transcript, voice }}
+      services={{ transcript: options.transcript, navigation: options.navigation, voice }}
     />
   )
   const view = render(element())
@@ -139,6 +144,52 @@ function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Pr
       current += ms
     },
   }
+}
+
+function navigationPreview(intent: { intent_id: string; selection: number[] }): NavigationPreview {
+  return {
+    session,
+    intent_id: intent.intent_id,
+    t: T0,
+    expires_at_ms: T0 + 15_000,
+    plan: {
+      roster_version: 7,
+      selection: intent.selection,
+      navigation: {
+        route: {
+          destination_zone_id: 'lobby',
+          execution_order: intent.selection,
+          routes: intent.selection.map((drone_id) => ({
+            drone: { drone_id },
+            arrival_slot: { slot_id: `lobby-${drone_id}` },
+            waypoints: [{ x_m: 0, y_m: 0, z_m: 1 }, { x_m: 3, y_m: 2, z_m: 1 }],
+          })),
+        },
+      },
+    },
+  }
+}
+
+function enableNavigation(client: FixtureRelayClient) {
+  client.emitServer({
+    v: 1,
+    t: T0,
+    type: 'state',
+    event_id: 'navigation-enabled',
+    session,
+    roster_version: 7,
+    armed: true,
+    estop: false,
+    selection: [1],
+    formation: 'none',
+    spacing: 0.8,
+    mode: 'indoor',
+    pending: null,
+    accepted_plan: null,
+    capability_profile: 'c1_basic_control.navigation',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'navigate'],
+    drones: fixtureAircraft(T0),
+  })
 }
 
 const listenButton = () => screen.getByRole('button', { name: /Hold to talk|Listening|Language disabled|Transcribing/ })
@@ -460,6 +511,113 @@ describe('Speech module', () => {
     const tabs = within(screen.getByRole('group', { name: 'Speech panes' }))
     await u.click(tabs.getByRole('button', { name: 'Compiler pipeline' }))
     expect(screen.getByText('plan · relay compiler')).toBeInTheDocument()
+  })
+
+  test('a relay-compiled navigate step previews the route and sends its staged intent after confirmation', async () => {
+    const transcript = new QueuedTranscriptClient()
+    transcript.answer(
+      outcome({
+        transcript: 'Navigate to the lobby.',
+        plan: relayPlan({
+          transcript: 'Navigate to the lobby.',
+          steps: [step(0, 'navigate', [1], { zone_id: 'lobby' })],
+        }),
+      }),
+    )
+    const preview = vi.fn(async (intent) => navigationPreview(intent))
+    const navigation: NavigationClient = {
+      catalog: vi.fn(),
+      preview,
+    }
+    const { clients } = mount({ transcript, navigation })
+    await screen.findByText(/Development fixture active/i)
+    act(() => enableNavigation(clients.console))
+
+    await record()
+    await user().click(await screen.findByRole('button', { name: 'Stage step 1: navigate' }))
+    const dock = await screen.findByRole('region', { name: 'Pending confirmation' })
+    expect(preview).toHaveBeenCalledTimes(1)
+    expect(dock).toHaveTextContent('Navigate')
+    expect(dock).toHaveTextContent('lobby')
+    expect(clients.console.sent).toHaveLength(0)
+
+    await user().click(within(dock).getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    expect(clients.console.sent[0].intent_id).toBe(preview.mock.calls[0][0].intent_id)
+    expect(clients.console.sent[0]).toMatchObject({ name: 'navigate', args: { zone_id: 'lobby' }, confirm: true })
+  })
+
+  test('a replaced relay plan discards an in-flight route preview', async () => {
+    let finish: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { finish = resolve })
+    const transcript = new QueuedTranscriptClient()
+    transcript.answer(outcome({
+      transcript: 'Navigate to the lobby.',
+      plan: relayPlan({ steps: [step(0, 'navigate', [1], { zone_id: 'lobby' })] }),
+    }))
+    transcript.answer(outcome({
+      transcript: 'Do not take off.',
+      plan: relayPlan({
+        kind: 'clarify',
+        transcript: 'Do not take off.',
+        reason: 'ambiguous_action',
+        detail: 'The transcript negates an action, so no step was proposed.',
+        options: [],
+        steps: [],
+        expires_at_ms: null,
+        plan_digest: null,
+      }),
+    }))
+    const navigation: NavigationClient = {
+      catalog: vi.fn(),
+      preview: vi.fn(async (intent) => {
+        await gate
+        return navigationPreview(intent)
+      }),
+    }
+    const { clients } = mount({ transcript, navigation })
+    await screen.findByText(/Development fixture active/i)
+    act(() => enableNavigation(clients.console))
+
+    await record()
+    await user().click(await screen.findByRole('button', { name: 'Stage step 1: navigate' }))
+    expect(planCard()).toHaveTextContent('Preparing the route preview. Nothing is sent until you confirm it in the dock.')
+    expect(screen.getByRole('button', { name: 'Stage step 1: navigate' })).toBeDisabled()
+
+    await record()
+    await waitFor(() => expect(planCard()).toHaveTextContent('The transcript negates an action, so no step was proposed.'))
+    await act(async () => { finish?.() })
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(0)
+  })
+
+  test('an in-flight route preview cannot stage after its compiled plan expires', async () => {
+    let finish: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { finish = resolve })
+    const transcript = new QueuedTranscriptClient()
+    transcript.answer(outcome({
+      transcript: 'Navigate to the lobby.',
+      plan: relayPlan({ steps: [step(0, 'navigate', [1], { zone_id: 'lobby' })] }),
+    }))
+    const navigation: NavigationClient = {
+      catalog: vi.fn(),
+      preview: vi.fn(async (intent) => {
+        await gate
+        return navigationPreview(intent)
+      }),
+    }
+    const { clients, advance } = mount({ transcript, navigation })
+    await screen.findByText(/Development fixture active/i)
+    act(() => enableNavigation(clients.console))
+
+    await record()
+    await user().click(await screen.findByRole('button', { name: 'Stage step 1: navigate' }))
+    advance(30_000)
+    await act(async () => { finish?.() })
+
+    expect(planCard()).toHaveTextContent('plan expired')
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(0)
   })
 
   test('a relay-compiled step that is refused halts the plan, and an expired plan cannot be staged', async () => {

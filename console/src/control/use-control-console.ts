@@ -237,8 +237,16 @@ export function useControlConsole({
     [intentDependencies, stageIntent, state],
   )
 
-  const prepareNavigation = useCallback(async (zoneId: string): Promise<IntentV1> => {
+  const prepareNavigation = useCallback(async (
+    zoneId: string,
+    deadline?: number,
+    isCurrent: () => boolean = () => true,
+  ): Promise<IntentV1> => {
     const current = latestState.current
+    if (!isCurrent()) throw new Error('The route preview is no longer current. Preview it again.')
+    if (deadline !== undefined && intentDependencies.now() >= deadline) {
+      throw new Error('The compiled plan expired. Preview it again.')
+    }
     if (!navigation || !isIntentEnabled(current, 'navigate') || current.connection.status !== 'connected' ||
       current.selection.length === 0 || !selectionReady(current, current.selection)) {
       throw new Error('Select ready aircraft and connect to a relay with navigation configured.')
@@ -249,13 +257,13 @@ export function useControlConsole({
     const startedAt = intentDependencies.now()
     const preview = await navigation.preview(draft)
     const latest = latestState.current
-    if (sequence !== previewSequence.current || latest.rosterVersion !== current.rosterVersion ||
+    if (!isCurrent() || sequence !== previewSequence.current || latest.rosterVersion !== current.rosterVersion ||
       latest.connection !== current.connection || JSON.stringify(latest.selection) !== JSON.stringify(current.selection) ||
       !isIntentEnabled(latest, 'navigate') || !selectionReady(latest, current.selection) ||
       preview.plan.roster_version !== current.rosterVersion) {
       throw new Error('The fleet changed while preparing the route. Preview it again.')
     }
-    const expiresAt = startedAt + preview.expires_at_ms - preview.t
+    const expiresAt = Math.min(deadline ?? Infinity, startedAt + preview.expires_at_ms - preview.t)
     if (intentDependencies.now() >= expiresAt) throw new Error('The route preview expired. Preview it again.')
     return stageForConfirmation(draft, expiresAt, preview)
   }, [navigation, intentDependencies, stageForConfirmation])
