@@ -1,94 +1,173 @@
-# Flight acceptance software evidence
+# Localization software measurement evidence
 
-`python -m evals.flight_acceptance` checks five recorded mapped-route rehearsals against independently measured reference positions. A passing report requires exactly five distinct recording runs, every run and the aggregate at or below 0.25 m nearest-rank p95 position error, and no localization-update interval longer than 500 ms. Flight authorization remains an external decision based on the supplied recordings and separate acceptance records.
+The command **python -m evals.flight_acceptance** calculates bounded localization
+measurements for exactly five recordings. It does not approve a flight, authenticate
+evidence, exercise failure drills, or establish release readiness. A synthetic fixture
+can test the evaluator and receive a software pass; it cannot count as one of the
+physical rehearsals required by issues #86 and #145.
 
-Each run pins its map, geometry, aircraft, camera calibration, body extrinsics, and common clock identity. Reference evidence names its source, measurement method, calibration identity, and calibration bound. The evaluator rejects a reference source ID that is the same as the estimator source ID, but the declared independence and reference quality remain claims supported by the recorded measurement process.
+The physical gate remains external. Its signed record must show five complete
+launch-to-lobby-to-kitchen-hold-return-land rehearsals on the approved route, the
+command and JSONL audit streams, pose traces and video, reference-instrument records,
+the covered-tag, wrong-map and link-silence drills, RC intervention evidence, and the
+current map/route approval. Issue #82 governs the map and route evidence; issue #84
+governs capture-time localization and calibrated latency.
 
-Record physical failure and RC drills as separate signed acceptance measurements. Keep their evidence with the flight-operation record; it is outside this software report.
+## Two hash-bound inputs
 
-## Evidence file
+The command requires:
 
-The input is one JSON document. Values shown here are labels, so replace each with the exact identity used during the rehearsal.
+1. An externally reviewed evaluation manifest. It pins the approved route identifier,
+   route digest and ordered checkpoint geometry; aircraft, map, geometry, camera,
+   body-extrinsics and latency-calibration digests; localizer build/configuration
+   digests; reference and clock-alignment calibration; the exact five immutable raw
+   recording-bundle digests; and measurement bounds.
+2. One evidence document containing the five normalized measurement runs. Its
+   **evaluation_manifest_sha256** must equal the SHA-256 of the exact manifest file
+   bytes.
 
-```json
+The evaluator compares every run with the manifest and includes SHA-256 digests of
+both input files in the report. A digest proves byte identity, not who captured,
+reviewed, or approved the bytes. Preserve the signed manifest and the five raw
+recording bundles outside this report. **raw_run_evidence_sha256** means the digest of
+one immutable raw bundle, not a digest invented from the normalized samples.
+
+The manifest has this strict shape; all shown digest values must be 64 lowercase hex
+characters:
+
+~~~json
 {
   "schema_version": 1,
-  "criteria": {"max_pairing_age_s": 0.1},
-  "runs": [
-    {
-      "run_id": "rehearsal-01",
-      "route_id": "kitchen-to-lobby",
-      "manifest": {
-        "map_id": "map-content-sha256",
-        "geometry_id": "geometry-content-sha256",
-        "aircraft_id": "aircraft-serial",
-        "camera_calibration_id": "camera-calibration-sha256",
-        "body_extrinsics_id": "body-extrinsics-sha256",
-        "clock_id": "room-monotonic-clock",
-        "session_id": "rehearsal-session-2026-09-06-01",
-        "estimator_source_id": "fused-tag-localizer",
-        "reference": {
-          "source_id": "total-station-serial",
-          "method": "surveyed total station",
-          "calibration_id": "total-station-calibration-record",
-          "calibration_bound_m": 0.01,
-          "independence_claimed": true
-        }
+  "manifest_kind": "localization_software_measurement_manifest",
+  "manifest_id": "owner-reviewed-route-evaluation-v1",
+  "route": {
+    "route_id": "approved-lobby-kitchen-return-v1",
+    "route_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "minimum_duration_s": 60.0,
+    "maximum_duration_s": 600.0,
+    "checkpoints": [
+      {
+        "checkpoint_id": "launch",
+        "position_map_m": [0.0, 0.0, 1.2],
+        "radius_m": 0.1
       },
-      "interval": {"start_s": 0.0, "end_s": 0.5},
-      "estimates": [
-        {
-          "id": "estimate-0001",
-          "timestamp_s": 0.1,
-          "clock_id": "room-monotonic-clock",
-          "source_id": "fused-tag-localizer",
-          "status": "available",
-          "position_map_m": [1.2, 0.4, 1.1]
-        }
-      ],
-      "references": [
-        {
-          "id": "reference-0001",
-          "timestamp_s": 0.13,
-          "clock_id": "room-monotonic-clock",
-          "source_id": "total-station-serial",
-          "status": "available",
-          "position_map_m": [1.19, 0.41, 1.1]
-        }
-      ],
-      "localization_updates": [
-        {
-          "id": "update-0001",
-          "timestamp_s": 0.0,
-          "clock_id": "room-monotonic-clock",
-          "source_id": "fused-tag-localizer",
-          "status": "available"
-        },
-        {
-          "id": "update-0002",
-          "timestamp_s": 0.5,
-          "clock_id": "room-monotonic-clock",
-          "source_id": "fused-tag-localizer",
-          "status": "available"
-        }
-      ]
-    }
-  ]
+      {
+        "checkpoint_id": "kitchen-hold",
+        "position_map_m": [12.0, 0.0, 1.2],
+        "radius_m": 0.1
+      },
+      {
+        "checkpoint_id": "return",
+        "position_map_m": [0.0, 0.0, 1.2],
+        "radius_m": 0.1
+      }
+    ]
+  },
+  "deployment": {
+    "aircraft_id": "mini3-serial-1",
+    "map_bundle_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "geometry_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "camera_calibration_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "body_extrinsics_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "latency_calibration_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "estimator": {
+    "source_id": "fused-localizer",
+    "build_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "config_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "reference": {
+    "source_id": "survey-total-station",
+    "method": "surveyed total station",
+    "calibration_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "clock_alignment_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "maximum_calibration_bound_m": 0.02,
+    "maximum_clock_alignment_bound_s": 0.01
+  },
+  "expected_raw_run_evidence_sha256": [
+    "4444444444444444444444444444444444444444444444444444444444444444",
+    "5555555555555555555555555555555555555555555555555555555555555555",
+    "6666666666666666666666666666666666666666666666666666666666666666",
+    "7777777777777777777777777777777777777777777777777777777777777777",
+    "8888888888888888888888888888888888888888888888888888888888888888"
+  ],
+  "limits": {
+    "minimum_estimate_samples_per_run": 119,
+    "minimum_reference_samples_per_run": 119,
+    "minimum_localization_updates_per_run": 119,
+    "max_pairing_age_s": 0.05
+  }
 }
-```
+~~~
 
-Supply five runs, each with a unique `run_id`. Repeated `route_id` values record complete rehearsals of the approved route. A `session_id` can cover more than one rehearsal. Map, geometry, aircraft, camera calibration, and body extrinsics identities must be identical across all five runs. A run can use a different clock identity, provided every estimate, reference, and localization update in that run uses its listed clock. Timestamps are seconds in that clock and are strictly increasing within each series. The interval includes the start and end of the recorded rehearsal. Available localization updates and successfully paired reference samples must each cover every 500 ms interval, including both boundaries.
+The ordered checkpoint path must span at least 1 m. Its minimum duration cannot be
+shorter than that path at the fixed 0.5 m/s route-tube speed limit. The three sample
+minimums cannot be lower than the number needed to cover that minimum duration with
+no interval over 500 ms.
 
-Use `status: "unavailable"` or `"invalid"` with a nonempty `reason` when a recorded sample lacks a usable value. Omit `position_map_m` for either status. The report retains the counts and fails the software checks. Missing fields, duplicate IDs, nonfinite values, out-of-order timestamps, a wrong clock, or a source mismatch are malformed evidence and produce no report.
+Each evidence run has these exact fields:
 
-## Run the evaluator
+- **run_id**
+- **manifest**, containing **raw_run_evidence_sha256**, the exact route/deployment/
+  estimator pins, **session_id**, **clock_id**, and the independently sourced
+  reference calibration and clock-alignment bounds
+- **interval** with strictly ordered **start_s** and **end_s**
+- **estimates** and **references**
+- **localization_updates**
+- **checkpoint_crossings**, mapping the manifest's exact ordered checkpoint IDs to
+  distinct reference sample IDs
 
-```bash
-uv run python -m evals.flight_acceptance rehearsals.json --output flight-software-report.json
-```
+Available position samples contain **id**, **timestamp_s**, **source_id**,
+**clock_id**, **status: available**, and **position_map_m**. An unavailable or invalid
+position sample replaces **position_map_m** with a nonempty **reason**. Available
+localization updates omit both position and reason. Unknown fields, duplicate
+keys/IDs, out-of-order or out-of-interval timestamps, source/clock mismatches,
+booleans in numeric fields, nonfinite/extreme numbers, and overlapping runs in one
+session clock are refused.
 
-The output path must be new. The command writes a report for valid evidence even when the criteria fail, then exits with status 1. Malformed evidence also exits with status 1 and names the rejected condition. With no `--output`, the report is written to standard output.
+## Measurement
 
-For each available reference, the evaluator selects the nearest unused available estimate within `max_pairing_age_s`, which must be greater than zero and at most 0.5 seconds. It reports the direct Euclidean distance in the declared map frame. It never interpolates or extrapolates an estimate. The p50 and p95 are nearest-rank values from the paired errors, and p95 uses rank `ceil(0.95 × count)`.
+References are paired in timestamp order to the earliest still-feasible unused
+estimate. This linear, maximum-cardinality matching cannot consume a later estimate
+that a later reference needs. Pairing never interpolates or extrapolates.
 
-The report contains the SHA-256 of the input evidence file, a SHA-256 of the report body, every run manifest, matched samples, status counts, error distributions, errors above 0.25 m, and update-gap segments above 500 ms. It also records paired-reference coverage gaps. The calculation uses recorded positions and timestamps. It omits estimator confidence, covariance, and unrecorded accuracy assumptions.
+For each pair, the conservative position-error bound is:
+
+~~~text
+measured Euclidean distance
++ reference calibration bound
++ 0.5 m/s × (pairing age + clock-alignment bound)
+~~~
+
+Every run and the aggregate must have nearest-rank p95 at or below 0.25 m. Every
+recorded status must be available, each reference must pair, each pinned checkpoint
+must be crossed in order within its radius, and checkpoint timing cannot imply travel
+faster than 0.5 m/s. Sample minimums and duration bounds must pass, and neither
+available localization updates nor paired references may leave a
+run-boundary-inclusive gap over 500 ms.
+
+## Resource and path limits
+
+- Each input file: regular UTF-8 JSON, at most 16 MiB.
+- JSON: at most 32 nested containers, 300,000 values, and 2,048 characters per
+  string.
+- Each run series: at most 10,000 records; route: at most 64 checkpoints; run:
+  at most 3,600 seconds.
+- Serialized report: at most 32 MiB.
+- Input/output paths cannot contain symbolic-link components. The output parent must
+  already exist, and the output itself must be new. Publication uses a flushed
+  temporary file and an atomic no-overwrite hard link.
+
+## Run it
+
+~~~bash
+uv run python -m evals.flight_acceptance \
+  rehearsals.json \
+  --evaluation-manifest evaluation-manifest.json \
+  --output localization-software-report.json
+~~~
+
+A software pass exits 0. Valid measurements that miss a criterion still write their
+report and exit 1. Malformed, mismatched, oversized, or unsafe-path inputs write no
+report, emit one **localization software evidence refused:** diagnostic, and exit 1.
+Without **--output**, the bounded report is written to standard output.
