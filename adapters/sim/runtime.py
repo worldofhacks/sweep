@@ -214,8 +214,19 @@ class _SimNodeIngress:
     def _watchdog_loop(self) -> None:
         while not self._watchdog_stop.wait(0.01):
             now_ms = self.session.clock()
+            with self._ingress_lock:
+                live_nodes = self._active - self._silent
             with self._watchdog_lock:
                 for progress in tuple(self._watchdogs.values()):
+                    if progress.state.drone_id in live_nodes:
+                        progress = _LocalWatchdog(
+                            state=NodeWatchdogState(
+                                progress.state.drone_id,
+                                progress.state.connection_epoch,
+                                now_ms,
+                            )
+                        )
+                        self._watchdogs[progress.state.drone_id] = progress
                     try:
                         action = self.flight.apply_node_watchdog(
                             progress.state,

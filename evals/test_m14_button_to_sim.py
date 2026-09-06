@@ -561,6 +561,38 @@ def test_open_adapter_socket_link_loss_runs_watchdog_and_rejoin_uses_current_epo
     assert harness.flight.aircraft[1].connection_epoch == 2
 
 
+def test_simulated_control_heartbeat_survives_busy_relay_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initial = make_snapshot(
+        1,
+        selection=(),
+        flight_state=FlightState.DISARMED,
+        armed=False,
+        now_ms=Clock().value,
+    )
+    harness = Harness(tmp_path, initial, auto_start_nodes=True)
+    watchdog_tick = Event()
+
+    with TestClient(harness.app) as client, _connect(client, "console"):
+        original_apply = type(harness.flight).apply_node_watchdog
+
+        def observe_watchdog(*args, **kwargs):
+            now_ms = kwargs["now_ms"]
+            if isinstance(now_ms, int) and now_ms >= harness.clock.value:
+                watchdog_tick.set()
+            return original_apply(*args, **kwargs)
+
+        monkeypatch.setattr(type(harness.flight), "apply_node_watchdog", observe_watchdog)
+        bridge = harness.factory.bridges[SESSION]
+        with bridge.execution_barrier():
+            harness.clock.advance(2_000)
+            assert watchdog_tick.wait(1)
+        acknowledgement = harness.flight.takeoff([1], 1.0)[0]
+
+    assert acknowledgement.status.value == "completed"
+
+
 def test_deployed_simulator_nodes_stream_and_rejoin_without_stale_epoch_io(tmp_path: Path) -> None:
     initial = make_snapshot(
         2,
