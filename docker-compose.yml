@@ -34,11 +34,12 @@ services:
       # The relay's control-API reader (media/mediamtx.yml `sweep-api`); locked without a value.
       - MTX_AUTHINTERNALUSERS_5_USER=${SWEEP_MEDIA_API_USERNAME:-sweep-api}
       - MTX_AUTHINTERNALUSERS_5_PASS=${SWEEP_MEDIA_API_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
-      # Ground-vehicle publishers (media/mediamtx.yml `ground1..3`), positional after the six
+      # Ground-vehicle publishers (media/mediamtx.yml `ground1..4`), positional after the six
       # accounts above; each password is the media-only derivative of that node's adapter key.
       - MTX_AUTHINTERNALUSERS_6_PASS=${SWEEP_MEDIA_GROUND1_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
       - MTX_AUTHINTERNALUSERS_7_PASS=${SWEEP_MEDIA_GROUND2_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
       - MTX_AUTHINTERNALUSERS_8_PASS=${SWEEP_MEDIA_GROUND3_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
+      - MTX_AUTHINTERNALUSERS_9_PASS=${SWEEP_MEDIA_GROUND4_PASSWORD:-sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76}
       # Recording is fail-closed by default. The opt-in override changes this exact value.
       - MTX_PATHDEFAULTS_RECORD=false
     volumes:
