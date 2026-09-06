@@ -388,6 +388,39 @@ describe('Speech module', () => {
 })
 
 
+test.each(['arm', 'land_all', 'estop'] as const)('stages compiled fleet-wide %s with an empty selection and waits for confirmation', async (name) => {
+  const language: LanguageClient = {
+    compile: async () => ({ kind: 'plan', source: 'synthetic', reason: null, detail: null,
+      intents: [{ name, args: {}, selection: [] }] }),
+  }
+  const { clients } = mount({ language })
+  const u = user()
+  await screen.findByText(/Development fixture active/i)
+  await compileTyped(u, name)
+  await u.click(screen.getByRole('button', { name: 'Stage step 1 of 1' }))
+  expect(clients.console.sent).toHaveLength(0)
+
+  await u.click(screen.getByRole('button', { name: 'Confirm and send' }))
+  await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+  expect(clients.console.sent[0]).toMatchObject({ name, selection: [], source: 'console', confirm: true })
+})
+
+test.each(['takeoff', 'translate', 'hold', 'come_home', 'land'] as const)('does not stage compiled selected-aircraft %s without targets', async (name) => {
+  const language: LanguageClient = {
+    compile: async () => ({ kind: 'plan', source: 'synthetic', reason: null, detail: null,
+      intents: [{ name, args: name === 'translate' ? { dx: 1, dy: 0 } : {}, selection: [] }] }),
+  }
+  const { clients } = mount({ language })
+  const u = user()
+  await screen.findByText(/Development fixture active/i)
+  await compileTyped(u, name)
+  await u.click(screen.getByRole('button', { name: 'Stage step 1 of 1' }))
+
+  expect(screen.queryByRole('button', { name: 'Confirm and send' })).not.toBeInTheDocument()
+  expect(clients.console.sent).toHaveLength(0)
+  expect(clients.console.previewRequests).toHaveLength(0)
+})
+
 test('stages a language navigation plan only after the select completes with the proposed selection', async () => {
   const { clients } = mount({ language: languagePlan() })
   const u = user()

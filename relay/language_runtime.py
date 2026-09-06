@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from language.compiler import CompiledPlan, InMemoryAuditSink, TranscriptCompiler
 from language.contracts import CompilerOutcome, CompilerReason, OutcomeKind, intent_payload
 from language.navigation import NavigationGrounding
+from language.telemetry import TraceSink
 from language.transport import AnthropicTransport, ModelTransport
 from planner.models import AltitudeGrounding, FleetSnapshot, TranslationGrounding
 from relay.capabilities import CapabilityProfile, IntentName
@@ -46,8 +47,11 @@ class LanguageCompilationOutcome:
 class LanguageRuntime:
     """Compile grounded text into console-stageable intents without dispatching them."""
 
-    def __init__(self, transport: ModelTransport | None = None) -> None:
+    def __init__(
+        self, transport: ModelTransport | None = None, *, tracer: TraceSink | None = None
+    ) -> None:
         self._transport = AnthropicTransport() if transport is None else transport
+        self._tracer = tracer
 
     @classmethod
     def from_env(cls) -> LanguageRuntime:
@@ -77,7 +81,9 @@ class LanguageRuntime:
             raise ValueError("navigation grounding does not match the current capability profile")
         relay_state = _relay_state(snapshot, session_id=session_id, event_id=state_event_id)
         relay_state.update(capability_profile.state_value())
-        compiler = TranscriptCompiler(self._transport, audit=InMemoryAuditSink())
+        compiler = TranscriptCompiler(
+            self._transport, audit=InMemoryAuditSink(), tracer=self._tracer
+        )
         compile_kwargs: dict[str, object] = {
             "capability_version": _capability_version(capability_profile),
             "rooms": rooms,

@@ -10,7 +10,7 @@ import type {
   IntentV1,
   NavigationPreviewRequest,
 } from '../relay/contract'
-import { isConsoleIntentV1, requiresConfirmation, selectionRule } from '../relay/contract'
+import { followsSelection, isConsoleIntentV1, requiresConfirmation, selectionRule } from '../relay/contract'
 import {
   browserIntentDependencies,
   confirmIntent,
@@ -442,7 +442,7 @@ export function useControlConsole({
       }
       const selectionMatches = request.intent.selection.length === state.selection.length &&
         request.intent.selection.every((id) => state.selection.includes(id))
-      if (!selectionMatches && selectionRule(request.intent.name) !== 'all' && request.intent.name !== 'select') {
+      if (!selectionMatches && followsSelection(request.intent.name) && request.intent.name !== 'select') {
         dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
           reasonCode: 'stale_selection', detail: 'The authoritative selection changed after preview. No command was sent.' })
         return null
@@ -573,7 +573,9 @@ export function useControlConsole({
 
   const stageProposedIntent = useCallback(
     (proposal: { name: ConsoleIntentName; args: IntentArgs; selection: DroneId[] }): IntentV1 | null => {
-      if (!isIntentEnabled(state, proposal.name) || proposal.selection.length === 0) return null
+      if (!isIntentEnabled(state, proposal.name)) return null
+      const rule = selectionRule(proposal.name)
+      if (proposal.selection.length === 0 && rule !== 'any' && rule !== 'all' && rule !== 'fleet') return null
       const intent = createIntent({ name: proposal.name, args: proposal.args as never, selection: proposal.selection, source: 'console', session: state.sessionId }, intentDependencies)
       stageForConfirmation(intent)
       return intent
