@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { ControlState, OperatorNotice } from '../control/state'
+import { deviceLabeller } from '../control/state'
 import {
   deriveLinks,
   deriveRcLine,
@@ -75,7 +76,9 @@ export function Header({
               </li>
             ))}
             <li className="sh-selection">
-              <span className="sh-selection-label">{deriveSelectionLabel(state.selection)}</span>
+              <span className="sh-selection-label">
+                {deriveSelectionLabel(state.selection, deviceLabeller(state.aircraft))}
+              </span>
               <span className="sh-ready">{deriveReadyCount(state.aircraft)}</span>
             </li>
           </ul>
@@ -147,7 +150,7 @@ function SessionSheet({
         </p>
         {isFixture && (
           <p className="sh-sheet-fixture">
-            Fixture data — the roster is a development fixture. No aircraft are connected.
+            Fixture data — the roster is a development fixture. No devices are connected.
           </p>
         )}
       </div>

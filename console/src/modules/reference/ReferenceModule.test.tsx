@@ -55,17 +55,17 @@ describe('Reference module', () => {
 
     const refusals = within(screen.getByRole('region', { name: 'Refusal and failure reasons' }))
     expect(refusals.getAllByRole('listitem')).toHaveLength(Object.keys(REASONS).length)
-    expect(Object.keys(REASONS)).toHaveLength(48)
+    expect(Object.keys(REASONS)).toHaveLength(49)
     expect(refusals.getByText('estop_active')).toBeInTheDocument()
     expect(refusals.getByText('estop_active').closest('li')).toHaveTextContent(REASONS.estop_active)
     expect(refusals.getByText('estop_active').closest('li')).toHaveClass('is-danger')
 
     const readiness = within(screen.getByRole('region', { name: 'Readiness reasons' }))
     expect(readiness.getAllByRole('listitem')).toHaveLength(Object.keys(READINESS).length)
-    expect(Object.keys(READINESS)).toHaveLength(10)
+    expect(Object.keys(READINESS)).toHaveLength(11)
     const membership = within(screen.getByRole('region', { name: 'Membership reasons' }))
     expect(membership.getAllByRole('listitem')).toHaveLength(Object.keys(MEMBERSHIP_REASON).length)
-    expect(Object.keys(MEMBERSHIP_REASON)).toHaveLength(8)
+    expect(Object.keys(MEMBERSHIP_REASON)).toHaveLength(9)
   })
 
   test('the gallery is the console vocabulary, so it renders the same without a catalog', async () => {
@@ -76,7 +76,7 @@ describe('Reference module', () => {
     expect(screen.queryByText(/does not report/)).not.toBeInTheDocument()
   })
 
-  test('Mission is the Appendix E tracker; Ledger and Map stay honest empties until the relay feeds them', async () => {
+  test('Mission is the Appendix E tracker, Map is the fleet map, and Ledger stays an honest empty', async () => {
     const user = userEvent.setup()
     renderCatalogConsole({ scenario: 'pending4' })
     await openReferenceTab(user, 'Mission')
@@ -86,6 +86,8 @@ describe('Reference module', () => {
     await openReferenceTab(user, 'Ledger')
     expect(screen.getByText(/does not report a session ledger or replay/)).toBeInTheDocument()
     await openReferenceTab(user, 'Map')
-    expect(screen.getByText(/does not report positions or a room graph/)).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Fleet map' })).toBeInTheDocument()
+    expect(screen.getByText(/No relay bootstrap, so no occupancy map can be read/)).toBeInTheDocument()
+    expect(screen.queryByText(/does not report positions or a room graph/)).not.toBeInTheDocument()
   })
 })

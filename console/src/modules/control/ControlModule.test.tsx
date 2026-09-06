@@ -225,7 +225,7 @@ describe('Control › Swarm: capability-profile behavior on the fixture client',
     expect(within(panel).getAllByText('Slot 1').length).toBeGreaterThan(0)
     expect(within(panel).queryByText(/^D-01$/)).not.toBeInTheDocument()
     expect(panel).toHaveTextContent(
-      'aircraft-to-slot assignments are not projected by the relay and are therefore not guessed',
+      'device-to-slot assignments are not projected by the relay and are therefore not guessed',
     )
   })
 

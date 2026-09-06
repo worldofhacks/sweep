@@ -3,6 +3,7 @@ import { Pane, type PaneTab } from '../../shell/Pane'
 import { ConfigModule } from '../config/ConfigModule'
 import { ConnectivityModule } from '../connectivity/ConnectivityModule'
 import { MissionTracker } from '../control/MissionTracker'
+import { FleetMap } from '../map/FleetMap'
 import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
 import { StatesGallery } from './StatesGallery'
@@ -40,8 +41,8 @@ const SECTIONS: Record<ReferenceTab, { title: string; note: string; what: string
     what: 'a session ledger or replay',
   },
   map: {
-    title: 'Map and room graph',
-    note: 'Positions, doorways, capture poses, geofence.',
+    title: 'Fleet map',
+    note: 'The occupancy raster, device poses, and the latest lidar returns.',
     what: 'positions or a room graph',
   },
   gallery: {
@@ -53,9 +54,9 @@ const SECTIONS: Record<ReferenceTab, { title: string; note: string; what: string
 
 /**
  * The Reference group: Mission is the Appendix E tracker, Health is the
- * Connectivity module, Config is the Configuration module, States is the
- * vocabulary gallery. Ledger and Map stay honest empties until the relay feeds
- * them.
+ * Connectivity module, Config is the Configuration module, Map is the fleet
+ * map, States is the vocabulary gallery. Ledger stays an honest empty until
+ * the relay feeds it.
  */
 export function ReferenceModule(props: ModuleProps) {
   const [tab, setTab] = useState<ReferenceTab>('mission')
@@ -76,6 +77,8 @@ export function ReferenceModule(props: ModuleProps) {
         <ConnectivityModule {...props} />
       ) : tab === 'config' ? (
         <ConfigModule {...props} />
+      ) : tab === 'map' ? (
+        <FleetMap {...props} />
       ) : tab === 'gallery' ? (
         <StatesGallery />
       ) : (

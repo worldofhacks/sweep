@@ -246,3 +246,9 @@
 @media (max-width: 759px) {
   .tg-strip-quick { flex: 1 1 100%; }
 }
+
+.gs-profile { border: 1px solid var(--color-border-secondary); padding: 12px; margin: 0 0 16px; display: flex; flex-wrap: wrap; gap: 12px; }
+.gs-profile legend { font-weight: 600; }
+.gs-profile label { display: flex; align-items: center; gap: 4px; }
+.gs-profile p { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--color-ink-3); }
+.gs-pair-blocked { grid-column: 1 / -1; font-size: 12px; color: var(--color-warn); }

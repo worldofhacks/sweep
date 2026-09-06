@@ -3,6 +3,7 @@
  * The HLS origin is no longer required because only WHEP playback is carried
  * over; an `hlsOrigin` in the payload is ignored. Reconcile when #68 merges.
  */
+import { relayHttpOrigin } from '../relay/origin'
 import type { MediaRuntimeConfiguration } from './playback'
 
 export const MEDIA_CONFIG_ENDPOINT = '/runtime-config.json'
@@ -26,17 +27,10 @@ export function relayMediaConfigurationSource(
   baseUrl: string,
   token: string,
 ): MediaConfigurationSource | null {
-  let url: URL
-  try {
-    url = new URL(baseUrl)
-  } catch {
-    return null
-  }
-  if (url.protocol === 'ws:') url.protocol = 'http:'
-  if (url.protocol === 'wss:') url.protocol = 'https:'
-  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !token) return null
+  const origin = relayHttpOrigin(baseUrl)
+  if (!origin || !token) return null
   return {
-    url: new URL(MEDIA_CONFIG_ENDPOINT, url.origin).toString(),
+    url: new URL(MEDIA_CONFIG_ENDPOINT, origin).toString(),
     authorization: `Bearer ${token}`,
   }
 }

@@ -51,12 +51,40 @@ The token is sent only in the first WebSocket frame; it is never placed in a URL
 UI, or included in console logging. Without the full bootstrap, both sources remain visibly
 disconnected and network controls are unavailable.
 
+## Device classes
+
+Every device the relay reports carries `device_class` (`aircraft` or `ground_vehicle`) and `unit`,
+its 1-based ordinal within that class; a relay that omits them is read as aircraft whose unit is
+the drone id (`src/relay/contract.ts`, `normalizeRelayAircraftState`). Labels are `D-{unit}` for
+aircraft and `G-{unit}` for ground vehicles (`formatDeviceId`; `formatDroneId` stays as the
+aircraft-only alias), and operator copy takes the noun for the class in view: `aircraft`, `robot`,
+or `device` when a set is mixed or empty (`deviceNoun`, `rosterNoun`, `selectionNoun` in
+`src/control/state.ts`; the sentence tables in `src/shell/sentences.ts` take the same noun). A
+join's `class:<device_class>` capability sets the class before the first state frame arrives.
+
+The Control module marks `takeoff`, `land`, `land_all`, `altitude`, `sweep` and `capture_room`
+unsupported with "Not available for robots." when every device a control addresses is a ground
+vehicle (`deviceClassBlockedReason`); a mixed selection keeps them enabled because the relay
+decides per device, and `land_all` follows the roster, so it is unsupported only when the roster
+holds no aircraft. For a ground vehicle the registry's safety-operator line reads `Spotter` (a
+person beside the robot with its screen stop in reach) and lost authority reads `Local override`.
+
+A node's `sensor` frame (a `lidar_scan`: pose at scan time, angle origin and increment, range
+bounds, and integer centimetre ranges with 0 for no return) is parsed with the relay's bounds
+(`RelaySensorEvent`, `parseRelayServerEvent`) and kept in `src/sensor/store.ts`: the latest scan per
+device and a trail of the last twenty, read with `useSensorStore(controller.sensors)`. The control
+reducer records only `sensor.last_scan_at`, mirroring the relay's projection. `MapMetadata` and
+`parseMapMetadata` read the headers of the relay's map endpoint for the fleet map.
+
 ## Camera dashboard
 
-The Live module's walls and focus feed use the authoritative aircraft ID, connection epoch,
-telemetry, membership, readiness reasons, and a closed media status with a last-frame timestamp.
-The console derives the display name `drone{id}` and does not render adapter-provided media URLs.
-Recording and latency measurement remain held for M3.1.
+The Live module's walls and focus feed use the authoritative device ID, class, unit, connection
+epoch, telemetry, membership, readiness reasons, and a closed media status with a last-frame
+timestamp. The console derives the stream name from the class and unit, `drone{unit}` for aircraft
+and `ground{unit}` for ground vehicles (`streamName` in `src/media/playback.ts`), and does not
+render adapter-provided media URLs. The two walls hold aircraft; the Ground pane holds ground
+vehicles in unit order; the focus feed follows any device. Recording and latency measurement
+remain held for M3.1.
 
 ## Live playback
 
@@ -96,14 +124,61 @@ the working pane with its sub-tab strip; the fleet context column; and the foote
 the one pending plan with its full Intent v1 envelope. The newest warning or info notice stays on
 a line under the header row as a polite live region, the newest danger is the banner alert, and the
 session sheet keeps the capped history. `src/modules/registry.ts` declares each
-module (id, label, component, context renderer) in navigation order; module selection lives in the
-shell and a pending request survives switching. Modules the relay does not feed yet render an
-honest empty state.
+module (id, label, component, context renderer) in navigation order: Control, Live, Gesture,
+Speech, Captures, Worlds, Devices, Reference. Module selection lives in the shell and a pending
+request survives switching. Modules the relay does not feed yet render an honest empty state.
 
 Fixture scenarios are data only and exist only in development builds: `/?fixture=control`,
-`pending4`, `six6`, or `down` select a `FixtureRelayClient` scenario for the console, keyboard and
-webcam sources and the matching `FixtureCatalogClient` tables. Production runs on the real relay
-WebSocket with no fixture fallback.
+`pending4`, `six6`, `down`, or `mixed` select a `FixtureRelayClient` scenario for the console,
+keyboard and webcam sources and the matching `FixtureCatalogClient` tables. `mixed` reports two
+aircraft beside three ground vehicles (ids 11 to 13, units 1 to 3; two with the lidar kit, one
+docked without it) and emits one burst of synthetic room-shaped scans on the console source after
+the first state frame (`syntheticRoomScan`). Production runs on the real relay WebSocket with no
+fixture fallback.
+
+## Devices module
+
+`src/modules/devices/` lists every device the relay reports, connected and departed: class, unit
+and device id, adapter, advertised capabilities, link, battery and position, control authority and
+the safety operator, video state, sensor state (`no lidar` when the kit is not advertised, else
+the last scan age), readiness reasons in the class's wording, and the last refusal that named the
+device. Beside the list is the configuration a node needs to join: the relay URL from the console's
+bootstrap (or a note that none was given), the session, and a device id, as a copyable block. The
+device key is never shown; the relay never sends it, and a person enters it on the device.
+
+## Fleet map
+
+`Reference › Map` draws one canvas (`src/modules/map/FleetMap.tsx`) with ordered passes: the
+relay's occupancy raster, the geofence box, each scanning device's short trail, its newest lidar
+returns in that device's colour, and every device that reports a position as a heading triangle
+labelled with its device id. The room frame is x east, y north, in metres; the canvas is y-down,
+so every projection flips y exactly once (`projection.ts`). Dragging pans, the wheel zooms about
+the pointer, the zoom buttons about the centre, and Fit view frames the geofence, or the placed
+fleet when there is none.
+
+The raster comes from `GET /api/sessions/{id}/map` under the relay bootstrap URL read as HTTP,
+behind the relay bearer, the same base and bearer the transcripts endpoint uses
+(`src/relay/map-endpoint.ts`, `src/relay/origin.ts`). It is read once on mount and once a second
+while the pane is mounted, and never after it unmounts. Image row 0 is the grid's maximum y and
+`X-Sweep-Map-Origin-X`/`-Y` name the bottom-left cell corner, so the raster is placed from
+`(origin_x, origin_y + height × resolution)`. Headers that do not describe a grid, a body that
+does not decode, or a refusal draw no raster and say so; 404 is the honest "the relay has no grid
+for this session yet"; without a bootstrap nothing is read at all and `Reset map` is disabled.
+`Reset map` posts to `…/map/reset` and reports what the relay answered.
+
+Positions come from the relay's telemetry projection (`x`, `y`, and an optional `heading_deg`, or
+`yaw_deg` from a node that names it that way), else from the pose of the device's newest scan in
+the current connection epoch. A device that reports neither is named under the map rather than
+placed, and a device with no heading is drawn as a circle rather than a guessed direction. Scans
+and trails come from the sensor store's ring, never from the control reducer. The geofence is read
+from the catalog's configuration snapshot, which the relay does not serve yet, so production draws
+no box and the fixture draws the demo room.
+
+Each scanning device keeps one hue by unit (`--color-scan-1` to `--color-scan-4`, beside
+`--color-stream-*`); the map ground is `--color-map-grid`, the raster frame `--color-map-frame`,
+the geofence `--color-map-geofence`. `LidarPolar` (`src/modules/map/LidarPolar.tsx`) plots the same
+newest scan in the device's own frame with forward up, on every ground-vehicle registry card and
+device card that advertises `lidar`.
 
 ## Control module
 
@@ -172,3 +247,39 @@ selection, confirmed takeoff, configured-step translation, hold, come home, and 
 land-all. Takeoff and land-all stay in preview until the operator confirms the exact request,
 selection, and roster version. The network E-stop remains available from both its button and the
 separately authenticated keyboard connection.
+
+
+### Mixed fleet controls and sensing
+
+Control › Swarm chips add or remove one device from the current selection. **Only** selects
+one device; **Select aircraft**, **Select robots**, and **Select all ready** select a class
+or the full ready roster. The relay remains authoritative: a selection change invalidates
+an older movement preview. Intent selections support up to ten ids (six simulated aircraft
+plus four robots); physical capacity remains a relay concern.
+
+Gesture starts with Capture / HOLD. **Fleet motion** is an explicit opt-in profile:
+point up → north, Victory → east, closed fist → south, I love you → west, open palm → hold.
+Each translation drafts one relay-configured step for the selected devices. **Swarm
+formations** maps Victory to formation_next and open palm to hold. Thumb up confirms a
+webcam draft; thumb down cancels it. Changing profile stops tracking and cancels the pending
+preview. Arming, takeoff, landing and network stop remain manual controls. Gestures use the
+same Intent v1 preview, selection invalidation and relay outcome path as manual controls.
+
+Robot translation uses room +x east / +y north. Aircraft retain the relay's configured
+translation frame. No telemetry yaw extension is required. Formation previews show
+anonymous slots separately for aircraft and robots; a singleton class holds its pose.
+C2 formation controls remain disabled unless the relay advertises them. The simulator-only
+C2 release restriction remains in force for real hardware.
+
+Reference › Map reads the authenticated occupancy PNG and displays fresh scans from either
+class. Sensors are displayed by capability, including aircraft that advertise lidar.
+After two seconds without a scan, the live overlay disappears and the device reports stale
+coverage. The historical occupancy raster is retained by the relay. Devices without lidar
+report unavailable coverage; no return, no hardware, or a stale feed never means clear.
+Lidar samples a single plane and does not detect obstacles above or below that plane.
+
+`?fixture=mixed` supplies two aircraft, three robots, continuous synthetic lidar on two robots,
+and a grayscale room PNG through an isolated fixture transport. The third robot has no lidar
+and an absent spotter, so its missing coverage and readiness blocker remain visible. No
+fixture command contacts a robot. Production video playback still requires media credentials
+from the normal runtime configuration endpoint.

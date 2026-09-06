@@ -2,6 +2,7 @@ import type {
   BackendIntentStatus,
   CapturePattern,
   ConsoleIntentName,
+  DeviceClass,
   DroneId,
   IntentV1,
   IntentSource,
@@ -9,7 +10,7 @@ import type {
   RelayAircraftState,
   RelayServerEvent,
 } from '../relay/contract'
-import { followsSelection } from '../relay/contract'
+import { DEVICE_CLASSES, followsSelection } from '../relay/contract'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'degraded' | 'disconnected'
 export type RelayTransport = 'websocket' | 'fixture' | 'unavailable'
@@ -370,7 +371,11 @@ function reduceRelayEvent(
       // projection. Retain the event ID for dedupe, but do not build a second
       // client-side source of aircraft truth here.
       return stateWithEvent
-    case 'safety_action':
+    case 'sensor':
+      return reduceSensorEvent(stateWithEvent, event)
+    case 'safety_action': {
+      const device = stateWithEvent.aircraft[event.drone_id]
+      const noun = device ? deviceNoun(device.device_class) : 'device'
       return {
         ...stateWithEvent,
         notices: prependNotice(
@@ -378,12 +383,13 @@ function reduceRelayEvent(
           makeNotice(
             `safety-action-${event.event_id}`,
             'danger',
-            event.action === 'failsafe' ? 'Aircraft failsafe' : 'Aircraft hold',
-            `D-${String(event.drone_id).padStart(2, '0')} applied ${event.action} after ${event.reason}.`,
+            `${capitalize(noun)} ${event.action === 'failsafe' ? 'failsafe' : 'hold'}`,
+            `${deviceLabeller(stateWithEvent.aircraft)(event.drone_id)} applied ${event.action} after ${event.reason}.`,
             event.t,
           ),
         ),
       }
+    }
     case 'acknowledgement':
       if (event.command_id !== null || event.source === 'adapter') {
         return reduceCommandAcknowledgement(stateWithEvent, event)
@@ -412,6 +418,27 @@ function reduceRelayEvent(
         droneId: event.drone_id ?? undefined,
         connectionEpoch: event.connection_epoch ?? undefined,
       })
+  }
+}
+
+/**
+ * Scans live in the sensor store; the reducer records only that one arrived,
+ * mirroring the relay's `sensor.last_scan_at` projection between state frames.
+ */
+function reduceSensorEvent(
+  state: ControlState,
+  event: Extract<RelayServerEvent, { type: 'sensor' }>,
+): ControlState {
+  const device = state.aircraft[event.drone_id]
+  if (!device || device.connection_epoch !== event.connection_epoch) return state
+  const lastScanAt = device.sensor?.last_scan_at ?? null
+  if (lastScanAt !== null && lastScanAt >= event.t) return state
+  return {
+    ...state,
+    aircraft: {
+      ...state.aircraft,
+      [event.drone_id]: { ...device, sensor: { kind: event.kind, last_scan_at: event.t } },
+    },
   }
 }
 
@@ -593,7 +620,7 @@ function reduceStateEvent(
       invalidatedIds,
       event.t,
       'stale_selection',
-      'An aircraft in the pending preview is no longer ready or selectable.',
+      `${capitalize(indefinite(selectionNoun(aircraft, staleSelection)))} in the pending preview is no longer ready or selectable.`,
     )
   }
   const staleRosterRequests = next.requests
@@ -628,7 +655,7 @@ function reduceStateEvent(
     staleProposedSelectionRequests,
     event.t,
     'stale_selection',
-    'An aircraft in the proposed selection is no longer ready or selectable.',
+    `${capitalize(indefinite(rosterNoun(Object.values(aircraft))))} in the proposed selection is no longer ready or selectable.`,
   )
   // SELECT carries the proposed selection; it must survive snapshots of the old
   // selection until confirmed. Roster-wide intents also keep independent targets.
@@ -646,7 +673,7 @@ function reduceStateEvent(
     changedSelectionRequests,
     event.t,
     'selection_changed',
-    'The authoritative aircraft selection changed. Build and confirm a new preview.',
+    `The authoritative ${selectionNoun(aircraft, selection)} selection changed. Build and confirm a new preview.`,
   )
   return next
 }
@@ -659,7 +686,9 @@ function reduceMembershipEvent(
     (state.lastStateEvent !== null && event.roster_version <= state.lastStateEvent.rosterVersion)
   const previous = state.aircraft[event.drone_id]
   const drone = projectMembershipEvent(
-    event, previous?.connection_epoch === event.connection_epoch ? previous : undefined,
+    event,
+    previous?.connection_epoch === event.connection_epoch ? previous : undefined,
+    previous,
   )
   const isDeparture =
     event.action === 'graceful_leave_completed' || event.action === 'unexpected_loss'
@@ -698,8 +727,8 @@ function reduceMembershipEvent(
       reasonCode: event.reason ?? event.action,
       detail:
         event.action === 'graceful_leave_completed'
-          ? 'Aircraft completed a graceful leave.'
-          : 'Aircraft connection was lost unexpectedly.',
+          ? `${capitalize(deviceNoun(drone.device_class))} completed a graceful leave.`
+          : `${capitalize(deviceNoun(drone.device_class))} connection was lost unexpectedly.`,
     }
     next = { ...next, departed: [departure, ...next.departed] }
     if (!staleProjection) {
@@ -715,7 +744,7 @@ function reduceMembershipEvent(
         makeNotice(
           `rejoin-${event.event_id}`,
           'info',
-          `${formatDroneId(event.drone_id)} rejoined`,
+          `${formatDeviceId(drone)} rejoined`,
           `Connection epoch is now ${event.connection_epoch}. Selection was not changed.`,
           event.t,
         ),
@@ -725,12 +754,23 @@ function reduceMembershipEvent(
   return next
 }
 
+/**
+ * Builds the device record a membership event implies. `previous` is the
+ * same-epoch record whose telemetry-derived fields carry over; `known` is any
+ * record for the id, whose class and unit are stable across reconnects. A
+ * first join derives the class from its `class:` capability and labels by
+ * drone id until the relay's state projection reports the unit.
+ */
 function projectMembershipEvent(
   event: Extract<RelayServerEvent, { type: 'membership' }>,
   previous?: RelayAircraftState,
+  known?: RelayAircraftState,
 ): RelayAircraftState {
+  const device_class = known?.device_class ?? deviceClassFromCapabilities(event.capabilities)
   return {
     drone_id: event.drone_id,
+    device_class,
+    unit: known !== undefined && known.device_class === device_class ? known.unit : event.drone_id,
     connection_epoch: event.connection_epoch,
     membership: event.membership,
     readiness_reasons: [...event.readiness_reasons],
@@ -750,7 +790,19 @@ function projectMembershipEvent(
     membership_history: previous?.membership_history ?? [],
     membership_history_truncated: previous?.membership_history_truncated ?? 0,
     video: previous?.connection_epoch === event.connection_epoch ? previous.video : undefined,
+    sensor: previous?.connection_epoch === event.connection_epoch ? previous.sensor : undefined,
   }
+}
+
+/** The join's `class:<device_class>` capability; absent or unknown means aircraft, as on the relay. */
+export function deviceClassFromCapabilities(capabilities: readonly string[]): DeviceClass {
+  const declared = capabilities
+    .filter((capability) => capability.startsWith('class:'))
+    .map((capability) => capability.slice('class:'.length))
+  const [first] = declared
+  return declared.length === 1 && (DEVICE_CLASSES as readonly string[]).includes(first)
+    ? (first as DeviceClass)
+    : 'aircraft'
 }
 
 function reduceAuthRefusal(
@@ -967,7 +1019,7 @@ function upgradeProvisionalInvalidationReason(
 }
 
 function addStaleSelectionNotice(state: ControlState, ids: DroneId[], t: number): ControlState {
-  const labels = ids.map(formatDroneId).join(', ')
+  const labels = ids.map(deviceLabeller(state.aircraft)).join(', ')
   return {
     ...state,
     notices: prependNotice(
@@ -976,7 +1028,7 @@ function addStaleSelectionNotice(state: ControlState, ids: DroneId[], t: number)
         `stale-selection-${ids.join('-')}-${t}`,
         'warning',
         'Stale selection cleared',
-        `${labels} is no longer ready. No substitute aircraft was selected.`,
+        `${labels} is no longer ready. No substitute ${selectionNoun(state.aircraft, ids)} was selected.`,
         t,
       ),
     ),
@@ -1042,6 +1094,61 @@ export function isTerminalRequest(status: RequestStatus): boolean {
   return ['cancelled', 'completed', 'failed', 'invalidated', 'refused'].includes(status)
 }
 
+/** Operator label per class and unit: `D-01` for aircraft, `G-01` for ground vehicles. */
+export function formatDeviceId(device: Pick<RelayAircraftState, 'device_class' | 'unit'>): string {
+  const prefix = device.device_class === 'ground_vehicle' ? 'G' : 'D'
+  return `${prefix}-${String(device.unit).padStart(2, '0')}`
+}
+
+/** Labels an aircraft whose unit is its drone id; the pre-class convention, kept as an alias. */
 export function formatDroneId(id: DroneId): string {
-  return `D-${String(id).padStart(2, '0')}`
+  return formatDeviceId({ device_class: 'aircraft', unit: id })
+}
+
+export type DeviceLabeller = (id: DroneId) => string
+
+/**
+ * Labels ids against the roster. An id the roster does not hold is labelled
+ * as an aircraft by drone id, which is what an unreported device is until the
+ * relay says otherwise.
+ */
+export function deviceLabeller(aircraft: ControlState['aircraft']): DeviceLabeller {
+  return (id) => {
+    const device = aircraft[id]
+    return device ? formatDeviceId(device) : formatDroneId(id)
+  }
+}
+
+/** The word for a class of device in operator copy. */
+export type DeviceNoun = 'aircraft' | 'robot' | 'device'
+
+export function deviceNoun(deviceClass: DeviceClass): DeviceNoun {
+  return deviceClass === 'ground_vehicle' ? 'robot' : 'aircraft'
+}
+
+/** One noun for a set of devices: their class when they share one, `device` when mixed or empty. */
+export function rosterNoun(devices: ReadonlyArray<Pick<RelayAircraftState, 'device_class'>>): DeviceNoun {
+  if (devices.length === 0) return 'device'
+  const [first] = devices
+  return devices.every((device) => device.device_class === first.device_class)
+    ? deviceNoun(first.device_class)
+    : 'device'
+}
+
+/** The noun for the roster records behind a list of ids. */
+export function selectionNoun(aircraft: ControlState['aircraft'], ids: readonly DroneId[]): DeviceNoun {
+  return rosterNoun(ids.flatMap((id) => (aircraft[id] ? [aircraft[id]] : [])))
+}
+
+export function pluralNoun(noun: DeviceNoun): string {
+  return noun === 'aircraft' ? 'aircraft' : `${noun}s`
+}
+
+/** `an aircraft`, `a robot`, `a device`. */
+export function indefinite(noun: DeviceNoun): string {
+  return `${noun === 'aircraft' ? 'an' : 'a'} ${noun}`
+}
+
+export function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
 }

@@ -38,7 +38,7 @@ function livePanes() {
   return within(screen.getByRole('group', { name: 'Live panes' }))
 }
 
-async function openPane(user: User, label: 'Wall of 4' | 'Wall of 6' | 'Focus feed') {
+async function openPane(user: User, label: 'Wall of 4' | 'Wall of 6' | 'Ground' | 'Focus feed') {
   await user.click(livePanes().getByRole('button', { name: label }))
 }
 
@@ -229,11 +229,11 @@ describe('Live module walls', () => {
       />,
     )
     const empty = (await screen.findByText('Nothing to show')).closest('[role="status"]')
-    expect(empty).toHaveTextContent('No aircraft have joined this session, so there is no wall and nothing to focus.')
+    expect(empty).toHaveTextContent('No devices have joined this session, so there is no wall and nothing to focus.')
     expect(screen.queryByRole('region', { name: 'Wall of 4' })).not.toBeInTheDocument()
     await openPane(user, 'Focus feed')
     expect(screen.getByText(/no wall and nothing to focus/)).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: /Focused aircraft/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /Focused (aircraft|device)/ })).not.toBeInTheDocument()
   })
 })
 
@@ -262,9 +262,9 @@ describe('Live module focus', () => {
     expect(screen.queryByRole('region', { name: 'Focused aircraft D-01' })).not.toBeInTheDocument()
 
     emitState(clients.console, 'state-focused-departed', drones.filter((drone) => drone.drone_id !== 2), [])
-    const none = within(await screen.findByRole('region', { name: 'Focused aircraft none' }))
+    const none = within(await screen.findByRole('region', { name: 'Focused device none' }))
     expect(none.getByText(/Nothing is focused/)).toBeInTheDocument()
-    expect(none.getByText(/No aircraft is focused/)).toBeInTheDocument()
+    expect(none.getByText(/No device is focused/)).toBeInTheDocument()
     expect(clients.console.sent).toHaveLength(0)
   })
 
@@ -454,5 +454,53 @@ describe('Live module playback', () => {
       ),
     ).toHaveClass('is-failed')
     expect(focused.getByText('live', { selector: 'dd' })).toBeInTheDocument()
+  })
+})
+
+describe('Live module ground pane', () => {
+  test('ground vehicles get their own wall of ground tiles playing ground{unit} streams', async () => {
+    const clients = {
+      console: new FixtureRelayClient(session, clock, 'console', 'mixed'),
+      keyboard: new FixtureRelayClient(session, clock, 'keyboard', 'mixed'),
+    }
+    const log = new SessionLog()
+    const user = userEvent.setup()
+    renderLive(clients, log.media)
+    await screen.findByText(/Development fixture active/i)
+
+    // The aircraft walls hold aircraft only: the mixed fixture has two.
+    const wall = within(screen.getByRole('region', { name: 'Wall of 4' }))
+    expect(wall.getAllByRole('button', { name: /^Focus D-/ })).toHaveLength(2)
+    expect(wall.queryByRole('article', { name: /^G-/ })).not.toBeInTheDocument()
+    expect(wall.getByRole('article', { name: 'Slot 3 empty' })).toHaveTextContent('no aircraft')
+    await waitFor(() => expect(log.started).toEqual(['drone1']))
+
+    await openPane(user, 'Ground')
+    const ground = within(screen.getByRole('region', { name: 'Ground' }))
+    expect(ground.getAllByRole('article').map((article) => article.getAttribute('aria-label'))).toEqual([
+      'G-01 camera tile',
+      'G-02 camera tile',
+      'G-03 camera tile',
+      'Slot 4 empty',
+    ])
+    expect(ground.getByText(/streams are named ground\{unit\}/)).toBeInTheDocument()
+    expect(ground.getByRole('article', { name: 'Slot 4 empty' })).toHaveTextContent('No robot reported for this slot.')
+    expect(tile('G-01').getByLabelText('Live feed G-01')).toBeInTheDocument()
+    expect(tile('G-02').getByLabelText('Live feed G-02')).toBeInTheDocument()
+    expect(await tile('G-01').findByText('Playback playing')).toBeInTheDocument()
+    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2']))
+    expect(tile('G-03').getByText('unreported')).toBeInTheDocument()
+    expect(tile('G-03').getByText('rc_safety_operator_missing')).toBeInTheDocument()
+    expect(tile('G-03').getByRole('button', { name: 'not selectable G-03' })).toHaveAttribute(
+      'title',
+      'Relay reports this robot is not selectable.',
+    )
+
+    await user.click(tile('G-02').getByRole('button', { name: 'Focus G-02' }))
+    await openPane(user, 'Focus feed')
+    const focused = within(screen.getByRole('region', { name: 'Focused robot G-02' }))
+    expect(focused.getByText('ground2')).toBeInTheDocument()
+    expect(focused.getByLabelText('Live feed G-02')).toBeInTheDocument()
+    expect(focused.getByText(/ground\{unit\}/)).toBeInTheDocument()
   })
 })

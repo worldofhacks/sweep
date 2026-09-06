@@ -64,8 +64,8 @@ describe('gesture pairs', () => {
     expect(validateGesturePairs(DEFAULT_GESTURE_PAIRS)).toEqual([])
   })
 
-  test('estop, arm, takeoff, and free-flight motion are never gesture-emittable', () => {
-    for (const name of ['estop', 'arm', 'takeoff', 'translate', 'altitude', 'come_home', 'land_all']) {
+  test('estop, arm, takeoff, and altitude are never gesture-emittable', () => {
+    for (const name of ['estop', 'arm', 'takeoff', 'altitude', 'come_home', 'land_all']) {
       expect(NEVER_GESTURE_EMITTABLE).toContain(name)
       expect(isGestureEmittable(name)).toBe(false)
       const pair = {

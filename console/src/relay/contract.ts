@@ -7,6 +7,9 @@
  */
 
 export type DroneId = number
+/** Mirror of planner/models.py DeviceClass; absent on the wire means aircraft. */
+export type DeviceClass = 'aircraft' | 'ground_vehicle'
+export const DEVICE_CLASSES: readonly DeviceClass[] = ['aircraft', 'ground_vehicle']
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard' | 'webcam' | 'language'
 export const FORMATION_NAMES = ['line', 'column', 'wedge', 'diamond'] as const
@@ -19,7 +22,7 @@ export const MAX_INTENT_IDENTIFIER_CODE_POINTS = 128
 export const MAX_INTENT_SESSION_CODE_POINTS = 512
 export const MAX_INTENT_SOURCE_CODE_POINTS = 64
 export const MAX_INTENT_NAME_CODE_POINTS = 64
-export const MAX_INTENT_DRONE_IDS = 6
+export const MAX_INTENT_DRONE_IDS = 10
 export const MAX_INTENT_DRONE_ID = 2_147_483_647
 
 /**
@@ -240,8 +243,20 @@ export interface MediaStreamState {
   last_frame_at: number | null
 }
 
+export type SensorKind = 'lidar_scan'
+
+/** The relay's per-device sensor projection, mirroring `video`. */
+export interface SensorState {
+  kind: SensorKind
+  last_scan_at: number | null
+}
+
 export interface RelayAircraftState {
   drone_id: DroneId
+  /** Absent on the wire from a relay without device classes; parsed as aircraft. */
+  device_class: DeviceClass
+  /** 1-based ordinal within the device's class; absent on the wire means the drone id. */
+  unit: number
   connection_epoch: number
   membership: MembershipState
   readiness_reasons: string[]
@@ -261,6 +276,7 @@ export interface RelayAircraftState {
   membership_history: unknown[]
   membership_history_truncated: number
   video?: MediaStreamState
+  sensor?: SensorState
 }
 
 export interface RelayStateEvent {
@@ -416,6 +432,42 @@ export interface RelaySafetyActionEvent {
   loss_behavior: 'hold' | 'failsafe'
 }
 
+/** The device's pose at scan time, in the same frame as its telemetry. */
+export interface SensorPose {
+  x: number
+  y: number
+  /** Counter-clockwise from +x, in [0, 360). */
+  yaw_deg: number
+}
+
+export type SensorAngleIncrement = 0.5 | 1 | 2
+export const SENSOR_ANGLE_INCREMENTS: readonly SensorAngleIncrement[] = [0.5, 1, 2]
+export const MAX_SENSOR_RANGES = 720
+export const MAX_SENSOR_RANGE_CM = 65_535
+export const MAX_SENSOR_FRAME_BYTES = 8_192
+
+/**
+ * A node's lidar scan, fanned out by the relay as received. Angle 0 points
+ * along the device's forward axis and angles increase counter-clockwise;
+ * a range of 0 means no return.
+ */
+export interface RelaySensorEvent {
+  v: 1
+  t: number
+  type: 'sensor'
+  event_id: string
+  session: string
+  drone_id: DroneId
+  connection_epoch: number
+  kind: SensorKind
+  pose: SensorPose
+  angle_min_deg: number
+  angle_increment_deg: SensorAngleIncrement
+  range_min_m: number
+  range_max_m: number
+  ranges_cm: number[]
+}
+
 export type RelayServerEvent =
   | RelayAcknowledgementEvent
   | RelayAuthAcceptedEvent
@@ -424,7 +476,72 @@ export type RelayServerEvent =
   | RelayRefusalEvent
   | RelayStateEvent
   | RelaySafetyActionEvent
+  | RelaySensorEvent
   | RelayTelemetryEvent
+
+/**
+ * Metadata the relay's map endpoint returns in headers beside its PNG raster.
+ * Row 0 of the image is the top (maximum y); the origin is the world position
+ * of the bottom-left cell corner.
+ */
+export interface MapMetadata {
+  resolution_m: number
+  origin_x: number
+  origin_y: number
+  width: number
+  height: number
+  updated_at: number
+}
+
+export const MAP_METADATA_HEADERS: Readonly<Record<keyof MapMetadata, string>> = {
+  resolution_m: 'X-Sweep-Map-Resolution-M',
+  origin_x: 'X-Sweep-Map-Origin-X',
+  origin_y: 'X-Sweep-Map-Origin-Y',
+  width: 'X-Sweep-Map-Width',
+  height: 'X-Sweep-Map-Height',
+  updated_at: 'X-Sweep-Map-Updated-At',
+}
+
+/** Reads the map headers; any missing or malformed value fails closed. */
+export function parseMapMetadata(read: (name: string) => string | null): MapMetadata | null {
+  const number = (name: string): number | null => {
+    const raw = read(name)
+    if (raw === null || raw.trim().length === 0) return null
+    const value = Number(raw)
+    return Number.isFinite(value) ? value : null
+  }
+  const resolution = number(MAP_METADATA_HEADERS.resolution_m)
+  const originX = number(MAP_METADATA_HEADERS.origin_x)
+  const originY = number(MAP_METADATA_HEADERS.origin_y)
+  const width = number(MAP_METADATA_HEADERS.width)
+  const height = number(MAP_METADATA_HEADERS.height)
+  const updatedAt = number(MAP_METADATA_HEADERS.updated_at)
+  if (
+    resolution === null ||
+    resolution <= 0 ||
+    originX === null ||
+    originY === null ||
+    width === null ||
+    !Number.isInteger(width) ||
+    width < 1 ||
+    height === null ||
+    !Number.isInteger(height) ||
+    height < 1 ||
+    updatedAt === null ||
+    !Number.isInteger(updatedAt) ||
+    updatedAt < 0
+  ) {
+    return null
+  }
+  return {
+    resolution_m: resolution,
+    origin_x: originX,
+    origin_y: originY,
+    width,
+    height,
+    updated_at: updatedAt,
+  }
+}
 
 export interface RelayAuthFrame {
   v: 1
@@ -803,6 +920,24 @@ function isNullableRecord(value: unknown): value is Record<string, unknown> | nu
   return value === null || isRecord(value)
 }
 
+function isDeviceClass(value: unknown): value is DeviceClass {
+  return typeof value === 'string' && (DEVICE_CLASSES as readonly string[]).includes(value)
+}
+
+/**
+ * A relay without device classes omits `device_class` and `unit`; those
+ * records are aircraft whose unit is the drone id. Present values are never
+ * rewritten, so an invalid class still fails validation.
+ */
+export function normalizeRelayAircraftState(value: unknown): unknown {
+  if (!isRecord(value)) return value
+  const drone: Record<string, unknown> = { ...value }
+  if (!Object.hasOwn(drone, 'membership_history_truncated')) drone.membership_history_truncated = 0
+  if (!Object.hasOwn(drone, 'device_class')) drone.device_class = 'aircraft'
+  if (!Object.hasOwn(drone, 'unit')) drone.unit = drone.drone_id
+  return drone
+}
+
 export function isRelayAircraftState(value: unknown): value is RelayAircraftState {
   if (!isRecord(value)) return false
   const patterns = value.camera_patterns
@@ -810,6 +945,8 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
 
   return (
     isDroneId(value.drone_id) &&
+    isDeviceClass(value.device_class) &&
+    isDroneId(value.unit) &&
     isNonNegativeInteger(value.connection_epoch) &&
     MEMBERSHIP_STATES.has(value.membership as MembershipState) &&
     isStringArray(readinessReasons) &&
@@ -829,7 +966,76 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
     'telemetry' in value &&
     Array.isArray(value.membership_history) &&
     isNonNegativeInteger(value.membership_history_truncated) &&
-    isVideoStreamState(value.video)
+    isVideoStreamState(value.video) &&
+    isSensorState(value.sensor)
+  )
+}
+
+function isSensorState(value: unknown): value is SensorState | undefined {
+  if (value === undefined) return true
+  if (!isRecord(value)) return false
+  return (
+    Object.keys(value).length === 2 &&
+    value.kind === 'lidar_scan' &&
+    (value.last_scan_at === null || isNonNegativeInteger(value.last_scan_at))
+  )
+}
+
+function isSensorPose(value: unknown): value is SensorPose {
+  if (!isRecord(value)) return false
+  return (
+    Object.keys(value).length === 3 &&
+    isFiniteNumber(value.x) &&
+    isFiniteNumber(value.y) &&
+    isFiniteNumber(value.yaw_deg) &&
+    value.yaw_deg >= 0 &&
+    value.yaw_deg < 360
+  )
+}
+
+function isSensorRanges(value: unknown, increment: SensorAngleIncrement): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length === 360 / increment &&
+    value.length <= MAX_SENSOR_RANGES &&
+    value.every(
+      (range) => Number.isInteger(range) && Number(range) >= 0 && Number(range) <= MAX_SENSOR_RANGE_CM,
+    )
+  )
+}
+
+/** The relay's canonical JSON: sorted keys, no whitespace, UTF-8 bytes. */
+function canonicalJsonByteLength(value: unknown): number {
+  const canonical = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(canonical)
+    if (isRecord(item)) {
+      return Object.fromEntries(
+        Object.keys(item)
+          .sort()
+          .map((key) => [key, canonical(item[key])]),
+      )
+    }
+    return item
+  }
+  return new TextEncoder().encode(JSON.stringify(canonical(value))).length
+}
+
+/** Mirrors the relay's parse_sensor bounds; a frame outside them fails closed. */
+function isSensorEvent(value: Record<string, unknown>): boolean {
+  const increment = value.angle_increment_deg
+  if (!(SENSOR_ANGLE_INCREMENTS as readonly unknown[]).includes(increment)) return false
+  return (
+    isDroneId(value.drone_id) &&
+    isNonNegativeInteger(value.connection_epoch) &&
+    value.kind === 'lidar_scan' &&
+    isSensorPose(value.pose) &&
+    isFiniteNumber(value.angle_min_deg) &&
+    isFiniteNumber(value.range_min_m) &&
+    isFiniteNumber(value.range_max_m) &&
+    value.range_min_m >= 0 &&
+    value.range_max_m > value.range_min_m &&
+    isSensorRanges(value.ranges_cm, increment as SensorAngleIncrement) &&
+    canonicalJsonByteLength(value) <= MAX_SENSOR_FRAME_BYTES
   )
 }
 
@@ -862,11 +1068,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
 
   if (value.type === 'state') {
     const drones = Array.isArray(value.drones)
-      ? value.drones.map((drone) =>
-          isRecord(drone) && !Object.hasOwn(drone, 'membership_history_truncated')
-            ? { ...drone, membership_history_truncated: 0 }
-            : drone,
-        )
+      ? value.drones.map(normalizeRelayAircraftState)
       : value.drones
     if (
       !isNonNegativeInteger(value.roster_version) ||
@@ -987,6 +1189,11 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       return null
     }
     return value as unknown as RelaySafetyActionEvent
+  }
+
+  if (value.type === 'sensor') {
+    if (!isSensorEvent(value)) return null
+    return value as unknown as RelaySensorEvent
   }
 
   if (value.type === 'acknowledgement') {

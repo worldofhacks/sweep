@@ -3,6 +3,7 @@ import type { CatalogController } from '../catalog/use-catalog'
 import type { useControlConsole } from '../control/use-control-console'
 import type { GestureProducerDependencies } from '../gesture/use-gesture-producer'
 import type { MediaRuntime } from '../media/runtime'
+import type { MapEndpoint } from '../relay/map-endpoint'
 import type { TranscriptClient } from '../voice/client'
 import type { UsePushToTalkOptions } from '../voice/use-push-to-talk'
 
@@ -16,6 +17,7 @@ export type ModuleId =
   | 'speech'
   | 'captures'
   | 'worlds'
+  | 'devices'
   | 'reference'
 
 /** Browser seams for the push-to-talk recorder; tests inject fakes. */
@@ -45,6 +47,10 @@ export interface ModuleProps {
   services: ModuleServices
   /** Playback runtime; absent until the media bootstrap provides a configuration. */
   media?: MediaRuntime
+  /** Relay WebSocket base URL from the bootstrap; absent in the fixture and without a bootstrap. */
+  relayBaseUrl?: string
+  /** The session's occupancy map behind the relay bearer; absent means the map cannot be read. */
+  mapEndpoint?: MapEndpoint
 }
 
 export interface ModuleDefinition {
