@@ -63,8 +63,10 @@ no intent expands into a ground `rotate_to` yet). `come_home` drives to the laun
 rather than climbing to the takeoff altitude. Formations expand once per class around
 that class's own centre, aircraft at the mean height of the selected aircraft and
 ground vehicles on the floor, so a ground vehicle is never assigned an aircraft's slot
-or altitude; a class with one selected device holds its position. `translate` in the
-`aircraft_relative` frame rotates the step by the ground vehicle's own heading.
+or altitude; a class with one selected device holds its position. Ground `translate`
+uses the room frame because telemetry v1 does not carry an authoritative heading.
+Aircraft keep the deployment's configured translation frame. C2 formations, spacing,
+and disarm still require the session's C2 capability release.
 
 Fleet safety plans follow `mobile`: an internal hold, the position-loss hold, and the
 adapter-failure hold cover every mobile device of either class, while the following

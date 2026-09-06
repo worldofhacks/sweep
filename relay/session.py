@@ -1679,8 +1679,9 @@ class RelaySession:
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             if (
-                intent.name not in {IntentName.HOLD, IntentName.ESTOP}
+                intent.name not in {IntentName.HOLD, IntentName.ESTOP, IntentName.LAND_ALL}
                 or intent.session != self.session_id
+                or (intent.name is IntentName.LAND_ALL and intent.confirm is not True)
             ):
                 raise ValueError("expected a safety stop for this session")
             if intent.intent_id in self._intents:

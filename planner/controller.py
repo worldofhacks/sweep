@@ -1453,6 +1453,8 @@ class AutonomyController:
                 land=False,
             )
             hold_execution = self.dispatcher.dispatch(hold_plan, current, current_snapshot=provider)
+            if hold_execution.status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}:
+                return PositioningLossResult(True, "hold", hold_execution, hold_execution)
             current = provider()
         action = "land" if land else "hold"
         plan = self.planner.fleet_position_loss_plan(
