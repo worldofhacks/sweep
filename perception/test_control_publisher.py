@@ -10,8 +10,12 @@ from perception.control_publisher import (
     _host_boot_id,
     _run_live,
 )
-from relay.auth import verify_event_signature
-from relay.control_localization import ControlLocalizationWire
+from relay.control_frames import ControlLocalizationFrame
+from relay.control_localization import (
+    ClockMapping,
+    ControlLocalizationPins,
+    ControlLocalizationProjector,
+)
 
 
 class FakeTransport:
@@ -34,7 +38,7 @@ def config(mode="replay"):
         "drones": [
             {
                 "key_environment": "LOCALIZATION_KEY_1",
-                "max_position_uncertainty_m": 0.2,
+                "max_position_uncertainty_m": 0.3,
                 "clock_mapping": {
                     "capture_clock_id": "camera-clock",
                     "relay_clock_id": "relay-clock",
@@ -55,6 +59,12 @@ def config(mode="replay"):
                     "height_source_id": "tof-height",
                     "camera_calibration_id": "camera-sha",
                     "body_extrinsics_id": "body-sha",
+                    "position_bounds_map_enu_m": [[-10, 10], [-10, 10], [0, 3]],
+                    "height_bounds_map_enu_m": [0, 3],
+                    "max_speed_mps": 5,
+                    "position_variance_bounds_m2": [0.000001, 0.0625],
+                    "velocity_variance_bounds_m2ps2": [0.000001, 1],
+                    "height_variance_bounds_m2": [0.000001, 0.0625],
                     "production_evidence_verified": True,
                 },
             }
@@ -140,12 +150,72 @@ def test_jsonl_records_drive_fuser_and_emit_signed_replay_frame():
     for record in [velocity(), height(), tag()]:
         publisher.enqueue(record)
     frame = publisher.publish(1, 1.0)
-    wire = ControlLocalizationWire.from_mapping(frame)
-    unsigned = dict(frame)
-    del unsigned["signature"]
-    assert wire.control_eligible
+    localization = ControlLocalizationFrame.parse(frame)
+    assert localization.wire.control_eligible
     assert frame["t"] == 101_000
-    assert verify_event_signature(unsigned, frame["signature"], b"replay")
+    assert localization.signature_valid(b"replay")
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "position_bounds_map_enu_m",
+        "height_bounds_map_enu_m",
+        "max_speed_mps",
+        "position_variance_bounds_m2",
+        "velocity_variance_bounds_m2ps2",
+        "height_variance_bounds_m2",
+    ],
+)
+def test_publisher_rejects_a_deployment_missing_a_required_fuser_limit(field):
+    raw = config()
+    del raw["drones"][0]["fuser"][field]
+
+    with pytest.raises(ValueError, match="fuser configuration"):
+        ControlPublisherConfig.from_mapping(raw)
+
+
+def test_publisher_frame_projects_through_the_signed_diagnostic_transport():
+    publisher = ControlPublisher(ControlPublisherConfig.from_mapping(config()))
+    for record in [velocity(), height(), tag()]:
+        publisher.enqueue(record)
+    frame = publisher.publish(1, 1.0)
+    localization = ControlLocalizationFrame.parse(frame)
+    mapping = ClockMapping("camera-clock", "relay-clock", 0, 100_000, 1000, 5, True)
+    projector = ControlLocalizationProjector(
+        {
+            1: ControlLocalizationPins(
+                1,
+                "map-sha",
+                "geometry-sha",
+                "camera-sha",
+                "body-sha",
+                ("tag-camera", "msdk-velocity", "tof-height"),
+                mapping,
+            )
+        },
+        relay_clock_id="relay-clock",
+        max_clock_error_ms=5,
+        max_fix_age_ms=500,
+        max_velocity_age_ms=500,
+        max_height_age_ms=500,
+        max_position_uncertainty_p95_m=0.3,
+    )
+
+    assert localization.signature_valid(b"replay")
+    pose = projector.project(
+        localization.wire,
+        authenticated_drone_id=1,
+        authenticated_connection_epoch=1,
+        now_ms=101_000,
+        event_id="diagnostic-1",
+        session="session-1",
+        previous=None,
+    )
+
+    assert pose.status == "ready"
+    assert pose.flight_approved is False
+    assert pose.fix_time_ms == 100_895
 
 
 def test_live_authenticates_distinct_source_and_stale_frames_hold_without_replay():
@@ -154,7 +224,7 @@ def test_live_authenticates_distinct_source_and_stale_frames_hold_without_replay
     publisher.bind_live_credentials({"LOCALIZATION_KEY_1": "key"})
     assert transport.authenticated == [(1, "key")]
     initial = publisher.publish_live(1, 12.1)
-    landed = publisher.publish_live(1, 14.1)
+    landed = publisher.publish_live(1, 15.1)
     assert initial["localization_status"] == "hold"
     assert landed["localization_status"] == "land"
     assert initial["control_eligible"] is False
