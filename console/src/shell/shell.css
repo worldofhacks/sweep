@@ -504,6 +504,7 @@
 .sh-dock-meta { font-family: var(--font-mono); font-size: var(--text-11-5); color: var(--color-ink-2); white-space: nowrap; }
 .sh-dock-countdown { font-family: var(--font-mono); font-size: var(--text-12); font-variant-numeric: tabular-nums; color: var(--color-ink-2); }
 .sh-dock-countdown.is-urgent { color: var(--color-danger); }
+.sh-dock-countdown.is-expired { color: var(--color-danger); font-weight: var(--weight-700); }
 .sh-dock-actions { display: flex; flex: 1 1 240px; gap: 8px; }
 .sh-confirm {
   flex: 1 1 auto;
@@ -530,6 +531,12 @@
 .sh-cancel:hover { background: var(--color-ground); }
 .sh-dock-steps { margin: 10px 0 0; padding-left: 19px; font-size: var(--text-13-5); line-height: var(--leading-1-55); }
 .sh-dock-steps li { padding: 2px 0; }
+.sh-dock .ct-route-preview { max-width: 100%; margin-top: 10px; }
+.sh-dock .ct-route-preview svg { height: 130px; max-height: 130px; }
+.sh-dock .ct-route-preview > p { margin: 4px 0; font-size: var(--text-11-5); }
+.sh-dock .ct-route-preview table { font-size: var(--text-11); }
+.sh-dock .ct-route-preview caption { margin: 5px 0; }
+.sh-dock .ct-route-preview th, .sh-dock .ct-route-preview td { padding: 3px 5px; }
 .sh-json-toggle {
   display: block;
   margin-top: 10px;

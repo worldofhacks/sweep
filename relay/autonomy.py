@@ -1081,7 +1081,12 @@ def create_autonomy_app(
     event_ids: EventIdFactory | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
 ) -> tuple[FastAPI, AutonomyComposition]:
-    """Build the relay app with the planner and arbiter consuming every accepted intent."""
+    """Build the relay app with the planner and arbiter consuming every accepted intent.
+
+    ``transcript_service_factory`` is ``create_app``'s hook for the voice endpoint;
+    ``relay.main`` builds one that compiles transcripts against this composition's
+    planning policy and capability profile.
+    """
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
     composition = AutonomyComposition(config)

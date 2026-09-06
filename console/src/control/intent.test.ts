@@ -25,6 +25,8 @@ const deps = { now: () => t, nextId: () => 'intent-1' }
 
 /** The exact args each control sends, per the relay's _parse_args. */
 const ENVELOPES: Record<ConsoleIntentName, { args: IntentArgs; selection: number[] }> = {
+  navigate: { args: { zone_id: 'lobby' }, selection: [1] },
+  search: { args: { zone_id: 'lobby', target_class: 'backpack' }, selection: [1] },
   arm: { args: {}, selection: [1] },
   disarm: { args: {}, selection: [1] },
   estop: { args: {}, selection: [] },

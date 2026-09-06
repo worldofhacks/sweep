@@ -1,3 +1,5 @@
+import type { NavigationClient } from '../navigation/client'
+import type { SearchClient } from '../search/client'
 import type { ComponentType } from 'react'
 import type { CatalogController } from '../catalog/use-catalog'
 import type { useControlConsole } from '../control/use-control-console'
@@ -14,6 +16,7 @@ export type ModuleId =
   | 'live'
   | 'gesture'
   | 'speech'
+  | 'search'
   | 'captures'
   | 'worlds'
   | 'reference'
@@ -29,6 +32,8 @@ export type VoiceDependencies = Pick<
  * transcript client means the relay has no transcription endpoint here.
  */
 export interface ModuleServices {
+  navigation?: NavigationClient
+  search?: SearchClient
   transcript?: TranscriptClient
   gesture?: GestureProducerDependencies
   voice?: VoiceDependencies

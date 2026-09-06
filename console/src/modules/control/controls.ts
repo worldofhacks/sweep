@@ -705,6 +705,7 @@ export function requestTone(status: RequestStatus): Tone {
 
 /** Retry is offered on failed and refused requests; the reason it is disabled is stated in text. */
 export function retryBlockedReason(request: RequestRecord, state: ControlState): string | null {
+  if (request.intent.name === 'navigate' || request.intent.name === 'search') return 'Create a fresh route preview in Routes before trying again.'
   const connection = request.intent.source === 'keyboard' ? state.keyboardConnection : state.connection
   if (!isLinkUp(connection.status)) {
     return `Disabled: the ${request.intent.source} connection is ${connection.status}.`

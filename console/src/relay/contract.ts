@@ -32,6 +32,8 @@ export type ConsoleIntentName =
   | 'come_home'
   | 'sweep'
   | 'capture_room'
+  | 'navigate'
+  | 'search'
 
 export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'arm',
@@ -50,6 +52,8 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'come_home',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ]
 
 /**
@@ -68,6 +72,8 @@ export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<Console
   'land_all',
   'estop',
   'capture_room',
+  'navigate',
+  'search',
   'altitude',
   'formation_next',
   'formation_set',
@@ -109,6 +115,8 @@ export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<
   'land_all',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ])
 
 export function requiresConfirmation(name: ConsoleIntentName): boolean {
@@ -135,6 +143,8 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   come_home: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
+  navigate: 'selected',
+  search: 'selected',
 }
 
 export function selectionRule(name: ConsoleIntentName): SelectionRule {
@@ -205,6 +215,8 @@ export interface IntentArgsByName {
   come_home: EmptyArgs
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
+  navigate: { zone_id: string }
+  search: { zone_id: string; target_class: string }
 }
 
 export type IntentArgs = IntentArgsByName[ConsoleIntentName]
@@ -433,6 +445,202 @@ export interface RelayAuthFrame {
   type: 'auth'
   source: IntentSource
   token: string
+}
+
+/**
+ * Mirror of relay/voice.py VoicePlan: the compiler's validated preview carried
+ * on a `voice_outcome`. It is never an emitted intent. `plan` carries ordered
+ * Intent v1 drafts the console stages one at a time after the operator
+ * confirms; `clarify` carries options and emits nothing; `refuse` and
+ * `unsupported` carry a typed compiler reason; `cancel_pending` names the
+ * pending intent the operator may cancel.
+ */
+export type VoicePlanKind = 'plan' | 'clarify' | 'unsupported' | 'refuse' | 'cancel_pending'
+
+export const VOICE_PLAN_KINDS: readonly VoicePlanKind[] = [
+  'plan',
+  'clarify',
+  'unsupported',
+  'refuse',
+  'cancel_pending',
+]
+
+export interface VoicePlanStep {
+  index: number
+  name: ConsoleIntentName
+  args: Record<string, unknown>
+  selection: DroneId[]
+  mode: 'indoor'
+  /** Mirror of the arbiter's confirmation gate for this name. */
+  confirm_required: boolean
+  /** The compiler's deterministic grounding notes for this step. */
+  notes: string[]
+}
+
+export interface VoicePlan {
+  v: 1
+  kind: VoicePlanKind
+  transcript: string
+  reason: string | null
+  detail: string | null
+  options: string[]
+  steps: VoicePlanStep[]
+  compiled_at_ms: number
+  /** Set only for kind `plan`; the relay refuses to ground a step past it. */
+  expires_at_ms: number | null
+  /** The relay state event the plan was grounded on. */
+  state_event_id: string
+  roster_version: number
+  session: string
+  correlation_id: string
+  plan_digest: string | null
+  model: string
+  prompt_schema_version: string
+  response_source: string
+  pending_intent_id: string | null
+}
+
+export const MAX_VOICE_PLAN_STEPS = 8
+const MAX_VOICE_PLAN_TEXT_CHARS = 500
+const VOICE_PLAN_FIELDS = [
+  'v',
+  'kind',
+  'transcript',
+  'reason',
+  'detail',
+  'options',
+  'steps',
+  'compiled_at_ms',
+  'expires_at_ms',
+  'state_event_id',
+  'roster_version',
+  'session',
+  'correlation_id',
+  'plan_digest',
+  'model',
+  'prompt_schema_version',
+  'response_source',
+  'pending_intent_id',
+] as const
+const VOICE_PLAN_STEP_FIELDS = [
+  'index',
+  'name',
+  'args',
+  'selection',
+  'mode',
+  'confirm_required',
+  'notes',
+] as const
+
+function isBoundedText(value: unknown, limit = MAX_VOICE_PLAN_TEXT_CHARS): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= limit &&
+    // Mirrors relay/voice.py: no control characters in operator-visible text.
+    // eslint-disable-next-line no-control-regex
+    !/[\u0000-\u001f]/.test(value)
+  )
+}
+
+function isNullableBoundedText(value: unknown): value is string | null {
+  return value === null || isBoundedText(value)
+}
+
+function hasExactFields(value: Record<string, unknown>, fields: readonly string[]): boolean {
+  const keys = Object.keys(value)
+  return keys.length === fields.length && fields.every((field) => field in value)
+}
+
+function isJsonNative(value: unknown, depth = 0): boolean {
+  if (depth > 8) return false
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (Array.isArray(value)) return value.every((item) => isJsonNative(item, depth + 1))
+  if (isRecord(value)) return Object.values(value).every((item) => isJsonNative(item, depth + 1))
+  return false
+}
+
+function isVoicePlanStep(value: unknown, index: number): value is VoicePlanStep {
+  if (!isRecord(value) || !hasExactFields(value, VOICE_PLAN_STEP_FIELDS)) return false
+  return (
+    value.index === index &&
+    typeof value.name === 'string' &&
+    (CONSOLE_INTENT_NAMES as readonly string[]).includes(value.name) &&
+    isRecord(value.args) &&
+    isJsonNative(value.args) &&
+    isDroneIds(value.selection) &&
+    new Set(value.selection as DroneId[]).size === (value.selection as DroneId[]).length &&
+    value.mode === 'indoor' &&
+    typeof value.confirm_required === 'boolean' &&
+    Array.isArray(value.notes) &&
+    value.notes.length <= 8 &&
+    value.notes.every((note) => isBoundedText(note))
+  )
+}
+
+/** Structural validator for the relay's VoicePlan; mirrors relay/voice.py parse_voice_plan. */
+export function isVoicePlan(value: unknown): value is VoicePlan {
+  if (!isRecord(value) || !hasExactFields(value, VOICE_PLAN_FIELDS)) return false
+  if (value.v !== 1 || !(VOICE_PLAN_KINDS as readonly unknown[]).includes(value.kind)) return false
+  if (!isBoundedText(value.transcript, 4_000) || value.transcript.trim().length === 0) return false
+  if (
+    !isNullableBoundedText(value.reason) ||
+    !isNullableBoundedText(value.detail) ||
+    !isNullableBoundedText(value.plan_digest) ||
+    !isNullableBoundedText(value.pending_intent_id)
+  ) {
+    return false
+  }
+  if (
+    !isBoundedText(value.state_event_id, 512) ||
+    !isBoundedText(value.session, 512) ||
+    !isBoundedText(value.correlation_id, 512) ||
+    !isBoundedText(value.model, 512) ||
+    !isBoundedText(value.prompt_schema_version, 512) ||
+    !isBoundedText(value.response_source, 512)
+  ) {
+    return false
+  }
+  if (!isNonNegativeInteger(value.compiled_at_ms) || !isNonNegativeInteger(value.roster_version)) {
+    return false
+  }
+  if (
+    value.expires_at_ms !== null &&
+    (!isNonNegativeInteger(value.expires_at_ms) || value.expires_at_ms <= value.compiled_at_ms)
+  ) {
+    return false
+  }
+  if (
+    !Array.isArray(value.options) ||
+    value.options.length > 16 ||
+    !value.options.every((option) => isBoundedText(option)) ||
+    new Set(value.options).size !== value.options.length
+  ) {
+    return false
+  }
+  if (
+    !Array.isArray(value.steps) ||
+    value.steps.length > MAX_VOICE_PLAN_STEPS ||
+    !value.steps.every((step, index) => isVoicePlanStep(step, index))
+  ) {
+    return false
+  }
+  if (value.kind === 'plan') {
+    return (
+      value.steps.length > 0 &&
+      value.expires_at_ms !== null &&
+      value.plan_digest !== null &&
+      value.reason === null &&
+      value.options.length === 0 &&
+      value.pending_intent_id === null
+    )
+  }
+  if (value.steps.length > 0 || value.plan_digest !== null || value.expires_at_ms !== null) return false
+  if (value.kind === 'cancel_pending') {
+    return value.pending_intent_id !== null && value.reason === null && value.options.length === 0
+  }
+  return value.reason !== null && value.pending_intent_id === null
 }
 
 const MEMBERSHIP_STATES = new Set<MembershipState>([
@@ -840,6 +1048,7 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
     return false
   }
   const name = value.name as ConsoleIntentName
+  if ((name === 'navigate' || name === 'search') && value.source !== 'console') return false
   const selection = value.selection as DroneId[]
   if (!hasValidArgs(name, value.args)) return false
   if (requiresConfirmation(name) && !value.confirm) return false
@@ -863,6 +1072,11 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
       return keys.length === 1 && FORMATION_NAMES.has(args.name as FormationName)
     case 'sweep':
       return keys.length === 0 || (keys.length === 1 && isSweepBox(args.box))
+    case 'navigate':
+      return keys.length === 1 && typeof args.zone_id === 'string' && args.zone_id.trim().length > 0
+    case 'search':
+      return keys.length === 2 && typeof args.zone_id === 'string' && args.zone_id.trim().length > 0 &&
+        typeof args.target_class === 'string' && args.target_class.trim().length > 0
     case 'capture_room':
       return (
         keys.length === 3 &&

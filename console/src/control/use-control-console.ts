@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useReducer, type Dispatch } from 'react'
+import type { NavigationClient, NavigationPreview } from '../navigation/client'
+import type { SearchClient } from '../search/client'
+import { useCallback, useEffect, useMemo, useReducer, useRef, type Dispatch } from 'react'
 import type { RelayClient } from '../relay/client'
 import type {
   CapturePattern,
@@ -26,6 +28,7 @@ import {
   createRequestRecord,
   isIntentEnabled,
   type RequestRecord,
+  type ControlState,
 } from './state'
 
 export interface ControlClients {
@@ -42,6 +45,8 @@ export interface UseControlConsoleOptions {
   sessionId: string
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
+  navigation?: NavigationClient
+  search?: SearchClient
 }
 
 /** One control press: an intent name, its args, and the aircraft it addresses. */
@@ -55,6 +60,8 @@ export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> 
 export function useControlConsole({
   sessionId,
   clients,
+  navigation,
+  search,
   intentDependencies = browserIntentDependencies,
 }: UseControlConsoleOptions) {
   const [state, dispatch] = useReducer(
@@ -62,6 +69,10 @@ export function useControlConsole({
     sessionId,
     (id) => createInitialControlState(id, intentDependencies.now()),
   )
+
+  const latestState = useRef(state)
+  const previewSequence = useRef(0)
+  useEffect(() => { latestState.current = state }, [state])
 
   useEffect(() => {
     const unsubscribeConsole = clients.console.subscribe((event) => {
@@ -151,10 +162,13 @@ export function useControlConsole({
    * Records a freshly minted intent and parks it in the dock with its plan
    * preview. One preview at a time: a new draft cancels an earlier, unconfirmed
    * one. The intent id never changes. The speech compiler and the gesture
-   * producer draft through this so nothing leaves on a compile or a pose.
+   * producer draft through this so nothing leaves on a compile or a pose. A
+   * relay-compiled step passes its plan's deadline as `expiresAt`; the preview
+   * carries it so the dock counts it down and confirmRequest honours it.
    */
   const stageForConfirmation = useCallback(
-    (intent: IntentV1): IntentV1 => {
+    (intent: IntentV1, expiresAt?: number, route?: NavigationPreview): IntentV1 => {
+      previewSequence.current += 1
       const t = intentDependencies.now()
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
@@ -166,7 +180,7 @@ export function useControlConsole({
         type: 'request_pending_confirmation',
         intentId: intent.intent_id,
         t,
-        plan: buildPlanPreview(intent, state.rosterVersion),
+        plan: { ...buildPlanPreview(intent, state.rosterVersion, expiresAt), ...(route ? { route } : {}) },
       })
       return intent
     },
@@ -178,7 +192,7 @@ export function useControlConsole({
    * (with its plan preview) or sends it at once.
    */
   const stageIntent = useCallback(
-    (intent: IntentV1) => {
+    (intent: IntentV1, expiresAt?: number) => {
       if (intent.name === 'select') {
         state.requests.filter((request) => request.status === 'pending_confirmation').forEach((request) => {
           dispatch({ type: 'request_invalidated', intentId: request.intent.intent_id,
@@ -187,7 +201,7 @@ export function useControlConsole({
         })
       }
       if (requiresConfirmation(intent.name)) {
-        stageForConfirmation(intent)
+        stageForConfirmation(intent, expiresAt)
         return
       }
       const t = intentDependencies.now()
@@ -206,8 +220,10 @@ export function useControlConsole({
   )
 
   const issueIntent = useCallback(
-    <N extends ConsoleIntentName>(request: IntentRequest<N>) => {
-      if (!isIntentEnabled(state, request.name)) return
+    <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
+      if (request.name === 'navigate' || request.name === 'search') return null
+      previewSequence.current += 1
+      if (!isIntentEnabled(state, request.name)) return null
       const intent = createIntent(
         {
           name: request.name,
@@ -218,10 +234,74 @@ export function useControlConsole({
         },
         intentDependencies,
       )
-      stageIntent(intent)
+      stageIntent(intent, expiresAt)
+      return intent
     },
     [intentDependencies, stageIntent, state],
   )
+
+  const prepareNavigation = useCallback(async (
+    zoneId: string,
+    deadline?: number,
+    isCurrent: () => boolean = () => true,
+  ): Promise<IntentV1> => {
+    const current = latestState.current
+    if (!isCurrent()) throw new Error('The route preview is no longer current. Preview it again.')
+    if (deadline !== undefined && intentDependencies.now() >= deadline) {
+      throw new Error('The compiled plan expired. Preview it again.')
+    }
+    if (!navigation || !isIntentEnabled(current, 'navigate') || current.connection.status !== 'connected' ||
+      current.selection.length === 0 || !selectionReady(current, current.selection)) {
+      throw new Error('Select ready aircraft and connect to a relay with navigation configured.')
+    }
+    const sequence = ++previewSequence.current
+    const draft = createIntent({ name: 'navigate', args: { zone_id: zoneId },
+      selection: current.selection, source: 'console', session: current.sessionId }, intentDependencies)
+    const startedAt = intentDependencies.now()
+    const preview = await navigation.preview(draft)
+    const latest = latestState.current
+    if (!isCurrent() || sequence !== previewSequence.current || latest.rosterVersion !== current.rosterVersion ||
+      latest.connection !== current.connection || JSON.stringify(latest.selection) !== JSON.stringify(current.selection) ||
+      !isIntentEnabled(latest, 'navigate') || !selectionReady(latest, current.selection) ||
+      preview.plan.roster_version !== current.rosterVersion) {
+      throw new Error('The fleet changed while preparing the route. Preview it again.')
+    }
+    const expiresAt = Math.min(deadline ?? Infinity, startedAt + preview.expires_at_ms - preview.t)
+    if (intentDependencies.now() >= expiresAt) throw new Error('The route preview expired. Preview it again.')
+    return stageForConfirmation(draft, expiresAt, preview)
+  }, [navigation, intentDependencies, stageForConfirmation])
+
+  const prepareSearch = useCallback(async (
+    zoneId: string,
+    targetClass: string,
+    deadline?: number,
+    isCurrent: () => boolean = () => true,
+  ): Promise<IntentV1> => {
+    const current = latestState.current
+    if (!isCurrent()) throw new Error('The search preview is no longer current. Preview it again.')
+    if (deadline !== undefined && intentDependencies.now() >= deadline) {
+      throw new Error('The compiled plan expired. Preview it again.')
+    }
+    if (!search || !isIntentEnabled(current, 'search') || current.connection.status !== 'connected' ||
+      current.selection.length === 0 || !selectionReady(current, current.selection)) {
+      throw new Error('Select ready aircraft and connect to a relay with search configured.')
+    }
+    const sequence = ++previewSequence.current
+    const draft = createIntent({ name: 'search', args: { zone_id: zoneId, target_class: targetClass },
+      selection: current.selection, source: 'console', session: current.sessionId }, intentDependencies)
+    const startedAt = intentDependencies.now()
+    const preview = await search.preview(draft)
+    const latest = latestState.current
+    if (!isCurrent() || sequence !== previewSequence.current || latest.rosterVersion !== current.rosterVersion ||
+      latest.connection !== current.connection || JSON.stringify(latest.selection) !== JSON.stringify(current.selection) ||
+      !isIntentEnabled(latest, 'search') || !selectionReady(latest, current.selection) ||
+      preview.plan.roster_version !== current.rosterVersion) {
+      throw new Error('The fleet changed while preparing the search. Preview it again.')
+    }
+    const expiresAt = Math.min(deadline ?? Infinity, startedAt + preview.expires_at_ms - preview.t)
+    if (intentDependencies.now() >= expiresAt) throw new Error('The search preview expired. Preview it again.')
+    return stageForConfirmation(draft, expiresAt, preview)
+  }, [search, intentDependencies, stageForConfirmation])
 
   /**
    * A select intent addresses the aircraft it names: `selection` carries the
@@ -230,6 +310,7 @@ export function useControlConsole({
    */
   const sendSelection = useCallback(
     (desired: DroneId[]) => {
+      previewSequence.current += 1
       if (!isIntentEnabled(state, 'select') || desired.length === 0) return
       const intent = createIntent(
         {
@@ -295,6 +376,7 @@ export function useControlConsole({
       roomId: string,
       source: DraftSource = 'console',
       pattern: CapturePattern = state.capturePattern,
+      expiresAt?: number,
     ): IntentV1 | null => {
       if (!state.enabledIntentNames.includes('capture_room')) return null
       const selectedId = state.selection[0]
@@ -315,10 +397,13 @@ export function useControlConsole({
         },
         intentDependencies,
       )
-      return stageForConfirmation({
-        ...draft,
-        args: createCaptureArgs(trimmedRoomId, draft.intent_id, pattern),
-      })
+      return stageForConfirmation(
+        {
+          ...draft,
+          args: createCaptureArgs(trimmedRoomId, draft.intent_id, pattern),
+        },
+        expiresAt,
+      )
     },
     [
       intentDependencies,
@@ -336,7 +421,7 @@ export function useControlConsole({
    * speech compiler and the target strip use it so nothing leaves on a compile.
    */
   const prepareSelect = useCallback(
-    (ids: DroneId[], source: DraftSource): IntentV1 | null => {
+    (ids: DroneId[], source: DraftSource, expiresAt?: number): IntentV1 | null => {
       if (!isIntentEnabled(state, 'select')) return null
       const desired = [...new Set(ids)].sort((a, b) => a - b)
       if (desired.length === 0) return null
@@ -354,14 +439,46 @@ export function useControlConsole({
         },
         intentDependencies,
       )
-      return stageForConfirmation(draft)
+      return stageForConfirmation(draft, expiresAt)
+    },
+    [intentDependencies, stageForConfirmation, state],
+  )
+
+  /**
+   * Drafts any control press as a preview that must be confirmed before it is
+   * sent, whatever the name's own confirmation rule. The relay-compiled speech
+   * path stages every plan step through this or the name-specific prepare
+   * functions so nothing leaves on a compile.
+   */
+  const prepareIntent = useCallback(
+    <N extends ConsoleIntentName>(
+      request: IntentRequest<N>,
+      source: DraftSource = 'console',
+      expiresAt?: number,
+    ): IntentV1 | null => {
+      if (request.name === 'navigate' || request.name === 'search') return null
+      if (!isIntentEnabled(state, request.name)) return null
+      const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
+      const selection = fleetWide ? [] : request.targets ?? state.selection
+      if (!fleetWide && selection.length === 0) return null
+      const draft = createIntent(
+        {
+          name: request.name,
+          args: request.args,
+          selection,
+          source,
+          session: state.sessionId,
+        },
+        intentDependencies,
+      )
+      return stageForConfirmation(draft, expiresAt)
     },
     [intentDependencies, stageForConfirmation, state],
   )
 
   /** Drafts a hold that must be previewed and confirmed before it is sent. */
   const prepareHold = useCallback(
-    (source: DraftSource): IntentV1 | null => {
+    (source: DraftSource, expiresAt?: number): IntentV1 | null => {
       if (!isIntentEnabled(state, 'hold')) return null
       if (state.selection.length === 0) return null
       const selectionReady = state.selection.every(
@@ -378,13 +495,14 @@ export function useControlConsole({
         },
         intentDependencies,
       )
-      return stageForConfirmation(draft)
+      return stageForConfirmation(draft, expiresAt)
     },
     [intentDependencies, stageForConfirmation, state],
   )
 
   const confirmRequest = useCallback(
     (intentId: string): IntentV1 | null => {
+      previewSequence.current += 1
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
       if (!request || request.status !== 'pending_confirmation') return null
       if (!isIntentEnabled(state, request.intent.name)) {
@@ -404,6 +522,17 @@ export function useControlConsole({
           t: intentDependencies.now(),
           reasonCode: 'stale_roster',
           detail: `Preview used roster version ${request.plan?.rosterVersion}; current roster is ${state.rosterVersion}.`,
+        })
+        return null
+      }
+      const expiresAt = request.plan?.expiresAt
+      if (expiresAt !== undefined && intentDependencies.now() >= expiresAt) {
+        dispatch({
+          type: 'request_invalidated',
+          intentId,
+          t: intentDependencies.now(),
+          reasonCode: 'confirmation_window_expired',
+          detail: 'The confirmation window expired before the operator confirmed. No command was sent.',
         })
         return null
       }
@@ -440,6 +569,7 @@ export function useControlConsole({
 
   const cancelRequest = useCallback(
     (intentId: string) => {
+      previewSequence.current += 1
       dispatch({ type: 'request_cancelled', intentId, t: intentDependencies.now() })
     },
     [intentDependencies],
@@ -452,6 +582,7 @@ export function useControlConsole({
 
   const issueNetworkStop = useCallback(
     (source: Extract<IntentSource, 'console' | 'keyboard'>) => {
+      previewSequence.current += 1
       const intent = createIntent(
         {
           name: 'estop',
@@ -525,6 +656,7 @@ export function useControlConsole({
   const retryRequest = useCallback(
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
+      if (request.intent.name === 'navigate' || request.intent.name === 'search') return
       const intent = retryIntent(request.intent, intentDependencies)
       if (['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
         stageForConfirmation({ ...intent, confirm: false })
@@ -550,7 +682,10 @@ export function useControlConsole({
     selectAircraft,
     selectAllReady,
     prepareCapture,
+    prepareNavigation,
+    prepareSearch,
     prepareHold,
+    prepareIntent,
     prepareSelect,
     confirmRequest,
     cancelRequest,
@@ -561,6 +696,10 @@ export function useControlConsole({
     retryRequest,
     selectFeed: (droneId: DroneId) => dispatch({ type: 'feed_selected', droneId }),
   }
+}
+
+function selectionReady(state: ControlState, ids: readonly DroneId[]): boolean {
+  return ids.every(id => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable)
 }
 
 function sendToRelay(
