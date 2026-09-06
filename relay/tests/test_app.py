@@ -885,9 +885,7 @@ def test_live_replay_waits_for_audit_commit_and_returns_contiguous_snapshot(
         assert release_append.wait(timeout=2)
         return real_append_batch(audit_log, events, operation_id=operation_id)
 
-    def mark_replay(
-        session: RelaySession, *, after_sequence: int = 0
-    ) -> dict[str, object]:
+    def mark_replay(session: RelaySession, *, after_sequence: int = 0) -> dict[str, object]:
         replay_entered.set()
         return real_replay(session, after_sequence=after_sequence)
 
@@ -916,9 +914,7 @@ def test_live_replay_waits_for_audit_commit_and_returns_contiguous_snapshot(
 
     assert response.status_code == 200
     body = response.json()
-    assert [record["seq"] for record in body["events"]] == list(
-        range(1, body["last_sequence"] + 1)
-    )
+    assert [record["seq"] for record in body["events"]] == list(range(1, body["last_sequence"] + 1))
 
 
 def test_replay_reports_unrecoverable_audit_history_as_unavailable(
