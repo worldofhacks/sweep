@@ -386,6 +386,7 @@ def test_relay_snapshot_derives_safety_facts_and_excludes_silent_aircraft(
     hovering = relay_snapshot(relay_session.current_state(), operator_last_seen_ms=clock.value)
 
     assert set(landed.aircraft) == {1}, "aircraft 2 has no telemetry and is excluded"
+    assert landed.fleet_observation_complete is False
     assert before_capabilities.operator_present is False
     assert before_capabilities.aircraft[1].camera_ready is False
     assert before_capabilities.aircraft[1].storage_remaining_bytes == 0

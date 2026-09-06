@@ -186,14 +186,16 @@ def relay_snapshot(
     ``estop_active`` rather than sent.
 
     Aircraft without current-epoch telemetry, or whose telemetry state is not a
-    ``FlightState``, are excluded: they cannot be selected or commanded until the
-    node reports.
+    ``FlightState``, are excluded from commands and mark the fleet observation
+    incomplete. That fact prevents the session-wide arm authorization from being
+    withdrawn until every registered aircraft is proven physically disarmed.
     """
     drones_raw = state.get("drones")
     if not isinstance(drones_raw, list):
         raise ValueError("relay state requires a drones list")
     drones: list[Mapping[str, object]] = []
     enrichment: dict[int, RelayAircraftSafetyEnrichment] = {}
+    fleet_observation_complete = True
     for drone in drones_raw:
         if not isinstance(drone, Mapping):
             raise ValueError("relay drone entries must be mappings")
@@ -202,6 +204,7 @@ def relay_snapshot(
             raise ValueError("relay drone entries require a positive drone_id")
         telemetry = drone.get("telemetry")
         if not isinstance(telemetry, Mapping) or telemetry.get("state") not in _FLIGHT_STATES:
+            fleet_observation_complete = False
             continue
         capabilities = drone.get("camera_capabilities")
         storage = (
@@ -235,6 +238,7 @@ def relay_snapshot(
             operator_present=operator_last_seen_ms is not None,
             operator_last_seen_ms=0 if operator_last_seen_ms is None else operator_last_seen_ms,
             aircraft=enrichment,
+            fleet_observation_complete=fleet_observation_complete,
         ),
     )
     if estop_requested and not snapshot.estop_active:

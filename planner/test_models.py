@@ -207,6 +207,19 @@ def test_snapshot_projection_is_json_native_and_deterministic() -> None:
 
     assert first == second
     assert json.loads(json.dumps(first, sort_keys=True))["aircraft"][0]["membership"] == "ready"
+    assert first["fleet_observation_complete"] is True
+
+
+def test_snapshot_observation_completeness_is_strict_and_round_trips() -> None:
+    raw = FleetSnapshot.from_relay_state(relay_state(), enrichment=enrichment()).to_dict()
+    raw["fleet_observation_complete"] = False
+
+    snapshot = FleetSnapshot.from_mapping(raw)
+
+    assert snapshot.fleet_observation_complete is False
+    raw["fleet_observation_complete"] = 1
+    with pytest.raises(ValueError, match="fleet_observation_complete"):
+        FleetSnapshot.from_mapping(raw)
 
 
 def test_execution_projection_rejects_nondeterministic_iterable_bundle() -> None:

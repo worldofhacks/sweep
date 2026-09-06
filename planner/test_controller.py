@@ -117,6 +117,52 @@ def test_disarm_refuses_when_an_unselected_aircraft_is_airborne() -> None:
     assert flight.calls == []
 
 
+def test_disarm_refuses_when_any_registered_aircraft_lacks_current_telemetry() -> None:
+    snapshot = replace(
+        make_snapshot(
+            1,
+            selection=(),
+            flight_state=FlightState.LANDED,
+            armed=True,
+        ),
+        fleet_observation_complete=False,
+    )
+    controller, _, _, _, flight, _ = make_stack(
+        snapshot,
+        capability_profile=C2_CAPABILITY_PROFILE,
+    )
+
+    result = controller.execute(make_intent(IntentName.DISARM, selection=()), snapshot)
+
+    assert result.status is LifecycleStatus.REFUSED
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.AIRCRAFT_NOT_READY
+    assert flight.calls == []
+
+
+def test_disarm_revalidates_complete_fleet_observation_before_commit() -> None:
+    grounded = make_snapshot(
+        1,
+        selection=(),
+        flight_state=FlightState.LANDED,
+        armed=True,
+    )
+    incomplete = replace(grounded, fleet_observation_complete=False)
+    controller, _, _, _, flight, _ = make_stack(
+        grounded,
+        capability_profile=C2_CAPABILITY_PROFILE,
+    )
+    prepared = controller.prepare(make_intent(IntentName.DISARM, selection=()), grounded)
+
+    assert isinstance(prepared, PreparedExecution)
+    result = controller.dispatch_prepared(prepared, current_snapshot=lambda: incomplete)
+
+    assert result.status is LifecycleStatus.REFUSED
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.AIRCRAFT_NOT_READY
+    assert flight.calls == []
+
+
 def test_disarm_revalidates_grounded_state_immediately_before_commit() -> None:
     grounded = make_snapshot(
         1,

@@ -201,6 +201,14 @@ class SafetyArbiter:
             if operator_refusal is not None:
                 return operator_refusal
 
+        if intent.name is IntentName.DISARM and not snapshot.fleet_observation_complete:
+            return self._intent_refusal(
+                intent,
+                snapshot,
+                RefusalReason.AIRCRAFT_NOT_READY,
+                "disarm requires current telemetry for every registered aircraft",
+            )
+
         target_ids = self._intent_targets(intent, snapshot)
         if isinstance(target_ids, Refusal):
             return target_ids
@@ -487,6 +495,13 @@ class SafetyArbiter:
         operator_refusal = self._check_operator(plan.intent_id, snapshot)
         if operator_refusal is not None:
             return operator_refusal
+        if plan.intent_name is IntentName.DISARM and not snapshot.fleet_observation_complete:
+            return self._refusal_for(
+                plan.intent_id,
+                snapshot,
+                RefusalReason.AIRCRAFT_NOT_READY,
+                "disarm requires current telemetry for every registered aircraft",
+            )
         if plan.intent_name is IntentName.ARM:
             targets = plan.selection
         elif plan.intent_name is IntentName.DISARM:
