@@ -18,6 +18,7 @@ from perception.search_events import (
     SearchMissionIdentity,
     SearchTaskEvent,
 )
+from perception.search_localization import SearchLocalization
 from planner.models import (
     ExecutionResult,
     FleetSnapshot,
@@ -102,6 +103,8 @@ class _Mission:
     preview: SearchMissionPreview
     ledger: CoverageLedger
     started: bool = False
+    candidates: dict[str, tuple[SearchCandidateEvent, SearchLocalization | None]] | None = None
+    acknowledged_findings: set[str] | None = None
 
 
 class SearchRuntime:
@@ -162,7 +165,9 @@ class SearchRuntime:
         if intent.intent_id in self._missions:
             return self._refusal(intent.intent_id, snapshot, "search intent already has a mission")
         preview = SearchMissionPreview(search, plan)
-        self._missions[intent.intent_id] = _Mission(preview, search.ledger())
+        self._missions[intent.intent_id] = _Mission(
+            preview, search.ledger(), candidates={}, acknowledged_findings=set()
+        )
         return preview
 
     def start(self, intent_id: str) -> SearchMissionStatus:
@@ -203,7 +208,70 @@ class SearchRuntime:
         return mission.ledger.observe_processed(event, pose, now_s)
 
     def observe_sighting(self, intent_id: str, event: SightingEvent) -> SearchCandidateEvent | None:
-        return self._mission(intent_id).ledger.observe_sighting(event)
+        mission = self._mission(intent_id)
+        candidate = mission.ledger.observe_sighting(event)
+        if candidate is not None:
+            assert mission.candidates is not None
+            mission.candidates[candidate.sighting_id] = (candidate, None)
+        return candidate
+
+    def localize_sighting(
+        self, intent_id: str, sighting_id: str, localization: SearchLocalization | None
+    ) -> None:
+        mission = self._mission(intent_id)
+        assert mission.candidates is not None
+        candidate = mission.candidates.get(sighting_id)
+        if candidate is not None:
+            mission.candidates[sighting_id] = (candidate[0], localization)
+
+    def acknowledge_finding(self, intent_id: str, sighting_id: str) -> bool:
+        mission = self._mission(intent_id)
+        assert mission.candidates is not None and mission.acknowledged_findings is not None
+        if sighting_id not in mission.candidates:
+            return False
+        mission.acknowledged_findings.add(sighting_id)
+        return True
+
+    def status_payload(self, intent_id: str) -> dict[str, object]:
+        mission = self._mission(intent_id)
+        assert mission.candidates is not None and mission.acknowledged_findings is not None
+        tasks = []
+        for assignment in mission.preview.search.assignments:
+            covered, total = mission.ledger.progress(assignment.task.task_id)
+            tasks.append(
+                {
+                    "drone_id": assignment.drone.drone.drone_id,
+                    "task_id": assignment.task.task_id,
+                    "state": mission.ledger.task_state(assignment.task.task_id),
+                    "covered_cells": covered,
+                    "total_cells": total,
+                }
+            )
+        candidates = []
+        for sighting_id, (candidate, localization) in mission.candidates.items():
+            position = None
+            if localization is not None:
+                position = {
+                    "x_m": localization.pose.x_m,
+                    "y_m": localization.pose.y_m,
+                    "z_m": localization.pose.z_m,
+                    "zone_id": localization.pose.floor_id,
+                }
+            candidates.append(
+                {
+                    "sighting_id": sighting_id,
+                    "source_id": candidate.source_id,
+                    "acknowledged": sighting_id in mission.acknowledged_findings,
+                    "position": position,
+                }
+            )
+        return {
+            "type": "search_status",
+            "intent_id": intent_id,
+            "state": self.status(intent_id).state,
+            "tasks": tasks,
+            "candidates": candidates,
+        }
 
     def detection_worker(
         self,
