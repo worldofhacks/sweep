@@ -733,6 +733,14 @@ class RelayRuntime:
         to the audit log or broadcast to consoles.  The node accepts one only when
         its signature and current session/drone/epoch/roster identity all match.
         """
+        heartbeat_gate = getattr(session.intent_sink, "control_heartbeats_allowed", None)
+        if callable(heartbeat_gate):
+            try:
+                if not heartbeat_gate():
+                    return
+            except Exception:
+                _LOGGER.exception("control heartbeat gate failed closed session=%s", session_id)
+                return
         now = time.monotonic()
         # Default to 1 Hz, but keep at least two lease opportunities inside a
         # shorter configured hold window (the fan-out loop remains the upper rate).

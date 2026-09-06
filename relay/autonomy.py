@@ -24,11 +24,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
+from time import monotonic
 from typing import get_origin, get_type_hints
 
 from fastapi import FastAPI
@@ -44,6 +46,7 @@ from planner.models import (
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
+    MembershipState,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
@@ -63,7 +66,14 @@ from relay.control_localization import (
     ControlLocalizationProjector,
 )
 from relay.intent_v1 import IntentName, IntentV1, Mode
-from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
+from relay.session import (
+    OPERATOR_PRESENCE_MIN_INTERVAL_MS,
+    Clock,
+    EventIdFactory,
+    IntentSink,
+    LeaveAuthorizer,
+    RelaySession,
+)
 from relay.session_report import write_session_report
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 
@@ -95,6 +105,9 @@ _LOGGER = logging.getLogger(__name__)
 _FLIGHT_STATES = frozenset(state.value for state in FlightState)
 _PHYSICALLY_DISARMED_STATES = frozenset({FlightState.DISARMED.value, FlightState.LANDED.value})
 _PUBLISH_TIMEOUT_S = 30.0
+_MIN_OPERATOR_TIMEOUT_MS = OPERATOR_PRESENCE_MIN_INTERVAL_MS * 3
+_MAX_WATCHDOG_RETRY_INTERVAL_MS = 5_000
+_REPORT_DEADLINE_RESERVE_S = 1.0
 
 
 class PlanPreempted(BaseException):
@@ -120,6 +133,13 @@ class AutonomyConfig:
     presence_watchdog: PresenceWatchdogConfig = field(
         default_factory=lambda: PresenceWatchdogConfig()
     )
+
+    def __post_init__(self) -> None:
+        if self.safety.operator_timeout_ms < _MIN_OPERATOR_TIMEOUT_MS:
+            raise ValueError(
+                f"operator_timeout_ms must be at least {_MIN_OPERATOR_TIMEOUT_MS} "
+                "to allow three bounded interaction delivery opportunities"
+            )
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
@@ -148,7 +168,7 @@ class AutonomyConfig:
             ),
             presence_watchdog=_config_from_json(
                 PresenceWatchdogConfig,
-                values.get("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", '{"action":"hold"}'),
+                values.get("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", ""),
                 "SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON",
             ),
         )
@@ -361,6 +381,8 @@ class _Job:
     cancelled_by: str | None = None
     finished: bool = False
     watchdog_action: str | None = None
+    watchdog_attempt: int = 0
+    watchdog_targets: tuple[tuple[int, int], ...] = ()
 
     def check(self) -> None:
         if self.cancelled_by is not None:
@@ -374,6 +396,21 @@ class _AwaitingExecution:
     dispatcher: AdapterDispatcher
     snapshot: FleetSnapshot
     pending: ExecutionResult
+
+
+@dataclass(slots=True)
+class _PresenceIncident:
+    """Bounded retry state for one expiry epoch and its exact aircraft identities."""
+
+    expired_last_seen_ms: int
+    safe_targets: set[tuple[int, int]] = field(default_factory=set)
+    pending: bool = False
+    in_flight: _Job | None = None
+    awaiting_job: _Job | None = None
+    next_attempt_ms: int = 0
+    attempts: int = 0
+    idle_reported: bool = False
+    last_intent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -432,6 +469,28 @@ class _PreemptibleLink:
         return self._inner.media_files(drone_id, capture_id)
 
 
+def _presence_watchdog_targets(snapshot: FleetSnapshot, action: str) -> tuple[tuple[int, int], ...]:
+    """Freeze the exact identities a presence-loss action must make safe."""
+    active = tuple(
+        aircraft
+        for aircraft in snapshot.aircraft.values()
+        if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+        and aircraft.airborne
+    )
+    if not active:
+        return ()
+    candidates = (
+        active
+        if action == "hold"
+        else tuple(
+            aircraft
+            for aircraft in snapshot.aircraft.values()
+            if aircraft.membership in {MembershipState.READY, MembershipState.DEGRADED}
+        )
+    )
+    return tuple(sorted((aircraft.drone_id, aircraft.connection_epoch) for aircraft in candidates))
+
+
 class AutonomySession:
     """One session's planner, arbiter, operator evidence, and intent lanes.
 
@@ -457,7 +516,7 @@ class AutonomySession:
         self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
         self._operator_last_seen_ms: int | None = None
-        self._presence_expiry_seen_ms: int | None = None
+        self._presence_incident: _PresenceIncident | None = None
         self._presence_action_serial = 0
         self._stop_requested = False
         self._normal = _Lane("normal", self._lock)
@@ -486,7 +545,6 @@ class AutonomySession:
                 self._operator_last_seen_ms = (
                     received_at if previous is None else max(previous, received_at)
                 )
-                self._presence_expiry_seen_ms = None
         runtime = self._composition.runtime_if_bound()
         job = _Job(intent, None if runtime is None else runtime.sessions.get(self.session_id))
         try:
@@ -496,6 +554,8 @@ class AutonomySession:
             _LOGGER.exception("preemption bookkeeping failed for intent %s", intent.intent_id)
             lane = self._lane_for(intent.name)
         with lane.ready:
+            if lane.closed:
+                raise RuntimeError("autonomy session is closed")
             lane.pending.append(job)
             lane.ready.notify()
 
@@ -516,7 +576,10 @@ class AutonomySession:
         self, state: Mapping[str, object], *, capture_readiness: ReadinessSource | None = None
     ) -> FleetSnapshot:
         with self._lock:
-            operator_last_seen_ms = self._operator_last_seen_ms
+            incident = self._presence_incident
+            operator_last_seen_ms = (
+                None if incident is not None and incident.pending else self._operator_last_seen_ms
+            )
             estop_requested = self._stop_requested
         return relay_snapshot(
             state,
@@ -529,10 +592,15 @@ class AutonomySession:
         with self._lock:
             previous = self._operator_last_seen_ms
             self._operator_last_seen_ms = now_ms if previous is None else max(previous, now_ms)
-            self._presence_expiry_seen_ms = None
+
+    def control_heartbeats_allowed(self) -> bool:
+        """Fail closed while a presence-loss action lacks a safe terminal result."""
+        with self._lock:
+            incident = self._presence_incident
+            return incident is None or not incident.pending
 
     def periodic_events(self, _relay_event: Mapping[str, object]) -> list[dict[str, object]]:
-        """Dispatch one configured stop when the last accepted operator action expires."""
+        """Retry a frozen operator-loss action until every current target is safe."""
         runtime = self._composition.runtime_if_bound()
         if runtime is None:
             return []
@@ -543,54 +611,225 @@ class AutonomySession:
         now = state.get("t")
         if not isinstance(now, int) or isinstance(now, bool):
             return []
+        action = self._composition.config.presence_watchdog.action
+        snapshot = self.snapshot(state, capture_readiness=session.capture_readiness)
+        targets = _presence_watchdog_targets(snapshot, action)
         with self._lock:
             last_seen = self._operator_last_seen_ms
-            expired = (
-                last_seen is not None
-                and now - last_seen >= self.arbiter.config.operator_timeout_ms
-                and self._presence_expiry_seen_ms != last_seen
-            )
-            if not expired:
+            if last_seen is None:
                 return []
-            self._presence_action_serial += 1
-            action = self._composition.config.presence_watchdog.action
-            intent = IntentV1(
-                v=1,
-                t=now,
-                type="intent",
-                intent_id=(f"safety:operator-presence:{last_seen}:{self._presence_action_serial}"),
-                retry_of=None,
-                source="safety",
-                session=self.session_id,
-                name=IntentName(action),
-                args={},
-                selection=(),
-                mode=Mode.INDOOR,
-                confirm=True,
+            expired = now - last_seen >= self.arbiter.config.operator_timeout_ms
+            incident = self._presence_incident
+            if incident is None:
+                if not expired:
+                    return []
+                incident = _PresenceIncident(expired_last_seen_ms=last_seen)
+                self._presence_incident = incident
+            elif last_seen > incident.expired_last_seen_ms and not incident.pending:
+                if not expired:
+                    self._presence_incident = None
+                    return []
+                incident = _PresenceIncident(expired_last_seen_ms=last_seen)
+                self._presence_incident = incident
+
+            unsafe_targets = tuple(
+                target for target in targets if target not in incident.safe_targets
             )
+            if not unsafe_targets:
+                incident.pending = False
+                if targets or incident.idle_reported:
+                    return []
+                incident.idle_reported = True
+                idle_event = True
+            else:
+                idle_event = False
+                incident.pending = True
+                if incident.in_flight is not None or now < incident.next_attempt_ms:
+                    return []
+                retiring_job = incident.awaiting_job
+                incident.awaiting_job = None
+                self._presence_action_serial += 1
+                incident.attempts += 1
+                attempt = incident.attempts
+                intent_id = (
+                    f"safety:operator-presence:{incident.expired_last_seen_ms}:"
+                    f"{self._presence_action_serial}"
+                )
+                intent = IntentV1(
+                    v=1,
+                    t=now,
+                    type="intent",
+                    intent_id=intent_id,
+                    retry_of=incident.last_intent_id,
+                    source="safety",
+                    session=self.session_id,
+                    name=IntentName(action),
+                    args={},
+                    selection=(),
+                    mode=Mode.INDOOR,
+                    confirm=True,
+                )
+                job = _Job(
+                    intent,
+                    session,
+                    watchdog_action=action,
+                    watchdog_attempt=attempt,
+                    watchdog_targets=targets,
+                )
+                incident.in_flight = job
+                incident.last_intent_id = intent_id
+
+        if idle_event:
+            return [
+                session.record_safety_action(
+                    reason="operator_presence_expired",
+                    action=action,
+                    operator_last_seen_ms=incident.expired_last_seen_ms,
+                    status="not_required",
+                    attempt=0,
+                    intent_id=None,
+                    targets=(),
+                )
+            ]
+
+        retired_event: dict[str, object] | None = None
+        if retiring_job is not None:
+            try:
+                retired_event = session.record_lifecycle(
+                    intent_id=retiring_job.intent.intent_id,
+                    status=WireLifecycleStatus.INVALIDATED,
+                    source=LIFECYCLE_SOURCE,
+                    reason="operator_presence_retry",
+                    detail="the presence watchdog retired an unconfirmed attempt before retrying",
+                )
+            except ValueError:
+                retired_event = None
+            with self._lock:
+                retiring_job.cancelled_by = "operator_presence_retry"
+                self._awaiting.pop(retiring_job.intent.intent_id, None)
         action_event = session.record_safety_action(
             reason="operator_presence_expired",
             action=action,
-            operator_last_seen_ms=last_seen,
+            operator_last_seen_ms=incident.expired_last_seen_ms,
+            status="requested" if attempt == 1 else "retrying",
+            attempt=attempt,
+            intent_id=intent.intent_id,
+            targets=targets,
         )
-        accepted = session.admit_safety_stop(intent)
-        job = _Job(intent, session, watchdog_action=action)
-        lane = self._route(job)
-        with lane.ready:
-            lane.pending.append(job)
-            lane.ready.notify()
-        with self._lock:
-            if self._operator_last_seen_ms == last_seen:
-                self._presence_expiry_seen_ms = last_seen
-        return [action_event, accepted, *job.publications]
+        try:
+            accepted = session.admit_safety_stop(intent)
+            lane = self._route(job)
+            with lane.ready:
+                if lane.closed:
+                    raise RuntimeError("autonomy session is closed")
+                lane.pending.append(job)
+                lane.ready.notify()
+        except BaseException:
+            self._defer_watchdog_retry(job, now)
+            raise
+        return [
+            *([] if retired_event is None else [retired_event]),
+            action_event,
+            accepted,
+            *job.publications,
+        ]
 
-    def close(self, timeout_s: float) -> None:
+    def _defer_watchdog_retry(self, job: _Job, now_ms: int) -> None:
+        retry_ms = max(
+            OPERATOR_PRESENCE_MIN_INTERVAL_MS,
+            min(_MAX_WATCHDOG_RETRY_INTERVAL_MS, self.arbiter.config.operator_timeout_ms // 2),
+        )
+        with self._lock:
+            incident = self._presence_incident
+            if incident is None or incident.in_flight is not job:
+                return
+            incident.in_flight = None
+            incident.pending = True
+            incident.next_attempt_ms = now_ms + retry_ms
+
+    def _record_watchdog_result(
+        self,
+        runtime: RelayRuntime,
+        session: RelaySession,
+        job: _Job,
+        status: LifecycleStatus,
+    ) -> None:
+        event = self._watchdog_result_event(session, job, status)
+        if event is not None:
+            self._publish(runtime, lambda: [event])
+
+    def _watchdog_result_event(
+        self,
+        session: RelaySession,
+        job: _Job,
+        status: LifecycleStatus,
+    ) -> dict[str, object] | None:
+        if job.watchdog_action is None:
+            return None
+        now = session.clock()
+        current_targets = _presence_watchdog_targets(
+            self.snapshot(session.current_state(), capture_readiness=session.capture_readiness),
+            job.watchdog_action,
+        )
+        with self._lock:
+            incident = self._presence_incident
+            if incident is None or (
+                incident.in_flight is not job and incident.awaiting_job is not job
+            ):
+                return None
+            incident.in_flight = None
+            incident.awaiting_job = None
+            if status is LifecycleStatus.COMPLETED:
+                incident.safe_targets = set(job.watchdog_targets)
+                incident.pending = any(
+                    target not in incident.safe_targets for target in current_targets
+                )
+                incident.next_attempt_ms = now if incident.pending else 0
+                event_status = "confirmed"
+            else:
+                incident.pending = True
+                if status is LifecycleStatus.EXECUTING:
+                    incident.awaiting_job = job
+                    event_status = "awaiting"
+                else:
+                    event_status = "failed"
+                retry_ms = max(
+                    OPERATOR_PRESENCE_MIN_INTERVAL_MS,
+                    min(
+                        _MAX_WATCHDOG_RETRY_INTERVAL_MS,
+                        max(
+                            session.limits.command_ttl_ms,
+                            self.arbiter.config.operator_timeout_ms // 2,
+                        ),
+                    ),
+                )
+                incident.next_attempt_ms = now + retry_ms
+            expired_last_seen_ms = incident.expired_last_seen_ms
+        return session.record_safety_action(
+            reason="operator_presence_expired",
+            action=job.watchdog_action,
+            operator_last_seen_ms=expired_last_seen_ms,
+            status=event_status,
+            attempt=job.watchdog_attempt,
+            intent_id=job.intent.intent_id,
+            targets=job.watchdog_targets,
+        )
+
+    def close(self, deadline: float) -> bool:
         for lane in self._lanes:
             with lane.ready:
                 lane.closed = True
                 lane.ready.notify_all()
         for worker in self._workers:
-            worker.join(timeout=timeout_s)
+            worker.join(timeout=max(0.0, deadline - monotonic()))
+        with self._lock:
+            incident = self._presence_incident
+            idle = (
+                not self._awaiting
+                and (incident is None or not incident.pending)
+                and all(not lane.pending and lane.running is None for lane in self._lanes)
+            )
+        return idle and all(not worker.is_alive() for worker in self._workers)
 
     def _lane_for(self, name: IntentName) -> _Lane:
         if name is IntentName.ESTOP:
@@ -704,6 +943,17 @@ class AutonomySession:
                     self.session_id,
                     job.intent.intent_id,
                 )
+                session = job.session
+                runtime = self._composition.runtime_if_bound()
+                if session is not None and runtime is not None:
+                    try:
+                        self._record_watchdog_result(runtime, session, job, LifecycleStatus.FAILED)
+                    except Exception:
+                        _LOGGER.exception(
+                            "could not record failed watchdog attempt session=%s intent=%s",
+                            self.session_id,
+                            job.intent.intent_id,
+                        )
             finally:
                 with lane.ready:
                     lane.running = None
@@ -736,6 +986,12 @@ class AutonomySession:
 
         try:
             snapshot = current()
+            if (
+                job.watchdog_action is not None
+                and _presence_watchdog_targets(snapshot, job.watchdog_action)
+                != job.watchdog_targets
+            ):
+                raise RuntimeError("presence watchdog target identity changed before dispatch")
             dispatcher = build_dispatcher(
                 runtime,
                 self.session_id,
@@ -757,6 +1013,7 @@ class AutonomySession:
                 result = controller.execute(intent, snapshot, current_snapshot=current)
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
+            self._record_watchdog_result(runtime, session, job, LifecycleStatus.INVALIDATED)
             return
         except Exception as error:  # the console still receives a typed terminal result
             _LOGGER.exception(
@@ -780,8 +1037,10 @@ class AutonomySession:
                 job.finished = True
             cancelled = job.cancelled_by
         if cancelled is not None:
+            self._record_watchdog_result(runtime, session, job, LifecycleStatus.INVALIDATED)
             return  # a stop already recorded this plan's terminal lifecycle
         self._report(runtime, session, job, result)
+        self._record_watchdog_result(runtime, session, job, result.status)
 
     def prepare_resume(
         self, session: RelaySession, acknowledgement: WireAcknowledgement
@@ -892,6 +1151,9 @@ class AutonomySession:
             if owner.job.cancelled_by is None:
                 raise
             return None
+        watchdog_event = self._watchdog_result_event(owner.session, owner.job, result.status)
+        if watchdog_event is not None:
+            events.append(watchdog_event)
         return RelayExecution(result, tuple(events))
 
     def resume_after_acknowledgement(
@@ -1009,19 +1271,35 @@ class AutonomyComposition:
             return session
 
     def close(self, *, timeout_s: float = 5.0) -> None:
+        if (
+            isinstance(timeout_s, bool)
+            or not isinstance(timeout_s, int | float)
+            or not math.isfinite(timeout_s)
+            or timeout_s <= 0
+        ):
+            raise ValueError("timeout_s must be a finite positive number")
+        deadline = monotonic() + timeout_s
+        worker_deadline = deadline - min(_REPORT_DEADLINE_RESERVE_S, timeout_s / 2)
         with self._lock:
             sessions = tuple(self._sessions.values())
+        complete: dict[str, bool] = {}
         for session in sessions:
-            session.close(timeout_s)
+            complete[session.session_id] = session.close(worker_deadline)
         runtime = self.runtime_if_bound()
         if runtime is None:
             return
         for relay_session in tuple(runtime.sessions.values()):
             try:
                 write_session_report(
-                    relay_session.audit_log.root,
-                    relay_session.session_id,
-                    relay_session.audit_log.replay(),
+                    relay_session.audit_log,
+                    generated_at_ms=runtime.clock(),
+                    complete=complete.get(relay_session.session_id, True),
+                    completion_reason=(
+                        "orderly_shutdown"
+                        if complete.get(relay_session.session_id, True)
+                        else "worker_deadline_exceeded"
+                    ),
+                    deadline=deadline,
                 )
             except Exception:
                 _LOGGER.exception(

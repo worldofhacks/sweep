@@ -343,6 +343,37 @@ describe('M1.1 wire compatibility', () => {
     expect(event).toMatchObject({ type: 'safety_action', drone_id: 1, action: 'failsafe' })
   })
 
+  test('accepts only the exact operator-presence safety action variant', () => {
+    const raw = {
+      v: 1,
+      t: 1_756_700_000_016,
+      type: 'safety_action',
+      event_id: 'presence-safety-1',
+      session,
+      reason: 'operator_presence_expired',
+      action: 'hold',
+      operator_last_seen_ms: 1_756_699_990_000,
+      status: 'retrying',
+      attempt: 2,
+      intent_id: 'safety:operator-presence:1:2',
+      targets: [{ drone_id: 1, connection_epoch: 2 }],
+    }
+
+    expect(parseRelayServerEvent(raw)).toEqual(raw)
+    expect(parseRelayServerEvent({ ...raw, unexpected: true })).toBeNull()
+    expect(parseRelayServerEvent({ ...raw, attempt: 0 })).toBeNull()
+    expect(parseRelayServerEvent({ ...raw, targets: [] })).toBeNull()
+    expect(
+      parseRelayServerEvent({
+        ...raw,
+        status: 'not_required',
+        attempt: 0,
+        intent_id: null,
+        targets: [],
+      }),
+    ).not.toBeNull()
+  })
+
   test('accepts intent-level and command-scoped acknowledgement variants', () => {
     const accepted = parseRelayServerEvent({
       v: 1,

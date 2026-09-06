@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest'
+import { describe, expect, test } from 'vitest'
 import { WebSocketRelayClient, buildSessionWebSocketUrl } from './client'
 
 class TestSocket extends EventTarget {
@@ -184,36 +184,49 @@ describe('WebSocket relay client', () => {
 })
 
 
-test('only a visible authenticated console refreshes presence and stopping clears its timer', () => {
-  vi.useFakeTimers()
-  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+test('only deliberate authenticated interaction refreshes presence at the bounded cadence', () => {
   const socket = new TestSocket()
+  let now = 1_000
+  let activity = () => {}
+  let activitySubscribed = false
   const client = new WebSocketRelayClient(
     { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source: 'console', token: 'token' },
-    { now: () => 100, createSocket: () => socket as unknown as WebSocket },
+    {
+      now: () => now,
+      createSocket: () => socket as unknown as WebSocket,
+      subscribeOperatorActivity: (listener) => {
+        activity = listener
+        activitySubscribed = true
+        return () => { activitySubscribed = false }
+      },
+    },
   )
   try {
     client.start()
     socket.open()
-    vi.advanceTimersByTime(1_000)
     expect(socket.sent).toHaveLength(1)
     socket.message({
       v: 1, t: 101, type: 'auth.accepted', event_id: 'presence-auth',
       session: 'session-1', source: 'console', drone_id: null,
     })
-    vi.advanceTimersByTime(1_000)
-    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ v: 1, type: 'operator_presence' })
-    const sent = socket.sent.length
-    visibility.mockReturnValue('hidden')
-    vi.advanceTimersByTime(2_000)
-    expect(socket.sent).toHaveLength(sent)
-    visibility.mockReturnValue('visible')
+    expect(socket.sent).toHaveLength(1)
+    activity()
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      v: 1,
+      type: 'operator_presence',
+      activity: 'interaction',
+    })
+    const afterFirstInteraction = socket.sent.length
+    activity()
+    now += 999
+    activity()
+    expect(socket.sent).toHaveLength(afterFirstInteraction)
+    now += 1
+    activity()
+    expect(socket.sent).toHaveLength(afterFirstInteraction + 1)
     client.stop()
-    vi.advanceTimersByTime(2_000)
-    expect(socket.sent).toHaveLength(sent)
+    expect(activitySubscribed).toBe(false)
   } finally {
     client.stop()
-    visibility.mockRestore()
-    vi.useRealTimers()
   }
 })

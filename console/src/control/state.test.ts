@@ -411,6 +411,32 @@ describe('control reducer fleet lifecycle', () => {
     expect(next.notices[0]).toMatchObject({ level: 'danger', title: 'Aircraft failsafe' })
   })
 
+  test('surfaces operator-presence retries and exact affected aircraft', () => {
+    const next = controlReducer(withReadyState(), {
+      type: 'relay_event',
+      event: {
+        v: 1,
+        t: t + 1,
+        type: 'safety_action',
+        event_id: 'presence-action-1',
+        session,
+        reason: 'operator_presence_expired',
+        action: 'hold',
+        operator_last_seen_ms: t - 10_000,
+        status: 'retrying',
+        attempt: 2,
+        intent_id: 'safety:operator-presence:1:2',
+        targets: [{ drone_id: 1, connection_epoch: 1 }],
+      },
+    })
+
+    expect(next.notices[0]).toMatchObject({
+      level: 'danger',
+      title: 'Retrying presence safety action',
+    })
+    expect(next.notices[0].detail).toContain('D-01')
+  })
+
   test('focuses a single authoritative selection and retains explicit focus through video loss', () => {
     let state = controlReducer(createInitialControlState(session, t), {
       type: 'relay_event',

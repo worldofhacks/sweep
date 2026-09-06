@@ -404,7 +404,7 @@ export interface RelayTelemetryEvent {
   pos_quality: number
 }
 
-export interface RelaySafetyActionEvent {
+export interface RelayNodeSafetyActionEvent {
   v: 1
   t: number
   type: 'safety_action'
@@ -416,6 +416,30 @@ export interface RelaySafetyActionEvent {
   action: 'hold' | 'failsafe'
   loss_behavior: 'hold' | 'failsafe'
 }
+
+export interface RelayOperatorPresenceTarget {
+  drone_id: DroneId
+  connection_epoch: number
+}
+
+export interface RelayOperatorPresenceSafetyActionEvent {
+  v: 1
+  t: number
+  type: 'safety_action'
+  event_id: string
+  session: string
+  reason: 'operator_presence_expired'
+  action: 'hold' | 'estop'
+  operator_last_seen_ms: number
+  status: 'requested' | 'retrying' | 'awaiting' | 'confirmed' | 'failed' | 'not_required'
+  attempt: number
+  intent_id: string | null
+  targets: RelayOperatorPresenceTarget[]
+}
+
+export type RelaySafetyActionEvent =
+  | RelayNodeSafetyActionEvent
+  | RelayOperatorPresenceSafetyActionEvent
 
 export type RelayServerEvent =
   | RelayAcknowledgementEvent
@@ -791,6 +815,17 @@ function isNullableUnitNumber(value: unknown): value is number | null {
   return value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1)
 }
 
+function isOperatorPresenceTarget(value: unknown): value is RelayOperatorPresenceTarget {
+  return (
+    isRecord(value) &&
+    hasExactFields(value, ['drone_id', 'connection_epoch']) &&
+    Number.isSafeInteger(value.drone_id) &&
+    Number(value.drone_id) > 0 &&
+    Number.isSafeInteger(value.connection_epoch) &&
+    Number(value.connection_epoch) > 0
+  )
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
@@ -970,6 +1005,44 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
   }
 
   if (value.type === 'safety_action') {
+    if (value.reason === 'operator_presence_expired') {
+      const fields = [
+        'v', 't', 'type', 'event_id', 'session', 'reason', 'action',
+        'operator_last_seen_ms', 'status', 'attempt', 'intent_id', 'targets',
+      ] as const
+      const targets = value.targets
+      const status = value.status
+      if (
+        !hasExactFields(value, fields) ||
+        !Number.isSafeInteger(value.t) ||
+        !Number.isSafeInteger(value.operator_last_seen_ms) ||
+        Number(value.operator_last_seen_ms) < 0 ||
+        !['hold', 'estop'].includes(String(value.action)) ||
+        !['requested', 'retrying', 'awaiting', 'confirmed', 'failed', 'not_required'].includes(
+          String(status),
+        ) ||
+        !Number.isSafeInteger(value.attempt) ||
+        Number(value.attempt) < 0 ||
+        !Array.isArray(targets) ||
+        targets.length > 4 ||
+        !targets.every(isOperatorPresenceTarget) ||
+        new Set(targets.map((target) => target.drone_id)).size !== targets.length
+      ) {
+        return null
+      }
+      if (status === 'not_required') {
+        if (value.attempt !== 0 || value.intent_id !== null || targets.length !== 0) return null
+      } else if (
+        Number(value.attempt) < 1 ||
+        typeof value.intent_id !== 'string' ||
+        !value.intent_id.startsWith('safety:') ||
+        value.intent_id.length > 512 ||
+        targets.length === 0
+      ) {
+        return null
+      }
+      return value as unknown as RelayOperatorPresenceSafetyActionEvent
+    }
     if (
       !isDroneId(value.drone_id) ||
       !isNonNegativeInteger(value.connection_epoch) ||

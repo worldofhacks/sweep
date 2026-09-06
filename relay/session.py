@@ -144,6 +144,8 @@ _COMMAND_RETENTION_MULTIPLIER = 30
 _TRANSPORT_REPLAY_LEDGER_MAX = 8_192
 _TRANSPORT_REPLAY_PRUNE_AT = 4_096
 _MEDIA_CAPTURE_KEY_MAX = 256
+OPERATOR_PRESENCE_MIN_INTERVAL_MS = 1_000
+"""Maximum accepted/audited operator-presence cadence for one session."""
 
 
 def _declared_sink_capability_profile(sink: IntentSink) -> CapabilityProfile | None:
@@ -335,6 +337,7 @@ class RelaySession:
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._control_pose: dict[int, ControlPose] = {}
+        self._last_operator_presence_ms: int | None = None
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
@@ -418,9 +421,10 @@ class RelaySession:
         if (
             principal.source != "console"
             or not isinstance(raw, Mapping)
-            or set(raw) != {"v", "type"}
+            or set(raw) != {"v", "type", "activity"}
             or type(raw["v"]) is not int
             or raw["v"] != 1
+            or raw["activity"] != "interaction"
         ):
             return [
                 self.protocol_refusal(
@@ -432,19 +436,25 @@ class RelaySession:
         if not callable(receive):
             return []
         now = self.clock()
-        with self._lock, self._audit_operation():
+        with self._lock:
             self._ensure_mutation_usable()
-            self._append_audit(
-                {
-                    "v": 1,
-                    "t": now,
-                    "type": "operator_presence",
-                    "session": self.session_id,
-                    "event_id": self.event_ids(),
-                    "source": principal.source,
-                }
-            )
-        receive(now)
+            last = self._last_operator_presence_ms
+            if last is not None and now - last < OPERATOR_PRESENCE_MIN_INTERVAL_MS:
+                return []
+            with self._audit_operation():
+                self._append_audit(
+                    {
+                        "v": 1,
+                        "t": now,
+                        "type": "operator_presence",
+                        "session": self.session_id,
+                        "event_id": self.event_ids(),
+                        "source": principal.source,
+                        "activity": "interaction",
+                    }
+                )
+            receive(now)
+            self._last_operator_presence_ms = now
         return []
 
     def protocol_refusal(self, *, reason: str, detail: str) -> dict[str, object]:
@@ -1627,16 +1637,59 @@ class RelaySession:
         reason: str,
         action: str,
         operator_last_seen_ms: int,
+        status: str,
+        attempt: int,
+        intent_id: str | None,
+        targets: tuple[tuple[int, int], ...],
     ) -> dict[str, object]:
-        """Record a relay safety action before its corresponding stop is dispatched."""
+        """Record one bounded state transition in an operator-expiry safety incident."""
         if reason != "operator_presence_expired" or action not in {"hold", "estop"}:
             raise ValueError("invalid relay safety action")
+        if status not in {
+            "requested",
+            "retrying",
+            "awaiting",
+            "confirmed",
+            "failed",
+            "not_required",
+        }:
+            raise ValueError("invalid relay safety action status")
         if (
             not isinstance(operator_last_seen_ms, int)
             or isinstance(operator_last_seen_ms, bool)
             or operator_last_seen_ms < 0
         ):
             raise ValueError("operator_last_seen_ms must be non-negative")
+        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 0:
+            raise ValueError("safety action attempt must be non-negative")
+        if status == "not_required":
+            if attempt != 0 or intent_id is not None or targets:
+                raise ValueError("not-required safety actions cannot identify an attempt")
+        elif (
+            attempt == 0
+            or not isinstance(intent_id, str)
+            or not intent_id
+            or not intent_id.startswith("safety:")
+            or not targets
+        ):
+            raise ValueError("active safety actions require an attempt, intent, and targets")
+        normalized_targets: list[dict[str, int]] = []
+        seen_targets: set[int] = set()
+        if len(targets) > 4:
+            raise ValueError("safety actions are bounded to four aircraft")
+        for drone_id, connection_epoch in targets:
+            if (
+                not isinstance(drone_id, int)
+                or isinstance(drone_id, bool)
+                or drone_id <= 0
+                or not isinstance(connection_epoch, int)
+                or isinstance(connection_epoch, bool)
+                or connection_epoch <= 0
+                or drone_id in seen_targets
+            ):
+                raise ValueError("invalid safety action target identity")
+            seen_targets.add(drone_id)
+            normalized_targets.append({"drone_id": drone_id, "connection_epoch": connection_epoch})
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
@@ -1649,6 +1702,10 @@ class RelaySession:
                 "reason": reason,
                 "action": action,
                 "operator_last_seen_ms": operator_last_seen_ms,
+                "status": status,
+                "attempt": attempt,
+                "intent_id": intent_id,
+                "targets": normalized_targets,
             }
             self._append_audit(event)
             self._metrics["safety_actions"] += 1
