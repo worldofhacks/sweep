@@ -30,7 +30,7 @@ from relay.auth import (
 )
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.control_localization import ControlLocalizationProjector
-from relay.detection_attention import DetectionAttention
+from relay.detection_attention import DetectionAttention, HostRecordedFrameProcessor
 from relay.intent_v1 import REGISTERED_SOURCES
 from relay.media import MediaEvidence, MediaMonitor, MediaMtxClient
 from relay.session import (
@@ -52,11 +52,13 @@ _OUTBOUND_LIMIT = 128
 _SEND_TIMEOUT_SECONDS = 5.0
 _CLOSE_TIMEOUT_SECONDS = 1.0
 _CONTROL_HEARTBEAT_MAX_INTERVAL_SECONDS = 1.0
+MAX_DETECTION_REQUEST_BYTES = 4 * 1024
+_DETECTION_REQUEST_TIMEOUT_SECONDS = 2.0
 TranscriptServiceFactory = Callable[["RelayRuntime"], TranscriptService]
 AuthoritativeRoomsFactory = Callable[[RelaySession], tuple[str, ...]]
 ControlLocalizationFactory = Callable[[str], ControlLocalizationProjector | None]
 MediaMonitorFactory = Callable[[RelaySettings, Clock], MediaMonitor | None]
-RecordedFrameProcessor = Callable[[str, int, str], tuple[PerceptionEvent, ...]]
+RecordedFrameProcessor = Callable[[str, int, str, int], tuple[PerceptionEvent, ...]]
 
 
 def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor | None:
@@ -174,7 +176,9 @@ class RelayRuntime:
     ) -> None:
         self.settings = settings
         self.media_monitor = media_monitor
-        self.detection_attention = DetectionAttention() if detection_attention is None else detection_attention
+        self.detection_attention = (
+            DetectionAttention() if detection_attention is None else detection_attention
+        )
         self.recorded_frame_processor = recorded_frame_processor
         self.credential_resolver = credential_resolver or settings.credential_resolver()
         self.clock = clock or _epoch_ms
@@ -444,14 +448,18 @@ class RelayRuntime:
         return await asyncio.shield(task)
 
     async def record_detection_events(
-        self, session_id: str, drone_id: int, events: tuple[PerceptionEvent, ...]
+        self,
+        session_id: str,
+        drone_id: int,
+        connection_epoch: int,
+        events: tuple[PerceptionEvent, ...],
     ) -> list[dict[str, object]]:
         session = self.sessions.get(session_id)
         if session is None:
             raise ValueError("session is unavailable for detection events")
         return await self.process_and_publish(
             session_id,
-            lambda: self.detection_attention.record(session, drone_id, events),
+            lambda: self.detection_attention.record(session, drone_id, connection_epoch, events),
         )
 
     async def acknowledge_detection(
@@ -955,7 +963,11 @@ def create_app(
             control_localization_factory=control_localization_factory,
             control_pose_signing_key=control_pose_signing_key,
             media_monitor=build_monitor(active_settings, active_clock),
-            recorded_frame_processor=recorded_frame_processor,
+            recorded_frame_processor=(
+                HostRecordedFrameProcessor(active_settings)
+                if recorded_frame_processor is None and active_settings.detection_recordings
+                else recorded_frame_processor
+            ),
         )
         application.state.relay_runtime = runtime
         application.state.transcript_service = (
@@ -1086,7 +1098,9 @@ def create_app(
                                 lambda: [
                                     session.protocol_refusal(
                                         reason="detection_acknowledgement_forbidden",
-                                        detail="only the console operator can acknowledge a detection",
+                                        detail=(
+                                            "only the console operator can acknowledge a detection"
+                                        ),
                                     )
                                 ],
                             )
@@ -1096,12 +1110,13 @@ def create_app(
                                     session_id, detection_id, principal
                                 )
                             except ValueError as error:
+                                detail = str(error)
                                 events = await runtime.process_and_publish(
                                     session_id,
-                                    lambda: [
+                                    lambda detail=detail: [
                                         session.protocol_refusal(
                                             reason="invalid_detection_acknowledgement",
-                                            detail=str(error),
+                                            detail=detail,
                                         )
                                     ],
                                 )
@@ -1275,7 +1290,11 @@ def create_app(
             raise HTTPException(status_code=503, detail="recorded frame detector is unavailable")
         try:
             _validate_session_id(session_id)
-            body = await request.json()
+            payload = await asyncio.wait_for(
+                _bounded_request_body(request, MAX_DETECTION_REQUEST_BYTES),
+                timeout=_DETECTION_REQUEST_TIMEOUT_SECONDS,
+            )
+            body = json.loads(payload.decode())
             if not isinstance(body, Mapping) or set(body) != {"recording_id", "drone_id"}:
                 raise ValueError("recorded frame request has unexpected fields")
             recording_id = body["recording_id"]
@@ -1289,10 +1308,24 @@ def create_app(
                 or drone_id <= 0
             ):
                 raise ValueError("recorded frame request is invalid")
-            events = await asyncio.to_thread(processor, session_id, drone_id, recording_id)
-            published = await runtime.record_detection_events(session_id, drone_id, events)
-        except ValueError as error:
+            session = runtime.sessions.get(session_id)
+            if session is None:
+                raise ValueError("session is unavailable for detection events")
+            identity = session.registry.active_connection_identity(drone_id)
+            if identity is None:
+                raise ValueError("detection aircraft is not active in this session")
+            events = await asyncio.to_thread(
+                processor, session_id, drone_id, recording_id, identity[0]
+            )
+            published = await runtime.record_detection_events(
+                session_id, drone_id, identity[0], events
+            )
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
+        except TimeoutError:
+            raise HTTPException(
+                status_code=408, detail="recorded frame request timed out"
+            ) from None
         return {"events": published}
 
     return application
@@ -1319,10 +1352,10 @@ def _same_state_projection(left: Mapping[str, object], right: Mapping[str, objec
     }
 
 
-async def _bounded_request_body(request: Request) -> bytes:
+async def _bounded_request_body(request: Request, maximum_bytes: int = MAX_AUDIO_BYTES) -> bytes:
     body = bytearray()
     async for chunk in request.stream():
-        if len(chunk) > MAX_AUDIO_BYTES - len(body):
+        if len(chunk) > maximum_bytes - len(body):
             raise ValueError("upload_too_large")
         body.extend(chunk)
     return bytes(body)

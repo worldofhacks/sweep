@@ -30,6 +30,9 @@ export function LiveModule({ controller, now, media }: ModuleProps) {
   const currentNow = now()
   const focused =
     state.selectedFeedId === null ? null : (state.aircraft[state.selectedFeedId] ?? null)
+  const attentionId = state.detections.find(
+    ({ event, acknowledged }) => event.attention === 'promoted' && !acknowledged,
+  )?.event.drone_id
 
   return (
     <Pane
@@ -60,6 +63,7 @@ export function LiveModule({ controller, now, media }: ModuleProps) {
           count={pane === 'wall6' ? 6 : 4}
           now={currentNow}
           focusedId={focused?.drone_id ?? null}
+          attentionId={attentionId ?? null}
           selection={state.selection}
           selectionEnabled={isIntentEnabled(state, 'select')}
           selectionDisabledReason={capabilityBlockedReason(state, 'select')}

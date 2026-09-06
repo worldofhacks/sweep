@@ -265,6 +265,8 @@ describe('Live module focus', () => {
       acknowledged: false,
     })
 
+    expect(await tile('D-02').findByText('Detection needs review')).toBeInTheDocument()
+    expect(clients.console.sent).toEqual([])
     await openPane(user, 'Focus feed')
     expect(await screen.findByRole('region', { name: 'Focused aircraft D-02' })).toBeInTheDocument()
     expect(screen.getByText('backpack')).toBeInTheDocument()

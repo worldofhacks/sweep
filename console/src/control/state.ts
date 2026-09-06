@@ -381,7 +381,7 @@ function reduceRelayEvent(
     case 'detection':
       return {
         ...stateWithEvent,
-        detections: [{ event, acknowledged: false }, ...stateWithEvent.detections].slice(0, 64),
+        detections: [{ event, acknowledged: event.acknowledged }, ...stateWithEvent.detections].slice(0, 64),
         selectedFeedId: event.attention === 'promoted' ? event.drone_id : stateWithEvent.selectedFeedId,
       }
     case 'detection_acknowledgement':
