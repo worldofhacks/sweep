@@ -342,9 +342,12 @@ function reduceRelayEvent(
     case 'membership':
       return reduceMembershipEvent(stateWithEvent, event)
     case 'telemetry':
-      // The relay atomically follows telemetry with its authoritative state
-      // projection. Retain the event ID for dedupe, but do not build a second
-      // client-side source of aircraft truth here.
+    case 'capabilities':
+    case 'node_status':
+    case 'capture_readiness':
+      // Aircraft control state comes from the relay's authoritative projection.
+      // Retain report IDs for dedupe; these reports cannot grant readiness or
+      // authority or create a second client-side source of aircraft truth.
       return stateWithEvent
     case 'navigation_preview':
       return reduceNavigationPreview(stateWithEvent, event)
