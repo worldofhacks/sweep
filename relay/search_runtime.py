@@ -182,6 +182,9 @@ class SearchRuntime:
         mission.started = True
         return self.status(intent_id)
 
+    def has_mission(self, intent_id: str) -> bool:
+        return intent_id in self._missions
+
     def execute(
         self,
         intent_id: str,

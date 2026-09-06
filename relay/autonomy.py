@@ -483,6 +483,11 @@ class AutonomySession:
 
     def submit(self, intent: IntentV1, _state: dict[str, object]) -> None:
         """``IntentSink``: record operator activity and route the intent without blocking."""
+        if intent.name is IntentName.SEARCH:
+            search = self._composition.search_runtime
+            if search is None or not search.has_mission(intent.intent_id):
+                _LOGGER.warning("search intent %s has no frozen preview", intent.intent_id)
+                return
         with self._lock:
             previous = self._operator_last_seen_ms
             self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
