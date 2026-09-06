@@ -25,7 +25,9 @@ python3 media/recording.py \
 
 The command refuses an existing working or exported run, reserves a fresh
 `recordings/<session-id>/<run-id>/` bind mount, starts only MediaMTX, and remains in the
-foreground. Follow logs from another terminal with `docker compose logs -f
+foreground. Stop a running MediaMTX service before starting the helper. The helper holds
+one system-wide MediaMTX lock, so it supports one recording run at a time even when the
+working roots differ. Follow logs from another terminal with `docker compose logs -f
 mediamtx`. Press Ctrl-C once the publishers have stopped or the run is complete.
 The helper stops MediaMTX gracefully before reading its output, validates every
 finalized MP4 with `ffprobe`, hashes every segment, and atomically publishes a

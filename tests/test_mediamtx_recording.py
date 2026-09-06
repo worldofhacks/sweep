@@ -200,7 +200,11 @@ def test_recording_override_is_opt_in_exact_and_operator_owned(tmp_path: Path) -
     )
 
 
-def test_recording_lock_serializes_recording_helpers_globally() -> None:
+def test_recording_lock_serializes_recording_helpers_globally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = tmp_path / "recording.lock"
+    monkeypatch.setattr(recording, "LOCK_PATH", lock_path)
     locker = subprocess.Popen(
         [
             sys.executable,
@@ -208,7 +212,7 @@ def test_recording_lock_serializes_recording_helpers_globally() -> None:
             "import fcntl, os, signal, sys; "
             "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600); "
             "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); signal.pause()",
-            str(recording.LOCK_PATH),
+            str(lock_path),
         ],
         stdout=subprocess.PIPE,
         text=True,
