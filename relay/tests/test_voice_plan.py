@@ -834,9 +834,10 @@ def test_voice_outcome_wire_shape_round_trips_and_rejects_widening() -> None:
     assert parse_voice_plan(wire["plan"]) == plan
 
     deepgram = VoiceOutcome("transcribed", "deepgram", None, "Take off.")
-    assert parse_voice_outcome(
-        deepgram.to_dict(session_id=SESSION, correlation_id=_CORRELATION)
-    ) == deepgram
+    assert (
+        parse_voice_outcome(deepgram.to_dict(session_id=SESSION, correlation_id=_CORRELATION))
+        == deepgram
+    )
 
     legacy = VoiceOutcome("refused", "template", "compiler_unavailable", "hold").to_dict(
         session_id=SESSION, correlation_id=_CORRELATION
