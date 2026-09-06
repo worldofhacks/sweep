@@ -27,6 +27,7 @@ import {
   createRequestRecord,
   isIntentEnabled,
   type RequestRecord,
+  type ControlState,
 } from './state'
 
 export interface ControlClients {
@@ -651,6 +652,10 @@ export function useControlConsole({
     retryRequest,
     selectFeed: (droneId: DroneId) => dispatch({ type: 'feed_selected', droneId }),
   }
+}
+
+function selectionReady(state: ControlState, ids: readonly DroneId[]): boolean {
+  return ids.every(id => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable)
 }
 
 function sendToRelay(
