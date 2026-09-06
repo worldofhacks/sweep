@@ -10,7 +10,9 @@ As of September 6, 2026, the integrated PR stack passes 2,201 Python tests, 528 
 
 Physical flight authorization remains pending. One real aircraft must supply measured camera, velocity, height, attitude/gimbal and timing evidence, including dropouts. Five mapped-route rehearsals must show p95 position error at or below 0.25 m against independent reference measurements, with no unhandled update gap over 500 ms. Map/calibration binding, stale-data refusal, hold/land behavior and physical RC takeover must pass their deployment and failure trials. Estimator confidence and synthetic tests cannot substitute for those measurements.
 
-The remaining input integration is concrete: Android sensor callbacks expose receipt time, and the current camera path lacks verified capture-time and synchronized body/gimbal transforms. Recording and diagnostic conversion preserve that distinction. The live ingestion and estimator timing contract must be completed against measured source behavior before those inputs can earn control authority. [Acceptance evaluator #226](https://github.com/worldofhacks/sweep/pull/226) compares recorded poses with independent references; it does not certify raw sensor timing.
+The remaining input integration is concrete: Android sensor callbacks expose receipt time, and the current camera path lacks verified capture-time and synchronized body/gimbal transforms. [Phone recording/export #227](https://github.com/worldofhacks/sweep/pull/227) and [diagnostic conversion #228](https://github.com/worldofhacks/sweep/pull/228) preserve that distinction. The live ingestion and estimator timing contract must be completed against measured source behavior before those inputs can earn control authority. [Acceptance evaluator #226](https://github.com/worldofhacks/sweep/pull/226) compares recorded poses with independent references; it does not certify raw sensor timing.
+
+[Optional camera recording #229](https://github.com/worldofhacks/sweep/pull/229) adds a Compose override and an archive procedure for the actual stream. Preserve its media files alongside the phone export and acceptance input.
 
 The current work prioritizes autonomous destination navigation and object search. Lobby and atrium-front are candidate formation volumes pending measured approval; kitchen remains a named destination/transit area and is not a formation fallback. Capture/Worlds continues in its separate lane.
 
@@ -21,7 +23,7 @@ The current work prioritizes autonomous destination navigation and object search
 - [PRD](docs/prd.md): product behavior, architecture and contracts, synchronized with the issues.
 - [Decision records](docs/decisions/) and [docs index](docs/README.md): supporting rationale and run guides.
 
-C1 provides earned basic controls, including selected land and configured altitude. C2 adds disarm, formations, spacing and sweep for accepted deployments. Configured `navigate {zone_id}` and `search {zone_id, target_label}` remain separate from C3 assisted survey and C4 `map_area` traversal/capture. Navigation arrival permission does not authorize a formation.
+C1 provides earned basic controls, including selected land and configured altitude. C2 adds disarm, formations, spacing and sweep for accepted deployments. Configured `navigate {zone_id}` and `search {zone_id, target_class}` remain separate from C3 assisted survey and C4 `map_area` traversal/capture. Navigation arrival permission does not authorize a formation.
 
 ## Run the software
 
