@@ -701,6 +701,13 @@ class ControlPublisher:
             raise PublisherTransportError("localization frame was not delivered") from error
         return frame
 
+    def bound_epoch(self, drone_id: int) -> int:
+        self._require_open()
+        if self.config.mode != "live":
+            raise PublisherError("replay publisher has no live epoch")
+        self._require_key(drone_id)
+        return self._current_binding(drone_id).connection_epoch
+
     def close(self) -> None:
         if self._closed:
             return
