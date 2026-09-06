@@ -5,8 +5,11 @@ import json
 import os
 import sqlite3
 import stat
+import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -49,6 +52,36 @@ def test_operation_batch_preserves_one_jsonl_record_per_event(tmp_path: Path) ->
     assert [record["seq"] for record in records] == [1, 2]
     assert len(log.path.read_text(encoding="utf-8").splitlines()) == 2
     assert SessionAuditLog(tmp_path, "session-1").replay() == records
+
+
+def test_replay_deadline_includes_waiting_to_acquire_the_audit_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    append_holds_lock = Event()
+    release_append = Event()
+    real_append_mirror = log._append_mirror
+
+    def pause_append_mirror(encoded: bytes) -> None:
+        append_holds_lock.set()
+        assert release_append.wait(timeout=2)
+        real_append_mirror(encoded)
+
+    monkeypatch.setattr(log, "_append_mirror", pause_append_mirror)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        append = executor.submit(log.append, _event("event-1"))
+        assert append_holds_lock.wait(timeout=2)
+        started = time.monotonic()
+        try:
+            with pytest.raises(AuditLogError, match="live replay deadline"):
+                log.replay_snapshot(deadline=started + 0.1)
+            elapsed = time.monotonic() - started
+        finally:
+            release_append.set()
+            append.result(timeout=2)
+
+    assert elapsed < 1.0
+    assert [record["seq"] for record in log.replay()] == [1]
 
 
 @pytest.mark.parametrize("reopen", [False, True])

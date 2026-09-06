@@ -12,12 +12,14 @@ import tempfile
 from collections.abc import Iterable, Mapping
 from contextlib import closing
 from pathlib import Path
-from threading import RLock
+from threading import Condition, RLock
+from time import monotonic
 
 _FORBIDDEN_KEYS = frozenset(
     {"authorization", "credential", "password", "secret", "signature", "token"}
 )
 _LOGGER = logging.getLogger(__name__)
+LIVE_REPLAY_TIMEOUT_SECONDS = 1.0
 
 
 class AuditLogError(RuntimeError):
@@ -38,6 +40,7 @@ class SessionAuditLog:
         self.database_path = self.root / f"{digest}.sqlite3"
         self.pending_path = self.root / f"{digest}.pending"
         self._lock = RLock()
+        self._operation_complete = Condition(self._lock)
         self._append_usable = True
         self._replay_usable = True
         self._database_initialized = False
@@ -92,6 +95,7 @@ class SessionAuditLog:
             if self._operation_status(operation_id) == "pending":
                 self._append_usable = False
                 self._replay_usable = False
+                self._operation_complete.notify_all()
 
     def append(self, event: Mapping[str, object]) -> dict[str, object]:
         """Validate and durably append one safe JSON-native event."""
@@ -114,6 +118,7 @@ class SessionAuditLog:
                 operation_id = self.begin_operation()
             if not records:
                 self._complete_operation(operation_id, [])
+                self._operation_complete.notify_all()
                 return []
             encoded_records = [self._encode_record(record) for record in records]
             encoded = b"".join(encoded_records)
@@ -126,21 +131,46 @@ class SessionAuditLog:
                 self._append_usable = False
                 self._replay_usable = False
                 raise
+            finally:
+                self._operation_complete.notify_all()
             return [json.loads(encoded_record) for encoded_record in encoded_records]
 
     def replay(self, *, after_sequence: int = 0) -> list[dict[str, object]]:
         records, _ = self.replay_snapshot(after_sequence=after_sequence)
         return records
 
-    def replay_snapshot(self, *, after_sequence: int = 0) -> tuple[list[dict[str, object]], int]:
+    def replay_snapshot(
+        self,
+        *,
+        after_sequence: int = 0,
+        deadline: float | None = None,
+    ) -> tuple[list[dict[str, object]], int]:
         if after_sequence < 0:
             raise ValueError("after_sequence must be non-negative")
-        with self._lock:
-            if not self._replay_usable or self._has_pending_operation():
+        if deadline is None:
+            deadline = monotonic() + LIVE_REPLAY_TIMEOUT_SECONDS
+        remaining = deadline - monotonic()
+        if remaining <= 0 or not self._lock.acquire(timeout=remaining):
+            raise AuditLogError("session log replay exceeded the live replay deadline")
+        try:
+            if not self._replay_usable:
                 raise AuditLogError("session log replay is uncertain after an incomplete operation")
+            while self._has_pending_operation():
+                remaining = deadline - monotonic()
+                if remaining <= 0 or not self._operation_complete.wait(timeout=remaining):
+                    raise AuditLogError(
+                        "session log replay exceeded the live replay deadline while an operation "
+                        "was pending"
+                    )
+                if not self._replay_usable:
+                    raise AuditLogError(
+                        "session log replay is uncertain after an incomplete operation"
+                    )
             records = self._database_records()
             self._verify_mirror(records)
             return [record for record in records if record["seq"] > after_sequence], len(records)
+        finally:
+            self._lock.release()
 
     def _prepare_records(self, events: Iterable[Mapping[str, object]]) -> list[dict[str, object]]:
         records: list[dict[str, object]] = []

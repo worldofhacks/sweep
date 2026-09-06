@@ -21,7 +21,7 @@ from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
 from relay.media import MediaMonitor, MediaPathObservation
-from relay.session import CapabilityBoundIntentSink, Clock, IntentSink
+from relay.session import CapabilityBoundIntentSink, Clock, IntentSink, RelaySession
 from relay.settings import RelaySettings
 from relay.tests.conftest import (
     ADAPTER_KEY,
@@ -860,6 +860,141 @@ def test_adapter_receives_fresh_telemetry_while_its_state_delivery_is_blocked(
                     release_timer.cancel()
     finally:
         release_state_delivery.set()
+
+
+def test_live_replay_waits_for_audit_commit_and_returns_contiguous_snapshot(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    append_started = Event()
+    release_append = Event()
+    replay_entered = Event()
+    replay_returned = Event()
+    real_append_batch = SessionAuditLog.append_batch
+    real_replay = RelaySession.replay
+
+    def pause_append(
+        audit_log: SessionAuditLog,
+        events: object,
+        *,
+        operation_id: int | None = None,
+    ) -> list[dict[str, object]]:
+        append_started.set()
+        assert release_append.wait(timeout=2)
+        return real_append_batch(audit_log, events, operation_id=operation_id)
+
+    def mark_replay(
+        session: RelaySession,
+        *,
+        after_sequence: int = 0,
+        deadline: float | None = None,
+    ) -> dict[str, object]:
+        replay_entered.set()
+        return real_replay(session, after_sequence=after_sequence, deadline=deadline)
+
+    monkeypatch.setattr(SessionAuditLog, "append_batch", pause_append)
+    monkeypatch.setattr(RelaySession, "replay", mark_replay)
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as executor:
+        session = app.state.relay_runtime.session(SESSION)
+        append = executor.submit(session.update_control_projection, selection=())
+        assert append_started.wait(timeout=2)
+
+        def request_replay() -> object:
+            response = client.get(f"/session/{SESSION}?after_sequence=0", headers=headers)
+            replay_returned.set()
+            return response
+
+        replay = executor.submit(request_replay)
+        assert replay_entered.wait(timeout=2)
+        assert not replay_returned.wait(timeout=0.1)
+        release_append.set()
+
+        append.result(timeout=2)
+        response = replay.result(timeout=2)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [record["seq"] for record in body["events"]] == list(range(1, body["last_sequence"] + 1))
+
+
+def test_live_replay_returns_503_before_an_in_lock_append_can_finish(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    append_holds_locks = Event()
+    release_append = Event()
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    monkeypatch.setattr(app_module, "LIVE_REPLAY_TIMEOUT_SECONDS", 0.1)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client:
+        session = app.state.relay_runtime.session(SESSION)
+        real_append_mirror = session.audit_log._append_mirror
+
+        def pause_append_mirror(encoded: bytes) -> None:
+            append_holds_locks.set()
+            assert release_append.wait(timeout=2)
+            real_append_mirror(encoded)
+
+        monkeypatch.setattr(session.audit_log, "_append_mirror", pause_append_mirror)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            append = executor.submit(session.update_control_projection, selection=())
+            assert append_holds_locks.wait(timeout=2)
+            started = time.monotonic()
+            try:
+                response = client.get(f"/session/{SESSION}", headers=headers)
+                elapsed = time.monotonic() - started
+            finally:
+                release_append.set()
+                append.result(timeout=2)
+
+        assert app.state.relay_runtime.replay(SESSION)["last_sequence"] == 1
+
+    assert response.status_code == 503
+    assert "live replay deadline" in response.json()["detail"]
+    assert elapsed < 1.0
+
+
+def test_live_replay_returns_503_when_a_pending_commit_never_completes(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    monkeypatch.setattr(app_module, "LIVE_REPLAY_TIMEOUT_SECONDS", 0.1)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client:
+        audit_log = app.state.relay_runtime.session(SESSION).audit_log
+        operation_id = audit_log.begin_operation()
+        response = client.get(f"/session/{SESSION}", headers=headers)
+        audit_log.abandon_operation(operation_id)
+
+    assert response.status_code == 503
+    assert "live replay deadline" in response.json()["detail"]
+    assert "operation was pending" in response.json()["detail"]
+
+
+def test_replay_reports_unrecoverable_audit_history_as_unavailable(
+    app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
+) -> None:
+    SessionAuditLog(app_settings.log_dir, SESSION).begin_operation()
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client:
+        response = client.get(f"/session/{SESSION}", headers=headers)
+
+    assert response.status_code == 503
+    assert "incomplete operation" in response.json()["detail"]
 
 
 def test_authenticated_console_receives_periodic_state_fanout_at_frozen_rate(
