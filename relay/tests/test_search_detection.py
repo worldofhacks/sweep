@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from perception.object_detection import DEFAULT_TARGET_LABELS
 from perception.search_events import CameraPolicy
-from planner.models import ExecutionResult, LifecycleStatus
+from planner.models import ExecutionResult, LifecycleStatus, Position
 from planner.navigation import NavigationPermission
 from planner.navigation_deployment import NavigationDeployment
 from planner.search import SearchArea
@@ -54,10 +55,29 @@ class _Detector:
 
 
 class _Dispatcher:
-    def __init__(self) -> None:
+    def __init__(self, stream: _Frames, arrival) -> None:
         self.calls: list[object] = []
+        self.on_navigation_command_completed = None
+        self._stream = stream
+        self._arrival = arrival
+        self.worker = None
 
     def dispatch(self, plan, snapshot, *, current_snapshot=None):
+        self._stream.released = True
+        arrived = replace(
+            snapshot,
+            aircraft={
+                1: replace(
+                    snapshot.aircraft[1],
+                    pose=Position(*self._arrival.xyz),
+                    position_last_seen_ms=snapshot.now_ms,
+                )
+            },
+        )
+        assert self.on_navigation_command_completed is not None
+        self.on_navigation_command_completed(plan, plan.commands[-1], arrived)
+        assert self.worker is not None
+        self.worker.poll()
         return ExecutionResult(
             intent_id=plan.intent_id,
             roster_version=snapshot.roster_version,
@@ -99,6 +119,7 @@ def test_production_detection_factory_updates_search_without_adapter_calls() -> 
     )
     preview = search.prepare(intent, _snapshot())
     assert isinstance(preview, SearchMissionPreview)
+    arrival = preview.search.assignments[0].transit.arrival_slot.pose
     stream = _Frames()
     source = DetectionSourceConfig(
         1,
@@ -125,18 +146,18 @@ def test_production_detection_factory_updates_search_without_adapter_calls() -> 
             geometry_id=artifact.geometry_pin.version,
             camera_calibration_id="camera-calibration-v1",
             pose_time_ms=1_000,
-            x_mm=1_000,
-            y_mm=1_000,
-            z_mm=1_000,
+            x_mm=round(arrival.x_m * 1_000),
+            y_mm=round(arrival.y_m * 1_000),
+            z_mm=round(arrival.z_m * 1_000),
         ),
     )
-    dispatcher = _Dispatcher()
+    dispatcher = _Dispatcher(stream, arrival)
     factory.start()
     factory.start_mission(intent.intent_id, session)
+    dispatcher.worker = factory._workers[(intent.intent_id, 1)][1]
     try:
         result = search.execute(intent.intent_id, dispatcher, _snapshot())
         assert result.status is LifecycleStatus.COMPLETED
-        stream.released = True
         deadline = time.monotonic() + 1
         while time.monotonic() < deadline:
             if search.status_payload(intent.intent_id)["tasks"][0]["covered_cells"]:
