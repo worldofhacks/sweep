@@ -7,7 +7,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from perception.object_detection import DetectionCandidate
+from perception.object_detection import DetectionCandidate, SightingEvent
+from perception.search_events import FramePoseEvidence
 from planner.navigation import Pose, Zone
 
 
@@ -77,10 +78,16 @@ class FiveFrameLocalizer:
             raise ValueError("only owner-approved search zones are allowed")
         self._zones = zones
         self._samples: deque[Pose] = deque(maxlen=5)
+        self._candidate_id: str | None = None
+        self._frames: set[str] = set()
 
-    def observe(self, pose: Pose | None) -> SearchLocalization | None:
+    def observe(self, pose: Pose | None, candidate_id: str = "") -> SearchLocalization | None:
         if pose is None:
             return None
+        if self._candidate_id != candidate_id:
+            self._candidate_id = candidate_id
+            self._samples.clear()
+            self._frames.clear()
         if not any(
             zone.floor_id == pose.floor_id and _inside(pose.x_m, pose.y_m, zone.polygon_xy)
             for zone in self._zones
@@ -93,3 +100,24 @@ class FiveFrameLocalizer:
         x, y, z = np.median(values, axis=0)
         zone = next(zone for zone in self._zones if _inside(float(x), float(y), zone.polygon_xy))
         return SearchLocalization(Pose(float(x), float(y), float(z), zone.floor_id), 5)
+
+    def observe_sighting(
+        self,
+        event: SightingEvent,
+        evidence: FramePoseEvidence,
+        model: SearchCameraModel,
+        image_width_px: int,
+        now_s: float,
+    ) -> SearchLocalization | None:
+        if (
+            evidence.identity != event.identity
+            or event.identity.frame_id in self._frames
+            or not 0 <= now_s - event.evaluation_completed_at_monotonic_s <= 0.5
+            or not 0 <= now_s - evidence.observed_at_s <= 0.5
+            or abs(evidence.pose_timestamp_s - event.last_frame_decoded_at_monotonic_s) > 0.2
+        ):
+            return None
+        pose = project_bottom_center(event.candidate, image_width_px, model, self._zones)
+        result = self.observe(pose, event.sighting_id)
+        self._frames.add(event.identity.frame_id)
+        return result

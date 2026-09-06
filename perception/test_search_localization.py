@@ -34,3 +34,26 @@ def test_projection_and_zone_filter_refuse_unapproved_space():
     )
     candidate = DetectionCandidate("backpack", 24, 0.9, (0, 0, 2, 1))
     assert project_bottom_center(candidate, 2, model, (_zone(),)) is None
+
+
+def test_sighting_localization_requires_five_fresh_unique_matching_frames():
+    from perception.detection_contracts import FrameIdentity, SightingEvent
+    from perception.search_events import FramePoseEvidence
+
+    model = SearchCameraModel(
+        ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+        ((1, 0, 0, 1), (0, 1, 0, 1), (0, 0, -1, 2), (0, 0, 0, 1)),
+    )
+    candidate = DetectionCandidate("backpack", 24, 0.9, (0, 0, 2, 1))
+    localizer = FiveFrameLocalizer((_zone(),))
+    pose = project_bottom_center(candidate, 2, model, (_zone(),))
+    assert pose is not None
+    for sequence in range(1, 6):
+        identity = FrameIdentity("camera-1", "mission", "run", sequence)
+        event = SightingEvent(
+            "candidate-1", identity, 10, 10, 10, 10.01, candidate, sequence, "a" * 64
+        )
+        evidence = FramePoseEvidence(identity, 1, pose, 10, 10.01)
+        result = localizer.observe_sighting(event, evidence, model, 2, 10.02)
+    assert result is not None
+    assert localizer.observe_sighting(event, evidence, model, 2, 10.02) is None
