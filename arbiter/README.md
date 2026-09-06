@@ -48,19 +48,19 @@ path.
 
 Device classes change which gates apply, never whether one is checked. The geofence
 bounds every device in x and y; an aircraft is bounded in z by the geofence and the
-ceiling, while a ground vehicle's z bound is the floor plane itself, so a wheeled
-target at any other height is refused `geofence` rather than left unchecked. Spacing
-is checked within a class:
-aircraft against aircraft, ground vehicle against ground vehicle, because clearance
-between the two is a vertical question this issue does not answer. The gates that ask
-whether a device is airborne read `mobile` for a ground vehicle, so `hold`, `goto`,
-`rotate_to`, and `hover` require one that is `idle`, `moving`, or `stopped`, and `arm`
-requires one that is `docked`, `idle`, or `stopped`. `ground_max_speed_m_s` caps the
-planned drive speed of a ground `goto` with a `speed_limit` refusal, and a ground
-vehicle accepts only `goto`, `rotate_to`, `hover`, and `estop`; every other operation
-is refused `unsupported_for_device_class`, as are the aircraft-only intents targeted at
-one. Battery, link, telemetry freshness, position quality, operator, authority, and
-membership gates are unchanged and apply to both classes.
+ceiling, while a ground vehicle's z bound is the floor plane itself, so a wheeled target
+at any other height is refused `geofence` rather than left unchecked. Spacing is checked
+within a class: aircraft against aircraft, ground vehicle against ground vehicle,
+because clearance between the two is a vertical question this issue does not answer. The
+gates that ask whether a device is airborne read `mobile` for a ground vehicle, so
+`hold`, `goto`, `rotate_to`, and `hover` require one that is `idle`, `moving`, or
+`stopped`, and `arm` requires one that is `docked`, `idle`, or `stopped`.
+`ground_max_speed_m_s` caps the planned drive speed of a ground `goto` with a
+`speed_limit` refusal, and a ground vehicle accepts only `goto`, `rotate_to`, `hover`,
+and `estop`; every other operation is refused `unsupported_for_device_class`, as are the
+aircraft-only intents targeted at one. Battery, link, telemetry freshness, position
+quality, operator, authority, and membership gates are unchanged and apply to both
+classes.
 
 Precedence is deliberate: the class gate runs before the confirmation gate and before
 the latched-stop gate, so `land` aimed at a robot reports `unsupported_for_device_class`
