@@ -87,3 +87,20 @@ source-key provenance, and a source-capture to Android-clock mapping. Tag locali
 camera calibration, measured body-to-camera extrinsics, synchronized aircraft and gimbal attitude,
 and a camera capture-time mapping. Record the measurement IDs in `recording.json` with the raw
 run and its recorder configuration digest.
+
+## Evidence for a future acceptance run
+
+A future acceptance validator should take an immutable evidence manifest alongside the raw JSONL.
+The manifest should bind the recording run ID and recorder configuration digest to the following
+artifacts:
+
+- the survey result for the NED-to-map rotation and height datum;
+- the flight analysis that produced velocity covariance and height variance;
+- a source-capture to Android-clock mapping with its measured residual bound;
+- for tag fixes, camera calibration, body-to-camera extrinsics, synchronized aircraft and gimbal
+  attitude, and the camera capture-time mapping.
+
+Each manifest entry should name its measurement ID and artifact digest. The validator can replay the
+raw run against those pins, check clock residuals and synchronization, and issue verified publisher
+records only for samples covered by the evidence. Runs without a complete manifest remain diagnostic
+artifacts produced by this adapter.
