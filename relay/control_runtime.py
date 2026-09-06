@@ -5,13 +5,11 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
-from math import ceil, sqrt
-
-import numpy as np
+from math import ceil
 
 from planner.models import FleetSnapshot
 from relay.auth import sign_event
-from relay.control_config import ControlRuntimeConfig
+from relay.control_config import ControlRuntimeConfig as ControlRuntimeConfig
 from relay.control_frames import ControlLocalizationFrame
 from relay.control_localization import ControlLocalizationPins, IngestResult
 
@@ -40,7 +38,6 @@ class ControlRuntime:
         }
         self._sequence = 0
         self._loss_started: dict[int, int] = {}
-        self._covariances: dict[int, tuple[tuple[float, ...], ...]] = {}
         self._retained: dict[int, _RetainedPose] = {}
 
     def ingest(
@@ -58,9 +55,6 @@ class ControlRuntime:
         )
         if result.accepted:
             seen.append(frame.event_id)
-            covariance = frame.wire.covariance_map_enu_m2
-            if covariance is not None:
-                self._covariances[frame.wire.drone_id] = covariance
         return result
 
     def apply(self, snapshot: FleetSnapshot) -> FleetSnapshot:
@@ -87,10 +81,10 @@ class ControlRuntime:
             or pose_time < fix_time
         ):
             return self._loss_packet(drone_id, pin, session, now_ms)
-        covariance = self._covariances.get(drone_id)
-        if covariance is None:
+        uncertainty_m = provenance.position_uncertainty_m
+        if uncertainty_m is None:
             return self._loss_packet(drone_id, pin, session, now_ms)
-        uncertainty_mm = _uncertainty_radius_mm(covariance)
+        uncertainty_mm = ceil(1000 * uncertainty_m * _GAUSSIAN_95_RADIUS_3D)
         if uncertainty_mm / 1000 > self.config.max_position_uncertainty_m:
             return self._loss_packet(drone_id, pin, session, now_ms)
         retained = self._retained.get(drone_id)
@@ -166,8 +160,3 @@ class ControlRuntime:
                 "source_ids",
             )
         )
-
-
-def _uncertainty_radius_mm(covariance: tuple[tuple[float, ...], ...]) -> int:
-    maximum = float(np.linalg.eigvalsh(np.asarray(covariance, dtype=float)).max())
-    return ceil(1000 * sqrt(maximum) * _GAUSSIAN_95_RADIUS_3D)
