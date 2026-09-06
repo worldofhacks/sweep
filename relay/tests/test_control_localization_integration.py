@@ -384,7 +384,7 @@ def test_navigation_packets_reach_only_the_authorized_aircraft(
             for principal in (
                 Principal("adapter", 1, ADAPTER_KEY),
                 Principal("adapter", 2, b"other-aircraft-credential-32bytes"),
-                Principal("console", signing_key=CONSOLE_KEY),
+                Principal("console", None, CONSOLE_KEY),
                 Principal("localization", 1, LOCALIZATION_KEY),
             )
         ]
