@@ -143,3 +143,24 @@ def test_loader_rejects_unknown_fields_and_invalid_backend(generated, tmp_path: 
         load_navigation_deployment({"SWEEP_NAVIGATION_CONFIG": str(path)})
     with pytest.raises(SettingsError, match="backend"):
         load_navigation_deployment({}, backend="unbounded")  # type: ignore[arg-type]
+
+
+def test_deployment_aliases_are_preserved_and_change_the_navigation_pin(
+    generated, tmp_path: Path
+) -> None:
+    bundle, geometry = generated
+    first = _config(bundle, geometry)
+    first["zones"][0]["aliases"] = ["atrium", "main hall"]  # type: ignore[index]
+    path = tmp_path / "navigation.json"
+    path.write_text(json.dumps(first))
+    deployed = load_navigation_deployment({"SWEEP_NAVIGATION_CONFIG": str(path)})
+    assert deployed is not None
+    artifact = deployed.runtime.artifact()
+    assert artifact.zones[0].aliases == ("atrium", "main hall")
+
+    second = json.loads(json.dumps(first))
+    second["zones"][0]["aliases"] = ["atrium", "lobby"]
+    path.write_text(json.dumps(second))
+    replacement = load_navigation_deployment({"SWEEP_NAVIGATION_CONFIG": str(path)})
+    assert replacement is not None
+    assert replacement.runtime.artifact().navigation_pin != artifact.navigation_pin

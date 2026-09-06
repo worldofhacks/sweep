@@ -6,7 +6,7 @@ import io
 import json
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -185,6 +185,7 @@ class NavigationArtifact:
                     self.grids,
                     self.zones,
                     self.connectors,
+                    {zone.zone_id: zone.aliases for zone in self.zones},
                 ),
             ),
         )
@@ -274,6 +275,7 @@ class NavigationArtifact:
         accepted_map_versions: dict[str, str],
         arrival_slots: tuple[ArrivalSlot, ...] = (),
         connectors: tuple[Connector, ...] = (),
+        zone_aliases: Mapping[str, tuple[str, ...]] | None = None,
     ) -> NavigationArtifact:
         """Load an accepted map plus pinned offline geometry as a non-dispatchable preview."""
         if not isinstance(accepted_map_versions, dict) or any(
@@ -294,6 +296,17 @@ class NavigationArtifact:
             isinstance(connector, Connector) for connector in connectors
         ):
             raise ValueError("connectors must be an immutable tuple of Connector values")
+        if zone_aliases is not None and (
+            not isinstance(zone_aliases, Mapping)
+            or any(
+                not isinstance(zone_id, str)
+                or not isinstance(aliases, tuple)
+                or any(not isinstance(alias, str) for alias in aliases)
+                for zone_id, aliases in zone_aliases.items()
+            )
+        ):
+            raise ValueError("zone aliases must be a mapping of immutable text tuples")
+        aliases_by_zone = {} if zone_aliases is None else dict(zone_aliases)
         try:
             validated = validate_bundle(bundle, accepted_map_versions)
             with _directory_descriptor(Path(geometry_directory)) as directory_descriptor:
@@ -320,6 +333,8 @@ class NavigationArtifact:
             known_zone_ids = {item["id"] for item in zones_document["zones"]}
             if set(slot_groups) - known_zone_ids:
                 raise ValueError("arrival slots reference a zone outside the accepted map")
+            if set(aliases_by_zone) - known_zone_ids:
+                raise ValueError("zone aliases reference a zone outside the accepted map")
             zones = tuple(
                 Zone(
                     item["id"],
@@ -329,6 +344,7 @@ class NavigationArtifact:
                     item["z_min"],
                     item["z_max"],
                     tuple(sorted(slot_groups.get(item["id"], ()), key=lambda slot: slot.slot_id)),
+                    aliases_by_zone.get(item["id"], ()),
                 )
                 for item in sorted(zones_document["zones"], key=lambda item: item["id"])
             )
@@ -346,6 +362,7 @@ class NavigationArtifact:
                     grids,
                     zones,
                     connectors,
+                    aliases_by_zone,
                 ),
             )
             return cls(
@@ -610,6 +627,7 @@ def _navigation_configuration_sha256(
     grids: tuple[GridLevel, ...],
     zones: tuple[Zone, ...],
     connectors: tuple[Connector, ...],
+    zone_aliases: Mapping[str, tuple[str, ...]],
 ) -> str:
     """Bind every public navigation-artifact value that can affect a route."""
     if not isinstance(map_pin, ArtifactPin) or not isinstance(geometry_pin, ArtifactPin):
@@ -622,6 +640,13 @@ def _navigation_configuration_sha256(
         isinstance(connector, Connector) for connector in connectors
     ):
         raise ValueError("connectors must be an immutable tuple of Connector values")
+    if not isinstance(zone_aliases, Mapping) or any(
+        not isinstance(zone_id, str)
+        or not isinstance(aliases, tuple)
+        or any(not isinstance(alias, str) for alias in aliases)
+        for zone_id, aliases in zone_aliases.items()
+    ):
+        raise ValueError("zone aliases must be a mapping of immutable text tuples")
     payload = {
         "map_pin": [map_pin.version, map_pin.content_sha256],
         "geometry_pin": [geometry_pin.version, geometry_pin.content_sha256],
@@ -675,6 +700,10 @@ def _navigation_configuration_sha256(
                 "enabled": connector.enabled,
             }
             for connector in sorted(connectors, key=lambda item: item.connector_id)
+        ],
+        "zone_aliases": [
+            {"zone_id": zone_id, "aliases": list(aliases)}
+            for zone_id, aliases in sorted(zone_aliases.items())
         ],
     }
     return sha256(
