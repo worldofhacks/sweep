@@ -261,6 +261,7 @@ def test_search_counts_real_worker_frames_during_frozen_route_execution() -> Non
     assert runtime.status_payload("search-runtime")["candidates"][0]["acknowledged"]
     assert len(flight.calls) == count
 
+
 def test_search_preview_lease_binds_the_full_intent_and_expires() -> None:
     from dataclasses import replace
 

@@ -587,6 +587,8 @@ class AutonomySession:
         if session.session_id == self.session_id:
             with self._lock:
                 self._navigation_previews.clear()
+            if search := self._composition.search_runtime:
+                search.revoke_unstarted_previews(session.session_id)
         return ()
 
     def navigation_preview_expiry(self, intent_id: str) -> int | None:
@@ -613,12 +615,6 @@ class AutonomySession:
             return navigation_metadata(runtime)
         except (OSError, ValueError):
             return None
-
-    def reconcile_membership(self, session: RelaySession) -> tuple[dict[str, object], ...]:
-        if session.session_id == self.session_id:
-            if search := self._composition.search_runtime:
-                search.revoke_unstarted_previews(session.session_id)
-        return ()
 
     def authorize_leave(
         self, drone_id: int, connection_epoch: int, state: dict[str, object]
