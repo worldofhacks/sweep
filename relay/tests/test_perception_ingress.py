@@ -22,12 +22,15 @@ from relay.perception_ingress import (
 class _Runtime:
     calls: list[tuple[str, ProcessedFrameEvent, object]]
 
-    def observe_processed_frame(self, intent_id: str, event: ProcessedFrameEvent, pose: object):
-        self.calls.append((intent_id, event, pose))
+    def observe_processed_frame(
+        self, intent_id: str, event: ProcessedFrameEvent, pose: object, *, now_s: float
+    ):
+        self.calls.append((intent_id, event, pose, now_s))
         return CoverageObservation(True, "accepted", ())
 
 
 _DETECTOR_CONFIG_SHA256 = "a" * 64
+_MISSION_ID = "b" * 64
 
 
 def _mapping() -> ClockMapping:
@@ -39,7 +42,7 @@ def _publisher() -> DetectionPublisher:
         DetectionPublisherConfig(
             "session-1",
             "intent-1",
-            "intent-1:v1:e7",
+            _MISSION_ID,
             1,
             7,
             "camera-1",
@@ -54,7 +57,7 @@ def _publisher() -> DetectionPublisher:
 def _frame(frame_id: str = "1", timestamp_s: float = 11) -> dict[str, object]:
     return _publisher().enqueue(
         ProcessedFrameEvent(
-            FrameIdentity("camera-1", "intent-1:v1:e7", frame_id, 1),
+            FrameIdentity("camera-1", _MISSION_ID, frame_id, 1),
             timestamp_s,
             timestamp_s + 0.01,
             timestamp_s + 0.01,
@@ -75,7 +78,7 @@ def _ingress(runtime: _Runtime) -> DetectionIngress:
         "camera-serial-1",
         "camera-calibration-1",
         "intent-1",
-        "intent-1:v1:e7",
+        _MISSION_ID,
         _mapping(),
     )
 
@@ -106,7 +109,7 @@ def _ingress(runtime: _Runtime) -> DetectionIngress:
     return DetectionIngress(
         DetectionIngressConfig("session-1", {1: pin}),
         runtime,  # type: ignore[arg-type]
-        lambda drone_id: DetectionDroneState(drone_id, 7, "intent-1:v1:e7"),
+        lambda drone_id: DetectionDroneState(drone_id, 7, _MISSION_ID),
         pose,
     )
 

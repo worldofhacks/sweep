@@ -6,7 +6,6 @@ import math
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
-from urllib.parse import quote
 
 import numpy as np
 
@@ -164,10 +163,6 @@ def _identity_component(value: str, name: str) -> None:
         raise ValueError(f"{name} must not contain the reserved ':' delimiter")
 
 
-def _identity_token(value: str) -> str:
-    return quote(value, safe="-_.~")
-
-
 def _sha256_digest(value: str, name: str) -> None:
     if (
         not isinstance(value, str)
@@ -201,7 +196,7 @@ class FrameIdentity:
 
     def __post_init__(self) -> None:
         _identity_component(self.source_id, "source_id")
-        _identifier(self.mission_id, "mission_id", max_length=64)
+        _identity_component(self.mission_id, "mission_id")
         _identity_component(self.worker_run_id, "worker_run_id")
         if (
             isinstance(self.frame_sequence, bool)
@@ -213,8 +208,7 @@ class FrameIdentity:
     @property
     def frame_id(self) -> str:
         return (
-            f"frame:{_identity_token(self.mission_id)}:{_identity_token(self.source_id)}:"
-            f"{_identity_token(self.worker_run_id)}:{self.frame_sequence}"
+            f"frame:{self.mission_id}:{self.source_id}:{self.worker_run_id}:{self.frame_sequence}"
         )
 
     def payload(self) -> dict[str, str | int]:

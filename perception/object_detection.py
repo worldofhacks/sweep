@@ -27,7 +27,6 @@ from perception.detection_contracts import (
     SightingEvent,
     _finite_nonnegative,
     _finite_positive,
-    _identifier,
     _identity_component,
     _sha256_digest,
     _target_labels,
@@ -87,7 +86,7 @@ class LiveDetectionWorker:
         monotonic_clock: Callable[[], float] | None = None,
     ) -> None:
         _identity_component(source_id, "source_id")
-        _identifier(mission_id, "mission_id", max_length=64)
+        _identity_component(mission_id, "mission_id")
         if worker_run_id is None:
             worker_run_id = uuid.uuid4().hex
         _identity_component(worker_run_id, "worker_run_id")

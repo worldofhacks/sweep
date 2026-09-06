@@ -23,13 +23,14 @@ from relay.auth import verify_event_signature
 from relay.control_localization import ClockMapping
 
 _DETECTOR_CONFIG_SHA256 = "a" * 64
+_MISSION_ID = "b" * 64
 
 
 def _config(queue_limit: int = 2) -> DetectionPublisherConfig:
     return DetectionPublisherConfig(
         "session-1",
         "intent-1",
-        "intent-1:v1:e7",
+        _MISSION_ID,
         1,
         7,
         "camera-1",
@@ -42,7 +43,7 @@ def _config(queue_limit: int = 2) -> DetectionPublisherConfig:
 
 def _event(frame_id: str, *, verified: bool = False) -> ProcessedFrameEvent:
     return ProcessedFrameEvent(
-        FrameIdentity("camera-1", "intent-1:v1:e7", frame_id, 1),
+        FrameIdentity("camera-1", _MISSION_ID, frame_id, 1),
         11,
         11.01,
         11.01,
@@ -72,10 +73,10 @@ def test_publisher_preserves_capture_verification_and_bounds_backlog() -> None:
     unsigned = {key: value for key, value in first.items() if key != "signature"}
     assert verify_event_signature(unsigned, first["signature"], b"perception-key")
     assert [frame["frame_id"] for frame in publisher.drain()] == [
-        "frame:intent-1%3Av1%3Ae7:camera-1:2:1",
-        "frame:intent-1%3Av1%3Ae7:camera-1:3:1",
+        f"frame:{_MISSION_ID}:camera-1:2:1",
+        f"frame:{_MISSION_ID}:camera-1:3:1",
     ]
-    assert last["event_id"] == "event:frame:intent-1%3Av1%3Ae7:camera-1:3:1:processed"
+    assert last["event_id"] == f"event:frame:{_MISSION_ID}:camera-1:3:1:processed"
 
 
 @dataclass
@@ -105,7 +106,7 @@ def test_mapped_pts_and_receipt_time_drop_buffered_frames() -> None:
         reader,
         _Detector(),
         source_id="camera-1",
-        mission_id="intent-1:v1:e7",
+        mission_id=_MISSION_ID,
         max_frame_age_s=0.5,
         monotonic_clock=lambda: 14,
     )
@@ -141,7 +142,7 @@ def test_slow_detector_uses_completion_time_from_mapped_clock() -> None:
         reader,
         SlowDetector(),
         source_id="camera-1",
-        mission_id="intent-1:v1:e7",
+        mission_id=_MISSION_ID,
         max_frame_age_s=0.5,
         monotonic_clock=relay_clock,
     )
@@ -183,8 +184,8 @@ def test_async_transport_authenticates_and_sends_only_bounded_latest_queue() -> 
     auth, *frames = (json.loads(message) for message in socket.messages)
     assert auth == {"v": 1, "type": "auth", "source": "perception", "token": "perception-key"}
     assert [frame["frame_id"] for frame in frames] == [
-        "frame:intent-1%3Av1%3Ae7:camera-1:2:1",
-        "frame:intent-1%3Av1%3Ae7:camera-1:3:1",
+        f"frame:{_MISSION_ID}:camera-1:2:1",
+        f"frame:{_MISSION_ID}:camera-1:3:1",
     ]
     assert all(frame["source"] == "perception" for frame in frames)
     assert all(
@@ -205,7 +206,7 @@ def test_producer_config_accepts_source_video_and_yolox_model_aliases() -> None:
             "publisher": {
                 "session": "session-1",
                 "intent_id": "intent-1",
-                "mission_id": "intent-1:v1:e7",
+                "mission_id": _MISSION_ID,
                 "drone_id": 1,
                 "connection_epoch": 7,
                 "source_id": "camera-1",

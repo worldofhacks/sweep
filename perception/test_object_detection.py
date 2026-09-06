@@ -883,8 +883,6 @@ def test_yolox_detector_rejects_invalid_frames(frame: object) -> None:
         detector.detect(frame)
 
 
-def test_mission_delimiters_are_encoded_in_generated_frame_ids():
-    first = FrameIdentity("camera", "mission:7", "run", 1)
-    escaped = FrameIdentity("camera", "mission%3A7", "run", 1)
-    assert first.frame_id == "frame:mission%3A7:camera:run:1"
-    assert first.frame_id != escaped.frame_id
+def test_mission_delimiters_are_rejected_in_generated_frame_ids():
+    with pytest.raises(ValueError, match="reserved ':' delimiter"):
+        FrameIdentity("camera", "mission:7", "run", 1)
