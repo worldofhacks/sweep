@@ -8,7 +8,7 @@ from planner.models import Refusal
 from planner.navigation import ArrivalSlot, NavigationDispatchAcceptance, NavigationPermission
 from planner.navigation_runtime import NavigationExecutionConfig, NavigationRuntime
 from planner.test_navigation import MOTION, artifact, pose
-from relay.autonomy import AutonomyComposition, AutonomyConfig
+from relay.autonomy import AutonomyComposition, AutonomyConfig, create_autonomy_app
 from relay.capabilities import C1_CAPABILITY_PROFILE, IntentName
 from tests.autonomy_fixtures import planning_config, safety_config
 
@@ -177,5 +177,45 @@ def test_session_preview_returns_the_frozen_route_and_current_aliases(tmp_path) 
         )
         with pytest.raises(ValueError, match="current matching server preview"):
             owner.submit(replace(stopped, confirm=True), session.current_state())
+    finally:
+        composition.close()
+
+
+def test_navigation_catalog_endpoint_authenticates_and_returns_deployed_aliases(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from planner.navigation_deployment import NavigationDeployment
+    from relay.settings import AdapterBackend, RelaySettings
+    from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY
+
+    runtime = _runtime()
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY},
+        log_dir=tmp_path,
+        adapter_backend=AdapterBackend.REMOTE,
+    )
+    app, composition = create_autonomy_app(
+        settings,
+        AutonomyConfig(
+            planning=planning_config(),
+            safety=safety_config(),
+            navigation_deployment=NavigationDeployment(
+                runtime, 1, "control-store", "synthetic", "navigation-config"
+            ),
+        ),
+    )
+    try:
+        with TestClient(app) as client:
+            assert client.get("/session/catalog/navigation/catalog").status_code == 401
+            response = client.get(
+                "/session/catalog/navigation/catalog",
+                headers={"Authorization": f"Bearer {CONSOLE_KEY.decode()}"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["type"] == "navigation_catalog"
+        assert body["session"] == "catalog"
+        assert body["catalog"]["zones"][0]["aliases"] == ["atrium", "main hall"]
     finally:
         composition.close()

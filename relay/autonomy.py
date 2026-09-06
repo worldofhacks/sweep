@@ -562,6 +562,11 @@ class AutonomySession:
                 self._navigation_previews.clear()
         return ()
 
+    def navigation_preview_expiry(self, intent_id: str) -> int | None:
+        with self._lock:
+            preview = self._navigation_previews.get(intent_id)
+            return None if preview is None else preview[0]
+
     def navigation_catalog(self) -> dict[str, object] | None:
         runtime = self._composition.navigation_runtime
         if runtime is None:
@@ -1058,6 +1063,33 @@ def create_autonomy_app(
         leave_authorizer_factory=composition.leave_authorizer_factory,
     )
 
+    @app.get("/session/{session_id}/navigation/catalog")
+    async def navigation_catalog(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        runtime: RelayRuntime = request.app.state.relay_runtime
+        token = (
+            authorization.removeprefix("Bearer ").encode()
+            if authorization and authorization.startswith("Bearer ")
+            else None
+        )
+        expected = runtime.credential_resolver.resolve("console", None)
+        if token is None or expected is None or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=401, detail="console authentication is required")
+        await runtime.activate_session(session_id)
+        catalog = composition.session(session_id).navigation_catalog()
+        if catalog is None:
+            raise HTTPException(status_code=409, detail="navigation catalog is unavailable")
+        return {
+            "v": 1,
+            "t": runtime.clock(),
+            "type": "navigation_catalog",
+            "session": session_id,
+            "catalog": catalog,
+        }
+
     @app.post("/session/{session_id}/navigation/preview")
     async def navigation_preview(
         session_id: str,
@@ -1088,15 +1120,17 @@ def create_autonomy_app(
         result = owner.preview_navigation(validated.intent, session.current_state())
         if isinstance(result, Refusal):
             raise HTTPException(status_code=409, detail=result.detail)
+        expires_at_ms = owner.navigation_preview_expiry(validated.intent.intent_id)
         catalog = owner.navigation_catalog()
-        if catalog is None:
-            raise HTTPException(status_code=409, detail="navigation catalog is unavailable")
+        if expires_at_ms is None or catalog is None:
+            raise HTTPException(status_code=409, detail="navigation preview is unavailable")
         return {
             "v": 1,
             "t": runtime.clock(),
             "type": "navigation_preview",
             "session": session_id,
             "intent_id": validated.intent.intent_id,
+            "expires_at_ms": expires_at_ms,
             "plan": result.to_dict(),
             "rooms": catalog["zones"],
         }
