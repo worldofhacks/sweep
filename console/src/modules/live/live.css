@@ -50,6 +50,8 @@
   font-size: var(--text-11);
   color: var(--color-warn);
 }
+.lv-overlay.is-muted { border-top-color: var(--color-hairline); color: var(--color-ink-2); }
+.lv-tile .lv-playback { padding: 7px 10px; font-size: var(--text-11); }
 .lv-meta {
   margin: 8px 0 0;
   display: flex;

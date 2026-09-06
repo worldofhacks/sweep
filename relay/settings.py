@@ -48,6 +48,17 @@ class RelaySettings:
     node_watchdog_hold_ms: int = 2_000
     node_watchdog_failsafe_ms: int = 10_000
     console_origins: tuple[str, ...] = DEFAULT_CONSOLE_ORIGINS
+    # MediaMTX control API for the per-aircraft video projection; unset means node claims only.
+    media_api_url: str | None = None
+    media_api_username: str = "sweep-api"
+    media_api_password: str | None = field(default=None, repr=False)
+    media_api_timeout_ms: int = 500
+    media_poll_interval_ms: int = 1_000
+    media_stale_after_ms: int = 3_000
+    # The console's media bootstrap served at GET /runtime-config.json; incomplete means 503.
+    media_webrtc_origin: str | None = None
+    media_read_username: str | None = None
+    media_read_password: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.relay_token) is not bytes or not 32 <= len(self.relay_token) <= 4_096:
@@ -106,6 +117,24 @@ class RelaySettings:
             command_ttl_ms=self.command_ttl_ms,
         )
         _validate_origins(self.console_origins)
+        if self.media_api_url is not None:
+            if not _is_origin(self.media_api_url):
+                raise SettingsError("SWEEP_MEDIA_API_URL must be an explicit HTTP(S) origin")
+            if not self.media_api_username or not self.media_api_password:
+                raise SettingsError(
+                    "SWEEP_MEDIA_API_USERNAME and SWEEP_MEDIA_API_PASSWORD are required "
+                    "when SWEEP_MEDIA_API_URL is set"
+                )
+        if self.media_api_timeout_ms <= 0 or self.media_poll_interval_ms <= 0:
+            raise SettingsError(
+                "SWEEP_MEDIA_API_TIMEOUT_MS and SWEEP_MEDIA_POLL_INTERVAL_MS must be positive"
+            )
+        if self.media_stale_after_ms < self.media_poll_interval_ms:
+            raise SettingsError(
+                "SWEEP_MEDIA_STALE_AFTER_MS must be at least SWEEP_MEDIA_POLL_INTERVAL_MS"
+            )
+        if self.media_webrtc_origin is not None and not _is_origin(self.media_webrtc_origin):
+            raise SettingsError("SWEEP_MEDIA_WEBRTC_ORIGIN must be an explicit HTTP(S) origin")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> RelaySettings:
@@ -168,7 +197,33 @@ class RelaySettings:
                     ",".join(DEFAULT_CONSOLE_ORIGINS),
                 )
             ),
+            media_api_url=_optional(values.get("SWEEP_MEDIA_API_URL")),
+            media_api_username=_optional(values.get("SWEEP_MEDIA_API_USERNAME")) or "sweep-api",
+            media_api_password=_optional(values.get("SWEEP_MEDIA_API_PASSWORD")),
+            media_api_timeout_ms=_positive_integer(
+                values.get("SWEEP_MEDIA_API_TIMEOUT_MS", "500"), "SWEEP_MEDIA_API_TIMEOUT_MS"
+            ),
+            media_poll_interval_ms=_positive_integer(
+                values.get("SWEEP_MEDIA_POLL_INTERVAL_MS", "1000"),
+                "SWEEP_MEDIA_POLL_INTERVAL_MS",
+            ),
+            media_stale_after_ms=_positive_integer(
+                values.get("SWEEP_MEDIA_STALE_AFTER_MS", "3000"), "SWEEP_MEDIA_STALE_AFTER_MS"
+            ),
+            media_webrtc_origin=_optional(values.get("SWEEP_MEDIA_WEBRTC_ORIGIN")),
+            media_read_username=_optional(values.get("SWEEP_MEDIA_READ_USERNAME")),
+            media_read_password=_optional(values.get("SWEEP_MEDIA_READ_PASSWORD")),
         )
+
+    def media_runtime_config(self) -> dict[str, str] | None:
+        """The console's media bootstrap, or ``None`` until every value is configured."""
+        if not (self.media_webrtc_origin and self.media_read_username and self.media_read_password):
+            return None
+        return {
+            "webrtcOrigin": self.media_webrtc_origin,
+            "readerUsername": self.media_read_username,
+            "readerPassword": self.media_read_password,
+        }
 
     def credential_resolver(self) -> StaticCredentialResolver:
         return StaticCredentialResolver(
@@ -223,6 +278,13 @@ def _backend(raw: str) -> AdapterBackend:
         return AdapterBackend(raw)
     except ValueError:
         raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote") from None
+
+
+def _optional(raw: str | None) -> str | None:
+    """An unset or blank variable is absent; the value is otherwise kept verbatim."""
+    if raw is None or not raw.strip():
+        return None
+    return raw
 
 
 def _boolean(raw: str, name: str) -> bool:
