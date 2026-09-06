@@ -19,7 +19,7 @@ _FORBIDDEN_KEYS = frozenset(
     {"authorization", "credential", "password", "secret", "signature", "token"}
 )
 _LOGGER = logging.getLogger(__name__)
-_LIVE_REPLAY_WAIT_SECONDS = 1.0
+LIVE_REPLAY_TIMEOUT_SECONDS = 1.0
 
 
 class AuditLogError(RuntimeError):
@@ -139,18 +139,28 @@ class SessionAuditLog:
         records, _ = self.replay_snapshot(after_sequence=after_sequence)
         return records
 
-    def replay_snapshot(self, *, after_sequence: int = 0) -> tuple[list[dict[str, object]], int]:
+    def replay_snapshot(
+        self,
+        *,
+        after_sequence: int = 0,
+        deadline: float | None = None,
+    ) -> tuple[list[dict[str, object]], int]:
         if after_sequence < 0:
             raise ValueError("after_sequence must be non-negative")
-        with self._operation_complete:
+        if deadline is None:
+            deadline = monotonic() + LIVE_REPLAY_TIMEOUT_SECONDS
+        remaining = deadline - monotonic()
+        if remaining <= 0 or not self._lock.acquire(timeout=remaining):
+            raise AuditLogError("session log replay exceeded the live replay deadline")
+        try:
             if not self._replay_usable:
                 raise AuditLogError("session log replay is uncertain after an incomplete operation")
-            deadline = monotonic() + _LIVE_REPLAY_WAIT_SECONDS
             while self._has_pending_operation():
                 remaining = deadline - monotonic()
                 if remaining <= 0 or not self._operation_complete.wait(timeout=remaining):
                     raise AuditLogError(
-                        "session log replay is unavailable while an operation is pending"
+                        "session log replay exceeded the live replay deadline while an operation "
+                        "was pending"
                     )
                 if not self._replay_usable:
                     raise AuditLogError(
@@ -159,6 +169,8 @@ class SessionAuditLog:
             records = self._database_records()
             self._verify_mirror(records)
             return [record for record in records if record["seq"] > after_sequence], len(records)
+        finally:
+            self._lock.release()
 
     def _prepare_records(self, events: Iterable[Mapping[str, object]]) -> list[dict[str, object]]:
         records: list[dict[str, object]] = []

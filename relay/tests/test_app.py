@@ -885,9 +885,14 @@ def test_live_replay_waits_for_audit_commit_and_returns_contiguous_snapshot(
         assert release_append.wait(timeout=2)
         return real_append_batch(audit_log, events, operation_id=operation_id)
 
-    def mark_replay(session: RelaySession, *, after_sequence: int = 0) -> dict[str, object]:
+    def mark_replay(
+        session: RelaySession,
+        *,
+        after_sequence: int = 0,
+        deadline: float | None = None,
+    ) -> dict[str, object]:
         replay_entered.set()
-        return real_replay(session, after_sequence=after_sequence)
+        return real_replay(session, after_sequence=after_sequence, deadline=deadline)
 
     monkeypatch.setattr(SessionAuditLog, "append_batch", pause_append)
     monkeypatch.setattr(RelaySession, "replay", mark_replay)
@@ -915,6 +920,67 @@ def test_live_replay_waits_for_audit_commit_and_returns_contiguous_snapshot(
     assert response.status_code == 200
     body = response.json()
     assert [record["seq"] for record in body["events"]] == list(range(1, body["last_sequence"] + 1))
+
+
+def test_live_replay_returns_503_before_an_in_lock_append_can_finish(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    append_holds_locks = Event()
+    release_append = Event()
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    monkeypatch.setattr(app_module, "LIVE_REPLAY_TIMEOUT_SECONDS", 0.1)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client:
+        session = app.state.relay_runtime.session(SESSION)
+        real_append_mirror = session.audit_log._append_mirror
+
+        def pause_append_mirror(encoded: bytes) -> None:
+            append_holds_locks.set()
+            assert release_append.wait(timeout=2)
+            real_append_mirror(encoded)
+
+        monkeypatch.setattr(session.audit_log, "_append_mirror", pause_append_mirror)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            append = executor.submit(session.update_control_projection, selection=())
+            assert append_holds_locks.wait(timeout=2)
+            started = time.monotonic()
+            try:
+                response = client.get(f"/session/{SESSION}", headers=headers)
+                elapsed = time.monotonic() - started
+            finally:
+                release_append.set()
+                append.result(timeout=2)
+
+        assert app.state.relay_runtime.replay(SESSION)["last_sequence"] == 1
+
+    assert response.status_code == 503
+    assert "live replay deadline" in response.json()["detail"]
+    assert elapsed < 1.0
+
+
+def test_live_replay_returns_503_when_a_pending_commit_never_completes(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(app_settings, clock=clock, event_ids=event_ids)
+    monkeypatch.setattr(app_module, "LIVE_REPLAY_TIMEOUT_SECONDS", 0.1)
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+
+    with TestClient(app) as client:
+        audit_log = app.state.relay_runtime.session(SESSION).audit_log
+        operation_id = audit_log.begin_operation()
+        response = client.get(f"/session/{SESSION}", headers=headers)
+        audit_log.abandon_operation(operation_id)
+
+    assert response.status_code == 503
+    assert "live replay deadline" in response.json()["detail"]
+    assert "operation was pending" in response.json()["detail"]
 
 
 def test_replay_reports_unrecoverable_audit_history_as_unavailable(

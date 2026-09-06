@@ -12,7 +12,7 @@ from math import isfinite
 from threading import Lock, RLock
 
 from planner.models import CommandOperation
-from relay.audit import AuditLogError, SessionAuditLog
+from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import (
@@ -1696,11 +1696,17 @@ class RelaySession:
             self._append_audit(state)
             return state
 
-    def replay(self, *, after_sequence: int = 0) -> dict[str, object]:
-        with self._lock:
+    def replay(
+        self, *, after_sequence: int = 0, deadline: float | None = None
+    ) -> dict[str, object]:
+        if deadline is None:
+            deadline = time.monotonic() + LIVE_REPLAY_TIMEOUT_SECONDS
+        with self._replay_lock(deadline):
             self._ensure_replay_usable()
-        records, last_sequence = self.audit_log.replay_snapshot(after_sequence=after_sequence)
-        with self._lock:
+        records, last_sequence = self.audit_log.replay_snapshot(
+            after_sequence=after_sequence, deadline=deadline
+        )
+        with self._replay_lock(deadline):
             self._ensure_replay_usable()
             return {
                 "v": 1,
@@ -1712,6 +1718,16 @@ class RelaySession:
                 "last_sequence": last_sequence,
                 "events": records,
             }
+
+    @contextmanager
+    def _replay_lock(self, deadline: float) -> Iterator[None]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self._lock.acquire(timeout=remaining):
+            raise AuditLogError("relay session replay exceeded the live replay deadline")
+        try:
+            yield
+        finally:
+            self._lock.release()
 
     def metrics(self) -> dict[str, int]:
         with self._lock:

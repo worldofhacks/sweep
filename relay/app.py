@@ -19,7 +19,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, W
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from relay.audit import AuditLogError, SessionAuditLog
+from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import (
     AuthenticationError,
     CredentialResolver,
@@ -254,11 +254,14 @@ class RelayRuntime:
     def replay(self, session_id: str, *, after_sequence: int = 0) -> dict[str, object]:
         """Read active or persisted history without reopening mutable live state."""
         _validate_session_id(session_id)
-        with self._session_gate(session_id):
+        deadline = time.monotonic() + LIVE_REPLAY_TIMEOUT_SECONDS
+        with self._session_gate(session_id, deadline=deadline):
             session = self.sessions.get(session_id)
             if session is None:
                 audit_log = SessionAuditLog(self.settings.log_dir, session_id)
-                records, last_sequence = audit_log.replay_snapshot(after_sequence=after_sequence)
+                records, last_sequence = audit_log.replay_snapshot(
+                    after_sequence=after_sequence, deadline=deadline
+                )
                 return {
                     "v": 1,
                     "t": self.clock(),
@@ -269,7 +272,7 @@ class RelayRuntime:
                     "last_sequence": last_sequence,
                     "events": records,
                 }
-        return session.replay(after_sequence=after_sequence)
+        return session.replay(after_sequence=after_sequence, deadline=deadline)
 
     async def activate_session(self, session_id: str) -> RelaySession:
         with self._activation_tasks_lock:
@@ -290,13 +293,22 @@ class RelayRuntime:
         return self.authoritative_rooms_factory(session)
 
     @contextlib.contextmanager
-    def _session_gate(self, session_id: str) -> Iterator[None]:
+    def _session_gate(self, session_id: str, *, deadline: float | None = None) -> Iterator[None]:
         with self._session_gates_lock:
             gate = self._session_gates.setdefault(session_id, _SessionGate())
             gate.users += 1
         try:
-            with gate.lock:
+            if deadline is None:
+                acquired = gate.lock.acquire()
+            else:
+                remaining = deadline - time.monotonic()
+                acquired = remaining > 0 and gate.lock.acquire(timeout=remaining)
+            if not acquired:
+                raise AuditLogError("relay replay exceeded the live replay deadline")
+            try:
                 yield
+            finally:
+                gate.lock.release()
         finally:
             with self._session_gates_lock:
                 gate.users -= 1
