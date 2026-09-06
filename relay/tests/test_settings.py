@@ -14,6 +14,7 @@ def test_environment_builds_per_aircraft_credentials(tmp_path: Path) -> None:
             "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
             "SWEEP_ADAPTER_KEYS_JSON": f'{{"1":"{ADAPTER_KEY.decode()}"}}',
             "SWEEP_LOCALIZATION_KEYS_JSON": f'{{"1":"{ADAPTER_KEY.decode()}-localization"}}',
+            "SWEEP_PERCEPTION_KEY": f"{ADAPTER_KEY.decode()}-perception",
             "SWEEP_SESSION_LOG_DIR": str(tmp_path),
             "SWEEP_CONSOLE_ORIGINS": "https://console.example,http://localhost:5173",
         }
@@ -22,11 +23,26 @@ def test_environment_builds_per_aircraft_credentials(tmp_path: Path) -> None:
     assert settings.adapter_keys == {1: ADAPTER_KEY}
     assert settings.allow_shared_adapter_token is False
     assert settings.localization_keys == {1: ADAPTER_KEY + b"-localization"}
+    assert settings.perception_key == ADAPTER_KEY + b"-perception"
     assert settings.console_origins == ("https://console.example", "http://localhost:5173")
     assert settings.credential_resolver().resolve("adapter", 1) == ADAPTER_KEY
     assert settings.credential_resolver().resolve("localization", 1) == (
         ADAPTER_KEY + b"-localization"
     )
+    assert settings.credential_resolver().resolve("perception", None) == (
+        ADAPTER_KEY + b"-perception"
+    )
+
+
+def test_perception_credential_is_bounded_and_distinct(tmp_path: Path) -> None:
+    with pytest.raises(SettingsError, match="SWEEP_PERCEPTION_KEY"):
+        RelaySettings(relay_token=CONSOLE_KEY, perception_key=b"short", log_dir=tmp_path)
+    with pytest.raises(SettingsError, match="globally distinct"):
+        RelaySettings(
+            relay_token=CONSOLE_KEY,
+            perception_key=CONSOLE_KEY,
+            log_dir=tmp_path,
+        )
 
 
 def test_aircraft_credential_configuration_is_immutable(tmp_path: Path) -> None:
