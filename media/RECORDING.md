@@ -8,14 +8,14 @@ docker compose -f docker-compose.yml -f docker-compose.recording.yml up -d media
 docker compose logs -f mediamtx
 ```
 
-End a recording run by stopping MediaMTX, then archive the completed segments before a later recording startup can delete them:
+End a recording run by stopping MediaMTX, then archive the completed segments before a later recording startup can delete them. Choose a new `RUN_ID` for each archive:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.recording.yml stop mediamtx
 RUN_ID=2026-09-06-run-01
 mkdir -p "flight-evidence/$RUN_ID"
 cp -a recordings "flight-evidence/$RUN_ID/recordings"
-find "flight-evidence/$RUN_ID/recordings" -type f -name '*.mp4' -print0 | xargs -0 sha256sum > "flight-evidence/$RUN_ID/recording-sha256.txt"
+(cd "flight-evidence/$RUN_ID" && find recordings -type f -name '*.mp4' -print0 | xargs -0 sha256sum > recording-sha256.txt)
 docker compose -f docker-compose.yml -f docker-compose.recording.yml down
 ```
 
