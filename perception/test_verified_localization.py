@@ -79,9 +79,19 @@ def config(tmp_path):
             "body_gimbal_mount": measured("body-gimbal", body_camera.tolist()),
             "gimbal_camera": measured("gimbal-camera", np.eye(4).tolist()),
             "map_ned_rotation": measured("map-ned", body_pose[:3, :3].tolist()),
-            "max_attitude_age_s": 0.05,
-            "max_attitude_skew_s": 0.05,
             "max_body_orientation_error_deg": 1,
+            "capture_aligned_attitude": {
+                "measurement": {
+                    "measurement_id": "capture-aligned-attitude",
+                    "measured": True,
+                    "artifact_sha256": "d" * 64,
+                },
+                "body_convention_id": "aircraft-body-to-ned-rpy-zyx",
+                "gimbal_convention_id": "body-to-gimbal-calibrated-v1",
+                "max_bracket_s": 0.02,
+                "max_residual_s": 0.005,
+                "max_uncertainty_deg": 0.5,
+            },
             "position_covariance_map_enu_m2": {
                 "measurement": {
                     "measurement_id": "tag-noise",
@@ -165,6 +175,18 @@ def bind_evidence(raw, tmp_path):
         camera["position_covariance_map_enu_m2"]["measurement"],
         camera["position_covariance_map_enu_m2"]["matrix"],
     )
+    aligned = camera["capture_aligned_attitude"]
+    bind_measurement(
+        tmp_path,
+        aligned["measurement"],
+        {
+            "body_convention_id": aligned["body_convention_id"],
+            "gimbal_convention_id": aligned["gimbal_convention_id"],
+            "max_bracket_s": aligned["max_bracket_s"],
+            "max_residual_s": aligned["max_residual_s"],
+            "max_uncertainty_deg": aligned["max_uncertainty_deg"],
+        },
+    )
 
 
 def attitude(kind: str, receipt_ms: int = 1000):
@@ -179,6 +201,44 @@ def attitude(kind: str, receipt_ms: int = 1000):
         "roll_deg": 0,
         "received_at_android_elapsed_realtime_ms": receipt_ms,
         "written_at_android_elapsed_realtime_ms": receipt_ms,
+    }
+
+
+def capture_aligned_attitude(raw, source: str, capture_time_s: float = 1.0):
+    identity = raw["identity"]
+    aligned = raw["camera"]["capture_aligned_attitude"]
+    return {
+        **{
+            name: identity[name]
+            for name in (
+                "recording_run_id",
+                "session",
+                "product_id",
+                "drone_id",
+                "connection_generation",
+                "connection_epoch",
+                "product_type",
+                "aircraft_firmware",
+                "rc_firmware",
+                "sdk_version",
+                "recorder_config_sha256",
+            )
+        },
+        "kind": "capture_aligned_attitude",
+        "event_id": f"{source}-capture-{capture_time_s}",
+        "android_boot_id": raw["timing"]["frame"]["boot_id"],
+        "source": source,
+        "convention_id": (
+            aligned["body_convention_id"]
+            if source == "aircraft_body_to_ned"
+            else aligned["gimbal_convention_id"]
+        ),
+        "capture_time_s": capture_time_s,
+        "before_capture_time_s": capture_time_s - 0.005,
+        "after_capture_time_s": capture_time_s + 0.005,
+        "interpolation_residual_s": 0.001,
+        "interpolation_uncertainty_deg": 0.1,
+        "rotation": np.eye(3).tolist(),
     }
 
 
@@ -226,17 +286,32 @@ def sensor_samples(receipt_ms: int = 1000):
     return result
 
 
-def test_raw_gimbal_axes_never_create_a_signed_ready_pose(tmp_path, monkeypatch):
+def test_capture_aligned_attitudes_flow_through_tag_fuser_and_signed_publisher(
+    tmp_path, monkeypatch
+):
     raw, frame, _ = config(tmp_path)
     monkeypatch.setenv("LOCALIZATION_KEY_1", "x" * 32)
     ingestion = VerifiedLocalizationIngestion(raw)
-    with pytest.raises(ValueError, match="body-relative attitude adapter"):
-        ingestion.records(attitude("KeyGimbalAttitude"))
+    assert ingestion.records(attitude("KeyGimbalAttitude")) == []
+    with pytest.raises(ValueError, match="capture-aligned"):
+        ingestion.records(frame_record(raw, frame))
+
+    emitted = []
+    for sample in [
+        capture_aligned_attitude(raw, "aircraft_body_to_ned"),
+        capture_aligned_attitude(raw, "body_to_gimbal"),
+        frame_record(raw, frame),
+    ]:
+        emitted.extend(ingestion.records(sample))
+    assert [record["kind"] for record in emitted] == ["tag"]
 
     replay = "\n".join(
         json.dumps({"now_s": 1.01, "raw": sample})
         for sample in [
+            capture_aligned_attitude(raw, "aircraft_body_to_ned"),
+            capture_aligned_attitude(raw, "body_to_gimbal"),
             *sensor_samples(),
+            frame_record(raw, frame),
         ]
     )
     output = []
@@ -247,21 +322,22 @@ def test_raw_gimbal_axes_never_create_a_signed_ready_pose(tmp_path, monkeypatch)
 
     run_replay(VerifiedLocalizationIngestion(raw), replay.splitlines(), Sink())
     signed = [json.loads(value) for value in output]
-    assert len(signed) == 2
+    assert len(signed) == 3
     assert all(frame["type"] == "control_localization" for frame in signed)
-    assert all(frame["localization_status"] != "ready" for frame in signed)
+    assert signed[-1]["localization_status"] == "ready"
+    assert signed[-1]["flight_approved"] is False
 
 
 def test_missing_or_asynchronous_attitude_and_wrong_pins_fail_closed(tmp_path):
     raw, frame, _ = config(tmp_path)
     ingestion = VerifiedLocalizationIngestion(raw)
-    with pytest.raises(ValueError, match="missing"):
+    with pytest.raises(ValueError, match="capture-aligned"):
         ingestion.records(frame_record(raw, frame))
-    raw["camera"]["max_attitude_skew_s"] = 0.01
     ingestion = VerifiedLocalizationIngestion(raw)
-    ingestion.records(attitude("KeyAircraftAttitude", 980))
-    with pytest.raises(ValueError, match="body-relative attitude adapter"):
-        ingestion.records(attitude("KeyGimbalAttitude", 1000))
+    aligned = capture_aligned_attitude(raw, "body_to_gimbal")
+    aligned["after_capture_time_s"] = 1.1
+    with pytest.raises(ValueError, match="interpolation bounds"):
+        ingestion.records(aligned)
     changed = deepcopy(raw)
     changed["identity"]["pipeline_sha256"] = "d" * 64
     with pytest.raises(ValueError, match="camera evidence"):
@@ -285,8 +361,7 @@ def test_missing_or_asynchronous_attitude_and_wrong_pins_fail_closed(tmp_path):
     calibration["evidence_kind"] = "recorded_live"
     calibration_path.write_text(json.dumps(calibration))
     ingestion = VerifiedLocalizationIngestion(raw)
-    ingestion.records(attitude("KeyAircraftAttitude", 800))
-    with pytest.raises(ValueError, match="stale"):
+    with pytest.raises(ValueError, match="capture-aligned"):
         ingestion.records(frame_record(raw, frame))
 
 

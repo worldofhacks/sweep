@@ -185,6 +185,7 @@ class _Timing:
 class _Attitude:
     timestamp: float
     rotation: tuple[tuple[float, ...], ...]
+    uncertainty_deg: float
 
 
 class VerifiedLocalizationIngestion:
@@ -282,10 +283,9 @@ class VerifiedLocalizationIngestion:
             "body_gimbal_mount",
             "gimbal_camera",
             "map_ned_rotation",
-            "max_attitude_age_s",
-            "max_attitude_skew_s",
             "max_body_orientation_error_deg",
             "position_covariance_map_enu_m2",
+            "capture_aligned_attitude",
         }:
             raise ValueError("camera evidence fields do not match the contract")
         camera = raw["camera"]
@@ -325,12 +325,6 @@ class VerifiedLocalizationIngestion:
         self.map_ned_rotation = np.asarray(
             self._measured_rotation(camera["map_ned_rotation"], "map_ned_rotation")
         )
-        self.max_attitude_age_s = _number(
-            camera["max_attitude_age_s"], "max_attitude_age_s", positive=True
-        )
-        self.max_attitude_skew_s = _number(
-            camera["max_attitude_skew_s"], "max_attitude_skew_s", positive=True
-        )
         orientation_error = _number(
             camera["max_body_orientation_error_deg"],
             "max_body_orientation_error_deg",
@@ -339,6 +333,38 @@ class VerifiedLocalizationIngestion:
         if orientation_error > 180:
             raise ValueError("max_body_orientation_error_deg is outside its bounded range")
         self.max_body_orientation_error_deg = orientation_error
+        aligned = camera["capture_aligned_attitude"]
+        if not isinstance(aligned, Mapping) or set(aligned) != {
+            "measurement",
+            "body_convention_id",
+            "gimbal_convention_id",
+            "max_bracket_s",
+            "max_residual_s",
+            "max_uncertainty_deg",
+        }:
+            raise ValueError("capture-aligned attitude fields do not match the contract")
+        self.body_convention_id = _text(aligned["body_convention_id"], "body convention ID")
+        self.gimbal_convention_id = _text(aligned["gimbal_convention_id"], "gimbal convention ID")
+        self.max_attitude_bracket_s = _number(
+            aligned["max_bracket_s"], "max attitude bracket", positive=True
+        )
+        self.max_attitude_residual_s = _number(
+            aligned["max_residual_s"], "max attitude residual", positive=True
+        )
+        self.max_attitude_uncertainty_deg = _number(
+            aligned["max_uncertainty_deg"], "max attitude uncertainty", positive=True
+        )
+        _measured(
+            aligned["measurement"],
+            "capture-aligned attitude",
+            {
+                "body_convention_id": aligned["body_convention_id"],
+                "gimbal_convention_id": aligned["gimbal_convention_id"],
+                "max_bracket_s": aligned["max_bracket_s"],
+                "max_residual_s": aligned["max_residual_s"],
+                "max_uncertainty_deg": aligned["max_uncertainty_deg"],
+            },
+        )
         covariance = camera["position_covariance_map_enu_m2"]
         if not isinstance(covariance, Mapping) or set(covariance) != {"measurement", "matrix"}:
             raise ValueError("position covariance fields do not match the contract")
@@ -401,6 +427,9 @@ class VerifiedLocalizationIngestion:
         if kind == "phone_attitude_raw":
             self._store_attitude(raw)
             return []
+        if kind == "capture_aligned_attitude":
+            self._store_capture_aligned_attitude(raw)
+            return []
         if kind == "decoded_frame":
             return self._frame(raw)
         raise ValueError("raw input kind is unsupported")
@@ -412,18 +441,55 @@ class VerifiedLocalizationIngestion:
 
     def _store_attitude(self, raw: Mapping[str, object]) -> None:
         self.sensor.record_if_selected(raw)
-        if raw["sdk_key"] == "KeyGimbalAttitude":
-            raise ValueError(
-                "raw SDK gimbal axes require a measured body-relative attitude adapter"
-            )
-        timestamp = self.attitude_timing.capture_time(
-            raw["received_at_android_elapsed_realtime_ms"]
+
+    def _store_capture_aligned_attitude(self, raw: Mapping[str, object]) -> None:
+        expected = set(_RAW_IDENTITY_FIELDS) | {
+            "kind",
+            "event_id",
+            "android_boot_id",
+            "source",
+            "convention_id",
+            "capture_time_s",
+            "before_capture_time_s",
+            "after_capture_time_s",
+            "interpolation_residual_s",
+            "interpolation_uncertainty_deg",
+            "rotation",
+        }
+        if set(raw) != expected:
+            raise ValueError("capture-aligned attitude fields do not match the contract")
+        if raw["android_boot_id"] != self.frame_timing.boot_id:
+            raise ValueError("capture-aligned attitude boot is not pinned")
+        _text(raw["event_id"], "capture-aligned attitude event ID")
+        source = raw["source"]
+        convention = raw["convention_id"]
+        if source == "aircraft_body_to_ned":
+            target = self._body
+            expected_convention = self.body_convention_id
+        elif source == "body_to_gimbal":
+            target = self._gimbal
+            expected_convention = self.gimbal_convention_id
+        else:
+            raise ValueError("capture-aligned attitude source is unsupported")
+        if convention != expected_convention:
+            raise ValueError("capture-aligned attitude convention is not pinned")
+        capture = _number(raw["capture_time_s"], "attitude capture time")
+        before = _number(raw["before_capture_time_s"], "attitude bracket start")
+        after = _number(raw["after_capture_time_s"], "attitude bracket end")
+        residual = _number(raw["interpolation_residual_s"], "attitude interpolation residual")
+        uncertainty = _number(
+            raw["interpolation_uncertainty_deg"], "attitude interpolation uncertainty"
         )
-        rotation = _rpy(raw["yaw_deg"], raw["pitch_deg"], raw["roll_deg"])
-        sample = _Attitude(
-            timestamp, tuple(tuple(float(value) for value in row) for row in rotation)
-        )
-        self._body.append(sample)
+        if (
+            before > capture
+            or capture > after
+            or after - before > self.max_attitude_bracket_s
+            or residual > self.max_attitude_residual_s
+            or uncertainty > self.max_attitude_uncertainty_deg
+        ):
+            raise ValueError("capture-aligned attitude exceeds its measured interpolation bounds")
+        rotation = _rotation(raw["rotation"], "capture-aligned attitude rotation")
+        target.append(_Attitude(capture, rotation, uncertainty))
 
     def _frame(self, raw: Mapping[str, object]) -> list[dict[str, object]]:
         expected = set(_RAW_IDENTITY_FIELDS) | {
@@ -451,13 +517,8 @@ class VerifiedLocalizationIngestion:
         if decoded < received:
             raise ValueError("decoded frame precedes receipt")
         capture = self.frame_timing.capture_time(received)
-        body = self._nearest(self._body, capture, "aircraft attitude")
-        gimbal = self._nearest(self._gimbal, capture, "gimbal attitude")
-        if (
-            abs(body.timestamp - gimbal.timestamp) + 2 * self.attitude_timing.max_error_s
-            > self.max_attitude_skew_s
-        ):
-            raise ValueError("body and gimbal transforms are asynchronous")
+        body = self._capture_aligned(self._body, capture, "aircraft attitude")
+        gimbal = self._capture_aligned(self._gimbal, capture, "gimbal attitude")
         dynamic = self.body_gimbal_mount @ _homogeneous(gimbal.rotation) @ self.gimbal_camera
         path = Path(_text(raw["frame_path"], "frame_path"))
         payload = path.read_bytes()
@@ -481,7 +542,15 @@ class VerifiedLocalizationIngestion:
         ].fuser.max_speed_mps * (
             self.frame_timing.max_error_s + 2 * self.attitude_timing.max_error_s
         )
-        covariance = np.asarray(self.position_covariance) + np.eye(3) * timing_position_error_m**2
+        lever_arm_m = np.linalg.norm(self.body_gimbal_mount[:3, 3]) + np.linalg.norm(
+            self.gimbal_camera[:3, 3]
+        )
+        attitude_position_error_m = lever_arm_m * math.sin(
+            math.radians(body.uncertainty_deg + gimbal.uncertainty_deg)
+        )
+        covariance = np.asarray(self.position_covariance) + np.eye(3) * (
+            timing_position_error_m**2 + attitude_position_error_m**2
+        )
         extrinsics = BodyExtrinsics(
             self.body_extrinsics_id,
             self.tag_source_id,
@@ -523,40 +592,11 @@ class VerifiedLocalizationIngestion:
             }
         ]
 
-    def _nearest(self, samples: deque[_Attitude], capture: float, name: str) -> _Attitude:
-        if not samples:
-            raise ValueError(f"{name} is missing")
-        sample = min(samples, key=lambda item: abs(item.timestamp - capture))
-        if (
-            abs(sample.timestamp - capture)
-            + self.frame_timing.max_error_s
-            + self.attitude_timing.max_error_s
-            > self.max_attitude_age_s
-        ):
-            raise ValueError(f"{name} is stale at frame capture")
-        return sample
-
-
-def _rpy(yaw: object, pitch: object, roll: object) -> np.ndarray:
-    values = [float(value) for value in (yaw, pitch, roll)]
-    if not np.isfinite(values).all():
-        raise ValueError("attitude angles must be finite")
-    yaw_r, pitch_r, roll_r = np.deg2rad(values)
-    cz, sz, cy, sy, cx, sx = (
-        math.cos(yaw_r),
-        math.sin(yaw_r),
-        math.cos(pitch_r),
-        math.sin(pitch_r),
-        math.cos(roll_r),
-        math.sin(roll_r),
-    )
-    return np.array(
-        [
-            [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
-            [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
-            [-sy, cy * sx, cy * cx],
-        ]
-    )
+    def _capture_aligned(self, samples: deque[_Attitude], capture: float, name: str) -> _Attitude:
+        for sample in reversed(samples):
+            if sample.timestamp == capture:
+                return sample
+        raise ValueError(f"{name} has no capture-aligned interpolation")
 
 
 def _homogeneous(rotation: tuple[tuple[float, ...], ...]) -> np.ndarray:
