@@ -1,6 +1,6 @@
 # Navigation deployment configuration
 
-Set `SWEEP_NAVIGATION_CONFIG` to a JSON file before enabling navigation. The file pins an accepted map bundle, geometry directory, accepted version hashes, named zones with aliases and arrival slots, permissions, motion limits, and the control-localization store identity. The loader rejects unknown fields, negative limits, malformed pins, and changed configuration.
+Set `SWEEP_NAVIGATION_CONFIG` to a JSON file before enabling navigation. The file pins an accepted map bundle, geometry directory, accepted version hashes, named zones with aliases and arrival slots, permissions, motion limits, and a control-store identity. The remote composition requires that identity to match the loaded control-localization configuration. The loader rejects unknown fields, negative limits, malformed pins, and changed configuration.
 
 A zone permits motion only when it appears in `permission_zone_ids` and has `navigation_allowed: true`. Zone IDs are validated even when a zone has no arrival slots. The accepted map bundle supplies authoritative aliases; deployment-file aliases are descriptive.
 
@@ -12,4 +12,4 @@ Synthetic deployments support software tests. A remote deployment also needs evi
 
 Remote mapped navigation requires `SWEEP_ENABLE_LOCALIZED_NAVIGATION=true`. The relay then sends a signed route authorization before every mapped `goto`, bound to the plan intent, command, aircraft epoch, map and camera pins, target, start, limits, and segment expiry. A normal `goto` has no route authorization fields and keeps its existing behavior.
 
-The phone receives signed navigation poses only for an active authorized route. A ready pose includes the capture-derived position and a conservative 3D 95% uncertainty radius. The relay assumes the fuser's largest covariance standard deviation is Gaussian and multiplies it by 2.796, the square root of the 3D chi-square 95% critical value 7.815 from NIST's [chi-square critical-value table](https://www.itl.nist.gov/div898/handbook/eda/section3/eda3674.htm). A pose that fails provenance, freshness, tube, or uncertainty checks reports `hold` or `land` with every observation field set to `null`.
+The phone receives signed navigation poses only for an active authorized route. A ready pose includes the capture-derived position and its diagnostic 3D 95% uncertainty radius. The relay accepts the pose only within the configured localization and navigation uncertainty bounds. A pose that fails provenance, freshness, tube, or uncertainty checks reports `hold` or `land` with every observation field set to `null`.
