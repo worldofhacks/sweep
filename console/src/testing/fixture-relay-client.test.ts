@@ -35,7 +35,7 @@ describe('explicit development fixture', () => {
     expect(state.drones[5].video).toEqual({ status: 'unreported', last_frame_at: null })
   })
 
-  test('refuses names outside the C2 fixture capability set', async () => {
+  test('refuses names outside the advertised fixture capability set', async () => {
     const client = new FixtureRelayClient('fixture-session', clock)
     const events = record(client)
     client.start()
@@ -64,7 +64,7 @@ describe('explicit development fixture', () => {
         status: 'refused',
         source: 'relay',
         reason: 'unsupported',
-        detail: 'map_area is outside the C2 fixture capability set',
+        detail: 'map_area is outside the advertised fixture capability set',
       },
     })
     expect(states(events)).toHaveLength(1)

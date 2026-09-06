@@ -32,6 +32,8 @@ export type ConsoleIntentName =
   | 'come_home'
   | 'sweep'
   | 'capture_room'
+  | 'navigate'
+  | 'search'
 
 export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'arm',
@@ -50,32 +52,9 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'come_home',
   'sweep',
   'capture_room',
-]
-
-/**
- * Mirror of the relay's implemented names, including the earned M1.5 simulator
- * behaviors. Other names remain visible but are disabled by the authoritative
- * advertised capability profile.
- */
-export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
-  'arm',
-  'select',
-  'takeoff',
-  'translate',
-  'hold',
-  'come_home',
-  'land',
-  'land_all',
-  'estop',
-  'capture_room',
   'navigate',
   'search',
-  'altitude',
-  'formation_next',
-  'formation_set',
-  'spacing',
-  'sweep',
-])
+]
 
 export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'arm',
@@ -110,26 +89,24 @@ export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
   'translate',
 ]
 
-/** Mirror of the relay's C2 implemented-name registry. */
-export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
-  C2_FLEET_OPERATIONS_INTENTS,
-)
+export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  ...C2_FLEET_OPERATIONS_INTENTS,
+  'navigate',
+  'search',
+])
 
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
   return SUPPORTED_INTENTS.has(name)
 }
 
-/**
- * Console policy from the design brief: these intents never leave the console
- * without the operator confirming the exact envelope. The relay itself only
- * enforces confirmation for capture_room.
- */
 export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'takeoff',
   'land',
   'land_all',
   'sweep',
   'capture_room',
+  'navigate',
+  'search',
 ])
 
 export function requiresConfirmation(name: ConsoleIntentName): boolean {
@@ -156,6 +133,8 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   come_home: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
+  navigate: 'selected',
+  search: 'selected',
 }
 
 export function selectionRule(name: ConsoleIntentName): SelectionRule {
@@ -207,6 +186,13 @@ export interface CaptureRoomArgs {
   capture_id: string
   pattern: CapturePattern
 }
+export interface NavigateArgs {
+  zone_id: string
+}
+export interface SearchArgs {
+  zone_id: string
+  target_class: string
+}
 
 /** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
 export interface IntentArgsByName {
@@ -226,6 +212,8 @@ export interface IntentArgsByName {
   come_home: EmptyArgs
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
+  navigate: NavigateArgs
+  search: SearchArgs
 }
 
 export type IntentArgs = IntentArgsByName[ConsoleIntentName]
@@ -1016,6 +1004,14 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
         args.capture_id.length > 0 &&
         CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
       )
+    case 'navigate':
+      return keys.length === 1 && isBoundedIntentText(args.zone_id)
+    case 'search':
+      return (
+        keys.length === 2 &&
+        isBoundedIntentText(args.zone_id) &&
+        isBoundedIntentText(args.target_class)
+      )
     case 'arm':
     case 'disarm':
     case 'estop':
@@ -1027,6 +1023,10 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
     case 'come_home':
       return keys.length === 0
   }
+}
+
+function isBoundedIntentText(value: unknown): value is string {
+  return typeof value === 'string' && value.length >= 1 && value.length <= 128 && value.trim() === value
 }
 
 function isSweepBox(value: unknown): value is SweepBox {
