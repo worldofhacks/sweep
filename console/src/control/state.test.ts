@@ -107,6 +107,34 @@ function withPendingCapture(): ControlState {
 }
 
 describe('control reducer fleet lifecycle', () => {
+  test('keeps the relay captures a state frame carries and the last list when a frame omits them', () => {
+    const initial = createInitialControlState(session, t)
+    expect(initial.captures).toEqual([])
+    const capture = {
+      capture_id: 'cap-1',
+      drone_id: 1,
+      connection_epoch: 1,
+      room_id: null,
+      pattern: null,
+      coverage: null,
+      status: null,
+      reason: null,
+      detail: null,
+      files: [],
+      updated_at: t,
+    }
+    const withCaptures = controlReducer(initial, {
+      type: 'relay_event',
+      event: { ...stateEvent('state-captures', 1, [drone()], [1]), captures: [capture] },
+    })
+    expect(withCaptures.captures).toEqual([capture])
+    const later = controlReducer(withCaptures, {
+      type: 'relay_event',
+      event: stateEvent('state-later', 1, [drone()], [1]),
+    })
+    expect(later.captures).toEqual([capture])
+  })
+
   test('keeps the formation and spacing the relay reports, and nothing before the first frame', () => {
     const initial = createInitialControlState(session, t)
     expect(initial.formation).toBeNull()

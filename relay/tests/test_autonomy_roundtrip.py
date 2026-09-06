@@ -722,3 +722,61 @@ def _wait_until(predicate: Callable[[], bool], *, what: str) -> None:
 
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+def test_capture_room_reconstruct_8_retains_media_and_a_composed_bundle_in_state(
+    relay_server: RelayServer,
+) -> None:
+    fleet = _Fleet(relay_server, {1: {}})
+    fleet.start()
+    try:
+        fleet.airborne()
+        capture_id, capture = fleet.run(
+            "capture_room",
+            selection=[1],
+            args={"room_id": "room-1", "capture_id": "cap-roundtrip", "pattern": "reconstruct_8"},
+            confirm=True,
+        )
+        assert capture["status"] == "completed", capture
+        session = relay_server.runtime.sessions[SESSION]
+        state = session.current_state()
+        (entry,) = [item for item in state["captures"] if item["capture_id"] == "cap-roundtrip"]
+        assert (entry["room_id"], entry["pattern"], entry["coverage"], entry["status"]) == (
+            "room-1",
+            "reconstruct_8",
+            "incomplete_vertical_coverage",
+            "completed",
+        )
+        assert [file["file_id"] for file in entry["files"]] == [
+            f"cap-roundtrip-frame-{number:02d}" for number in range(1, 9)
+        ]
+        assert {file["retrieval_status"] for file in entry["files"]} == {"completed"}
+        assert [file["actual_yaw_deg"] for file in entry["files"]] == [
+            float(heading) for heading in range(0, 360, 45)
+        ]
+        # The console received the closed capture through the state fan-out, never the frames.
+        _wait_until(
+            lambda: any(
+                event["type"] == "state"
+                and any(
+                    item["capture_id"] == "cap-roundtrip" and item["status"] == "completed"
+                    for item in event.get("captures", [])
+                )
+                for event in list(fleet.console.events)
+            ),
+            what="a state event carrying the closed capture",
+        )
+        assert "media_file" not in {event["type"] for event in fleet.console.events}
+        assert "capture_bundle" not in {event["type"] for event in fleet.console.events}
+    finally:
+        fleet.stop()
+
+    operations = [operation for operation, intent in fleet.commands_for(1) if intent == capture_id]
+    assert operations[:2] == ["camera_capabilities", "set_gimbal_pitch"]
+    assert operations[2:] == ["rotate_to", "camera_ready", "capture_photo", "retrieve_media"] * 8
+    records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
+    media = [record for record in records if record["type"] == "media_file"]
+    assert len(media) == 16, "one record at capture time and one at retrieval per frame"
+    bundles = [record for record in records if record["type"] == "capture_bundle"]
+    assert [bundle.get("source") for bundle in bundles] == ["autonomy"]
+    assert bundles[0]["status"] == "completed" and len(bundles[0]["media"]) == 8

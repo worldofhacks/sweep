@@ -1,6 +1,7 @@
 package org.worldofhacks.sweep.bridge.session
 
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.camera.CameraExecutor
 import org.worldofhacks.sweep.bridge.flight.FlightNode
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
@@ -59,6 +60,10 @@ interface AircraftSession {
 
     /** Phase E: the Virtual Stick loop and the #85 probe runner; null in a session without flight control. */
     val flight: FlightNode?
+        get() = null
+
+    /** Phase G: the camera and media path; null in a session without a camera. */
+    val camera: CameraExecutor?
         get() = null
 
     fun exportProbeReport(): ExportResult
