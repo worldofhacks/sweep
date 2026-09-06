@@ -132,6 +132,28 @@ def test_normal_lane_refuses_motion_while_a_mapped_route_awaits(tmp_path, monkey
         composition.close()
 
 
+def test_hold_preempts_queued_mapped_routes(tmp_path, monkeypatch) -> None:
+    composition, owner, session, awaiting = _owner_session(tmp_path)
+    try:
+        monkeypatch.setattr(session, "record_lifecycle", lambda **kwargs: kwargs)
+        queued_search = _Job(
+            replace(awaiting.job.intent, intent_id="queued-search", name=IntentName.SEARCH),
+            session,
+        )
+        owner._normal.pending.extend((awaiting.job, queued_search))
+
+        hold = _Job(
+            replace(awaiting.job.intent, intent_id="hold-pending-routes", name=IntentName.HOLD),
+            session,
+        )
+        owner._route(hold)
+
+        assert awaiting.job.cancelled_by == PREEMPTED_BY_HOLD
+        assert queued_search.cancelled_by == PREEMPTED_BY_HOLD
+    finally:
+        composition.close()
+
+
 def test_watchdog_and_late_resume_serialize_dispatcher_io(tmp_path, monkeypatch) -> None:
     composition, owner, session, awaiting = _owner_session(tmp_path)
     command = awaiting.pending.plan.commands[0]

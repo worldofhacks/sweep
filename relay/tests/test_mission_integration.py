@@ -17,14 +17,16 @@ from perception.object_detection import (
     SightingEvent,
 )
 from perception.search_events import CameraPolicy
+from planner.control_provenance import ControlProvenance
 from planner.navigation import ArrivalSlot, NavigationPermission
+from planner.navigation_acceptance import NavigationDispatchAcceptance
 from planner.navigation_runtime import NavigationExecutionConfig, NavigationRuntime
 from planner.search import SearchArea
 from planner.test_navigation import MOTION, artifact, pose
 from relay.auth import Principal
 from relay.autonomy import AutonomyConfig, create_autonomy_app
-from relay.control_localization import ClockMapping, ControlProvenance
-from relay.control_runtime import ControlRuntimeConfig
+from relay.control_config import ControlRuntimeConfig
+from relay.control_localization import ClockMapping
 from relay.search_bridge import SearchBridge
 from relay.search_runtime import SearchMissionPreview, SearchRuntime, SearchRuntimeConfig
 from relay.settings import AdapterBackend, RelaySettings
@@ -57,9 +59,16 @@ def _settings(log_dir: Path) -> RelaySettings:
 
 def _navigation() -> NavigationRuntime:
     return NavigationRuntime(
-        lambda: artifact(slots=(ArrivalSlot("atrium-1", "atrium", pose(6.5, 1.5), 0.5),)),
+        lambda: artifact(slots=(ArrivalSlot("atrium-1", "atrium", pose(6.5, 1.5), 0.5, 0.5),)),
         NavigationExecutionConfig("level_1", MOTION, 0.5, 0.05, 500, 0.5, 5_000),
         NavigationPermission(frozenset({"atrium"})),
+        dispatch_acceptance=lambda plan, current: NavigationDispatchAcceptance(
+            "sim-test",
+            current.map_pin,
+            current.geometry_pin,
+            current.navigation_pin,
+            plan.plan_revision,
+        ),
     )
 
 
@@ -221,19 +230,17 @@ def _control_config(now_ms: int) -> ControlRuntimeConfig:
             "limits": {
                 "max_clock_error_ms": 5,
                 "max_fix_age_ms": 500,
-                "max_position_uncertainty_m": 0.2,
-                "land_after_fix_age_ms": 2_000,
+                "max_position_uncertainty_p95_m": 0.3,
+                "max_velocity_age_ms": 200,
+                "max_height_age_ms": 200,
             },
             "drones": [
                 {
                     "drone_id": 1,
-                    "connection_epoch": 1,
                     "map_id": "map",
                     "geometry_id": "geometry",
                     "camera_calibration_id": "camera",
                     "body_extrinsics_id": "body",
-                    "capture_clock_id": "camera-clock",
-                    "relay_clock_id": "relay-monotonic",
                     "source_ids": ["tag", "velocity", "height"],
                     "clock_mapping": _clock_mapping(now_ms).to_mapping(),
                 }
@@ -307,7 +314,7 @@ def test_search_bridge_requires_an_accepted_requested_class_frame_before_sightin
         ),
         PERCEPTION_KEY,
     )
-    identity = FrameIdentity("camera-1", "frame-1", preview.search.mission.frame_mission_id)
+    identity = FrameIdentity("camera-1", preview.search.mission.frame_mission_id, "test-run", 1)
     processed = publisher.enqueue(
         ProcessedFrameEvent(
             identity,
@@ -319,6 +326,7 @@ def test_search_bridge_requires_an_accepted_requested_class_frame_before_sightin
             ("backpack",),
             _DETECTOR_CONFIG_SHA256,
             capture_time_verified=True,
+            received_at_s=100,
         )
     )
     principal = Principal("perception", None, PERCEPTION_KEY)
@@ -362,7 +370,7 @@ def test_search_bridge_requires_an_accepted_requested_class_frame_before_sightin
         publisher.enqueue(
             SightingEvent(
                 "sighting-3",
-                FrameIdentity("camera-1", "unverified", preview.search.mission.frame_mission_id),
+                FrameIdentity("camera-1", preview.search.mission.frame_mission_id, "unverified", 1),
                 100,
                 100,
                 100,
@@ -428,7 +436,7 @@ def test_search_bridge_accepts_signed_typed_worker_sighting() -> None:
         source_id="camera-1",
         mission_id=preview.search.mission.frame_mission_id,
         worker_run_id="worker-1",
-        clock=lambda: 100,
+        monotonic_clock=lambda: 100,
     )
     processed, sighting = worker.poll()
     principal = Principal("perception", None, PERCEPTION_KEY)
@@ -473,10 +481,23 @@ def test_search_bridge_rejects_a_capture_at_the_wrong_camera_height() -> None:
         ),
         PERCEPTION_KEY,
     )
-    identity = FrameIdentity("camera-1", "wrong-height", preview.search.mission.frame_mission_id)
+    identity = FrameIdentity("camera-1", preview.search.mission.frame_mission_id, "wrong-height", 1)
 
     result = bridge.consume(
-        publisher.enqueue(ProcessedFrameEvent(identity, 100.001, 100.001, "empty", 0, True)),
+        publisher.enqueue(
+            ProcessedFrameEvent(
+                identity,
+                100.001,
+                100.001,
+                100.001,
+                "empty",
+                0,
+                ("backpack",),
+                _DETECTOR_CONFIG_SHA256,
+                True,
+                100.001,
+            )
+        ),
         Principal("perception", None, PERCEPTION_KEY),
         100_001,
     )

@@ -28,17 +28,17 @@ def test_mailbox_returns_latest_frame_and_copies_storage() -> None:
     assert np.all(image == 2)
 
 
-def test_mailbox_exposes_capture_and_receipt_timing_to_timed_consumers() -> None:
+def test_mailbox_preserves_decoder_receipt_timing() -> None:
     mailbox = _Mailbox(mp.get_context("spawn"))
     frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-    mailbox.put(frame, 4.8, 5.0, True)
+    mailbox.put(frame, 1.0, 9.0, False)
 
-    timed = mailbox.get_timed(0)
+    result = mailbox.get_timed(0)
 
-    assert timed is not None
-    assert timed.captured_at_s == 4.8
-    assert timed.received_at_s == 5.0
-    assert timed.capture_time_verified
+    assert result is not None
+    assert result.captured_at_s == 1.0
+    assert result.received_at_s == 9.0
+    assert result.capture_time_verified is False
 
 
 def test_abandoned_frame_lock_cannot_block_read() -> None:
@@ -159,54 +159,22 @@ def test_worker_checks_decoded_frames_and_reconnects_after_eof(
         def release(self) -> None:
             self.released = True
 
-    mailbox = SimpleNamespace(put=lambda image, *timing: received.append((image, *timing)))
+    mailbox = SimpleNamespace(
+        put=lambda image, captured_at_s, received_at_s, capture_time_verified: received.append(
+            (image, captured_at_s, received_at_s, capture_time_verified)
+        )
+    )
     monkeypatch.setattr("perception.webcam_stream.cv2.VideoCapture", Capture)
     started = time.monotonic()
     _decode("rtsp://localhost/drone1", mailbox, stop, state)
     assert len(received) == 1
     assert received[0][0] is images[-1]
     assert started <= received[0][1] <= time.monotonic()
+    assert received[0][1] == received[0][2]
+    assert received[0][3] is False
     assert len(captures) == 2
     assert all(capture.released for capture in captures)
     assert state.value == 5
-
-
-def test_decoder_scales_invalid_pts_fallback_from_seconds_to_milliseconds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("perception.webcam_stream.os.dup2", lambda *_: None)
-    monkeypatch.setattr("perception.webcam_stream.time.monotonic", lambda: 5.0)
-    stop = mp.get_context("spawn").Event()
-    state = SimpleNamespace(value=0)
-    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-    received = []
-
-    class Capture:
-        def __init__(self, *_: object) -> None:
-            self.reads = 0
-
-        def isOpened(self) -> bool:
-            return True
-
-        def read(self) -> tuple[bool, np.ndarray | None]:
-            self.reads += 1
-            stop.set()
-            return True, frame
-
-        def get(self, _: int) -> float:
-            return float("nan")
-
-        def release(self) -> None:
-            return None
-
-    monkeypatch.setattr("perception.webcam_stream.cv2.VideoCapture", Capture)
-    _decode(
-        "rtsp://localhost/drone1",
-        SimpleNamespace(put=lambda *args: received.append(args)),
-        stop,
-        state,
-    )
-    assert received[0][1:] == (5.0, 5.0, False)
 
 
 def test_decoder_open_errors_stay_generic(monkeypatch: pytest.MonkeyPatch) -> None:

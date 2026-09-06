@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from perception.detection_publisher import DetectionPublisher, DetectionPublisherConfig
 from perception.object_detection import FrameIdentity, ProcessedFrameEvent
 from perception.search_events import CoverageObservation
+from planner.control_provenance import ControlProvenance
 from planner.navigation import Pose
 from relay.auth import Principal, sign_event
-from relay.control_localization import ClockMapping, ControlProvenance
+from relay.control_localization import ClockMapping
 from relay.perception_ingress import (
     DetectionDroneState,
     DetectionIngress,
@@ -53,7 +54,7 @@ def _publisher() -> DetectionPublisher:
 def _frame(frame_id: str = "1", timestamp_s: float = 11) -> dict[str, object]:
     return _publisher().enqueue(
         ProcessedFrameEvent(
-            FrameIdentity("camera-1", frame_id, "intent-1:v1:e7"),
+            FrameIdentity("camera-1", "intent-1:v1:e7", frame_id, 1),
             timestamp_s,
             timestamp_s + 0.01,
             timestamp_s + 0.01,
@@ -62,6 +63,7 @@ def _frame(frame_id: str = "1", timestamp_s: float = 11) -> dict[str, object]:
             ("backpack",),
             _DETECTOR_CONFIG_SHA256,
             capture_time_verified=True,
+            received_at_s=timestamp_s,
         )
     )
 

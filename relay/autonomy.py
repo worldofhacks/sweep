@@ -65,7 +65,6 @@ from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
 from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
 from relay.control_config import ControlRuntimeConfig
-from relay.control_runtime import ControlRuntime
 from relay.intent_v1 import IntentName, IntentV1
 from relay.language_runtime import LanguageCompilationOutcome, LanguageRuntime
 from relay.mission_config import load_detection_camera_ids, load_mission_config
@@ -508,14 +507,6 @@ class AutonomySession:
         )
         self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
-        self._control_lock = threading.RLock()
-        self.control = (
-            None
-            if composition.config.control_localization is None
-            else ControlRuntime(
-                composition.config.control_localization, node_keys=composition.node_keys
-            )
-        )
         self.navigation_control = (
             None
             if not composition.config.enable_localized_navigation
@@ -523,7 +514,7 @@ class AutonomySession:
                 NavigationControlConfig(
                     composition.config.navigation,
                     composition.config.control_localization,
-                    composition.config.navigation_deployment.configuration_id,
+                    composition.config.navigation_deployment.control_store_identity,
                     composition.node_keys,
                 )
             )
@@ -532,10 +523,10 @@ class AutonomySession:
             SearchBridge(
                 session_id,
                 self.search,
-                self.control.config,
+                composition.config.control_localization,
                 composition.config.detection_camera_ids,
             )
-            if self.search is not None and self.control is not None
+            if self.search is not None and composition.config.control_localization is not None
             else None
         )
         self._search_intents: deque[str] = deque(maxlen=32)
@@ -793,15 +784,10 @@ class AutonomySession:
                     for drone_id, aircraft in snapshot.aircraft.items()
                 },
             )
-        if self.control is None:
-            return snapshot
         runtime = self._composition.runtime_if_bound()
         session = None if runtime is None else runtime.sessions.get(self.session_id)
-        snapshot = (
-            self.control.apply(snapshot)
-            if session is None
-            else session.apply_control_localization(snapshot)
-        )
+        if session is not None and self.navigation_control is not None:
+            snapshot = self.navigation_control.approved_snapshot(snapshot, session)
         if self.search_bridge is not None:
             self.search_bridge.observe_snapshot(snapshot)
         return snapshot
@@ -885,35 +871,7 @@ class AutonomySession:
                 owner.watchdog_running = True
         for owner in waiting:
             threading.Thread(target=self._watch_navigation, args=(owner,), daemon=True).start()
-        if self.control is None:
-            return []
-        runtime = self._composition.runtime_if_bound()
-        session = None if runtime is None else runtime.sessions.get(self.session_id)
-        if session is None:
-            return []
-        snapshot = self.snapshot(state if state.get("type") == "state" else session.current_state())
-        packets = []
-        with self._control_lock:
-            for drone_id in self.control.config.pins:
-                aircraft = snapshot.aircraft.get(drone_id)
-                if (
-                    aircraft is None
-                    or aircraft.connection_epoch
-                    != self.control.config.pins[drone_id].connection_epoch
-                ):
-                    continue
-                packet = self.control.control_pose(
-                    drone_id, snapshot, self.session_id, snapshot.now_ms
-                )
-                if packet is not None:
-                    packets.append(packet)
-        events = [session.record_control_pose(packet) for packet in packets]
-        if self.navigation_control is not None:
-            events.extend(
-                session.record_navigation_pose(packet)
-                for packet in self.navigation_control.pose(snapshot, self.session_id)
-            )
-        return events
+        return []
 
     def _watch_navigation(self, owner: _AwaitingExecution) -> None:
         pending = owner.pending
@@ -1603,15 +1561,23 @@ def create_autonomy_app(
             )
         if (
             control.max_fix_age_ms > min(500, config.navigation.config.position_max_age_ms)
-            or control.max_position_uncertainty_m
+            or control.max_position_uncertainty_p95_m
             > config.navigation.config.motion.pose_uncertainty_m
         ):
             raise SettingsError("control localization bounds exceed navigation allowances")
-        config.navigation.control_pins = control.pins
+        config.navigation.configure_control_localization(
+            control.pins,
+            max_fix_age_ms=control.max_fix_age_ms,
+            max_position_uncertainty_p95_m=control.max_position_uncertainty_p95_m,
+        )
         config.navigation.maximum_aircraft = deployment.max_aircraft
         config.navigation.require_phone_authorization = config.enable_localized_navigation
         if config.mapped_formations is not None:
-            config.mapped_formations.navigation.control_pins = control.pins
+            config.mapped_formations.navigation.configure_control_localization(
+                control.pins,
+                max_fix_age_ms=control.max_fix_age_ms,
+                max_position_uncertainty_p95_m=control.max_position_uncertainty_p95_m,
+            )
             config.mapped_formations.navigation.maximum_aircraft = deployment.max_aircraft
         if config.search is not None and (
             settings.perception_key is None
@@ -1637,11 +1603,12 @@ def create_autonomy_app(
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
         transcript_service_factory=composition.transcript_service_factory,
-        control_localization_store_factory=(
+        control_localization_factory=(
             None
             if control_localization is None
-            else lambda session_id: composition.session(session_id).control.store
+            else lambda _session_id: control_localization.create_projector()
         ),
+        control_pose_signing_key=lambda drone_id: settings.adapter_keys.get(drone_id),
     )
     composition.bind(app)
     return app, composition

@@ -15,9 +15,10 @@ from perception.object_detection import (
     SightingEvent,
 )
 from perception.search_events import CoverageObservation, FramePoseEvidence
+from planner.control_provenance import ControlProvenance
 from planner.navigation import Pose
 from relay.auth import Principal, verify_event_signature
-from relay.control_localization import ClockMapping, ControlProvenance
+from relay.control_localization import ClockMapping
 from relay.search_runtime import SearchRuntime
 
 
@@ -245,11 +246,7 @@ class DetectionIngress:
         worker_run_id = _text(raw["worker_run_id"], "worker_run_id")
         frame_sequence = _integer(raw["frame_sequence"], "frame_sequence", allow_zero=False)
         frame_id = _text(raw["frame_id"], "frame_id")
-        identity = (
-            FrameIdentity(pin.source_id, frame_id, pin.mission_id)
-            if worker_run_id == "legacy" and frame_sequence == 1
-            else FrameIdentity(pin.source_id, pin.mission_id, worker_run_id, frame_sequence)
-        )
+        identity = FrameIdentity(pin.source_id, pin.mission_id, worker_run_id, frame_sequence)
         if identity.frame_id != frame_id:
             raise ValueError("perception frame identity is invalid")
         return pin, state, identity
@@ -358,7 +355,7 @@ class DetectionIngress:
         now_ms: int,
     ) -> bool:
         provenance = pose.provenance
-        capture_ms = round(event.frame_timestamp_s * 1000)
+        capture_ms = round(event.frame_decoded_at_monotonic_s * 1000)
         return (
             pose.identity == identity
             and pose.connection_epoch == state.connection_epoch

@@ -53,9 +53,9 @@ class _Mailbox:
             return None
         try:
             frame = np.frombuffer(self._pixels, dtype=np.uint8).reshape(720, 1280, 3).copy()
-            received_at_s = self._received_at_s.value
+            timestamp = self._received_at_s.value
             self._available.clear()
-            return frame, received_at_s
+            return frame, timestamp
         finally:
             self._lock.release()
 
@@ -102,7 +102,17 @@ def _decode(url: str, mailbox: Any, stop: Any, state: Any) -> None:
                     ):
                         state.value = 4
                         continue
-                    mailbox.put(frame, decoded_at, decoded_at, False)
+                    get_property = getattr(capture, "get", None)
+                    captured_at_ms = (
+                        get_property(cv2.CAP_PROP_POS_MSEC)
+                        if callable(get_property)
+                        else decoded_at * 1000
+                    )
+                    if not isinstance(captured_at_ms, (int, float)) or not math.isfinite(
+                        captured_at_ms
+                    ):
+                        captured_at_ms = decoded_at * 1000
+                    mailbox.put(frame, float(captured_at_ms) / 1000, decoded_at, False)
                     state.value = 2
         except Exception:
             pass

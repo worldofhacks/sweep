@@ -305,8 +305,8 @@ class CoverageLedger:
         if not event.capture_time_verified:
             return CoverageObservation(False, "capture_time_unverified", ())
         if (
-            now_s - event.processed_at_s > self._max_frame_age_s
-            or event.processed_at_s < event.frame_timestamp_s
+            now_s - event.evaluation_completed_at_monotonic_s > self._max_frame_age_s
+            or event.evaluation_completed_at_monotonic_s < event.frame_decoded_at_monotonic_s
         ):
             return CoverageObservation(False, "stale_frame", ())
         if pose.identity != event.identity:
@@ -315,7 +315,8 @@ class CoverageLedger:
             return CoverageObservation(False, "connection_epoch_mismatch", ())
         if (
             now_s - pose.observed_at_s > self._max_pose_age_s
-            or abs(pose.pose_timestamp_s - event.frame_timestamp_s) > self._max_pose_skew_s
+            or abs(pose.pose_timestamp_s - event.frame_decoded_at_monotonic_s)
+            > self._max_pose_skew_s
         ):
             return CoverageObservation(False, "stale_pose", ())
         frame_key = (event.identity.source_id, event.identity.frame_id, event.identity.mission_id)

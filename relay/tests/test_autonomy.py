@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
-from planner.models import ExecutionResult, LifecycleStatus, Plan, Position, RefusalReason
+from planner.models import ExecutionResult, LifecycleStatus, Plan, Position
 from relay.app import RelayRuntime
 from relay.auth import Principal
 from relay.autonomy import (
@@ -21,8 +21,7 @@ from relay.autonomy import (
     relay_snapshot,
 )
 from relay.control_frames import sign_localization_frame
-from relay.control_localization import ControlLocalizationWire, to_wire_payload
-from relay.intent_v1 import AcceptedIntent, IntentName, validate_intent
+from relay.intent_v1 import IntentName
 from relay.session import RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 from relay.tests.conftest import (
@@ -36,7 +35,8 @@ from relay.tests.conftest import (
     membership_payload,
     telemetry_payload,
 )
-from relay.tests.test_control_localization import fresh_snapshot, mapping
+from relay.tests.test_control_localization import NOW_MS, projector
+from relay.tests.test_control_localization import wire as localization_wire
 from tests.autonomy_fixtures import camera_config, planning_config, safety_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -170,11 +170,12 @@ def test_env_example_autonomy_values_are_the_ci_fixtures() -> None:
     assert config.enable_localized_navigation is False
 
 
-@pytest.mark.parametrize(("failure", "clock_ms"), [("wrong-map", 101_000), ("stale", 101_600)])
+@pytest.mark.parametrize("failure", ["wrong-map", "stale"])
 def test_configured_localization_source_fences_stale_or_wrong_map_motion(
-    tmp_path: Path, failure: str, clock_ms: int
+    tmp_path: Path, failure: str
 ) -> None:
-    clock = MutableClock(value=clock_ms)
+    clock = MutableClock(value=NOW_MS + (600 if failure == "stale" else 0))
+    accepted_projector = projector()
     control_config = tmp_path / "control-localization.json"
     control_config.write_text(
         json.dumps(
@@ -182,42 +183,24 @@ def test_configured_localization_source_fences_stale_or_wrong_map_motion(
                 "limits": {
                     "max_clock_error_ms": 5,
                     "max_fix_age_ms": 500,
-                    "max_position_uncertainty_m": 0.2,
-                    "land_after_fix_age_ms": 2_000,
+                    "max_velocity_age_ms": 200,
+                    "max_height_age_ms": 200,
+                    "max_position_uncertainty_p95_m": 0.3,
                 },
-                "drones": [
-                    {
-                        "drone_id": 1,
-                        "connection_epoch": 1,
-                        "map_id": "map-sha",
-                        "geometry_id": "geometry-sha",
-                        "camera_calibration_id": "camera-calibration-sha",
-                        "body_extrinsics_id": "body-extrinsics-sha",
-                        "capture_clock_id": "camera-clock",
-                        "relay_clock_id": "relay-monotonic",
-                        "source_ids": ["tag-camera", "msdk-velocity", "tof-height"],
-                        "clock_mapping": {
-                            "capture_clock_id": "camera-clock",
-                            "relay_clock_id": "relay-monotonic",
-                            "capture_reference_s": 0,
-                            "relay_reference_ms": 100_000,
-                            "milliseconds_per_capture_second": 1_000,
-                            "max_error_ms": 5,
-                            "measured": True,
-                        },
-                    }
-                ],
+                "drones": [asdict(accepted_projector.pins[1])],
             }
         )
     )
     environment = _env_example()
     environment["SWEEP_CONTROL_LOCALIZATION_CONFIG"] = str(control_config)
     config = AutonomyConfig.from_env(environment)
+    key = b"localization-key-at-least-32-bytes"
     settings = RelaySettings(
         relay_token=CONSOLE_KEY,
         adapter_keys={1: ADAPTER_KEY},
-        localization_keys={1: b"localization-key-at-least-32-bytes"},
+        localization_keys={1: key},
         log_dir=tmp_path,
+        adapter_backend=AdapterBackend.REMOTE,
     )
     app, composition = create_autonomy_app(settings, config, clock=clock, event_ids=EventIds())
     try:
@@ -234,36 +217,23 @@ def test_configured_localization_source_fences_stale_or_wrong_map_motion(
             session.process_membership(
                 membership_payload(action="readiness", event_id="ready", timestamp=clock()), adapter
             )
-            payload = to_wire_payload(fresh_snapshot(), mapping(), "pending", failure)
-            if failure == "wrong-map":
-                payload["map_id"] = "unexpected-map"
-            wire = ControlLocalizationWire.from_mapping(payload)
+            wire = localization_wire(
+                **({"map_id": "unexpected-map"} if failure == "wrong-map" else {})
+            )
             frame = sign_localization_frame(
                 wire,
                 timestamp_ms=clock(),
-                event_id=wire.event_id,
+                event_id=failure,
                 session=SESSION,
-                signing_key=b"localization-key-at-least-32-bytes",
+                signing_key=key,
             )
-            accepted = session.process_frame(
-                frame,
-                Principal("localization", 1, b"localization-key-at-least-32-bytes"),
-            )
-            assert accepted[0]["type"] == "control_localization"
-            session.update_control_projection(selection=(1,), armed=True)
-            snapshot = composition.session(SESSION).snapshot(session.current_state())
-            snapshot = replace(snapshot, operator_present=True, operator_last_seen_ms=clock())
-            parsed = validate_intent(
-                _intent("translate", intent_id="translate", selection=[1], args={"dx": 1, "dy": 0})
-            )
-            assert isinstance(parsed, AcceptedIntent)
-            refusal = composition.session(SESSION).arbiter.check_intent(parsed.intent, snapshot)
+            events = session.process_frame(frame, Principal("localization", 1, key))
+            assert all(event["type"] != "control_pose" for event in events)
+            assert session.control_pose(1) is None
+            projected = composition.session(SESSION).snapshot(session.current_state())
+            assert projected.aircraft[1].control_provenance is None
     finally:
         composition.close()
-
-    assert snapshot.aircraft[1].position_quality == 0.0
-    assert refusal is not None
-    assert refusal.reason is RefusalReason.POSITION_QUALITY
 
 
 def test_localized_navigation_flag_requires_an_explicit_boolean() -> None:

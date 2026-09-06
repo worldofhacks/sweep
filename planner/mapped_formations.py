@@ -20,6 +20,7 @@ from planner.navigation import (
     Pose,
     Zone,
 )
+from planner.navigation_geometry import pose_supported
 from tools.geometry_math import point_inside, polygon, segments_intersect
 
 FormationShape = Literal["line", "column", "wedge", "diamond"]
@@ -77,6 +78,7 @@ class FormationLayout:
 class MappedFormationRequest:
     shape: FormationShape
     roster_version: int
+    plan_revision: int
     selected: tuple[DronePose, ...]
     all_positions: tuple[DronePose, ...]
     airborne_drone_ids: frozenset[int]
@@ -87,7 +89,7 @@ class MappedFormationRequest:
     def __post_init__(self) -> None:
         if self.shape not in {"line", "column", "wedge", "diamond"}:
             raise ValueError("unknown formation shape")
-        if self.roster_version < 0 or len(self.selected) not in {2, 4}:
+        if self.roster_version < 0 or self.plan_revision < 0 or len(self.selected) not in {2, 4}:
             raise ValueError("mapped formations require two or four selected aircraft")
         if len({drone.drone_id for drone in self.selected}) != len(self.selected):
             raise ValueError("selected drone ids must be unique")
@@ -184,6 +186,7 @@ class MappedFormationPlanner:
             NavigationRequest(
                 f"formation:{formation_zone.zone_id}",
                 request.roster_version,
+                request.plan_revision,
                 tuple(assignment.drone for assignment in assignments),
                 request.all_positions,
                 request.motion,
@@ -227,7 +230,7 @@ class MappedFormationPlanner:
                     "slot_outside_formation_zone",
                     f"slot altitude is outside formation volume: {slot.slot_id}",
                 )
-            if not self._navigation._pose_on_free_grid(slot.pose, artifact.grids):
+            if not pose_supported(slot.pose, artifact, motion):
                 return FormationRefusal(
                     "slot_blocked", f"slot is outside known free space: {slot.slot_id}"
                 )
@@ -295,9 +298,16 @@ def _formation_artifact(
         route_zone_id,
         zone.floor_id,
         True,
+        zone.polygon_xy,
+        zone.z_min_m,
+        zone.z_max_m,
         tuple(
             ArrivalSlot(
-                f"route-{index:02d}", route_zone_id, assignment.slot.pose, motion.swept_radius_m
+                f"route-{index:02d}",
+                route_zone_id,
+                assignment.slot.pose,
+                motion.swept_radius_m,
+                motion.swept_half_height_m,
             )
             for index, assignment in enumerate(assignments)
         ),
@@ -318,7 +328,7 @@ def _approaches_cross(plan: NavigationPlan) -> bool:
             for a in first.swept_segments:
                 for b in second.swept_segments:
                     if abs((a.start.z_m + a.end.z_m - b.start.z_m - b.end.z_m) / 2) < (
-                        a.height_m + b.height_m
+                        2 * (a.half_height_m + b.half_height_m)
                     ) / 2 and segments_intersect(
                         (a.start.x_m, a.start.y_m),
                         (a.end.x_m, a.end.y_m),

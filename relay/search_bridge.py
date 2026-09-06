@@ -9,7 +9,7 @@ from perception.object_detection import DetectionCandidate, FrameIdentity, Sight
 from planner.models import AircraftState, FleetSnapshot
 from planner.navigation import Pose
 from relay.auth import Principal
-from relay.control_runtime import ControlRuntimeConfig
+from relay.control_config import ControlRuntimeConfig
 from relay.perception_ingress import (
     DetectionDroneState,
     DetectionIngress,
@@ -165,11 +165,7 @@ class SearchBridge:
         source_id, frame_id, mission_id = frame_key
         worker_run_id = raw["worker_run_id"]
         frame_sequence = raw["frame_sequence"]
-        identity = (
-            FrameIdentity(source_id, frame_id, mission_id)
-            if worker_run_id == "legacy" and frame_sequence == 1
-            else FrameIdentity(source_id, mission_id, worker_run_id, frame_sequence)
-        )
+        identity = FrameIdentity(source_id, mission_id, worker_run_id, frame_sequence)
         return SightingEvent(
             raw["sighting_id"],
             identity,

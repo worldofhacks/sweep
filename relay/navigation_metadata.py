@@ -11,7 +11,7 @@ def navigation_metadata(runtime: NavigationRuntime) -> dict[str, object]:
         {
             "zone_id": zone.zone_id,
             "floor_id": zone.floor_id,
-            "navigation_allowed": zone.navigation_allowed
+            "navigation_allowed": zone.owner_approved
             and zone.zone_id in runtime.permission.permitted_zone_ids,
             "arrival_slots": [slot.slot_id for slot in zone.arrival_slots],
             "aliases": list(zone.aliases),

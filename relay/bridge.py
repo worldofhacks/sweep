@@ -101,14 +101,12 @@ class RelayNodeLink:
         if self._navigation_control is None:
             raise AdapterError("mapped navigation has no approved phone control")
         packet = self._navigation_control.authorize(plan, command, snapshot, self._session_id)
-        initial_pose = self._navigation_control.pose(
-            snapshot, self._session_id, drone_ids=frozenset({command.drone_id})
+        initial_pose = self._navigation_control.initial_pose(
+            command.drone_id, self._session, snapshot.now_ms
         )
-        self._session.record_navigation_authorization(packet)
-        for pose in initial_pose:
-            self._session.record_navigation_pose(pose)
         loop = self._worker_loop()
-        for frame in (packet, *initial_pose):
+        for frame in (packet, initial_pose):
+            self._session.record_navigation_packet(frame)
             future = asyncio.run_coroutine_threadsafe(
                 self._runtime.deliver_to_node(self._session_id, command.drone_id, frame), loop
             )

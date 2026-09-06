@@ -1,19 +1,24 @@
-"""Signed, closed-loop authorization for mapped phone navigation."""
+"""Explicit host approval for flight navigation derived from diagnostic poses."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from math import ceil, dist
+from dataclasses import dataclass, replace
+from math import ceil
+from typing import TYPE_CHECKING
 
-from planner.models import Command, CommandOperation, FleetSnapshot, Plan
+from planner.control_provenance import ControlProvenance
+from planner.models import Command, CommandOperation, FleetSnapshot, Plan, Position
 from planner.navigation import Pose
 from planner.navigation_runtime import NavigationRuntime
 from relay.auth import sign_event
 from relay.control_config import ControlRuntimeConfig
-from relay.control_localization import ControlLocalizationPins
+from relay.control_localization import ControlLocalizationPins, ControlPose
 
-_P95_3D = 2.796
+if TYPE_CHECKING:
+    from relay.session import RelaySession
+
+_P95_TO_SIGMA = 2.7954834829151074
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,8 +33,8 @@ class NavigationControlConfig:
             raise ValueError("navigation control requires a configuration identity and node keys")
 
 
-@dataclass(slots=True)
-class _ActiveSegment:
+@dataclass(frozen=True, slots=True)
+class _ActiveRoute:
     route_id: str
     command_id: str
     drone_id: int
@@ -38,59 +43,77 @@ class _ActiveSegment:
     target: Pose
     expires_at_ms: int
     sequence: int
-    loss_started_ms: int | None = None
 
 
 class NavigationControl:
-    """Own route authorizations and emit only evidence-backed navigation poses."""
+    """Host-owned approval boundary between diagnostic localization and navigation."""
 
     def __init__(self, config: NavigationControlConfig) -> None:
         self.config = config
-        self._active: dict[int, _ActiveSegment] = {}
+        self._active: dict[int, _ActiveRoute] = {}
         self._sequence = 0
+
+    def approved_snapshot(self, snapshot: FleetSnapshot, session: RelaySession) -> FleetSnapshot:
+        aircraft = dict(snapshot.aircraft)
+        for drone_id, current in snapshot.aircraft.items():
+            pose = session.control_pose(drone_id)
+            pin = self.config.localization.pins.get(drone_id)
+            if pose is None or pin is None or not self._usable_pose(pose, pin, snapshot.now_ms):
+                continue
+            if current.connection_epoch != pose.connection_epoch:
+                continue
+            aircraft[drone_id] = replace(
+                current,
+                pose=Position(pose.x_mm / 1_000, pose.y_mm / 1_000, pose.z_mm / 1_000),
+                position_quality=1.0,
+                position_last_seen_ms=pose.fix_time_ms,
+                control_provenance=ControlProvenance(
+                    map_id=pin.map_id,
+                    geometry_id=pin.geometry_id,
+                    camera_calibration_id=pin.camera_calibration_id,
+                    body_extrinsics_id=pin.body_extrinsics_id,
+                    capture_clock_id=pin.clock_mapping.capture_clock_id,
+                    relay_clock_id=pin.clock_mapping.relay_clock_id,
+                    source_ids=pin.source_ids,
+                    capture_time_s=None,
+                    conversion_error_ms=pin.clock_mapping.max_error_ms,
+                    reason="host_approved_diagnostic_pose",
+                    evaluated_at_relay_ms=pose.pose_time_ms,
+                    position_uncertainty_m=pose.position_uncertainty_mm / 1_000 / _P95_TO_SIGMA,
+                ),
+            )
+        return replace(snapshot, aircraft=aircraft)
 
     def authorize(
         self, plan: Plan, command: Command, snapshot: FleetSnapshot, session: str
     ) -> dict[str, object]:
-        if (
-            command.operation is not CommandOperation.GOTO
-            or command.parameters.get("navigation_route_id") != plan.intent_id
-        ):
-            raise ValueError("mapped goto is missing its route identity")
+        if command.operation is not CommandOperation.GOTO:
+            raise ValueError("only mapped goto commands may be authorized")
         segment = self._segment(plan, command)
         aircraft = snapshot.aircraft.get(command.drone_id)
         pin = self.config.localization.pins.get(command.drone_id)
         if aircraft is None or pin is None or aircraft.connection_epoch != command.connection_epoch:
             raise ValueError("mapped goto aircraft is no longer current")
-        if not self._valid_provenance(aircraft.control_provenance, pin):
-            raise ValueError("mapped goto requires accepted localization provenance")
-        now = snapshot.now_ms
-        expires = now + self.config.navigation.config.segment_timeout_ms
+        if not self._matches_provenance(aircraft.control_provenance, pin):
+            raise ValueError("mapped goto requires host-approved localization")
         self._sequence += 1
-        active = _ActiveSegment(
-            plan.intent_id,
-            command.command_id,
-            command.drone_id,
-            command.connection_epoch,
-            segment.start,
-            segment.end,
-            expires,
-            self._sequence,
+        active = _ActiveRoute(
+            route_id=plan.intent_id,
+            command_id=command.command_id,
+            drone_id=command.drone_id,
+            connection_epoch=command.connection_epoch,
+            start=segment.start,
+            target=segment.end,
+            expires_at_ms=snapshot.now_ms + self.config.navigation.config.segment_timeout_ms,
+            sequence=self._sequence,
         )
         self._active[command.drone_id] = active
         motion = self.config.navigation.config.motion
-        max_uncertainty_mm = ceil(
-            _P95_3D * self.config.localization.max_position_uncertainty_m * 1000
-        )
-        tube_mm = ceil(
-            (motion.aircraft_radius_m + motion.tracking_allowance_m + motion.pose_uncertainty_m)
-            * 1000
-        )
         unsigned = {
             "v": 1,
             "type": "navigation_route_authorization",
-            "t": now,
-            "expires_at_ms": expires,
+            "t": snapshot.now_ms,
+            "expires_at_ms": active.expires_at_ms,
             "event_id": f"navigation-route-{command.drone_id}-{active.sequence}",
             "session": session,
             "drone_id": command.drone_id,
@@ -103,21 +126,29 @@ class NavigationControl:
             "geometry_id": pin.geometry_id,
             "camera_calibration_id": pin.camera_calibration_id,
             "body_extrinsics_id": pin.body_extrinsics_id,
-            "start_x_mm": round(segment.start.x_m * 1000),
-            "start_y_mm": round(segment.start.y_m * 1000),
-            "start_z_mm": round(segment.start.z_m * 1000),
-            "target_x_mm": round(segment.end.x_m * 1000),
-            "target_y_mm": round(segment.end.y_m * 1000),
-            "target_z_mm": round(segment.end.z_m * 1000),
-            "max_speed_mm_s": round(self.config.navigation.config.speed_m_s * 1000),
+            "start_x_mm": round(segment.start.x_m * 1_000),
+            "start_y_mm": round(segment.start.y_m * 1_000),
+            "start_z_mm": round(segment.start.z_m * 1_000),
+            "target_x_mm": round(segment.end.x_m * 1_000),
+            "target_y_mm": round(segment.end.y_m * 1_000),
+            "target_z_mm": round(segment.end.z_m * 1_000),
+            "max_speed_mm_s": round(self.config.navigation.config.speed_m_s * 1_000),
             "horizontal_tolerance_mm": round(
-                self.config.navigation.config.position_tolerance_m * 1000
+                self.config.navigation.config.position_tolerance_m * 1_000
             ),
             "vertical_tolerance_mm": round(
-                self.config.navigation.config.position_tolerance_m * 1000
+                self.config.navigation.config.position_tolerance_m * 1_000
             ),
-            "max_position_uncertainty_mm": max_uncertainty_mm,
-            "tube_radius_mm": tube_mm,
+            "max_position_uncertainty_mm": ceil(
+                min(
+                    self.config.localization.max_position_uncertainty_p95_m,
+                    motion.pose_uncertainty_m,
+                )
+                * 1_000
+            ),
+            "tube_radius_mm": ceil(
+                (motion.tracking_allowance_m + motion.pose_uncertainty_m) * 1_000
+            ),
             "flight_approved": True,
         }
         return {
@@ -125,148 +156,96 @@ class NavigationControl:
             "signature": sign_event(unsigned, self.config.node_keys[command.drone_id]),
         }
 
-    def pose(
-        self, snapshot: FleetSnapshot, session: str, *, drone_ids: frozenset[int] | None = None
-    ) -> list[dict[str, object]]:
-        packets = []
-        for drone_id, active in tuple(self._active.items()):
-            if drone_ids is not None and drone_id not in drone_ids:
-                continue
-            aircraft = snapshot.aircraft.get(drone_id)
-            pin = self.config.localization.pins[drone_id]
-            ready = (
-                aircraft is not None
-                and aircraft.connection_epoch == active.connection_epoch
-                and snapshot.now_ms <= active.expires_at_ms
-                and self._valid_provenance(aircraft.control_provenance, pin)
-                and aircraft.position_quality > 0
-            )
-            radius_mm: int | None = None
-            if ready:
-                assert aircraft is not None and aircraft.control_provenance is not None
-                uncertainty = aircraft.control_provenance.position_uncertainty_m
-                if uncertainty is None:
-                    ready = False
-                else:
-                    radius_mm = ceil(_P95_3D * uncertainty * 1000)
-                    motion = self.config.navigation.config.motion
-                    tube = (
-                        motion.aircraft_radius_m
-                        + motion.tracking_allowance_m
-                        + motion.pose_uncertainty_m
-                    )
-                    ready = (
-                        radius_mm
-                        <= ceil(
-                            _P95_3D * self.config.localization.max_position_uncertainty_m * 1000
-                        )
-                        and _distance_to_segment(aircraft.pose, active.start, active.target)
-                        + radius_mm / 1000
-                        <= tube
-                    )
-            if ready:
-                assert aircraft is not None and radius_mm is not None
-                status, values = (
-                    "ready",
-                    (
-                        aircraft.control_provenance.evaluated_at_relay_ms,
-                        aircraft.position_last_seen_ms,
-                        round(aircraft.pose.x * 1000),
-                        round(aircraft.pose.y * 1000),
-                        round(aircraft.pose.z * 1000),
-                        radius_mm,
-                    ),
-                )
-                active.loss_started_ms = None
-            else:
-                active.loss_started_ms = (
-                    snapshot.now_ms if active.loss_started_ms is None else active.loss_started_ms
-                )
-                status = (
-                    "land"
-                    if snapshot.now_ms - active.loss_started_ms
-                    >= self.config.localization.land_after_fix_age_ms
-                    else "hold"
-                )
-                values = (None, None, None, None, None, None)
-            self._sequence += 1
-            pose_time, fix_time, x, y, z, uncertainty = values
-            unsigned = {
-                "v": 1,
-                "type": "navigation_pose",
-                "t": snapshot.now_ms,
-                "event_id": f"navigation-pose-{drone_id}-{self._sequence}",
-                "session": session,
-                "drone_id": drone_id,
-                "connection_epoch": active.connection_epoch,
-                "command_id": active.command_id,
-                "route_id": active.route_id,
-                "seq": self._sequence,
-                "navigation_config_id": self.config.configuration_id,
-                "map_id": pin.map_id,
-                "geometry_id": pin.geometry_id,
-                "camera_calibration_id": pin.camera_calibration_id,
-                "body_extrinsics_id": pin.body_extrinsics_id,
-                "pose_time_ms": pose_time,
-                "fix_time_ms": fix_time,
-                "x_mm": x,
-                "y_mm": y,
-                "z_mm": z,
-                "position_uncertainty_mm": uncertainty,
-                "status": status,
-                "flight_approved": True,
-            }
-            packets.append(
-                {**unsigned, "signature": sign_event(unsigned, self.config.node_keys[drone_id])}
-            )
-        return packets
+    def initial_pose(self, drone_id: int, session: RelaySession, now_ms: int) -> dict[str, object]:
+        active = self._active.get(drone_id)
+        if active is None:
+            raise ValueError("navigation route is not active")
+        pose = session.control_pose(drone_id)
+        pin = self.config.localization.pins[drone_id]
+        if pose is None or pose.connection_epoch != active.connection_epoch:
+            raise ValueError("navigation pose is unavailable")
+        if not self._usable_pose(pose, pin, now_ms):
+            raise ValueError("navigation pose is not ready")
+        self._sequence += 1
+        unsigned = {
+            "v": 1,
+            "type": "navigation_pose",
+            "t": now_ms,
+            "event_id": f"navigation-pose-{drone_id}-{self._sequence}",
+            "session": session.session_id,
+            "drone_id": drone_id,
+            "connection_epoch": active.connection_epoch,
+            "command_id": active.command_id,
+            "route_id": active.route_id,
+            "seq": self._sequence,
+            "navigation_config_id": self.config.configuration_id,
+            "map_id": pin.map_id,
+            "geometry_id": pin.geometry_id,
+            "camera_calibration_id": pin.camera_calibration_id,
+            "body_extrinsics_id": pin.body_extrinsics_id,
+            "pose_time_ms": pose.pose_time_ms,
+            "fix_time_ms": pose.fix_time_ms,
+            "x_mm": pose.x_mm,
+            "y_mm": pose.y_mm,
+            "z_mm": pose.z_mm,
+            "position_uncertainty_mm": pose.position_uncertainty_mm,
+            "status": "ready",
+            "flight_approved": True,
+        }
+        return {**unsigned, "signature": sign_event(unsigned, self.config.node_keys[drone_id])}
 
     def invalidate(self, route_id: str) -> None:
         self._active = {
-            key: value for key, value in self._active.items() if value.route_id != route_id
+            drone_id: route
+            for drone_id, route in self._active.items()
+            if route.route_id != route_id
         }
 
     def _segment(self, plan: Plan, command: Command):
         if plan.navigation is None:
             raise ValueError("mapped goto has no frozen navigation execution")
         for route in plan.navigation.route.routes:
-            if route.drone.drone_id != command.drone_id:
-                continue
-            gotos = [
-                item
-                for item in plan.commands
-                if item.drone_id == command.drone_id and item.operation is CommandOperation.GOTO
-            ]
-            index = gotos.index(command)
-            return route.swept_segments[index]
+            if route.drone.drone_id == command.drone_id:
+                gotos = [
+                    item
+                    for item in plan.commands
+                    if item.drone_id == command.drone_id and item.operation is CommandOperation.GOTO
+                ]
+                return route.swept_segments[gotos.index(command)]
         raise ValueError("mapped goto is outside its frozen route")
 
-    @staticmethod
-    def _valid_provenance(provenance: object, pin: ControlLocalizationPins) -> bool:
-        return provenance is not None and all(
-            getattr(provenance, field, None) == getattr(pin, field)
-            for field in (
-                "map_id",
-                "geometry_id",
-                "camera_calibration_id",
-                "body_extrinsics_id",
-                "capture_clock_id",
-                "relay_clock_id",
-                "source_ids",
+    def _usable_pose(self, pose: ControlPose, pin: ControlLocalizationPins, now_ms: int) -> bool:
+        return (
+            pose.status == "ready"
+            and pose.flight_approved is False
+            and pose.map_id == pin.map_id
+            and pose.geometry_id == pin.geometry_id
+            and pose.camera_calibration_id == pin.camera_calibration_id
+            and pose.body_extrinsics_id == pin.body_extrinsics_id
+            and now_ms >= pose.pose_time_ms >= pose.fix_time_ms
+            and now_ms - pose.fix_time_ms
+            <= min(
+                self.config.localization.max_fix_age_ms,
+                self.config.navigation.config.position_max_age_ms,
+            )
+            and pose.position_uncertainty_mm / 1_000
+            <= min(
+                self.config.localization.max_position_uncertainty_p95_m,
+                self.config.navigation.config.motion.pose_uncertainty_m,
             )
         )
 
-
-def _distance_to_segment(point: object, start: Pose, end: Pose) -> float:
-    px, py, pz = point.x, point.y, point.z
-    dx, dy, dz = end.x_m - start.x_m, end.y_m - start.y_m, end.z_m - start.z_m
-    length = dx * dx + dy * dy + dz * dz
-    if length == 0:
-        return dist((px, py, pz), start.xyz)
-    ratio = max(
-        0.0,
-        min(1.0, ((px - start.x_m) * dx + (py - start.y_m) * dy + (pz - start.z_m) * dz) / length),
-    )
-    return dist(
-        (px, py, pz), (start.x_m + ratio * dx, start.y_m + ratio * dy, start.z_m + ratio * dz)
-    )
+    @staticmethod
+    def _matches_provenance(provenance: object, pin: ControlLocalizationPins) -> bool:
+        return provenance is not None and all(
+            getattr(provenance, name, None) == value
+            for name, value in (
+                ("map_id", pin.map_id),
+                ("geometry_id", pin.geometry_id),
+                ("camera_calibration_id", pin.camera_calibration_id),
+                ("body_extrinsics_id", pin.body_extrinsics_id),
+                ("capture_clock_id", pin.clock_mapping.capture_clock_id),
+                ("relay_clock_id", pin.clock_mapping.relay_clock_id),
+                ("source_ids", pin.source_ids),
+            )
+        )

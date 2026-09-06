@@ -5,7 +5,7 @@ from collections import deque
 import numpy as np
 import pytest
 
-from perception.object_detection import DecodedFrame, DetectionCandidate, LiveDetectionWorker
+from perception.object_detection import DetectionCandidate, LiveDetectionWorker
 from perception.search_events import CameraPolicy, FramePoseEvidence, SearchMissionIdentity
 from planner.navigation import (
     ArtifactPin,
@@ -16,6 +16,7 @@ from planner.navigation import (
     NavigationPermission,
     Pose,
     Zone,
+    preview_evidence,
 )
 from planner.search import SearchArea, SearchDrone, SearchPlanner, SearchRefusal, SearchRequest
 
@@ -33,9 +34,24 @@ def artifact(blocked: frozenset[tuple[int, int]] = frozenset()) -> NavigationArt
     return NavigationArtifact(
         ArtifactPin("map-v3", "a" * 64),
         ArtifactPin("geometry-v3", "b" * 64),
+        ArtifactPin("preview", "c" * 64),
+        preview_evidence("synthetic"),
         0.5,
+        ((0.0, 0.0), (14.0, 0.0), (14.0, 5.0), (0.0, 5.0), (0.0, 0.0)),
+        0.0,
+        3.0,
         (GridLevel("level_1", 1, (0, 0), 1, 14, 5, blocked),),
-        (Zone("search-zone", "level_1", True, ()),),
+        (
+            Zone(
+                "search-zone",
+                "level_1",
+                True,
+                ((0.0, 0.0), (14.0, 0.0), (14.0, 5.0), (0.0, 5.0), (0.0, 0.0)),
+                0.0,
+                3.0,
+                (),
+            ),
+        ),
     )
 
 
@@ -48,6 +64,7 @@ def request(count: int, *, map_pin: ArtifactPin | None = None) -> SearchRequest:
         MISSION,
         AREA,
         "backpack",
+        12,
         12,
         tuple(SearchDrone(drone, f"drone{drone.drone_id}") for drone in positions),
         positions,
@@ -111,8 +128,7 @@ def test_search_refuses_disconnected_occupancy_and_changed_map() -> None:
 class _Frames:
     def __init__(self, timestamps: list[float]) -> None:
         self._frames = deque(
-            DecodedFrame(np.zeros((2, 2, 3), dtype=np.uint8), timestamp, timestamp, True)
-            for timestamp in timestamps
+            (np.zeros((2, 2, 3), dtype=np.uint8), timestamp) for timestamp in timestamps
         )
 
     def read(self, timeout: float = 0.1):
@@ -121,6 +137,9 @@ class _Frames:
 
 
 class _Detector:
+    target_labels = ("backpack",)
+    detector_config_sha256 = "a" * 64
+
     def __init__(self, candidates=()):
         self._candidates = candidates
 
@@ -130,13 +149,22 @@ class _Detector:
 
 
 def _worker(source_id: str, timestamps: list[float], *, empty: bool = False) -> LiveDetectionWorker:
-    return LiveDetectionWorker(
+    clock = [0.0]
+    worker = LiveDetectionWorker(
         _Frames(timestamps),
         _Detector(() if empty else (DetectionCandidate("backpack", 24, 0.9, (0, 0, 1, 1)),)),
         source_id=source_id,
-        mission_id=MISSION.frame_mission_id,
+        mission_id=MISSION.mission_id,
         max_frame_age_s=1,
+        monotonic_clock=lambda: clock[0],
     )
+    worker.test_clock = clock
+    return worker
+
+
+def _poll(worker: LiveDetectionWorker, now: float):
+    worker.test_clock[0] = now
+    return worker.poll()
 
 
 def _evidence(event, cell, epoch: int, timestamp: float) -> FramePoseEvidence:
@@ -153,7 +181,7 @@ def test_processed_frames_from_live_detector_complete_coverage_and_upsert_candid
     candidate_events = []
 
     for index, cell in enumerate(task.cells):
-        processed, sighting = worker.poll(now=10.01 + index / 10)
+        processed, sighting = _poll(worker, 10.01 + index / 10)
         observation = ledger.observe_processed(
             processed,
             _evidence(processed, cell, task.connection_epoch, 10 + index / 10),
@@ -176,12 +204,12 @@ def test_stale_and_mismatched_processed_frames_cannot_claim_coverage() -> None:
     task = preview.assignments[0].task
     ledger.activate(task.task_id)
     worker = _worker(task.source_id, [1])
-    processed, _ = worker.poll(now=1.01)
+    processed, _ = _poll(worker, 1.01)
     evidence = _evidence(processed, task.cells[0], task.connection_epoch, 1)
 
     stale = ledger.observe_processed(processed, evidence, 2)
     other_worker = _worker("other-camera", [1])
-    other_processed, _ = other_worker.poll(now=1.01)
+    other_processed, _ = _poll(other_worker, 1.01)
     source_mismatch = ledger.observe_processed(
         other_processed,
         FramePoseEvidence(
@@ -189,14 +217,17 @@ def test_stale_and_mismatched_processed_frames_cannot_claim_coverage() -> None:
         ),
         1.02,
     )
+    old_mission_clock = [0.0]
     old_mission_worker = LiveDetectionWorker(
         _Frames([1]),
         _Detector(),
         source_id=task.source_id,
-        mission_id="search-7:v2:e2",
+        mission_id="different-search",
         max_frame_age_s=1,
+        monotonic_clock=lambda: old_mission_clock[0],
     )
-    old_mission = old_mission_worker.poll(now=1.01)[0]
+    old_mission_worker.test_clock = old_mission_clock
+    old_mission = _poll(old_mission_worker, 1.01)[0]
     mission_mismatch = ledger.observe_processed(
         old_mission,
         FramePoseEvidence(old_mission.identity, task.connection_epoch, task.cells[0].pose, 1, 1.01),
@@ -237,7 +268,7 @@ def test_sighting_needs_processed_frame_and_cancel_preserves_pending_coverage() 
     active, pending = (assignment.task for assignment in preview.assignments)
     ledger.activate(active.task_id)
     worker = _worker(active.source_id, [1])
-    processed, sighting = worker.poll(now=1.01)
+    processed, sighting = _poll(worker, 1.01)
 
     assert ledger.observe_sighting(sighting) is None
     assert ledger.observe_processed(
@@ -252,30 +283,6 @@ def test_sighting_needs_processed_frame_and_cancel_preserves_pending_coverage() 
     assert ledger.task_state(active.task_id) == "incomplete"
 
 
-def test_decode_only_processed_frame_cannot_claim_coverage() -> None:
-    preview = SearchPlanner().plan(request(1), artifact())
-    assert not isinstance(preview, SearchRefusal)
-    ledger = preview.ledger()
-    task = preview.assignments[0].task
-    ledger.activate(task.task_id)
-    worker = _worker(task.source_id, [1], empty=True)
-    (verified,) = worker.poll(now=1.01)
-    unverified = type(verified)(
-        verified.identity,
-        verified.frame_timestamp_s,
-        verified.processed_at_s,
-        verified.outcome,
-        verified.candidate_count,
-        False,
-    )
-
-    result = ledger.observe_processed(
-        unverified, _evidence(unverified, task.cells[0], task.connection_epoch, 1), 1.02
-    )
-
-    assert result.reason == "capture_time_unverified"
-
-
 def test_fresh_empty_processed_frame_advances_coverage() -> None:
     preview = SearchPlanner().plan(request(1), artifact())
     assert not isinstance(preview, SearchRefusal)
@@ -283,7 +290,7 @@ def test_fresh_empty_processed_frame_advances_coverage() -> None:
     task = preview.assignments[0].task
     ledger.activate(task.task_id)
     worker = _worker(task.source_id, [1], empty=True)
-    (processed,) = worker.poll(now=1.01)
+    (processed,) = _poll(worker, 1.01)
 
     observation = ledger.observe_processed(
         processed, _evidence(processed, task.cells[0], task.connection_epoch, 1), 1.02

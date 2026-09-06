@@ -131,11 +131,10 @@ class ClockMappedFrameReader:
             captured_at_s = raw.captured_at_s
             received_at_s = raw.received_at_s
             verified = raw.capture_time_verified
-        elif isinstance(raw, tuple) and len(raw) in {2, 3, 4}:
-            image = raw[0]
-            captured_at_s = raw[1]
-            received_at_s = raw[1] if len(raw) == 2 else raw[2]
-            verified = len(raw) == 3 or (len(raw) == 4 and raw[3] is True)
+        elif isinstance(raw, tuple) and len(raw) == 2:
+            image, captured_at_s = raw
+            received_at_s = captured_at_s
+            verified = False
         else:
             raise ValueError("frame reader returned an invalid frame sample")
         if (
@@ -167,13 +166,9 @@ class DetectionPublisher:
     def pending(self) -> int:
         return len(self._queue)
 
-    def poll_worker(
-        self, worker: LiveDetectionWorker, now_s: float | None = None
-    ) -> tuple[dict[str, object], ...]:
+    def poll_worker(self, worker: LiveDetectionWorker) -> tuple[dict[str, object], ...]:
         """Poll a clock-mapped worker once, retaining all outputs through reconnects."""
-        if now_s is not None and (not isfinite(now_s) or now_s < 0):
-            raise ValueError("relay processing timestamp must be nonnegative and finite")
-        return tuple(self.enqueue(event) for event in worker.poll(now_s))
+        return tuple(self.enqueue(event) for event in worker.poll())
 
     def enqueue(self, event: PerceptionEvent) -> dict[str, object]:
         frame = self._frame(event)
@@ -384,7 +379,7 @@ async def run_producer(config: DetectionProducerConfig, producer_key: str) -> No
             max_frame_age_s=config.max_frame_age_s,
             sample_interval_s=config.sample_interval_s,
             retained_events=config.publisher.queue_limit,
-            clock=relay_clock,
+            monotonic_clock=relay_clock,
         )
         publisher = DetectionPublisher(config.publisher, producer_key)
         transport = AsyncDetectionTransport(config.websocket_url, producer_key)

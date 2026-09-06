@@ -1,96 +1,97 @@
-from dataclasses import replace
-
-from planner.control_provenance import ControlProvenance
 from planner.models import CommandOperation, PreparedExecution
 from planner.test_navigation_runtime import stack
+from relay.auth import verify_event_signature
 from relay.control_config import ControlRuntimeConfig
-from relay.control_localization import ClockMapping, ControlLocalizationPins
+from relay.control_localization import ClockMapping, ControlLocalizationPins, ControlPose
 from relay.navigation_control import NavigationControl, NavigationControlConfig
 
 KEY = b"navigation-node-key-at-least-32bytes"
 
 
-def _control(runtime) -> NavigationControl:
-    clock = ClockMapping("capture", "relay", 0, 100_000, 1000, 5, True)
-    pin = ControlLocalizationPins(
-        1, 1, "map", "geometry", "camera", "body", "capture", "relay", ("tag",), clock
-    )
-    return NavigationControl(
-        NavigationControlConfig(
-            runtime,
-            ControlRuntimeConfig({1: pin}, 5, 500, 0.2, 2_000),
-            "navigation-config",
-            {1: KEY},
-        )
-    )
+class _Session:
+    session_id = "session"
+
+    def __init__(self, pose: ControlPose) -> None:
+        self._pose = pose
+
+    def control_pose(self, drone_id: int) -> ControlPose | None:
+        return self._pose if drone_id == self._pose.drone_id else None
 
 
-def _localized(snapshot):
-    provenance = ControlProvenance(
+def control_config() -> ControlRuntimeConfig:
+    clock = ClockMapping("capture", "relay", 0, 100_000, 1_000, 5, True)
+    pin = ControlLocalizationPins(1, "map", "geometry", "camera", "body", ("tag",), clock)
+    return ControlRuntimeConfig({1: pin}, 5, 500, 200, 200, 0.3)
+
+
+def pose() -> ControlPose:
+    return ControlPose(
+        100_000,
+        "diagnostic-pose",
+        "session",
+        1,
+        1,
         "map",
         "geometry",
         "camera",
         "body",
-        "capture",
-        "relay",
-        ("tag",),
-        1.0,
-        5,
-        "ready",
         100_000,
-        0.01,
-    )
-    return replace(
-        snapshot,
-        aircraft={1: replace(snapshot.aircraft[1], control_provenance=provenance)},
+        99_900,
+        500,
+        1_500,
+        1_000,
+        "map_enu",
+        28,
+        "ready",
     )
 
 
-def test_authorization_precedes_mapped_goto_and_pose_uses_p95_radius():
+def test_explicit_host_approval_turns_a_diagnostic_pose_into_signed_route_evidence() -> None:
     controller, _, _, snapshot, current, _, intent = stack()
     runtime = controller.planner.navigation
     runtime.require_phone_authorization = True
-    prepared = controller.prepare(intent, snapshot, current_snapshot=current)
+    config = control_config()
+    runtime.configure_control_localization(
+        config.pins,
+        max_fix_age_ms=config.max_fix_age_ms,
+        max_position_uncertainty_p95_m=config.max_position_uncertainty_p95_m,
+    )
+    runtime.maximum_aircraft = 1
+    control = NavigationControl(NavigationControlConfig(runtime, config, "config", {1: KEY}))
+    session = _Session(pose())
+    approved = control.approved_snapshot(snapshot, session)
+
+    prepared = controller.prepare(intent, approved, current_snapshot=lambda: approved)
+
     assert isinstance(prepared, PreparedExecution)
     command = next(
         item for item in prepared.plan.commands if item.operation is CommandOperation.GOTO
     )
-    localized = _localized(snapshot)
-    control = _control(runtime)
+    authorization = control.authorize(prepared.plan, command, approved, session.session_id)
+    initial = control.initial_pose(1, session, approved.now_ms)
+    for packet in (authorization, initial):
+        unsigned = dict(packet)
+        signature = unsigned.pop("signature")
+        assert verify_event_signature(unsigned, signature, KEY)
+    assert authorization["flight_approved"] is True
+    assert authorization["max_position_uncertainty_mm"] == 30
+    assert authorization["tube_radius_mm"] == 130
+    assert initial["status"] == "ready"
+    assert approved.aircraft[1].control_provenance is not None
 
-    authorization = control.authorize(prepared.plan, command, localized, "session")
-    pose = control.pose(localized, "session")[0]
 
-    assert authorization["command_id"] == command.command_id
-    assert authorization["route_id"] == intent.intent_id
-    assert authorization["expires_at_ms"] > authorization["t"]
-    assert pose["status"] == "ready"
-    assert pose["position_uncertainty_mm"] == 28
-
-
-def test_missing_localization_emits_nullable_hold_pose_without_fabricated_coordinates():
-    controller, _, _, snapshot, current, _, intent = stack()
+def test_diagnostic_pose_never_becomes_navigation_evidence_without_host_approval() -> None:
+    controller, _, _, snapshot, _, _, intent = stack()
     runtime = controller.planner.navigation
     runtime.require_phone_authorization = True
-    prepared = controller.prepare(intent, snapshot, current_snapshot=current)
-    assert isinstance(prepared, PreparedExecution)
-    command = next(
-        item for item in prepared.plan.commands if item.operation is CommandOperation.GOTO
+    config = control_config()
+    runtime.configure_control_localization(
+        config.pins,
+        max_fix_age_ms=config.max_fix_age_ms,
+        max_position_uncertainty_p95_m=config.max_position_uncertainty_p95_m,
     )
-    control = _control(runtime)
-    control.authorize(prepared.plan, command, _localized(snapshot), "session")
+    runtime.maximum_aircraft = 1
 
-    packet = control.pose(snapshot, "session")[0]
+    refused = controller.prepare(intent, snapshot, current_snapshot=lambda: snapshot)
 
-    assert packet["status"] == "hold"
-    assert all(
-        packet[field] is None
-        for field in (
-            "pose_time_ms",
-            "fix_time_ms",
-            "x_mm",
-            "y_mm",
-            "z_mm",
-            "position_uncertainty_mm",
-        )
-    )
+    assert not isinstance(refused, PreparedExecution)

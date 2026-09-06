@@ -28,9 +28,16 @@ from relay.auth import (
     sign_event,
 )
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
-from relay.control_localization import ControlLocalizationStore
+from relay.control_localization import ControlLocalizationProjector
 from relay.intent_v1 import REGISTERED_SOURCES
-from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
+from relay.session import (
+    Clock,
+    ControlPoseSigningKey,
+    EventIdFactory,
+    IntentSink,
+    LeaveAuthorizer,
+    RelaySession,
+)
 from relay.settings import RelaySettings, console_origins_from_env
 from relay.voice import MAX_AUDIO_BYTES, MAX_AUDIO_DURATION_MS, TranscriptService, VoiceOutcome
 
@@ -44,7 +51,7 @@ _CLOSE_TIMEOUT_SECONDS = 1.0
 _CONTROL_HEARTBEAT_MAX_INTERVAL_SECONDS = 1.0
 TranscriptServiceFactory = Callable[["RelayRuntime"], TranscriptService]
 AuthoritativeRoomsFactory = Callable[[RelaySession], tuple[str, ...]]
-ControlLocalizationStoreFactory = Callable[[str], ControlLocalizationStore | None]
+ControlLocalizationFactory = Callable[[str], ControlLocalizationProjector | None]
 
 
 @dataclass(eq=False, slots=True)
@@ -61,21 +68,24 @@ class _Subscription:
     overflowed: asyncio.Event = field(default_factory=asyncio.Event)
 
     def enqueue(self, outbound: _Outbound) -> bool:
-        """Queue ordered events, conflating only disposable state snapshots."""
+        """Queue ordered events, conflating state and dominated pose diagnostics."""
         if self.overflowed.is_set() or self.sender_failed.is_set():
             _resolve_delivery(outbound, False)
             return False
-        if outbound.event.get("type") == "state":
+        if outbound.event.get("type") in {"state", "control_pose"}:
             retained: list[_Outbound] = []
             while not self.queue.empty():
                 pending = self.queue.get_nowait()
                 self.queue.task_done()
-                if (
-                    pending.event.get("type") != "state"
-                    or pending.delivered is not None
-                    or pending.event.get("invalidation_reason") is not None
-                    or not _same_state_projection(pending.event, outbound.event)
-                ):
+                replace_state = (
+                    outbound.event.get("type") == "state"
+                    and pending.event.get("type") == "state"
+                    and pending.delivered is None
+                    and pending.event.get("invalidation_reason") is None
+                    and _same_state_projection(pending.event, outbound.event)
+                )
+                replace_control_pose = _supersedes_control_pose(outbound, pending)
+                if not replace_state and not replace_control_pose:
                     retained.append(pending)
             for pending in retained:
                 self.queue.put_nowait(pending)
@@ -92,6 +102,27 @@ class _Subscription:
 class _Outbound:
     event: dict[str, object]
     delivered: asyncio.Future[bool] | None = None
+
+
+def _supersedes_control_pose(new: _Outbound, pending: _Outbound) -> bool:
+    """Conflate a drone's diagnostics without hiding a queued safer transition."""
+    if (
+        new.event.get("type") != "control_pose"
+        or pending.event.get("type") != "control_pose"
+        or pending.delivered is not None
+        or pending.event.get("drone_id") != new.event.get("drone_id")
+    ):
+        return False
+    new_status = new.event.get("status")
+    if new_status == "ready":
+        superseded = ("ready",)
+    elif new_status == "hold":
+        superseded = ("ready", "hold")
+    elif new_status == "land":
+        superseded = ("ready", "hold", "land")
+    else:
+        return False
+    return pending.event.get("status") in superseded
 
 
 @dataclass(slots=True)
@@ -112,7 +143,8 @@ class RelayRuntime:
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
         authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
-        control_localization_store_factory: ControlLocalizationStoreFactory | None = None,
+        control_localization_factory: ControlLocalizationFactory | None = None,
+        control_pose_signing_key: ControlPoseSigningKey | None = None,
     ) -> None:
         self.settings = settings
         self.credential_resolver = credential_resolver or settings.credential_resolver()
@@ -128,10 +160,16 @@ class RelayRuntime:
         self.capability_profile = capability_profile
         self.leave_authorizer_factory = leave_authorizer_factory
         self.authoritative_rooms_factory = authoritative_rooms_factory
-        self.control_localization_store_factory = control_localization_store_factory
+        self.control_localization_factory = control_localization_factory
+        self.control_pose_signing_key = (
+            settings.adapter_keys.get
+            if control_pose_signing_key is None
+            else control_pose_signing_key
+        )
         self.sessions: dict[str, RelaySession] = {}
         self._subscriptions: dict[str, dict[str, _Subscription]] = {}
         self._adapter_connections: dict[tuple[str, int], str] = {}
+        self._localization_connections: dict[tuple[str, int], str] = {}
         self._session_gates: dict[str, _SessionGate] = {}
         self._session_gates_lock = Lock()
         self._activation_tasks: dict[str, asyncio.Task[RelaySession]] = {}
@@ -163,6 +201,11 @@ class RelayRuntime:
                     if self.leave_authorizer_factory is None
                     else self.leave_authorizer_factory(session_id)
                 )
+                projector = (
+                    None
+                    if self.control_localization_factory is None
+                    else self.control_localization_factory(session_id)
+                )
                 session = RelaySession(
                     session_id=session_id,
                     audit_log=audit_log,
@@ -171,11 +214,8 @@ class RelayRuntime:
                     event_ids=self.event_ids,
                     leave_authorizer=leave_authorizer,
                     capability_profile=self.capability_profile,
-                    control_localization_store=(
-                        None
-                        if self.control_localization_store_factory is None
-                        else self.control_localization_store_factory(session_id)
-                    ),
+                    control_localization_projector=projector,
+                    control_pose_signing_key=self.control_pose_signing_key,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -296,6 +336,14 @@ class RelayRuntime:
                             "adapter_already_connected",
                             "an authenticated connection is already bound to this drone",
                         )
+                if principal.source == "localization":
+                    assert principal.drone_id is not None
+                    key = (session_id, principal.drone_id)
+                    if key in self._localization_connections:
+                        raise AuthenticationError(
+                            "localization_already_connected",
+                            "a localization producer is already bound to this drone",
+                        )
                 session = self.sessions[session_id]
                 initial_state = session.current_state_if_available()
                 if initial_state is None:
@@ -310,6 +358,10 @@ class RelayRuntime:
                     assert principal.drone_id is not None
                     key = (session_id, principal.drone_id)
                     self._adapter_connections[key] = subscription.connection_id
+                elif principal.source == "localization":
+                    assert principal.drone_id is not None
+                    key = (session_id, principal.drone_id)
+                    self._localization_connections[key] = subscription.connection_id
                 self._subscriptions.setdefault(session_id, {})[subscription.connection_id] = (
                     subscription
                 )
@@ -503,6 +555,11 @@ class RelayRuntime:
                 key = (session_id, principal.drone_id)
                 if self._adapter_connections.get(key) == subscription.connection_id:
                     self._adapter_connections.pop(key, None)
+            elif principal.source == "localization":
+                assert principal.drone_id is not None
+                key = (session_id, principal.drone_id)
+                if self._localization_connections.get(key) == subscription.connection_id:
+                    self._localization_connections.pop(key, None)
             self._control_heartbeat_last.pop(subscription.connection_id, None)
             self._control_heartbeat_sequence.pop(subscription.connection_id, None)
 
@@ -574,11 +631,6 @@ class RelayRuntime:
                 if subscription.sender_failed.is_set():
                     continue
                 for event in events:
-                    if event.get("type") == "control_localization" and (
-                        subscription.principal.source != "localization"
-                        or subscription.principal.drone_id != event.get("drone_id")
-                    ):
-                        continue
                     if event.get("type") == "control_pose" and (
                         subscription.principal.source != "adapter"
                         or subscription.principal.drone_id != event.get("drone_id")
@@ -810,7 +862,8 @@ def create_app(
     capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
     authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
-    control_localization_store_factory: ControlLocalizationStoreFactory | None = None,
+    control_localization_factory: ControlLocalizationFactory | None = None,
+    control_pose_signing_key: ControlPoseSigningKey | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
     shutdown_callback: ShutdownCallback | None = None,
 ) -> FastAPI:
@@ -826,7 +879,8 @@ def create_app(
             capability_profile=capability_profile,
             leave_authorizer_factory=leave_authorizer_factory,
             authoritative_rooms_factory=authoritative_rooms_factory,
-            control_localization_store_factory=control_localization_store_factory,
+            control_localization_factory=control_localization_factory,
+            control_pose_signing_key=control_pose_signing_key,
         )
         application.state.relay_runtime = runtime
         application.state.transcript_service = (
@@ -936,7 +990,11 @@ def create_app(
                             lambda received=frame: runtime.process_frame(
                                 session, received, principal
                             ),
-                            wait_for_connection_id=subscription.connection_id,
+                            wait_for_connection_id=(
+                                None
+                                if principal.source == "localization"
+                                else subscription.connection_id
+                            ),
                         )
                     if (
                         principal.source in REGISTERED_SOURCES
@@ -1271,7 +1329,8 @@ def _validate_session_id(session_id: str) -> None:
     if (
         not session_id
         or len(session_id) > 512
-        or any(ord(character) < 32 for character in session_id)
+        or session_id != session_id.strip()
+        or not session_id.isprintable()
     ):
         raise ValueError("invalid session ID")
 

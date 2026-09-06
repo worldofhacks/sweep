@@ -150,11 +150,12 @@ def test_worker_emits_explicit_identity_timing_and_target_configuration() -> Non
     assert payload["frame_time_provenance"] == "decoder_completion"
     assert payload["target_labels"] == list(_CANONICAL_DEFAULT_LABELS)
     assert payload["detector_config_sha256"] == _TEST_CONFIG_SHA256
-    assert "capture" not in " ".join(payload)
+    assert payload["received_at_s"] == 10.0
+    assert payload["capture_time_verified"] is False
     assert sighting.payload()["detector_config_sha256"] == _TEST_CONFIG_SHA256
 
 
-def test_worker_uses_decoder_receipt_time_for_unverified_compatibility_frames() -> None:
+def test_worker_uses_decoder_receipt_time_for_unverified_frames() -> None:
     detector = _Detector()
     worker = LiveDetectionWorker(
         _Frames([DecodedFrame(_image(), 1.0, 9.0, False)]),
@@ -162,46 +163,14 @@ def test_worker_uses_decoder_receipt_time_for_unverified_compatibility_frames() 
         source_id="drone1",
         mission_id="mission-7",
         max_frame_age_s=0.5,
+        monotonic_clock=_Clock(10.0),
     )
 
-    event = worker.poll(now=10.0)[0]
+    event = worker.poll()[0]
 
     assert event.outcome == "dropped_stale"
     assert event.received_at_s == 9.0
-    assert event.payload()["received_at_s"] == 9.0
     assert detector.frames == []
-
-
-def test_legacy_event_construction_keeps_the_publisher_contract() -> None:
-    event = ProcessedFrameEvent(
-        FrameIdentity("camera-1", "frame-1", "mission-7:v1:e7"),
-        10.0,
-        10.1,
-        "empty",
-        0,
-    )
-
-    assert event.event_id == "processed:mission-7:v1:e7:camera-1:frame-1"
-    assert event.frame_timestamp_s == 10.0
-    assert event.processed_at_s == 10.1
-    assert event.received_at_s is None
-    assert event.capture_time_verified is False
-    assert FrameIdentity(
-        source_id="camera-1", frame_id="frame-1", mission_id="mission-7:v1:e7"
-    ) == (event.identity)
-
-
-def test_worker_accepts_the_legacy_clock_and_poll_override() -> None:
-    worker = LiveDetectionWorker(
-        _Frames([(_image(), 10.0), (_image(), 10.1)]),
-        _Detector(),
-        source_id="drone1",
-        mission_id="mission-7",
-        clock=_Clock(10.2),
-    )
-
-    assert worker.poll()[0].processed_at_s == 10.2
-    assert worker.poll(10.3)[0].processed_at_s == 10.3
 
 
 def test_default_worker_run_ids_prevent_identity_collisions_across_restarts() -> None:
@@ -271,6 +240,7 @@ def test_worker_drops_future_and_regressed_times_without_running_detector() -> N
         monotonic_clock=_Clock(1.9),
     )
     assert future_worker.poll()[0].outcome == "dropped_future"
+    assert len(detector.frames) == 1
 
 
 def test_worker_does_not_let_dropped_frames_advance_its_regression_watermark() -> None:
@@ -546,6 +516,8 @@ def test_processed_event_rejects_inconsistent_runtime_values(
             candidate_count=candidate_count,
             target_labels=_CANONICAL_DEFAULT_LABELS,
             detector_config_sha256=_TEST_CONFIG_SHA256,
+            capture_time_verified=False,
+            received_at_s=decoded_at,
         )
 
 
@@ -615,21 +587,18 @@ def test_aggregator_failure_retains_an_event_and_stops_background_work() -> None
     worker.close()
 
 
-def test_worker_defaults_legacy_detectors_to_the_coco_target_set() -> None:
-    class LegacyDetector:
+def test_worker_requires_detector_to_declare_target_labels() -> None:
+    class UndeclaredDetector:
         def detect(self, _: np.ndarray) -> tuple[()]:
             return ()
 
-    event = LiveDetectionWorker(
-        _Frames([(_image(), 1.0)]),
-        LegacyDetector(),
-        source_id="drone1",
-        mission_id="mission-7",
-        monotonic_clock=_Clock(1.1),
-    ).poll()[0]
-
-    assert event.target_labels == _CANONICAL_DEFAULT_LABELS
-    assert event.detector_config_sha256 == "0" * 64
+    with pytest.raises(ValueError, match="declare target_labels"):
+        LiveDetectionWorker(
+            _Frames([]),
+            UndeclaredDetector(),
+            source_id="drone1",
+            mission_id="mission-7",
+        )
 
 
 def test_worker_preserves_explicit_falsy_dependencies() -> None:
@@ -679,25 +648,6 @@ def test_worker_rejects_ambiguous_identity_components(component: str, value: str
 
     with pytest.raises(ValueError, match="reserved"):
         LiveDetectionWorker(_Frames([]), _Detector(), **arguments)
-
-
-def test_worker_escapes_colon_delimited_mission_ids_in_frame_identity() -> None:
-    worker = LiveDetectionWorker(
-        _Frames([(_image(), 1.0)]),
-        _Detector(),
-        source_id="drone1",
-        mission_id="intent-1:v1:e7",
-        worker_run_id="run-1",
-        monotonic_clock=_Clock(1.1),
-    )
-
-    event = worker.poll()[0]
-
-    assert event.identity.frame_id == "frame:intent-1%3Av1%3Ae7:drone1:run-1:1"
-    assert (
-        event.identity.frame_id
-        != FrameIdentity("drone1", "intent-1%3Av1%3Ae7", "run-1", 1).frame_id
-    )
 
 
 class _BlockedThread:
@@ -931,3 +881,10 @@ def test_yolox_detector_rejects_invalid_frames(frame: object) -> None:
     )
     with pytest.raises(ValueError, match="frame"):
         detector.detect(frame)
+
+
+def test_mission_delimiters_are_encoded_in_generated_frame_ids():
+    first = FrameIdentity("camera", "mission:7", "run", 1)
+    escaped = FrameIdentity("camera", "mission%3A7", "run", 1)
+    assert first.frame_id == "frame:mission%3A7:camera:run:1"
+    assert first.frame_id != escaped.frame_id
