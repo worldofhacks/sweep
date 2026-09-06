@@ -32,6 +32,7 @@ function aircraft(overrides: Record<string, unknown> = {}) {
     rc_safety_operator_present: true,
     telemetry: { state: 'hovering' },
     membership_history: [],
+    membership_history_truncated: 0,
     ...overrides,
   }
 }
@@ -51,6 +52,28 @@ describe('M1.1 wire compatibility', () => {
     } else {
       expect(event).toBeNull()
     }
+  })
+
+  test.each([
+    [0, true],
+    [12, true],
+    [undefined, false],
+    [-1, false],
+    [1.5, false],
+    ['1', false],
+    [true, false],
+  ])('validates the membership history truncation count %s', (truncated, accepted) => {
+    const event = parseRelayServerEvent({
+      v: 1, t: 100, type: 'state', event_id: 'history-truncation-test', session,
+      roster_version: 1, state_sequence: 1, armed: false, estop: false,
+      selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null,
+      drones: [aircraft({ membership_history_truncated: truncated })],
+    })
+
+    expect(event !== null).toBe(accepted)
   })
 
   test('refuses an adapter-supplied media URL', () => {

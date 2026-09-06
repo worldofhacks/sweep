@@ -22,6 +22,8 @@ from relay.contracts import (
 from relay.media import MediaEvidenceProvider, project_video
 
 MAX_PHYSICAL_AIRCRAFT = 4
+DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
+MAX_MEMBERSHIP_HISTORY_LIMIT = 64
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
 _FORMATIONS = frozenset({"line", "column", "circle", "grid", "V"})
 
@@ -90,6 +92,7 @@ class _AircraftRecord:
     telemetry: TelemetryV1 | None = None
     disconnected_at: int | None = None
     history: list[dict[str, object]] = field(default_factory=list)
+    history_truncated: int = 0
     camera_capabilities: CapabilitiesFrame | None = None
     node_status: NodeStatusFrame | None = None
     # The latest node_status that claimed publishing; kept across rejoin as frame history.
@@ -105,12 +108,23 @@ class FleetRegistry:
         telemetry_freshness_ms: int,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         media_evidence: MediaEvidenceProvider | None = None,
+        membership_history_limit: int = DEFAULT_MEMBERSHIP_HISTORY_LIMIT,
     ) -> None:
         if telemetry_freshness_ms <= 0:
             raise ValueError("telemetry_freshness_ms must be positive")
+        if (
+            isinstance(membership_history_limit, bool)
+            or not isinstance(membership_history_limit, int)
+            or not 1 <= membership_history_limit <= MAX_MEMBERSHIP_HISTORY_LIMIT
+        ):
+            raise ValueError(
+                "membership_history_limit must be an integer from 1 through "
+                f"{MAX_MEMBERSHIP_HISTORY_LIMIT}"
+            )
         self.telemetry_freshness_ms = telemetry_freshness_ms
         self.capability_profile = capability_profile
         self._media_evidence = media_evidence
+        self.membership_history_limit = membership_history_limit
         self._aircraft: dict[int, _AircraftRecord] = {}
         self._roster_version = 0
         self._state_sequence = 0
@@ -128,15 +142,11 @@ class FleetRegistry:
     def transaction(self) -> Iterator[None]:
         """Hold registry readers until the caller commits; restore state on failure."""
         with self._lock:
-            # History is append-only and can become large during a long-running
-            # session.  Keep the existing lists and remember their lengths so a
-            # rollback costs O(number of aircraft), not O(total telemetry history).
+            # Membership history is bounded, so copying each short retained tail
+            # makes rollback exact even when a transition evicts its oldest entry.
             aircraft_before = {
-                drone_id: replace(record, history=record.history)
+                drone_id: replace(record, history=list(record.history))
                 for drone_id, record in self._aircraft.items()
-            }
-            history_lengths = {
-                drone_id: len(record.history) for drone_id, record in self._aircraft.items()
             }
             scalars_before = (
                 self._roster_version,
@@ -153,8 +163,6 @@ class FleetRegistry:
             try:
                 yield
             except BaseException:
-                for drone_id, record in aircraft_before.items():
-                    del record.history[history_lengths[drone_id] :]
                 self._aircraft = aircraft_before
                 (
                     self._roster_version,
@@ -682,6 +690,7 @@ class FleetRegistry:
             "rc_safety_operator_present": record.rc_safety_operator_present,
             "telemetry": telemetry,
             "membership_history": _json_copy(record.history),
+            "membership_history_truncated": record.history_truncated,
             "camera_capabilities": (
                 None
                 if record.camera_capabilities is None
@@ -702,8 +711,8 @@ class FleetRegistry:
             ),
         }
 
-    @staticmethod
     def _remember(
+        self,
         record: _AircraftRecord,
         *,
         t: int,
@@ -724,6 +733,10 @@ class FleetRegistry:
                 "pos_quality": None if telemetry is None else telemetry.pos_quality,
             }
         )
+        overflow = len(record.history) - self.membership_history_limit
+        if overflow > 0:
+            del record.history[:overflow]
+            record.history_truncated += overflow
 
 
 def _json_copy(value: object) -> object:
