@@ -320,3 +320,12 @@ A live session ID is scoped to one relay process lifetime. After restart, any ID
 On first reopen of a legacy JSONL log, the relay removes only a nonempty, unterminated EOF fragment after validating every complete record, then imports that prefix into the transaction database. Later recovery verifies the JSONL mirror against completed database operations. Complete malformed records and divergent mirrors fail closed. A repaired log remains evidence of prior session use even when its first record was torn, so that session ID stays replay-only.
 
 Controller-generated safety stops reserve the `safety:` intent ID prefix. Public requests using that prefix are refused without occupying the intent ledger.
+
+Transcript uploads have a 15-second total body-read deadline, configured with
+`SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS` from 1 through 300000 milliseconds. The timer
+starts when the authenticated request begins reading its body; trickling chunks does
+not reset it. Expiry returns HTTP 408 with
+`voice_outcome.reason=upload_timeout` and zero emissions before audio decoding,
+transcription, or compilation. The 8 MiB cap still applies across arbitrary transport
+fragments. This application deadline works with the documented ASGI deployment and
+does not depend on a reverse proxy read timeout.
