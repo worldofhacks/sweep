@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 import numpy as np
@@ -100,6 +100,7 @@ FrameOutcome = Literal[
     "dropped_stale",
     "dropped_future",
     "dropped_regressed",
+    "dropped_regressive",
     "invalid_frame",
     "detector_error",
     "aggregation_error",
@@ -111,6 +112,7 @@ _EVENT_OUTCOMES = frozenset(
         "dropped_stale",
         "dropped_future",
         "dropped_regressed",
+        "dropped_regressive",
         "invalid_frame",
         "detector_error",
         "aggregation_error",
@@ -187,26 +189,63 @@ def _target_labels(value: Collection[str], name: str = "target_labels") -> tuple
     return tuple(label for label in COCO_LABELS if label in selected)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class FrameIdentity:
     source_id: str
     mission_id: str
     worker_run_id: str
     frame_sequence: int
+    _legacy_frame_id: str | None = field(default=None, repr=False, compare=False)
 
-    def __post_init__(self) -> None:
-        _identity_component(self.source_id, "source_id")
-        _identity_component(self.mission_id, "mission_id")
-        _identity_component(self.worker_run_id, "worker_run_id")
+    def __init__(
+        self,
+        source_id: str,
+        mission_id: str | None = None,
+        worker_run_id: str | None = None,
+        frame_sequence: int | None = None,
+        *,
+        frame_id: str | None = None,
+    ) -> None:
+        legacy_frame_id = frame_id
+        if frame_sequence is None:
+            if legacy_frame_id is not None:
+                if mission_id is None or worker_run_id is not None:
+                    raise ValueError("legacy frame identity needs source, frame, and mission ids")
+                worker_run_id, frame_sequence = "legacy", 1
+            else:
+                if mission_id is None or worker_run_id is None:
+                    raise ValueError("legacy frame identity needs source, frame, and mission ids")
+                legacy_frame_id = mission_id
+                mission_id, worker_run_id, frame_sequence = worker_run_id, "legacy", 1
+        if legacy_frame_id is not None:
+            _identity_component(legacy_frame_id, "frame_id")
+        _identity_component(source_id, "source_id")
+        if legacy_frame_id is None:
+            _identity_component(mission_id, "mission_id")
+            _identity_component(worker_run_id, "worker_run_id")
+        else:
+            _identifier(mission_id, "mission_id")
+            _identifier(worker_run_id, "worker_run_id")
         if (
-            isinstance(self.frame_sequence, bool)
-            or not isinstance(self.frame_sequence, int)
-            or self.frame_sequence < 1
+            isinstance(frame_sequence, bool)
+            or not isinstance(frame_sequence, int)
+            or frame_sequence < 1
         ):
             raise ValueError("frame_sequence must be a positive integer")
+        object.__setattr__(self, "source_id", source_id)
+        object.__setattr__(self, "mission_id", mission_id)
+        object.__setattr__(self, "worker_run_id", worker_run_id)
+        object.__setattr__(self, "frame_sequence", frame_sequence)
+        object.__setattr__(self, "_legacy_frame_id", legacy_frame_id)
+
+    @property
+    def is_legacy(self) -> bool:
+        return self._legacy_frame_id is not None
 
     @property
     def frame_id(self) -> str:
+        if self._legacy_frame_id is not None:
+            return self._legacy_frame_id
         return (
             f"frame:{self.mission_id}:{self.source_id}:{self.worker_run_id}:{self.frame_sequence}"
         )
@@ -268,7 +307,7 @@ class DetectionCandidate:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ProcessedFrameEvent:
     identity: FrameIdentity
     frame_decoded_at_monotonic_s: float
@@ -278,6 +317,80 @@ class ProcessedFrameEvent:
     candidate_count: int
     target_labels: tuple[str, ...]
     detector_config_sha256: str
+    capture_time_verified: bool
+    received_at_s: float | None
+
+    def __init__(
+        self,
+        identity: FrameIdentity,
+        frame_decoded_at_monotonic_s: float | None = None,
+        evaluation_started_at_monotonic_s: float | None = None,
+        evaluation_completed_at_monotonic_s: float | str | None = None,
+        outcome: FrameOutcome | int | None = None,
+        candidate_count: int | bool | None = None,
+        target_labels: tuple[str, ...] | bool | float | None = None,
+        detector_config_sha256: str | None = None,
+        *,
+        frame_timestamp_s: float | None = None,
+        processed_at_s: float | None = None,
+        capture_time_verified: bool = False,
+        received_at_s: float | None = None,
+    ) -> None:
+        if isinstance(evaluation_completed_at_monotonic_s, str):
+            legacy_outcome = evaluation_completed_at_monotonic_s
+            legacy_count = outcome
+            legacy_verified = candidate_count
+            legacy_received = target_labels
+            frame_timestamp_s = frame_decoded_at_monotonic_s
+            processed_at_s = evaluation_started_at_monotonic_s
+            frame_decoded_at_monotonic_s = frame_timestamp_s
+            evaluation_started_at_monotonic_s = processed_at_s
+            evaluation_completed_at_monotonic_s = processed_at_s
+            outcome = legacy_outcome
+            candidate_count = legacy_count
+            target_labels = _target_labels(DEFAULT_TARGET_LABELS)
+            detector_config_sha256 = "0" * 64
+            capture_time_verified = (
+                capture_time_verified if legacy_verified is None else legacy_verified
+            )
+            received_at_s = legacy_received if received_at_s is None else received_at_s
+        elif frame_timestamp_s is not None or processed_at_s is not None:
+            if frame_timestamp_s is None or processed_at_s is None:
+                raise ValueError("legacy frame timestamps must be supplied together")
+            frame_decoded_at_monotonic_s = frame_timestamp_s
+            evaluation_started_at_monotonic_s = processed_at_s
+            evaluation_completed_at_monotonic_s = processed_at_s
+            target_labels = (
+                _target_labels(DEFAULT_TARGET_LABELS) if target_labels is None else target_labels
+            )
+            detector_config_sha256 = (
+                "0" * 64 if detector_config_sha256 is None else detector_config_sha256
+            )
+        if (
+            frame_decoded_at_monotonic_s is None
+            or evaluation_started_at_monotonic_s is None
+            or evaluation_completed_at_monotonic_s is None
+            or outcome is None
+            or candidate_count is None
+            or target_labels is None
+            or detector_config_sha256 is None
+        ):
+            raise ValueError("processed frame event fields are required")
+        object.__setattr__(self, "identity", identity)
+        object.__setattr__(self, "frame_decoded_at_monotonic_s", frame_decoded_at_monotonic_s)
+        object.__setattr__(
+            self, "evaluation_started_at_monotonic_s", evaluation_started_at_monotonic_s
+        )
+        object.__setattr__(
+            self, "evaluation_completed_at_monotonic_s", evaluation_completed_at_monotonic_s
+        )
+        object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(self, "candidate_count", candidate_count)
+        object.__setattr__(self, "target_labels", target_labels)
+        object.__setattr__(self, "detector_config_sha256", detector_config_sha256)
+        object.__setattr__(self, "capture_time_verified", capture_time_verified)
+        object.__setattr__(self, "received_at_s", received_at_s)
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, FrameIdentity):
@@ -306,6 +419,10 @@ class ProcessedFrameEvent:
         if self.target_labels != _target_labels(self.target_labels):
             raise ValueError("target_labels must use canonical COCO order")
         _sha256_digest(self.detector_config_sha256, "detector_config_sha256")
+        if not isinstance(self.capture_time_verified, bool):
+            raise ValueError("capture_time_verified must be a boolean")
+        if self.received_at_s is not None:
+            _finite_nonnegative(self.received_at_s, "received_at_s")
         if (
             self.outcome == "dropped_future"
             and self.frame_decoded_at_monotonic_s <= self.evaluation_started_at_monotonic_s
@@ -316,7 +433,20 @@ class ProcessedFrameEvent:
             raise ValueError("frame timing must agree with outcome")
 
     @property
+    def frame_timestamp_s(self) -> float:
+        return self.frame_decoded_at_monotonic_s
+
+    @property
+    def processed_at_s(self) -> float:
+        return self.evaluation_completed_at_monotonic_s
+
+    @property
     def event_id(self) -> str:
+        if self.identity.is_legacy:
+            return (
+                f"processed:{self.identity.mission_id}:{self.identity.source_id}:"
+                f"{self.identity.frame_id}"
+            )
         return f"event:{self.identity.frame_id}:processed"
 
     def payload(self) -> dict[str, object]:
@@ -327,6 +457,8 @@ class ProcessedFrameEvent:
             "frame_decoded_at_monotonic_s": self.frame_decoded_at_monotonic_s,
             "evaluation_started_at_monotonic_s": self.evaluation_started_at_monotonic_s,
             "evaluation_completed_at_monotonic_s": self.evaluation_completed_at_monotonic_s,
+            "received_at_s": self.received_at_s,
+            "processed_at_s": self.processed_at_s,
             "clock_domain": FRAME_CLOCK_DOMAIN,
             "frame_time_provenance": FRAME_TIME_PROVENANCE,
             "outcome": self.outcome,
@@ -386,6 +518,18 @@ class SightingEvent:
     def event_id(self) -> str:
         return f"event:{self.sighting_id}:observation:{self.observation_count}"
 
+    @property
+    def first_frame_timestamp_s(self) -> float:
+        return self.first_frame_decoded_at_monotonic_s
+
+    @property
+    def last_frame_timestamp_s(self) -> float:
+        return self.last_frame_decoded_at_monotonic_s
+
+    @property
+    def processed_at_s(self) -> float:
+        return self.evaluation_completed_at_monotonic_s
+
     def payload(self) -> dict[str, object]:
         return {
             "type": "perception.sighting",
@@ -407,10 +551,27 @@ class SightingEvent:
 PerceptionEvent = ProcessedFrameEvent | SightingEvent
 
 
+@dataclass(frozen=True, slots=True)
+class DecodedFrame:
+    image: np.ndarray
+    captured_at_s: float
+    received_at_s: float
+    capture_time_verified: bool = False
+
+    def __post_init__(self) -> None:
+        _finite_nonnegative(self.captured_at_s, "captured_at_s")
+        _finite_nonnegative(self.received_at_s, "received_at_s")
+        if not isinstance(self.capture_time_verified, bool):
+            raise ValueError("capture_time_verified must be a boolean")
+
+
+type FrameRead = DecodedFrame | tuple[np.ndarray, float] | None
+
+
 class FrameReader(Protocol):
     """Supplies a frame and its host-monotonic decoder-completion time."""
 
-    def read(self, timeout: float = 0.1) -> tuple[np.ndarray, float] | None: ...
+    def read(self, timeout: float = 0.1) -> FrameRead: ...
 
 
 class Detector(Protocol):
