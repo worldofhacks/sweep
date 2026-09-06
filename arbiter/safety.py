@@ -29,6 +29,7 @@ from planner.planner import (
     AIRCRAFT_ONLY_INTENTS,
     GROUND_VEHICLE_OPERATIONS,
     SELECTION_TARGETED_INTENTS,
+    _formation_group_size,
     _formation_targets,
     _next_formation,
 )
@@ -97,6 +98,12 @@ _GROUND_ARM_STATES: Final = frozenset({DriveState.DOCKED, DriveState.IDLE, Drive
 _ARM_DETAIL: Final = {
     DeviceClass.AIRCRAFT: "arm requires a landed and disarmed aircraft",
     DeviceClass.GROUND_VEHICLE: "arm requires a docked, idle, or stopped ground vehicle",
+}
+_DISARM_DETAIL: Final = {
+    DeviceClass.AIRCRAFT: "disarm requires every aircraft to be landed and physically disarmed",
+    DeviceClass.GROUND_VEHICLE: (
+        "disarm requires every ground vehicle to be docked, idle, or stopped"
+    ),
 }
 _MOTION_DETAIL: Final = {
     DeviceClass.AIRCRAFT: "an airborne aircraft",
@@ -595,15 +602,12 @@ class SafetyArbiter:
                     _ARM_DETAIL[aircraft.device_class],
                     aircraft=aircraft,
                 )
-            if plan.intent_name is IntentName.DISARM and (
-                aircraft.flight_state not in {FlightState.DISARMED, FlightState.LANDED}
-                or aircraft.armed
-            ):
+            if plan.intent_name is IntentName.DISARM and not self._arm_ready(aircraft):
                 return self._refusal_for(
                     plan.intent_id,
                     snapshot,
                     RefusalReason.INVALID_STATE,
-                    "disarm requires every aircraft to be landed and physically disarmed",
+                    _DISARM_DETAIL[aircraft.device_class],
                     aircraft=aircraft,
                 )
             authority_refusal = self._check_authority(plan.intent_id, snapshot, aircraft)
@@ -1410,7 +1414,7 @@ class SafetyArbiter:
                 plan, snapshot, "formation motion is missing its deterministic state binding"
             )
         if plan.intent_name is IntentName.FORMATION_NEXT and name != _next_formation(
-            snapshot.formation, len(plan.selection)
+            snapshot.formation, _formation_group_size(plan.selection, snapshot)
         ):
             return self._invalid_plan_refusal(
                 plan, snapshot, "formation_next does not match the deterministic sequence"
@@ -1852,15 +1856,12 @@ class SafetyArbiter:
                     aircraft.drone_id,
                 )
         elif intent.name is IntentName.DISARM:
-            if (
-                aircraft.flight_state not in {FlightState.DISARMED, FlightState.LANDED}
-                or aircraft.armed
-            ):
+            if not self._arm_ready(aircraft):
                 return self._intent_refusal(
                     intent,
                     snapshot,
                     RefusalReason.INVALID_STATE,
-                    "disarm requires every aircraft to be landed and physically disarmed",
+                    _DISARM_DETAIL[aircraft.device_class],
                     aircraft.drone_id,
                 )
         elif intent.name is IntentName.TAKEOFF:

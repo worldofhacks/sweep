@@ -18,6 +18,7 @@ from planner.models import (
     RefusalReason,
 )
 from planner.planner import DeterministicPlanner
+from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
     NOW_MS,
@@ -183,7 +184,7 @@ def test_spacing_is_checked_within_a_class_and_not_across_one() -> None:
     snapshot = make_mixed_snapshot(aircraft_ids=(1,), ground_ids=(11, 12))
     snapshot = replace_aircraft(snapshot, 1, pose=Position(0.0, 0.0, 0.5))
     snapshot = replace_aircraft(snapshot, 11, pose=Position(3.0, 0.0, 0.0))
-    snapshot = replace_aircraft(snapshot, 12, pose=Position(6.0, 0.0, 0.0))
+    snapshot = replace_aircraft(snapshot, 12, pose=Position(0.0, 3.0, 0.0))
     minimum = safety_config().min_spacing_m
 
     under_the_aircraft = _goto(snapshot, 12, x=0.0, y=0.3, z=0.0)
@@ -314,6 +315,56 @@ def test_arm_keeps_the_aircraft_wording_and_gate() -> None:
 
 
 @pytest.mark.parametrize(
+    ("drive_state", "allowed"),
+    [
+        (DriveState.DOCKED, True),
+        (DriveState.IDLE, True),
+        (DriveState.STOPPED, True),
+        (DriveState.MOVING, False),
+        (DriveState.FAULT, False),
+    ],
+)
+def test_disarm_checks_unselected_robots_without_requiring_a_flight_state(
+    drive_state: DriveState, allowed: bool
+) -> None:
+    snapshot = make_mixed_snapshot(
+        aircraft_ids=(1,),
+        ground_ids=(11,),
+        selection=(1,),
+        flight_state=FlightState.LANDED,
+        drive_state=drive_state,
+    )
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
+    intent = make_intent(IntentName.DISARM, selection=(1,))
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+
+    intent_refusal = _arbiter().check_intent(intent, snapshot)
+    plan_refusal = _arbiter().check_plan(plan, snapshot)
+
+    if allowed:
+        assert intent_refusal is None and plan_refusal is None
+        assert plan.armed_update is False and plan.commands == ()
+    else:
+        for refusal in (intent_refusal, plan_refusal):
+            assert refusal is not None and refusal.reason is RefusalReason.INVALID_STATE
+            assert "ground vehicle" in refusal.detail
+
+
+def test_disarm_requires_complete_observation_even_if_all_visible_robots_are_stopped() -> None:
+    snapshot = make_mixed_snapshot(aircraft_ids=(), fleet_observation_complete=False)
+    intent = make_intent(IntentName.DISARM, selection=snapshot.selection)
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+
+    for refusal in (
+        _arbiter().check_intent(intent, snapshot), _arbiter().check_plan(plan, snapshot)
+    ):
+        assert refusal is not None and refusal.reason is RefusalReason.AIRCRAFT_NOT_READY
+
+
+@pytest.mark.parametrize(
     ("change", "reason"),
     [
         ({"battery": 0.05}, RefusalReason.BATTERY_CRITICAL),
@@ -368,7 +419,8 @@ def test_a_mixed_translate_plan_passes_the_whole_plan_gate() -> None:
 
 def test_a_mixed_formation_plan_passes_the_whole_plan_gate() -> None:
     snapshot = make_mixed_snapshot(spacing=1.2)
-    planner = DeterministicPlanner(planning_config())
+    snapshot = replace_aircraft(snapshot, 12, pose=Position(2.0, 6.0, 0.0))
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
     intent = make_intent(
         IntentName.FORMATION_SET, selection=snapshot.selection, args={"name": "line"}
     )
@@ -376,6 +428,17 @@ def test_a_mixed_formation_plan_passes_the_whole_plan_gate() -> None:
     plan = planner.plan(intent, snapshot)
 
     assert isinstance(plan, Plan)
+    assert _arbiter().check_plan(plan, snapshot) is None
+
+
+def test_formation_next_validates_the_shapes_each_selected_class_can_form() -> None:
+    snapshot = make_mixed_snapshot(formation="column")
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
+    intent = make_intent(IntentName.FORMATION_NEXT, selection=snapshot.selection)
+
+    plan = planner.plan(intent, snapshot)
+
+    assert isinstance(plan, Plan) and plan.formation_update == "line"
     assert _arbiter().check_plan(plan, snapshot) is None
 
 

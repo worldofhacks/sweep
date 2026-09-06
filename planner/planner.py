@@ -443,7 +443,7 @@ class DeterministicPlanner:
 
         elif intent.name in {IntentName.FORMATION_NEXT, IntentName.FORMATION_SET}:
             name = (
-                _next_formation(snapshot.formation, len(selected))
+                _next_formation(snapshot.formation, _formation_group_size(selected, snapshot))
                 if intent.name is IntentName.FORMATION_NEXT
                 else str(intent.args["name"])
             )
@@ -855,6 +855,15 @@ def _next_formation(current: str, count: int) -> str:
         return available[(available.index(current) + 1) % len(available)]
     except ValueError:
         return available[0]
+
+
+def _formation_group_size(selected: tuple[int, ...], snapshot: FleetSnapshot) -> int:
+    """The smallest forming class bounds the shapes available to a mixed selection."""
+    counts = [
+        sum(snapshot.aircraft[drone_id].device_class is device_class for drone_id in selected)
+        for device_class in DeviceClass
+    ]
+    return min((count for count in counts if count > 1), default=1)
 
 
 def _formation_targets(
