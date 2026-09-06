@@ -362,7 +362,7 @@ export function useControlConsole({
         {
           name: 'select',
           args: { ids: desired },
-          selection: state.selection,
+          selection: desired,
           source,
           session: state.sessionId,
         },

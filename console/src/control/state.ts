@@ -593,12 +593,33 @@ function reduceStateEvent(
     'stale_roster',
     `Fleet roster changed to version ${event.roster_version}. Build and confirm a new preview.`,
   )
-  // Intents that address the whole roster (land_all) keep their preview while
-  // the operator's selection moves; only a roster change invalidates them.
+  // SELECT proposes new membership, so its named targets may not belong to the
+  // current selection yet. Validate those targets directly on every snapshot.
+  const staleProposedSelectionRequests = next.requests
+    .filter(
+      (request) =>
+        request.status === 'pending_confirmation' &&
+        request.intent.name === 'select' &&
+        'ids' in request.intent.args &&
+        request.intent.args.ids.some(
+          (id) => aircraft[id]?.membership !== 'ready' || !aircraft[id]?.selectable,
+        ),
+    )
+    .map((request) => request.intent.intent_id)
+  next = invalidateRequests(
+    next,
+    staleProposedSelectionRequests,
+    event.t,
+    'stale_selection',
+    'An aircraft in the proposed selection is no longer ready or selectable.',
+  )
+  // SELECT carries the proposed selection; it must survive snapshots of the old
+  // selection until confirmed. Roster-wide intents also keep independent targets.
   const changedSelectionRequests = next.requests
     .filter(
       (request) =>
         request.status === 'pending_confirmation' &&
+        request.intent.name !== 'select' &&
         followsSelection(request.intent.name) &&
         !sameDroneSet(request.intent.selection, selection),
     )

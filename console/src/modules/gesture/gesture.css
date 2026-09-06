@@ -198,6 +198,8 @@
 .gs-pair-status { flex: 0 0 auto; font-family: var(--font-mono); font-size: var(--text-11-5); color: var(--color-ok); }
 .gs-pair-status.is-nothing { color: var(--color-ink-v2-3); }
 .gs-pair-dwell { flex: 0 0 100%; font-family: var(--font-mono); font-size: var(--text-11); color: var(--color-ink-3); }
+.gs-pair-readiness { flex: 0 0 100%; font-size: var(--text-12-5); line-height: var(--leading-1-4); color: var(--color-ok); }
+.gs-pair-readiness.is-blocked { color: var(--color-ink-3); }
 .gs-never { margin: 10px 0 0; font-size: var(--text-12); line-height: var(--leading-1-45); color: var(--color-ink-3); }
 .gs-never code { font-family: var(--font-mono); color: var(--color-danger); }
 
