@@ -37,4 +37,4 @@ services:
     volumes:
       # Edits to this file need `docker compose restart mediamtx`; the bind mount does not hot-reload.
       - ./media/mediamtx.yml:/mediamtx.yml:ro
-      # M3: add ./recordings:/recordings and set recordPath in media/mediamtx.yml.
+      # docker-compose.recording.yml adds the writable recordings mount when explicitly selected.

@@ -1,0 +1,42 @@
+name: Camera recording
+
+on:
+  pull_request:
+    paths:
+      - docker-compose.yml
+      - docker-compose.recording.yml
+      - media/**
+      - tests/test_mediamtx_recording.py
+      - .github/workflows/media-recording.yml
+  push:
+    branches: [main]
+    paths:
+      - docker-compose.yml
+      - docker-compose.recording.yml
+      - media/**
+      - tests/test_mediamtx_recording.py
+      - .github/workflows/media-recording.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: camera-recording-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  camera-recording:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SWEEP_REQUIRE_MEDIA_RECORDING_TEST: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: docker compose -f docker-compose.yml -f docker-compose.recording.yml pull mediamtx
+      - run: uv run --no-sync pytest -q tests/test_mediamtx_recording.py
