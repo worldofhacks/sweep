@@ -7,8 +7,15 @@ import type {
   IntentArgsByName,
   IntentSource,
   IntentV1,
+  VoicePlan,
+  VoicePlanStep,
 } from '../relay/contract'
-import { isConsoleIntentV1, requiresConfirmation, selectionRule } from '../relay/contract'
+import {
+  intentFromVoicePlanStep,
+  isConsoleIntentV1,
+  requiresConfirmation,
+  selectionRule,
+} from '../relay/contract'
 import {
   browserIntentDependencies,
   confirmIntent,
@@ -25,6 +32,7 @@ import {
   createInitialControlState,
   createRequestRecord,
   isIntentEnabled,
+  type ControlState,
   type RequestRecord,
 } from './state'
 
@@ -33,6 +41,8 @@ export interface ControlClients {
   keyboard: RelayClient
   /** Optional gesture producer source; drafts with source webcam are sent through it. */
   webcam?: RelayClient
+  /** Optional relay-bound compiler source; raw language intents fail closed without it. */
+  language?: RelayClient
 }
 
 /** Sources that draft previewed requests through the operator control flow. */
@@ -64,6 +74,12 @@ export function useControlConsole({
   )
 
   useEffect(() => {
+    if (state.sessionId !== sessionId) {
+      dispatch({ type: 'session_changed', sessionId, t: intentDependencies.now() })
+    }
+  }, [intentDependencies, sessionId, state.sessionId])
+
+  useEffect(() => {
     const unsubscribeConsole = clients.console.subscribe((event) => {
       if (event.kind === 'connection') {
         dispatch({ type: 'connection_changed', connection: event.connection })
@@ -73,7 +89,10 @@ export function useControlConsole({
     })
     const subscribeLifecycleOnly = (
       client: RelayClient,
-      connectionType: 'keyboard_connection_changed' | 'webcam_connection_changed',
+      connectionType:
+        | 'keyboard_connection_changed'
+        | 'webcam_connection_changed'
+        | 'language_connection_changed',
     ) =>
       client.subscribe((event) => {
         if (event.kind === 'connection') {
@@ -88,25 +107,36 @@ export function useControlConsole({
           (connectionType === 'keyboard_connection_changed' &&
             (event.event.type === 'safety_action' || event.event.type === 'state'))
         ) {
-          dispatch({ type: 'relay_event', event: event.event,
-            source: connectionType === 'keyboard_connection_changed' ? 'keyboard' : 'webcam' })
+          const source: IntentSource =
+            connectionType === 'keyboard_connection_changed'
+              ? 'keyboard'
+              : connectionType === 'webcam_connection_changed'
+                ? 'webcam'
+                : 'language'
+          dispatch({ type: 'relay_event', event: event.event, source })
         }
       })
     const unsubscribeKeyboard = subscribeLifecycleOnly(clients.keyboard, 'keyboard_connection_changed')
     const unsubscribeWebcam = clients.webcam
       ? subscribeLifecycleOnly(clients.webcam, 'webcam_connection_changed')
       : () => {}
+    const unsubscribeLanguage = clients.language
+      ? subscribeLifecycleOnly(clients.language, 'language_connection_changed')
+      : () => {}
 
     clients.console.start()
     clients.keyboard.start()
     clients.webcam?.start()
+    clients.language?.start()
     return () => {
       unsubscribeConsole()
       unsubscribeKeyboard()
       unsubscribeWebcam()
+      unsubscribeLanguage()
       clients.console.stop()
       clients.keyboard.stop()
       clients.webcam?.stop()
+      clients.language?.stop()
     }
   }, [clients])
 
@@ -114,6 +144,7 @@ export function useControlConsole({
     (source: IntentSource): RelayClient | null => {
       if (source === 'keyboard') return clients.keyboard
       if (source === 'webcam') return clients.webcam ?? null
+      if (source === 'language') return clients.language ?? null
       return clients.console
     },
     [clients],
@@ -156,7 +187,11 @@ export function useControlConsole({
    * carries it so the dock counts it down and confirmRequest honours it.
    */
   const stageForConfirmation = useCallback(
-    (intent: IntentV1, expiresAt?: number): IntentV1 => {
+    (
+      intent: IntentV1,
+      expiresAt?: number,
+      voiceBinding?: NonNullable<RequestRecord['plan']>['voiceBinding'],
+    ): IntentV1 => {
       const t = intentDependencies.now()
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
@@ -168,7 +203,7 @@ export function useControlConsole({
         type: 'request_pending_confirmation',
         intentId: intent.intent_id,
         t,
-        plan: buildPlanPreview(intent, state.rosterVersion, expiresAt),
+        plan: buildPlanPreview(intent, state.rosterVersion, expiresAt, voiceBinding),
       })
       return intent
     },
@@ -355,7 +390,7 @@ export function useControlConsole({
         {
           name: 'select',
           args: { ids: desired },
-          selection: state.selection,
+          selection: desired,
           source,
           session: state.sessionId,
         },
@@ -393,6 +428,38 @@ export function useControlConsole({
         intentDependencies,
       )
       return stageForConfirmation(draft, expiresAt)
+    },
+    [intentDependencies, stageForConfirmation, state],
+  )
+
+  /** Stage the exact relay-minted language draft; no name-specific rewrite is allowed. */
+  const prepareVoicePlanStep = useCallback(
+    (plan: VoicePlan, step: VoicePlanStep, expiresAt: number): IntentV1 | null => {
+      if (
+        plan.kind !== 'plan' ||
+        plan.plan_digest === null ||
+        plan.session !== state.sessionId ||
+        plan.roster_version !== state.rosterVersion ||
+        state.languageConnection.status !== 'connected' ||
+        expiresAt !== plan.expires_at_ms ||
+        intentDependencies.now() >= expiresAt ||
+        !isIntentEnabled(state, step.name)
+      ) {
+        return null
+      }
+      const draft = intentFromVoicePlanStep(plan, step, intentDependencies.now())
+      if (draft === null) return null
+      const intentCanonical = canonicalVoiceIntent(draft)
+      return stageForConfirmation(draft, expiresAt, {
+        planDigest: plan.plan_digest,
+        correlationId: plan.correlation_id,
+        stateEventId: plan.state_event_id,
+        session: plan.session,
+        stepIndex: step.index,
+        intentId: step.intent_id,
+        intentCanonical,
+        stateCanonical: canonicalLanguageState(state),
+      })
     },
     [intentDependencies, stageForConfirmation, state],
   )
@@ -453,6 +520,25 @@ export function useControlConsole({
           t: intentDependencies.now(),
           reasonCode: 'confirmation_window_expired',
           detail: 'The confirmation window expired before the operator confirmed. No command was sent.',
+        })
+        return null
+      }
+      const voiceBinding = request.plan?.voiceBinding
+      if (
+        voiceBinding !== undefined &&
+        (state.sessionId !== voiceBinding.session ||
+          state.languageConnection.status !== 'connected' ||
+          request.intent.source !== 'language' ||
+          request.intent.intent_id !== voiceBinding.intentId ||
+          canonicalVoiceIntent(request.intent) !== voiceBinding.intentCanonical ||
+          canonicalLanguageState(state) !== voiceBinding.stateCanonical)
+      ) {
+        dispatch({
+          type: 'request_invalidated',
+          intentId,
+          t: intentDependencies.now(),
+          reasonCode: 'language_plan_mismatch',
+          detail: 'The staged request no longer matches its exact relay compiler preview. No command was sent.',
         })
         return null
       }
@@ -574,6 +660,7 @@ export function useControlConsole({
   const retryRequest = useCallback(
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
+      if (request.intent.source === 'language') return
       const intent = retryIntent(request.intent, intentDependencies)
       if (['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
         stageForConfirmation({ ...intent, confirm: false })
@@ -602,6 +689,7 @@ export function useControlConsole({
     prepareHold,
     prepareIntent,
     prepareSelect,
+    prepareVoicePlanStep,
     confirmRequest,
     cancelRequest,
     issueHold,
@@ -611,6 +699,54 @@ export function useControlConsole({
     retryRequest,
     selectFeed: (droneId: DroneId) => dispatch({ type: 'feed_selected', droneId }),
   }
+}
+
+function canonicalVoiceIntent(intent: IntentV1): string {
+  return JSON.stringify({
+    intent_id: intent.intent_id,
+    source: intent.source,
+    session: intent.session,
+    name: intent.name,
+    args: canonicalJson(intent.args),
+    selection: [...intent.selection],
+    mode: intent.mode,
+    retry_of: intent.retry_of,
+  })
+}
+
+function canonicalLanguageState(state: ControlState): string {
+  return JSON.stringify({
+    sessionId: state.sessionId,
+    rosterVersion: state.rosterVersion,
+    selection: [...state.selection],
+    capabilityProfile: state.capabilityProfile,
+    enabledIntentNames: [...state.enabledIntentNames].sort(),
+    armed: state.armed,
+    estop: state.estop,
+    drones: Object.values(state.aircraft)
+      .sort((left, right) => left.drone_id - right.drone_id)
+      .map((drone) => ({
+        droneId: drone.drone_id,
+        connectionEpoch: drone.connection_epoch,
+        membership: drone.membership,
+        selectable: drone.selectable,
+        flightState: drone.flight_state,
+        cameraPatterns: [...drone.camera_patterns].sort(),
+        flightAvailable: drone.adapter_capabilities.includes('flight'),
+      })),
+  })
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson)
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalJson(item)]),
+    )
+  }
+  return value
 }
 
 function sendToRelay(

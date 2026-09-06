@@ -15,6 +15,7 @@ function compiledPlan(overrides: Partial<VoicePlan> = {}): VoicePlan {
     steps: [
       {
         index: 0,
+        intent_id: 'voice-step-0',
         name: 'takeoff',
         args: {},
         selection: [1],

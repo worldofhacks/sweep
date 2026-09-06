@@ -2,8 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test, vi } from 'vitest'
 import App from '../../App'
-import { FixtureRelayClient } from '../../testing/fixture-relay-client'
-import type { VoicePlan, VoicePlanStep } from '../../relay/contract'
+import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
+import { C1_BASIC_CONTROL_INTENTS, type VoicePlan, type VoicePlanStep } from '../../relay/contract'
 import type { TranscriptClient, TranscriptRequest, VoiceOutcome } from '../../voice/client'
 import type { RecorderFactory } from '../../voice/use-push-to-talk'
 import type { VoiceDependencies } from '../types'
@@ -14,6 +14,7 @@ const T0 = 1_756_700_000_000
 function step(index: number, name: VoicePlanStep['name'], selection: number[], args: Record<string, unknown> = {}): VoicePlanStep {
   return {
     index,
+    intent_id: `voice-${index}-${name}`,
     name,
     args,
     selection,
@@ -89,6 +90,8 @@ function outcome(overrides: Partial<VoiceOutcome>): VoiceOutcome {
   return {
     v: 1,
     type: 'voice_outcome',
+    session,
+    correlation_id: 'voice-1',
     status: 'transcribed',
     source: 'whisper',
     reason: null,
@@ -105,6 +108,7 @@ function mount(options: { transcript?: TranscriptClient; requestAudio?: () => Pr
   const clients = {
     console: new FixtureRelayClient(session, now, 'console'),
     keyboard: new FixtureRelayClient(session, now, 'keyboard'),
+    language: new FixtureRelayClient(session, now, 'language'),
   }
   const recorder = new FakeRecorder()
   const stopTrack = vi.fn()
@@ -169,6 +173,29 @@ function completed(intentId: string, t: number, sequence: number) {
     reason: null,
     detail: 'Completed.',
     roster_version: 7,
+  }
+}
+
+function authoritativeState(selection: number[], t: number, sequence: number) {
+  return {
+    v: 1 as const,
+    t,
+    event_id: `authoritative-state-${sequence}`,
+    type: 'state' as const,
+    session,
+    roster_version: 7,
+    state_sequence: sequence,
+    armed: true,
+    estop: false,
+    selection,
+    formation: 'line',
+    spacing: 1.2,
+    mode: 'indoor',
+    capability_profile: 'c1_basic_control',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+    pending: null,
+    accepted_plan: null,
+    drones: fixtureAircraft(t),
   }
 }
 
@@ -346,21 +373,10 @@ describe('Speech module', () => {
     expect(clients.console.sent).toHaveLength(0)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
 
-    await user().click(screen.getByRole('button', { name: 'Draft for confirmation' }))
-    const dock = screen.getByRole('region', { name: 'Pending confirmation' })
-    expect(dock).toHaveTextContent('hold')
+    expect(screen.getByRole('button', { name: 'Draft for confirmation' })).toBeDisabled()
+    expect(result()).toHaveTextContent('A relayed transcript without an exact bound compiler plan is preview-only.')
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     expect(clients.console.sent).toHaveLength(0)
-
-    await user().click(within(dock).getByRole('button', { name: 'Confirm and send' }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
-    expect(clients.console.sent[0]).toMatchObject({
-      intent_id: 'speech-intent-1',
-      name: 'hold',
-      source: 'console',
-      selection: [1],
-      confirm: true,
-      args: {},
-    })
   })
 
   test('a relay-compiled plan previews every step and stages them one at a time through the dock', async () => {
@@ -407,23 +423,27 @@ describe('Speech module', () => {
     await u.click(screen.getByRole('button', { name: 'Stage step 1: select' }))
     let dock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(within(dock).getByText('select', { selector: '.sh-dock-title' })).toBeInTheDocument()
-    expect(dock).toHaveTextContent('source console')
-    expect(clients.console.sent).toHaveLength(0)
+    expect(dock).toHaveTextContent('source language')
+    expect(clients.language.sent).toHaveLength(0)
     expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
-    expect(steps[0]).toHaveTextContent('staged speech-i…nt-1 · Pending confirmation — confirm or cancel it in the dock.')
+    expect(steps[0]).toHaveTextContent('Pending confirmation — confirm or cancel it in the dock.')
     await u.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
-    expect(clients.console.sent[0]).toMatchObject({
-      intent_id: 'speech-intent-1',
+    await waitFor(() => expect(clients.language.sent).toHaveLength(1))
+    expect(clients.language.sent[0]).toMatchObject({
+      intent_id: 'voice-0-select',
       name: 'select',
-      source: 'console',
+      source: 'language',
+      selection: [2],
       args: { ids: [2] },
       confirm: true,
     })
     // Accepted is not terminal: step 2 is not offered until the relay closes step 1.
     await waitFor(() => expect(steps[0]).toHaveTextContent('Accepted'))
     expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
-    act(() => clients.console.emitServer(completed('speech-intent-1', T0 + 1, 1)))
+    act(() => {
+      clients.console.emitServer(authoritativeState([2], T0 + 1, 2))
+      clients.language.emitServer(completed('voice-0-select', T0 + 1, 1))
+    })
     await waitFor(() => expect(steps[0]).toHaveTextContent('Completed'))
 
     // Step 2: takeoff lands in the dock with confirm, exactly like the Control button.
@@ -432,28 +452,34 @@ describe('Speech module', () => {
     expect(dock).toHaveTextContent('Takeoff')
     expect(dock).toHaveTextContent('D-02')
     expect(dock).toHaveTextContent('Take off to the indoor hover altitude.')
-    expect(clients.console.sent).toHaveLength(1)
+    expect(clients.language.sent).toHaveLength(1)
     await u.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(2))
-    expect(clients.console.sent[1]).toMatchObject({
-      intent_id: 'speech-intent-2',
+    await waitFor(() => expect(clients.language.sent).toHaveLength(2))
+    expect(clients.language.sent[1]).toMatchObject({
+      intent_id: 'voice-1-takeoff',
       name: 'takeoff',
-      source: 'console',
+      source: 'language',
       selection: [2],
       confirm: true,
       args: {},
     })
     expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
-    act(() => clients.console.emitServer(completed('speech-intent-2', T0 + 2, 2)))
+    act(() => clients.language.emitServer(completed('voice-1-takeoff', T0 + 2, 3)))
 
     // Step 3: hold is a preview the operator sends from the dock; the plan then completes.
     await u.click(await screen.findByRole('button', { name: 'Stage step 3: hold' }))
     dock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(dock).toHaveTextContent('hold')
     await u.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(3))
-    expect(clients.console.sent[2]).toMatchObject({ name: 'hold', source: 'console', selection: [2], confirm: true })
-    act(() => clients.console.emitServer(completed('speech-intent-3', T0 + 3, 3)))
+    await waitFor(() => expect(clients.language.sent).toHaveLength(3))
+    expect(clients.language.sent[2]).toMatchObject({
+      intent_id: 'voice-2-hold',
+      name: 'hold',
+      source: 'language',
+      selection: [2],
+      confirm: true,
+    })
+    act(() => clients.language.emitServer(completed('voice-2-hold', T0 + 3, 4)))
     await waitFor(() => expect(planCard()).toHaveTextContent('Every step reached completed. Nothing further is staged.'))
     expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
 
@@ -474,15 +500,15 @@ describe('Speech module', () => {
     await u.click(await screen.findByRole('button', { name: 'Stage step 1: takeoff' }))
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
     await u.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
-    await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+    await waitFor(() => expect(clients.language.sent).toHaveLength(1))
     act(() =>
-      clients.console.emitServer({
+      clients.language.emitServer({
         v: 1,
         t: T0 + 5,
         event_id: 'refusal-1',
         type: 'refusal',
         session,
-        intent_id: 'speech-intent-1',
+        intent_id: 'voice-0-takeoff',
         command_id: null,
         status: 'refused',
         source: 'autonomy',
@@ -499,7 +525,7 @@ describe('Speech module', () => {
       ),
     )
     expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
-    expect(clients.console.sent).toHaveLength(1)
+    expect(clients.language.sent).toHaveLength(1)
 
     await record()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Stage step 1: takeoff' })).toBeEnabled())
@@ -507,7 +533,7 @@ describe('Speech module', () => {
     expect(planCard()).toHaveTextContent('plan expired')
     expect(planCard()).toHaveTextContent('The compiled plan expired; say it again to compile a fresh plan.')
     expect(screen.getByRole('button', { name: 'Stage step 1: takeoff' })).toBeDisabled()
-    expect(clients.console.sent).toHaveLength(1)
+    expect(clients.language.sent).toHaveLength(1)
   })
 
   test('a relay clarification shows the options and stages nothing; a relay refusal shows the reason sentence', async () => {
@@ -579,7 +605,7 @@ describe('Speech module', () => {
       "The model's proposal did not pass the relay's deterministic validation. The proposed plan did not pass deterministic validation. Nothing was emitted.",
     )
     expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
-    expect(clients.console.sent).toHaveLength(0)
+    expect(clients.language.sent).toHaveLength(0)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
   })
 
@@ -614,7 +640,7 @@ describe('Speech module', () => {
     expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Draft for confirmation' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
-    expect(clients.console.sent).toHaveLength(0)
+    expect(clients.language.sent).toHaveLength(0)
   })
 
   test('a staged relay step inherits the plan expiry: a late confirm is invalidated and the dock disables Confirm', async () => {
@@ -623,7 +649,12 @@ describe('Speech module', () => {
     transcript.answer(
       outcome({
         transcript: 'Hold position.',
-        plan: relayPlan({ transcript: 'Hold position.', steps: [step(0, 'hold', [1])] }),
+        plan: relayPlan({
+          transcript: 'Hold position.',
+          steps: [step(0, 'hold', [1])],
+          compiled_at_ms: T0 + 31_000,
+          expires_at_ms: T0 + 61_000,
+        }),
       }),
     )
     const { clients, advance, drift } = mount({ transcript })
@@ -644,7 +675,7 @@ describe('Speech module', () => {
     // when it is pressed: the control flow refuses and sends nothing.
     drift(10_000)
     await u.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
-    expect(clients.console.sent).toHaveLength(0)
+    expect(clients.language.sent).toHaveLength(0)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     const alert = screen.getByText(/Preview invalidated, nothing sent/).closest('[role="alert"]')
     expect(alert).toHaveTextContent('confirmation_window_expired')
@@ -664,7 +695,7 @@ describe('Speech module', () => {
     await u.click(within(holdDock).getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     expect(planCard()).toHaveTextContent('Plan halted at step 1 (cancelled).')
-    expect(clients.console.sent).toHaveLength(0)
+    expect(clients.language.sent).toHaveLength(0)
   })
 
   test('typing after a relay plan returns to the labelled local fallback', async () => {

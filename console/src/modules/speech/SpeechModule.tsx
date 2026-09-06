@@ -1,8 +1,7 @@
 import { useEffect, useReducer, useState } from 'react'
 import './speech.css'
 import { formatDroneId, isTerminalRequest, type ControlState, type RequestRecord } from '../../control/state'
-import type { IntentRequest } from '../../control/use-control-console'
-import type { CapturePattern, DroneId, IntentV1, VoicePlan, VoicePlanStep } from '../../relay/contract'
+import type { DroneId, VoicePlan, VoicePlanStep } from '../../relay/contract'
 import { isValidRoomId } from '../../control/intent'
 import { Pane, type PaneTab } from '../../shell/Pane'
 import { isReady, sortedAircraft } from '../../shell/derive'
@@ -52,8 +51,6 @@ interface SeenVoice {
 /** A relay-compiled plan being previewed and staged one step at a time. */
 interface RelayPlanState {
   plan: VoicePlan
-  /** Console clock when the plan arrived; the expiry is measured from here. */
-  receivedAt: number
   /** Intent IDs of the steps staged so far, in step order. */
   staged: string[]
   stageNote: string | null
@@ -90,13 +87,26 @@ const INITIAL: SpeechState = {
  * client, or type. When the relay carries the plan compiler its validated plan
  * is previewed step by step and each step is staged through the control flow,
  * so it lands in the same confirmation dock as a button press; the local
- * fallback compiles typed text or a relay transcript without a plan, and the
- * outcome card says which one ran. Nothing is sent from a compile.
+ * fallback compiles only text the operator separately types. A relayed
+ * transcript without a bound plan remains display-only, so its provenance
+ * cannot be laundered into the console source. Nothing is sent from a compile.
  */
-export function SpeechModule({ controller, now, roomId, services }: ModuleProps) {
+export function SpeechModule(props: ModuleProps) {
+  return <SpeechSession key={props.controller.state.sessionId} {...props} />
+}
+
+/** Session-keyed body: a session change unmounts every pending speech callback and preview. */
+function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
   const [pane, setPane] = useState<SpeechPane>('talk')
-  const { state, pendingRequest, issueIntent, prepareCapture, prepareHold, prepareIntent, prepareSelect } =
-    controller
+  const {
+    state,
+    pendingRequest,
+    prepareCapture,
+    prepareHold,
+    prepareSelect,
+    prepareVoicePlanStep,
+    invalidatePending,
+  } = controller
   const languageEnabled = services.transcript !== undefined
   const voice = usePushToTalk({
     sessionId: state.sessionId,
@@ -114,7 +124,7 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
     speech.seen.status !== voice.status ||
     speech.seen.detail !== voice.detail
   ) {
-    setSpeech(absorbVoice(speech, voice.outcome, voice.status, voice.detail, context, now()))
+    setSpeech(absorbVoice(speech, voice.outcome, voice.status, voice.detail, context))
   }
 
   const remainingSeconds =
@@ -123,7 +133,10 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
       : Math.max(0, Math.ceil((voice.startedAt + voice.maxRecordingMs - now()) / 1_000))
   const captureWord = describeCapture(voice.status, languageEnabled)
   const compiled = speech.compiled
-  const blocked = compiled?.status === 'compiled' ? emissionBlockedReason(compiled, state, pendingRequest) : null
+  const blocked =
+    compiled?.status === 'compiled'
+      ? emissionBlockedReason(compiled, state, pendingRequest, speech.origin)
+      : null
   const drafted =
     speech.draftedIntentId === null
       ? null
@@ -134,7 +147,17 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
       ? stageBlockedReason(relay, relayView, nextStep, state, pendingRequest, roomId, now())
       : null
 
-  const setUtterance = (utterance: string, origin: TranscriptOrigin, compile: boolean) =>
+  const setUtterance = (utterance: string, origin: TranscriptOrigin, compile: boolean) => {
+    const inputChanged = utterance !== speech.utterance || origin !== speech.origin
+    if (inputChanged) {
+      voice.reset()
+      if (pendingRequest?.intent.source === 'language') {
+        invalidatePending(
+          'language_input_changed',
+          'The language input changed after preview. Compile and stage a fresh plan.',
+        )
+      }
+    }
     setSpeech((previous) => ({
       ...previous,
       utterance,
@@ -144,6 +167,7 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
       relayPlan: null,
       draftNote: null,
     }))
+  }
 
   const pick = (option: AmbiguityOption) =>
     setSpeech((previous) => {
@@ -182,17 +206,8 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
    */
   const stageStep = () => {
     if (relay === null || nextStep === null || stageBlocked !== null) return
-    const intent = stageThroughController(
-      nextStep,
-      {
-        issueIntent,
-        prepareCapture,
-        prepareHold,
-        prepareIntent,
-        prepareSelect,
-      },
-      relayView?.deadline ?? undefined,
-    )
+    if (relayView?.deadline === null || relayView?.deadline === undefined) return
+    const intent = prepareVoicePlanStep(relay.plan, nextStep, relayView.deadline)
     setSpeech((previous) => {
       if (previous.relayPlan === null) return previous
       return {
@@ -209,6 +224,20 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
 
   const startRecording = () => {
     if (!languageEnabled) return
+    if (pendingRequest?.intent.source === 'language') {
+      invalidatePending(
+        'language_input_changed',
+        'A new recording started after preview. Compile and stage a fresh plan.',
+      )
+    }
+    setSpeech((previous) => ({
+      ...previous,
+      compiled: null,
+      relayCompilerReason: null,
+      relayPlan: null,
+      draftedIntentId: null,
+      draftNote: null,
+    }))
     void voice.start()
   }
 
@@ -358,8 +387,8 @@ export function SpeechModule({ controller, now, roomId, services }: ModuleProps)
                 )}
                 {compiled.status === 'compiled' && (
                   <p className="sp-drafted">
-                    Drafts with source <code>console</code>; the relay registers no language source yet. Nothing
-                    is sent until you confirm in the dock.
+                    Typed fallback drafts use source <code>console</code>. A relayed transcript without a bound
+                    compiler plan is preview-only and cannot be staged. Nothing is sent until you confirm in the dock.
                   </p>
                 )}
                 {speech.draftNote && <p className="sp-result-blocked">{speech.draftNote}</p>}
@@ -433,15 +462,14 @@ interface RelayPlanView {
   next: VoicePlanStep | null
   halted: string | null
   finished: boolean
-  /** Console-clock deadline derived from the relay's TTL; null for non-plan kinds. */
+  /** Relay-issued absolute deadline; null for non-plan kinds. */
   deadline: number | null
 }
 
 /** Derives each step's phase from the request records; pure, so it runs during render. */
 function deriveRelayPlan(relay: RelayPlanState, requests: RequestRecord[]): RelayPlanView {
   const { plan } = relay
-  const deadline =
-    plan.expires_at_ms === null ? null : relay.receivedAt + (plan.expires_at_ms - plan.compiled_at_ms)
+  const deadline = plan.expires_at_ms
   const steps: StepView[] = plan.steps.map((step, index) => {
     const intentId = relay.staged[index]
     const request =
@@ -474,8 +502,14 @@ function stageBlockedReason(
   now: number,
 ): string | null {
   if (pending) return 'A plan preview is already pending; confirm or cancel it before staging the next step.'
+  if (relay.plan.session !== state.sessionId) {
+    return 'The console session changed after compilation; say it again in the current session.'
+  }
   if (state.connection.status !== 'connected') {
-    return `The console connection is ${state.connection.status}. Nothing can be staged.`
+    return `The authoritative console state connection is ${state.connection.status}. Nothing can be staged.`
+  }
+  if (state.languageConnection.status !== 'connected') {
+    return `The language connection is ${state.languageConnection.status}. Nothing can be staged.`
   }
   if (state.estop) return 'The network stop is active. Requests are refused until the relay reports it clear.'
   if (view.deadline !== null && now >= view.deadline) {
@@ -490,7 +524,15 @@ function stageBlockedReason(
   }
   const notReady = (id: DroneId) => !isReady(state.aircraft[id])
   if (step.name === 'select') {
-    const ids = Array.isArray(step.args.ids) ? (step.args.ids as DroneId[]) : []
+    const rawIds = step.args.ids
+    const ids = Array.isArray(rawIds)
+      ? rawIds.filter(
+          (id): id is DroneId => typeof id === 'number' && Number.isSafeInteger(id) && id > 0,
+        )
+      : []
+    if (!Array.isArray(rawIds) || ids.length !== rawIds.length) {
+      return 'The compiled selection is malformed; say it again.'
+    }
     const stale = ids.find(notReady)
     if (stale !== undefined) return `${formatDroneId(stale)} is no longer ready.`
     return null
@@ -516,60 +558,6 @@ function stageBlockedReason(
     }
   }
   return null
-}
-
-type StagingController = Pick<
-  ModuleProps['controller'],
-  'issueIntent' | 'prepareCapture' | 'prepareHold' | 'prepareIntent' | 'prepareSelect'
->
-
-/**
- * Hands one compiled step to the control flow. Confirmation-gated names go
- * through issueIntent, which parks them pending confirmation exactly like the
- * Control buttons; hold, select and capture_room use their prepare functions;
- * everything else is parked as a preview through prepareIntent. `expiresAt`
- * is the plan's console-clock deadline, carried into the dock preview so a
- * step cannot be confirmed after its plan expired. Never sends.
- */
-function stageThroughController(
-  step: VoicePlanStep,
-  controller: StagingController,
-  expiresAt?: number,
-): IntentV1 | null {
-  switch (step.name) {
-    case 'select':
-      return controller.prepareSelect(
-        Array.isArray(step.args.ids) ? (step.args.ids as DroneId[]) : [],
-        'console',
-        expiresAt,
-      )
-    case 'hold':
-      return controller.prepareHold('console', expiresAt)
-    case 'capture_room':
-      return controller.prepareCapture(
-        String(step.args.room_id),
-        'console',
-        step.args.pattern as CapturePattern,
-        expiresAt,
-      )
-    case 'takeoff':
-    case 'land':
-    case 'land_all':
-    case 'sweep':
-      return controller.issueIntent(stepRequest(step), expiresAt)
-    case 'estop':
-      return null
-    default:
-      return controller.prepareIntent(stepRequest(step), 'console', expiresAt)
-  }
-}
-
-function stepRequest(step: VoicePlanStep): IntentRequest {
-  return {
-    name: step.name,
-    args: step.args as unknown as IntentRequest['args'],
-    targets: [...step.selection],
-  }
 }
 
 function RelayPlanCard({
@@ -671,9 +659,9 @@ function RelayPlanCard({
           )}
           {relay.stageNote && <p className="sp-result-blocked">{relay.stageNote}</p>}
           <p className="sp-drafted">
-            Steps stage with source <code>console</code> and pass the arbiter exactly like a button press. A staged
-            step inherits the plan's expiry: the dock counts it down and refuses to confirm past it. The next step is
-            offered only after the one before it reaches a terminal state; it is never sent on its own.
+            Steps retain source <code>language</code> and the relay accepts only the next exact step from its audited
+            bound plan. A staged step inherits the absolute relay expiry. The next step is offered only after the one
+            before it completes; it is never sent on its own.
           </p>
         </>
       )}
@@ -737,7 +725,6 @@ function absorbVoice(
   status: PushToTalkStatus,
   detail: string | null,
   context: CompileContext,
-  now: number,
 ): SpeechState {
   const seen: SeenVoice = { outcome, status, detail }
   let next: SpeechState = { ...previous, seen }
@@ -757,7 +744,7 @@ function absorbVoice(
         origin: outcome.source,
         compiled: null,
         relayCompilerReason: null,
-        relayPlan: { plan: outcome.plan, receivedAt: now, staged: [], stageNote: null },
+        relayPlan: { plan: outcome.plan, staged: [], stageNote: null },
         sttError: null,
         draftNote: null,
       }
@@ -793,8 +780,12 @@ function emissionBlockedReason(
   compiled: Extract<CompileOutcome, { status: 'compiled' }>,
   state: ControlState,
   pending: ControlState['requests'][number] | null,
+  origin: TranscriptOrigin | null,
 ): string | null {
   if (pending) return 'A plan preview is already pending; confirm or cancel it before drafting another.'
+  if (origin !== 'typed') {
+    return 'A relayed transcript without an exact bound compiler plan is preview-only. Type and compile it explicitly to draft a console intent.'
+  }
   if (state.connection.status !== 'connected') {
     return `The console connection is ${state.connection.status}. Nothing can be drafted.`
   }

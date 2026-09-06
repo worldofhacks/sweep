@@ -15,7 +15,9 @@ from planner.models import AltitudeGrounding, TranslationGrounding, TranslationP
 from relay.capabilities import CapabilityProfile
 from relay.intent_v1 import AcceptedIntent, IntentName, Mode, validate_intent
 
-MAX_PLAN_STEPS = 12
+# Keep the compiler, relay wire, and console on one bounded plan size.  A plan
+# that validates here must always be representable at the next boundary.
+MAX_PLAN_STEPS = 8
 _SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _MEMBERSHIPS = frozenset({"registered", "ready", "leaving", "disconnected", "degraded"})
 _FLIGHT_STATES = frozenset(
@@ -715,6 +717,57 @@ def plan_step_matches_facts(intent: ProposedIntent, facts: GroundingFacts) -> bo
     except ValueError:
         return False
     return restored == (intent,)
+
+
+def plan_step_matches_projected_facts(
+    intents: tuple[ProposedIntent, ...],
+    compiled_facts: GroundingFacts,
+    step_index: int,
+    current_facts: GroundingFacts,
+) -> bool:
+    """Match one ordered plan step against its exact expected semantic state.
+
+    Event identity and timestamp are freshness fields and may advance. All model
+    facts remain frozen except deterministic effects of earlier plan steps.
+    """
+    if not 0 <= step_index < len(intents):
+        return False
+    expected = compiled_facts.model_dict()
+    selection = compiled_facts.selection
+    armed = compiled_facts.armed
+    estop = compiled_facts.estop
+    flight_states = {
+        int(drone["drone_id"]): drone["flight_state"] for drone in compiled_facts.drones
+    }
+    for intent in intents[:step_index]:
+        transition = _fold_semantic_state(
+            intent,
+            compiled_facts,
+            armed=armed,
+            flight_states=flight_states,
+        )
+        if transition is None:
+            return False
+        armed, flight_states = transition
+        if intent.name is IntentName.SELECT:
+            selection = tuple(intent.args["ids"])
+        if intent.name is IntentName.ESTOP:
+            estop = True
+    expected["selection"] = list(selection)
+    expected["armed"] = armed
+    expected["estop"] = estop
+    expected_drones = expected["drones"]
+    if not isinstance(expected_drones, list):
+        return False
+    for drone in expected_drones:
+        if not isinstance(drone, dict) or not isinstance(drone.get("drone_id"), int):
+            return False
+        drone["flight_state"] = flight_states[drone["drone_id"]]
+    actual = current_facts.model_dict()
+    for projection in (expected, actual):
+        projection.pop("state_event_id")
+        projection.pop("state_time_ms")
+    return expected == actual and plan_step_matches_facts(intents[step_index], current_facts)
 
 
 def _validate_proposed_intent(

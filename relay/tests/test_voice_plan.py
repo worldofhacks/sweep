@@ -37,9 +37,15 @@ from planner.models import TranslationGrounding, TranslationPolicy
 from relay.app import RelayRuntime, create_app
 from relay.auth import Principal
 from relay.autonomy import AutonomyConfig, create_autonomy_app
-from relay.main import build_transcript_service, transcript_service_factory
+from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES, IntentName
+from relay.intent_v1 import AcceptedIntent, validate_intent
+from relay.main import (
+    _qualified_voice_intents,
+    build_transcript_service,
+    transcript_service_factory,
+)
 from relay.session import RelaySession
-from relay.settings import AdapterBackend, RelaySettings
+from relay.settings import AdapterBackend, RelaySettings, SettingsError
 from relay.tests.conftest import (
     ADAPTER_KEY,
     CONSOLE_KEY,
@@ -47,6 +53,7 @@ from relay.tests.conftest import (
     EventIds,
     MutableClock,
     membership_payload,
+    profiled_sink,
     telemetry_payload,
 )
 from relay.voice import (
@@ -70,6 +77,9 @@ _HEADERS = {
     "Content-Type": "audio/webm",
     "X-Sweep-Correlation-Id": _CORRELATION,
 }
+_QUALIFIED_TEST_INTENTS = ",".join(
+    sorted(name.value for name in C1_IMPLEMENTED_INTENT_NAMES if name is not IntentName.ESTOP)
+)
 
 
 @dataclass
@@ -186,7 +196,11 @@ def _wired_app(
     app.state.transcript_service = build_transcript_service(
         runtime,
         config=_config(),
-        environ={} if environ is None else environ,
+        environ=(
+            {"SWEEP_QUALIFIED_VOICE_INTENTS": _QUALIFIED_TEST_INTENTS}
+            if environ is None
+            else environ
+        ),
         transport=transport if transport is not None else StaticResponseTransport(payload),
         transcription=ClockedTranscription(
             transcript, clock, after=lambda: _fresh_telemetry(session, clock)
@@ -200,6 +214,29 @@ def _takeoff_payload(selection: list[int]) -> dict[str, object]:
     return {
         "kind": "plan",
         "intents": [{"name": "takeoff", "args": {}, "selection": selection, "mode": "indoor"}],
+    }
+
+
+def _language_intent(
+    plan: Mapping[str, object], *, timestamp: int, step_index: int = 0
+) -> dict[str, object]:
+    raw_steps = plan["steps"]
+    assert isinstance(raw_steps, list)
+    step = raw_steps[step_index]
+    assert isinstance(step, Mapping)
+    return {
+        "v": 1,
+        "t": timestamp,
+        "type": "intent",
+        "intent_id": step["intent_id"],
+        "retry_of": None,
+        "source": "language",
+        "session": plan["session"],
+        "name": step["name"],
+        "args": _thaw(step["args"]),
+        "selection": _thaw(step["selection"]),
+        "mode": step["mode"],
+        "confirm": True,
     }
 
 
@@ -230,6 +267,18 @@ def test_relay_main_factory_keeps_compiler_unavailable_without_anthropic_key(
         assert keyed_service._compiler.plan_ttl_ms == 30_000
         assert keyed_service._compiler.state_max_age_ms == 2_000
     keyed_composition.close()
+
+
+def test_speech_pair_qualification_configuration_is_closed_and_immutable() -> None:
+    profile = _config().planning.effective_capability_profile()
+
+    assert _qualified_voice_intents({}, profile) == ()
+    assert _qualified_voice_intents(
+        {"SWEEP_QUALIFIED_VOICE_INTENTS": "takeoff, hold"}, profile
+    ) == ("hold", "takeoff")
+    for raw in ("takeoff,takeoff", "takeoff,", "unknown", "disarm", "map_area"):
+        with pytest.raises(SettingsError, match="unique enabled Intent v1 names"):
+            _qualified_voice_intents({"SWEEP_QUALIFIED_VOICE_INTENTS": raw}, profile)
 
 
 def test_endpoint_without_anthropic_key_returns_typed_compiler_unavailable(
@@ -299,9 +348,11 @@ def test_endpoint_compiles_a_takeoff_plan_grounded_on_a_fresh_state_event(
     assert plan["compiled_at_ms"] == started_ms + 3_000
     assert plan["expires_at_ms"] == plan["compiled_at_ms"] + 30_000
     assert len(plan["plan_digest"]) == 64
+    assert plan["steps"][0]["intent_id"].startswith("voice-")
     assert plan["steps"] == [
         {
             "index": 0,
+            "intent_id": plan["steps"][0]["intent_id"],
             "name": "takeoff",
             "args": {},
             "selection": [1],
@@ -332,6 +383,208 @@ def test_endpoint_compiles_a_takeoff_plan_grounded_on_a_fresh_state_event(
     assert compiled[0]["event_id"].startswith("server-event-")
     assert "transcript" not in json.dumps(compiled[0])
     assert compiled[0]["facts"]["state_event_id"] == plan["state_event_id"]
+    bound = [
+        record["event"] for record in records if record["event"].get("event") == "voice_plan_bound"
+    ]
+    assert len(bound) == 1
+    assert bound[0]["plan_digest"] == plan["plan_digest"]
+    assert bound[0]["intent_ids"] == [plan["steps"][0]["intent_id"]]
+
+
+def test_language_emission_requires_the_exact_audited_step_and_is_single_use(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    app, runtime, session = _wired_app(
+        tmp_path, clock, transcript="Take off.", payload=_takeoff_payload([1])
+    )
+    _ready_landed_aircraft(session, clock)
+    session.intent_sink = profiled_sink(lambda _intent, _state: None)
+    principal = Principal(source="language", drone_id=None, signing_key=CONSOLE_KEY)
+
+    tampered_plan = _post(app).json()["plan"]
+    tampered = _language_intent(tampered_plan, timestamp=clock.value)
+    tampered["selection"] = [2]
+    refused = session.process_intent(tampered, principal)
+    assert refused[0]["reason"] == "language_plan_mismatch"
+
+    exact_plan = _post(app).json()["plan"]
+    exact = _language_intent(exact_plan, timestamp=clock.value)
+    accepted = session.process_intent(exact, principal)
+    replayed = session.process_intent(exact, principal)
+    assert accepted[0]["status"] == "accepted"
+    assert accepted[0]["intent_id"] == exact_plan["steps"][0]["intent_id"]
+    assert replayed[0]["reason"] == "duplicate_intent"
+
+    stale_plan = _post(app).json()["plan"]
+    session.update_control_projection(armed=False)
+    stale = session.process_intent(_language_intent(stale_plan, timestamp=clock.value), principal)
+    assert stale[0]["reason"] == "stale_language_plan"
+
+    records = runtime.replay(SESSION)["events"]
+    assert (
+        len([record for record in records if record["event"].get("event") == "voice_plan_bound"])
+        == 3
+    )
+
+
+def test_unqualified_speech_pair_cannot_mint_an_executable_plan(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    app, runtime, session = _wired_app(
+        tmp_path,
+        clock,
+        transcript="Take off.",
+        payload=_takeoff_payload([1]),
+        environ={},
+    )
+    _ready_landed_aircraft(session, clock)
+
+    plan = _post(app).json()["plan"]
+
+    assert (plan["kind"], plan["reason"], plan["steps"]) == (
+        "unsupported",
+        "capability_unavailable",
+        [],
+    )
+    records = runtime.replay(SESSION)["events"]
+    assert not any(
+        record["event"].get("event") in {"plan_compiled", "voice_plan_bound"} for record in records
+    )
+
+
+def test_bound_plan_capacity_fails_explicitly_without_evicting_an_active_plan(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    runtime = _runtime(tmp_path, clock)
+    session = runtime.session(SESSION)
+    _ready_landed_aircraft(session, clock)
+    profile = _config().planning.effective_capability_profile()
+    compiler = RelayTranscriptCompiler(
+        sessions=lambda session_id: session if session_id == SESSION else None,
+        transport=StaticResponseTransport(_takeoff_payload([1])),
+        capability_profile=profile,
+        qualified_voice_intents=("takeoff",),
+    )
+
+    plans = []
+    for index in range(8):
+        state = session.current_state()
+        plan, _compiled = compiler.compile(
+            "Take off.",
+            state,
+            capability_version=compiler_capability_version(state),
+            now_ms=clock.value,
+            correlation_id=f"capacity-{index}",
+            session_id=SESSION,
+        )
+        plans.append(plan)
+
+    state = session.current_state()
+    with pytest.raises(CompilerUnavailable):
+        compiler.compile(
+            "Take off.",
+            state,
+            capability_version=compiler_capability_version(state),
+            now_ms=clock.value,
+            correlation_id="capacity-overflow",
+            session_id=SESSION,
+        )
+
+    assert len({plan.plan_digest for plan in plans}) == 8
+    records = session.audit_log.replay()
+    assert (
+        len([record for record in records if record["event"].get("event") == "voice_plan_bound"])
+        == 8
+    )
+
+
+def test_recompiling_the_same_digest_cannot_reset_a_bound_plan(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    runtime = _runtime(tmp_path, clock)
+    session = runtime.session(SESSION)
+    _ready_landed_aircraft(session, clock)
+    profile = _config().planning.effective_capability_profile()
+    compiler = RelayTranscriptCompiler(
+        sessions=lambda session_id: session if session_id == SESSION else None,
+        transport=StaticResponseTransport(_takeoff_payload([1])),
+        capability_profile=profile,
+        qualified_voice_intents=("takeoff",),
+    )
+    state = session.current_state()
+    arguments = {
+        "capability_version": compiler_capability_version(state),
+        "now_ms": clock.value,
+        "correlation_id": "duplicate-bound-plan",
+        "session_id": SESSION,
+    }
+
+    compiler.compile("Take off.", state, **arguments)
+    with pytest.raises(CompilerUnavailable):
+        compiler.compile("Take off.", state, **arguments)
+
+    assert (
+        len(
+            [
+                record
+                for record in session.audit_log.replay()
+                if record["event"].get("event") == "voice_plan_bound"
+            ]
+        )
+        == 1
+    )
+
+
+def test_bound_plan_steps_are_ordered_and_revalidate_the_projected_state(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    runtime = _runtime(tmp_path, clock)
+    session = runtime.session(SESSION)
+    _ready_landed_aircraft(session, clock)
+    session.intent_sink = profiled_sink(lambda _intent, _state: None)
+    profile = _config().planning.effective_capability_profile()
+    compiler = RelayTranscriptCompiler(
+        sessions=lambda session_id: session if session_id == SESSION else None,
+        transport=StaticResponseTransport(
+            {
+                "kind": "plan",
+                "intents": [
+                    {"name": "takeoff", "args": {}, "selection": [1], "mode": "indoor"},
+                    {"name": "hold", "args": {}, "selection": [1], "mode": "indoor"},
+                ],
+            }
+        ),
+        capability_profile=profile,
+        qualified_voice_intents=("hold", "takeoff"),
+    )
+    state = session.current_state()
+    plan, _compiled = compiler.compile(
+        "Take off and hold.",
+        state,
+        capability_version=compiler_capability_version(state),
+        now_ms=clock.value,
+        correlation_id="ordered-plan",
+        session_id=SESSION,
+    )
+    wire = plan.to_dict()
+    principal = Principal(source="language", drone_id=None, signing_key=CONSOLE_KEY)
+    second = validate_intent(
+        _language_intent(wire, timestamp=clock.value, step_index=1),
+        capability_profile=profile,
+    )
+    assert isinstance(second, AcceptedIntent)
+    assert compiler.authorize_intent(second.intent, session.current_state(), clock.value) == (
+        "language_plan_out_of_order",
+        "language plan steps must be emitted in order",
+    )
+
+    first_result = session.process_intent(_language_intent(wire, timestamp=clock.value), principal)
+    assert first_result[0]["status"] == "accepted"
+    _fresh_telemetry(session, clock, state="hovering")
+    second_result = session.process_intent(
+        _language_intent(wire, timestamp=clock.value, step_index=1), principal
+    )
+    assert second_result[0]["status"] == "accepted"
 
 
 def test_stale_state_without_refresh_is_a_typed_refusal_not_a_plan(
@@ -343,7 +596,7 @@ def test_stale_state_without_refresh_is_a_typed_refusal_not_a_plan(
     service = build_transcript_service(
         runtime,
         config=_config(),
-        environ={},
+        environ={"SWEEP_QUALIFIED_VOICE_INTENTS": "takeoff"},
         transport=StaticResponseTransport(_takeoff_payload([1])),
         transcription=ClockedTranscription(
             "Take off.", clock, after=lambda: _fresh_telemetry(session, clock)
@@ -545,6 +798,7 @@ def _plan(**changes: object) -> VoicePlan:
         "steps": (
             VoicePlanStep(
                 index=0,
+                intent_id="voice-plan-step-0",
                 name="takeoff",
                 args={},
                 selection=(1,),
@@ -598,7 +852,19 @@ def test_voice_outcome_wire_shape_round_trips_and_rejects_widening() -> None:
     with pytest.raises(ValueError, match="indexed in order"):
         parse_voice_plan({**wire["plan"], "steps": [{**wire["plan"]["steps"][0], "index": 1}]})
     with pytest.raises(ValueError, match="JSON-native"):
-        _plan(steps=(VoicePlanStep(0, "takeoff", {"z": object()}, (1,), "indoor", True),))
+        _plan(
+            steps=(
+                VoicePlanStep(
+                    0,
+                    "voice-plan-step-0",
+                    "takeoff",
+                    {"z": object()},
+                    (1,),
+                    "indoor",
+                    True,
+                ),
+            )
+        )
     with pytest.raises(ValueError, match="requires steps"):
         _plan(steps=())
     with pytest.raises(ValueError, match="only a compiled plan"):
@@ -609,6 +875,27 @@ def test_voice_outcome_wire_shape_round_trips_and_rejects_widening() -> None:
         _plan(expires_at_ms=1_756_700_000_000)
     with pytest.raises(ValueError, match="kind is unsupported"):
         _plan(kind="emit")
+
+    eight_steps = tuple(
+        VoicePlanStep(
+            index=index,
+            intent_id=f"voice-plan-step-{index}",
+            name="hold",
+            args={},
+            selection=(1,),
+            mode="indoor",
+            confirm_required=False,
+        )
+        for index in range(8)
+    )
+    assert len(_plan(steps=eight_steps).steps) == 8
+    with pytest.raises(ValueError, match="too many steps"):
+        _plan(
+            steps=(
+                *eight_steps,
+                VoicePlanStep(8, "voice-plan-step-8", "hold", {}, (1,), "indoor", False),
+            )
+        )
 
 
 def test_compiler_result_bound_to_another_session_is_not_returned(
@@ -671,7 +958,7 @@ def _corpus_headings(case: CorpusCase) -> dict[int, float]:
 
 
 def test_live_demo_corpus_previews_through_the_relay_path_with_replay(
-    tmp_path: Path, relay_session: RelaySession
+    tmp_path: Path,
 ) -> None:
     corpus = load_corpus()
     responses = load_synthetic_responses(corpus=corpus)
@@ -682,6 +969,15 @@ def test_live_demo_corpus_previews_through_the_relay_path_with_replay(
     for case in live:
         grounded = compiler_relay_state(_corpus_state(case))
         policy = _corpus_policy(case)
+        qualified = tuple(
+            sorted(
+                {
+                    intent["name"]
+                    for intent in case.expected.get("intents", [])
+                    if isinstance(intent, Mapping) and isinstance(intent.get("name"), str)
+                }
+            )
+        )
         facts = build_grounding_facts(
             grounded,
             capability_version=compiler_capability_version(grounded),
@@ -691,6 +987,7 @@ def test_live_demo_corpus_previews_through_the_relay_path_with_replay(
                 if policy is None
                 else TranslationGrounding(policy=policy, headings=_corpus_headings(case))
             ),
+            qualified_voice_intents=qualified,
         )
         RecordingTransport(StaticResponseTransport(responses[case.case_id]), cassette).complete(
             ModelRequest(transcript=case.transcript, facts=facts.model_dict())
@@ -698,13 +995,28 @@ def test_live_demo_corpus_previews_through_the_relay_path_with_replay(
     replay = ReplayTransport(cassette)
 
     seen_kinds: set[str] = set()
+    compiled_records: list[dict[str, object]] = []
     for case in live:
         headings = _corpus_headings(case)
+        case_runtime = _runtime(tmp_path / case.case_id, MutableClock(case.now_ms))
+        relay_session = case_runtime.session(SESSION)
+        qualified = tuple(
+            sorted(
+                {
+                    intent["name"]
+                    for intent in case.expected.get("intents", [])
+                    if isinstance(intent, Mapping) and isinstance(intent.get("name"), str)
+                }
+            )
+        )
         compiler = RelayTranscriptCompiler(
-            sessions=lambda session_id: relay_session if session_id == SESSION else None,
+            sessions=lambda session_id, bound=relay_session: (
+                bound if session_id == SESSION else None
+            ),
             transport=replay,
             translation_policy=_corpus_policy(case),
             headings=lambda _state, headings=headings: headings,
+            qualified_voice_intents=qualified,
         )
         outcome = TranscriptService(
             transcription=ClockedTranscription(case.transcript),
@@ -757,15 +1069,15 @@ def test_live_demo_corpus_previews_through_the_relay_path_with_replay(
                 tuple(case.rooms) if plan.reason == "ambiguous_location" else ()
             ), case.case_id
         parse_voice_outcome(outcome.to_dict(session_id=SESSION, correlation_id=case.case_id))
+        compiled_records.extend(
+            record["event"]
+            for record in relay_session.audit_log.replay()
+            if record["event"].get("event") == "plan_compiled"
+        )
 
     assert seen_kinds == {"plan", "clarify"}
-    compiled = [
-        record["event"]
-        for record in relay_session.audit_log.replay()
-        if record["event"].get("event") == "plan_compiled"
-    ]
-    assert len(compiled) == 18
-    assert all(record["response_source"] == "replay" for record in compiled)
+    assert len(compiled_records) == 18
+    assert all(record["response_source"] == "replay" for record in compiled_records)
 
 
 def test_relay_compiler_uses_one_audited_language_compiler_per_session(

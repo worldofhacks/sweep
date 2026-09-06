@@ -27,6 +27,7 @@ from relay.session import (
 )
 from relay.tests.conftest import (
     ADAPTER_KEY,
+    CONSOLE_KEY,
     SESSION,
     EventIds,
     MutableClock,
@@ -637,6 +638,31 @@ def test_webcam_source_is_gated_like_console_and_keyboard(
     assert impersonated[0]["reason"] == "source_mismatch"
     assert reversed_binding[0]["reason"] == "source_mismatch"
     assert adapter_authored[0]["reason"] == "frame_not_allowed"
+
+
+def test_language_source_fails_closed_without_the_bound_compiler_plan(
+    relay_session: RelaySession,
+) -> None:
+    principal = Principal(source="language", drone_id=None, signing_key=CONSOLE_KEY)
+
+    refused = relay_session.process_frame(intent_payload(source="language"), principal)
+
+    assert refused[0]["type"] == "refusal"
+    assert refused[0]["reason"] == "unbound_language_intent"
+    assert refused[0]["intent_id"] == "intent-1"
+
+
+def test_language_authorizer_binding_is_immutable(relay_session: RelaySession) -> None:
+    def first(_intent, _state, _now):
+        return None
+
+    def second(_intent, _state, _now):
+        return None
+
+    relay_session.bind_language_intent_authorizer(first)
+    relay_session.bind_language_intent_authorizer(first)
+    with pytest.raises(ValueError, match="already bound"):
+        relay_session.bind_language_intent_authorizer(second)
 
 
 def test_source_allowlist_refuses_names_a_source_never_emits(

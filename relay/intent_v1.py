@@ -60,7 +60,7 @@ type ValidationResult = AcceptedIntent | RejectedIntent
 # Intent v1. Console buttons, the keyboard network stop, and the webcam gesture
 # producer are each bound to their own connection; an intent never moves
 # between them. Adding a source changes this constant and its conformance tests.
-REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam"})
+REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam", "language"})
 # Intent v1 names each registered source may emit. The console owns every C1
 # name; the keyboard socket carries only the Shift+Escape network stop; the
 # webcam gesture producer drafts only the two names its gesture policy may emit
@@ -74,6 +74,9 @@ SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
         "console": C1_IMPLEMENTED_INTENT_NAMES,
         "keyboard": frozenset({IntentName.ESTOP}),
         "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
+        # This is only the schema ceiling. RelaySession additionally requires a
+        # one-shot audited compiler-plan binding for every language intent.
+        "language": C1_IMPLEMENTED_INTENT_NAMES,
     }
 )
 _REQUIRED_FIELDS = frozenset(

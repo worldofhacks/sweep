@@ -71,6 +71,7 @@ export const TRY_PHRASES: readonly string[] = Object.freeze([
 
 const ROOM_PATTERN = /\b(kitchen|hall|studio|stair|lobby|corridor)(?:[- ]?(\d+))?\b/
 const DEMONSTRATIVE = /\b(over there|that one|it|them|those|this one)\b/
+const NEGATED_ACTION = /\b(?:do\s+not|not|never|cannot|no\s+longer|\w+n['’]t)\b/
 
 export function compileUtterance(text: string, context: CompileContext): CompileOutcome {
   const t = text.toLowerCase().trim()
@@ -81,6 +82,13 @@ export function compileUtterance(text: string, context: CompileContext): Compile
 
   if (!t) {
     return { status: 'refused', reason: 'empty_audio', sentence: 'No speech was captured. Nothing was emitted.' }
+  }
+  if (NEGATED_ACTION.test(t)) {
+    return {
+      status: 'refused',
+      reason: 'negated_action',
+      sentence: 'The utterance negates an action, so no intent was drafted.',
+    }
   }
   if (has('ignore the geofence', 'fly through', 'disable safety', 'override')) {
     return {

@@ -16,6 +16,8 @@ from typing import Literal, Protocol
 import av
 import httpx
 
+from arbiter.safety import CONFIRMATION_REQUIRED_INTENTS
+from relay.intent_v1 import AcceptedIntent, validate_intent
 from relay.voice_telemetry import VoiceTraceSink, get_default_voice_trace_sink
 
 WHISPER_MODEL = "whisper-1"
@@ -197,6 +199,7 @@ class VoicePlanStep:
     """One Intent v1 draft the compiler proposes; the console builds the envelope."""
 
     index: int
+    intent_id: str
     name: str
     args: Mapping[str, object]
     selection: tuple[int, ...]
@@ -207,6 +210,7 @@ class VoicePlanStep:
     def to_dict(self) -> dict[str, object]:
         return {
             "index": self.index,
+            "intent_id": self.intent_id,
             "name": self.name,
             "args": _thaw(self.args),
             "selection": list(self.selection),
@@ -332,7 +336,16 @@ _VOICE_PLAN_FIELDS = frozenset(
     }
 )
 _VOICE_PLAN_STEP_FIELDS = frozenset(
-    {"index", "name", "args", "selection", "mode", "confirm_required", "notes"}
+    {
+        "index",
+        "intent_id",
+        "name",
+        "args",
+        "selection",
+        "mode",
+        "confirm_required",
+        "notes",
+    }
 )
 
 
@@ -413,6 +426,7 @@ def _parse_voice_plan_step(raw: object) -> VoicePlanStep:
         raise ValueError("voice plan step notes must be a list")
     return VoicePlanStep(
         index=raw["index"],
+        intent_id=raw["intent_id"],
         name=raw["name"],
         args=dict(args),
         selection=tuple(selection),
@@ -488,6 +502,11 @@ def _validate_voice_plan_step(step: VoicePlanStep, index: int) -> None:
         raise ValueError("voice plan steps must be plan steps")
     if not isinstance(step.index, int) or isinstance(step.index, bool) or step.index != index:
         raise ValueError("voice plan steps must be indexed in order")
+    if (
+        not _bounded_text(step.intent_id, limit=128)
+        or _CORRELATION_ID.fullmatch(step.intent_id) is None
+    ):
+        raise ValueError("voice plan step intent_id must be a safe bounded identifier")
     if not isinstance(step.name, str) or _INTENT_NAME.fullmatch(step.name) is None:
         raise ValueError("voice plan step name must be an intent name")
     if not isinstance(step.args, Mapping):
@@ -504,6 +523,25 @@ def _validate_voice_plan_step(step: VoicePlanStep, index: int) -> None:
         raise ValueError("voice plan step notes must be a bounded tuple")
     if any(not _bounded_text(note) for note in step.notes):
         raise ValueError("voice plan step notes must be bounded strings")
+    candidate = {
+        "v": 1,
+        "t": 0,
+        "type": "intent",
+        "intent_id": step.intent_id,
+        "retry_of": None,
+        "source": "language",
+        "session": "voice-plan-validation",
+        "name": step.name,
+        "args": _thaw(step.args),
+        "selection": list(step.selection),
+        "mode": step.mode,
+        "confirm": True,
+    }
+    validated = validate_intent(candidate)
+    if not isinstance(validated, AcceptedIntent):
+        raise ValueError("voice plan step is not a canonical Intent v1 proposal")
+    if step.confirm_required != (validated.intent.name in CONFIRMATION_REQUIRED_INTENTS):
+        raise ValueError("voice plan step confirmation policy differs from the arbiter")
 
 
 def _reject_non_json(value: object) -> None:

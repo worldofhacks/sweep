@@ -15,17 +15,31 @@ every emission exactly as it does for a button press.
 from __future__ import annotations
 
 import threading
+import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from arbiter.safety import CONFIRMATION_REQUIRED_INTENTS
-from language.compiler import CompiledPlan, SessionCompilerAudit, TranscriptCompiler
-from language.contracts import CompilerOutcome, CompilerReason, OutcomeKind, ProposedIntent
+from language.compiler import (
+    CompiledPlan,
+    SessionCompilerAudit,
+    TranscriptCompiler,
+)
+from language.contracts import (
+    CompilerOutcome,
+    CompilerReason,
+    OutcomeKind,
+    ProposedIntent,
+    build_grounding_facts,
+    intent_payload,
+    plan_step_matches_projected_facts,
+)
 from language.telemetry import TraceSink
 from language.transport import PINNED_COMPILER_MODEL, PROMPT_SCHEMA_VERSION, ModelTransport
 from planner.models import TranslationGrounding, TranslationPolicy
 from relay.capabilities import CapabilityProfile
-from relay.intent_v1 import IntentName
+from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
 from relay.voice import CompilerUnavailable, VoicePlan, VoicePlanStep
 
 if TYPE_CHECKING:
@@ -33,6 +47,7 @@ if TYPE_CHECKING:
 
 DEFAULT_PLAN_TTL_MS = 30_000
 DEFAULT_STATE_MAX_AGE_MS = 2_000
+MAX_ACTIVE_VOICE_PLANS_PER_SESSION = 8
 
 SessionResolver = Callable[[str], "RelaySession | None"]
 HeadingResolver = Callable[[Mapping[str, object]], Mapping[int, float]]
@@ -40,6 +55,13 @@ HeadingResolver = Callable[[Mapping[str, object]], Mapping[int, float]]
 
 def _no_headings(_relay_state: Mapping[str, object]) -> Mapping[int, float]:
     return {}
+
+
+@dataclass(slots=True)
+class _BoundPlan:
+    compiled: CompiledPlan
+    intent_ids: tuple[str, ...]
+    next_index: int = 0
 
 
 class RelayTranscriptCompiler:
@@ -67,6 +89,7 @@ class RelayTranscriptCompiler:
         tracer: TraceSink | None = None,
         plan_ttl_ms: int = DEFAULT_PLAN_TTL_MS,
         state_max_age_ms: int = DEFAULT_STATE_MAX_AGE_MS,
+        qualified_voice_intents: tuple[str, ...] = (),
     ) -> None:
         if plan_ttl_ms <= 0 or state_max_age_ms <= 0:
             raise ValueError("plan TTL and state maximum age must be positive")
@@ -78,7 +101,27 @@ class RelayTranscriptCompiler:
         self._tracer = tracer
         self._plan_ttl_ms = plan_ttl_ms
         self._state_max_age_ms = state_max_age_ms
+        if not isinstance(qualified_voice_intents, tuple):
+            raise ValueError("qualified voice intents must be an immutable tuple")
+        known_names = {name.value for name in IntentName}
+        if (
+            len(set(qualified_voice_intents)) != len(qualified_voice_intents)
+            or any(name not in known_names for name in qualified_voice_intents)
+            or (
+                capability_profile is not None
+                and any(
+                    not capability_profile.supports(IntentName(name))
+                    for name in qualified_voice_intents
+                )
+            )
+        ):
+            raise ValueError("qualified voice intents must be unique enabled Intent v1 names")
+        self._qualified_voice_intents = tuple(sorted(qualified_voice_intents))
         self._compilers: dict[str, tuple[RelaySession, TranscriptCompiler]] = {}
+        self._bound_plans: dict[str, dict[str, _BoundPlan]] = {}
+        # A bound method object is otherwise recreated on every attribute read;
+        # retain one stable identity for RelaySession's one-time policy binding.
+        self._intent_authorizer = self.authorize_intent
         self._lock = threading.Lock()
 
     @property
@@ -116,7 +159,8 @@ class RelayTranscriptCompiler:
             rooms=rooms,
             translation=self._translation(relay_state),
             capability_profile=self._capability_profile,
-            qualified_voice_intents=(),
+            qualified_voice_intents=self._qualified_voice_intents,
+            require_qualified_voice_intents=True,
             now_ms=now_ms,
             correlation_id=correlation,
             session_id=session_id,
@@ -139,9 +183,15 @@ class RelayTranscriptCompiler:
             correlation_id=correlation,
             session_id=session_id,
         )
+        if compiled is not None:
+            self._bind_plan(session, plan, compiled, now_ms=now_ms)
         return plan, compiled
 
     def _compiler_for(self, session_id: str, session: RelaySession) -> TranscriptCompiler:
+        try:
+            session.bind_language_intent_authorizer(self._intent_authorizer)
+        except ValueError:
+            raise CompilerUnavailable() from None
         with self._lock:
             cached = self._compilers.get(session_id)
             if cached is not None and cached[0] is session:
@@ -155,6 +205,111 @@ class RelayTranscriptCompiler:
             )
             self._compilers[session_id] = (session, compiler)
             return compiler
+
+    def _bind_plan(
+        self,
+        session: RelaySession,
+        plan: VoicePlan,
+        compiled: CompiledPlan,
+        *,
+        now_ms: int,
+    ) -> None:
+        if plan.kind != "plan" or plan.plan_digest != compiled.digest:
+            raise CompilerUnavailable()
+        intent_ids = tuple(step.intent_id for step in plan.steps)
+        with self._lock:
+            active = self._bound_plans.setdefault(session.session_id, {})
+            self._purge_expired(active, now_ms)
+            # Recompiling an identical request must never reset the consumption
+            # cursor and make an already-issued motion step executable again.
+            if compiled.digest in active:
+                raise CompilerUnavailable()
+            if len(active) >= MAX_ACTIVE_VOICE_PLANS_PER_SESSION:
+                raise CompilerUnavailable()
+            # Persist the exact mapping before making it admissible.  A failed
+            # audit write leaves no executable language plan.
+            SessionCompilerAudit(session.audit_log, session.event_ids).append(
+                {
+                    "event": "voice_plan_bound",
+                    "correlation_id": compiled.correlation_id,
+                    "plan_digest": compiled.digest,
+                    "state_event_id": compiled.facts.state_event_id,
+                    "expires_at_ms": compiled.expires_at_ms,
+                    "intent_ids": list(intent_ids),
+                }
+            )
+            active[compiled.digest] = _BoundPlan(compiled=compiled, intent_ids=intent_ids)
+
+    def authorize_intent(
+        self,
+        intent: IntentV1,
+        relay_state: Mapping[str, object],
+        now_ms: int,
+    ) -> tuple[str, str] | None:
+        """Consume one exact, audited language-plan step or fail closed."""
+        if intent.source != "language":
+            return "source_mismatch", "the bound compiler authorizes only language intents"
+        with self._lock:
+            active = self._bound_plans.get(intent.session)
+            if active is None:
+                return "unbound_language_intent", "no active compiler plan binds this intent"
+            self._purge_expired(active, now_ms)
+            match = next(
+                (
+                    (bound, index)
+                    for bound in active.values()
+                    for index, intent_id in enumerate(bound.intent_ids)
+                    if intent_id == intent.intent_id
+                ),
+                None,
+            )
+            if match is None:
+                return "unbound_language_intent", "no active compiler plan binds this intent"
+            bound, index = match
+            compiled = bound.compiled
+            if now_ms >= compiled.expires_at_ms:
+                return "language_plan_expired", "the bound compiler plan has expired"
+            if index != bound.next_index:
+                return "language_plan_out_of_order", "language plan steps must be emitted in order"
+            try:
+                current_facts = build_grounding_facts(
+                    relay_state,
+                    capability_version=compiled.facts.capability_version,
+                    rooms=compiled.facts.rooms,
+                    translation=self._translation(relay_state),
+                    capability_profile=self._capability_profile,
+                    qualified_voice_intents=self._qualified_voice_intents,
+                )
+            except ValueError:
+                return "stale_language_plan", "current relay state is invalid for this plan"
+            if not plan_step_matches_projected_facts(
+                compiled.intents, compiled.facts, index, current_facts
+            ):
+                return "stale_language_plan", "state or capabilities changed after preview"
+            proposal = compiled.intents[index]
+            payload = intent_payload(
+                proposal,
+                session=compiled.facts.session,
+                intent_id=bound.intent_ids[index],
+                timestamp_ms=intent.t,
+                source="language",
+            )
+            profile = self._capability_profile or current_facts.capability_profile
+            expected = (
+                validate_intent(payload)
+                if profile is None
+                else validate_intent(payload, capability_profile=profile)
+            )
+            if not isinstance(expected, AcceptedIntent) or expected.intent != intent:
+                return "language_plan_mismatch", "intent does not match the bound compiler preview"
+            bound.next_index += 1
+            return None
+
+    @staticmethod
+    def _purge_expired(active: dict[str, _BoundPlan], now_ms: int) -> None:
+        for digest, bound in tuple(active.items()):
+            if now_ms >= bound.compiled.expires_at_ms:
+                del active[digest]
 
     def _translation(self, relay_state: Mapping[str, object]) -> TranslationGrounding | None:
         if self._translation_policy is None:
@@ -191,7 +346,8 @@ def voice_plan_from_outcome(
         if compiled is None:
             raise CompilerUnavailable()
         steps = tuple(
-            _step(index, intent, relay_state) for index, intent in enumerate(compiled.intents)
+            _step(index, intent, relay_state, compiled.digest)
+            for index, intent in enumerate(compiled.intents)
         )
         return VoicePlan(
             kind="plan",
@@ -254,9 +410,15 @@ def voice_plan_from_outcome(
     )
 
 
-def _step(index: int, intent: ProposedIntent, relay_state: Mapping[str, object]) -> VoicePlanStep:
+def _step(
+    index: int,
+    intent: ProposedIntent,
+    relay_state: Mapping[str, object],
+    plan_digest: str,
+) -> VoicePlanStep:
     return VoicePlanStep(
         index=index,
+        intent_id=_voice_intent_id(plan_digest, index),
         name=intent.name.value,
         args=dict(intent.semantic_dict()["args"]),
         selection=tuple(intent.selection),
@@ -264,6 +426,11 @@ def _step(index: int, intent: ProposedIntent, relay_state: Mapping[str, object])
         confirm_required=intent.name in CONFIRMATION_REQUIRED_INTENTS,
         notes=_step_notes(index, intent, relay_state),
     )
+
+
+def _voice_intent_id(plan_digest: str, index: int) -> str:
+    value = uuid.uuid5(uuid.NAMESPACE_URL, f"sweep:voice-plan:{plan_digest}:{index}")
+    return f"voice-{value.hex}"
 
 
 def _label(drone_id: int) -> str:

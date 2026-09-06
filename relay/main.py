@@ -23,6 +23,7 @@ from language.transport import AnthropicTransport, ModelTransport
 from planner.models import TranslationPolicy
 from relay.app import RelayRuntime
 from relay.autonomy import AutonomyConfig, create_autonomy_app
+from relay.capabilities import CapabilityProfile, IntentName
 from relay.settings import RelaySettings, SettingsError
 from relay.voice import TranscriptionTransport, TranscriptService
 
@@ -59,6 +60,13 @@ def build_transcript_service(
             )
             return TranscriptService(transcription=transcription)
         transport = AnthropicTransport(api_key=api_key)
+    capability_profile = config.planning.effective_capability_profile()
+    qualified_voice_intents = _qualified_voice_intents(values, capability_profile)
+    if not qualified_voice_intents:
+        _LOGGER.warning(
+            "no speech/intent pairs are qualified: proposed plans will be refused "
+            "capability_unavailable"
+        )
     compiler = RelayTranscriptCompiler(
         sessions=runtime.sessions.get,
         transport=transport,
@@ -66,9 +74,36 @@ def build_transcript_service(
             frame=config.planning.translation_frame,
             step_m=config.planning.translation_step_m,
         ),
-        capability_profile=config.planning.effective_capability_profile(),
+        capability_profile=capability_profile,
+        qualified_voice_intents=qualified_voice_intents,
     )
     return TranscriptService(transcription=transcription, compiler=compiler)
+
+
+def _qualified_voice_intents(
+    environ: Mapping[str, str], capability_profile: CapabilityProfile
+) -> tuple[str, ...]:
+    """Parse the deployment's measured speech/intent qualification allowlist.
+
+    Empty is the fail-closed default.  The setting enables only pairs whose
+    external acceptance evidence has passed; it cannot widen the relay's
+    immutable capability profile or name a non-Intent-v1 operation.
+    """
+    raw = environ.get("SWEEP_QUALIFIED_VOICE_INTENTS", "")
+    if not raw.strip():
+        return ()
+    values = tuple(part.strip() for part in raw.split(","))
+    known = {name.value for name in IntentName}
+    if (
+        any(not value for value in values)
+        or len(set(values)) != len(values)
+        or any(value not in known for value in values)
+        or any(not capability_profile.supports(IntentName(value)) for value in values)
+    ):
+        raise SettingsError(
+            "SWEEP_QUALIFIED_VOICE_INTENTS must contain unique enabled Intent v1 names"
+        )
+    return tuple(sorted(values))
 
 
 def transcript_service_factory(

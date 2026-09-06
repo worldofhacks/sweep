@@ -24,6 +24,7 @@ from language.compiler import (
     TranscriptCompiler,
 )
 from language.contracts import (
+    MAX_PLAN_STEPS,
     NEGATED_TRANSCRIPT_DETAIL,
     CompilerReason,
     OutcomeKind,
@@ -146,6 +147,40 @@ def _compile(case_id: str):
         correlation_id=case.case_id,
     )
     return case, result
+
+
+def test_compiler_plan_bound_matches_the_eight_step_wire_limit() -> None:
+    case = _case("hold-current-selection")
+    response = _response("hold-current-selection")
+    one_step = response["intents"]
+
+    at_limit = TranscriptCompiler(
+        StaticResponseTransport({**response, "intents": one_step * MAX_PLAN_STEPS}),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        case.transcript,
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+        correlation_id="eight-step-boundary",
+    )
+    over_limit = TranscriptCompiler(
+        StaticResponseTransport({**response, "intents": one_step * (MAX_PLAN_STEPS + 1)}),
+        audit=InMemoryAuditSink(),
+    ).compile(
+        case.transcript,
+        case.relay_state,
+        capability_version=case.capability_version,
+        rooms=case.rooms,
+        now_ms=case.now_ms,
+        correlation_id="nine-step-boundary",
+    )
+
+    assert at_limit[0].kind is OutcomeKind.PLAN
+    assert len(at_limit[0].intents) == MAX_PLAN_STEPS
+    assert over_limit[0].kind is OutcomeKind.REFUSE
+    assert over_limit[0].reason is CompilerReason.INVALID_MODEL_OUTPUT
 
 
 def _state(case, *, session: str = "language-eval") -> dict[str, object]:

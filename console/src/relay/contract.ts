@@ -8,7 +8,7 @@
 
 export type DroneId = number
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
-export type IntentSource = 'console' | 'keyboard' | 'webcam'
+export type IntentSource = 'console' | 'keyboard' | 'webcam' | 'language'
 export type FormationName = 'line' | 'column' | 'circle' | 'grid' | 'V'
 
 /**
@@ -443,6 +443,8 @@ export const VOICE_PLAN_KINDS: readonly VoicePlanKind[] = [
 
 export interface VoicePlanStep {
   index: number
+  /** Relay-minted deterministic identity bound to this exact audited plan step. */
+  intent_id: string
   name: ConsoleIntentName
   args: Record<string, unknown>
   selection: DroneId[]
@@ -500,6 +502,7 @@ const VOICE_PLAN_FIELDS = [
 ] as const
 const VOICE_PLAN_STEP_FIELDS = [
   'index',
+  'intent_id',
   'name',
   'args',
   'selection',
@@ -528,6 +531,10 @@ function hasExactFields(value: Record<string, unknown>, fields: readonly string[
   return keys.length === fields.length && fields.every((field) => field in value)
 }
 
+function sameIds(left: DroneId[], right: DroneId[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index])
+}
+
 function isJsonNative(value: unknown, depth = 0): boolean {
   if (depth > 8) return false
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
@@ -539,8 +546,10 @@ function isJsonNative(value: unknown, depth = 0): boolean {
 
 function isVoicePlanStep(value: unknown, index: number): value is VoicePlanStep {
   if (!isRecord(value) || !hasExactFields(value, VOICE_PLAN_STEP_FIELDS)) return false
-  return (
+  const structurallyValid =
     value.index === index &&
+    typeof value.intent_id === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.intent_id) &&
     typeof value.name === 'string' &&
     (CONSOLE_INTENT_NAMES as readonly string[]).includes(value.name) &&
     isRecord(value.args) &&
@@ -552,6 +561,26 @@ function isVoicePlanStep(value: unknown, index: number): value is VoicePlanStep 
     Array.isArray(value.notes) &&
     value.notes.length <= 8 &&
     value.notes.every((note) => isBoundedText(note))
+  if (!structurallyValid) return false
+  const candidate: unknown = {
+    v: 1,
+    t: 0,
+    type: 'intent',
+    intent_id: value.intent_id,
+    retry_of: null,
+    source: 'language',
+    session: 'voice-plan-validation',
+    name: value.name,
+    args: value.args,
+    selection: value.selection,
+    mode: value.mode,
+    confirm: true,
+  }
+  if (!isConsoleIntentV1(candidate)) return false
+  if (value.confirm_required !== requiresConfirmation(candidate.name)) return false
+  return (
+    candidate.name !== 'select' ||
+    ('ids' in candidate.args && sameIds(candidate.selection, candidate.args.ids))
   )
 }
 
@@ -606,7 +635,8 @@ export function isVoicePlan(value: unknown): value is VoicePlan {
     return (
       value.steps.length > 0 &&
       value.expires_at_ms !== null &&
-      value.plan_digest !== null &&
+      typeof value.plan_digest === 'string' &&
+      /^[0-9a-f]{64}$/.test(value.plan_digest) &&
       value.reason === null &&
       value.options.length === 0 &&
       value.pending_intent_id === null
@@ -619,6 +649,45 @@ export function isVoicePlan(value: unknown): value is VoicePlan {
   return value.reason !== null && value.pending_intent_id === null
 }
 
+/** Build the only Intent v1 draft permitted from a relay-bound voice step. */
+export function intentFromVoicePlanStep(
+  plan: VoicePlan,
+  step: VoicePlanStep,
+  timestamp: number,
+): IntentV1 | null {
+  if (
+    plan.kind !== 'plan' ||
+    plan.plan_digest === null ||
+    plan.steps[step.index] !== step ||
+    !isNonNegativeInteger(timestamp)
+  ) {
+    return null
+  }
+  const candidate: unknown = {
+    v: 1,
+    t: timestamp,
+    type: 'intent',
+    intent_id: step.intent_id,
+    retry_of: null,
+    source: 'language',
+    session: plan.session,
+    name: step.name,
+    args: step.args,
+    selection: step.selection,
+    mode: step.mode,
+    // Every language emission is operator-confirmed, even when the arbiter's
+    // base policy would permit the same name from a console button immediately.
+    confirm: true,
+  }
+  if (!isConsoleIntentV1(candidate)) return null
+  return {
+    ...candidate,
+    args: structuredClone(candidate.args),
+    selection: [...candidate.selection],
+    confirm: false,
+  }
+}
+
 const MEMBERSHIP_STATES = new Set<MembershipState>([
   'registered',
   'ready',
@@ -628,7 +697,7 @@ const MEMBERSHIP_STATES = new Set<MembershipState>([
 ])
 const CAPTURE_PATTERNS = new Set<CapturePattern>(['pano_360', 'reconstruct_8'])
 /** Mirror of relay REGISTERED_SOURCES: operator sources bound to their own connection. */
-const INTENT_SOURCES = new Set<IntentSource>(['console', 'keyboard', 'webcam'])
+const INTENT_SOURCES = new Set<IntentSource>(['console', 'keyboard', 'webcam', 'language'])
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

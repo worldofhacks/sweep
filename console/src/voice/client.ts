@@ -9,10 +9,10 @@
 import { isVoicePlan, type VoicePlan } from '../relay/contract'
 
 export type VoiceOutcome = {
-  v?: 1
-  type?: 'voice_outcome'
-  session?: string
-  correlation_id?: string
+  v: 1
+  type: 'voice_outcome'
+  session: string
+  correlation_id: string
   status: 'transcribed' | 'refused'
   source: 'whisper' | 'template'
   reason: string | null

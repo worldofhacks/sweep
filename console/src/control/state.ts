@@ -37,6 +37,17 @@ export interface PlanPreview {
    * late confirmation with confirmation_window_expired instead of sending.
    */
   expiresAt?: number
+  /** Exact relay compiler evidence for a language-source draft. */
+  voiceBinding?: {
+    planDigest: string
+    correlationId: string
+    stateEventId: string
+    session: string
+    stepIndex: number
+    intentId: string
+    intentCanonical: string
+    stateCanonical: string
+  }
 }
 
 export interface RequestRecord {
@@ -82,6 +93,7 @@ export interface ControlState {
   connection: RelayConnection
   keyboardConnection: RelayConnection
   webcamConnection: RelayConnection
+  languageConnection: RelayConnection
   rosterVersion: number
   aircraft: Record<DroneId, RelayAircraftState>
   selection: DroneId[]
@@ -104,9 +116,11 @@ export interface ControlState {
 }
 
 export type ControlAction =
+  | { type: 'session_changed'; sessionId: string; t: number }
   | { type: 'connection_changed'; connection: RelayConnection }
   | { type: 'keyboard_connection_changed'; connection: RelayConnection }
   | { type: 'webcam_connection_changed'; connection: RelayConnection }
+  | { type: 'language_connection_changed'; connection: RelayConnection }
   | { type: 'relay_event'; event: RelayServerEvent; source?: IntentSource }
   | { type: 'request_created'; request: RequestRecord }
   | { type: 'request_pending_confirmation'; intentId: string; t: number; plan: PlanPreview }
@@ -138,6 +152,12 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
       transport: 'unavailable',
       changedAt: now,
       reason: 'Webcam relay source is unavailable.',
+    },
+    languageConnection: {
+      status: 'disconnected',
+      transport: 'unavailable',
+      changedAt: now,
+      reason: 'Language relay source is unavailable.',
     },
     rosterVersion: 0,
     aircraft: {},
@@ -185,12 +205,16 @@ export function createRequestRecord(intent: IntentV1, now: number): RequestRecor
 
 export function controlReducer(state: ControlState, action: ControlAction): ControlState {
   switch (action.type) {
+    case 'session_changed':
+      return createInitialControlState(action.sessionId, action.t)
     case 'connection_changed':
       return reduceConnection(state, action.connection)
     case 'keyboard_connection_changed':
       return reduceKeyboardConnection(state, action.connection)
     case 'webcam_connection_changed':
       return reduceWebcamConnection(state, action.connection)
+    case 'language_connection_changed':
+      return reduceLanguageConnection(state, action.connection)
     case 'relay_event':
       return reduceRelayEvent(state, action.event, action.source ?? 'console')
     case 'request_created':
@@ -284,6 +308,24 @@ function reduceWebcamConnection(state: ControlState, connection: RelayConnection
   return {
     ...state,
     webcamConnection: connection,
+    notices: prependNotice(state.notices, notice),
+  }
+}
+
+function reduceLanguageConnection(state: ControlState, connection: RelayConnection): ControlState {
+  if (connection.status === 'connected' || connection.status === 'connecting') {
+    return { ...state, languageConnection: connection }
+  }
+  const notice = makeNotice(
+    `language-connection-${connection.changedAt}`,
+    connection.status === 'degraded' ? 'warning' : 'danger',
+    connection.status === 'degraded' ? 'Language source degraded' : 'Language source unavailable',
+    connection.reason ?? 'No reason was provided.',
+    connection.changedAt,
+  )
+  return {
+    ...state,
+    languageConnection: connection,
     notices: prependNotice(state.notices, notice),
   }
 }
@@ -568,12 +610,33 @@ function reduceStateEvent(
     'stale_roster',
     `Fleet roster changed to version ${event.roster_version}. Build and confirm a new preview.`,
   )
-  // Intents that address the whole roster (land_all) keep their preview while
-  // the operator's selection moves; only a roster change invalidates them.
+  // SELECT proposes new membership, so its named targets may not belong to the
+  // current selection yet. Validate those targets directly on every snapshot.
+  const staleProposedSelectionRequests = next.requests
+    .filter(
+      (request) =>
+        request.status === 'pending_confirmation' &&
+        request.intent.name === 'select' &&
+        'ids' in request.intent.args &&
+        request.intent.args.ids.some(
+          (id) => aircraft[id]?.membership !== 'ready' || !aircraft[id]?.selectable,
+        ),
+    )
+    .map((request) => request.intent.intent_id)
+  next = invalidateRequests(
+    next,
+    staleProposedSelectionRequests,
+    event.t,
+    'stale_selection',
+    'An aircraft in the proposed selection is no longer ready or selectable.',
+  )
+  // SELECT carries the proposed selection; it must survive snapshots of the old
+  // selection until confirmed. Roster-wide intents also keep independent targets.
   const changedSelectionRequests = next.requests
     .filter(
       (request) =>
         request.status === 'pending_confirmation' &&
+        request.intent.name !== 'select' &&
         followsSelection(request.intent.name) &&
         !sameDroneSet(request.intent.selection, selection),
     )

@@ -61,7 +61,17 @@ export function planSteps(intent: IntentV1): string[] {
  * the console-clock deadline a relay-compiled step inherits from its plan: the
  * dock counts it down and the control flow refuses to confirm past it.
  */
-export function buildPlanPreview(intent: IntentV1, rosterVersion: number, expiresAt?: number): PlanPreview {
-  const preview: PlanPreview = { title: planTitle(intent), steps: planSteps(intent), rosterVersion }
+export function buildPlanPreview(
+  intent: IntentV1,
+  rosterVersion: number,
+  expiresAt?: number,
+  voiceBinding?: PlanPreview['voiceBinding'],
+): PlanPreview {
+  const preview: PlanPreview = {
+    title: planTitle(intent),
+    steps: planSteps(intent),
+    rosterVersion,
+    ...(voiceBinding === undefined ? {} : { voiceBinding }),
+  }
   return expiresAt === undefined ? preview : { ...preview, expiresAt }
 }
