@@ -204,6 +204,15 @@ class SearchRuntime:
     def preview_expires_at_ms(self, intent_id: str) -> int:
         return self._mission(intent_id).expires_at_ms
 
+    def revoke_unstarted_previews(self, session_id: str) -> None:
+        for intent_id, mission in tuple(self._missions.items()):
+            if (
+                not mission.started
+                and mission.intent_fingerprint
+                and mission.intent_fingerprint[0] == session_id
+            ):
+                del self._missions[intent_id]
+
     def execute(
         self,
         intent_id: str,

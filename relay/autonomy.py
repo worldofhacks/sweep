@@ -480,6 +480,9 @@ class AutonomySession:
 
     def submit(self, intent: IntentV1, _state: dict[str, object]) -> None:
         """``IntentSink``: record operator activity and route the intent without blocking."""
+        if intent.name in {IntentName.HOLD, IntentName.ESTOP, IntentName.SELECT}:
+            if search := self._composition.search_runtime:
+                search.revoke_unstarted_previews(intent.session)
         if intent.name is IntentName.SEARCH:
             search = self._composition.search_runtime
             now_ms = self.snapshot(_state).now_ms
