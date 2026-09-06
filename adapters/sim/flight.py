@@ -16,6 +16,7 @@ from adapters.protocols import (
 )
 from planner.models import (
     CommandOperation,
+    DeviceClass,
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
@@ -63,8 +64,11 @@ class SimFlightAdapter:
 
     @classmethod
     def from_snapshot(cls, snapshot: FleetSnapshot) -> SimFlightAdapter:
+        """Simulate the aircraft in a snapshot; a device of another class has no sim model."""
         aircraft: dict[int, SimAircraft] = {}
         for drone_id, state in snapshot.aircraft.items():
+            if state.device_class is not DeviceClass.AIRCRAFT or state.flight_state is None:
+                continue
             if state.home is None:
                 raise ValueError(f"sim aircraft {drone_id} requires a home pose")
             aircraft[drone_id] = SimAircraft(
