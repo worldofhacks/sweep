@@ -157,6 +157,12 @@
 }
 .lv-det-copy { margin: 6px 0 0; max-width: 70ch; font-size: var(--text-14); color: var(--color-ink-2); }
 .lv-det-note { margin: 6px 0 0; font-size: var(--text-12-5); color: var(--color-ink-3); }
+.lv-detections { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.lv-detection { padding: 10px 12px; border-left: 3px solid var(--color-warn); background: var(--color-ground); }
+.lv-detection p { margin: 0; font-size: var(--text-13); }
+.lv-detection-ack { min-height: var(--min-h-42); margin-top: 8px; padding: 8px 12px; border: 1px solid var(--color-ink); background: #fff; color: var(--color-ink); font-size: var(--text-12-5); cursor: pointer; }
+.lv-detection-ack:hover:not(:disabled) { background: var(--color-ink); color: #fff; }
+.lv-detection-ack:disabled { border-color: var(--color-border-secondary); color: var(--color-ink-3); cursor: default; }
 .lv-eyebrow {
   margin: 0;
   font-family: var(--font-mono);

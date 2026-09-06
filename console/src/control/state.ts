@@ -7,6 +7,7 @@ import type {
   IntentSource,
   MembershipAction,
   RelayAircraftState,
+  RelayDetectionEvent,
   RelayServerEvent,
 } from '../relay/contract'
 import { followsSelection } from '../relay/contract'
@@ -88,6 +89,11 @@ export interface OperatorNotice {
   t: number
 }
 
+export interface DetectionRecord {
+  event: RelayDetectionEvent
+  acknowledged: boolean
+}
+
 export interface ControlState {
   sessionId: string
   connection: RelayConnection
@@ -105,6 +111,7 @@ export interface ControlState {
   enabledIntentNames: ConsoleIntentName[]
   departed: DepartureRecord[]
   requests: RequestRecord[]
+  detections: DetectionRecord[]
   selectedFeedId: DroneId | null
   capturePattern: CapturePattern
   armed: boolean
@@ -168,6 +175,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     enabledIntentNames: [],
     departed: [],
     requests: [],
+    detections: [],
     selectedFeedId: null,
     capturePattern: 'pano_360',
     armed: false,
@@ -370,6 +378,21 @@ function reduceRelayEvent(
       // projection. Retain the event ID for dedupe, but do not build a second
       // client-side source of aircraft truth here.
       return stateWithEvent
+    case 'detection':
+      return {
+        ...stateWithEvent,
+        detections: [{ event, acknowledged: false }, ...stateWithEvent.detections].slice(0, 64),
+        selectedFeedId: event.attention === 'promoted' ? event.drone_id : stateWithEvent.selectedFeedId,
+      }
+    case 'detection_acknowledgement':
+      return {
+        ...stateWithEvent,
+        detections: stateWithEvent.detections.map((record) =>
+          record.event.detection_id === event.detection_id
+            ? { ...record, acknowledged: true }
+            : record,
+        ),
+      }
     case 'safety_action':
       return {
         ...stateWithEvent,
