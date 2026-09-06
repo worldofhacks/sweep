@@ -106,7 +106,7 @@ class FakeNode:
         self._frame_counts: dict[str, int] = {}
         self._media: dict[str, dict[str, object]] = {}
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
-        self._telemetry_pending = False
+        self._queued_telemetry = 0
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -201,7 +201,7 @@ class FakeNode:
         while True:
             frame = await self._outbound.get()
             if frame["type"] == "telemetry":
-                self._telemetry_pending = False
+                self._queued_telemetry -= 1
             await socket.send(json.dumps(frame))  # type: ignore[attr-defined]
 
     async def _receive_loop(self, socket: object) -> None:
@@ -235,7 +235,7 @@ class FakeNode:
         while True:
             await asyncio.sleep(interval)
             if self._connection_epoch is not None:
-                self._enqueue_telemetry()
+                self._enqueue_periodic_telemetry()
 
     def _handle_membership(self, frame: dict[str, object]) -> None:
         epoch = frame.get("connection_epoch")
@@ -392,11 +392,14 @@ class FakeNode:
         assert self._outbound is not None
         self._outbound.put_nowait(frame)
 
-    def _enqueue_telemetry(self) -> None:
-        if self._telemetry_pending:
+    def _enqueue_periodic_telemetry(self) -> None:
+        if self._queued_telemetry:
             return
+        self._enqueue_telemetry()
+
+    def _enqueue_telemetry(self) -> None:
         assert self._outbound is not None
-        self._telemetry_pending = True
+        self._queued_telemetry += 1
         self._outbound.put_nowait(self._telemetry_frame())
 
     def _next_t(self) -> int:
