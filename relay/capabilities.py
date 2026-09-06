@@ -27,6 +27,8 @@ class IntentName(StrEnum):
     CAPTURE_ROOM = "capture_room"
     SURVEY_AREA = "survey_area"
     MAP_AREA = "map_area"
+    NAVIGATE = "navigate"
+    SEARCH = "search"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +92,11 @@ C2_ADDITIONAL_INTENT_NAMES = frozenset(
     }
 )
 
-IMPLEMENTED_INTENT_NAMES = C1_IMPLEMENTED_INTENT_NAMES | C2_ADDITIONAL_INTENT_NAMES
+IMPLEMENTED_INTENT_NAMES = (
+    C1_IMPLEMENTED_INTENT_NAMES
+    | C2_ADDITIONAL_INTENT_NAMES
+    | {IntentName.NAVIGATE, IntentName.SEARCH}
+)
 
 C1_CAPABILITY_PROFILE = CapabilityProfile(
     name="c1_basic_control",

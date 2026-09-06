@@ -151,10 +151,12 @@ export function useControlConsole({
    * Records a freshly minted intent and parks it in the dock with its plan
    * preview. One preview at a time: a new draft cancels an earlier, unconfirmed
    * one. The intent id never changes. The speech compiler and the gesture
-   * producer draft through this so nothing leaves on a compile or a pose.
+   * producer draft through this so nothing leaves on a compile or a pose. A
+   * relay-compiled step passes its plan's deadline as `expiresAt`; the preview
+   * carries it so the dock counts it down and confirmRequest honours it.
    */
   const stageForConfirmation = useCallback(
-    (intent: IntentV1): IntentV1 => {
+    (intent: IntentV1, expiresAt?: number): IntentV1 => {
       const t = intentDependencies.now()
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
@@ -166,7 +168,7 @@ export function useControlConsole({
         type: 'request_pending_confirmation',
         intentId: intent.intent_id,
         t,
-        plan: buildPlanPreview(intent, state.rosterVersion),
+        plan: buildPlanPreview(intent, state.rosterVersion, expiresAt),
       })
       return intent
     },
@@ -178,7 +180,7 @@ export function useControlConsole({
    * (with its plan preview) or sends it at once.
    */
   const stageIntent = useCallback(
-    (intent: IntentV1) => {
+    (intent: IntentV1, expiresAt?: number) => {
       if (intent.name === 'select') {
         state.requests.filter((request) => request.status === 'pending_confirmation').forEach((request) => {
           dispatch({ type: 'request_invalidated', intentId: request.intent.intent_id,
@@ -187,7 +189,7 @@ export function useControlConsole({
         })
       }
       if (requiresConfirmation(intent.name)) {
-        stageForConfirmation(intent)
+        stageForConfirmation(intent, expiresAt)
         return
       }
       const t = intentDependencies.now()
@@ -206,8 +208,8 @@ export function useControlConsole({
   )
 
   const issueIntent = useCallback(
-    <N extends ConsoleIntentName>(request: IntentRequest<N>) => {
-      if (!isIntentEnabled(state, request.name)) return
+    <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
+      if (!isIntentEnabled(state, request.name)) return null
       const intent = createIntent(
         {
           name: request.name,
@@ -218,7 +220,8 @@ export function useControlConsole({
         },
         intentDependencies,
       )
-      stageIntent(intent)
+      stageIntent(intent, expiresAt)
+      return intent
     },
     [intentDependencies, stageIntent, state],
   )
@@ -295,6 +298,7 @@ export function useControlConsole({
       roomId: string,
       source: DraftSource = 'console',
       pattern: CapturePattern = state.capturePattern,
+      expiresAt?: number,
     ): IntentV1 | null => {
       if (!state.enabledIntentNames.includes('capture_room')) return null
       const selectedId = state.selection[0]
@@ -315,10 +319,13 @@ export function useControlConsole({
         },
         intentDependencies,
       )
-      return stageForConfirmation({
-        ...draft,
-        args: createCaptureArgs(trimmedRoomId, draft.intent_id, pattern),
-      })
+      return stageForConfirmation(
+        {
+          ...draft,
+          args: createCaptureArgs(trimmedRoomId, draft.intent_id, pattern),
+        },
+        expiresAt,
+      )
     },
     [
       intentDependencies,
@@ -336,7 +343,7 @@ export function useControlConsole({
    * speech compiler and the target strip use it so nothing leaves on a compile.
    */
   const prepareSelect = useCallback(
-    (ids: DroneId[], source: DraftSource): IntentV1 | null => {
+    (ids: DroneId[], source: DraftSource, expiresAt?: number): IntentV1 | null => {
       if (!isIntentEnabled(state, 'select')) return null
       const desired = [...new Set(ids)].sort((a, b) => a - b)
       if (desired.length === 0) return null
@@ -354,14 +361,45 @@ export function useControlConsole({
         },
         intentDependencies,
       )
-      return stageForConfirmation(draft)
+      return stageForConfirmation(draft, expiresAt)
+    },
+    [intentDependencies, stageForConfirmation, state],
+  )
+
+  /**
+   * Drafts any control press as a preview that must be confirmed before it is
+   * sent, whatever the name's own confirmation rule. The relay-compiled speech
+   * path stages every plan step through this or the name-specific prepare
+   * functions so nothing leaves on a compile.
+   */
+  const prepareIntent = useCallback(
+    <N extends ConsoleIntentName>(
+      request: IntentRequest<N>,
+      source: DraftSource = 'console',
+      expiresAt?: number,
+    ): IntentV1 | null => {
+      if (!isIntentEnabled(state, request.name)) return null
+      const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
+      const selection = fleetWide ? [] : request.targets ?? state.selection
+      if (!fleetWide && selection.length === 0) return null
+      const draft = createIntent(
+        {
+          name: request.name,
+          args: request.args,
+          selection,
+          source,
+          session: state.sessionId,
+        },
+        intentDependencies,
+      )
+      return stageForConfirmation(draft, expiresAt)
     },
     [intentDependencies, stageForConfirmation, state],
   )
 
   /** Drafts a hold that must be previewed and confirmed before it is sent. */
   const prepareHold = useCallback(
-    (source: DraftSource): IntentV1 | null => {
+    (source: DraftSource, expiresAt?: number): IntentV1 | null => {
       if (!isIntentEnabled(state, 'hold')) return null
       if (state.selection.length === 0) return null
       const selectionReady = state.selection.every(
@@ -378,7 +416,7 @@ export function useControlConsole({
         },
         intentDependencies,
       )
-      return stageForConfirmation(draft)
+      return stageForConfirmation(draft, expiresAt)
     },
     [intentDependencies, stageForConfirmation, state],
   )
@@ -404,6 +442,17 @@ export function useControlConsole({
           t: intentDependencies.now(),
           reasonCode: 'stale_roster',
           detail: `Preview used roster version ${request.plan?.rosterVersion}; current roster is ${state.rosterVersion}.`,
+        })
+        return null
+      }
+      const expiresAt = request.plan?.expiresAt
+      if (expiresAt !== undefined && intentDependencies.now() >= expiresAt) {
+        dispatch({
+          type: 'request_invalidated',
+          intentId,
+          t: intentDependencies.now(),
+          reasonCode: 'confirmation_window_expired',
+          detail: 'The confirmation window expired before the operator confirmed. No command was sent.',
         })
         return null
       }
@@ -551,6 +600,7 @@ export function useControlConsole({
     selectAllReady,
     prepareCapture,
     prepareHold,
+    prepareIntent,
     prepareSelect,
     confirmRequest,
     cancelRequest,

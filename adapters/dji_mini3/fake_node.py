@@ -288,6 +288,8 @@ class FakeNode:
 
     def _finish_command(self, frame: CommandFrame) -> None:
         status, reason, detail = self._execute(frame)
+        if status == "completed" and self._connection_epoch is not None:
+            self._enqueue(self._telemetry_frame())
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
 
     def _admission_refusal(

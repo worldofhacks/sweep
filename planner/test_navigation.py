@@ -18,6 +18,7 @@ from planner.navigation import (
     GridLevel,
     MotionConfig,
     NavigationArtifact,
+    NavigationDispatchAcceptance,
     NavigationEvidence,
     NavigationLiveState,
     NavigationPermission,
@@ -280,6 +281,7 @@ def test_public_route_and_plan_constructors_enforce_internal_invariants() -> Non
             plan.arrival_slots,
             plan.routes,
             plan.execution_order,
+            plan.artifact_sha256,
             dispatch_eligible=True,
         )
 
@@ -1012,3 +1014,75 @@ def test_preview_overlay_pin_is_order_independent_and_content_sensitive(
 
     assert ordered.navigation_pin == reversed_order.navigation_pin
     assert ordered.navigation_pin != changed.navigation_pin
+
+
+def test_revalidation_binds_exported_artifact_contents_beyond_the_supplied_pin() -> None:
+    planner, map_artifact, plan = planned(drone(1, 0.5, 1.5))
+    extra_slot = arrival("atrium-b", 6.5, 3.5)
+    changes = (
+        replace(
+            map_artifact,
+            zones=(replace(map_artifact.zones[0], owner_approved=False),),
+        ),
+        replace(
+            map_artifact,
+            zones=(
+                replace(
+                    map_artifact.zones[0],
+                    arrival_slots=(*map_artifact.zones[0].arrival_slots, extra_slot),
+                ),
+            ),
+        ),
+        replace(
+            map_artifact,
+            connectors=(
+                Connector(
+                    "stairs",
+                    "level_1",
+                    "mezzanine",
+                    pose(0.5, 0.5, 1.0),
+                    pose(0.5, 0.5, 1.0, "mezzanine"),
+                ),
+            ),
+        ),
+    )
+
+    for changed in changes:
+        assert changed.semantic_sha256 != plan.artifact_sha256
+        refusal = planner.revalidate(plan, changed, live_for(plan), 0, 0, 0.1)
+        assert refusal is not None
+        assert refusal.code == "artifact_changed"
+
+
+def test_revalidation_accepts_only_a_matching_runtime_acceptance() -> None:
+    planner, map_artifact, plan = planned(drone(1, 0.5, 1.5))
+    acceptance = NavigationDispatchAcceptance(
+        "acceptance-1",
+        plan.map_pin,
+        plan.geometry_pin,
+        plan.navigation_pin,
+        plan.plan_revision,
+    )
+
+    assert (
+        planner.revalidate(plan, map_artifact, live_for(plan), 0, 0, 0.1, acceptance=acceptance)
+        is None
+    )
+
+
+def test_revalidation_refuses_acceptance_for_another_preview() -> None:
+    planner, map_artifact, plan = planned(drone(1, 0.5, 1.5))
+    acceptance = NavigationDispatchAcceptance(
+        "acceptance-1",
+        plan.map_pin,
+        plan.geometry_pin,
+        plan.navigation_pin,
+        plan.plan_revision + 1,
+    )
+
+    refusal = planner.revalidate(
+        plan, map_artifact, live_for(plan), 0, 0, 0.1, acceptance=acceptance
+    )
+
+    assert refusal is not None
+    assert refusal.code == "dispatch_acceptance_invalid"

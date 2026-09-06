@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from math import cos, isfinite, pi, radians, sin
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from planner.navigation_runtime import NavigationRuntime
 
 from planner.models import (
     AltitudeGrounding,
@@ -39,6 +43,8 @@ SELECTION_TARGETED_INTENTS = frozenset(
         IntentName.FORMATION_SET,
         IntentName.SPACING,
         IntentName.SWEEP,
+        IntentName.NAVIGATE,
+        IntentName.SEARCH,
     }
 )
 
@@ -177,9 +183,12 @@ class DeterministicPlanner:
         self,
         config: PlanningConfig,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        *,
+        navigation: NavigationRuntime | None = None,
     ) -> None:
         self.config = config
         self.capability_profile = config.effective_capability_profile(capability_profile)
+        self.navigation = navigation
 
     def supports(self, intent: IntentV1) -> bool:
         return self.capability_profile.supports(intent.name)
@@ -204,6 +213,15 @@ class DeterministicPlanner:
             )
 
         selected = tuple(sorted(snapshot.selection))
+        if intent.name is IntentName.NAVIGATE:
+            if self.navigation is None:
+                return _refusal(
+                    intent,
+                    snapshot,
+                    RefusalReason.UNSUPPORTED,
+                    "navigation runtime is unavailable",
+                )
+            return self.navigation.prepare(intent, snapshot)
         plan_id = f"plan:{intent.intent_id}"
         builder = _CommandBuilder(intent.intent_id, snapshot, plan_id)
         selection_update: tuple[int, ...] | None = None

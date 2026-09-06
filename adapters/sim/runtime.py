@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Event, Lock, RLock, Thread
 
 from fastapi import FastAPI, Header, HTTPException
@@ -414,10 +414,15 @@ def create_m14_sim_app(
 ) -> FastAPI:
     active_settings = settings or RelaySettings.from_env()
     now = (clock or _epoch_ms)()
+    safety = replace(
+        _safety_config(),
+        max_link_age_ms=active_settings.telemetry_freshness_ms,
+        max_position_age_ms=active_settings.telemetry_freshness_ms,
+    )
     factory = SimBridgeFactory(
         initial_snapshot=initial_snapshot or _initial_snapshot(now),
         planning=_planning_config(),
-        safety=_safety_config(),
+        safety=safety,
         camera=_camera_config(now),
         watchdog=WatchdogConfig(
             hold_after_ms=2_000,

@@ -42,8 +42,8 @@ LEGACY_SYNTHETIC_RESPONSES_PATH = (
     / "fixtures"
     / "transcript_plan_responses.synthetic.json"
 )
-REVIEWED_CORPUS_DIGEST = "7fcc2097ccedfe84a65e161b9793e803973608f6194b243da15693885cedd458"
-REVIEWED_CORPUS_CASES = 50
+REVIEWED_CORPUS_DIGEST = "4e85885366ff4c3762e86c59e822ab3ebcb1f169da898e0ffe5a3b1912710cbb"
+REVIEWED_CORPUS_CASES = 53
 _HOST_MINTED_EXPECTATIONS = {
     "capture-explicit-living-room": "capture-living-room-4",
     "capture-explicit-reconstruct-eight": "capture-living-room-5",
@@ -172,7 +172,7 @@ def load_corpus(path: Path | None = None) -> LoadedCorpus:
     if reviewed and (
         corpus_digest != REVIEWED_CORPUS_DIGEST or len(parsed) != REVIEWED_CORPUS_CASES
     ):
-        raise ValueError("default language corpus does not match the reviewed 50-case release")
+        raise ValueError("default language corpus does not match the reviewed 53-case release")
     loaded = LoadedCorpus(cases=parsed, digest=corpus_digest, reviewed=reviewed)
     if reviewed:
         _ISSUED_CORPORA[loaded] = parsed

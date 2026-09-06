@@ -46,6 +46,7 @@ IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
 _LOGGER = logging.getLogger(__name__)
 ShutdownCallback = Callable[[], None]
+StartupCallback = Callable[[], None]
 _OUTBOUND_LIMIT = 128
 _SEND_TIMEOUT_SECONDS = 5.0
 _CLOSE_TIMEOUT_SECONDS = 1.0
@@ -889,6 +890,7 @@ def create_app(
     control_localization_factory: ControlLocalizationFactory | None = None,
     control_pose_signing_key: ControlPoseSigningKey | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
+    startup_callback: StartupCallback | None = None,
     shutdown_callback: ShutdownCallback | None = None,
     media_monitor_factory: MediaMonitorFactory | None = None,
 ) -> FastAPI:
@@ -919,6 +921,8 @@ def create_app(
             else transcript_service_factory(runtime)
         )
         await runtime.start()
+        if startup_callback is not None:
+            startup_callback()
         try:
             yield
         finally:
@@ -1155,6 +1159,10 @@ def create_app(
             relay_state=session.current_state(),
             rooms=runtime.authoritative_rooms(session),
             now_ms=runtime.clock(),
+            # Transcription takes seconds; the compiler grounds on a state event read
+            # after it so its maximum state age is measured against the plan, not the
+            # upload.
+            refresh_state=lambda: (session.current_state(), runtime.clock()),
         )
         status_code = 413 if outcome.reason == "audio_too_long" else 200
         return JSONResponse(
