@@ -1,6 +1,8 @@
 package org.worldofhacks.sweep.bridge.core.flight
 
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
+import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
 
 sealed interface PortResult {
     data object Ok : PortResult
@@ -56,6 +58,10 @@ enum class FlightReason(val wire: String, val retryable: Boolean) {
     YAW_NOT_REACHED("yaw_not_reached", true),
     NODE_BUSY("node_busy", true),
     SUPERSEDED("superseded", true),
+    NAVIGATION_NOT_AUTHORIZED("navigation_not_authorized", false),
+    NAVIGATION_HOLD("navigation_hold", true),
+    NAVIGATION_LOST("navigation_lost", true),
+    NAVIGATION_LAND("navigation_land", false),
     UNSUPPORTED("unsupported", false);
 
     val classWord: String
@@ -96,6 +102,13 @@ data class FlightCommand(val commandId: String, val args: CommandArgs, val label
         }
     }
 }
+
+data class NavigationEvidence(
+    val authorization: NavigationRouteAuthorization? = null,
+    val pose: NavigationPose? = null,
+    val poseFreshUntilMs: Long? = null,
+    val relayOffsetMs: Long? = null,
+)
 
 /** The loop's observable state for the screen, the bench log, and `node_status`. */
 data class FlightStatus(

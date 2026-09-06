@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfigJson
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 
@@ -14,6 +16,7 @@ data class BridgeSetup(
     val droneId: Int,
     val token: String,
     val localizationPins: LocalizationPins? = null,
+    val navigationConfig: NavigationConfig? = null,
 ) {
     /** Never includes the token. */
     override fun toString(): String = "BridgeSetup(relayUrl=$relayUrl, session=$session, droneId=$droneId, token=<redacted>)"
@@ -28,6 +31,7 @@ data class SetupSummary(
     val tokenLength: Int = 0,
     val loaded: Boolean = false,
     val localizationPins: LocalizationPins? = null,
+    val navigationConfig: NavigationConfig? = null,
 ) {
     val complete: Boolean
         get() = tokenStored && relayUrl.isNotBlank() && session.isNotBlank() && droneId > 0
@@ -50,6 +54,7 @@ class BridgeSetupStore(context: Context) {
             droneId = prefs.getInt(KEY_DRONE_ID, 1),
             token = token,
             localizationPins = localizationPins(),
+            navigationConfig = navigationConfig(),
         )
     }
 
@@ -63,6 +68,7 @@ class BridgeSetupStore(context: Context) {
             tokenLength = token?.length ?: 0,
             loaded = true,
             localizationPins = localizationPins(),
+            navigationConfig = navigationConfig(),
         )
     }
 
@@ -80,7 +86,13 @@ class BridgeSetupStore(context: Context) {
         prefs.edit().remove(KEY_TOKEN).apply()
     }
 
-    /** Stores the exact versioned import atomically; it remains diagnostic-only. */
+    fun saveNavigationConfig(config: NavigationConfig?) {
+        val editor = prefs.edit()
+        if (config == null) editor.remove(KEY_NAVIGATION_CONFIG)
+        else editor.putString(KEY_NAVIGATION_CONFIG, NavigationConfigJson.encode(config))
+        editor.apply()
+    }
+
     fun saveLocalizationPins(pins: LocalizationPins?) {
         val editor = prefs.edit()
         if (pins == null) editor.remove(KEY_LOCALIZATION_CONFIG)
@@ -90,6 +102,9 @@ class BridgeSetupStore(context: Context) {
 
     private fun localizationPins(): LocalizationPins? = prefs.getString(KEY_LOCALIZATION_CONFIG, null)
         ?.let { runCatching { LocalizationPinsJson.parse(it) }.getOrNull() }
+
+    private fun navigationConfig(): NavigationConfig? = prefs.getString(KEY_NAVIGATION_CONFIG, null)
+        ?.let { runCatching { NavigationConfigJson.parse(it) }.getOrNull() }
 
     @Suppress("DEPRECATION")
     private fun open(): SharedPreferences {
@@ -114,5 +129,6 @@ class BridgeSetupStore(context: Context) {
         private const val KEY_DRONE_ID = "drone_id"
         private const val KEY_TOKEN = "token"
         private const val KEY_LOCALIZATION_CONFIG = "localization_diagnostic_pins_json"
+        private const val KEY_NAVIGATION_CONFIG = "measured_navigation_config_json"
     }
 }
