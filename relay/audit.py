@@ -36,13 +36,7 @@ class AuditLogError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class _CommittedRecord:
-    """Fencing metadata for one committed record.
-
-    ``digest`` and ``length`` describe the exact JSONL line; ``line`` itself is
-    retained until the next non-empty operation commits, so the database can
-    rebuild a mirror tail the process did not finish writing without duplicating
-    history.
-    """
+    """Retain line bytes only until the next nonempty commit, for mirror-tail recovery."""
 
     seq: int
     operation_id: int
@@ -143,15 +137,10 @@ class SessionAuditLog:
                 return []
             owns_operation = operation_id is None
             try:
-                # A stand-alone append has no external side effect to protect, so
-                # inspect the mirror before creating its durable pending marker.
-                # An outer relay operation supplies a marker created before its
-                # mutation; it must remain pending if this verification fails.
+                # An external operation's marker must survive failed mirror verification.
+                self._verify_mirror_for_append()
                 if owns_operation:
-                    self._verify_mirror_for_append()
                     operation_id = self.begin_operation()
-                else:
-                    self._verify_mirror_for_append()
                 assert operation_id is not None
                 if not prepared:
                     self._complete_operation(operation_id, [])
@@ -321,9 +310,7 @@ class SessionAuditLog:
                 if status != ("pending",):
                     raise AuditLogError("audit operation is missing or already complete")
                 if prepared:
-                    # Do not discard the last known recovery source until the
-                    # mirror has been verified and its successor lines can be
-                    # committed in this same transaction.
+                    # Replace the recovery source only in the successor's commit.
                     database.execute("UPDATE records SET line = NULL WHERE line IS NOT NULL")
                 for record, encoded in prepared:
                     database.execute(
@@ -471,11 +458,7 @@ class SessionAuditLog:
         )
 
     def _migrate_legacy_database(self) -> None:
-        """Replace a database that duplicates every event body with digest rows.
-
-        The mirror is first recovered from the legacy bodies exactly as before, so
-        the migration never loses a committed record the mirror did not hold.
-        """
+        """Recover the mirror before discarding legacy event bodies."""
         try:
             with closing(self._connect()) as database:
                 if self._database_schema(database) != "legacy":
@@ -552,12 +535,7 @@ class SessionAuditLog:
             raise AuditLogError(f"cannot migrate legacy audit log: {error}") from None
 
     def _recover_mirror_from_database(self, *, all_lines_recoverable: bool = False) -> None:
-        """Repair the mirror from committed metadata and any retained line bodies.
-
-        The legacy schema retained every canonical event body, so its one-time
-        migration may recover across operation boundaries. The digest schema
-        deliberately retains only the newest operation and must not do so.
-        """
+        """Repair retained lines; only legacy migration may cross operation boundaries."""
         pending = self._has_pending_operation()
         try:
             mirror = open(self.path, "rb", buffering=_MIRROR_READ_BUFFER)

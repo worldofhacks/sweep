@@ -881,9 +881,7 @@ class RelaySession:
                     )
                 ]
 
-            # Retain every accepted source frame. Sampling these inputs makes a
-            # later control-state record insufficient to reconstruct the evidence
-            # a safety or autonomy decision could have observed.
+            # Sampling telemetry would lose the inputs behind later safety decisions.
             state = self._state_event(now)
             projection = _material_state_projection(state)
             state_changed = transition is not None or self._state_projection_changed(projection)
@@ -2499,17 +2497,8 @@ _MAX_MATERIAL_DRONE_PROJECTION_BYTES = 128 * 1024
 
 
 def _material_state_projection(state: Mapping[str, object]) -> str:
-    """Canonical JSON of the state fields whose change warrants another audit record.
-
-    Timestamps, sequence numbers and per-aircraft telemetry values move on every
-    frame and are carried by the retained telemetry records instead; membership,
-    readiness, flight state, control fields, plans and node reports are material.
-    A node report that repeats its previous content under a new timestamp is not.
-    """
-    # State is generated internally, but every new top-level field still needs an
-    # explicit projection decision. In particular, future collections such as
-    # captures must add their own bounded projector rather than silently turning
-    # this 10 Hz comparison into an ever-growing deep serialization.
+    """Exclude volatile fields already retained in source events from snapshot comparison."""
+    # New collections need bounded projections to keep this 10 Hz comparison bounded.
     unknown = (
         set(state)
         - _VOLATILE_STATE_KEYS
