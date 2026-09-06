@@ -81,6 +81,7 @@ HOLD_PREEMPTS = frozenset(
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
         IntentName.NAVIGATE,
+        IntentName.SEARCH,
     }
 )
 """Operator motion and camera plans a hold cancels; a running safety plan finishes first."""

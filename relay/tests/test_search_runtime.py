@@ -28,7 +28,7 @@ def _search_runtime(*, map_pin: ArtifactPin | None = None) -> SearchRuntime:
 
 def _intent(intent_id: str = "search-runtime"):
     return make_intent(
-        IntentName.NAVIGATE,
+        IntentName.SEARCH,
         selection=(1,),
         args={"zone_id": "atrium", "target_class": "backpack"},
         confirm=True,
@@ -70,7 +70,6 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
 
     from perception.object_detection import (
         DEFAULT_TARGET_LABELS,
-        DetectionCandidate,
         ProcessedFrameEvent,
     )
     from perception.search_events import FramePoseEvidence
@@ -89,7 +88,7 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
         detector_config_sha256 = "a" * 64
 
         def detect(self, _frame):
-            return (DetectionCandidate("backpack", 24, 0.9, (1, 1, 3, 3)),)
+            return ()
 
     runtime = _search_runtime()
     snapshot = _snapshot()
@@ -114,7 +113,7 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
 
     result = runtime.execute("search-runtime", dispatcher, snapshot, current_snapshot=current)
     assert result.status is LifecycleStatus.COMPLETED, result.refusal
-    assert runtime.status("search-runtime").state == "running"
+    assert runtime.status("search-runtime").state == "incomplete"
     assert any(call.operation.value == "goto" for call in flight.calls)
 
     task = preview.search.assignments[0].task
@@ -146,6 +145,108 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
     assert not accepted.accepted
     assert accepted.reason == "task_not_active" or accepted.reason == "duplicate_frame"
 
+
+def test_search_preview_lease_binds_the_full_intent_and_expires() -> None:
+    from dataclasses import replace
+
+    runtime = _search_runtime()
+    intent = _intent("leased-search")
+    preview = runtime.prepare(intent, _snapshot())
+    assert isinstance(preview, SearchMissionPreview)
+    expires = runtime.preview_expires_at_ms(intent.intent_id)
+    assert runtime.accepts_intent(intent, expires)
+    assert not runtime.accepts_intent(replace(intent, retry_of="prior"), expires)
+    assert not runtime.accepts_intent(replace(intent, selection=(2,)), expires)
+    assert not runtime.accepts_intent(intent, expires + 1)
+
+
+def test_search_counts_real_worker_frames_during_frozen_route_execution() -> None:
+    from collections import deque
+    from dataclasses import replace
+
+    import numpy as np
+
+    from perception.object_detection import DEFAULT_TARGET_LABELS, DetectionCandidate
+    from perception.search_events import FramePoseEvidence
+    from perception.search_localization import SearchLocalization
+    from planner.models import LifecycleStatus
+    from planner.navigation import Pose
+    from tests.autonomy_fixtures import make_stack
+
+    class Frames:
+        frames = deque()
+
+        def read(self, _timeout):
+            return self.frames.popleft() if self.frames else None
+
+    class Detector:
+        target_labels = DEFAULT_TARGET_LABELS
+        detector_config_sha256 = "a" * 64
+
+        def detect(self, _frame):
+            return (DetectionCandidate("backpack", 24, 0.9, (1, 1, 3, 3)),)
+
+    runtime = _search_runtime()
+    snapshot = _snapshot()
+    preview = runtime.prepare(_intent(), snapshot)
+    assert isinstance(preview, SearchMissionPreview)
+    _, _, _, dispatcher, flight, _ = make_stack(snapshot)
+    dispatcher.navigation = runtime.navigation
+    frames = Frames()
+    clock = [snapshot.now_ms]
+    observed_pose = [snapshot.aircraft[1].pose]
+    covered_during_flight = []
+    task = preview.search.assignments[0].task
+
+    def current():
+        clock[0] += 1
+        aircraft = {
+            drone_id: replace(
+                snapshot.aircraft[drone_id],
+                pose=drone.pose,
+                flight_state=drone.flight_state,
+                position_last_seen_ms=clock[0],
+            )
+            for drone_id, drone in flight.aircraft.items()
+        }
+        return replace(snapshot, now_ms=clock[0], aircraft=aircraft)
+
+    def pose_for(event):
+        pose = observed_pose[0]
+        return FramePoseEvidence(
+            event.identity,
+            task.connection_epoch,
+            Pose(pose.x, pose.y, pose.z, "level_1"),
+            clock[0] / 1000,
+            clock[0] / 1000,
+        )
+
+    worker = runtime.detection_worker(
+        "search-runtime",
+        1,
+        frames,
+        Detector(),
+        pose_for,
+        now_s=lambda: clock[0] / 1000,
+        worker_run_id="moving-search",
+    )
+
+    def process_arrival(_plan, _command, arrived):
+        observed_pose[0] = arrived.aircraft[1].pose
+        frames.frames.append((np.zeros((8, 8, 3), dtype=np.uint8), clock[0] / 1000))
+        worker.poll()
+        covered_during_flight.append(
+            runtime.status_payload("search-runtime")["tasks"][0]["covered_cells"]
+        )
+
+    dispatcher.on_navigation_command_completed = process_arrival
+    result = runtime.execute("search-runtime", dispatcher, snapshot, current_snapshot=current)
+
+    assert result.status is LifecycleStatus.COMPLETED, result.refusal
+    assert any(count > 0 for count in covered_during_flight[:-1])
+    assert runtime.status("search-runtime").state == "covered"
+    assert dispatcher.on_navigation_command_completed is process_arrival
+
     payload = runtime.status_payload("search-runtime")
     candidate = payload["candidates"][0]
     task_payload = payload["tasks"][0]
@@ -155,8 +256,6 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
     assert candidate["position"] is None
     assert task_payload["cells"]
     assert task_payload["covered_cell_ids"]
-
-    from perception.search_localization import SearchLocalization
 
     runtime.localize_sighting(
         "search-runtime",

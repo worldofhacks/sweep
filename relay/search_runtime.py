@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from math import dist
 from types import MappingProxyType
 from typing import Literal
 
@@ -20,6 +21,7 @@ from perception.search_events import (
 )
 from perception.search_localization import SearchLocalization
 from planner.models import (
+    Command,
     ExecutionResult,
     FleetSnapshot,
     LifecycleStatus,
@@ -186,17 +188,30 @@ class SearchRuntime:
         """Dispatch only the exact route frozen into the confirmed preview."""
         mission = self._mission(intent_id)
         self.start(intent_id)
-        result = dispatcher.dispatch(
-            mission.preview.plan, snapshot, current_snapshot=current_snapshot
-        )
+        previous_observer = dispatcher.on_navigation_command_completed
+
+        def arrived(plan: Plan, command: Command, current: FleetSnapshot) -> None:
+            if plan.intent_id == intent_id:
+                self._activate_arrived_tasks(mission, current, drone_id=command.drone_id)
+            if previous_observer is not None:
+                previous_observer(plan, command, current)
+
+        dispatcher.on_navigation_command_completed = arrived
+        self._activate_arrived_tasks(mission, snapshot)
+        try:
+            result = dispatcher.dispatch(
+                mission.preview.plan, snapshot, current_snapshot=current_snapshot
+            )
+        finally:
+            dispatcher.on_navigation_command_completed = previous_observer
         if result.status is not LifecycleStatus.COMPLETED:
             reason = result.refusal.detail if result.refusal else "route_execution_failed"
             self.hold(intent_id, reason)
             return result
-        latest = current_snapshot() if current_snapshot else snapshot
-        events = self._activate_arrived_tasks(mission, latest)
-        if not events:
-            self.hold(intent_id, "fresh_coverage_arrival_unverified")
+        for assignment in mission.preview.search.assignments:
+            task_id = assignment.task.task_id
+            if mission.ledger.task_state(task_id) in {"pending", "active"}:
+                mission.ledger.mark_incomplete(task_id, "route_finished_with_unobserved_cells")
         return result
 
     def observe_processed_frame(
@@ -463,14 +478,22 @@ class SearchRuntime:
         return tuple(cell.pose for lane in lanes for cell in lane.cells)
 
     def _activate_arrived_tasks(
-        self, mission: _Mission, snapshot: FleetSnapshot
+        self, mission: _Mission, snapshot: FleetSnapshot, *, drone_id: int | None = None
     ) -> tuple[SearchTaskEvent, ...]:
         events = []
         for assignment in mission.preview.search.assignments:
             task = assignment.task
+            if drone_id is not None and assignment.drone.drone.drone_id != drone_id:
+                continue
+            arrival = assignment.transit.arrival_slot.pose
             aircraft = snapshot.aircraft.get(assignment.drone.drone.drone_id)
             if (
                 aircraft is not None
+                and dist(
+                    (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z),
+                    (arrival.x_m, arrival.y_m, arrival.z_m),
+                )
+                <= self.navigation.config.position_tolerance_m
                 and aircraft.connection_epoch == task.connection_epoch
                 and aircraft.flight_state.value == "hovering"
                 and 0
