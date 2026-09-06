@@ -354,6 +354,8 @@ class VerifiedLocalizationIngestion:
         self.max_attitude_uncertainty_deg = _number(
             aligned["max_uncertainty_deg"], "max attitude uncertainty", positive=True
         )
+        if self.max_attitude_uncertainty_deg > 180:
+            raise ValueError("maximum attitude uncertainty cannot exceed 180 degrees")
         _measured(
             aligned["measurement"],
             "capture-aligned attitude",
@@ -466,7 +468,7 @@ class VerifiedLocalizationIngestion:
         if source == "aircraft_body_to_ned":
             target = self._body
             expected_convention = self.body_convention_id
-        elif source == "body_to_gimbal":
+        elif source == "gimbal_mount_to_gimbal":
             target = self._gimbal
             expected_convention = self.gimbal_convention_id
         else:
@@ -545,9 +547,8 @@ class VerifiedLocalizationIngestion:
         lever_arm_m = np.linalg.norm(self.body_gimbal_mount[:3, 3]) + np.linalg.norm(
             self.gimbal_camera[:3, 3]
         )
-        attitude_position_error_m = lever_arm_m * math.sin(
-            math.radians(body.uncertainty_deg + gimbal.uncertainty_deg)
-        )
+        angular_bound_deg = min(180.0, body.uncertainty_deg + gimbal.uncertainty_deg)
+        attitude_position_error_m = 2 * lever_arm_m * math.sin(math.radians(angular_bound_deg) / 2)
         covariance = np.asarray(self.position_covariance) + np.eye(3) * (
             timing_position_error_m**2 + attitude_position_error_m**2
         )

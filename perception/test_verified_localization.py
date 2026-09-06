@@ -19,11 +19,6 @@ def config(tmp_path):
     publisher = sensor["publisher"]
     map_id = json.loads((tmp_path / "bundle" / "manifest.yaml").read_text())["content_sha256"]
     publisher["drones"][0]["fuser"]["map_id"] = map_id
-    calibration_path = tmp_path / "calibration.yaml"
-    calibration = json.loads(calibration_path.read_text())
-    calibration["evidence_kind"] = "recorded_live"
-    calibration_path.write_text(json.dumps(calibration))
-    localizer["calibration_sha256"] = hashlib.sha256(calibration_path.read_bytes()).hexdigest()
     pipeline_sha256 = hashlib.sha256(
         json.dumps(localizer["pipeline"], sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -87,7 +82,7 @@ def config(tmp_path):
                     "artifact_sha256": "d" * 64,
                 },
                 "body_convention_id": "aircraft-body-to-ned-rpy-zyx",
-                "gimbal_convention_id": "body-to-gimbal-calibrated-v1",
+                "gimbal_convention_id": "mount-to-gimbal-calibrated-v1",
                 "max_bracket_s": 0.02,
                 "max_residual_s": 0.005,
                 "max_uncertainty_deg": 0.5,
@@ -102,7 +97,7 @@ def config(tmp_path):
             },
         },
     }
-    frame = tmp_path / "recorded-720p.png"
+    frame = tmp_path / "rendered-720p.png"
     assert cv2.imwrite(str(frame), image)
     bind_evidence(raw, tmp_path)
     return raw, frame, body_pose
@@ -299,7 +294,7 @@ def test_capture_aligned_attitudes_flow_through_tag_fuser_and_signed_publisher(
     emitted = []
     for sample in [
         capture_aligned_attitude(raw, "aircraft_body_to_ned"),
-        capture_aligned_attitude(raw, "body_to_gimbal"),
+        capture_aligned_attitude(raw, "gimbal_mount_to_gimbal"),
         frame_record(raw, frame),
     ]:
         emitted.extend(ingestion.records(sample))
@@ -309,7 +304,7 @@ def test_capture_aligned_attitudes_flow_through_tag_fuser_and_signed_publisher(
         json.dumps({"now_s": 1.01, "raw": sample})
         for sample in [
             capture_aligned_attitude(raw, "aircraft_body_to_ned"),
-            capture_aligned_attitude(raw, "body_to_gimbal"),
+            capture_aligned_attitude(raw, "gimbal_mount_to_gimbal"),
             *sensor_samples(),
             frame_record(raw, frame),
         ]
@@ -334,7 +329,7 @@ def test_missing_or_asynchronous_attitude_and_wrong_pins_fail_closed(tmp_path):
     with pytest.raises(ValueError, match="capture-aligned"):
         ingestion.records(frame_record(raw, frame))
     ingestion = VerifiedLocalizationIngestion(raw)
-    aligned = capture_aligned_attitude(raw, "body_to_gimbal")
+    aligned = capture_aligned_attitude(raw, "gimbal_mount_to_gimbal")
     aligned["after_capture_time_s"] = 1.1
     with pytest.raises(ValueError, match="interpolation bounds"):
         ingestion.records(aligned)
@@ -346,20 +341,10 @@ def test_missing_or_asynchronous_attitude_and_wrong_pins_fail_closed(tmp_path):
     changed["publisher"]["drones"][0]["fuser"]["map_id"] = "other-map"
     with pytest.raises(ValueError, match="map identity"):
         VerifiedLocalizationIngestion(changed)
-    calibration_path = tmp_path / "calibration.yaml"
-    calibration = json.loads(calibration_path.read_text())
-    calibration["evidence_kind"] = "synthetic"
-    calibration_path.write_text(json.dumps(calibration))
     changed = deepcopy(raw)
     changed["evidence_scope"] = "hardware"
-    changed["localizer"]["calibration_sha256"] = hashlib.sha256(
-        calibration_path.read_bytes()
-    ).hexdigest()
-    changed["camera"]["calibration_sha256"] = changed["localizer"]["calibration_sha256"]
     with pytest.raises(ValueError, match="synthetic"):
         VerifiedLocalizationIngestion(changed)
-    calibration["evidence_kind"] = "recorded_live"
-    calibration_path.write_text(json.dumps(calibration))
     ingestion = VerifiedLocalizationIngestion(raw)
     with pytest.raises(ValueError, match="capture-aligned"):
         ingestion.records(frame_record(raw, frame))
@@ -375,4 +360,39 @@ def test_artifacts_bind_values_and_telemetry_timing_bound(tmp_path):
     raw, _, _ = config(tmp_path)
     raw["camera"]["body_gimbal_mount"]["matrix"][0][3] = 2
     with pytest.raises(ValueError, match="does not bind"):
+        VerifiedLocalizationIngestion(raw)
+
+
+def test_nonidentity_gimbal_mount_composes_once_and_angular_error_does_not_wrap(tmp_path):
+    raw, frame, expected_body_pose = config(tmp_path)
+    rotation = cv2.Rodrigues(np.array([0.0, 0.0, 0.4]))[0]
+    joint = np.eye(4)
+    joint[:3, :3] = rotation
+    body_camera = np.asarray(raw["camera"]["body_gimbal_mount"]["matrix"])
+    mount = body_camera @ np.linalg.inv(joint)
+    raw["camera"]["body_gimbal_mount"]["matrix"] = mount.tolist()
+    raw["camera"]["capture_aligned_attitude"]["max_uncertainty_deg"] = 90.0
+    bind_evidence(raw, tmp_path)
+    ingestion = VerifiedLocalizationIngestion(raw)
+    body = capture_aligned_attitude(raw, "aircraft_body_to_ned")
+    gimbal = capture_aligned_attitude(raw, "gimbal_mount_to_gimbal")
+    body["interpolation_uncertainty_deg"] = 90.0
+    gimbal["interpolation_uncertainty_deg"] = 90.0
+    gimbal["rotation"] = rotation.tolist()
+    ingestion.records(body)
+    ingestion.records(gimbal)
+
+    (tag,) = ingestion.records(frame_record(raw, frame))
+
+    np.testing.assert_allclose(tag["position_map_enu_m"], expected_body_pose[:3, 3], atol=0.02)
+    covariance = np.asarray(tag["covariance_map_enu_m2"])
+    configured = np.asarray(raw["camera"]["position_covariance_map_enu_m2"]["matrix"])
+    assert np.all(np.diag(covariance - configured) >= 4 * np.linalg.norm(mount[:3, 3]) ** 2)
+
+
+def test_uncertainty_above_a_half_turn_is_rejected_even_with_matching_artifact(tmp_path):
+    raw, _, _ = config(tmp_path)
+    raw["camera"]["capture_aligned_attitude"]["max_uncertainty_deg"] = 181.0
+    bind_evidence(raw, tmp_path)
+    with pytest.raises(ValueError, match="180 degrees"):
         VerifiedLocalizationIngestion(raw)
