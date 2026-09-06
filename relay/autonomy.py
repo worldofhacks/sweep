@@ -22,6 +22,7 @@ the intent operation.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -31,7 +32,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import get_origin, get_type_hints
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Request
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink
@@ -44,6 +45,7 @@ from planner.models import (
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
+    Plan,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
@@ -58,7 +60,7 @@ from relay.capabilities import CapabilityProfile
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
 from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
-from relay.intent_v1 import IntentName, IntentV1
+from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 
@@ -475,6 +477,46 @@ class AutonomySession:
 
     def __call__(self, intent: IntentV1, state: dict[str, object]) -> None:
         self.submit(intent, state)
+
+    def preview_navigation(self, intent: IntentV1, state: Mapping[str, object]) -> Plan | Refusal:
+        if intent.name is not IntentName.NAVIGATE or self._composition.navigation_runtime is None:
+            return Refusal(
+                intent.intent_id,
+                0,
+                None,
+                None,
+                RefusalReason.UNSUPPORTED,
+                "navigation deployment is unavailable",
+            )
+        with self._lock:
+            previous = self._operator_last_seen_ms
+            self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
+        snapshot = self.snapshot(state)
+        planned = self.planner.plan(replace(intent, confirm=True), snapshot)
+        if isinstance(planned, Refusal):
+            return planned
+        if planned.navigation is None:
+            return Refusal(
+                intent.intent_id,
+                snapshot.roster_version,
+                None,
+                None,
+                RefusalReason.UNSUPPORTED,
+                "navigation runtime did not produce a route",
+            )
+        refusal = self.arbiter.check_intent(replace(intent, confirm=True), snapshot)
+        return planned if refusal is None else refusal
+
+    def navigation_catalog(self) -> dict[str, object] | None:
+        runtime = self._composition.navigation_runtime
+        if runtime is None:
+            return None
+        from relay.navigation_metadata import navigation_metadata
+
+        try:
+            return navigation_metadata(runtime)
+        except (OSError, ValueError):
+            return None
 
     def authorize_leave(
         self, drone_id: int, connection_epoch: int, state: dict[str, object]
@@ -956,6 +998,50 @@ def create_autonomy_app(
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
     )
+
+    @app.post("/session/{session_id}/navigation/preview")
+    async def navigation_preview(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        runtime: RelayRuntime = request.app.state.relay_runtime
+        token = (
+            authorization.removeprefix("Bearer ").encode()
+            if authorization and authorization.startswith("Bearer ")
+            else None
+        )
+        expected = runtime.credential_resolver.resolve("console", None)
+        if token is None or expected is None or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=401, detail="console authentication is required")
+        try:
+            payload = await request.json()
+            candidate = payload["intent"] if isinstance(payload, Mapping) else None
+        except (ValueError, KeyError):
+            candidate = None
+        validated = validate_intent(candidate, capability_profile=composition.capability_profile)
+        if not isinstance(validated, AcceptedIntent) or validated.intent.source != "console":
+            raise HTTPException(
+                status_code=422, detail="a configured console navigation intent is required"
+            )
+        session = await runtime.activate_session(session_id)
+        owner = composition.session(session_id)
+        result = owner.preview_navigation(validated.intent, session.current_state())
+        if isinstance(result, Refusal):
+            raise HTTPException(status_code=409, detail=result.detail)
+        catalog = owner.navigation_catalog()
+        if catalog is None:
+            raise HTTPException(status_code=409, detail="navigation catalog is unavailable")
+        return {
+            "v": 1,
+            "t": runtime.clock(),
+            "type": "navigation_preview",
+            "session": session_id,
+            "intent_id": validated.intent.intent_id,
+            "plan": result.to_dict(),
+            "rooms": catalog["zones"],
+        }
+
     composition.bind(app)
     return app, composition
 
