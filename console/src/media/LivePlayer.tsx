@@ -41,7 +41,19 @@ export function LivePlayer({ device, media }: LivePlayerProps) {
         Playback {playback.state}
       </p>
       {caption && (
-        <p className={caption.failed ? 'lv-playback is-failed' : 'lv-playback'}>{caption.text}</p>
+        <p className={caption.failed ? 'lv-playback is-failed' : 'lv-playback'}>
+          <span className={caption.failed ? 'is-failed' : undefined}>{caption.text}</span>
+          {playback.state === 'reconnecting' && (
+            <>
+              <br />
+              <span>
+                {playback.retryDelayMs === undefined
+                  ? playback.phase ?? 'Reconnecting to the live feed…'
+                  : `Reconnecting in ${playback.retryDelayMs / 1_000}s…`}
+              </span>
+            </>
+          )}
+        </p>
       )}
     </div>
   )
@@ -57,11 +69,14 @@ function describePlayback(
     return { text: `No playback path for ${streamName(device)}: ${descriptor.message}.`, failed: true }
   }
   if (state === 'playing') return null
-  if (state === 'failed') {
+  if (state === 'failed' || state === 'reconnecting') {
     return {
       text: `Playback failed: ${detail ?? 'no detail'}. The relay still reports the stream live.`,
       failed: true,
     }
   }
-  return { text: `Connecting to ${descriptor.stream} over WHEP.`, failed: false }
+  return {
+    text: detail ? `${detail} (${descriptor.stream}).` : `Connecting to ${descriptor.stream} over WHEP.`,
+    failed: false,
+  }
 }

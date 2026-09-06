@@ -98,8 +98,8 @@ authoritative relay/session; it does not combine rosters from separate relay ins
 
 ## Live playback
 
-Every wall tile whose stream the relay reports `live` plays it over WHEP in its own session, so
-the Wall of 4 holds four concurrent sessions, and the focus feed plays the focused aircraft's
+Every wall tile whose stream the relay reports `live` plays it over WHEP in its own session,
+including mixed aircraft and ground-vehicle walls. The focus feed plays the focused device's
 stream the same way; playback needs the page to have been served a media configuration, and every
 other state is said in words. A player is torn down with its tile: when the pane changes, when the
 console unmounts, and the moment the relay stops reporting the stream `live`, after which the tile
@@ -107,6 +107,14 @@ says `offline` with the age of the last frame the relay knew about. The relay's 
 (`relay/README.md`, "Membership and state fan-out") is the only source of that status; the console
 never probes MediaMTX itself. A changed device connection epoch also replaces that device's
 player, even if the console did not observe an intervening offline frame. Other players remain open.
+
+Source availability and browser playback are separate evidence. A tile reports playback only
+after a video frame arrives. Failed connections clean up their old peer and WHEP session, then
+retry after 1, 2, 4, and at most 8 seconds while the stream remains live. A long initial H264
+keyframe interval may require up to the separate 20-second first-frame window; signaling phases
+have 5-second bounds. Once playing, a visible tile that receives no fresh rendered frame for
+3 seconds reports the stall and reconnects. Background tabs wait for fresh video when brought
+forward. An offline transition, a replaced connection epoch, or unmount cancels pending retries.
 
 The configuration is `{ "media": { "webrtcOrigin", "readerUsername", "readerPassword" } }`, read
 once at startup from two places in order, so credentials never enter the bundle. First the
