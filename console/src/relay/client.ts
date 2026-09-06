@@ -14,6 +14,7 @@ export interface RelayClient {
   stop(): void
   subscribe(listener: RelayClientListener): () => void
   sendIntent(intent: IntentV1): Promise<void>
+  acknowledgeDetection(detectionId: string): Promise<void>
 }
 
 export interface WebSocketRelayConfig {
@@ -164,6 +165,13 @@ export class WebSocketRelayClient implements RelayClient {
     this.presenceTimer = null
   }
 
+  async acknowledgeDetection(detectionId: string): Promise<void> {
+    if (!this.socket || this.socket.readyState !== 1 || !this.authenticated) {
+      throw new Error('Relay is not authenticated; the detection acknowledgement was not sent.')
+    }
+    this.socket.send(JSON.stringify({ v: 1, type: 'detection_acknowledgement', detection_id: detectionId }))
+  }
+
   private emitConnection(status: RelayConnection['status'], reason?: string): void {
     this.emit({
       kind: 'connection',
@@ -212,6 +220,10 @@ export class UnavailableRelayClient implements RelayClient {
   }
 
   async sendIntent(): Promise<void> {
+    throw new Error(this.reason)
+  }
+
+  async acknowledgeDetection(): Promise<void> {
     throw new Error(this.reason)
   }
 

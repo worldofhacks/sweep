@@ -8,6 +8,7 @@ import type {
   IntentSource,
   MembershipAction,
   RelayAircraftState,
+  RelayDetectionEvent,
   RelayCaptureRecord,
   RelayServerEvent,
 } from '../relay/contract'
@@ -91,6 +92,11 @@ export interface OperatorNotice {
   t: number
 }
 
+export interface DetectionRecord {
+  event: RelayDetectionEvent
+  acknowledged: boolean
+}
+
 export interface ControlState {
   sessionId: string
   connection: RelayConnection
@@ -110,6 +116,7 @@ export interface ControlState {
   enabledIntentNames: ConsoleIntentName[]
   departed: DepartureRecord[]
   requests: RequestRecord[]
+  detections: DetectionRecord[]
   selectedFeedId: DroneId | null
   capturePattern: CapturePattern
   armed: boolean
@@ -174,6 +181,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     enabledIntentNames: [],
     departed: [],
     requests: [],
+    detections: [],
     selectedFeedId: null,
     capturePattern: 'pano_360',
     armed: false,
