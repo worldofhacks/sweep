@@ -88,20 +88,26 @@ describe('Gesture module', () => {
     expect(trackingState()).toHaveTextContent('webcam source connected')
 
     expect(screen.getByLabelText('Open palm pair')).toHaveTextContent(
-      'Open palmdrafts capture_room · confirm required600 ms dwell · score 0.80',
+      'Open palmdrafts capture_room · confirm required600 ms dwell · score 0.60',
     )
-    expect(screen.getByLabelText('Closed fist pair')).toHaveTextContent('drafts hold · confirm required600 ms dwell')
+    expect(screen.getByLabelText('Closed fist pair')).toHaveTextContent(
+      'drafts hold · confirm required600 ms dwell · score 0.80',
+    )
     expect(screen.getByLabelText('Pointing up pair')).toHaveTextContent(
-      'Pointing updrafts takeoff · confirm required600 ms dwell · score 0.80',
+      'Pointing updrafts takeoff · confirm required600 ms dwell · score 0.70',
     )
     expect(screen.getByLabelText('Victory pair')).toHaveTextContent(
-      'Victorydrafts translate forward one step · confirm required600 ms dwell · score 0.80',
+      'Victorydrafts translate forward one step · confirm required600 ms dwell · score 0.70',
     )
     expect(screen.getByLabelText('I love you pair')).toHaveTextContent(
-      'I love youdrafts land · confirm required600 ms dwell · score 0.80',
+      'I love youdrafts land · confirm required600 ms dwell · score 0.70',
     )
-    expect(screen.getByLabelText('Thumb up pair')).toHaveTextContent('confirms the pending preview400 ms dwell')
-    expect(screen.getByLabelText('Thumb down pair')).toHaveTextContent('cancels the pending preview400 ms dwell')
+    expect(screen.getByLabelText('Thumb up pair')).toHaveTextContent(
+      'confirms the pending preview400 ms dwell · score 0.60',
+    )
+    expect(screen.getByLabelText('Thumb down pair')).toHaveTextContent(
+      'cancels the pending preview400 ms dwell · score 0.70',
+    )
     expect(screen.getAllByLabelText(/ pair$/)).toHaveLength(7)
     const never = screen.getByText(/Never gesture-emittable/)
     expect(never).toHaveTextContent(
@@ -268,10 +274,21 @@ describe('Gesture module', () => {
     await act(async () => {})
 
     act(() => rig.frame([hand('Open_Palm', 0.4)], 50))
-    expect(screen.getByText(/Low confidence · Open palm at 40% \(needs 80%\)/)).toBeInTheDocument()
+    expect(screen.getByText(/Low confidence · Open palm at 40% \(needs 60%\)/)).toBeInTheDocument()
     const readout = within(screen.getByRole('list', { name: 'Gesture readout' }))
     expect(readout.getByText('low confidence')).toHaveClass('is-blocked')
-    expect(readout.getByText(/Open palm scored 40%; the threshold is 80%\. Nothing was emitted\./)).toBeInTheDocument()
+    expect(readout.getByText(/Open palm scored 40%; the threshold is 60%\. Nothing was emitted\./)).toBeInTheDocument()
+
+    // Three strong frames, then a weak fourth: the consensus rule abandons the candidate.
+    hold(null, 1600)
+    hold('Open_Palm', 150, 0.7)
+    act(() => rig.frame([hand('Open_Palm', 0.4)], 50))
+    expect(screen.getByText(/Low confidence · Open palm reached 60% in 3 of 4 frames/)).toBeInTheDocument()
+    expect(
+      readout.getByText(
+        /Open palm reached its 60% threshold in only 3 of 4 frames over 150 ms; 80% of frames must\. Nothing was emitted\./,
+      ),
+    ).toBeInTheDocument()
 
     hold(null, 100)
     hold('Open_Palm', 200)

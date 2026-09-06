@@ -20,6 +20,7 @@ import {
   GESTURE_TRANSLATE_STEP,
   createGesturePolicyState,
   describeGestureDraft,
+  observeHand,
   stepGesturePolicy,
   type GestureEmittableName,
   type GesturePair,
@@ -351,12 +352,7 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
     if (!frame) return
 
     recorder.record({ kind: 'recognizer', t, hands: frame.hands })
-    const hand = frame.hands[0]
-    const step = stepGesturePolicy(
-      policyRef.current,
-      { t, category: hand?.category ?? null, score: hand?.score ?? 0 },
-      deps.policy,
-    )
+    const step = stepGesturePolicy(policyRef.current, observeHand(t, frame.hands[0]), deps.policy)
     const phaseChanged = step.state.phase !== policyRef.current.phase
     policyRef.current = step.state
     if (
@@ -530,6 +526,7 @@ export function useGestureProducer({ control, roomId, dependencies }: UseGesture
   return {
     view,
     pairs: deps.policy.pairs,
+    policy: deps.policy,
     videoRef,
     bindVideo,
     enable,

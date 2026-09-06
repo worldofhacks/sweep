@@ -201,11 +201,11 @@ describe('useGestureProducer', () => {
   test('low confidence emits nothing and is shown', async () => {
     const { clients, get, hold, enable } = await mount()
     await enable()
-    hold('Open_Palm', 1000, 0.6)
+    hold('Open_Palm', 1000, 0.5)
     expect(get().control.pendingRequest).toBeNull()
     expect(get().control.state.requests).toHaveLength(0)
     expect(clients.webcam?.sent).toHaveLength(0)
-    expect(get().producer.view.notable?.outcome).toMatchObject({ kind: 'low_confidence', score: 0.6 })
+    expect(get().producer.view.notable?.outcome).toMatchObject({ kind: 'low_confidence', score: 0.5 })
     expect(get().producer.view.phase).toBe('idle')
   })
 

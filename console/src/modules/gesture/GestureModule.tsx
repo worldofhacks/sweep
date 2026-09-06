@@ -6,6 +6,7 @@ import {
   describeGestureDraft,
   gestureLabel as gestureName,
   type GesturePair,
+  type GesturePolicyConfig,
 } from '../../gesture/policy'
 import {
   useGestureProducer,
@@ -28,14 +29,24 @@ const READOUT_CAP = 6
 /** Consecutive notable outcomes of one kind inside this window collapse into one readout entry. */
 const READOUT_COLLAPSE_MS = 1_500
 
+const percent = (value: number) => `${Math.round(value * 100)}%`
+
 /** Design copy: the five states in which a gesture emits nothing. */
-const GESTURE_FAILS: ReadonlyArray<readonly [string, string]> = [
-  ['model failed to load', 'The hand model did not load. Gesture emission is disabled.'],
-  ['webcam dropped', 'The camera was unplugged or released. Gesture emission is disabled.'],
-  ['low confidence', 'Confidence stayed below the threshold. Nothing was emitted.'],
-  ['dwell timeout', 'The pose did not hold long enough. Nothing was emitted.'],
-  ['duplicate suppressed', 'The same gesture repeated inside the suppression window. Nothing was emitted.'],
-]
+function gestureFails(policy: GesturePolicyConfig): ReadonlyArray<readonly [string, string]> {
+  return [
+    ['model failed to load', 'The hand model did not load. Gesture emission is disabled.'],
+    ['webcam dropped', 'The camera was unplugged or released. Gesture emission is disabled.'],
+    [
+      'low confidence',
+      `The first frame fell below the pose's score threshold, or fewer than ${percent(policy.minConsensus)} of the frames since the candidate started reached it. Nothing was emitted.`,
+    ],
+    ['dwell timeout', 'The pose did not hold long enough. Nothing was emitted.'],
+    [
+      'duplicate suppressed',
+      `A pose already accepted repeated before the hand had been neutral for ${policy.releaseMs} ms; a different pose starts its own candidate at once. Nothing was emitted.`,
+    ],
+  ]
+}
 
 interface ReadoutEntry {
   id: number
@@ -60,10 +71,10 @@ interface ReadoutState {
  */
 export function GestureModule({ controller, now, roomId, services }: ModuleProps) {
   const [pane, setPane] = useState<GesturePane>('camera')
-  const { view, pairs, videoRef, bindVideo, enable, disable, selectDevice, downloadRecording, clearRecording } =
+  const { view, pairs, policy, videoRef, bindVideo, enable, disable, selectDevice, downloadRecording, clearRecording } =
     useGestureProducer({ control: controller, roomId, dependencies: services.gesture })
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const readout = useReadout(view, now)
+  const readout = useReadout(view, now, policy)
 
   useEffect(() => {
     drawLandmarkOverlay(canvasRef.current, videoRef.current, view.frame)
@@ -113,7 +124,7 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
               </button>
               <span className="gs-hint">
                 {view.status === 'tracking'
-                  ? 'Score must reach 0.80 and the pose must hold for its dwell window.'
+                  ? `Each pose has its own score threshold; ${percent(policy.minConsensus)} of the frames since the candidate started must reach it, and the pose must hold for its full dwell window.`
                   : 'Off by default. Enabling the camera never bypasses confirmation, the arbiter or the physical RC.'}
               </span>
             </div>
@@ -175,9 +186,12 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
         <div data-two="1" className="gs-two">
           <div className="gs-column">
             <p className="gs-intro">
-              The seven MediaPipe poses this console maps. A pose needs a classifier score of 0.80 and its full
-              dwell window; each draft parks in the dock and needs confirmation, and confirm and cancel use the
-              shorter 400 ms window so an operator can answer a preview quickly.
+              The seven MediaPipe poses this console maps. Each pose has its own score threshold, set from recorded
+              webcam sessions; a candidate keeps building while {percent(policy.minConsensus)} of its frames reach
+              that threshold and is accepted after its full dwell window. Each draft parks in the dock and needs
+              confirmation, and confirm and cancel use the shorter 400 ms window so an operator can answer a preview
+              quickly. A pose already accepted stays suppressed until the hand has been neutral for{' '}
+              {policy.releaseMs} ms; a different pose starts its own candidate at once.
             </p>
             {pairs.map((pair) => (
               <div key={pair.gesture} className="gs-vocab-row">
@@ -193,7 +207,7 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
           </div>
           <div className="gs-column">
             <p className="gs-eyebrow is-first">States that emit nothing</p>
-            {GESTURE_FAILS.map(([key, value]) => (
+            {gestureFails(policy).map(([key, value]) => (
               <p key={key} className="gs-fails">
                 <span className="is-key">{key}</span>
                 <span className="is-value">{value}</span>
@@ -280,7 +294,9 @@ function Meters({ view }: { view: GestureProducerView }) {
       <Meter
         label="Confidence"
         value={topScore}
-        text={`${Math.round(topScore * 100)}%${candidatePair ? ` / ${Math.round(candidatePair.minScore * 100)}%` : ''}`}
+        text={`${percent(topScore)}${candidatePair ? ` / ${percent(candidatePair.minScore)}` : ''}${
+          view.outcome.kind === 'candidate' ? ` · ${view.outcome.strongFrames} of ${view.outcome.frames} frames` : ''
+        }`}
       />
       <Meter
         label="Dwell"
@@ -296,7 +312,9 @@ function Meters({ view }: { view: GestureProducerView }) {
       <div className="gs-outcome">
         <span>{humanizeCode(view.phase)}</span>
         {view.frame?.hands[0] && <span className="mono">{view.frame.hands[0].rawCategory ?? 'No gesture'}</span>}
-        {duplicateSuppressed && <span className="tone-warn">Duplicate suppressed · release hand to neutral</span>}
+        {duplicateSuppressed && (
+          <span className="tone-warn">Duplicate suppressed · release to neutral or change pose</span>
+        )}
         {view.notable && view.notable.outcome.kind !== 'duplicate_suppressed' && (
           <span className={view.notable.outcome.kind === 'accepted' ? 'tone-ok' : 'tone-warn'}>
             {describeNotable(view.notable.outcome)}
@@ -399,7 +417,7 @@ function CandidatePreview({
 }
 
 /** Accumulates the readout log from the producer's latest action and notable outcome. */
-function useReadout(view: GestureProducerView, now: () => number): ReadoutEntry[] {
+function useReadout(view: GestureProducerView, now: () => number, policy: GesturePolicyConfig): ReadoutEntry[] {
   const [readout, setReadout] = useState<ReadoutState>({
     seq: 0,
     entries: [],
@@ -417,7 +435,7 @@ function useReadout(view: GestureProducerView, now: () => number): ReadoutEntry[
         view.notable.t - readout.notable.t < READOUT_COLLAPSE_MS
       if (!collapse) {
         seq += 1
-        entries = [{ id: seq, at, ...notableEntry(view.notable.outcome) }, ...entries]
+        entries = [{ id: seq, at, ...notableEntry(view.notable.outcome, policy) }, ...entries]
       }
     }
     if (view.lastAction !== readout.lastAction && view.lastAction) {
@@ -446,12 +464,18 @@ function actionEntry(action: GestureActionRecord): Omit<ReadoutEntry, 'id' | 'at
   return { label, text: action.detail, blocked: action.kind === 'blocked' }
 }
 
-function notableEntry(outcome: GestureProducerView['outcome']): Omit<ReadoutEntry, 'id' | 'at'> {
+function notableEntry(
+  outcome: GestureProducerView['outcome'],
+  policy: GesturePolicyConfig,
+): Omit<ReadoutEntry, 'id' | 'at'> {
   switch (outcome.kind) {
     case 'low_confidence':
       return {
         label: 'low confidence',
-        text: `${gestureName(outcome.pair.gesture)} scored ${Math.round(outcome.score * 100)}%; the threshold is ${Math.round(outcome.pair.minScore * 100)}%. Nothing was emitted.`,
+        text:
+          outcome.frames > 1
+            ? `${gestureName(outcome.pair.gesture)} reached its ${percent(outcome.pair.minScore)} threshold in only ${outcome.strongFrames} of ${outcome.frames} frames over ${outcome.heldMs} ms; ${percent(policy.minConsensus)} of frames must. Nothing was emitted.`
+            : `${gestureName(outcome.pair.gesture)} scored ${percent(outcome.score)}; the threshold is ${percent(outcome.pair.minScore)}. Nothing was emitted.`,
         blocked: true,
       }
     case 'dwell_timeout':
@@ -463,7 +487,7 @@ function notableEntry(outcome: GestureProducerView['outcome']): Omit<ReadoutEntr
     case 'duplicate_suppressed':
       return {
         label: 'duplicate suppressed',
-        text: `${gestureName(outcome.pair.gesture)} repeated before the hand returned to neutral. Nothing was emitted.`,
+        text: `${gestureName(outcome.pair.gesture)} repeated before the hand returned to neutral; a different pose would start its own candidate. Nothing was emitted.`,
         blocked: true,
       }
     case 'unmapped':
@@ -517,7 +541,9 @@ function describeNotable(outcome: GestureProducerView['outcome']): string {
     case 'accepted':
       return `Accepted ${gestureName(outcome.pair.gesture)} after ${outcome.heldMs} ms`
     case 'low_confidence':
-      return `Low confidence · ${gestureName(outcome.pair.gesture)} at ${Math.round(outcome.score * 100)}% (needs ${Math.round(outcome.pair.minScore * 100)}%)`
+      return outcome.frames > 1
+        ? `Low confidence · ${gestureName(outcome.pair.gesture)} reached ${percent(outcome.pair.minScore)} in ${outcome.strongFrames} of ${outcome.frames} frames`
+        : `Low confidence · ${gestureName(outcome.pair.gesture)} at ${percent(outcome.score)} (needs ${percent(outcome.pair.minScore)})`
     case 'dwell_timeout':
       return `Dwell timeout · ${gestureName(outcome.pair.gesture)} held ${outcome.heldMs} of ${outcome.pair.dwellMs} ms (${humanizeCode(outcome.reason).toLowerCase()})`
     case 'unmapped':

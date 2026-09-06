@@ -21,6 +21,8 @@ export interface RecordedOutcome {
   reason?: string
   category?: string
   neutralMs?: number
+  frames?: number
+  strongFrames?: number
 }
 
 export type GestureIntentEvent =
@@ -195,13 +197,22 @@ export function summarizeOutcome(outcome: GesturePolicyOutcome): RecordedOutcome
     case 'unmapped':
       return { kind: 'unmapped', category: outcome.category }
     case 'low_confidence':
-      return { kind: 'low_confidence', ...pairFields(outcome.pair), score: round(outcome.score) }
+      return {
+        kind: 'low_confidence',
+        ...pairFields(outcome.pair),
+        score: round(outcome.score),
+        heldMs: outcome.heldMs,
+        frames: outcome.frames,
+        strongFrames: outcome.strongFrames,
+      }
     case 'candidate':
       return {
         kind: 'candidate',
         ...pairFields(outcome.pair),
         heldMs: outcome.heldMs,
         progress: round(outcome.progress),
+        frames: outcome.frames,
+        strongFrames: outcome.strongFrames,
       }
     case 'accepted':
       return { kind: 'accepted', ...pairFields(outcome.pair), heldMs: outcome.heldMs }

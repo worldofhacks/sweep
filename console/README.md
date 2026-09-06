@@ -134,7 +134,15 @@ closed fist drafts `hold`, pointing up drafts `takeoff`, victory drafts one forw
 (`dx: 1, dy: 0` in the planner's translation frame), the I-love-you sign drafts `land`, thumb up
 confirms and thumb down cancels a gesture-drafted preview; a draft carries source `webcam`, parks in
 the dock even where the button would send at once, and is never sent until it is confirmed by the
-thumb-up gesture or the dock button. A refused or failed gesture-drafted request retried from the
+thumb-up gesture or the dock button. Each pose has its own score threshold (`src/gesture/policy.ts`,
+set from the recorded webcam session under `src/testing/gesture-recordings/`): open palm and thumb
+up 0.60, thumb down 0.70, closed fist 0.80, and the three flight poses 0.70 until a recording of
+them exists; a candidate keeps building while at least 80% of its frames reach the threshold and
+is accepted after its full dwell (600 ms for drafts, 400 ms for confirm and cancel); every pose
+accepted since the hand was last neutral for 200 ms stays suppressed until it is neutral for that
+long again, while a different pose starts its own candidate at once. `src/gesture/policy.eval.test.ts`
+replays the recording through the policy and prints each pose's score distribution and acceptance
+count, which is how a threshold is re-tuned. A refused or failed gesture-drafted request retried from the
 Requests pane returns to the dock the same way, so a retry never sends without that confirmation
 either. Low confidence,
 an interrupted dwell, a repeated pose, a denied permission, a dropped webcam, a model that fails to
