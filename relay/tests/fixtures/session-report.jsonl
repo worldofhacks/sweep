@@ -1,0 +1,6 @@
+{"seq":1,"event":{"v":1,"t":1000,"type":"telemetry","event_id":"telemetry-1","session":"session-report","drone":1,"battery":0.8,"state":"hovering"}}
+{"seq":2,"event":{"v":1,"t":1020,"type":"telemetry","event_id":"telemetry-2","session":"session-report","drone":1,"battery":0.7,"state":"hovering"}}
+{"seq":3,"event":{"v":1,"t":1030,"type":"command","event_id":"command-event-1","session":"session-report","command_id":"command-1","intent_id":"intent-1","operation":"hover"}}
+{"seq":4,"event":{"v":1,"t":1040,"type":"acknowledgement","event_id":"ack-accepted","session":"session-report","command_id":"command-1","status":"accepted"}}
+{"seq":5,"event":{"v":1,"t":1050,"type":"refusal","event_id":"refusal-1","session":"session-report","intent_id":"intent-2","reason":"operator_absent","detail":"operator activity is stale"}}
+{"seq":6,"event":{"v":1,"t":1060,"type":"acknowledgement","event_id":"ack-completed","session":"session-report","command_id":"command-1","status":"completed"}}
