@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1, parseRelayServerEvent } from './contract'
+import { C1_BASIC_CONTROL_INTENTS, C2_FLEET_OPERATIONS_INTENTS, isConsoleIntentV1, parseRelayServerEvent } from './contract'
 
 const session = 'session-contract-test'
 
@@ -106,7 +106,7 @@ describe('M1.1 wire compatibility', () => {
     ['custom', []],
     ['custom', ['hold', 'hold']],
     ['custom', ['unknown']],
-    ['custom', ['disarm']],
+    ['custom', ['unearned']],
     ['c1_basic_control', ['hold']],
   ])('rejects contradictory capability advertisement %s / %j', (profile, enabled) => {
     expect(
@@ -130,6 +130,33 @@ describe('M1.1 wire compatibility', () => {
         drones: [aircraft()],
       }),
     ).toBeNull()
+  })
+
+  test('accepts the exact C2 fleet operations capability advertisement', () => {
+    expect(
+      parseRelayServerEvent({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'state',
+        event_id: 'c2-capability',
+        session,
+        roster_version: 4,
+        armed: true,
+        estop: false,
+        selection: [1],
+        formation: 'line',
+        spacing: 0.8,
+        mode: 'indoor',
+        capability_profile: 'c2_fleet_operations',
+        enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS],
+        pending: null,
+        accepted_plan: null,
+        drones: [aircraft()],
+      }),
+    ).toMatchObject({
+      capability_profile: 'c2_fleet_operations',
+      enabled_intent_names: C2_FLEET_OPERATIONS_INTENTS,
+    })
   })
 
   test('accepts a bounded custom subset profile', () => {

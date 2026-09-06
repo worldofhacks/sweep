@@ -15,7 +15,7 @@ import type {
   RelayServerEvent,
   IntentSource,
 } from '../relay/contract'
-import { C1_BASIC_CONTROL_INTENTS, isSupportedIntent } from '../relay/contract'
+import { C2_FLEET_OPERATIONS_INTENTS } from '../relay/contract'
 
 export type FixtureFleetSize = 4 | 6
 
@@ -152,7 +152,7 @@ export class FixtureRelayClient implements RelayClient {
       throw new Error('Fixture relay is disconnected; the intent was not sent.')
     }
     const t = this.now()
-    if (!isSupportedIntent(intent.name)) {
+    if (!C2_FLEET_OPERATIONS_INTENTS.includes(intent.name)) {
       // The same refusal relay/intent_v1.py returns for a name outside the advertised profile.
       this.emitServer({
         v: 1,
@@ -165,7 +165,7 @@ export class FixtureRelayClient implements RelayClient {
         status: 'refused',
         source: 'relay',
         reason: 'unsupported',
-        detail: `${intent.name} is outside the M2.0 capability set`,
+        detail: `${intent.name} is outside the C2 fixture capability set`,
         roster_version: this.scenario.rosterVersion,
         drone_id: null,
         connection_epoch: null,
@@ -228,8 +228,8 @@ export class FixtureRelayClient implements RelayClient {
       formation: this.scenario.formation,
       spacing: this.scenario.spacing,
       mode: 'indoor',
-      capability_profile: 'c1_basic_control',
-      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      capability_profile: 'c2_fleet_operations',
+      enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS],
       pending: this.scenario.pending,
       accepted_plan: null,
       drones: this.scenario.fleet(this.now()),

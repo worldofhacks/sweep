@@ -35,7 +35,7 @@ describe('explicit development fixture', () => {
     expect(state.drones[5].video).toEqual({ status: 'unreported', last_frame_at: null })
   })
 
-  test('refuses names outside the M2.0 set exactly as the relay does', async () => {
+  test('refuses names outside the C2 fixture capability set', async () => {
     const client = new FixtureRelayClient('fixture-session', clock)
     const events = record(client)
     client.start()
@@ -44,11 +44,11 @@ describe('explicit development fixture', () => {
       v: 1,
       t: 1_756_700_000_001,
       type: 'intent',
-      intent_id: 'disarm-intent',
+      intent_id: 'map-area-intent',
       retry_of: null,
       source: 'console',
       session: 'fixture-session',
-      name: 'disarm',
+      name: 'map_area' as never,
       args: {},
       selection: [1],
       mode: 'indoor',
@@ -60,11 +60,11 @@ describe('explicit development fixture', () => {
       kind: 'server_event',
       event: {
         type: 'refusal',
-        intent_id: 'disarm-intent',
+        intent_id: 'map-area-intent',
         status: 'refused',
         source: 'relay',
         reason: 'unsupported',
-        detail: 'disarm is outside the M2.0 capability set',
+        detail: 'map_area is outside the C2 fixture capability set',
       },
     })
     expect(states(events)).toHaveLength(1)

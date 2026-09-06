@@ -57,30 +57,26 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
  * behaviors. Other names remain visible but are disabled by the authoritative
  * advertised capability profile.
  */
-export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
-  'arm',
-  'select',
-  'takeoff',
-  'translate',
-  'hold',
-  'come_home',
-  'land',
-  'land_all',
-  'estop',
-  'capture_room',
-  'altitude',
-  'formation_next',
-  'formation_set',
-  'spacing',
-  'sweep',
-])
-
-/** The exact profile emitted by the current C1 relay. */
 export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'arm',
   'altitude',
   'capture_room',
   'come_home',
+  'estop',
+  'hold',
+  'land',
+  'land_all',
+  'select',
+  'takeoff',
+  'translate',
+]
+
+export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
+  'arm',
+  'altitude',
+  'capture_room',
+  'come_home',
+  'disarm',
   'estop',
   'formation_next',
   'formation_set',
@@ -93,6 +89,11 @@ export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'takeoff',
   'translate',
 ]
+
+/** Mirror of the relay's C2 implemented-name registry. */
+export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
+  C2_FLEET_OPERATIONS_INTENTS,
+)
 
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
   return SUPPORTED_INTENTS.has(name)
@@ -472,10 +473,15 @@ function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled 
   ) {
     return false
   }
-  if (profile !== 'c1_basic_control') return true
+  const exactProfile =
+    profile === 'c1_basic_control'
+      ? C1_BASIC_CONTROL_INTENTS
+      : profile === 'c2_fleet_operations'
+        ? C2_FLEET_OPERATIONS_INTENTS
+        : null
   return (
-    enabled.length === C1_BASIC_CONTROL_INTENTS.length &&
-    C1_BASIC_CONTROL_INTENTS.every((name) => enabled.includes(name))
+    exactProfile === null ||
+    (enabled.length === exactProfile.length && exactProfile.every((name) => enabled.includes(name)))
   )
 }
 
