@@ -11,6 +11,9 @@ from relay.auth import Principal
 from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
     C1_IMPLEMENTED_INTENT_NAMES,
+    C2_ADDITIONAL_INTENT_NAMES,
+    C2_CAPABILITY_PROFILE,
+    IMPLEMENTED_INTENT_NAMES,
     CapabilityProfile,
     IntentName,
 )
@@ -34,24 +37,26 @@ def test_c1_profile_enables_only_earned_intents() -> None:
         "capture_room",
         "come_home",
         "estop",
-        "formation_next",
-        "formation_set",
         "hold",
         "land",
         "land_all",
         "select",
-        "spacing",
-        "sweep",
         "takeoff",
         "translate",
     }
-    assert C1_CAPABILITY_PROFILE.supports(IntentName.ALTITUDE)
-    assert not C1_CAPABILITY_PROFILE.supports(IntentName.DISARM)
+
+
+def test_c2_profile_is_a_strict_c1_superset() -> None:
+    assert C2_CAPABILITY_PROFILE.enabled_intent_names == IMPLEMENTED_INTENT_NAMES
+    assert C2_CAPABILITY_PROFILE.enabled_intent_names == (
+        C1_CAPABILITY_PROFILE.enabled_intent_names | C2_ADDITIONAL_INTENT_NAMES
+    )
+    assert C1_CAPABILITY_PROFILE.enabled_intent_names < C2_CAPABILITY_PROFILE.enabled_intent_names
 
 
 def test_profile_rejects_unimplemented_intents() -> None:
-    with pytest.raises(ValueError, match="unimplemented intents: disarm"):
-        CapabilityProfile("unsafe", frozenset({IntentName.DISARM}))
+    with pytest.raises(ValueError, match="unimplemented intents: survey_area"):
+        CapabilityProfile("unsafe", frozenset({IntentName.SURVEY_AREA}))
 
     with pytest.raises(ValueError, match="must not be empty"):
         CapabilityProfile("empty", frozenset())
@@ -95,7 +100,7 @@ def test_deployment_grounding_derives_altitude_capability_without_widening() -> 
 def test_profile_normalizes_caller_owned_sets_and_string_members() -> None:
     caller_owned = {IntentName.LAND}
     profile = CapabilityProfile("land-only", caller_owned)  # type: ignore[arg-type]
-    caller_owned.add(IntentName.DISARM)
+    caller_owned.add(IntentName.SURVEY_AREA)
 
     assert profile.enabled_intent_names == frozenset({IntentName.LAND})
     assert isinstance(profile.enabled_intent_names, frozenset)
@@ -106,7 +111,7 @@ def test_profile_normalizes_caller_owned_sets_and_string_members() -> None:
     assert from_string.state_value()["enabled_intent_names"] == ["land"]
 
 
-@pytest.mark.parametrize("name", ["disarm", "not_registered"])
+@pytest.mark.parametrize("name", ["survey_area", "not_registered"])
 def test_profile_rejects_unsupported_string_members_as_value_errors(name: str) -> None:
     with pytest.raises(ValueError):
         CapabilityProfile("unsafe", frozenset({name}))  # type: ignore[arg-type]
@@ -165,22 +170,15 @@ def test_opaque_sink_requires_an_explicit_capability_contract(tmp_path) -> None:
         )
 
 
-def test_every_advertised_intent_has_a_safe_planner_and_arbiter_path() -> None:
-    planner = DeterministicPlanner(
-        replace(
-            planning_config(),
-            altitude_step_m=0.5,
-            altitude_floor_z_m=0.0,
-            altitude_configuration_id="capability-test-floor-v1",
-            altitude_completion_tolerance_m=0.05,
-        ),
-        C1_CAPABILITY_PROFILE,
-    )
-    arbiter = SafetyArbiter(safety_config())
-    cases = (
+def _safe_profile_cases() -> tuple[tuple[object, object], ...]:
+    return (
         (
             make_intent(IntentName.ARM, selection=()),
             make_snapshot(1, selection=(), flight_state=FlightState.DISARMED, armed=False),
+        ),
+        (
+            make_intent(IntentName.DISARM, selection=()),
+            make_snapshot(1, selection=(), flight_state=FlightState.LANDED, armed=True),
         ),
         (
             make_intent(IntentName.SELECT, selection=(), args={"ids": (1,)}),
@@ -227,16 +225,12 @@ def test_every_advertised_intent_has_a_safe_planner_and_arbiter_path() -> None:
             make_snapshot(2, selection=(1, 2), spacing=1.0),
         ),
         (
-            make_intent(
-                IntentName.FORMATION_SET,
-                selection=(1, 2),
-                args={"name": "line"},
-            ),
+            make_intent(IntentName.FORMATION_SET, selection=(1, 2), args={"name": "line"}),
             make_snapshot(2, selection=(1, 2), spacing=1.0),
         ),
         (
             make_intent(IntentName.SPACING, selection=(1, 2), args={"delta": 1}),
-            make_snapshot(2, selection=(1, 2), spacing=1.0),
+            make_snapshot(2, selection=(1, 2), spacing=1.0, formation="line"),
         ),
         (
             make_intent(IntentName.SWEEP, selection=(1, 2), args={}, confirm=True),
@@ -244,12 +238,47 @@ def test_every_advertised_intent_has_a_safe_planner_and_arbiter_path() -> None:
         ),
     )
 
-    assert {intent.name for intent, _ in cases} == C1_CAPABILITY_PROFILE.enabled_intent_names
+
+def _grounded_planner(profile: CapabilityProfile) -> DeterministicPlanner:
+    return DeterministicPlanner(
+        replace(
+            planning_config(),
+            altitude_step_m=0.5,
+            altitude_floor_z_m=0.0,
+            altitude_configuration_id="capability-test-floor-v1",
+            altitude_completion_tolerance_m=0.05,
+        ),
+        profile,
+    )
+
+
+def test_every_c2_intent_has_a_safe_planner_and_arbiter_path() -> None:
+    planner = _grounded_planner(C2_CAPABILITY_PROFILE)
+    arbiter = SafetyArbiter(safety_config())
+    cases = _safe_profile_cases()
+
+    assert {intent.name for intent, _ in cases} == C2_CAPABILITY_PROFILE.enabled_intent_names
     for intent, snapshot in cases:
         assert arbiter.check_intent(intent, snapshot) is None
         plan = planner.plan(intent, snapshot)
         assert isinstance(plan, Plan)
         assert arbiter.check_plan(plan, snapshot) is None
+
+
+def test_c2_preserves_c1_plan_shapes_and_safety_checks() -> None:
+    c1 = _grounded_planner(C1_CAPABILITY_PROFILE)
+    c2 = _grounded_planner(C2_CAPABILITY_PROFILE)
+    arbiter = SafetyArbiter(safety_config())
+
+    for intent, snapshot in _safe_profile_cases():
+        if intent.name not in C1_CAPABILITY_PROFILE.enabled_intent_names:
+            continue
+        c1_plan = c1.plan(intent, snapshot)
+        c2_plan = c2.plan(intent, snapshot)
+        assert isinstance(c1_plan, Plan)
+        assert c2_plan == c1_plan
+        assert arbiter.check_intent(intent, snapshot) is None
+        assert arbiter.check_plan(c1_plan, snapshot) is None
 
 
 def test_validation_and_planning_share_the_injected_profile() -> None:

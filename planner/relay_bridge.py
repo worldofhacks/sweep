@@ -111,6 +111,12 @@ class AutonomyRelayBridge:
 
     def _execute_one(self, intent: IntentV1) -> IntentSinkResult:
         def snapshot() -> FleetSnapshot:
+            if self.ingress is not None:
+                # The deployable simulator's adapter state is authoritative only
+                # after its signed node telemetry has crossed the same relay ingress
+                # as a real node. Refresh before every pre-I/O revalidation so an
+                # attained command cannot be mistaken for its older projection.
+                self.ingress()
             current = self.session.current_state()
             return FleetSnapshot.from_relay_state(
                 current,
@@ -293,6 +299,8 @@ class AutonomyRelayBridge:
         self, admissions: tuple[_CoordinatedIntent, ...]
     ) -> dict[str, IntentSinkResult]:
         def snapshot() -> FleetSnapshot:
+            if self.ingress is not None:
+                self.ingress()
             current = self.session.current_state()
             return FleetSnapshot.from_relay_state(
                 current,

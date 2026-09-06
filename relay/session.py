@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import Lock, RLock
 
-from planner.models import CommandOperation
+from planner.models import CommandOperation, DeviceClass
 from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
@@ -55,6 +55,7 @@ from relay.control_localization import (
 )
 from relay.control_localization_contracts import session_identifier
 from relay.intent_v1 import (
+    FORMATION_NAMES,
     MAX_INTENT_IDENTIFIER_CHARS,
     REGISTERED_SOURCES,
     AcceptedIntent,
@@ -67,6 +68,7 @@ from relay.media import MediaEvidenceProvider
 from relay.state import (
     MAX_MEMBERSHIP_HISTORY_LIMIT,
     MAX_PHYSICAL_DEVICES,
+    MAX_SIMULATED_AIRCRAFT,
     FleetRegistry,
     MembershipTransition,
     RegistryError,
@@ -109,10 +111,8 @@ class IntentSinkResult:
             not isinstance(event, Mapping) for event in self.events
         ):
             raise ValueError("sink result events must be a tuple of mappings")
-        if self.formation_update is not None and (
-            not isinstance(self.formation_update, str) or not self.formation_update
-        ):
-            raise ValueError("formation update must be a non-empty string")
+        if self.formation_update is not None and self.formation_update not in FORMATION_NAMES:
+            raise ValueError("formation update must name a supported formation")
         if self.spacing_update is not None and (
             isinstance(self.spacing_update, bool)
             or not isinstance(self.spacing_update, int | float)
@@ -1650,6 +1650,30 @@ class RelaySession:
             self._metrics["refused_intents"] += 1
             return event
 
+    def record_map_reset(self, *, cleared: bool) -> dict[str, object]:
+        """Audit an operator clearing the session's occupancy grid.
+
+        The grid is an in-memory display artefact, not fleet state, so the reset changes
+        no projection and is not fanned out. The record exists so the log shows what a
+        person cleared and when: a map that suddenly forgets a wall is otherwise
+        indistinguishable from a sensor that stopped reporting one. ``cleared`` is false
+        when the session had no grid to clear.
+        """
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            event: dict[str, object] = {
+                "v": 1,
+                "t": now,
+                "type": "map_reset",
+                "event_id": self.event_ids(),
+                "session": self.session_id,
+                "roster_version": self.registry.roster_version,
+                "cleared": cleared,
+            }
+            self._append_audit(event)
+            return event
+
     def admit_safety_stop(self, intent: IntentV1) -> dict[str, object]:
         """Register a controller-generated safety stop before adapter I/O."""
         with self._lock, self._audit_operation():
@@ -1849,7 +1873,7 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            possible_ids = [self.event_ids() for _ in range(4)]
+            possible_ids = [self.event_ids() for _ in range(self.registry.aircraft_limit)]
             transitions = self.registry.expire_stale_telemetry(now_ms=now, event_ids=possible_ids)
             events: list[dict[str, object]] = []
             for transition in transitions:
@@ -2682,7 +2706,9 @@ def _material_state_projection(state: Mapping[str, object]) -> str:
         raise AuditLogError(f"material state is not JSON-native: {error}") from None
 
 
-_MAX_PROJECTED_DEVICES = sum(MAX_PHYSICAL_DEVICES.values())
+_MAX_PROJECTED_DEVICES = (
+    MAX_SIMULATED_AIRCRAFT + MAX_PHYSICAL_DEVICES[DeviceClass.GROUND_VEHICLE]
+)
 
 
 def _material_drones_projection(value: object) -> list[dict[str, object]]:

@@ -1225,9 +1225,9 @@ def test_control_projection_omissions_do_not_clear_plan_or_pending(
 def test_control_projection_applies_completed_formation_and_spacing_updates(
     relay_session: RelaySession,
 ) -> None:
-    state = relay_session.update_control_projection(formation="circle", spacing=1.2)
+    state = relay_session.update_control_projection(formation="diamond", spacing=1.2)
 
-    assert state["formation"] == "circle"
+    assert state["formation"] == "diamond"
     assert state["spacing"] == 1.2
 
 

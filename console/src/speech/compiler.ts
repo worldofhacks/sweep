@@ -145,7 +145,7 @@ export function compileUtterance(text: string, context: CompileContext): Compile
     return selectReady(context.readyIds)
   }
   if (has('spread out', 'wider', 'tighter', 'closer')) return unsupported('spacing')
-  if (has('line', 'column', 'circle', 'grid', 'v formation', 'formation')) return unsupported('formation_set')
+  if (has('line', 'column', 'wedge', 'diamond', 'formation')) return unsupported('formation_set')
   if (has('north', 'south', 'east', 'west', 'forward', 'left', 'right', 'move')) return unsupported('translate')
   if (has('altitude', 'higher', 'lower', 'climb', 'descend')) return unsupported('altitude')
   if (word('sweep', 'survey', 'map')) return unsupported(t.includes('map') ? 'map_area' : 'sweep')

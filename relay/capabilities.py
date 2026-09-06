@@ -49,7 +49,7 @@ class CapabilityProfile:
         if not names:
             raise ValueError("enabled intent names must not be empty")
         object.__setattr__(self, "enabled_intent_names", names)
-        unsupported = names - C1_IMPLEMENTED_INTENT_NAMES
+        unsupported = names - IMPLEMENTED_INTENT_NAMES
         if unsupported:
             names = ", ".join(sorted(name.value for name in unsupported))
             raise ValueError(f"capability profile enables unimplemented intents: {names}")
@@ -77,6 +77,12 @@ C1_IMPLEMENTED_INTENT_NAMES = frozenset(
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
         IntentName.ALTITUDE,
+    }
+)
+
+C2_ADDITIONAL_INTENT_NAMES = frozenset(
+    {
+        IntentName.DISARM,
         IntentName.FORMATION_NEXT,
         IntentName.FORMATION_SET,
         IntentName.SPACING,
@@ -84,7 +90,14 @@ C1_IMPLEMENTED_INTENT_NAMES = frozenset(
     }
 )
 
+IMPLEMENTED_INTENT_NAMES = C1_IMPLEMENTED_INTENT_NAMES | C2_ADDITIONAL_INTENT_NAMES
+
 C1_CAPABILITY_PROFILE = CapabilityProfile(
     name="c1_basic_control",
     enabled_intent_names=C1_IMPLEMENTED_INTENT_NAMES,
+)
+
+C2_CAPABILITY_PROFILE = CapabilityProfile(
+    name="c2_fleet_operations",
+    enabled_intent_names=IMPLEMENTED_INTENT_NAMES,
 )

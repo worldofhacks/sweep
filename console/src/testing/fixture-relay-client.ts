@@ -9,13 +9,15 @@ import type {
 } from '../catalog/types'
 import type { RelayClient, RelayClientEvent, RelayClientListener } from '../relay/client'
 import type {
+  ConsoleIntentName,
   DroneId,
+  FormationName,
   IntentV1,
   RelayAircraftState,
   RelayServerEvent,
   IntentSource,
 } from '../relay/contract'
-import { C1_BASIC_CONTROL_INTENTS, isSupportedIntent } from '../relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, C2_FLEET_OPERATIONS_INTENTS } from '../relay/contract'
 
 export type FixtureFleetSize = 4 | 6
 
@@ -56,7 +58,7 @@ interface FixtureDeparture {
 export interface FixtureScenario {
   name: FixtureScenarioName
   rosterVersion: number
-  formation: string
+  formation: 'none' | FormationName
   spacing: number
   console: FixtureLink
   keyboard: FixtureLink
@@ -84,6 +86,7 @@ export class FixtureRelayClient implements RelayClient {
   private readonly sessionId: string
   private readonly now: () => number
   private readonly source: IntentSource
+  private readonly capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations'
   private armed: boolean
 
   constructor(
@@ -92,16 +95,24 @@ export class FixtureRelayClient implements RelayClient {
     source: IntentSource = 'console',
     scenario: FixtureFleetSize | FixtureScenarioName | boolean = 4,
     armed = true,
+    capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations' = 'c1_basic_control',
   ) {
     this.sessionId = sessionId
     this.now = now
     this.source = source
+    this.capabilityProfile = capabilityProfile
     this.armed = typeof scenario === 'boolean' ? scenario : armed
     this.scenario = typeof scenario === 'boolean' ? controlScenario(4) : typeof scenario === 'number' ? controlScenario(scenario) : fixtureScenario(scenario)
   }
 
   private get link(): FixtureLink {
     return this.source === 'keyboard' ? this.scenario.keyboard : this.scenario.console
+  }
+
+  private get enabledIntentNames(): readonly ConsoleIntentName[] {
+    return this.capabilityProfile === 'c2_fleet_operations'
+      ? C2_FLEET_OPERATIONS_INTENTS
+      : C1_BASIC_CONTROL_INTENTS
   }
 
   start(): void {
@@ -152,7 +163,7 @@ export class FixtureRelayClient implements RelayClient {
       throw new Error('Fixture relay is disconnected; the intent was not sent.')
     }
     const t = this.now()
-    if (!isSupportedIntent(intent.name)) {
+    if (!this.enabledIntentNames.includes(intent.name)) {
       // The same refusal relay/intent_v1.py returns for a name outside the advertised profile.
       this.emitServer({
         v: 1,
@@ -165,7 +176,7 @@ export class FixtureRelayClient implements RelayClient {
         status: 'refused',
         source: 'relay',
         reason: 'unsupported',
-        detail: `${intent.name} is outside the M2.0 capability set`,
+        detail: `${intent.name} is outside the ${this.capabilityProfile} fixture capability set`,
         roster_version: this.scenario.rosterVersion,
         drone_id: null,
         connection_epoch: null,
@@ -228,8 +239,8 @@ export class FixtureRelayClient implements RelayClient {
       formation: this.scenario.formation,
       spacing: this.scenario.spacing,
       mode: 'indoor',
-      capability_profile: 'c1_basic_control',
-      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      capability_profile: this.capabilityProfile,
+      enabled_intent_names: [...this.enabledIntentNames],
       pending: this.scenario.pending,
       accepted_plan: null,
       drones: this.scenario.fleet(this.now()),

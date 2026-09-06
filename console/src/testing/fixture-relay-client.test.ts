@@ -35,7 +35,7 @@ describe('explicit development fixture', () => {
     expect(state.drones[5].video).toEqual({ status: 'unreported', last_frame_at: null })
   })
 
-  test('refuses names outside the M2.0 set exactly as the relay does', async () => {
+  test('refuses names outside the advertised C1 fixture profile', async () => {
     const client = new FixtureRelayClient('fixture-session', clock)
     const events = record(client)
     client.start()
@@ -64,7 +64,7 @@ describe('explicit development fixture', () => {
         status: 'refused',
         source: 'relay',
         reason: 'unsupported',
-        detail: 'disarm is outside the M2.0 capability set',
+        detail: 'disarm is outside the c1_basic_control fixture capability set',
       },
     })
     expect(states(events)).toHaveLength(1)

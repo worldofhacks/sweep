@@ -132,7 +132,7 @@ describe('Control / Capture console', () => {
       armed: true,
       estop: false,
       selection: [1],
-      formation: 'none',
+      formation: 'none' as const,
       spacing: 0.8,
       mode: 'indoor',
       capability_profile: 'c1_basic_control',
@@ -172,7 +172,7 @@ describe('Control / Capture console', () => {
     expect(await screen.findByText(/Development fixture active/i)).toBeInTheDocument()
     const snapshot = {
       v: 1 as const, t: clock(), type: 'state' as const, session, armed: true, estop: false,
-      formation: 'none', spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
+      formation: 'none' as const, spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
       ...capabilityFields(),
     }
     const lossState = { ...snapshot, event_id: 'loss-state', roster_version: 8, state_sequence: 20,
@@ -336,7 +336,7 @@ describe('Control / Capture console', () => {
       armed: true,
       estop: true,
       selection: [1],
-      formation: 'none',
+      formation: 'none' as const,
       spacing: 0.8,
       mode: 'indoor',
       ...capabilityFields(),
@@ -361,7 +361,7 @@ describe('Control / Capture console', () => {
       roster_version: 2,
       armed: true,
       selection: [1],
-      formation: 'none',
+      formation: 'none' as const,
       spacing: 0.8,
       mode: 'indoor',
       ...capabilityFields(),
@@ -397,7 +397,7 @@ describe('Control / Capture console', () => {
     const snapshot = {
       v: 1 as const, t: clock(), type: 'state' as const, session,
       roster_version: 2, armed: true, estop: false, selection: [2],
-      formation: 'none', spacing: 0.8, mode: 'indoor', pending: null,
+      formation: 'none' as const, spacing: 0.8, mode: 'indoor', pending: null,
       ...capabilityFields(),
       accepted_plan: null, drones: fixtureAircraft(clock()).slice(0, 2),
     }
@@ -433,7 +433,7 @@ describe('Control / Capture console', () => {
         armed: true,
         estop: true,
         selection: [1],
-        formation: 'none',
+        formation: 'none' as const,
         spacing: 0.8,
         mode: 'indoor',
         ...capabilityFields(),
@@ -458,7 +458,7 @@ describe('Control / Capture console', () => {
         armed: true,
         estop: false,
         selection: [1],
-        formation: 'none',
+        formation: 'none' as const,
         spacing: 0.8,
         mode: 'indoor',
         ...capabilityFields(),

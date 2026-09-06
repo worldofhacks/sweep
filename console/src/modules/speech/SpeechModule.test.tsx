@@ -188,7 +188,7 @@ function authoritativeState(selection: number[], t: number, sequence: number) {
     armed: true,
     estop: false,
     selection,
-    formation: 'line',
+    formation: 'line' as const,
     spacing: 1.2,
     mode: 'indoor',
     capability_profile: 'c1_basic_control',

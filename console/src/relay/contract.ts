@@ -9,7 +9,8 @@
 export type DroneId = number
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard' | 'webcam' | 'language'
-export type FormationName = 'line' | 'column' | 'circle' | 'grid' | 'V'
+export const FORMATION_NAMES = ['line', 'column', 'wedge', 'diamond'] as const
+export type FormationName = (typeof FORMATION_NAMES)[number]
 
 // Intent producer ceilings mirrored from relay/intent_v1.py. JavaScript numbers
 // use their exact integer ceiling; the relay additionally accepts signed-Long
@@ -62,35 +63,28 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'capture_room',
 ]
 
-/**
- * Mirror of the relay's implemented names, including the earned M1.5 simulator
- * behaviors. Other names remain visible but are disabled by the authoritative
- * advertised capability profile.
- */
-export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
-  'arm',
-  'select',
-  'takeoff',
-  'translate',
-  'hold',
-  'come_home',
-  'land',
-  'land_all',
-  'estop',
-  'capture_room',
-  'altitude',
-  'formation_next',
-  'formation_set',
-  'spacing',
-  'sweep',
-])
-
-/** The exact profile emitted by the current C1 relay. */
+/** The exact profile emitted by a C1 relay. */
 export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'arm',
   'altitude',
   'capture_room',
   'come_home',
+  'estop',
+  'hold',
+  'land',
+  'land_all',
+  'select',
+  'takeoff',
+  'translate',
+]
+
+/** The exact profile emitted by a C2 simulator relay. */
+export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
+  'arm',
+  'altitude',
+  'capture_room',
+  'come_home',
+  'disarm',
   'estop',
   'formation_next',
   'formation_set',
@@ -104,14 +98,19 @@ export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'translate',
 ]
 
+/** Every intent implemented by this console, independently of deployment release. */
+export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
+  C2_FLEET_OPERATIONS_INTENTS,
+)
+
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
   return SUPPORTED_INTENTS.has(name)
 }
 
 /**
  * Console policy from the design brief: these intents never leave the console
- * without the operator confirming the exact envelope. The relay itself only
- * enforces confirmation for capture_room.
+ * without the operator confirming the exact envelope. The autonomy arbiter
+ * independently enforces the same set before planning and dispatch.
  */
 export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'takeoff',
@@ -275,7 +274,7 @@ export interface RelayStateEvent {
   armed: boolean
   estop: boolean
   selection: DroneId[]
-  formation: string
+  formation: 'none' | FormationName
   spacing: number
   mode: string
   capability_profile: string
@@ -772,10 +771,15 @@ function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled 
   ) {
     return false
   }
-  if (profile !== 'c1_basic_control') return true
+  const exactProfile =
+    profile === 'c1_basic_control'
+      ? C1_BASIC_CONTROL_INTENTS
+      : profile === 'c2_fleet_operations'
+        ? C2_FLEET_OPERATIONS_INTENTS
+        : null
   return (
-    enabled.length === C1_BASIC_CONTROL_INTENTS.length &&
-    C1_BASIC_CONTROL_INTENTS.every((name) => enabled.includes(name))
+    exactProfile === null ||
+    (enabled.length === exactProfile.length && exactProfile.every((name) => enabled.includes(name)))
   )
 }
 
@@ -871,7 +875,10 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       typeof value.armed !== 'boolean' ||
       typeof value.estop !== 'boolean' ||
       !isDroneIds(value.selection) ||
-      typeof value.formation !== 'string' ||
+      !(
+        value.formation === 'none' ||
+        FORMATION_NAME_SET.has(value.formation as FormationName)
+      ) ||
       !isFiniteNumber(value.spacing) ||
       typeof value.mode !== 'string' ||
       !isCapabilityAdvertisement(value.capability_profile, value.enabled_intent_names) ||
@@ -1073,10 +1080,10 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   const selection = value.selection as DroneId[]
   if (!hasValidArgs(name, value.args)) return false
   if (requiresConfirmation(name) && !value.confirm) return false
-  return hasValidSelection(name, selection)
+  return hasValidSelection(name, selection, value.args)
 }
 
-const FORMATION_NAMES = new Set<FormationName>(['line', 'column', 'circle', 'grid', 'V'])
+const FORMATION_NAME_SET: ReadonlySet<FormationName> = new Set(FORMATION_NAMES)
 
 /** Mirrors relay/intent_v1.py _parse_args for the console-built subset. */
 function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): boolean {
@@ -1090,7 +1097,7 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
     case 'spacing':
       return keys.length === 1 && isFiniteNumber(args.delta)
     case 'formation_set':
-      return keys.length === 1 && FORMATION_NAMES.has(args.name as FormationName)
+      return keys.length === 1 && FORMATION_NAME_SET.has(args.name as FormationName)
     case 'sweep':
       return keys.length === 0 || (keys.length === 1 && isSweepBox(args.box))
     case 'capture_room':
@@ -1130,7 +1137,16 @@ function isSweepBox(value: unknown): value is SweepBox {
 }
 
 /** The brief's selection rules; capture_room's is also the relay's own scope check. */
-function hasValidSelection(name: ConsoleIntentName, selection: DroneId[]): boolean {
+function hasValidSelection(
+  name: ConsoleIntentName,
+  selection: DroneId[],
+  args: Record<string, unknown>,
+): boolean {
+  if (name === 'formation_next') return selection.length >= 2
+  if (name === 'formation_set') {
+    const minimum = args.name === 'wedge' || args.name === 'diamond' ? 4 : 2
+    return selection.length >= minimum
+  }
   switch (SELECTION_RULES[name]) {
     case 'any':
     case 'all':

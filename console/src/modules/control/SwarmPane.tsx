@@ -228,7 +228,7 @@ function FormationPanel({
   const { state, issueIntent } = controller
   const shown = preview ?? state.formation
   const selected = sortedAircraft(state.aircraft).filter((drone) => state.selection.includes(drone.drone_id))
-  const dots = formationPlot(selected, shown, state.spacing)
+  const dots = formationPlot(selected.length, shown, state.spacing)
   const options = formationControls(state)
   return (
     <div className="ct-panel" aria-label="Formation">
@@ -263,8 +263,8 @@ function FormationPanel({
       <div className="ct-plot" aria-hidden="true">
         {dots.map((dot) => (
           <span
-            key={dot.droneId}
-            className={dot.ready ? 'ct-plot-dot' : 'ct-plot-dot is-not-ready'}
+            key={dot.id}
+            className="ct-plot-dot"
             style={{ left: dot.left, top: dot.top }}
           >
             {dot.id}
@@ -273,12 +273,12 @@ function FormationPanel({
       </div>
       <p className="ct-formation-relay">{formationRelayNote(preview, state.formation)}</p>
       <p className="ct-formation-planner">
-        Deterministic slots from the planner: the arbiter refuses the whole plan if any slot breaks spacing,
-        the ceiling or the geofence. The requested shape is not authoritative until relay state reports the
-        completed update.
+        Shape-only slots: aircraft-to-slot assignments are not projected by the relay and are therefore not
+        guessed here. The arbiter refuses the whole plan if any assigned route breaks spacing, the ceiling or
+        the geofence. The requested shape is not authoritative until relay state reports the completed update.
       </p>
       {dots.map((dot) => (
-        <p key={dot.droneId} className={dot.ready ? 'ct-slot-row' : 'ct-slot-row is-not-ready'}>
+        <p key={dot.id} className="ct-slot-row">
           <strong>{dot.id}</strong>
           <span>{dot.slot}</span>
         </p>

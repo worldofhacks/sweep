@@ -11,7 +11,7 @@ from threading import RLock
 from types import MappingProxyType
 
 from planner.models import DeviceClass, DriveState, FlightState
-from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
 from relay.contracts import (
     CapabilitiesFrame,
     DeviceIdentity,
@@ -24,6 +24,7 @@ from relay.contracts import (
     TelemetryV1,
     VideoPublishState,
 )
+from relay.intent_v1 import FORMATION_NAMES
 from relay.media import MediaEvidenceProvider, project_video
 
 # Stable physical ids a session admits, enforced per class in ``apply_join``. The audit
@@ -32,10 +33,21 @@ MAX_PHYSICAL_DEVICES: Mapping[DeviceClass, int] = MappingProxyType(
     {DeviceClass.AIRCRAFT: 4, DeviceClass.GROUND_VEHICLE: 4}
 )
 MAX_PHYSICAL_AIRCRAFT = MAX_PHYSICAL_DEVICES[DeviceClass.AIRCRAFT]
+MAX_SIMULATED_AIRCRAFT = 6
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
-_FORMATIONS = frozenset({"line", "column", "circle", "grid", "V"})
+_FORMATIONS = frozenset(FORMATION_NAMES)
+
+
+def aircraft_limit_for_profile(capability_profile: CapabilityProfile) -> int:
+    """Return the registry capacity advertised by one capability profile."""
+    return (
+        MAX_SIMULATED_AIRCRAFT
+        if capability_profile.supports(IntentName.FORMATION_SET)
+        else MAX_PHYSICAL_AIRCRAFT
+    )
+
 # The one capability each class must advertise before readiness, and the gate it fails.
 _REQUIRED_CLASS_CAPABILITY: Mapping[DeviceClass, tuple[str, str]] = MappingProxyType(
     {
@@ -159,6 +171,7 @@ class FleetRegistry:
             )
         self.telemetry_freshness_ms = telemetry_freshness_ms
         self.capability_profile = capability_profile
+        self.aircraft_limit = aircraft_limit_for_profile(capability_profile)
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
         configured = {} if devices is None else dict(devices)
@@ -268,7 +281,11 @@ class FleetRegistry:
             record = self._aircraft.get(request.drone_id)
             rejoining = record is not None
             if record is None:
-                limit = MAX_PHYSICAL_DEVICES[identity.device_class]
+                limit = (
+                    self.aircraft_limit
+                    if identity.device_class is DeviceClass.AIRCRAFT
+                    else MAX_PHYSICAL_DEVICES[identity.device_class]
+                )
                 occupied = sum(
                     1
                     for existing in self._aircraft.values()
