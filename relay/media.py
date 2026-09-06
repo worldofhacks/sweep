@@ -60,8 +60,10 @@ def parse_path_observation(payload: object) -> MediaPathObservation:
     if not isinstance(online, bool):
         raise MediaUnreachable("MediaMTX path document has no online flag")
     inbound = payload.get("inboundBytes", payload.get("bytesReceived"))
-    if inbound is not None and (isinstance(inbound, bool) or not isinstance(inbound, int)):
-        raise MediaUnreachable("MediaMTX path document has a non-integer byte count")
+    if inbound is not None and (
+        isinstance(inbound, bool) or not isinstance(inbound, int) or inbound < 0
+    ):
+        raise MediaUnreachable("MediaMTX path document has a non-negative integer byte count")
     return MediaPathObservation(online=online, inbound_bytes=inbound)
 
 
@@ -155,7 +157,6 @@ class MediaMonitor:
         self._poll_interval_s = poll_interval_ms / 1_000
         self._stale_after_ms = stale_after_ms
         self._paths: dict[int, _PathState] = {}
-        self._last_success_at: int | None = None
         self._reachable: bool | None = None
         self._task: asyncio.Task[None] | None = None
 
@@ -206,7 +207,6 @@ class MediaMonitor:
         for drone_id, result in zip(self._drone_ids, results, strict=True):
             observation = result if isinstance(result, MediaPathObservation) else None
             self._paths[drone_id] = self._merge(self._paths.get(drone_id), observation, now)
-        self._last_success_at = now
         self._note_reachable(True, None)
         return True
 
@@ -214,10 +214,8 @@ class MediaMonitor:
         state = self._paths.get(drone_id)
         if state is None:
             return None
-        fresh = (
-            self._last_success_at is not None
-            and now_ms - self._last_success_at <= self._stale_after_ms
-        )
+        age_ms = now_ms - state.observed_at
+        fresh = 0 <= age_ms <= self._stale_after_ms
         return MediaEvidence(
             online=state.online,
             last_frame_at=state.last_frame_at,
@@ -241,7 +239,10 @@ class MediaMonitor:
             inbound is None
             or previous is None
             or previous.inbound_bytes is None
-            or inbound > previous.inbound_bytes
+            # A restarted path can reset the counter without an offline sample between
+            # polls. Any counter change is therefore fresh media evidence; equality is
+            # the only observation that proves a stall.
+            or inbound != previous.inbound_bytes
         ):
             last_frame_at = now
         return _PathState(

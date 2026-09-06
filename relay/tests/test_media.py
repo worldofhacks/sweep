@@ -215,6 +215,20 @@ def test_monitor_dates_frames_by_growing_inbound_bytes_and_keeps_the_age_on_a_st
     assert monitor.evidence(1, clock()).last_frame_at == T0 + 4_000
 
 
+def test_monitor_dates_a_counter_reset_as_new_path_evidence() -> None:
+    clock = MutableClock(T0)
+    client = FakePathClient()
+    monitor = MediaMonitor(client, clock=clock, drone_ids=(1,), stale_after_ms=3_000)
+    client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=10_000)
+    _run(monitor.poll_once())
+
+    clock.advance(1_000)
+    client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=100)
+    _run(monitor.poll_once())
+
+    assert monitor.evidence(1, clock()).last_frame_at == T0 + 1_000
+
+
 def test_monitor_outage_keeps_the_last_evidence_until_it_ages_out() -> None:
     clock = MutableClock(T0)
     client = FakePathClient()
@@ -250,6 +264,16 @@ def test_monitor_outage_keeps_the_last_evidence_until_it_ages_out() -> None:
     assert monitor.evidence(1, clock()) == MediaEvidence(
         online=True, last_frame_at=clock(), observed_at=clock(), fresh=True
     )
+
+
+def test_monitor_fails_stale_when_the_runtime_clock_regresses() -> None:
+    clock = MutableClock(T0)
+    client = FakePathClient()
+    monitor = MediaMonitor(client, clock=clock, drone_ids=(1,), stale_after_ms=3_000)
+    client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=10)
+    _run(monitor.poll_once())
+
+    assert monitor.evidence(1, T0 - 1).fresh is False
 
 
 def test_monitor_task_polls_on_its_own_and_stops_cleanly() -> None:
@@ -301,6 +325,7 @@ def test_path_document_parsing_prefers_current_fields_and_accepts_deprecated_ali
         {"name": "drone1"},
         {"online": "yes"},
         {"online": True, "inboundBytes": "x"},
+        {"online": True, "inboundBytes": -1},
     ):
         with pytest.raises(MediaUnreachable):
             parse_path_observation(malformed)
