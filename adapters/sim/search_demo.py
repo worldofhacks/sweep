@@ -17,6 +17,7 @@ from perception.object_detection import (
     ProcessedFrameEvent,
 )
 from perception.search_events import CameraPolicy, CoverageTask, FramePoseEvidence
+from perception.search_localization import SearchCameraModel
 from planner.models import Geofence
 from planner.navigation import (
     ArrivalSlot,
@@ -116,29 +117,77 @@ class SearchDemo:
         session: RelaySession, drone_id: int, task: CoverageTask
     ) -> Callable[[ProcessedFrameEvent], FramePoseEvidence | None]:
         def provide(event: ProcessedFrameEvent) -> FramePoseEvidence | None:
-            pose = session.control_pose(drone_id)
-            if pose is None or pose.connection_epoch != task.connection_epoch:
-                return None
+            state = session.current_state()
+            drone = next(
+                (
+                    item
+                    for item in state["drones"]
+                    if isinstance(item, dict) and item.get("drone_id") == drone_id
+                ),
+                None,
+            )
             if (
-                pose.status != "ready"
-                or pose.map_id != "synthetic-search-map-v1"
-                or pose.geometry_id != "synthetic-search-geometry-v1"
-                or pose.camera_calibration_id != "synthetic-search-camera-v1"
-                or not 0 <= session.clock() - pose.pose_time_ms <= 500
+                drone is None
+                or drone.get("connection_epoch") != task.connection_epoch
+                or drone.get("membership") != "ready"
+                or not isinstance(telemetry := drone.get("telemetry"), dict)
+                or telemetry.get("state") not in {"hovering", "flying"}
             ):
                 return None
-            observed_at_s = time.monotonic()
+            if (
+                not isinstance(last_seen_at_ms := drone.get("last_seen_at"), int)
+                or not 0 <= session.clock() - last_seen_at_ms <= 500
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int | float)
+                    for value in (telemetry.get("x"), telemetry.get("y"), telemetry.get("z"))
+                )
+            ):
+                return None
             return FramePoseEvidence(
                 event.identity,
                 task.connection_epoch,
                 Pose(
-                    pose.x_mm / 1000,
-                    pose.y_mm / 1000,
-                    pose.z_mm / 1000,
+                    float(telemetry["x"]),
+                    float(telemetry["y"]),
+                    float(telemetry["z"]),
                     task.cells[0].pose.floor_id,
                 ),
-                observed_at_s,
-                observed_at_s,
+                event.frame_decoded_at_monotonic_s,
+                time.monotonic(),
+            )
+
+        return provide
+
+    @staticmethod
+    def camera_provider_factory(
+        session: RelaySession, source: DetectionSourceConfig, task: CoverageTask
+    ) -> Callable[[ProcessedFrameEvent], tuple[int, SearchCameraModel] | None]:
+        body_from_camera = np.asarray(source.camera.body_from_camera, dtype=float)
+        intrinsics = source.camera.intrinsics
+        image_width_px = round(2 * intrinsics[0][2])
+
+        def provide(_event: ProcessedFrameEvent) -> tuple[int, SearchCameraModel] | None:
+            state = session.current_state()
+            drone = next(
+                (
+                    item
+                    for item in state["drones"]
+                    if isinstance(item, dict)
+                    and item.get("drone_id") == source.drone_id
+                    and item.get("connection_epoch") == task.connection_epoch
+                ),
+                None,
+            )
+            telemetry = None if drone is None else drone.get("telemetry")
+            if not isinstance(telemetry, dict) or any(
+                isinstance(value, bool) or not isinstance(value, int | float)
+                for value in (telemetry.get("x"), telemetry.get("y"), telemetry.get("z"))
+            ):
+                return None
+            map_from_body = np.eye(4)
+            map_from_body[:3, 3] = (telemetry["x"], telemetry["y"], telemetry["z"])
+            return image_width_px, SearchCameraModel(
+                intrinsics, tuple(tuple(row) for row in map_from_body @ body_from_camera)
             )
 
         return provide

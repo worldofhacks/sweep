@@ -70,6 +70,7 @@ from relay.control_localization import (
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, validate_intent
 from relay.search_deployment import load_search_runtime
 from relay.search_detection import (
+    CameraProviderFactory,
     DetectorFactory,
     PoseProviderFactory,
     SearchDetectionConfig,
@@ -1096,6 +1097,7 @@ class AutonomyComposition:
         detection_stream_factory: StreamFactory | None = None,
         detection_detector_factory: DetectorFactory | None = None,
         detection_pose_provider_factory: PoseProviderFactory | None = None,
+        detection_camera_provider_factory: CameraProviderFactory | None = None,
     ) -> None:
         self.config = config
         base_profile = config.planning.effective_capability_profile()
@@ -1122,6 +1124,8 @@ class AutonomyComposition:
             factory_args["detector_factory"] = detection_detector_factory
         if detection_pose_provider_factory is not None:
             factory_args["pose_provider_factory"] = detection_pose_provider_factory
+        if detection_camera_provider_factory is not None:
+            factory_args["camera_provider_factory"] = detection_camera_provider_factory
         self._detection_factory = (
             None
             if config.search_detection is None or config.search_runtime is None
@@ -1203,6 +1207,7 @@ def create_autonomy_app(
     detection_stream_factory: StreamFactory | None = None,
     detection_detector_factory: DetectorFactory | None = None,
     detection_pose_provider_factory: PoseProviderFactory | None = None,
+    detection_camera_provider_factory: CameraProviderFactory | None = None,
 ) -> tuple[FastAPI, AutonomyComposition]:
     """Build the relay app with the planner and arbiter consuming every accepted intent."""
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
@@ -1212,6 +1217,7 @@ def create_autonomy_app(
         detection_stream_factory=detection_stream_factory,
         detection_detector_factory=detection_detector_factory,
         detection_pose_provider_factory=detection_pose_provider_factory,
+        detection_camera_provider_factory=detection_camera_provider_factory,
     )
     control_localization_factory = (
         None
@@ -1400,7 +1406,9 @@ def create_autonomy_app(
         search = composition.search_runtime
         if search is None or not search.acknowledge_finding(intent_id, sighting_id):
             raise HTTPException(status_code=404, detail="search finding is unknown")
-        return search.status_payload(intent_id)
+        status = search.status_payload(intent_id)
+        status["session"] = session_id
+        return status
 
     composition.bind(app)
     return app, composition
