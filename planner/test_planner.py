@@ -1,15 +1,38 @@
 from dataclasses import replace
+from itertools import combinations, permutations
+from math import fsum
 
 import pytest
 
-from planner.models import CommandOperation, FlightState, Plan, Position, Refusal, RefusalReason
-from planner.planner import DeterministicPlanner
-from relay.intent_v1 import IntentName
+from arbiter.safety import SafetyArbiter
+from planner.models import (
+    CommandOperation,
+    FleetSnapshot,
+    FlightState,
+    Plan,
+    Position,
+    Refusal,
+    RefusalReason,
+)
+from planner.planner import (
+    DeterministicPlanner,
+    _formation_offsets,
+    _formation_targets,
+    _formation_transitions_cross,
+    _hungarian_assignment,
+    _minimum_cost_formation_assignment,
+    _point_to_segment_distance,
+    _segments_cross_xy,
+    _sequential_formation_order,
+)
+from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE
+from relay.intent_v1 import FORMATION_NAMES, IntentName
 from tests.autonomy_fixtures import (
     make_intent,
     make_snapshot,
     planning_config,
     replace_aircraft,
+    safety_config,
 )
 
 
@@ -234,11 +257,58 @@ def test_translate_orders_leading_aircraft_first_for_sequential_spacing() -> Non
 
 def test_formation_and_spacing_plans_carry_authoritative_projection_updates() -> None:
     snapshot = make_snapshot(4)
-    planner = DeterministicPlanner(planning_config())
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
 
     formation = planner.plan(
         make_intent(
-            IntentName.FORMATION_SET, selection=snapshot.selection, args={"name": "circle"}
+            IntentName.FORMATION_SET, selection=snapshot.selection, args={"name": "diamond"}
+        ),
+        snapshot,
+    )
+    spacing_snapshot = replace(snapshot, formation="diamond")
+    spacing = planner.plan(
+        make_intent(IntentName.SPACING, selection=snapshot.selection, args={"delta": 1}),
+        spacing_snapshot,
+    )
+
+    assert isinstance(formation, Plan)
+    assert formation.formation_update == "diamond"
+    assert len(formation.commands) == 4
+    assert isinstance(spacing, Plan)
+    assert spacing.spacing_update == 1.0
+    assert len(spacing.commands) == 4
+    assert {command.operation for command in spacing.commands} == {CommandOperation.GOTO}
+    assert SafetyArbiter(safety_config()).check_plan(spacing, spacing_snapshot) is None
+
+
+def test_arbiter_rejects_a_tampered_formation_projection() -> None:
+    snapshot = make_snapshot(4)
+    plan = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(
+        make_intent(
+            IntentName.FORMATION_SET,
+            selection=snapshot.selection,
+            args={"name": "diamond"},
+        ),
+        snapshot,
+    )
+    assert isinstance(plan, Plan)
+
+    refusal = SafetyArbiter(safety_config()).check_plan(
+        replace(plan, formation_update="circle"), snapshot
+    )
+
+    assert refusal is not None
+    assert refusal.reason is RefusalReason.INVALID_PLAN
+
+
+def test_arbiter_rejects_tampered_formation_geometry_and_spacing_binding() -> None:
+    snapshot = replace(make_snapshot(4), formation="diamond")
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
+    formation = planner.plan(
+        make_intent(
+            IntentName.FORMATION_SET,
+            selection=snapshot.selection,
+            args={"name": "line"},
         ),
         snapshot,
     )
@@ -246,18 +316,27 @@ def test_formation_and_spacing_plans_carry_authoritative_projection_updates() ->
         make_intent(IntentName.SPACING, selection=snapshot.selection, args={"delta": 1}),
         snapshot,
     )
-
     assert isinstance(formation, Plan)
-    assert formation.formation_update == "circle"
-    assert len(formation.commands) == 4
     assert isinstance(spacing, Plan)
-    assert spacing.spacing_update == 1.0
-    assert spacing.commands == ()
+
+    moved = replace(
+        formation.commands[0],
+        parameters=formation.commands[0].parameters | {"x": 9.0},
+    )
+    altered_formation = replace(formation, commands=(moved, *formation.commands[1:]))
+    altered_spacing = replace(spacing, spacing_update=1.2)
+
+    formation_refusal = SafetyArbiter(safety_config()).check_plan(altered_formation, snapshot)
+    spacing_refusal = SafetyArbiter(safety_config()).check_plan(altered_spacing, snapshot)
+    assert formation_refusal is not None
+    assert formation_refusal.reason is RefusalReason.INVALID_PLAN
+    assert spacing_refusal is not None
+    assert spacing_refusal.reason is RefusalReason.INVALID_PLAN
 
 
 def test_altitude_and_confirmed_sweep_expand_for_six_simulated_aircraft() -> None:
     snapshot = make_snapshot(6)
-    planner = DeterministicPlanner(altitude_config())
+    planner = DeterministicPlanner(altitude_config(), C2_CAPABILITY_PROFILE)
 
     altitude = planner.plan(
         make_intent(IntentName.ALTITUDE, selection=snapshot.selection, args={"delta": 1}),
@@ -283,7 +362,7 @@ def test_requested_sweep_box_is_the_exact_source_of_lane_coordinates() -> None:
     snapshot = make_snapshot(4)
     box = {"min_x": -2.0, "max_x": 2.0, "min_y": -3.0, "max_y": 3.0}
 
-    result = DeterministicPlanner(planning_config()).plan(
+    result = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(
         make_intent(
             IntentName.SWEEP,
             selection=snapshot.selection,
@@ -305,7 +384,9 @@ def test_m15_delta_overflow_is_a_typed_refusal(name: IntentName) -> None:
     snapshot = make_snapshot(2)
     config = altitude_config() if name is IntentName.ALTITUDE else planning_config()
 
-    result = DeterministicPlanner(config).plan(
+    result = DeterministicPlanner(
+        config, C2_CAPABILITY_PROFILE if name is IntentName.SPACING else C1_CAPABILITY_PROFILE
+    ).plan(
         make_intent(name, selection=snapshot.selection, args={"delta": 10**400}),
         snapshot,
     )
@@ -314,18 +395,273 @@ def test_m15_delta_overflow_is_a_typed_refusal(name: IntentName) -> None:
     assert result.reason is RefusalReason.INVALID_PLAN
 
 
-def test_console_v_formation_name_matches_the_planner_library() -> None:
-    snapshot = make_snapshot(4)
+@pytest.mark.parametrize("count", [4, 5, 6])
+@pytest.mark.parametrize("name", FORMATION_NAMES)
+def test_mvp_formations_are_separated_non_crossing_and_safe(name: str, count: int) -> None:
+    snapshot = make_snapshot(count)
 
-    result = DeterministicPlanner(planning_config()).plan(
+    result = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(
         make_intent(
             IntentName.FORMATION_SET,
             selection=snapshot.selection,
-            args={"name": "V"},
+            args={"name": name},
         ),
         snapshot,
     )
 
     assert isinstance(result, Plan)
-    assert result.formation_update == "V"
-    assert len(result.commands) == 4
+    assert result.formation_update == name
+    assert len(result.commands) == count
+    assert {command.drone_id for command in result.commands} == set(snapshot.selection)
+    assert {command.operation for command in result.commands} == {CommandOperation.GOTO}
+    assignments = tuple(
+        (
+            command.drone_id,
+            Position(
+                float(command.parameters["x"]),
+                float(command.parameters["y"]),
+                float(command.parameters["z"]),
+            ),
+        )
+        for command in result.commands
+    )
+    targets = tuple(target for _, target in assignments)
+    assert sum(target.x for target in targets) / count == pytest.approx(
+        sum(aircraft.pose.x for aircraft in snapshot.aircraft.values()) / count
+    )
+    assert sum(target.y for target in targets) / count == pytest.approx(0.0)
+    assert min(first.distance_to(second) for first, second in combinations(targets, 2)) > (
+        snapshot.spacing
+    )
+    assert not _formation_transitions_cross(assignments, snapshot)
+    assert SafetyArbiter(safety_config()).check_plan(result, snapshot) is None
+    occupied = {drone_id: aircraft.pose for drone_id, aircraft in snapshot.aircraft.items()}
+    for drone_id, target in assignments:
+        occupied.pop(drone_id)
+        assert all(target.distance_to(other) >= snapshot.spacing for other in occupied.values())
+        occupied[drone_id] = target
+
+
+@pytest.mark.parametrize("name", ["circle", "grid", "V", "unknown"])
+def test_planner_refuses_names_outside_the_exact_mvp_library(name: str) -> None:
+    snapshot = make_snapshot(4)
+
+    result = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(
+        make_intent(
+            IntentName.FORMATION_SET,
+            selection=snapshot.selection,
+            args={"name": name},
+        ),
+        snapshot,
+    )
+
+    assert isinstance(result, Refusal)
+    assert result.reason is RefusalReason.PLANNER_FAILURE
+
+
+@pytest.mark.parametrize("name", ["wedge", "diamond"])
+@pytest.mark.parametrize("count", [2, 3])
+def test_four_aircraft_shapes_refuse_smaller_selections(name: str, count: int) -> None:
+    snapshot = make_snapshot(count)
+
+    result = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(
+        make_intent(
+            IntentName.FORMATION_SET,
+            selection=snapshot.selection,
+            args={"name": name},
+        ),
+        snapshot,
+    )
+
+    assert isinstance(result, Refusal)
+    assert result.reason is RefusalReason.PLANNER_FAILURE
+
+
+def test_formation_next_uses_only_shapes_available_to_the_selection() -> None:
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
+    snapshot = make_snapshot(3)
+
+    first = planner.plan(
+        make_intent(IntentName.FORMATION_NEXT, selection=snapshot.selection), snapshot
+    )
+    second = planner.plan(
+        make_intent(IntentName.FORMATION_NEXT, selection=snapshot.selection),
+        replace(snapshot, formation="line"),
+    )
+    wrapped = planner.plan(
+        make_intent(IntentName.FORMATION_NEXT, selection=snapshot.selection),
+        replace(snapshot, formation="column"),
+    )
+
+    assert isinstance(first, Plan) and first.formation_update == "line"
+    assert isinstance(second, Plan) and second.formation_update == "column"
+    assert isinstance(wrapped, Plan) and wrapped.formation_update == "line"
+
+
+def test_assignment_minimizes_3d_cost_among_non_crossing_matches() -> None:
+    positions = (
+        Position(3.4, 0.3, 3.1),
+        Position(1.6, -2.8, 2.2),
+        Position(-3.8, 0.1, 1.0),
+        Position(-3.5, 0.3, 2.3),
+    )
+    snapshot = make_snapshot(4)
+    for drone_id, pose in enumerate(positions, start=1):
+        snapshot = replace_aircraft(snapshot, drone_id, pose=pose)
+    offsets = _formation_offsets("line", 4)
+    assert offsets is not None
+    center = Position(
+        sum(position.x / 4 for position in positions),
+        sum(position.y / 4 for position in positions),
+        sum(position.z / 4 for position in positions),
+    )
+    targets = tuple(
+        Position(
+            center.x + x * snapshot.spacing,
+            center.y + y * snapshot.spacing,
+            center.z,
+        )
+        for x, y in offsets
+    )
+
+    candidates = []
+    for target_indices in permutations(range(4)):
+        assignment = tuple(
+            (drone_id, targets[target_index])
+            for drone_id, target_index in zip(
+                tuple(sorted(snapshot.selection)), target_indices, strict=True
+            )
+        )
+        cost = fsum(
+            snapshot.aircraft[drone_id].pose.distance_to(target) for drone_id, target in assignment
+        )
+        candidates.append((cost, target_indices, assignment))
+    unconstrained = min(candidates, key=lambda candidate: (candidate[0], candidate[1]))
+    feasible = min(
+        (
+            candidate
+            for candidate in candidates
+            if not _formation_transitions_cross(candidate[2], snapshot)
+            and _has_sequential_clearance(candidate[2], snapshot, snapshot.spacing)
+        ),
+        key=lambda candidate: (candidate[0], candidate[1]),
+    )
+    actual = _formation_targets("line", snapshot.selection, snapshot, snapshot.spacing)
+    assert actual is not None
+    actual_by_drone = dict(actual)
+    actual_indices = tuple(targets.index(actual_by_drone[drone_id]) for drone_id in range(1, 5))
+
+    assert _formation_transitions_cross(unconstrained[2], snapshot)
+    assert actual_indices == feasible[1]
+    assert feasible[0] > unconstrained[0]
+
+
+def test_assignment_ties_are_stable_by_drone_and_slot_index() -> None:
+    snapshot = make_snapshot(4, selection=(4, 3, 2, 1))
+    for drone_id in snapshot.aircraft:
+        snapshot = replace_aircraft(snapshot, drone_id, pose=Position(0.0, 0.0, 1.0))
+    offsets = _formation_offsets("diamond", 4)
+    assert offsets is not None
+    targets = tuple(Position(x, y, 1.0) for x, y in offsets)
+
+    assignment = _minimum_cost_formation_assignment(
+        snapshot.selection,
+        targets,
+        snapshot,
+        minimum_clearance=0.0,
+    )
+
+    assert assignment is not None
+    by_drone = dict(assignment)
+    assert tuple(by_drone[drone_id] for drone_id in range(1, 5)) == targets
+
+
+@pytest.mark.parametrize("count", [2, 3, 4, 5, 6])
+def test_hungarian_solver_matches_bounded_exhaustive_minimum(count: int) -> None:
+    for case in range(5):
+        costs = tuple(
+            tuple(float(((row + 3) * (column + 5) + case * 7) % 19) for column in range(count))
+            for row in range(count)
+        )
+        expected = min(
+            (
+                fsum(costs[row][column] for row, column in enumerate(candidate)),
+                candidate,
+            )
+            for candidate in permutations(range(count))
+        )
+
+        assert _hungarian_assignment(costs, (), ()) == expected
+
+
+def test_transition_crossing_uses_xy_geometry_and_allows_sequential_collinear_following() -> None:
+    assert _segments_cross_xy(
+        Position(-1.0, -1.0, 1.0),
+        Position(1.0, 1.0, 1.0),
+        Position(-1.0, 1.0, 3.0),
+        Position(1.0, -1.0, 3.0),
+    )
+    assert not _segments_cross_xy(
+        Position(0.0, 0.0, 1.0),
+        Position(3.0, 0.0, 1.0),
+        Position(2.0, 0.0, 1.0),
+        Position(4.0, 0.0, 1.0),
+    )
+
+
+def test_sequential_order_checks_the_whole_3d_segment_against_stationary_aircraft() -> None:
+    snapshot = make_snapshot(3, selection=(1, 2))
+    snapshot = replace_aircraft(snapshot, 1, pose=Position(0.0, 0.0, 1.0))
+    snapshot = replace_aircraft(snapshot, 2, pose=Position(4.0, 2.0, 1.0))
+    snapshot = replace_aircraft(snapshot, 3, pose=Position(2.0, 0.79, 1.0))
+    assignments = (
+        (1, Position(4.0, 0.0, 1.0)),
+        (2, Position(0.0, 2.0, 1.0)),
+    )
+
+    assert assignments[0][1].distance_to(snapshot.aircraft[3].pose) > 0.8
+    assert (
+        _point_to_segment_distance(
+            snapshot.aircraft[3].pose, snapshot.aircraft[1].pose, assignments[0][1]
+        )
+        < 0.8
+    )
+    assert _sequential_formation_order(assignments, snapshot, minimum_clearance=0.8) is None
+
+
+def test_sequential_segment_clearance_accepts_exact_minimum_and_rejects_epsilon_below() -> None:
+    snapshot = make_snapshot(2, selection=(1,))
+    snapshot = replace_aircraft(snapshot, 1, pose=Position(0.0, 0.0, 1.0))
+    assignment = ((1, Position(4.0, 0.0, 1.0)),)
+
+    exact = replace_aircraft(snapshot, 2, pose=Position(2.0, 0.8, 1.0))
+    below = replace_aircraft(snapshot, 2, pose=Position(2.0, 0.8 - 1e-12, 1.0))
+
+    assert _sequential_formation_order(assignment, exact, minimum_clearance=0.8) == assignment
+    assert _sequential_formation_order(assignment, below, minimum_clearance=0.8) is None
+
+
+def _has_sequential_clearance(
+    assignment: tuple[tuple[int, Position], ...],
+    snapshot: FleetSnapshot,
+    minimum_clearance: float,
+) -> bool:
+    by_drone = dict(assignment)
+    for order in permutations(sorted(by_drone)):
+        occupied = {
+            drone_id: aircraft.pose
+            for drone_id, aircraft in snapshot.aircraft.items()
+            if aircraft.airborne
+        }
+        for drone_id in order:
+            start = occupied.pop(drone_id)
+            target = by_drone[drone_id]
+            if any(
+                _point_to_segment_distance(other, start, target) < minimum_clearance
+                for other in occupied.values()
+            ):
+                break
+            occupied[drone_id] = target
+        else:
+            return True
+    return False

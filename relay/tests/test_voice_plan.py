@@ -37,7 +37,12 @@ from planner.models import TranslationGrounding, TranslationPolicy
 from relay.app import RelayRuntime, create_app
 from relay.auth import Principal
 from relay.autonomy import AutonomyConfig, create_autonomy_app
-from relay.capabilities import C1_IMPLEMENTED_INTENT_NAMES, IntentName
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    C1_IMPLEMENTED_INTENT_NAMES,
+    C2_CAPABILITY_PROFILE,
+    IntentName,
+)
 from relay.intent_v1 import AcceptedIntent, validate_intent
 from relay.main import (
     _qualified_voice_intents,
@@ -45,7 +50,7 @@ from relay.main import (
     transcript_service_factory,
 )
 from relay.session import RelaySession
-from relay.settings import AdapterBackend, RelaySettings, SettingsError
+from relay.settings import AdapterBackend, CapabilityRelease, RelaySettings, SettingsError
 from relay.tests.conftest import (
     ADAPTER_KEY,
     CONSOLE_KEY,
@@ -269,6 +274,57 @@ def test_relay_main_factory_keeps_compiler_unavailable_without_anthropic_key(
     keyed_composition.close()
 
 
+def test_relay_main_compiler_uses_the_exact_runtime_release_profile(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    config = _config()
+    profiles = (
+        (
+            RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path / "c1"),
+            C1_CAPABILITY_PROFILE,
+        ),
+        (
+            RelaySettings(
+                relay_token=CONSOLE_KEY,
+                log_dir=tmp_path / "c2",
+                capability_release=CapabilityRelease.C2,
+            ),
+            C2_CAPABILITY_PROFILE,
+        ),
+    )
+    for settings, expected in profiles:
+        effective = config.planning.effective_capability_profile(settings.capability_profile)
+        runtime = RelayRuntime(
+            settings,
+            clock=clock,
+            event_ids=EventIds(),
+            capability_profile=effective,
+        )
+        service = build_transcript_service(
+            runtime,
+            config=config,
+            environ={"SWEEP_QUALIFIED_VOICE_INTENTS": "hold"},
+            transport=StaticResponseTransport({"kind": "refuse", "reason": "unknown_intent"}),
+            transcription=ClockedTranscription("Hold."),
+        )
+
+        assert isinstance(service._compiler, RelayTranscriptCompiler)
+        assert service._compiler._capability_profile is expected
+        assert runtime.capability_profile is expected
+        assert (
+            service._compiler._capability_profile.enabled_intent_names
+            == runtime.capability_profile.enabled_intent_names
+        )
+
+    with pytest.raises(SettingsError, match="c2 is allowed only with the sim backend"):
+        RelaySettings(
+            relay_token=CONSOLE_KEY,
+            log_dir=tmp_path / "remote-c2",
+            adapter_backend=AdapterBackend.REMOTE,
+            capability_release=CapabilityRelease.C2,
+        )
+
+
 def test_speech_pair_qualification_configuration_is_closed_and_immutable() -> None:
     profile = _config().planning.effective_capability_profile()
 
@@ -277,8 +333,12 @@ def test_speech_pair_qualification_configuration_is_closed_and_immutable() -> No
         {"SWEEP_QUALIFIED_VOICE_INTENTS": "takeoff, hold"}, profile
     ) == ("hold", "takeoff")
     for raw in ("takeoff,takeoff", "takeoff,", "unknown", "disarm", "map_area"):
-        with pytest.raises(SettingsError, match="unique enabled Intent v1 names"):
+        with pytest.raises(SettingsError, match="unique enabled language-source names"):
             _qualified_voice_intents({"SWEEP_QUALIFIED_VOICE_INTENTS": raw}, profile)
+
+    for raw in ("disarm", "formation_next", "formation_set", "spacing", "sweep"):
+        with pytest.raises(SettingsError, match="unique enabled language-source names"):
+            _qualified_voice_intents({"SWEEP_QUALIFIED_VOICE_INTENTS": raw}, C2_CAPABILITY_PROFILE)
 
 
 def test_endpoint_without_anthropic_key_returns_typed_compiler_unavailable(

@@ -76,6 +76,7 @@ def enrichment() -> RelaySnapshotEnrichment:
     return RelaySnapshotEnrichment(
         operator_present=True,
         operator_last_seen_ms=0,
+        fleet_observation_complete=True,
         aircraft={
             1: RelayAircraftSafetyEnrichment(
                 drone_id=1,
@@ -207,6 +208,43 @@ def test_snapshot_projection_is_json_native_and_deterministic() -> None:
 
     assert first == second
     assert json.loads(json.dumps(first, sort_keys=True))["aircraft"][0]["membership"] == "ready"
+    assert first["fleet_observation_complete"] is True
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, False), (False, False), (True, True)])
+def test_snapshot_fleet_observation_is_fail_closed_when_omitted(
+    value: bool | None, expected: bool
+) -> None:
+    raw = FleetSnapshot.from_relay_state(relay_state(), enrichment=enrichment()).to_dict()
+    if value is None:
+        raw.pop("fleet_observation_complete")
+    else:
+        raw["fleet_observation_complete"] = value
+
+    assert FleetSnapshot.from_mapping(raw).fleet_observation_complete is expected
+
+
+def test_relay_enrichment_fleet_observation_defaults_fail_closed() -> None:
+    assert (
+        RelaySnapshotEnrichment(
+            operator_present=True,
+            operator_last_seen_ms=0,
+            aircraft={},
+        ).fleet_observation_complete
+        is False
+    )
+
+
+def test_snapshot_observation_completeness_is_strict_and_round_trips() -> None:
+    raw = FleetSnapshot.from_relay_state(relay_state(), enrichment=enrichment()).to_dict()
+    raw["fleet_observation_complete"] = False
+
+    snapshot = FleetSnapshot.from_mapping(raw)
+
+    assert snapshot.fleet_observation_complete is False
+    raw["fleet_observation_complete"] = 1
+    with pytest.raises(ValueError, match="fleet_observation_complete"):
+        FleetSnapshot.from_mapping(raw)
 
 
 def test_execution_projection_rejects_nondeterministic_iterable_bundle() -> None:

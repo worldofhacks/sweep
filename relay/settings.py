@@ -12,7 +12,9 @@ from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from relay.auth import StaticCredentialResolver
+from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
 from relay.session import RelayLimits
+from relay.state import aircraft_limit_for_profile
 
 DEFAULT_CONSOLE_ORIGINS = (
     "http://localhost:5173",
@@ -31,6 +33,11 @@ class AdapterBackend(StrEnum):
     REMOTE = "remote"
 
 
+class CapabilityRelease(StrEnum):
+    C1 = "c1"
+    C2 = "c2"
+
+
 @dataclass(frozen=True, slots=True)
 class RelaySettings:
     relay_token: bytes = field(repr=False)
@@ -45,6 +52,8 @@ class RelaySettings:
     transcript_upload_timeout_ms: int = DEFAULT_TRANSCRIPT_UPLOAD_TIMEOUT_MS
     fanout_hz: int = 10
     adapter_backend: AdapterBackend = AdapterBackend.SIM
+    capability_release: CapabilityRelease = CapabilityRelease.C1
+    sim_aircraft_count: int | None = None
     command_ttl_ms: int = 2_000
     command_deadline_ms: int = 10_000
     virtual_stick_hz: int = 10
@@ -113,6 +122,27 @@ class RelaySettings:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
             raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
+        if not isinstance(self.capability_release, CapabilityRelease):
+            raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1 or c2")
+        if (
+            self.capability_release is CapabilityRelease.C2
+            and self.adapter_backend is not AdapterBackend.SIM
+        ):
+            raise SettingsError("SWEEP_CAPABILITY_RELEASE=c2 is allowed only with the sim backend")
+        if self.sim_aircraft_count is not None and (
+            type(self.sim_aircraft_count) is not int or not 1 <= self.sim_aircraft_count <= 6
+        ):
+            raise SettingsError("SWEEP_SIM_AIRCRAFT_COUNT must be an integer from 1 through 6")
+        if self.capability_release is CapabilityRelease.C2 and not (
+            4 <= self.effective_sim_aircraft_count <= 6
+        ):
+            raise SettingsError("the C2 simulator requires 4 through 6 aircraft")
+        profile_limit = aircraft_limit_for_profile(self.capability_profile)
+        if self.effective_sim_aircraft_count > profile_limit:
+            raise SettingsError(
+                f"the {self.capability_release.value.upper()} simulator supports at most "
+                f"{profile_limit} aircraft"
+            )
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
         if self.command_deadline_ms < self.command_ttl_ms:
@@ -191,6 +221,10 @@ class RelaySettings:
                 "SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS",
             ),
             adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
+            capability_release=_capability_release(values.get("SWEEP_CAPABILITY_RELEASE", "c1")),
+            sim_aircraft_count=_optional_positive_integer(
+                values.get("SWEEP_SIM_AIRCRAFT_COUNT"), "SWEEP_SIM_AIRCRAFT_COUNT"
+            ),
             command_ttl_ms=_positive_integer(
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"
             ),
@@ -278,6 +312,18 @@ class RelaySettings:
             "watchdog_failsafe_ms": self.node_watchdog_failsafe_ms,
         }
 
+    @property
+    def capability_profile(self) -> CapabilityProfile:
+        if self.capability_release is CapabilityRelease.C2:
+            return C2_CAPABILITY_PROFILE
+        return C1_CAPABILITY_PROFILE
+
+    @property
+    def effective_sim_aircraft_count(self) -> int:
+        if self.sim_aircraft_count is not None:
+            return self.sim_aircraft_count
+        return 4 if self.capability_release is CapabilityRelease.C2 else 2
+
 
 def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
     try:
@@ -307,6 +353,13 @@ def _backend(raw: str) -> AdapterBackend:
         raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote") from None
 
 
+def _capability_release(raw: str) -> CapabilityRelease:
+    try:
+        return CapabilityRelease(raw)
+    except ValueError:
+        raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1 or c2") from None
+
+
 def _optional(raw: str | None) -> str | None:
     """An unset or blank variable is absent; the value is otherwise kept verbatim."""
     if raw is None or not raw.strip():
@@ -327,6 +380,10 @@ def _positive_integer(raw: str, name: str) -> int:
     if value == 0:
         raise SettingsError(f"{name} must be positive")
     return value
+
+
+def _optional_positive_integer(raw: str | None, name: str) -> int | None:
+    return None if raw is None or raw == "" else _positive_integer(raw, name)
 
 
 def _nonnegative_integer(raw: str, name: str) -> int:

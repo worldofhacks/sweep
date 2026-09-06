@@ -81,6 +81,26 @@ The opt-in altitude path and its floor-reference contract are described in
 [Altitude controls](../docs/ALTITUDE_CONTROLS.md). It is disabled by default and
 requires explicit deployment configuration plus the existing live acceptance gates.
 
+## C2 simulator formations
+
+The explicit simulator-only C2 release adds `formation_next`, `formation_set`,
+`spacing`, and `sweep` without widening the remote Mini 3 backend. Its formation
+contract contains exactly line, column, wedge, and diamond. Line and column accept
+2–6 selected aircraft; wedge and diamond accept 4–6. Slots retain the selected
+fleet's centroid and a small clearance margin above the reported spacing.
+
+For at most six aircraft, a deterministic Hungarian solver minimizes total 3-D
+Euclidean travel. Bounded Murty partitioning visits alternative assignments in cost
+and slot-index order until one has non-crossing transitions and a sequential
+one-aircraft-at-a-time `goto` order whose complete segments clear every stationary or
+already projected ready aircraft. Spacing changes reposition the completed formation;
+they refuse instead of reporting metadata-only success when no supported formation or
+clear route exists. Sweep similarly stages every assigned lane start before traversing
+the lanes. If no safe assignment and order exists, planning refuses before adapter I/O.
+The arbiter independently rechecks every segment. This is bounded simulator behavior,
+not physical-flight acceptance and not a substitute for mapped route or clearance
+evidence.
+
 ## Known-map navigation previews
 
 `NavigationPlanner` produces deterministic, inspectable route previews. It does not
@@ -132,8 +152,8 @@ the minimum-cost deterministic result. No kitchen fallback or formation permissi
 inferred from a navigation destination.
 
 These are software-planning foundations for issues #87, #88, #143, and #144. They emit
-no command and cannot authorize flight. Public `map_area`, search, route dispatch, and
-live formation execution remain gated on their separate capability, evidence,
-confirmation, relay, arbiter, adapter, and physical-acceptance requirements.
+no command and cannot authorize flight. Public `map_area`, search, mapped route
+dispatch, and physical formation execution remain gated on their separate capability,
+evidence, confirmation, relay, arbiter, adapter, and physical-acceptance requirements.
 
 Current scope: `docs/mvp-plan.md` M3A–M3D and live issues #87, #88, and #143–#145.

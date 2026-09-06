@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import RLock
 
-from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
 from relay.contracts import (
     CapabilitiesFrame,
     Membership,
@@ -19,13 +19,24 @@ from relay.contracts import (
     TelemetryV1,
     VideoPublishState,
 )
+from relay.intent_v1 import FORMATION_NAMES
 from relay.media import MediaEvidenceProvider, project_video
 
 MAX_PHYSICAL_AIRCRAFT = 4
+MAX_SIMULATED_AIRCRAFT = 6
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
-_FORMATIONS = frozenset({"line", "column", "circle", "grid", "V"})
+_FORMATIONS = frozenset(FORMATION_NAMES)
+
+
+def aircraft_limit_for_profile(capability_profile: CapabilityProfile) -> int:
+    """Return the registry capacity advertised by one capability profile."""
+    return (
+        MAX_SIMULATED_AIRCRAFT
+        if capability_profile.supports(IntentName.FORMATION_SET)
+        else MAX_PHYSICAL_AIRCRAFT
+    )
 
 
 class RegistryError(ValueError):
@@ -123,6 +134,7 @@ class FleetRegistry:
             )
         self.telemetry_freshness_ms = telemetry_freshness_ms
         self.capability_profile = capability_profile
+        self.aircraft_limit = aircraft_limit_for_profile(capability_profile)
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
         self._aircraft: dict[int, _AircraftRecord] = {}
@@ -207,10 +219,10 @@ class FleetRegistry:
             record = self._aircraft.get(request.drone_id)
             rejoining = record is not None
             if record is None:
-                if len(self._aircraft) >= MAX_PHYSICAL_AIRCRAFT:
+                if len(self._aircraft) >= self.aircraft_limit:
                     raise RegistryError(
                         "fleet_capacity",
-                        f"session already contains {MAX_PHYSICAL_AIRCRAFT} stable aircraft IDs",
+                        f"session already contains {self.aircraft_limit} stable aircraft IDs",
                     )
                 record = _AircraftRecord(
                     drone_id=request.drone_id,

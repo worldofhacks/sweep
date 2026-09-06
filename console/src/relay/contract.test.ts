@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import {
   C1_BASIC_CONTROL_INTENTS,
+  C2_FLEET_OPERATIONS_INTENTS,
+  FORMATION_NAMES,
   MAX_INTENT_DRONE_ID,
   MAX_INTENT_DRONE_IDS,
   MAX_INTENT_IDENTIFIER_CODE_POINTS,
@@ -156,12 +158,40 @@ describe('M1.1 wire compatibility', () => {
     expect(event?.type).toBe('state')
   })
 
+  test('state projection accepts only none or an exact MVP formation name', () => {
+    const state = {
+      v: 1,
+      t: 1_756_700_000_000,
+      type: 'state',
+      event_id: 'formation-contract',
+      session,
+      roster_version: 4,
+      armed: true,
+      estop: false,
+      selection: [1],
+      spacing: 0.8,
+      mode: 'indoor',
+      capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null,
+      accepted_plan: null,
+      drones: [aircraft()],
+    }
+
+    for (const formation of ['none', ...FORMATION_NAMES]) {
+      expect(parseRelayServerEvent({ ...state, formation })).not.toBeNull()
+    }
+    for (const formation of ['circle', 'grid', 'V', '', 1]) {
+      expect(parseRelayServerEvent({ ...state, formation })).toBeNull()
+    }
+  })
+
   test.each([
     ['', ['hold']],
     ['custom', []],
     ['custom', ['hold', 'hold']],
     ['custom', ['unknown']],
-    ['custom', ['disarm']],
+    ['custom', ['unearned']],
     ['c1_basic_control', ['hold']],
   ])('rejects contradictory capability advertisement %s / %j', (profile, enabled) => {
     expect(
@@ -185,6 +215,33 @@ describe('M1.1 wire compatibility', () => {
         drones: [aircraft()],
       }),
     ).toBeNull()
+  })
+
+  test('accepts the exact C2 fleet-operations capability advertisement', () => {
+    expect(
+      parseRelayServerEvent({
+        v: 1,
+        t: 1_756_700_000_000,
+        type: 'state',
+        event_id: 'c2-capability',
+        session,
+        roster_version: 4,
+        armed: true,
+        estop: false,
+        selection: [1],
+        formation: 'line',
+        spacing: 0.8,
+        mode: 'indoor',
+        capability_profile: 'c2_fleet_operations',
+        enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS],
+        pending: null,
+        accepted_plan: null,
+        drones: [aircraft()],
+      }),
+    ).toMatchObject({
+      capability_profile: 'c2_fleet_operations',
+      enabled_intent_names: C2_FLEET_OPERATIONS_INTENTS,
+    })
   })
 
   test('accepts a bounded custom subset profile', () => {
@@ -540,8 +597,8 @@ describe('console Intent v1 mirror', () => {
     ['console', 'land_all', {}, [1, 2, 3, 4], true],
     ['console', 'translate', { dx: -2, dy: 0 }, [1], false],
     ['console', 'altitude', { delta: 1 }, [1], false],
-    ['console', 'formation_next', {}, [1], false],
-    ['console', 'formation_set', { name: 'V' }, [1, 2], false],
+    ['console', 'formation_next', {}, [1, 2], false],
+    ['console', 'formation_set', { name: 'diamond' }, [1, 2, 3, 4], false],
     ['console', 'spacing', { delta: -1 }, [1], false],
     ['console', 'come_home', {}, [1], false],
     ['console', 'sweep', {}, [1], true],
