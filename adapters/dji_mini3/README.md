@@ -230,6 +230,32 @@ sensor capture time, and these records are not source-timing-qualified, flight-a
 wired into localization, navigation, or control. Calibration, time alignment, source
 selection/fusion, AprilTag localization, and physical qualification remain separate work.
 
+### Export raw evidence
+
+Use the `probe` build with a connected DJI product and a relay that shows both
+`authenticated` and `joined`. The recorder opens only after that relay session, drone id, and
+connection epoch are available; it accepts samples only while the product remains connected.
+It records velocity, altitude, ultrasonic height, aircraft attitude, and gimbal attitude from
+the MSDK key listeners. Aircraft attitude is labelled `aircraft_body_to_ned`; gimbal attitude
+is retained as `raw_sdk_axes` until its frame is qualified on the target aircraft.
+
+On the Session page, below the identity and probe cards, tap `Export raw evidence ZIP` and
+wait for `Saved raw evidence …`. The button is disabled while the ZIP is built. Tap `Share raw
+evidence ZIP` to hand that file to Android's share sheet. The archive contains:
+
+- `sensor-records/*.jsonl`, the phone's raw callback records;
+- `bench/*.jsonl`, camera-stream and other bench metadata;
+- `probe-report.txt`, the current registration, product, and identity report; and
+- `provenance.json`, with the copied byte count and SHA-256 digest for every included file.
+
+The exporter includes each JSONL file only through its last newline-terminated record. It
+records sensor callback receipt time because the MSDK key listener supplies no source capture
+timestamp. Camera records carry `StreamInfo.presentationTimeMs`, Android receipt time, and the
+fact that receive-stream listeners do not expose decode time. They also preserve stream
+listener and Surface lifecycle notes. The ZIP contains metadata only. It does not contain
+encoded camera media, and the current WHIP path publishes live media to MediaMTX without
+recording it; MediaMTX recording remains the separate M3 configuration.
+
 ### Staged localization diagnostics (non-flight)
 
 The Setup page may store one exact v1 JSON object containing `map_id`, `geometry_id`,

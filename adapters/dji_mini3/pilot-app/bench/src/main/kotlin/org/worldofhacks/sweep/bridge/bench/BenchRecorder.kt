@@ -86,14 +86,27 @@ class BenchRecorder(private val sink: Appendable, private val clock: Clock) {
         )
     }
 
-    fun videoFrame(sizeBytes: Int, keyframe: Boolean, decodeMs: Long? = null, dropped: Boolean = false) {
+    fun videoFrame(
+        sizeBytes: Int,
+        keyframe: Boolean,
+        decodeMs: Long? = null,
+        dropped: Boolean = false,
+        frameSequence: Long? = null,
+        sdkPresentationTimeMs: Long? = null,
+        receivedAtAndroidElapsedRealtimeMs: Long? = null,
+    ) {
         write(
             RecordKind.VIDEO_FRAME,
             clock.nowMs(),
             "size_bytes" to sizeBytes,
             "keyframe" to keyframe,
             "decode_ms" to decodeMs,
+            "decode_time_status" to "not_exposed_by_receive_stream_listener",
             "dropped" to dropped,
+            "frame_sequence" to frameSequence,
+            "sdk_presentation_time_ms" to sdkPresentationTimeMs,
+            "sdk_presentation_time_source" to "StreamInfo.presentationTimeMs",
+            "received_at_android_elapsed_realtime_ms" to receivedAtAndroidElapsedRealtimeMs,
         )
     }
 
