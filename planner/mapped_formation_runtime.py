@@ -114,12 +114,15 @@ class MappedFormationRuntime:
         artifact: Callable[[], NavigationArtifact],
         config: MappedFormationRuntimeConfig,
         permission: FormationPermission,
+        navigation: NavigationRuntime | None = None,
     ) -> None:
         self.artifact = artifact
         self.config = config
         self.permission = permission
         self.planner = MappedFormationPlanner()
-        self.navigation = NavigationRuntime(
+        if navigation is not None and navigation.config != config.navigation:
+            raise ValueError("formation navigation configuration must match the deployment runtime")
+        self.navigation = navigation or NavigationRuntime(
             artifact, config.navigation, NavigationPermission(frozenset())
         )
 

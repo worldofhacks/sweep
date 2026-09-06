@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 
 import pytest
@@ -86,6 +87,7 @@ def test_route_executes_sequentially_and_requires_observed_arrival_hold(count):
     prepared = controller.prepare(intent, snapshot, current_snapshot=current)
     assert isinstance(prepared, PreparedExecution)
     frozen = prepared.plan.to_dict()["navigation"]
+    assert json.loads(json.dumps(prepared.plan.to_dict()))["navigation"]
     result = controller.dispatch_prepared(prepared, current_snapshot=current)
     assert result.status is LifecycleStatus.COMPLETED, result.refusal
     assert frozen == result.plan.to_dict()["navigation"]

@@ -144,7 +144,10 @@ class SearchPreview:
 
     def ledger(self) -> CoverageLedger:
         return CoverageLedger(
-            self.mission, self.camera, tuple(item.task for item in self.assignments)
+            self.mission,
+            self.camera,
+            tuple(item.task for item in self.assignments),
+            target_class=self.target_class,
         )
 
     def payload(self) -> dict[str, object]:
@@ -220,7 +223,7 @@ class SearchPlanner:
             return SearchRefusal(
                 "wrong_floor", "search zone and navigation zone have different floors"
             )
-        level = self._level_for(request.zone, artifact.grids)
+        level = self._level_for(request.zone, artifact.grids, request.camera.height_agl_m)
         if level is None or any(
             item.drone.pose.floor_id != request.zone.floor_id for item in request.selected
         ):
@@ -354,8 +357,15 @@ class SearchPlanner:
         return planned if isinstance(planned, NavigationRefusal) else planned.routes[0]
 
     @staticmethod
-    def _level_for(area: SearchArea, grids: tuple[GridLevel, ...]) -> GridLevel | None:
-        return next((grid for grid in grids if grid.floor_id == area.floor_id), None)
+    def _level_for(
+        area: SearchArea, grids: tuple[GridLevel, ...], camera_height_m: float
+    ) -> GridLevel | None:
+        candidates = tuple(grid for grid in grids if grid.floor_id == area.floor_id)
+        return (
+            min(candidates, key=lambda grid: (abs(grid.z_m - camera_height_m), grid.z_m))
+            if candidates
+            else None
+        )
 
 
 def _polygon_area(points: tuple[tuple[float, float], ...]) -> float:

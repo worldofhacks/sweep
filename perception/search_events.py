@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass
 from typing import Literal
@@ -53,7 +55,9 @@ class SearchMissionIdentity:
 
     @property
     def frame_mission_id(self) -> str:
-        return f"{self.mission_id}:v{self.version}:e{self.epoch}"
+        return hashlib.sha256(
+            json.dumps([self.mission_id, self.version, self.epoch], separators=(",", ":")).encode()
+        ).hexdigest()
 
     def payload(self) -> dict[str, object]:
         return {
@@ -240,6 +244,7 @@ class CoverageLedger:
         camera: CameraPolicy,
         tasks: tuple[CoverageTask, ...],
         *,
+        target_class: str,
         max_frame_age_s: float = 0.5,
         max_pose_age_s: float = 0.5,
         max_pose_skew_s: float = 0.2,
@@ -255,13 +260,16 @@ class CoverageLedger:
         ):
             if _nonnegative(value, name) <= 0:
                 raise ValueError(f"{name} must be positive")
+        _identifier(target_class, "target_class")
+        self._target_class = target_class
+        self._detector_by_source: dict[str, str] = {}
         self._mission = mission
         self._camera = camera
         self._tasks = {task.task_id: task for task in tasks}
         self._task_for_source = {task.source_id: task.task_id for task in tasks}
         self._states: dict[str, TaskState] = {task.task_id: "pending" for task in tasks}
         self._covered: dict[str, set[str]] = {task.task_id: set() for task in tasks}
-        self._accepted_frames: set[tuple[str, str, str]] = set()
+        self._accepted_frames: dict[tuple[str, str, str], str] = {}
         self._candidates: dict[str, SearchCandidateEvent] = {}
         self._max_frame_age_s = max_frame_age_s
         self._max_pose_age_s = max_pose_age_s
@@ -296,14 +304,20 @@ class CoverageLedger:
         if task_id is None:
             return CoverageObservation(False, "source_mismatch", ())
         task = self._tasks[task_id]
-        if event.identity.mission_id != self._mission.mission_id:
+        if event.identity.mission_id != self._mission.frame_mission_id:
             return CoverageObservation(False, "mission_mismatch", ())
         if self._states[task_id] != "active":
             return CoverageObservation(False, "task_not_active", ())
+        if self._target_class not in event.target_labels:
+            return CoverageObservation(False, "target_class_mismatch", ())
+        accepted_detector = self._detector_by_source.get(event.identity.source_id)
+        if accepted_detector is not None and event.detector_config_sha256 != accepted_detector:
+            return CoverageObservation(False, "detector_configuration_changed", ())
         if event.outcome not in {"detections", "empty"}:
             return CoverageObservation(False, "processed_outcome_not_covering", ())
         if (
-            now_s - event.evaluation_completed_at_monotonic_s > self._max_frame_age_s
+            event.evaluation_completed_at_monotonic_s > now_s
+            or now_s - event.evaluation_completed_at_monotonic_s > self._max_frame_age_s
             or event.evaluation_completed_at_monotonic_s < event.frame_decoded_at_monotonic_s
         ):
             return CoverageObservation(False, "stale_frame", ())
@@ -312,7 +326,8 @@ class CoverageLedger:
         if pose.connection_epoch != task.connection_epoch:
             return CoverageObservation(False, "connection_epoch_mismatch", ())
         if (
-            now_s - pose.observed_at_s > self._max_pose_age_s
+            pose.observed_at_s > now_s
+            or now_s - pose.observed_at_s > self._max_pose_age_s
             or abs(pose.pose_timestamp_s - event.frame_decoded_at_monotonic_s)
             > self._max_pose_skew_s
         ):
@@ -327,7 +342,8 @@ class CoverageLedger:
             if cell.cell_id not in covered and self._camera.covers(pose.pose, cell.pose)
         )
         covered.update(newly_covered)
-        self._accepted_frames.add(frame_key)
+        self._accepted_frames[frame_key] = event.detector_config_sha256
+        self._detector_by_source[event.identity.source_id] = event.detector_config_sha256
         task_event = None
         if len(covered) == len(task.cells):
             self._states[task_id] = "covered"
@@ -338,9 +354,12 @@ class CoverageLedger:
         task_id = self._task_for_source.get(event.identity.source_id)
         if (
             task_id is None
-            or event.identity.mission_id != self._mission.mission_id
-            or (event.identity.source_id, event.identity.frame_id, event.identity.mission_id)
-            not in self._accepted_frames
+            or event.candidate.label != self._target_class
+            or self._accepted_frames.get(
+                (event.identity.source_id, event.identity.frame_id, event.identity.mission_id)
+            )
+            != event.detector_config_sha256
+            or event.identity.mission_id != self._mission.frame_mission_id
         ):
             return None
         previous = self._candidates.get(event.sighting_id)

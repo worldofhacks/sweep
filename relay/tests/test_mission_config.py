@@ -4,7 +4,7 @@ import pytest
 
 from perception.search_events import SearchMissionIdentity
 from planner.mapped_formation_runtime import MappedFormationRuntime
-from planner.models import Plan, Position
+from planner.models import Plan, Position, Refusal
 from planner.navigation import (
     ArtifactPin,
     DronePose,
@@ -186,6 +186,41 @@ def test_config_rejects_unknown_mismatched_and_nonfinite_values(tmp_path, mutate
     raw = config()
     mutate(raw)
     with pytest.raises(SettingsError):
+        load(tmp_path, raw)
+
+
+def test_mapped_formations_retain_the_deployment_navigation_gates(tmp_path):
+    runtime = navigation()
+    runtime.maximum_aircraft = 1
+    runtime.require_phone_authorization = True
+    runtime.configure_control_localization(
+        {1: object()}, max_fix_age_ms=100, max_position_uncertainty_p95_m=0.1
+    )
+    path = tmp_path / "mission.json"
+    path.write_text(json.dumps(config()))
+
+    configured = load_mission_config(runtime, {"SWEEP_MISSION_CONFIG": str(path)})
+
+    assert configured is not None and configured.mapped_formations is not None
+    assert configured.mapped_formations.navigation is runtime
+    refused = configured.mapped_formations.prepare(
+        make_intent(
+            IntentName.FORMATION_SET,
+            selection=(1, 2),
+            args={"name": "line"},
+            confirm=True,
+        ),
+        make_snapshot(2),
+    )
+    assert isinstance(refused, Refusal)
+    assert refused.detail == "navigation selection exceeds the accepted aircraft limit"
+
+
+def test_search_config_rejects_self_intersecting_area_polygon(tmp_path):
+    raw = config()
+    raw["search"]["areas"][0]["polygon_xy_m"] = [[1, 1], [10, 5], [10, 1], [1, 5]]
+
+    with pytest.raises(SettingsError, match="simple polygon"):
         load(tmp_path, raw)
 
 
