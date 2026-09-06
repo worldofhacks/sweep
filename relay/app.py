@@ -69,6 +69,7 @@ def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor
     return MediaMonitor(
         client,
         clock=clock,
+        devices=settings.media_devices(),
         poll_interval_ms=settings.media_poll_interval_ms,
         stale_after_ms=settings.media_stale_after_ms,
     )
@@ -239,6 +240,7 @@ class RelayRuntime:
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
+                    devices=self.settings.device_identities(),
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -670,6 +672,13 @@ class RelayRuntime:
                     if event.get("type") == "control_pose" and (
                         subscription.principal.source != "adapter"
                         or subscription.principal.drone_id != event.get("drone_id")
+                    ):
+                        continue
+                    # Scans are a console display feed; nodes and localization producers
+                    # never receive them.
+                    if (
+                        event.get("type") == "sensor"
+                        and subscription.principal.source not in REGISTERED_SOURCES
                     ):
                         continue
                     roster_version = event.get("roster_version")

@@ -13,6 +13,10 @@ from relay.session import CapabilityBoundIntentSink, IntentSink, RelayLimits, Re
 SESSION = "session-test"
 CONSOLE_KEY = b"console-key-that-is-at-least-32-bytes"
 ADAPTER_KEY = b"adapter-one-key-that-is-at-least-32"
+# The demo keeps ground vehicles at ids 11..13, clear of the aircraft ids 1..4.
+GROUND_ID = 11
+GROUND_KEY = b"ground-eleven-key-that-is-at-least-32"
+GROUND_CAPABILITIES = ("class:ground_vehicle", "ground_drive", "lidar", "camera")
 
 
 def profiled_sink(sink: IntentSink) -> CapabilityBoundIntentSink:
@@ -87,6 +91,11 @@ def adapter_principal() -> Principal:
     return Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
 
 
+@pytest.fixture
+def ground_principal() -> Principal:
+    return Principal(source="adapter", drone_id=GROUND_ID, signing_key=GROUND_KEY)
+
+
 def intent_payload(
     *,
     timestamp: int = 1_756_700_000_000,
@@ -155,8 +164,9 @@ def telemetry_payload(
     session: str = SESSION,
     connection_epoch: int = 1,
     state: str = "hovering",
+    **overrides: object,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "v": 1,
         "t": timestamp,
         "type": "telemetry",
@@ -175,6 +185,93 @@ def telemetry_payload(
         "link": 0.9,
         "pos_quality": 0.95,
     }
+    payload.update(overrides)
+    return payload
+
+
+def ground_membership_payload(
+    *,
+    action: str,
+    event_id: str,
+    timestamp: int = 1_756_700_000_000,
+    drone_id: int = GROUND_ID,
+    session: str = SESSION,
+    connection_epoch: int = 1,
+    key: bytes = GROUND_KEY,
+    **overrides: object,
+) -> dict[str, object]:
+    """A ground vehicle's signed membership frame: the join declares its class and drive."""
+    if action == "join":
+        overrides.setdefault("adapter_id", f"ohmni-{drone_id}")
+        overrides.setdefault("capabilities", list(GROUND_CAPABILITIES))
+    return membership_payload(
+        action=action,
+        event_id=event_id,
+        timestamp=timestamp,
+        drone_id=drone_id,
+        session=session,
+        connection_epoch=connection_epoch,
+        key=key,
+        **overrides,
+    )
+
+
+def ground_telemetry_payload(
+    *,
+    event_id: str,
+    timestamp: int = 1_756_700_000_000,
+    drone_id: int = GROUND_ID,
+    session: str = SESSION,
+    connection_epoch: int = 1,
+    state: str = "idle",
+    **overrides: object,
+) -> dict[str, object]:
+    """Telemetry v1 as a ground vehicle sends it: the floor plane and the drive vocabulary."""
+    overrides.setdefault("z", 0.0)
+    overrides.setdefault("vz", 0.0)
+    overrides.setdefault("pos_quality", 0.6)
+    return telemetry_payload(
+        event_id=event_id,
+        timestamp=timestamp,
+        drone_id=drone_id,
+        session=session,
+        connection_epoch=connection_epoch,
+        state=state,
+        **overrides,
+    )
+
+
+def sensor_payload(
+    *,
+    event_id: str,
+    timestamp: int = 1_756_700_000_000,
+    drone_id: int = GROUND_ID,
+    session: str = SESSION,
+    connection_epoch: int = 1,
+    angle_increment_deg: float = 1.0,
+    **overrides: object,
+) -> dict[str, object]:
+    """A lidar scan of a square room: walls at 2 m, no return every tenth bin."""
+    count = round(360 / angle_increment_deg)
+    ranges = [0 if index % 10 == 9 else 200 + (index % 7) for index in range(count)]
+    payload: dict[str, object] = {
+        "v": 1,
+        "t": timestamp,
+        "type": "sensor",
+        "event_id": event_id,
+        "session": session,
+        "drone_id": drone_id,
+        "connection_epoch": connection_epoch,
+        "kind": "lidar_scan",
+        "pose": {"x": 1.2, "y": -0.4, "yaw_deg": 87.5},
+        "angle_min_deg": 0.0,
+        "angle_increment_deg": angle_increment_deg,
+        "range_min_m": 0.15,
+        "range_max_m": 12.0,
+        "ranges_cm": ranges,
+    }
+    payload.update(overrides)
+    return payload
 
 
 def acknowledgement_payload(

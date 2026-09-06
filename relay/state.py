@@ -3,29 +3,56 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import RLock
+from types import MappingProxyType
 
+from planner.models import DeviceClass, DriveState, FlightState
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import (
     CapabilitiesFrame,
+    DeviceIdentity,
     Membership,
     MembershipAction,
     MembershipRequest,
     NodeStatusFrame,
+    SensorFrame,
+    SensorKind,
     TelemetryV1,
     VideoPublishState,
 )
 from relay.media import MediaEvidenceProvider, project_video
 
-MAX_PHYSICAL_AIRCRAFT = 4
+# Stable physical ids a session admits, enforced per class in ``apply_join``. The audit
+# projector bounds the drone list by the sum.
+MAX_PHYSICAL_DEVICES: Mapping[DeviceClass, int] = MappingProxyType(
+    {DeviceClass.AIRCRAFT: 4, DeviceClass.GROUND_VEHICLE: 4}
+)
+MAX_PHYSICAL_AIRCRAFT = MAX_PHYSICAL_DEVICES[DeviceClass.AIRCRAFT]
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
 _FORMATIONS = frozenset({"line", "column", "circle", "grid", "V"})
+# The one capability each class must advertise before readiness, and the gate it fails.
+_REQUIRED_CLASS_CAPABILITY: Mapping[DeviceClass, tuple[str, str]] = MappingProxyType(
+    {
+        DeviceClass.AIRCRAFT: ("flight", "flight_capability_missing"),
+        DeviceClass.GROUND_VEHICLE: ("ground_drive", "drive_capability_missing"),
+    }
+)
+_GROUNDED_STATES: Mapping[DeviceClass, frozenset[str]] = MappingProxyType(
+    {
+        DeviceClass.AIRCRAFT: frozenset(
+            {FlightState.ARMED.value, FlightState.DISARMED.value, FlightState.LANDED.value}
+        ),
+        DeviceClass.GROUND_VEHICLE: frozenset(
+            {DriveState.DOCKED.value, DriveState.IDLE.value, DriveState.STOPPED.value}
+        ),
+    }
+)
 
 
 class RegistryError(ValueError):
@@ -83,6 +110,8 @@ class _AircraftRecord:
     membership: Membership
     joined_at: int
     updated_at: int
+    device_class: DeviceClass = DeviceClass.AIRCRAFT
+    unit: int = 0
     identity_verified: bool = True
     readiness_declared: bool = False
     home_pose: dict[str, float] | None = None
@@ -97,10 +126,16 @@ class _AircraftRecord:
     node_status: NodeStatusFrame | None = None
     # The latest node_status that claimed publishing; kept across rejoin as frame history.
     video_publishing_at: int | None = None
+    # The latest accepted sensor frame in the current epoch; a rejoin clears it.
+    sensor: SensorFrame | None = None
 
 
 class FleetRegistry:
-    """One-session fleet state; transport authentication happens before entry."""
+    """One-session fleet state; transport authentication happens before entry.
+
+    ``devices`` is the configured class and unit of each device id (``RelaySettings
+    .device_identities``). An id absent from it is an aircraft whose unit is its id.
+    """
 
     def __init__(
         self,
@@ -109,6 +144,7 @@ class FleetRegistry:
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         media_evidence: MediaEvidenceProvider | None = None,
         membership_history_limit: int = DEFAULT_MEMBERSHIP_HISTORY_LIMIT,
+        devices: Mapping[int, DeviceIdentity] | None = None,
     ) -> None:
         if telemetry_freshness_ms <= 0:
             raise ValueError("telemetry_freshness_ms must be positive")
@@ -125,6 +161,13 @@ class FleetRegistry:
         self.capability_profile = capability_profile
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
+        configured = {} if devices is None else dict(devices)
+        if any(
+            type(drone_id) is not int or drone_id <= 0 or not isinstance(identity, DeviceIdentity)
+            for drone_id, identity in configured.items()
+        ):
+            raise ValueError("devices must map positive device ids to DeviceIdentity values")
+        self._devices: Mapping[int, DeviceIdentity] = MappingProxyType(configured)
         self._aircraft: dict[int, _AircraftRecord] = {}
         self._roster_version = 0
         self._state_sequence = 0
@@ -199,18 +242,40 @@ class FleetRegistry:
                 return None
             return record.connection_epoch, self._roster_version
 
+    def device_identity(self, drone_id: int) -> DeviceIdentity:
+        """The configured class and unit of a device id; unconfigured ids are aircraft."""
+        identity = self._devices.get(drone_id)
+        if identity is None:
+            return DeviceIdentity(DeviceClass.AIRCRAFT, drone_id)
+        return identity
+
     def apply_join(self, request: MembershipRequest) -> MembershipTransition:
         if request.action is not MembershipAction.JOIN:
             raise ValueError("apply_join requires a join request")
         assert request.adapter_id is not None
         with self._lock:
+            identity = self.device_identity(request.drone_id)
+            claimed = DeviceClass.AIRCRAFT if request.device_class is None else request.device_class
+            if claimed is not identity.device_class:
+                raise RegistryError(
+                    "device_class_mismatch",
+                    f"drone {request.drone_id} is configured as {identity.device_class.value} "
+                    f"but joined as {claimed.value}",
+                )
             record = self._aircraft.get(request.drone_id)
             rejoining = record is not None
             if record is None:
-                if len(self._aircraft) >= MAX_PHYSICAL_AIRCRAFT:
+                limit = MAX_PHYSICAL_DEVICES[identity.device_class]
+                occupied = sum(
+                    1
+                    for existing in self._aircraft.values()
+                    if existing.device_class is identity.device_class
+                )
+                if occupied >= limit:
                     raise RegistryError(
                         "fleet_capacity",
-                        f"session already contains {MAX_PHYSICAL_AIRCRAFT} stable aircraft IDs",
+                        f"session already contains {limit} stable "
+                        f"{identity.device_class.value} IDs",
                     )
                 record = _AircraftRecord(
                     drone_id=request.drone_id,
@@ -220,6 +285,8 @@ class FleetRegistry:
                     membership=Membership.REGISTERED,
                     joined_at=request.t,
                     updated_at=request.t,
+                    device_class=identity.device_class,
+                    unit=identity.unit,
                 )
                 self._aircraft[request.drone_id] = record
             else:
@@ -241,6 +308,7 @@ class FleetRegistry:
                 record.disconnected_at = None
                 record.camera_capabilities = None
                 record.node_status = None
+                record.sensor = None
 
             self._roster_version += 1
             self._remember(
@@ -488,6 +556,17 @@ class FleetRegistry:
             if frame.video_publish_state is VideoPublishState.PUBLISHING:
                 record.video_publishing_at = max(record.video_publishing_at or 0, frame.t)
 
+    def apply_sensor(self, frame: SensorFrame) -> None:
+        """Retain the node's latest scan for the console projection; never a readiness gate."""
+        with self._lock:
+            self.check_current(frame.drone_id, frame.connection_epoch)
+            self._aircraft[frame.drone_id].sensor = frame
+
+    def latest_sensor(self, drone_id: int) -> SensorFrame | None:
+        with self._lock:
+            record = self._aircraft.get(drone_id)
+            return None if record is None else record.sensor
+
     def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None:
         with self._lock:
             record = self._aircraft.get(drone_id)
@@ -577,10 +656,11 @@ class FleetRegistry:
         reasons: list[str] = []
         if not record.identity_verified:
             reasons.append("identity_unverified")
+        required, gate = _REQUIRED_CLASS_CAPABILITY[record.device_class]
         if not record.capabilities:
             reasons.append("adapter_capabilities_missing")
-        elif "flight" not in record.capabilities:
-            reasons.append("flight_capability_missing")
+        elif required not in record.capabilities:
+            reasons.append(gate)
         if record.telemetry is None or record.telemetry.connection_epoch != record.connection_epoch:
             reasons.append("telemetry_missing")
         elif now_ms - record.telemetry.t > self.telemetry_freshness_ms:
@@ -602,14 +682,11 @@ class FleetRegistry:
 
     @classmethod
     def _is_grounded(cls, record: _AircraftRecord) -> bool:
+        """Aircraft on the ground, or a ground vehicle that is docked, idle, or stopped."""
         if not cls._has_current_telemetry(record):
             return False
         assert record.telemetry is not None
-        return record.telemetry.state in {
-            "armed",
-            "disarmed",
-            "landed",
-        }
+        return record.telemetry.state in _GROUNDED_STATES[record.device_class]
 
     def _transition(
         self,
@@ -673,6 +750,8 @@ class FleetRegistry:
         pos_quality = None if telemetry is None else telemetry["pos_quality"]
         return {
             "drone_id": record.drone_id,
+            "device_class": record.device_class.value,
+            "unit": record.unit,
             "connection_epoch": record.connection_epoch,
             "membership": record.membership.value,
             "readiness_reasons": list(reasons),
@@ -709,6 +788,14 @@ class FleetRegistry:
                     else self._media_evidence(record.drone_id, now_ms)
                 ),
             ),
+            "sensor": {
+                "kind": (
+                    SensorKind.LIDAR_SCAN.value
+                    if record.sensor is None
+                    else record.sensor.kind.value
+                ),
+                "last_scan_at": None if record.sensor is None else record.sensor.t,
+            },
         }
 
     def _remember(

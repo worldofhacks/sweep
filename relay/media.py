@@ -11,25 +11,36 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Protocol
 
 import httpx
 
-from relay.contracts import Membership, NodeStatusFrame, VideoPublishState
+from planner.models import DeviceClass
+from relay.contracts import DeviceIdentity, Membership, NodeStatusFrame, VideoPublishState
 
 _LOGGER = logging.getLogger(__name__)
 
 VIDEO_STATUSES = ("live", "offline", "unreported")
-DEFAULT_MEDIA_DRONE_IDS = (1, 2, 3, 4)
+# Polled when no device is configured (the sim backend with a shared token).
+DEFAULT_MEDIA_DEVICES: Mapping[int, DeviceIdentity] = MappingProxyType(
+    {unit: DeviceIdentity(DeviceClass.AIRCRAFT, unit) for unit in (1, 2, 3, 4)}
+)
+_STREAM_PREFIXES: Mapping[DeviceClass, str] = MappingProxyType(
+    {DeviceClass.AIRCRAFT: "drone", DeviceClass.GROUND_VEHICLE: "ground"}
+)
 
 Clock = Callable[[], int]
 
 
-def stream_name(drone_id: int) -> str:
-    """The MediaMTX path an aircraft publishes to; the console derives the same name."""
-    return f"drone{drone_id}"
+def stream_name(device_class: DeviceClass, unit: int) -> str:
+    """The MediaMTX path a device publishes to, ``drone{unit}`` or ``ground{unit}``; the
+    console derives the same name from the device's class and unit."""
+    if type(unit) is not int or unit <= 0:
+        raise ValueError("unit must be a positive integer")
+    return f"{_STREAM_PREFIXES[DeviceClass(device_class)]}{unit}"
 
 
 class MediaUnreachable(RuntimeError):
@@ -143,7 +154,7 @@ class MediaMonitor:
         client: MediaPathClient,
         *,
         clock: Clock,
-        drone_ids: Iterable[int] = DEFAULT_MEDIA_DRONE_IDS,
+        devices: Mapping[int, DeviceIdentity] = DEFAULT_MEDIA_DEVICES,
         poll_interval_ms: int = 1_000,
         stale_after_ms: int = 3_000,
     ) -> None:
@@ -153,7 +164,10 @@ class MediaMonitor:
             raise ValueError("stale_after_ms must be at least poll_interval_ms")
         self._client = client
         self._clock = clock
-        self._drone_ids = tuple(drone_ids)
+        self._streams: dict[int, str] = {
+            drone_id: stream_name(identity.device_class, identity.unit)
+            for drone_id, identity in devices.items()
+        }
         self._poll_interval_s = poll_interval_ms / 1_000
         self._stale_after_ms = stale_after_ms
         self._paths: dict[int, _PathState] = {}
@@ -190,10 +204,15 @@ class MediaMonitor:
                 _LOGGER.exception("media monitor cycle failed unexpectedly")
             await asyncio.sleep(self._poll_interval_s)
 
+    @property
+    def streams(self) -> Mapping[int, str]:
+        """The MediaMTX path polled for each configured device id."""
+        return MappingProxyType(self._streams)
+
     async def poll_once(self) -> bool:
-        """Read every path once; return whether the whole cycle completed."""
+        """Read every configured device's path once; return whether the cycle completed."""
         results = await asyncio.gather(
-            *(self._client.read_path(stream_name(drone_id)) for drone_id in self._drone_ids),
+            *(self._client.read_path(stream) for stream in self._streams.values()),
             return_exceptions=True,
         )
         now = self._clock()
@@ -204,7 +223,7 @@ class MediaMonitor:
         if failures:
             self._note_reachable(False, failures[0])
             return False
-        for drone_id, result in zip(self._drone_ids, results, strict=True):
+        for drone_id, result in zip(self._streams, results, strict=True):
             observation = result if isinstance(result, MediaPathObservation) else None
             self._paths[drone_id] = self._merge(self._paths.get(drone_id), observation, now)
         self._note_reachable(True, None)

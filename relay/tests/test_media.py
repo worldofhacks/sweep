@@ -6,8 +6,14 @@ import base64
 import httpx
 import pytest
 
+from planner.models import DeviceClass
 from relay.auth import Principal
-from relay.contracts import Membership, parse_membership_request, parse_node_status
+from relay.contracts import (
+    DeviceIdentity,
+    Membership,
+    parse_membership_request,
+    parse_node_status,
+)
 from relay.media import (
     MediaEvidence,
     MediaMonitor,
@@ -28,6 +34,10 @@ from relay.tests.conftest import (
 )
 
 T0 = 1_756_700_000_000
+
+
+def _aircraft(*units: int) -> dict[int, DeviceIdentity]:
+    return {unit: DeviceIdentity(DeviceClass.AIRCRAFT, unit) for unit in units}
 
 
 def _status(state: str, *, timestamp: int = T0, drone_id: int = 1, epoch: int = 1):
@@ -177,7 +187,7 @@ def _run(coroutine):
 def test_monitor_dates_frames_by_growing_inbound_bytes_and_keeps_the_age_on_a_stall() -> None:
     clock = MutableClock(T0)
     client = FakePathClient()
-    monitor = MediaMonitor(client, clock=clock, drone_ids=(1, 2), stale_after_ms=3_000)
+    monitor = MediaMonitor(client, clock=clock, devices=_aircraft(1, 2), stale_after_ms=3_000)
     client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=1_000)
 
     assert _run(monitor.poll_once()) is True
@@ -218,7 +228,7 @@ def test_monitor_dates_frames_by_growing_inbound_bytes_and_keeps_the_age_on_a_st
 def test_monitor_dates_a_counter_reset_as_new_path_evidence() -> None:
     clock = MutableClock(T0)
     client = FakePathClient()
-    monitor = MediaMonitor(client, clock=clock, drone_ids=(1,), stale_after_ms=3_000)
+    monitor = MediaMonitor(client, clock=clock, devices=_aircraft(1), stale_after_ms=3_000)
     client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=10_000)
     _run(monitor.poll_once())
 
@@ -233,7 +243,7 @@ def test_monitor_outage_keeps_the_last_evidence_until_it_ages_out() -> None:
     clock = MutableClock(T0)
     client = FakePathClient()
     monitor = MediaMonitor(
-        client, clock=clock, drone_ids=(1,), poll_interval_ms=1_000, stale_after_ms=3_000
+        client, clock=clock, devices=_aircraft(1), poll_interval_ms=1_000, stale_after_ms=3_000
     )
     client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=10)
     _run(monitor.poll_once())
@@ -269,7 +279,7 @@ def test_monitor_outage_keeps_the_last_evidence_until_it_ages_out() -> None:
 def test_monitor_fails_stale_when_the_runtime_clock_regresses() -> None:
     clock = MutableClock(T0)
     client = FakePathClient()
-    monitor = MediaMonitor(client, clock=clock, drone_ids=(1,), stale_after_ms=3_000)
+    monitor = MediaMonitor(client, clock=clock, devices=_aircraft(1), stale_after_ms=3_000)
     client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=10)
     _run(monitor.poll_once())
 
@@ -281,7 +291,7 @@ def test_monitor_task_polls_on_its_own_and_stops_cleanly() -> None:
     client = FakePathClient()
     client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=1)
     monitor = MediaMonitor(
-        client, clock=clock, drone_ids=(1,), poll_interval_ms=1, stale_after_ms=1
+        client, clock=clock, devices=_aircraft(1), poll_interval_ms=1, stale_after_ms=1
     )
 
     async def scenario() -> None:
@@ -354,7 +364,7 @@ def test_mediamtx_client_reads_the_path_with_basic_auth_and_a_bounded_request() 
 
     async def scenario():
         try:
-            return await client.read_path(stream_name(1))
+            return await client.read_path(stream_name(DeviceClass.AIRCRAFT, 1))
         finally:
             await client.close()
 
