@@ -322,9 +322,10 @@ On first reopen of a legacy JSONL log, the relay removes only a nonempty, unterm
 Controller-generated safety stops reserve the `safety:` intent ID prefix. Public requests using that prefix are refused without occupying the intent ledger.
 
 Transcript uploads have a 15-second total body-read deadline, configured with
-`SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS`. The timer starts when the authenticated
-request begins reading its body; trickling chunks does not reset it. Expiry returns
-HTTP 408 with `voice_outcome.reason=upload_timeout` and zero emissions before
-audio decoding, transcription, or compilation. The 8 MiB cap still applies across
-arbitrary transport fragments. This application deadline works with the documented
-ASGI deployment and does not depend on a reverse proxy read timeout.
+`SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS` from 1 through 300000 milliseconds. The timer
+starts when the authenticated request begins reading its body; trickling chunks does
+not reset it. Expiry returns HTTP 408 with
+`voice_outcome.reason=upload_timeout` and zero emissions before audio decoding,
+transcription, or compilation. The 8 MiB cap still applies across arbitrary transport
+fragments. This application deadline works with the documented ASGI deployment and
+does not depend on a reverse proxy read timeout.

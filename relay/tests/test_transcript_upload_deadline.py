@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from relay.app import RelayRuntime, create_app
-from relay.settings import RelaySettings, SettingsError
+from relay.settings import MAX_TRANSCRIPT_UPLOAD_TIMEOUT_MS, RelaySettings, SettingsError
 from relay.tests.conftest import CONSOLE_KEY, SESSION
 from relay.tests.test_voice import FixedTranscriptionTransport, SpyCompiler
 from relay.voice import TranscriptService
@@ -71,10 +71,19 @@ def test_partial_upload_stall_expires_before_decode_provider_or_compiler(tmp_pat
     assert compiler.calls == []
 
 
-@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, MAX_TRANSCRIPT_UPLOAD_TIMEOUT_MS + 1])
 def test_upload_deadline_requires_positive_integer(value) -> None:
     with pytest.raises(SettingsError, match="SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS"):
         RelaySettings(relay_token=CONSOLE_KEY, transcript_upload_timeout_ms=value)
+
+
+def test_upload_deadline_accepts_the_exact_upper_bound() -> None:
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        transcript_upload_timeout_ms=MAX_TRANSCRIPT_UPLOAD_TIMEOUT_MS,
+    )
+
+    assert settings.transcript_upload_timeout_ms == MAX_TRANSCRIPT_UPLOAD_TIMEOUT_MS
 
 
 def test_upload_deadline_uses_environment_setting() -> None:
