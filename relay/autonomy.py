@@ -38,6 +38,7 @@ from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink
 from adapters.sim.camera import SimCameraConfig
 from arbiter.safety import SafetyArbiter, SafetyConfig
+from perception.object_detection import DEFAULT_TARGET_LABELS
 from planner.controller import AutonomyController, RelayExecution
 from planner.models import (
     CommandAcknowledgement,
@@ -367,10 +368,10 @@ class _Job:
     intent: IntentV1
     session: RelaySession | None
     publications: list[dict[str, object]] = field(default_factory=list)
+    refusal_detail: str | None = None
     cancelled_by: str | None = None
     finished: bool = False
     prepared: PreparedExecution | None = None
-    refusal_detail: str | None = None
 
     def check(self) -> None:
         if self.cancelled_by is not None:
@@ -496,13 +497,20 @@ class AutonomySession:
             search = self._composition.search_runtime
             now_ms = self.snapshot(_state).now_ms
             if search is None or not search.accepts_intent(intent, now_ms):
-                _LOGGER.warning("search intent %s has no matching frozen preview", intent.intent_id)
-                return
+                refusal_detail = "search intent has no matching frozen preview"
+            else:
+                refusal_detail = None
+        else:
+            refusal_detail = None
         with self._lock:
             previous = self._operator_last_seen_ms
             self._operator_last_seen_ms = intent.t if previous is None else max(previous, intent.t)
         runtime = self._composition.runtime_if_bound()
-        job = _Job(intent, None if runtime is None else runtime.sessions.get(self.session_id))
+        job = _Job(
+            intent,
+            None if runtime is None else runtime.sessions.get(self.session_id),
+            refusal_detail=refusal_detail,
+        )
         if intent.name is IntentName.NAVIGATE:
             now_ms = _state.get("t")
             with self._lock:
@@ -788,19 +796,20 @@ class AutonomySession:
             self._publish(runtime, lambda: publications)
         if job.cancelled_by is not None:
             return  # cancelled while queued; the stop recorded its invalidation
-
         if job.refusal_detail is not None:
+            roster_version = session.registry.roster_version
             result = ExecutionResult(
                 intent_id=intent.intent_id,
-                roster_version=session.registry.roster_version,
-                status=LifecycleStatus.REFUSED,
+                roster_version=roster_version,
+                status=LifecycleStatus.FAILED,
                 refusal=Refusal(
                     intent_id=intent.intent_id,
-                    roster_version=session.registry.roster_version,
+                    roster_version=roster_version,
                     drone_id=None,
                     connection_epoch=None,
                     reason=RefusalReason.INVALID_PLAN,
                     detail=job.refusal_detail,
+                    status=LifecycleStatus.FAILED,
                 ),
             )
             with self._lock:
@@ -1317,12 +1326,33 @@ def create_autonomy_app(
             "v": 1,
             "t": runtime.clock(),
             "type": "search_preview",
+            "session": session_id,
             "intent_id": validated.intent.intent_id,
             "preview": result.search.payload(),
             "plan": result.plan.to_dict(),
             "expires_at_ms": composition.search_runtime.preview_expires_at_ms(
                 validated.intent.intent_id
             ),
+        }
+
+    @app.get("/session/{session_id}/search/catalog")
+    async def search_catalog(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        runtime: RelayRuntime = request.app.state.relay_runtime
+        token = authorization.removeprefix("Bearer ").encode() if authorization else None
+        expected = runtime.credential_resolver.resolve("console", None)
+        if token is None or expected is None or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=401, detail="console authentication is required")
+        search = composition.search_runtime
+        if search is None:
+            raise HTTPException(status_code=404, detail="search is unavailable")
+        return {
+            "session": session_id,
+            "target_classes": list(DEFAULT_TARGET_LABELS),
+            "zones": list(search.config.areas),
         }
 
     @app.get("/session/{session_id}/search/{intent_id}")
@@ -1346,6 +1376,7 @@ def create_autonomy_app(
             raise HTTPException(status_code=404, detail="search mission is unknown") from None
         if factory := composition.detection_factory:
             status["detection_workers"] = factory.status(intent_id)
+        status["session"] = session_id
         return status
 
     @app.post("/session/{session_id}/search/{intent_id}/findings/{sighting_id}/ack")
