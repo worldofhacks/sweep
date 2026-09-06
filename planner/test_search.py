@@ -21,7 +21,7 @@ from planner.navigation import (
 )
 from planner.search import SearchArea, SearchDrone, SearchPlanner, SearchRefusal, SearchRequest
 
-MOTION = MotionConfig(0.15, 0.2, 0.05, 0.03, 0.1, 0.05)
+MOTION = MotionConfig(0.15, 0.2, 0.05, 0.03, 0.1, 0.05, 0.2)
 CAMERA = CameraPolicy(90, 90, 1, -90, -90, 0, 0.25)
 MISSION = SearchMissionIdentity("search-7", 3, 2)
 AREA = SearchArea("search-zone", "level_1", ((0, 0), (12, 0), (12, 4), (0, 4)))
