@@ -22,7 +22,7 @@ def recording_config(tmp_path):
         "drones": [
             {
                 "key_environment": "LOCALIZATION_KEY_1",
-                "max_position_uncertainty_m": 0.2,
+                "max_position_uncertainty_m": 0.5,
                 "clock_mapping": {
                     "capture_clock_id": "phone-monotonic",
                     "relay_clock_id": "relay-clock",
@@ -43,6 +43,12 @@ def recording_config(tmp_path):
                     "height_source_id": "tof-height",
                     "camera_calibration_id": localizer["calibration_sha256"],
                     "body_extrinsics_id": "body-camera-measurement",
+                    "position_bounds_map_enu_m": [[-10, 10], [-10, 10], [0, 3]],
+                    "height_bounds_map_enu_m": [0, 3],
+                    "max_speed_mps": 5,
+                    "position_variance_bounds_m2": [0.000001, 0.0625],
+                    "velocity_variance_bounds_m2ps2": [0.000001, 1],
+                    "height_variance_bounds_m2": [0.000001, 0.0625],
                     "production_evidence_verified": True,
                 },
             }

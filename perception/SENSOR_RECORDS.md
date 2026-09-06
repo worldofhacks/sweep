@@ -14,7 +14,9 @@ from them.
 
 The `publisher` object is the normal `ControlPublisherConfig`. Its fuser source IDs, map ID,
 calibration digest, body-extrinsics ID, and clock ID are the recording adapter's identities. The
-adapter checks them against the phone and tag source configuration at startup. Phone conversion
+adapter checks them against the phone and tag source configuration at startup. The fuser also
+requires explicit position, height, speed, and sensor variance bounds; use the measured deployment
+values described in [publisher configuration](../docs/CONTROL_LOCALIZATION_PUBLISHER.md). Phone conversion
 also requires a measured NED-to-map rotation and height datum. A tag source pins the exact
 `TagLocalizer` configuration, a body-extrinsics identity, and a positive definite covariance
 matrix selected from measurement evidence. Each eligible tag frame carries its own measured
