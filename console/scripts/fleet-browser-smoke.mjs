@@ -20,7 +20,7 @@ const directory = resolve(repositoryRoot, 'output/playwright', session)
 const logs = join(directory, 'audit')
 await mkdir(logs, { recursive: true })
 const auditReader = createAuditReader(logs, session)
-const evidence = { session, nodes: 4, aircraft: 'synthetic signed bridge nodes', gestures: 'scripted MediaPipe results', language: liveLanguage ? 'real Whisper and Anthropic providers with computer-generated speech; not a human microphone accuracy test' : language ? 'synthetic provider responses through real compiler and audio upload' : 'typed local fallback', checks: [], utterances: [], translations: [] }
+const evidence = { session, nodes: 4, aircraft: 'synthetic signed bridge nodes', gestures: 'scripted MediaPipe results', language: liveLanguage ? 'real Whisper and Anthropic providers with computer-generated speech; not a human microphone accuracy test' : language ? 'synthetic provider responses through real compiler and audio upload' : 'typed local fallback', checks: [], utterances: [], translations: [], clarifications: [] }
 const child = spawn(join(repositoryRoot, '.venv/bin/python'), [
   '-m', language ? 'adapters.sim.language_demo' : 'adapters.sim.demo',
   '--count', '4', '--session', session, '--console-dist', join(consoleRoot, 'dist'), '--log-dir', logs,
@@ -83,10 +83,10 @@ try {
   evidence.checks.push('four ready aircraft visible in console')
 
   if (language) {
-    for (const [text, name, targets, displacement] of [
+    for (const [text, name, targets, displacement, clarification] of [
       ['arm', 'arm', []], ['select all drones', 'select', [1, 2, 3, 4]],
-      ['take off', 'takeoff', [1, 2, 3, 4]], ['move forward 0.5 meters', 'translate', [1, 2, 3, 4], { x: 0, y: .5, z: 0 }],
-    ]) await voiceCommand(text, name, targets, displacement)
+      ['take off', 'takeoff', [1, 2, 3, 4]], ['move forward 0.5 meters', 'translate', [1, 2, 3, 4], { x: 0, y: .5, z: 0 }, 'Move the selected drones 0.5 meters along the positive Y axis of the world frame.'],
+    ]) await voiceCommand(text, name, targets, displacement, clarification)
   } else {
     await controlCommand('Arm', 'arm')
     await module('Gesture')
@@ -316,8 +316,33 @@ async function typedCommand(text, name, expectedStatus = 'completed') {
   evidence.checks.push(`typed local ${name} ${expectedStatus}`)
   return id
 }
-async function voiceCommand(text, name, targets, displacement) {
+async function voiceCommand(text, name, targets, displacement, clarification) {
   await module('Speech')
+  let outcome = await uploadSpeech(text)
+  if (liveLanguage && clarification && outcome.compilation?.kind === 'clarify') {
+    assert.equal(name, 'translate', 'only the translation scenario has a clarification response')
+    assert.deepEqual(outcome.emissions, [], 'clarification must emit no commands')
+    assert.deepEqual(outcome.compilation.intents, [], 'clarification must not contain a staged plan')
+    assert.equal(await dock().count(), 0, 'clarification must leave no pending confirmation')
+    evidence.clarifications.push({ requested: text, reason: outcome.compilation.reason, detail: outcome.compilation.detail, response: clarification })
+    evidence.checks.push('ambiguous spoken translation requests clarification without emitting or staging a command')
+    // One explicit answer to the requested frame clarification; a second
+    // unresolved outcome fails below, with no generic provider retry loop.
+    outcome = await uploadSpeech(clarification)
+  }
+  assert.equal(outcome.compilation?.kind, 'plan', JSON.stringify(outcome))
+  await page.getByRole('button', { name: 'Stage step 1 of 1', exact: true }).click()
+  const pending = await pendingIntent()
+  assert.equal(pending.name, name)
+  assert.deepEqual(pending.selection, targets)
+  if (displacement) assert.deepEqual(pending.args, { dx: displacement.x / demoTranslationStepM, dy: displacement.y / demoTranslationStepM })
+  const before = displacement ? (await status()).drones : null
+  const id = await confirmAndWait(name)
+  assert.equal(id, pending.intent_id, 'confirmation must send the exact voice preview')
+  if (displacement) await assertTranslation(id, targets, before, displacement)
+  evidence.checks.push(`audio upload → compiler → confirmed ${name} completed`)
+}
+async function uploadSpeech(text) {
   if (liveLanguage) {
     const number = evidence.utterances.length
     const aiff = join(directory, `speech-${number}.aiff`)
@@ -333,19 +358,9 @@ async function voiceCommand(text, name, targets, displacement) {
   await page.waitForTimeout(liveLanguage ? await page.evaluate(() => window.__fleetSpeechDuration) : 500)
   await talk.dispatchEvent('pointerup', { buttons: 0 })
   const outcome = await (await upload).json()
-  evidence.utterances.push({ requested: text, transcript: outcome.transcript, kind: outcome.compilation?.kind, reason: outcome.compilation?.reason, source: outcome.compilation?.source })
+  evidence.utterances.push({ requested: text, transcript: outcome.transcript, kind: outcome.compilation?.kind, reason: outcome.compilation?.reason, detail: outcome.compilation?.detail, source: outcome.compilation?.source })
   if (!liveLanguage) assert.equal(outcome.transcript, text)
-  assert.equal(outcome.compilation?.kind, 'plan', JSON.stringify(outcome))
-  await page.getByRole('button', { name: 'Stage step 1 of 1', exact: true }).click()
-  const pending = await pendingIntent()
-  assert.equal(pending.name, name)
-  assert.deepEqual(pending.selection, targets)
-  if (displacement) assert.deepEqual(pending.args, { dx: displacement.x / demoTranslationStepM, dy: displacement.y / demoTranslationStepM })
-  const before = displacement ? (await status()).drones : null
-  const id = await confirmAndWait(name)
-  assert.equal(id, pending.intent_id, 'confirmation must send the exact voice preview')
-  if (displacement) await assertTranslation(id, targets, before, displacement)
-  evidence.checks.push(`audio upload → compiler → confirmed ${name} completed`)
+  return outcome
 }
 async function command(executable, args) {
   const process = spawn(executable, args, { stdio: 'ignore' })
