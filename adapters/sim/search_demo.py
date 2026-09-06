@@ -201,11 +201,7 @@ def search_demo() -> SearchDemo:
     artifact = navigation.artifact()
     search = SearchRuntime(
         SearchRuntimeConfig(
-            {
-                "atrium": SearchArea(
-                    "atrium", "level_1", ((0, 0), (8, 0), (8, 4), (0, 4)), 0
-                )
-            },
+            {"atrium": SearchArea("atrium", "level_1", ((0, 0), (8, 0), (8, 4), (0, 4)), 0)},
             artifact.map_pin,
             CameraPolicy(90, 90, 1, -90, -90, 0, 0.25),
             "synthetic-search-camera-v1",
@@ -282,7 +278,7 @@ def _safety_config() -> SafetyConfig:
 
 
 def _navigation_runtime() -> NavigationRuntime:
-    motion = MotionConfig(0.15, 0.2, 0.05, 0.03, 0.1, 0.05)
+    motion = MotionConfig(0.15, 0.2, 0.05, 0.03, 0.1, 0.05, 0.2)
     zone = Zone(
         "atrium",
         "level_1",
