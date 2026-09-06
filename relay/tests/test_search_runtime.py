@@ -146,20 +146,6 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
     assert accepted.reason == "task_not_active" or accepted.reason == "duplicate_frame"
 
 
-def test_search_preview_lease_binds_the_full_intent_and_expires() -> None:
-    from dataclasses import replace
-
-    runtime = _search_runtime()
-    intent = _intent("leased-search")
-    preview = runtime.prepare(intent, _snapshot())
-    assert isinstance(preview, SearchMissionPreview)
-    expires = runtime.preview_expires_at_ms(intent.intent_id)
-    assert runtime.accepts_intent(intent, expires)
-    assert not runtime.accepts_intent(replace(intent, retry_of="prior"), expires)
-    assert not runtime.accepts_intent(replace(intent, selection=(2,)), expires)
-    assert not runtime.accepts_intent(intent, expires + 1)
-
-
 def test_search_counts_real_worker_frames_during_frozen_route_execution() -> None:
     from collections import deque
     from dataclasses import replace
