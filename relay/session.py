@@ -1650,6 +1650,30 @@ class RelaySession:
             self._metrics["refused_intents"] += 1
             return event
 
+    def record_map_reset(self, *, cleared: bool) -> dict[str, object]:
+        """Audit an operator clearing the session's occupancy grid.
+
+        The grid is an in-memory display artefact, not fleet state, so the reset changes
+        no projection and is not fanned out. The record exists so the log shows what a
+        person cleared and when: a map that suddenly forgets a wall is otherwise
+        indistinguishable from a sensor that stopped reporting one. ``cleared`` is false
+        when the session had no grid to clear.
+        """
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            event: dict[str, object] = {
+                "v": 1,
+                "t": now,
+                "type": "map_reset",
+                "event_id": self.event_ids(),
+                "session": self.session_id,
+                "roster_version": self.registry.roster_version,
+                "cleared": cleared,
+            }
+            self._append_audit(event)
+            return event
+
     def admit_safety_stop(self, intent: IntentV1) -> dict[str, object]:
         """Register a controller-generated safety stop before adapter I/O."""
         with self._lock, self._audit_operation():
