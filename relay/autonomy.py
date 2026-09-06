@@ -923,6 +923,11 @@ class AutonomySession:
                 self._awaiting.pop(victim.intent.intent_id, None)
             if self.navigation_control is not None:
                 self.navigation_control.invalidate(victim.intent.intent_id)
+            if victim.intent.name is IntentName.SEARCH:
+                if search := self._composition.search_runtime:
+                    search.cancel(victim.intent.intent_id, reason)
+                if factory := self._composition.detection_factory:
+                    factory.finish_mission(victim.intent.intent_id)
             stop.publications.append(event)
 
     def _run(self, lane: _Lane) -> None:
@@ -1039,12 +1044,14 @@ class AutonomySession:
                             ),
                         )
                     else:
+                        result: ExecutionResult | None = None
                         try:
                             result = search.execute(
                                 intent.intent_id, dispatcher, snapshot, current_snapshot=current
                             )
                         finally:
-                            factory.finish_mission(intent.intent_id)
+                            if result is None or result.status is not LifecycleStatus.EXECUTING:
+                                factory.finish_mission(intent.intent_id)
                 else:
                     result = search.execute(
                         intent.intent_id, dispatcher, snapshot, current_snapshot=current
@@ -1157,7 +1164,7 @@ class AutonomySession:
 
         try:
             assert owner.pending.plan is not None
-            return owner.dispatcher.resume_after_completion(
+            result = owner.dispatcher.resume_after_completion(
                 owner.pending.plan,
                 owner.pending,
                 token.acknowledgement,
@@ -1165,6 +1172,11 @@ class AutonomySession:
                 current_snapshot=current,
                 owner_still_valid=lambda: self._owns_resume(token),
             )
+            if token.owner.job.intent.name is IntentName.SEARCH:
+                search = self._composition.search_runtime
+                if search is not None and result.status is not LifecycleStatus.EXECUTING:
+                    return search.complete_execution(token.intent_id, result)
+            return result
         except Exception as error:
             return _resume_failure(token, error)
 
@@ -1186,6 +1198,10 @@ class AutonomySession:
             else:
                 self._awaiting.pop(token.intent_id, None)
                 owner.job.finished = True
+                if owner.job.intent.name is IntentName.SEARCH:
+                    factory = self._composition.detection_factory
+                    if factory is not None:
+                        factory.finish_mission(token.intent_id)
         try:
             events = apply_result(owner.session, owner.job.intent, result)
         except ValueError:
@@ -1530,6 +1546,7 @@ def create_autonomy_app(
         if (
             not isinstance(validated, AcceptedIntent)
             or validated.intent.name is not IntentName.SEARCH
+            or validated.intent.session != session_id
         ):
             raise HTTPException(
                 status_code=422, detail="a configured console search intent is required"
@@ -1586,7 +1603,7 @@ def create_autonomy_app(
         if token is None or expected is None or not hmac.compare_digest(token, expected):
             raise HTTPException(status_code=401, detail="console authentication is required")
         search = composition.search_runtime
-        if search is None:
+        if search is None or not search.belongs_to_session(intent_id, session_id):
             raise HTTPException(status_code=404, detail="search is unavailable")
         try:
             status = search.status_payload(intent_id)
@@ -1611,7 +1628,11 @@ def create_autonomy_app(
         if token is None or expected is None or not hmac.compare_digest(token, expected):
             raise HTTPException(status_code=401, detail="console authentication is required")
         search = composition.search_runtime
-        if search is None or not search.acknowledge_finding(intent_id, sighting_id):
+        if (
+            search is None
+            or not search.belongs_to_session(intent_id, session_id)
+            or not search.acknowledge_finding(intent_id, sighting_id)
+        ):
             raise HTTPException(status_code=404, detail="search finding is unknown")
         status = search.status_payload(intent_id)
         status["session"] = session_id

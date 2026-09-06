@@ -13,7 +13,7 @@ from perception.object_detection import (
     SightingEvent,
 )
 from perception.search_events import CameraPolicy, FramePoseEvidence
-from planner.models import Plan, Position, Refusal
+from planner.models import ExecutionResult, LifecycleStatus, Plan, Position, Refusal
 from planner.navigation import ArtifactPin, NavigationPermission, Pose
 from planner.search import SearchArea
 from planner.test_navigation_runtime import _runtime, _snapshot
@@ -225,6 +225,43 @@ def test_search_executes_frozen_coverage_route_then_accepts_bounded_worker_frame
     )
     assert not accepted.accepted
     assert accepted.reason == "task_not_active" or accepted.reason == "duplicate_frame"
+
+
+def test_search_keeps_arrival_observer_until_a_pending_route_finishes() -> None:
+    class PendingDispatcher:
+        def __init__(self) -> None:
+            self.on_navigation_command_completed = None
+
+        def dispatch(self, plan, _snapshot, *, current_snapshot=None):
+            return ExecutionResult(
+                plan.intent_id,
+                plan.roster_version,
+                LifecycleStatus.EXECUTING,
+                plan,
+            )
+
+    runtime = _search_runtime()
+    preview = runtime.prepare(_intent(), _snapshot())
+    assert isinstance(preview, SearchMissionPreview)
+    dispatcher = PendingDispatcher()
+
+    pending = runtime.execute("search-runtime", dispatcher, _snapshot())
+
+    assert pending.status is LifecycleStatus.EXECUTING
+    assert dispatcher.on_navigation_command_completed is not None
+    terminal = runtime.complete_execution(
+        "search-runtime",
+        ExecutionResult(
+            preview.plan.intent_id,
+            preview.plan.roster_version,
+            LifecycleStatus.COMPLETED,
+            preview.plan,
+        ),
+    )
+
+    assert terminal.status is LifecycleStatus.COMPLETED
+    assert dispatcher.on_navigation_command_completed is None
+    assert runtime.status("search-runtime").state == "incomplete"
 
 
 def test_search_runtime_keeps_active_missions_when_retention_is_full(

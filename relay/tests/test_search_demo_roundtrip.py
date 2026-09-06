@@ -13,6 +13,7 @@ import uvicorn
 
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
 from adapters.sim.search_demo import SearchDemo, search_demo
+from planner.models import CommandOperation
 from relay.autonomy import create_autonomy_app
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION
@@ -121,6 +122,8 @@ def test_synthetic_search_demo_runs_from_http_preview_through_fake_node(
             adapter_id="synthetic-search-node",
             home=(0.5, 1.5, 0.0),
             telemetry_hz=10,
+            slow_operations=frozenset({CommandOperation.GOTO}),
+            slow_ack_delay_s=0.05,
         )
     )
     http_url = server.url.replace("ws://", "http://", 1)
@@ -174,13 +177,22 @@ def test_synthetic_search_demo_runs_from_http_preview_through_fake_node(
         assert preview.status_code == 200, preview.text
         assert preview.json()["session"] == SESSION
         console.send(search)
+        status_url = f"{http_url}/session/{SESSION}/search/{search['intent_id']}"
+        _wait_until(
+            lambda: (
+                httpx.get(status_url, headers=headers, timeout=WAIT_S)
+                .json()
+                .get("detection_workers")
+                == [{"drone_id": 1, "state": "running", "failure_reason": None}]
+            ),
+            what="search detection during pending remote navigation",
+        )
         for _ in range(30):
             demo.publish_frame()
             time.sleep(0.04)
         outcome = _outcome(console, search["intent_id"])
         assert outcome["status"] == "completed", json.dumps(outcome, indent=2)
 
-        status_url = f"{http_url}/session/{SESSION}/search/{search['intent_id']}"
         _wait_until(
             lambda: (
                 bool(

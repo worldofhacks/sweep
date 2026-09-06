@@ -392,13 +392,16 @@ def test_search_catalog_and_rejected_searches_reach_terminal_lifecycle(
                 console.send_json(payload("held-search-preview", held_intent.t))
                 held = terminal(console, "held-search-preview")
 
-                status_intent = make_intent(
-                    IntentName.SEARCH,
-                    selection=(1,),
-                    args={"zone_id": "atrium", "target_class": "backpack"},
-                    confirm=True,
-                    intent_id="search-status-session",
-                    t=clock.value,
+                status_intent = replace(
+                    make_intent(
+                        IntentName.SEARCH,
+                        selection=(1,),
+                        args={"zone_id": "atrium", "target_class": "backpack"},
+                        confirm=True,
+                        intent_id="search-status-session",
+                        t=clock.value,
+                    ),
+                    session=SESSION,
                 )
                 assert isinstance(
                     search.prepare(status_intent, fresh_snapshot()),
@@ -406,6 +409,19 @@ def test_search_catalog_and_rejected_searches_reach_terminal_lifecycle(
                 )
                 status = client.get(
                     f"/session/{SESSION}/search/search-status-session", headers=headers
+                )
+                foreign_status = client.get(
+                    "/session/another-session/search/search-status-session", headers=headers
+                )
+                foreign_preview = client.post(
+                    f"/session/{SESSION}/search/preview",
+                    headers=headers,
+                    json={
+                        "intent": {
+                            **payload("foreign-session-preview", clock.value),
+                            "session": "another-session",
+                        }
+                    },
                 )
     finally:
         composition.close()
@@ -416,3 +432,5 @@ def test_search_catalog_and_rejected_searches_reach_terminal_lifecycle(
         "invalid_plan",
     ]
     assert status.json()["session"] == SESSION
+    assert foreign_status.status_code == 404
+    assert foreign_preview.status_code == 422

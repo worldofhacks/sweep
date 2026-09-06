@@ -117,6 +117,8 @@ class _Mission:
     candidate_frames: dict[str, SightingEvent] | None = None
     intent_fingerprint: tuple[object, ...] = ()
     expires_at_ms: int = 0
+    pending_dispatcher: AdapterDispatcher | None = None
+    previous_navigation_observer: Callable[[Plan, Command, FleetSnapshot], None] | None = None
 
 
 class SearchRuntime:
@@ -205,6 +207,15 @@ class SearchRuntime:
         with self._lock:
             return intent_id in self._missions
 
+    def belongs_to_session(self, intent_id: str, session_id: str) -> bool:
+        with self._lock:
+            mission = self._missions.get(intent_id)
+            return (
+                mission is not None
+                and bool(mission.intent_fingerprint)
+                and mission.intent_fingerprint[0] == session_id
+            )
+
     def accepts_intent(self, intent: IntentV1, now_ms: int) -> bool:
         with self._lock:
             mission = self._missions.get(intent.intent_id)
@@ -254,8 +265,26 @@ class SearchRuntime:
         self._activate_arrived_tasks(mission, snapshot)
         try:
             result = dispatcher.dispatch(plan, snapshot, current_snapshot=current_snapshot)
-        finally:
+        except Exception:
             dispatcher.on_navigation_command_completed = previous_observer
+            raise
+        if result.status is LifecycleStatus.EXECUTING:
+            with self._lock:
+                mission.pending_dispatcher = dispatcher
+                mission.previous_navigation_observer = previous_observer
+            return result
+        dispatcher.on_navigation_command_completed = previous_observer
+        return self.complete_execution(intent_id, result)
+
+    def complete_execution(self, intent_id: str, result: ExecutionResult) -> ExecutionResult:
+        with self._lock:
+            mission = self._mission(intent_id)
+            if mission.pending_dispatcher is not None:
+                mission.pending_dispatcher.on_navigation_command_completed = (
+                    mission.previous_navigation_observer
+                )
+                mission.pending_dispatcher = None
+                mission.previous_navigation_observer = None
         if result.status is not LifecycleStatus.COMPLETED:
             reason = result.refusal.detail if result.refusal else "route_execution_failed"
             self.hold(intent_id, reason)
