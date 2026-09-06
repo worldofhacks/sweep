@@ -1873,7 +1873,7 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            possible_ids = [self.event_ids() for _ in range(self.registry.aircraft_limit)]
+            possible_ids = [self.event_ids() for _ in range(_MAX_PROJECTED_DEVICES)]
             transitions = self.registry.expire_stale_telemetry(now_ms=now, event_ids=possible_ids)
             events: list[dict[str, object]] = []
             for transition in transitions:

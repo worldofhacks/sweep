@@ -838,7 +838,10 @@ def test_keyboard_may_only_emit_the_network_stop(name: IntentName) -> None:
     [IntentName.HOLD, IntentName.CAPTURE_ROOM, IntentName.TRANSLATE, IntentName.FORMATION_NEXT],
 )
 def test_webcam_gesture_names_pass_validation(name: IntentName) -> None:
-    result = validate_intent(_c1_payload("webcam", name))
+    payload = _c1_payload("webcam", name)
+    if name is IntentName.FORMATION_NEXT:
+        payload["selection"] = [1, 11]
+    result = validate_intent(payload, capability_profile=C2_CAPABILITY_PROFILE)
 
     assert isinstance(result, AcceptedIntent)
     assert result.intent.source == "webcam"
