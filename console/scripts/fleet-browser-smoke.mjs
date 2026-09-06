@@ -9,6 +9,8 @@ const consoleRoot = resolve(import.meta.dirname, '..')
 const repositoryRoot = resolve(consoleRoot, '..')
 const liveLanguage = process.argv.includes('--live-language')
 const language = liveLanguage || process.argv.includes('--language')
+// Trusted demo_autonomy_config() planning policy: intent units are 0.5 meters.
+const demoTranslationStepM = .5
 const providerEnvIndex = process.argv.indexOf('--provider-env')
 const providerEnv = providerEnvIndex < 0 ? null : process.argv[providerEnvIndex + 1]
 if (providerEnvIndex >= 0) assert.ok(liveLanguage && providerEnv, '--provider-env requires --live-language and a file path')
@@ -18,7 +20,7 @@ const directory = resolve(repositoryRoot, 'output/playwright', session)
 const logs = join(directory, 'audit')
 await mkdir(logs, { recursive: true })
 const auditReader = createAuditReader(logs, session)
-const evidence = { session, nodes: 4, aircraft: 'synthetic signed bridge nodes', gestures: 'scripted MediaPipe results', language: liveLanguage ? 'real Whisper and Anthropic providers with computer-generated speech; not a human microphone accuracy test' : language ? 'synthetic provider responses through real compiler and audio upload' : 'typed local fallback', checks: [], utterances: [] }
+const evidence = { session, nodes: 4, aircraft: 'synthetic signed bridge nodes', gestures: 'scripted MediaPipe results', language: liveLanguage ? 'real Whisper and Anthropic providers with computer-generated speech; not a human microphone accuracy test' : language ? 'synthetic provider responses through real compiler and audio upload' : 'typed local fallback', checks: [], utterances: [], translations: [] }
 const child = spawn(join(repositoryRoot, '.venv/bin/python'), [
   '-m', language ? 'adapters.sim.language_demo' : 'adapters.sim.demo',
   '--count', '4', '--session', session, '--console-dist', join(consoleRoot, 'dist'), '--log-dir', logs,
@@ -81,10 +83,10 @@ try {
   evidence.checks.push('four ready aircraft visible in console')
 
   if (language) {
-    for (const [text, name, targets] of [
+    for (const [text, name, targets, displacement] of [
       ['arm', 'arm', []], ['select all drones', 'select', [1, 2, 3, 4]],
-      ['take off', 'takeoff', [1, 2, 3, 4]], ['move forward 0.5 meters', 'translate', [1, 2, 3, 4]],
-    ]) await voiceCommand(text, name, targets)
+      ['take off', 'takeoff', [1, 2, 3, 4]], ['move forward 0.5 meters', 'translate', [1, 2, 3, 4], { x: 0, y: .5, z: 0 }],
+    ]) await voiceCommand(text, name, targets, displacement)
   } else {
     await controlCommand('Arm', 'arm')
     await module('Gesture')
@@ -314,7 +316,7 @@ async function typedCommand(text, name, expectedStatus = 'completed') {
   evidence.checks.push(`typed local ${name} ${expectedStatus}`)
   return id
 }
-async function voiceCommand(text, name, targets) {
+async function voiceCommand(text, name, targets, displacement) {
   await module('Speech')
   if (liveLanguage) {
     const number = evidence.utterances.length
@@ -338,7 +340,11 @@ async function voiceCommand(text, name, targets) {
   const pending = await pendingIntent()
   assert.equal(pending.name, name)
   assert.deepEqual(pending.selection, targets)
-  await confirmAndWait(name)
+  if (displacement) assert.deepEqual(pending.args, { dx: displacement.x / demoTranslationStepM, dy: displacement.y / demoTranslationStepM })
+  const before = displacement ? (await status()).drones : null
+  const id = await confirmAndWait(name)
+  assert.equal(id, pending.intent_id, 'confirmation must send the exact voice preview')
+  if (displacement) await assertTranslation(id, targets, before, displacement)
   evidence.checks.push(`audio upload → compiler → confirmed ${name} completed`)
 }
 async function command(executable, args) {
@@ -358,7 +364,33 @@ async function assertCommands(id, targets, operation) {
   const commands = all.filter((event) => event.type === 'command' && event.intent_id === id)
   assert.deepEqual(commands.map((event) => event.drone_id).sort(), targets)
   assert.ok(commands.every((event) => event.operation === operation))
-  for (const droneId of targets) assert.ok(all.some((event) => event.type === 'acknowledgement' && event.source === 'adapter' && event.drone_id === droneId && event.intent_id === id && event.status === 'completed'))
+  for (const command of commands) assert.ok(all.some((event) => event.type === 'acknowledgement' && event.source === 'adapter' && event.drone_id === command.drone_id && event.intent_id === id && event.command_id === command.command_id && event.connection_epoch === command.connection_epoch && event.status === 'completed'), `adapter must complete exact command ${command.command_id}`)
+  return commands
+}
+async function assertTranslation(id, targets, before, displacement) {
+  assert.deepEqual(before.map((drone) => drone.drone_id).sort(), targets)
+  const commands = await assertCommands(id, targets, 'goto')
+  const expected = commands.map((command) => {
+    const drone = before.find((value) => value.drone_id === command.drone_id)
+    assert.equal(command.connection_epoch, drone.connection_epoch)
+    assert.equal(drone.telemetry.state, 'hovering')
+    const position = Object.fromEntries(['x', 'y', 'z'].map((axis) => {
+      assert.ok(Number.isFinite(drone.telemetry[axis]))
+      return [axis, drone.telemetry[axis] + displacement[axis]]
+    }))
+    for (const axis of ['x', 'y', 'z']) assert.equal(command.args[`${axis}_mm`], Math.round(position[axis] * 1000), `${droneName(command.drone_id)} commanded ${axis} position`)
+    return { command, before: drone.telemetry, position }
+  })
+  let observed
+  await waitUntil(async () => {
+    const all = await events()
+    const completedAt = all.findIndex((event) => event.type === 'acknowledgement' && event.source === 'autonomy' && event.intent_id === id && event.status === 'completed')
+    assert.ok(completedAt >= 0, 'translation requires aggregate completion')
+    observed = expected.map(({ command }) => all.slice(completedAt + 1).findLast((event) => event.type === 'telemetry' && event.drone === command.drone_id && event.connection_epoch === command.connection_epoch && event.t > all[completedAt].t))
+    return observed.every((telemetry, index) => telemetry?.state === 'hovering' && ['x', 'y', 'z'].every((axis) => Math.abs(telemetry[axis] - expected[index].position[axis]) < 1e-6))
+  }, 'four fresh post-completion telemetry positions displaced forward exactly 0.5 meters')
+  evidence.translations.push({ intent_id: id, intent_step_m: demoTranslationStepM, displacement_m: displacement, drones: expected.map(({ command, before }, index) => ({ drone_id: command.drone_id, connection_epoch: command.connection_epoch, command_id: command.command_id, command_args: command.args, before, after: observed[index] })) })
+  evidence.checks.push('voice translation commands and fresh completion telemetry move exactly four targets forward 0.5 meters')
 }
 async function waitUntil(predicate, description) {
   const until = Date.now() + 15000
