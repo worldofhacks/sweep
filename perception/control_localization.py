@@ -15,7 +15,7 @@ from perception._kalman_replay import (
     _ReplayResult,
 )
 
-_MAX_IDENTIFIER_CHARS = 512
+_MAX_IDENTIFIER_CHARS = 128
 _GREEN_FIX_AGE_S = 0.5
 _RED_FIX_AGE_S = 2.0
 _LAND_AFTER_LOSS_S = 3.0
@@ -38,7 +38,7 @@ def _identifier(value: object, name: str) -> str:
         or not value.isprintable()
         or len(value) > _MAX_IDENTIFIER_CHARS
     ):
-        raise ValueError(f"{name} must be a nonempty string of at most 512 characters")
+        raise ValueError(f"{name} must be canonical text of at most 128 characters")
     return value
 
 
