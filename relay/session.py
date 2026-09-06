@@ -340,6 +340,22 @@ class RelaySession:
                 raise ValueError("language intent authorizer is already bound")
             self._language_intent_authorizer = authorizer
 
+    def record_operator_events(self, events: list[Mapping[str, object]]) -> None:
+        if not events:
+            return
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            for event in events:
+                if event.get("session") != self.session_id:
+                    raise ValueError("operator event belongs to another session")
+                if event.get("type") not in {
+                    "detection_frame",
+                    "detection",
+                    "detection_acknowledgement",
+                }:
+                    raise ValueError("operator event type is not permitted")
+                self._append_audit(event)
+
     def process_frame(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         """Route one post-authentication frame according to its bound principal."""
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None

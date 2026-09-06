@@ -102,6 +102,33 @@ describe('WebSocket relay client', () => {
     expect(statuses.at(-1)).toBe('connected')
   })
 
+  test('sends an acknowledgement frame without building an intent', async () => {
+    const socket = new TestSocket()
+    const client = new WebSocketRelayClient(
+      { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source: 'console', token: 'token' },
+      { now: () => 100, createSocket: () => socket as unknown as WebSocket },
+    )
+    client.start()
+    socket.open()
+    socket.message({
+      v: 1,
+      t: 101,
+      type: 'auth.accepted',
+      event_id: 'auth-detection-ack',
+      session: 'session-1',
+      source: 'console',
+      drone_id: null,
+    })
+
+    await client.acknowledgeDetection('detection-1')
+
+    expect(JSON.parse(socket.sent[1])).toEqual({
+      v: 1,
+      type: 'detection_acknowledgement',
+      detection_id: 'detection-1',
+    })
+  })
+
   test('ignores late events from a socket replaced during StrictMode cleanup', () => {
     const first = new TestSocket()
     const second = new TestSocket()

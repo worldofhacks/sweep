@@ -37,6 +37,42 @@ function aircraft(overrides: Record<string, unknown> = {}) {
 }
 
 describe('M1.1 wire compatibility', () => {
+  test('accepts a bounded promoted detection and its console acknowledgement', () => {
+    const detection = parseRelayServerEvent({
+      v: 1,
+      t,
+      type: 'detection',
+      event_id: 'detection-1',
+      session,
+      detection_id: 'detection-1',
+      drone_id: 1,
+      source_id: 'drone1',
+      sighting_id: 'sighting-1',
+      frame_id: 'frame-1',
+      label: 'backpack',
+      confidence: 0.91,
+      bbox_xyxy: [4, 4, 24, 24],
+      frame_decoded_at_monotonic_s: 10,
+      evaluation_completed_at_monotonic_s: 10.1,
+      observation_count: 1,
+      attention: 'promoted',
+      acknowledged: false,
+    })
+    const acknowledgement = parseRelayServerEvent({
+      v: 1,
+      t: t + 1,
+      type: 'detection_acknowledgement',
+      event_id: 'detection-ack-1',
+      session,
+      detection_id: 'detection-1',
+      drone_id: 1,
+      operator_source: 'console',
+    })
+
+    expect(detection).toMatchObject({ type: 'detection', attention: 'promoted' })
+    expect(acknowledgement).toMatchObject({ type: 'detection_acknowledgement' })
+  })
+
   test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
     const event = parseRelayServerEvent({
       v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,

@@ -678,6 +678,10 @@ export function useControlConsole({
     [state.requests],
   )
 
+  const acknowledgeDetection = useCallback((detectionId: string) => {
+    void clients.console.acknowledgeDetection(detectionId)
+  }, [clients.console])
+
   return {
     state,
     pendingRequest,
@@ -697,6 +701,7 @@ export function useControlConsole({
     changeCapturePattern,
     invalidatePending,
     retryRequest,
+    acknowledgeDetection,
     selectFeed: (droneId: DroneId) => dispatch({ type: 'feed_selected', droneId }),
   }
 }
