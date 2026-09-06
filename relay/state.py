@@ -174,6 +174,17 @@ class FleetRegistry:
             record = self._aircraft.get(drone_id)
             return None if record is None else record.connection_epoch
 
+    def active_connection_identity(self, drone_id: int) -> tuple[int, int] | None:
+        """Return one atomic epoch/roster snapshot only for an active membership."""
+        with self._lock:
+            record = self._aircraft.get(drone_id)
+            if record is None or record.membership in {
+                Membership.DISCONNECTED,
+                Membership.LEAVING,
+            }:
+                return None
+            return record.connection_epoch, self._roster_version
+
     def apply_join(self, request: MembershipRequest) -> MembershipTransition:
         if request.action is not MembershipAction.JOIN:
             raise ValueError("apply_join requires a join request")

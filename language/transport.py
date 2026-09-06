@@ -19,7 +19,7 @@ import httpx
 from language.contracts import CompilerReason
 
 PINNED_COMPILER_MODEL = "claude-sonnet-5"
-PROMPT_SCHEMA_VERSION = "intent-v1-compiler-7"
+PROMPT_SCHEMA_VERSION = "intent-v1-compiler-8"
 _CASSETTE_LOCK = Lock()
 _COMPILER_INTENT_NAMES = (
     "arm",
@@ -324,7 +324,8 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "select requires args.ids, a nonempty array of known selectable IDs, and selection "
             "must equal args.ids. It changes the selection for subsequent plan steps. "
             "arm, land_all, and estop always use selection: []. They do not change selection. "
-            "takeoff, land, hold, translate, come_home, and capture_room use the current "
+            "takeoff, land, hold, translate, altitude, come_home, and capture_room use the "
+            "current "
             "selection. "
             "To target different aircraft, first emit select. Never silently choose all aircraft "
             "when selection is empty. LAND means land the selected aircraft; LAND_ALL means "
@@ -348,9 +349,18 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "Preserve conversion precision; do not round feet or step multipliers. "
             "If translation is absent or a required heading is missing, return clarify with "
             "ambiguous_location. Do not infer a location from an ID or room name.\n"
+            "Altitude uses authoritative_facts.altitude.step_m. Its delta is a dimensionless "
+            "configured-step multiplier: positive is up and negative is down. For fly, move, or "
+            "go up/down, convert explicit feet using exactly 0.3048 metres per foot, preserve "
+            "explicit metres, and divide by altitude.step_m. An omitted distance means one foot. "
+            "Altitude is unavailable when authoritative_facts.altitude is absent or altitude is "
+            "not in enabled_intent_names. Intent v1 has no absolute-height argument: hover at a "
+            "height must return clarify/capability_unavailable and must never be approximated as "
+            "a delta. Plain hover means hold.\n"
             "Preserve order and fold state after each step: arm authorizes takeoff; takeoff "
-            "requires landed/armed/disarmed selected aircraft and leads to hovering; translate "
-            "and come_home require armed, airborne/hovering aircraft. Hold requires airborne "
+            "requires landed/armed/disarmed selected aircraft and leads to hovering; translate, "
+            "altitude, and come_home require armed, airborne/hovering aircraft. Hold requires "
+            "airborne "
             "aircraft and leads to hovering; land leads to landed only for its selection; "
             "land_all lands all eligible airborne aircraft. Capture requires armed hovering. "
             "When estop is active only hold, land, land_all, and estop are allowed. Never insert "

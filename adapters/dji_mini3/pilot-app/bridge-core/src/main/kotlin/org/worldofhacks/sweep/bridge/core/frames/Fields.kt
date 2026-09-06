@@ -52,6 +52,19 @@ internal object Fields {
         return value.value
     }
 
+    /** Any 64-bit integer, sign included (`relay.contracts._integer`). */
+    fun integer(value: JsonValue?, field: String, code: String): Long {
+        if (value !is JsonInt) throw ContractError(code, "$field must be an integer")
+        return value.value
+    }
+
+    /** A finite number in `[0, 360)` (`relay.contracts._azimuth`). */
+    fun azimuth(value: JsonValue?, field: String, code: String): Double {
+        val result = finiteNumber(value, field, code)
+        if (result < 0.0 || result >= 360.0) throw ContractError(code, "$field azimuth must be between 0 and 360")
+        return result
+    }
+
     fun positiveInt(value: JsonValue?, field: String, code: String): Long {
         val result = nonNegativeInt(value, field, code)
         if (result == 0L) throw ContractError(code, "$field must be a positive integer")

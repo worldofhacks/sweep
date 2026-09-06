@@ -1,6 +1,9 @@
 package org.worldofhacks.sweep.bridge.session
 
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.flight.FlightNode
+import org.worldofhacks.sweep.bridge.node.AircraftSource
+import org.worldofhacks.sweep.bridge.node.CommandExecutor
 
 enum class Registration { INITIALIZING, REGISTERING, REGISTERED, FAILED }
 
@@ -41,8 +44,22 @@ sealed interface ExportResult {
     data class Failed(val reason: String) : ExportResult
 }
 
+/**
+ * One SDK session per process. Besides registration and identity it exposes the two things
+ * the relay link needs from an aircraft: the live [aircraft] snapshot it streams as telemetry
+ * and the [executor] that runs admitted commands. Both are flavor-specific: the fake flavor
+ * synthesizes a kinematic fixture, the probe flavor reads DJI `KeyManager` keys.
+ */
 interface AircraftSession {
     val state: StateFlow<SessionState>
+
+    val aircraft: AircraftSource
+
+    val executor: CommandExecutor
+
+    /** Phase E: the Virtual Stick loop and the #85 probe runner; null in a session without flight control. */
+    val flight: FlightNode?
+        get() = null
 
     fun exportProbeReport(): ExportResult
 }

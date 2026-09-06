@@ -154,7 +154,7 @@ Top-level `armed` is the authoritative session arm authorization, initially fals
 
 The capability profile limits valid intent names before planning. Every non-null intent sink must expose the same immutable `CapabilityProfile` as the relay session; opaque callbacks must be wrapped in `CapabilityBoundIntentSink`. The session revalidates that declaration before admission and again before pending execution, so replacing a planner behind a bound method cannot silently widen the command surface. A capability profile does not approve an adapter or aircraft deployment. Authenticated membership, adapter capabilities, current telemetry, control authority, RC-safety-operator presence, and the planner and arbiter gates remain required before hardware dispatch.
 
-Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, `state`, `telemetry`, `safety_action`, `acknowledgement`, `refusal`, and the node-authored `capabilities`, `capture_readiness`, and `node_status`; a node's socket additionally receives `command`. Every one carries `event_id`. Node-local `safety_action` events expose the aircraft, connection epoch, and HOLD or FAILSAFE action so operators can see link-loss intervention. A refusal always includes all of `intent_id`, `command_id`, `drone_id`, `connection_epoch`, `roster_version`, `reason`, and `detail`; context fields are deliberately present as null when they do not apply. Acknowledgements use the same always-present context fields; `command_id` is non-null for adapter facts and nullable for relay/orchestrator intent-level lifecycle events.
+Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, `state`, `telemetry`, `safety_action`, `acknowledgement`, `refusal`, and the node-authored `capabilities`, `capture_readiness`, and `node_status`; a node's socket additionally receives `command` and `control_heartbeat`. Every one carries `event_id`. Node-local `safety_action` events expose the aircraft, connection epoch, and HOLD or FAILSAFE action so operators can see link-loss intervention. A refusal always includes all of `intent_id`, `command_id`, `drone_id`, `connection_epoch`, `roster_version`, `reason`, and `detail`; context fields are deliberately present as null when they do not apply. Acknowledgements use the same always-present context fields; `command_id` is non-null for adapter facts and nullable for relay/orchestrator intent-level lifecycle events.
 
 ## Node protocol
 
@@ -175,7 +175,25 @@ SWEEP_NODE_WATCHDOG_HOLD_MS=2000
 SWEEP_NODE_WATCHDOG_FAILSAFE_MS=10000
 ```
 
-`SWEEP_ADAPTER_BACKEND` selects which adapters `relay.bridge.build_adapters` and `build_dispatcher` construct for a session: `sim` (the deterministic simulator, with an explicit `SimCameraConfig`) or `remote` (one `RemoteBridgeAdapter` over the bridge wire, bounded by `SWEEP_COMMAND_TTL_MS`). The relay itself never dispatches; `relay.autonomy`, the composition `relay.main` runs, calls that factory for each accepted intent. `SWEEP_COMMAND_DEADLINE_MS` bounds one command's total wait regardless of non-terminal heartbeats and must be at least the TTL; at the deadline the adapter returns the last non-terminal acknowledgement and the plan reports `executing`. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
+`SWEEP_ADAPTER_BACKEND` selects which adapters `relay.bridge.build_adapters` and `build_dispatcher` construct for a session: `sim` (the deterministic simulator, with an explicit `SimCameraConfig`) or `remote` (one `RemoteBridgeAdapter` over the bridge wire, bounded by `SWEEP_COMMAND_TTL_MS`). The relay itself never dispatches; `relay.autonomy`, the composition `relay.main` runs, calls that factory for each accepted intent. `SWEEP_COMMAND_DEADLINE_MS` bounds one command's total wait regardless of non-terminal progress acknowledgements and must be at least the TTL; at the deadline the adapter returns the last non-terminal acknowledgement and the plan reports `executing`. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
+
+### Control heartbeat (relay to one node)
+
+Once an authenticated adapter has joined, the relay sends it a per-connection control
+lease once per second by default, or twice per configured hold window when that window is
+shorter than two seconds. It is routed only to that adapter, never broadcast to consoles,
+and is not an audit-history event:
+
+```json
+{"v":1,"t":1756700000000,"type":"control_heartbeat","event_id":"...","session":"demo","source":"relay","drone_id":1,"connection_epoch":2,"roster_version":4,"seq":7,"signature":"..."}
+```
+
+The signature is HMAC-SHA256 with that adapter's key over the exact frame without
+`signature`. `seq` starts at one for each authenticated socket and strictly increases. A node
+refreshes its deadman only after the signature, session, drone id, current connection epoch,
+current roster version, timestamp freshness, and sequence all validate. Commands, state,
+membership, acknowledgements, parseable telemetry, and fan-out echoes are deliberately not
+liveness evidence.
 
 ### Command frame (relay to node)
 

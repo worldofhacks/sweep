@@ -119,7 +119,7 @@ def test_provider_reason_enum_matches_runtime_contract_and_rejects_recorded_free
     assert outcome.reason is CompilerReason.INVALID_MODEL_OUTPUT
 
 
-def test_provider_instruction_supplies_selection_argument_and_translation_contracts() -> None:
+def test_provider_instruction_supplies_selection_and_motion_contracts() -> None:
     system = _anthropic_body(ModelRequest(transcript="Hold", facts={}))["system"]
     for contract in (
         "selection must equal args.ids",
@@ -128,6 +128,10 @@ def test_provider_instruction_supplies_selection_argument_and_translation_contra
         "LAND means land the selected aircraft",
         "divide by step_m",
         "Do not rotate it yourself",
+        "takeoff, land, hold, translate, altitude, come_home",
+        "altitude and spacing={delta}",
+        "hover at a height",
+        "Plain hover means hold",
         "capture_room={room_id,pattern}",
         "explanations in detail, never in reason",
     ):

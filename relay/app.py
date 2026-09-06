@@ -25,7 +25,9 @@ from relay.auth import (
     CredentialResolver,
     Principal,
     authenticate,
+    sign_event,
 )
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import REGISTERED_SOURCES
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import RelaySettings, console_origins_from_env
@@ -38,6 +40,7 @@ ShutdownCallback = Callable[[], None]
 _OUTBOUND_LIMIT = 128
 _SEND_TIMEOUT_SECONDS = 5.0
 _CLOSE_TIMEOUT_SECONDS = 1.0
+_CONTROL_HEARTBEAT_MAX_INTERVAL_SECONDS = 1.0
 TranscriptServiceFactory = Callable[["RelayRuntime"], TranscriptService]
 AuthoritativeRoomsFactory = Callable[[RelaySession], tuple[str, ...]]
 
@@ -104,6 +107,7 @@ class RelayRuntime:
         clock: Clock | None = None,
         event_ids: EventIdFactory | None = None,
         intent_sink_factory: IntentSinkFactory | None = None,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
         authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
     ) -> None:
@@ -111,7 +115,14 @@ class RelayRuntime:
         self.credential_resolver = credential_resolver or settings.credential_resolver()
         self.clock = clock or _epoch_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
+        declared_profile = getattr(intent_sink_factory, "capability_profile", None)
+        if declared_profile is None:
+            factory_owner = getattr(intent_sink_factory, "__self__", None)
+            declared_profile = getattr(factory_owner, "capability_profile", None)
+        if declared_profile is not None and declared_profile != capability_profile:
+            raise ValueError("intent sink factory and relay runtime use different profiles")
         self.intent_sink_factory = intent_sink_factory
+        self.capability_profile = capability_profile
         self.leave_authorizer_factory = leave_authorizer_factory
         self.authoritative_rooms_factory = authoritative_rooms_factory
         self.sessions: dict[str, RelaySession] = {}
@@ -127,6 +138,8 @@ class RelayRuntime:
         self._fanout_failed_sessions: set[str] = set()
         self._fanout_task: asyncio.Task[None] | None = None
         self._fanout_session_tasks: dict[str, asyncio.Task[None]] = {}
+        self._control_heartbeat_last: dict[str, float] = {}
+        self._control_heartbeat_sequence: dict[str, int] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
 
     def session(self, session_id: str) -> RelaySession:
@@ -153,6 +166,7 @@ class RelayRuntime:
                     clock=self.clock,
                     event_ids=self.event_ids,
                     leave_authorizer=leave_authorizer,
+                    capability_profile=self.capability_profile,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -471,6 +485,8 @@ class RelayRuntime:
                 key = (session_id, principal.drone_id)
                 if self._adapter_connections.get(key) == subscription.connection_id:
                     self._adapter_connections.pop(key, None)
+            self._control_heartbeat_last.pop(subscription.connection_id, None)
+            self._control_heartbeat_sequence.pop(subscription.connection_id, None)
 
     async def cleanup_connection(
         self,
@@ -588,9 +604,65 @@ class RelayRuntime:
     async def _fanout_session(self, session_id: str, session: RelaySession) -> None:
         try:
             await self.process_and_publish(session_id, lambda: self.periodic_events(session))
+            await self._publish_control_heartbeats(session_id, session)
         except AuditLogError:
             self._fanout_failed_sessions.add(session_id)
             _LOGGER.exception("session fan-out stopped after audit failure session=%s", session_id)
+
+    async def _publish_control_heartbeats(self, session_id: str, session: RelaySession) -> None:
+        """Send each joined adapter its own signed, non-replayable control lease.
+
+        Heartbeats are transport control frames, not fleet-history events: they are
+        deliberately routed only to the authenticated adapter and are not appended
+        to the audit log or broadcast to consoles.  The node accepts one only when
+        its signature and current session/drone/epoch/roster identity all match.
+        """
+        now = time.monotonic()
+        # Default to 1 Hz, but keep at least two lease opportunities inside a
+        # shorter configured hold window (the fan-out loop remains the upper rate).
+        interval = min(
+            _CONTROL_HEARTBEAT_MAX_INTERVAL_SECONDS,
+            self.settings.node_watchdog_hold_ms / 2_000,
+        )
+        # Match the session -> connection lock order used by mutations and fan-out.
+        # That keeps the joined identity and the bound socket at one linearization
+        # point, so an authenticated replacement cannot inherit the prior lease.
+        async with self._session_operation(session_id):
+            async with self._connection_lock:
+                subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
+                for subscription in subscriptions:
+                    principal = subscription.principal
+                    if principal.source != "adapter" or principal.drone_id is None:
+                        continue
+                    last = self._control_heartbeat_last.get(subscription.connection_id)
+                    if last is not None and now - last < interval:
+                        continue
+                    identity = session.registry.active_connection_identity(principal.drone_id)
+                    if identity is None:
+                        continue
+                    connection_epoch, roster_version = identity
+                    sequence = (
+                        self._control_heartbeat_sequence.get(subscription.connection_id, 0) + 1
+                    )
+                    unsigned: dict[str, object] = {
+                        "v": 1,
+                        "t": self.clock(),
+                        "type": "control_heartbeat",
+                        "event_id": self.event_ids(),
+                        "session": session_id,
+                        "source": "relay",
+                        "drone_id": principal.drone_id,
+                        "connection_epoch": connection_epoch,
+                        "roster_version": roster_version,
+                        "seq": sequence,
+                    }
+                    event = {
+                        **unsigned,
+                        "signature": sign_event(unsigned, principal.signing_key),
+                    }
+                    if subscription.enqueue(_Outbound(event)):
+                        self._control_heartbeat_last[subscription.connection_id] = now
+                        self._control_heartbeat_sequence[subscription.connection_id] = sequence
 
     def _fanout_session_done(self, session_id: str, task: asyncio.Task[None]) -> None:
         if self._fanout_session_tasks.get(session_id) is task:
@@ -707,6 +779,7 @@ def create_app(
     clock: Clock | None = None,
     event_ids: EventIdFactory | None = None,
     intent_sink_factory: IntentSinkFactory | None = None,
+    capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
     leave_authorizer_factory: LeaveAuthorizerFactory | None = None,
     authoritative_rooms_factory: AuthoritativeRoomsFactory | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
@@ -721,6 +794,7 @@ def create_app(
             clock=clock,
             event_ids=event_ids,
             intent_sink_factory=intent_sink_factory,
+            capability_profile=capability_profile,
             leave_authorizer_factory=leave_authorizer_factory,
             authoritative_rooms_factory=authoritative_rooms_factory,
         )
@@ -854,9 +928,9 @@ def create_app(
             pass
         except TimeoutError:
             await _close_failed_socket(websocket, code=1013)
-        except AuditLogError:
-            await _close_failed_socket(websocket, code=1011)
         except (RuntimeError, OSError):
+            await _close_failed_socket(websocket, code=1011)
+        except AuditLogError:
             await _close_failed_socket(websocket, code=1011)
         finally:
             if sender is not None:

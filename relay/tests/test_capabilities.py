@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from arbiter.safety import SafetyArbiter
@@ -53,6 +55,41 @@ def test_profile_rejects_unimplemented_intents() -> None:
 
     with pytest.raises(ValueError, match="must not be empty"):
         CapabilityProfile("empty", frozenset())
+
+
+def test_deployment_grounding_derives_altitude_capability_without_widening() -> None:
+    disabled = replace(
+        planning_config(),
+        altitude_step_m=None,
+        altitude_floor_z_m=None,
+        altitude_configuration_id=None,
+        altitude_completion_tolerance_m=None,
+    )
+    without_altitude = CapabilityProfile(
+        "c1_without_altitude",
+        C1_CAPABILITY_PROFILE.enabled_intent_names - {IntentName.ALTITUDE},
+    )
+
+    disabled_planner = DeterministicPlanner(disabled, C1_CAPABILITY_PROFILE)
+    grounded = replace(
+        planning_config(),
+        altitude_step_m=0.5,
+        altitude_floor_z_m=0.0,
+        altitude_configuration_id="capability-test-floor-v1",
+        altitude_completion_tolerance_m=0.05,
+    )
+    grounded_planner = DeterministicPlanner(grounded, C1_CAPABILITY_PROFILE)
+    narrowed_planner = DeterministicPlanner(grounded, without_altitude)
+
+    altitude = make_intent(IntentName.ALTITUDE, selection=(1,), args={"delta": 1})
+    assert disabled_planner.capability_profile.name == "c1_basic_control.no_altitude"
+    assert disabled_planner.capability_profile.enabled_intent_names == (
+        C1_CAPABILITY_PROFILE.enabled_intent_names - {IntentName.ALTITUDE}
+    )
+    assert not disabled_planner.supports(altitude)
+    assert grounded_planner.capability_profile is C1_CAPABILITY_PROFILE
+    assert narrowed_planner.capability_profile is without_altitude
+    assert not narrowed_planner.supports(altitude)
 
 
 def test_profile_normalizes_caller_owned_sets_and_string_members() -> None:
@@ -129,7 +166,16 @@ def test_opaque_sink_requires_an_explicit_capability_contract(tmp_path) -> None:
 
 
 def test_every_advertised_intent_has_a_safe_planner_and_arbiter_path() -> None:
-    planner = DeterministicPlanner(planning_config(), C1_CAPABILITY_PROFILE)
+    planner = DeterministicPlanner(
+        replace(
+            planning_config(),
+            altitude_step_m=0.5,
+            altitude_floor_z_m=0.0,
+            altitude_configuration_id="capability-test-floor-v1",
+            altitude_completion_tolerance_m=0.05,
+        ),
+        C1_CAPABILITY_PROFILE,
+    )
     arbiter = SafetyArbiter(safety_config())
     cases = (
         (
