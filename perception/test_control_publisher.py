@@ -1,13 +1,13 @@
 import itertools
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from perception.control_publisher import (
     ControlPublisher,
     ControlPublisherConfig,
-    _host_boot_id,
     _run_live,
 )
 from relay.control_frames import ControlLocalizationFrame
@@ -16,6 +16,14 @@ from relay.control_localization import (
     ControlLocalizationPins,
     ControlLocalizationProjector,
 )
+
+TEST_BOOT_ID = "test-current-linux-boot"
+
+
+@pytest.fixture
+def current_boot(monkeypatch):
+    """Keep clock-policy tests independent of the machine running pytest."""
+    monkeypatch.setattr("perception.control_publisher._host_boot_id", lambda: TEST_BOOT_ID)
 
 
 class FakeTransport:
@@ -73,7 +81,7 @@ def config(mode="replay"):
     if mode == "live":
         result["drones"][0]["live_capture_clock"] = {
             "source": "process_monotonic",
-            "boot_id": _host_boot_id(),
+            "boot_id": TEST_BOOT_ID,
             "monotonic_reference_s": 10.0,
             "capture_reference_s": 0.0,
         }
@@ -218,7 +226,7 @@ def test_publisher_frame_projects_through_the_signed_diagnostic_transport():
     assert pose.fix_time_ms == 100_895
 
 
-def test_live_authenticates_distinct_source_and_stale_frames_hold_without_replay():
+def test_live_authenticates_distinct_source_and_stale_frames_hold_without_replay(current_boot):
     transport = FakeTransport()
     publisher = ControlPublisher(ControlPublisherConfig.from_mapping(config("live")), transport)
     publisher.bind_live_credentials({"LOCALIZATION_KEY_1": "key"})
@@ -231,7 +239,7 @@ def test_live_authenticates_distinct_source_and_stale_frames_hold_without_replay
     assert len(transport.frames) == 2
 
 
-def test_live_capture_clock_uses_the_calibrated_monotonic_reference_not_record_time():
+def test_live_capture_clock_uses_the_calibrated_monotonic_reference_not_record_time(current_boot):
     transport = FakeTransport()
     publisher = ControlPublisher(ControlPublisherConfig.from_mapping(config("live")), transport)
     publisher.bind_live_credentials({"LOCALIZATION_KEY_1": "key"})
@@ -248,13 +256,26 @@ def test_live_capture_clock_uses_the_calibrated_monotonic_reference_not_record_t
         publisher.publish(1, 999_999)
 
 
-def test_live_rejects_a_capture_clock_from_another_process_boot():
+def test_live_rejects_a_capture_clock_from_another_process_boot(current_boot):
     raw = config("live")
     raw["drones"][0]["live_capture_clock"]["boot_id"] = "previous-process-boot"
     publisher = ControlPublisher(ControlPublisherConfig.from_mapping(raw), FakeTransport())
 
     with pytest.raises(ValueError, match="boot ID"):
         publisher.bind_live_credentials({"LOCALIZATION_KEY_1": "key"})
+
+
+def test_live_still_requires_the_linux_boot_id_when_the_host_file_is_unavailable(monkeypatch):
+    def missing_boot_file(path, **_kwargs):
+        assert path == Path("/proc/sys/kernel/random/boot_id")
+        raise FileNotFoundError("boot ID unavailable")
+
+    monkeypatch.setattr(Path, "read_text", missing_boot_file)
+    transport = FakeTransport()
+    publisher = ControlPublisher(ControlPublisherConfig.from_mapping(config("live")), transport)
+    with pytest.raises(ValueError, match="current Linux boot ID"):
+        publisher.bind_live_credentials({"LOCALIZATION_KEY_1": "key"})
+    assert transport.authenticated == []
 
 
 def test_live_requires_a_measured_capture_clock_with_the_mapping_reference():
@@ -269,7 +290,7 @@ def test_live_requires_a_measured_capture_clock_with_the_mapping_reference():
         ControlPublisherConfig.from_mapping(mismatched)
 
 
-def test_live_loop_publishes_hold_then_land_while_input_stalls():
+def test_live_loop_publishes_hold_then_land_while_input_stalls(current_boot):
     class StalledLines:
         def __init__(self) -> None:
             self.release = threading.Event()
@@ -300,7 +321,7 @@ def test_live_loop_publishes_hold_then_land_while_input_stalls():
     assert [frame["localization_status"] for frame in transport.frames[:2]] == ["hold", "land"]
 
 
-def test_live_loop_propagates_invalid_json_without_turning_it_into_a_hold():
+def test_live_loop_propagates_invalid_json_without_turning_it_into_a_hold(current_boot):
     transport = FakeTransport()
     publisher = ControlPublisher(ControlPublisherConfig.from_mapping(config("live")), transport)
     publisher.bind_live_credentials({"LOCALIZATION_KEY_1": "key"})
