@@ -26,7 +26,7 @@ from relay.search_detection import (
 )
 from relay.search_runtime import SearchMissionPreview, SearchRuntime, SearchRuntimeConfig
 from relay.settings import AdapterBackend, RelaySettings
-from relay.tests.conftest import CONSOLE_KEY
+from relay.tests.conftest import CONSOLE_KEY, SESSION, EventIds, MutableClock
 from tests.autonomy_fixtures import make_intent, planning_config, safety_config
 
 
@@ -245,3 +245,174 @@ def test_detection_factory_follows_the_composed_app_lifespan(tmp_path) -> None:
         assert factory._started
 
     assert factory._closed
+
+
+def test_search_catalog_and_rejected_searches_reach_terminal_lifecycle(
+    tmp_path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    clock.value = 100_000
+    search = _search()
+    source = DetectionSourceConfig(
+        1,
+        "camera-1",
+        "rtsp://camera.example/drone1",
+        Path("model.onnx"),
+        "a" * 64,
+        _camera(),
+    )
+    config = AutonomyConfig(
+        planning=planning_config(),
+        safety=safety_config(),
+        navigation_deployment=NavigationDeployment(
+            search.navigation, 1, "control-store", "synthetic", "navigation-config"
+        ),
+        search_runtime=search,
+        search_detection=SearchDetectionConfig({1: source}),
+    )
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        log_dir=tmp_path,
+        adapter_backend=AdapterBackend.REMOTE,
+        intent_max_age_ms=35_000,
+    )
+    app, composition = create_autonomy_app(settings, config, clock=clock, event_ids=event_ids)
+
+    def payload(intent_id: str, timestamp: int) -> dict[str, object]:
+        return {
+            "v": 1,
+            "t": timestamp,
+            "type": "intent",
+            "intent_id": intent_id,
+            "retry_of": None,
+            "source": "console",
+            "session": SESSION,
+            "name": "search",
+            "args": {"zone_id": "atrium", "target_class": "backpack"},
+            "selection": [1],
+            "mode": "indoor",
+            "confirm": True,
+        }
+
+    def fresh_snapshot():
+        snapshot = _snapshot()
+        return replace(
+            snapshot,
+            now_ms=clock.value,
+            aircraft={
+                drone_id: replace(
+                    aircraft,
+                    link_last_seen_ms=clock.value,
+                    position_last_seen_ms=clock.value,
+                )
+                for drone_id, aircraft in snapshot.aircraft.items()
+            },
+        )
+
+    def terminal(socket, intent_id: str) -> dict[str, object]:
+        for _ in range(20):
+            event = socket.receive_json()
+            if (
+                event["type"] in {"acknowledgement", "refusal"}
+                and event.get("intent_id") == intent_id
+                and event.get("source") == "autonomy"
+                and event.get("status") == "failed"
+            ):
+                return event
+        raise AssertionError(f"missing terminal refusal for {intent_id}")
+
+    headers = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
+    try:
+        with TestClient(app) as client:
+            catalog = client.get(f"/session/{SESSION}/search/catalog", headers=headers)
+            assert catalog.json() == {
+                "session": SESSION,
+                "target_classes": list(DEFAULT_TARGET_LABELS),
+                "zones": ["atrium"],
+            }
+            with client.websocket_connect(f"/ws/{SESSION}") as console:
+                console.send_json(
+                    {"v": 1, "type": "auth", "source": "console", "token": CONSOLE_KEY.decode()}
+                )
+                assert console.receive_json()["type"] == "auth.accepted"
+                assert console.receive_json()["type"] == "state"
+
+                console.send_json(payload("missing-search-preview", clock.value))
+                missing = terminal(console, "missing-search-preview")
+
+                expired_intent = make_intent(
+                    IntentName.SEARCH,
+                    selection=(1,),
+                    args={"zone_id": "atrium", "target_class": "backpack"},
+                    confirm=True,
+                    intent_id="expired-search-preview",
+                    t=clock.value,
+                )
+                assert isinstance(search.prepare(expired_intent, _snapshot()), SearchMissionPreview)
+                clock.advance(30_001)
+                console.send_json(payload("expired-search-preview", expired_intent.t))
+                expired = terminal(console, "expired-search-preview")
+
+                held_intent = make_intent(
+                    IntentName.SEARCH,
+                    selection=(1,),
+                    args={"zone_id": "atrium", "target_class": "backpack"},
+                    confirm=True,
+                    intent_id="held-search-preview",
+                    t=clock.value,
+                )
+                assert isinstance(
+                    search.prepare(held_intent, fresh_snapshot()),
+                    SearchMissionPreview,
+                )
+                console.send_json(
+                    {
+                        "v": 1,
+                        "t": clock.value,
+                        "type": "intent",
+                        "intent_id": "hold-search-preview",
+                        "retry_of": None,
+                        "source": "console",
+                        "session": SESSION,
+                        "name": "hold",
+                        "args": {},
+                        "selection": [],
+                        "mode": "indoor",
+                        "confirm": False,
+                    }
+                )
+                for _ in range(20):
+                    event = console.receive_json()
+                    if (
+                        event.get("intent_id") == "hold-search-preview"
+                        and event["type"] == "acknowledgement"
+                    ):
+                        break
+                else:
+                    raise AssertionError("hold was not accepted")
+                console.send_json(payload("held-search-preview", held_intent.t))
+                held = terminal(console, "held-search-preview")
+
+                status_intent = make_intent(
+                    IntentName.SEARCH,
+                    selection=(1,),
+                    args={"zone_id": "atrium", "target_class": "backpack"},
+                    confirm=True,
+                    intent_id="search-status-session",
+                    t=clock.value,
+                )
+                assert isinstance(
+                    search.prepare(status_intent, fresh_snapshot()),
+                    SearchMissionPreview,
+                )
+                status = client.get(
+                    f"/session/{SESSION}/search/search-status-session", headers=headers
+                )
+    finally:
+        composition.close()
+
+    assert [event["reason"] for event in (missing, expired, held)] == [
+        "invalid_plan",
+        "invalid_plan",
+        "invalid_plan",
+    ]
+    assert status.json()["session"] == SESSION
