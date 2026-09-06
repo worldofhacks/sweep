@@ -734,3 +734,35 @@ def test_localization_config_rejects_duplicate_fields(field: str) -> None:
     raw = raw.replace(marker, f'"{field}": null, {marker}', 1)
     with pytest.raises(SettingsError, match="unique fields"):
         AutonomyConfig.from_env(_env_example() | {"SWEEP_CONTROL_LOCALIZATION_JSON": raw})
+
+
+def test_presence_watchdog_preserves_existing_deployment_configuration() -> None:
+    environment = _env_example()
+    environment.pop("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", None)
+    assert AutonomyConfig.from_env(environment).presence_watchdog.action == "hold"
+
+
+def test_authenticated_presence_refreshes_deadline_without_emitting_a_command(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    config = replace(_config(), safety=replace(safety_config(), operator_timeout_ms=100))
+    app, composition = create_autonomy_app(_settings(tmp_path), config, clock=clock)
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            session = runtime.session(SESSION)
+            console = Principal(source="console", drone_id=None, signing_key=CONSOLE_KEY)
+            adapter = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+            frame = {"v": 1, "type": "operator_presence"}
+            assert session.process_frame(frame, console) == []
+            clock.advance(99)
+            assert not any(e["type"] == "safety_action" for e in runtime.periodic_events(session))
+            assert session.process_frame(frame, console) == []
+            clock.advance(99)
+            assert not any(e["type"] == "safety_action" for e in runtime.periodic_events(session))
+            forbidden = session.process_frame(frame, adapter)
+            assert forbidden[0]["reason"] == "invalid_operator_presence"
+            clock.advance(2)
+            assert any(e["type"] == "safety_action" for e in runtime.periodic_events(session))
+    finally:
+        composition.close()

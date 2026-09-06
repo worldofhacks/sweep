@@ -148,7 +148,7 @@ class AutonomyConfig:
             ),
             presence_watchdog=_config_from_json(
                 PresenceWatchdogConfig,
-                values.get("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", ""),
+                values.get("SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON", '{"action":"hold"}'),
                 "SWEEP_OPERATOR_PRESENCE_WATCHDOG_JSON",
             ),
         )
@@ -521,6 +521,12 @@ class AutonomySession:
             capture_readiness=capture_readiness,
         )
 
+    def record_operator_presence(self, now_ms: int) -> None:
+        with self._lock:
+            previous = self._operator_last_seen_ms
+            self._operator_last_seen_ms = now_ms if previous is None else max(previous, now_ms)
+            self._presence_expiry_seen_ms = None
+
     def periodic_events(self, _relay_event: Mapping[str, object]) -> list[dict[str, object]]:
         """Dispatch one configured stop when the last accepted operator action expires."""
         runtime = self._composition.runtime_if_bound()
@@ -548,9 +554,7 @@ class AutonomySession:
                 v=1,
                 t=now,
                 type="intent",
-                intent_id=(
-                    f"safety:operator-presence:{last_seen}:{self._presence_action_serial}"
-                ),
+                intent_id=(f"safety:operator-presence:{last_seen}:{self._presence_action_serial}"),
                 retry_of=None,
                 source="safety",
                 session=self.session_id,
