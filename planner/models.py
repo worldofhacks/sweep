@@ -100,6 +100,21 @@ class FlightState(StrEnum):
     EMERGENCY = "emergency"
 
 
+class DeviceClass(StrEnum):
+    AIRCRAFT = "aircraft"
+    GROUND_VEHICLE = "ground_vehicle"
+
+
+class DriveState(StrEnum):
+    """The telemetry ``state`` vocabulary a ground vehicle reports instead of ``FlightState``."""
+
+    DOCKED = "docked"
+    IDLE = "idle"
+    MOVING = "moving"
+    STOPPED = "stopped"
+    FAULT = "fault"
+
+
 class LossBehavior(StrEnum):
     HOLD = "hold"
     FAILSAFE = "failsafe"
