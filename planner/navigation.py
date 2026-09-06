@@ -5,6 +5,7 @@ from __future__ import annotations
 from heapq import heappop, heappush
 from math import dist
 
+from planner.navigation_acceptance import NavigationDispatchAcceptance
 from planner.navigation_artifacts import NavigationArtifact
 from planner.navigation_contracts import (
     EPS,
@@ -54,6 +55,7 @@ __all__ = [
     "GridLevel",
     "MotionConfig",
     "NavigationArtifact",
+    "NavigationDispatchAcceptance",
     "NavigationEvidence",
     "NavigationLiveState",
     "NavigationPermission",
@@ -181,6 +183,7 @@ class NavigationPlanner:
             tuple(route.arrival_slot for route in routes),
             routes,
             tuple(drone.drone_id for drone in drones),
+            artifact.semantic_sha256,
         )
 
     def revalidate(
@@ -191,6 +194,8 @@ class NavigationPlanner:
         route_index: int,
         segment_index: int,
         position_tolerance_m: float,
+        *,
+        acceptance: NavigationDispatchAcceptance | None = None,
     ) -> NavigationRefusal | None:
         """Revalidate exact frozen inputs; this preview slice never authorizes dispatch."""
         if (
@@ -206,6 +211,7 @@ class NavigationPlanner:
             artifact.map_pin != plan.map_pin
             or artifact.geometry_pin != plan.geometry_pin
             or artifact.navigation_pin != plan.navigation_pin
+            or artifact.semantic_sha256 != plan.artifact_sha256
             or artifact.evidence != plan.evidence
         ):
             return NavigationRefusal(
@@ -322,10 +328,17 @@ class NavigationPlanner:
                     "remaining_route_obstructed",
                     "remaining route conflicts with stationary aircraft",
                 )
-        return NavigationRefusal(
-            "artifact_not_dispatchable",
-            "preview is blocked by: " + ", ".join(plan.evidence.blocking_gaps),
-        )
+        if acceptance is None:
+            return NavigationRefusal(
+                "artifact_not_dispatchable",
+                "preview is blocked by: " + ", ".join(plan.evidence.blocking_gaps),
+            )
+        if not acceptance.accept(plan, artifact):
+            return NavigationRefusal(
+                "dispatch_acceptance_invalid",
+                "runtime dispatch acceptance does not match the frozen navigation plan",
+            )
+        return None
 
     def _assign_routes(
         self,

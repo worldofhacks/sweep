@@ -171,6 +171,83 @@ class NavigationArtifact:
             ):
                 raise ValueError("arrival slot has no free validated altitude band")
 
+    @property
+    def semantic_sha256(self) -> str:
+        payload = {
+            "map_pin": (self.map_pin.version, self.map_pin.content_sha256),
+            "geometry_pin": (self.geometry_pin.version, self.geometry_pin.content_sha256),
+            "evidence": (
+                self.evidence.geometry_status,
+                self.evidence.evidence_kind,
+                self.evidence.flight_approved,
+                self.evidence.camera_visibility_verified,
+                self.evidence.blocking_gaps,
+            ),
+            "grid_clearance_m": self.grid_clearance_m,
+            "geofence": (
+                self.geofence_polygon_xy,
+                self.geofence_z_min_m,
+                self.geofence_z_max_m,
+            ),
+            "grids": tuple(
+                (
+                    grid.floor_id,
+                    grid.z_m,
+                    grid.origin_xy_m,
+                    grid.cell_m,
+                    grid.width,
+                    grid.height,
+                    tuple(sorted(grid.blocked_cells)),
+                )
+                for grid in self.grids
+            ),
+            "zones": tuple(
+                (
+                    zone.zone_id,
+                    zone.floor_id,
+                    zone.owner_approved,
+                    zone.polygon_xy,
+                    zone.z_min_m,
+                    zone.z_max_m,
+                    tuple(
+                        (
+                            slot.slot_id,
+                            slot.zone_id,
+                            slot.pose.x_m,
+                            slot.pose.y_m,
+                            slot.pose.z_m,
+                            slot.pose.floor_id,
+                            slot.radius_m,
+                            slot.half_height_m,
+                        )
+                        for slot in zone.arrival_slots
+                    ),
+                    zone.aliases,
+                )
+                for zone in self.zones
+            ),
+            "connectors": tuple(
+                (
+                    connector.connector_id,
+                    connector.from_floor_id,
+                    connector.to_floor_id,
+                    connector.from_pose.x_m,
+                    connector.from_pose.y_m,
+                    connector.from_pose.z_m,
+                    connector.from_pose.floor_id,
+                    connector.to_pose.x_m,
+                    connector.to_pose.y_m,
+                    connector.to_pose.z_m,
+                    connector.to_pose.floor_id,
+                    connector.enabled,
+                )
+                for connector in self.connectors
+            ),
+        }
+        return sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest()
+
     @classmethod
     def from_geometry_directory(
         cls,
