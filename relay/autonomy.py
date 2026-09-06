@@ -1000,7 +1000,8 @@ class AutonomySession:
         without creating a 10 Hz retry loop.
         """
         if result.refusal is None or result.refusal.reason not in {
-            RefusalReason.STALE_ROSTER, RefusalReason.STALE_CONNECTION_EPOCH
+            RefusalReason.STALE_ROSTER,
+            RefusalReason.STALE_CONNECTION_EPOCH,
         }:
             return
         if job is self._position_hold_job:

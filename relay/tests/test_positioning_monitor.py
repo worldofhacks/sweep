@@ -140,7 +140,11 @@ def test_periodic_loss_holds_the_ground_fleet_once_without_changing_operator_sta
     tmp_path, clock, event_ids, monkeypatch
 ):
     with monitor_stack(tmp_path, clock, event_ids, monkeypatch) as (
-        runtime, session, autonomy, devices, reports
+        runtime,
+        session,
+        autonomy,
+        devices,
+        reports,
     ):
         _ground_evidence(session, clock)
 
@@ -166,7 +170,11 @@ def test_unarmed_idle_robots_do_not_trigger_monitor_but_reported_motion_does(
     tmp_path, clock, event_ids, monkeypatch
 ):
     with monitor_stack(tmp_path, clock, event_ids, monkeypatch, armed=False) as (
-        runtime, session, _autonomy, devices, reports
+        runtime,
+        session,
+        _autonomy,
+        devices,
+        reports,
     ):
         _ground_evidence(session, clock)
         runtime.periodic_events(session)
@@ -182,7 +190,11 @@ def test_fresh_bad_quality_does_not_restart_dwell_and_land_only_reaches_aircraft
     tmp_path, clock, event_ids, monkeypatch
 ):
     with monitor_stack(tmp_path, clock, event_ids, monkeypatch, aircraft=True) as (
-        runtime, session, _autonomy, devices, reports
+        runtime,
+        session,
+        _autonomy,
+        devices,
+        reports,
     ):
         _ground_evidence(session, clock)
         runtime.periodic_events(session)
@@ -193,10 +205,13 @@ def test_fresh_bad_quality_does_not_restart_dwell_and_land_only_reaches_aircraft
             _ground_evidence(session, clock)
             for drone_id in (12, 13):
                 _ground_evidence(session, clock, drone_id, quality=0.6)
-            assert session.process_telemetry(
-                telemetry_payload(event_id=f"aircraft-{elapsed}", timestamp=clock.value),
-                Principal("adapter", 1, ADAPTER_KEY),
-            )[0]["type"] == "telemetry"
+            assert (
+                session.process_telemetry(
+                    telemetry_payload(event_id=f"aircraft-{elapsed}", timestamp=clock.value),
+                    Principal("adapter", 1, ADAPTER_KEY),
+                )[0]["type"]
+                == "telemetry"
+            )
             runtime.periodic_events(session)
 
         landing = reports.get(timeout=3)
@@ -212,7 +227,11 @@ def test_recovered_evidence_starts_a_new_debounced_loss_episode(
     tmp_path, clock, event_ids, monkeypatch
 ):
     with monitor_stack(tmp_path, clock, event_ids, monkeypatch) as (
-        runtime, session, _autonomy, _devices, reports
+        runtime,
+        session,
+        _autonomy,
+        _devices,
+        reports,
     ):
         _ground_evidence(session, clock)
         runtime.periodic_events(session)
@@ -230,7 +249,11 @@ def test_an_unresponsive_robot_does_not_prevent_other_robots_from_being_stopped(
     tmp_path, clock, event_ids, monkeypatch
 ):
     with monitor_stack(tmp_path, clock, event_ids, monkeypatch) as (
-        runtime, session, _autonomy, devices, reports
+        runtime,
+        session,
+        _autonomy,
+        devices,
+        reports,
     ):
         devices.timeouts = {11}
         _ground_evidence(session, clock)
@@ -249,7 +272,11 @@ def test_telemetry_expiry_during_planning_retries_hold_against_the_new_roster(
     tmp_path, clock, event_ids, monkeypatch
 ):
     with monitor_stack(tmp_path, clock, event_ids, monkeypatch) as (
-        runtime, session, autonomy, devices, reports
+        runtime,
+        session,
+        autonomy,
+        devices,
+        reports,
     ):
         original = autonomy.planner.fleet_position_loss_plan
         expired = False
@@ -282,7 +309,11 @@ def test_late_hold_completions_resume_all_robots_through_the_session_ledger(
     tmp_path, clock, event_ids, monkeypatch
 ):
     with monitor_stack(tmp_path, clock, event_ids, monkeypatch) as (
-        runtime, session, autonomy, devices, reports
+        runtime,
+        session,
+        autonomy,
+        devices,
+        reports,
     ):
         devices.pending = {11, 12}
         _ground_evidence(session, clock)
@@ -317,7 +348,11 @@ def test_already_expired_loss_waits_for_delayed_fleet_hold_before_landing(
     tmp_path, clock, event_ids, monkeypatch
 ):
     with monitor_stack(tmp_path, clock, event_ids, monkeypatch, aircraft=True) as (
-        runtime, session, autonomy, devices, reports
+        runtime,
+        session,
+        autonomy,
+        devices,
+        reports,
     ):
         devices.pending = {1}
         clock.value += 5_000
