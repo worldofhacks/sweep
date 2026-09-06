@@ -594,8 +594,8 @@ def test_complete_durable_batch_remains_replayable_after_close_failure(
     reopened = SessionAuditLog(relay_session.audit_log.root, SESSION)
     replay = reopened.replay()
     assert [record["seq"] for record in replay] == list(range(1, len(replay) + 1))
-    durable_events = [record["event"] for record in replay[-2:]]
-    assert [event["type"] for event in durable_events] == ["telemetry", "membership"]
+    durable_events = [record["event"] for record in replay[-3:]]
+    assert [event["type"] for event in durable_events] == ["telemetry", "membership", "state"]
     assert durable_events[0]["event_id"] == "telemetry-recovery"
     with pytest.raises(AuditLogError, match="session is unusable"):
         relay_session.current_state()
@@ -806,7 +806,7 @@ def test_regressive_membership_timestamp_is_refused(
     assert result[0]["reason"] == "out_of_order_event"
 
 
-def test_telemetry_remains_live_state_but_replays_as_canonical_raw_evidence(
+def test_telemetry_preserves_raw_evidence_and_audits_material_state_changes(
     relay_session: RelaySession, adapter_principal: Principal
 ) -> None:
     _join(relay_session, adapter_principal)
@@ -824,8 +824,15 @@ def test_telemetry_remains_live_state_but_replays_as_canonical_raw_evidence(
     replay = relay_session.replay()["events"]
     assert [record["seq"] for record in replay] == list(range(1, len(replay) + 1))
     persisted = [record["event"] for record in replay]
-    assert [event["type"] for event in persisted] == ["membership", "state", "telemetry"]
-    assert persisted[-1] == events[0]
+    assert [event["type"] for event in persisted] == ["membership", "state", "telemetry", "state"]
+    assert persisted[-2:] == events
+
+    repeated = relay_session.process_telemetry(
+        telemetry_payload(event_id="telemetry-2"), adapter_principal
+    )
+    assert [event["type"] for event in repeated] == ["telemetry", "state"]
+    later = relay_session.replay()["events"]
+    assert [record["event"] for record in later[len(replay) :]] == [repeated[0]]
 
 
 def test_reopened_audit_keeps_latest_telemetry_pose_and_last_seen_evidence(
