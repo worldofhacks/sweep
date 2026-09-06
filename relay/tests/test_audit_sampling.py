@@ -516,8 +516,8 @@ def test_material_state_projection_fails_closed_for_unbounded_or_non_json_extens
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
     state = registry.state_event(session=SESSION, t=1_000, event_id="state-1")
 
-    state["captures"] = []
-    with pytest.raises(AuditLogError, match="bounded audit projectors: captures"):
+    state["unbounded_extension"] = []
+    with pytest.raises(AuditLogError, match="bounded audit projectors: unbounded_extension"):
         _material_state_projection(state)
 
     state.pop("captures")
