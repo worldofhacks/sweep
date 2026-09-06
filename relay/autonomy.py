@@ -108,6 +108,17 @@ _PHYSICALLY_UNPOWERED_STATES = {
 _PUBLISH_TIMEOUT_S = 30.0
 
 
+def device_armed(device_class: DeviceClass, telemetry_state: str) -> bool:
+    """True when a device's motors or wheels are enabled, read from its telemetry state.
+
+    Telemetry v1 carries no separate motor or wheel-enable field for either class, so the
+    state vocabulary is the only evidence: an aircraft is unpowered while ``disarmed`` or
+    ``landed``, a ground vehicle while ``docked`` or in ``fault``. Every composition that
+    enriches a relay projection reads this one rule.
+    """
+    return telemetry_state not in _PHYSICALLY_UNPOWERED_STATES[device_class]
+
+
 class PlanPreempted(BaseException):
     """Raised inside a cancelled plan's dispatch so it sends nothing further.
 
@@ -242,7 +253,7 @@ def relay_snapshot(
         readiness = None if capture_readiness is None else capture_readiness(drone_id)
         enrichment[drone_id] = RelayAircraftSafetyEnrichment(
             drone_id=drone_id,
-            armed=telemetry["state"] not in _PHYSICALLY_UNPOWERED_STATES[device_class],
+            armed=device_armed(device_class, str(telemetry["state"])),
             physical_rc_available=drone.get("rc_safety_operator_present") is True,
             storage_remaining_bytes=(
                 storage

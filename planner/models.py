@@ -377,7 +377,8 @@ class AircraftState:
         """The telemetry ``state`` value this device reports, from either class vocabulary."""
         if self.flight_state is not None:
             return self.flight_state.value
-        assert self.drive_state is not None
+        if self.drive_state is None:
+            raise ValueError(f"device {self.drone_id} carries no telemetry state")
         return self.drive_state.value
 
     @classmethod

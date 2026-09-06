@@ -18,6 +18,7 @@ from arbiter.safety import SafetyArbiter, SafetyConfig
 from planner.controller import AutonomyController
 from planner.models import (
     AircraftState,
+    DeviceClass,
     FleetSnapshot,
     FlightState,
     Geofence,
@@ -31,8 +32,60 @@ from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.relay_bridge import AutonomyRelayBridge
 from relay.app import create_app
 from relay.auth import Principal, sign_event
+from relay.autonomy import device_armed
 from relay.session import Clock, EventIdFactory, RelaySession
 from relay.settings import RelaySettings
+
+_DEVICE_CLASS_VALUES = frozenset(member.value for member in DeviceClass)
+
+
+def _unsimulated_enrichment(
+    state: Mapping[str, object],
+    simulated: Mapping[int, RelayAircraftSafetyEnrichment],
+) -> dict[int, RelayAircraftSafetyEnrichment]:
+    """Enrich every projected device the simulator has no model for.
+
+    The sim backend flies aircraft; a ground vehicle joined to a sim session is admitted,
+    projected, and part of the session's snapshot all the same. A snapshot cannot be built
+    at all while one projected device lacks safety enrichment, so without this entry every
+    intent in the session fails, including aircraft-only ones. With it only the commands
+    aimed at the unsimulated device fail, and they fail closed: the sim flight adapter has
+    no model for that device, so its command raises and becomes a typed failure and a
+    safety hold. Camera readiness and storage are false and zero because the sim holds no
+    camera for it, and the last-known fallbacks stay empty because the relay projection
+    carries that device's live telemetry.
+    """
+    drones = state.get("drones")
+    if not isinstance(drones, list):
+        return {}
+    entries: dict[int, RelayAircraftSafetyEnrichment] = {}
+    for drone in drones:
+        if not isinstance(drone, Mapping):
+            continue
+        drone_id = drone.get("drone_id")
+        if (
+            not isinstance(drone_id, int)
+            or isinstance(drone_id, bool)
+            or drone_id <= 0
+            or drone_id in simulated
+        ):
+            continue
+        raw_class = drone.get("device_class")
+        if raw_class is not None and raw_class not in _DEVICE_CLASS_VALUES:
+            continue
+        device_class = DeviceClass.AIRCRAFT if raw_class is None else DeviceClass(raw_class)
+        telemetry = drone.get("telemetry")
+        telemetry_state = telemetry.get("state") if isinstance(telemetry, Mapping) else None
+        entries[drone_id] = RelayAircraftSafetyEnrichment(
+            drone_id=drone_id,
+            armed=isinstance(telemetry_state, str) and device_armed(device_class, telemetry_state),
+            physical_rc_available=drone.get("rc_safety_operator_present") is True,
+            storage_remaining_bytes=0,
+            camera_ready=False,
+            active_task_id=None,
+            position_loss_since_ms=None,
+        )
+    return entries
 
 
 class SimBridgeFactory:
@@ -78,29 +131,30 @@ class SimBridgeFactory:
 
         def enrichment(state: Mapping[str, object]) -> RelaySnapshotEnrichment:
             now = int(state["t"])
+            simulated = {
+                drone_id: RelayAircraftSafetyEnrichment(
+                    drone_id=drone_id,
+                    armed=aircraft.armed,
+                    physical_rc_available=True,
+                    storage_remaining_bytes=self.camera.storage_remaining_bytes,
+                    camera_ready=True,
+                    active_task_id=None,
+                    position_loss_since_ms=None,
+                    last_known_pose=aircraft.pose,
+                    last_known_home=aircraft.home,
+                    last_known_flight_state=aircraft.flight_state.value,
+                    last_known_battery=aircraft.battery,
+                    last_known_link_quality=aircraft.link_quality,
+                    last_known_position_quality=aircraft.position_quality,
+                    last_link_seen_ms=now,
+                    last_position_seen_ms=now,
+                )
+                for drone_id, aircraft in flight.aircraft.items()
+            }
             return RelaySnapshotEnrichment(
                 operator_present=True,
                 operator_last_seen_ms=now,
-                aircraft={
-                    drone_id: RelayAircraftSafetyEnrichment(
-                        drone_id=drone_id,
-                        armed=aircraft.armed,
-                        physical_rc_available=True,
-                        storage_remaining_bytes=self.camera.storage_remaining_bytes,
-                        camera_ready=True,
-                        active_task_id=None,
-                        position_loss_since_ms=None,
-                        last_known_pose=aircraft.pose,
-                        last_known_home=aircraft.home,
-                        last_known_flight_state=aircraft.flight_state.value,
-                        last_known_battery=aircraft.battery,
-                        last_known_link_quality=aircraft.link_quality,
-                        last_known_position_quality=aircraft.position_quality,
-                        last_link_seen_ms=now,
-                        last_position_seen_ms=now,
-                    )
-                    for drone_id, aircraft in flight.aircraft.items()
-                },
+                aircraft={**simulated, **_unsimulated_enrichment(state, simulated)},
             )
 
         def synchronize_connection_epoch(drone_id: int, connection_epoch: int) -> None:

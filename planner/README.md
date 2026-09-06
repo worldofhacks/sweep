@@ -66,6 +66,14 @@ ground vehicles on the floor, so a ground vehicle is never assigned an aircraft'
 or altitude; a class with one selected device holds its position. `translate` in the
 `aircraft_relative` frame rotates the step by the ground vehicle's own heading.
 
+Ground formations are a recorded conflict, not a settled decision. The pinned
+device-class contract has formations work for ground vehicles on the floor plane, and
+the per-class expansion above implements exactly that, while the #239 epic lists ground
+formations among the fixed demo's non-goals. The planner therefore expands them and the
+arbiter checks them, but a fixed-demo session should keep a multi-robot selection out of
+`formation_set` and `formation_next` until the epic re-opens them; #249 owns the
+decision.
+
 Fleet safety plans follow `mobile`: an internal hold, the position-loss hold, and the
 adapter-failure hold cover every mobile device of either class, while the following
 `land` covers airborne aircraft only, because a ground vehicle has no land operation
