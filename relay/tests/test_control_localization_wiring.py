@@ -62,6 +62,30 @@ def test_localization_frames_are_not_fanned_out_to_console_subscribers(tmp_path)
     asyncio.run(exercise())
 
 
+def test_localization_producer_receives_its_own_accepted_frame(tmp_path) -> None:
+    async def exercise() -> None:
+        runtime = RelayRuntime(
+            RelaySettings(relay_token=CONSOLE_KEY, adapter_keys={1: ADAPTER_KEY}, log_dir=tmp_path)
+        )
+        runtime.session(SESSION)
+        subscription = await runtime.subscribe(
+            SESSION, Principal("localization", 1, LOCALIZATION_KEY)
+        )
+        event = {
+            "v": 1,
+            "type": "control_localization",
+            "event_id": "localization-1",
+            "session": SESSION,
+            "drone_id": 1,
+        }
+
+        await runtime.publish(SESSION, [event])
+
+        assert subscription.queue.get_nowait().event == event
+
+    asyncio.run(exercise())
+
+
 def test_signed_localization_is_applied_to_the_session_snapshot(tmp_path) -> None:
     clock = MutableClock(value=101_000)
     session = RelaySession(
