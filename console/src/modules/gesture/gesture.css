@@ -218,6 +218,7 @@
 .gs-preview p { margin: 4px 0 0; }
 .gs-preview .is-blocked { color: var(--color-warn); }
 .gs-log-empty { margin: 0; font-size: var(--text-12-5); color: var(--color-ink-3); }
+.gs-log-scroll { max-height: min(48vh, 520px); overflow: auto; margin-top: 8px; padding-right: 4px; }
 .gs-log { margin: 0; padding: 0; list-style: none; }
 .gs-log li { padding: 8px 0; border-bottom: 1px solid var(--color-rule-inner); }
 .gs-log-head { margin: 0; display: flex; flex-wrap: wrap; gap: 3px 10px; align-items: baseline; }
@@ -225,7 +226,7 @@
 .gs-log-label.is-blocked { color: var(--color-warn); }
 .gs-log-time { font-family: var(--font-mono); font-size: var(--text-11); color: var(--color-ink-3); font-variant-numeric: tabular-nums; }
 .gs-log-text { margin: 2px 0 0; font-size: var(--text-12-5); color: var(--color-ink-2); }
-.gs-recording { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; font-size: var(--text-11-5); color: var(--color-ink-3); }
+.gs-recording { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: var(--text-11-5); color: var(--color-ink-3); }
 .gs-recording div { display: flex; gap: 12px; }
 
 /* Vocabulary */

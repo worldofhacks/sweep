@@ -55,3 +55,9 @@ component.
 The bounded COCO detector library and its event payloads are documented in
 [OBJECT_DETECTION.md](OBJECT_DETECTION.md). Relay logging, attention promotion, confirmation,
 pose projection, and real-aircraft camera integration are not wired by that library slice.
+
+`control_publisher.ControlPublisher` is the narrow JSONL/live adapter around that
+fuser. It uses the canonical relay wire encoder and signer; it has no planner,
+arbiter, telemetry, control-pose, or flight-dispatch surface. See
+[`docs/CONTROL_LOCALIZATION_PUBLISHER.md`](../docs/CONTROL_LOCALIZATION_PUBLISHER.md)
+for its exact input, audit, epoch, and replay boundaries.
