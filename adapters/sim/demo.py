@@ -33,8 +33,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
+from adapters.sim.navigation_demo import navigation_demo_runtime
 from arbiter.safety import SafetyConfig
 from planner.models import Geofence
+from planner.navigation_deployment import NavigationDeployment
 from planner.planner import PlanningConfig
 from relay.autonomy import AutonomyComposition, AutonomyConfig, create_autonomy_app
 from relay.settings import AdapterBackend, RelaySettings
@@ -57,6 +59,7 @@ class DemoConfig:
     log_dir: Path | None = None
     console_dist: Path | None = None
     console_origins: tuple[str, ...] = ()
+    navigation_demo: bool = False
 
     def __post_init__(self) -> None:
         if type(self.count) is not int or not 1 <= self.count <= 4:
@@ -76,7 +79,7 @@ class DemoConfig:
             raise ValueError("console_dist must contain a built console index.html")
 
 
-def demo_autonomy_config() -> AutonomyConfig:
+def demo_autonomy_config(*, navigation_demo: bool = False) -> AutonomyConfig:
     """Explicit kinematic-demo values; these are not hardware calibration."""
     return AutonomyConfig(
         planning=PlanningConfig(
@@ -113,6 +116,17 @@ def demo_autonomy_config() -> AutonomyConfig:
             positioning_loss_hold_ms=3_000,
             motion_conflict_window_ms=500,
         ),
+        navigation_deployment=(
+            NavigationDeployment(
+                navigation_demo_runtime(),
+                4,
+                "isolated-demo-control",
+                "synthetic",
+                "demo-navigation",
+            )
+            if navigation_demo
+            else None
+        ),
     )
 
 
@@ -131,7 +145,9 @@ class FleetDemo:
         configure_app: Callable[[FastAPI, AutonomyComposition], None] | None = None,
     ) -> None:
         self.config = config or DemoConfig()
-        self.autonomy_config = autonomy_config or demo_autonomy_config()
+        self.autonomy_config = autonomy_config or demo_autonomy_config(
+            navigation_demo=self.config.navigation_demo
+        )
         self._configure_app = configure_app
         self.log_dir = self.config.log_dir or Path(tempfile.mkdtemp(prefix="sweep-fleet-demo-"))
         self.token = secrets.token_urlsafe(32)
@@ -222,10 +238,17 @@ class FleetDemo:
                 drone_id=drone_id,
                 token=self._keys[drone_id],
                 adapter_id=f"isolated-demo-node-{drone_id}",
-                home=(float((drone_id - 1) * 2), 0.0, 0.0),
+                home=self._home(drone_id),
                 telemetry_hz=5.0,
             )
         )
+
+    def _home(self, drone_id: int) -> tuple[float, float, float]:
+        if self.config.navigation_demo:
+            return ((0.5, 1.5, 0.0), (0.5, 3.5, 0.0), (3.5, 3.5, 0.0), (5.5, 3.5, 0.0))[
+                drone_id - 1
+            ]
+        return (float((drone_id - 1) * 2), 0.0, 0.0)
 
     def drones(self) -> dict[int, dict[str, object]]:
         session = self.runtime.sessions.get(self.config.session)
@@ -243,6 +266,7 @@ class FleetDemo:
             "kind": "isolated_fake_node_demo",
             "session": self.config.session,
             "count": self.config.count,
+            "navigation_demo": self.config.navigation_demo,
             "console_url": self.http_url if self.config.console_dist is not None else None,
             "relay_url": self.ws_url,
             "replay_url": f"{self.http_url}/session/{self.config.session}",
@@ -340,6 +364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--log-dir", type=Path)
     parser.add_argument("--console-dist", type=Path)
     parser.add_argument("--console-origin", action="append", default=[])
+    parser.add_argument("--navigation-demo", action="store_true")
     args = parser.parse_args(argv)
     try:
         config = DemoConfig(
@@ -349,6 +374,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             log_dir=args.log_dir,
             console_dist=args.console_dist,
             console_origins=tuple(args.console_origin),
+            navigation_demo=args.navigation_demo,
         )
     except ValueError as error:
         parser.error(str(error))

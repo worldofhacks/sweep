@@ -15,6 +15,7 @@ from websockets.sync.client import connect
 import relay.voice as voice_module
 from adapters.sim.demo import DemoConfig, FleetDemo
 from relay.autonomy import AutonomyConfig
+from relay.capabilities import IntentName
 from relay.settings import RelaySettings
 
 
@@ -28,6 +29,25 @@ def test_demo_rejects_invalid_fleet_count(count: object) -> None:
 def test_demo_session_is_confined_to_one_url_component(session: str) -> None:
     with pytest.raises(ValueError, match="session"):
         DemoConfig(session=session)
+
+
+def test_navigation_demo_exposes_the_synthetic_route_catalog(tmp_path: Path) -> None:
+    with FleetDemo(DemoConfig(count=3, log_dir=tmp_path, navigation_demo=True)) as demo:
+        response = httpx.get(
+            f"{demo.http_url}/session/{demo.config.session}/navigation/catalog",
+            headers={"Authorization": f"Bearer {demo.token}"},
+            timeout=10,
+        )
+
+        assert IntentName.NAVIGATE in demo.composition.capability_profile.enabled_intent_names
+        assert response.status_code == 200
+        assert [zone["zone_id"] for zone in response.json()["catalog"]["zones"]] == [
+            "lobby",
+            "formation-one",
+            "formation-two",
+            "atrium",
+            "kitchen",
+        ]
 
 
 def _outcome(websocket: object, intent_id: str) -> dict[str, object]:
