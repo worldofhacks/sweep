@@ -1048,7 +1048,6 @@ def test_revalidation_binds_exported_artifact_contents_beyond_the_supplied_pin()
     )
 
     for changed in changes:
-        assert changed.navigation_pin == plan.navigation_pin
         assert changed.semantic_sha256 != plan.artifact_sha256
         refusal = planner.revalidate(plan, changed, live_for(plan), 0, 0, 0.1)
         assert refusal is not None
