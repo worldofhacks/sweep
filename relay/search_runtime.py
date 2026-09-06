@@ -390,9 +390,7 @@ class SearchRuntime:
                 last_pose = None
                 last_camera = None
                 if pose := pose_for_frame(event):
-                    observation = self.observe_processed_frame(
-                        intent_id, event, pose, now_s=now_s()
-                    )
+                    observation = self.observe_processed_frame(intent_id, event, pose, now_s=now_s())
                     if observation.accepted:
                         last_pose = pose
                         if camera_for_frame is not None:
@@ -423,6 +421,20 @@ class SearchRuntime:
             worker_run_id=worker_run_id,
             on_event=consume,
             monotonic_clock=now_s,
+        )
+
+    def detection_drone_ids(self, intent_id: str) -> tuple[int, ...]:
+        mission = self._mission(intent_id)
+        return tuple(
+            assignment.drone.drone.drone_id for assignment in mission.preview.search.assignments
+        )
+
+    def detection_task(self, intent_id: str, drone_id: int):
+        mission = self._mission(intent_id)
+        return next(
+            assignment.task
+            for assignment in mission.preview.search.assignments
+            if assignment.drone.drone.drone_id == drone_id
         )
 
     def hold(self, intent_id: str, reason: str) -> SearchMissionStatus:
