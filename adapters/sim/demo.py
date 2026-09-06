@@ -261,7 +261,7 @@ class FleetDemo:
                 token=self._keys[drone_id],
                 adapter_id=f"isolated-demo-node-{drone_id}",
                 home=self._home(drone_id),
-                telemetry_hz=5.0,
+                telemetry_hz=10.0,
                 slow_operations=frozenset({"goto", "hover"})
                 if self.search is not None
                 else frozenset(),
