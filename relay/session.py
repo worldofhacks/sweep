@@ -849,7 +849,6 @@ class RelaySession:
                 self._metrics["membership_events"] += 1
                 events.append(transition_event)
             state = self._state_event(now)
-            self._append_audit(state)
             events.append(state)
             if transition is not None:
                 events.extend(self._reconcile_membership())
