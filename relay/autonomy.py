@@ -57,6 +57,7 @@ from relay.capabilities import CapabilityProfile
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
 from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
+from relay.control_config import ControlRuntimeConfig
 from relay.intent_v1 import IntentName, IntentV1
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
@@ -110,17 +111,24 @@ class AutonomyConfig:
     planning: PlanningConfig
     safety: SafetyConfig
     sim_camera: SimCameraConfig | None = None
+    control_localization: ControlRuntimeConfig | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
-        """Read ``SWEEP_PLANNING_JSON``, ``SWEEP_SAFETY_JSON``, and ``SWEEP_SIM_CAMERA_JSON``.
+        """Read planner, safety, camera, and optional control-localization configuration.
 
-        Each value is one JSON object whose keys are exactly the config's fields; the
-        config's own validation then rejects values that could disable a gate. The sim
-        camera is optional here and required by ``create_autonomy_app`` on ``sim``.
+        The JSON-valued planner and safety settings require their exact dataclass fields.
+        The optional localization path points to deployment pins used for every session.
         """
         values = os.environ if environ is None else environ
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
+        control_localization_raw = values.get("SWEEP_CONTROL_LOCALIZATION_CONFIG", "")
+        try:
+            control_localization = (
+                None if not control_localization_raw else ControlRuntimeConfig.from_env(values)
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise SettingsError("SWEEP_CONTROL_LOCALIZATION_CONFIG is invalid") from error
         return cls(
             planning=_config_from_json(
                 PlanningConfig, values.get("SWEEP_PLANNING_JSON", ""), "SWEEP_PLANNING_JSON"
@@ -133,6 +141,7 @@ class AutonomyConfig:
                 if not camera_raw
                 else _config_from_json(SimCameraConfig, camera_raw, "SWEEP_SIM_CAMERA_JSON")
             ),
+            control_localization=control_localization,
         )
 
 
@@ -481,12 +490,15 @@ class AutonomySession:
         with self._lock:
             operator_last_seen_ms = self._operator_last_seen_ms
             estop_requested = self._stop_requested
-        return relay_snapshot(
+        snapshot = relay_snapshot(
             state,
             operator_last_seen_ms=operator_last_seen_ms,
             estop_requested=estop_requested,
             capture_readiness=capture_readiness,
         )
+        runtime = self._composition.runtime_if_bound()
+        session = None if runtime is None else runtime.sessions.get(self.session_id)
+        return snapshot if session is None else session.apply_control_localization(snapshot)
 
     def close(self, timeout_s: float) -> None:
         for lane in self._lanes:
@@ -922,6 +934,15 @@ def create_autonomy_app(
     """Build the relay app with the planner and arbiter consuming every accepted intent."""
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
+    control_localization = config.control_localization
+    if settings.localization_keys and control_localization is None:
+        raise SettingsError(
+            "SWEEP_CONTROL_LOCALIZATION_CONFIG is required when localization credentials are set"
+        )
+    if control_localization is not None and set(control_localization.pins) != set(
+        settings.localization_keys
+    ):
+        raise SettingsError("control-localization pins must exactly match localization credentials")
     composition = AutonomyComposition(config)
     app = create_app(
         settings,
@@ -930,6 +951,11 @@ def create_autonomy_app(
         intent_sink_factory=composition.intent_sink_factory,
         capability_profile=composition.capability_profile,
         leave_authorizer_factory=composition.leave_authorizer_factory,
+        control_localization_store_factory=(
+            None
+            if control_localization is None
+            else lambda _session_id: control_localization.create_store()
+        ),
     )
     composition.bind(app)
     return app, composition

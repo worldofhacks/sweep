@@ -7,7 +7,7 @@ from relay.auth import AuthenticationError, Principal, StaticCredentialResolver,
 from relay.control_frames import ControlLocalizationFrame, sign_localization_frame
 from relay.control_localization import ClockMapping, ControlLocalizationWire, to_wire_payload
 from relay.tests.conftest import membership_payload
-from relay.tests.test_control_localization import fresh_snapshot
+from relay.tests.test_control_localization import fresh_snapshot, store
 
 KEY = b"localization-test-key-32-characters"
 
@@ -74,6 +74,8 @@ def test_localization_retention_rolls_back_with_failed_audit(
         membership_payload(action="join", event_id="join"), adapter_principal
     )
     producer = Principal("localization", 1, KEY)
+    control_store = store()
+    relay_session._control_localization_store = control_store
     payload = frame(relay_session)
 
     def fail(*args, **kwargs):
@@ -82,5 +84,7 @@ def test_localization_retention_rolls_back_with_failed_audit(
     monkeypatch.setattr(relay_session.audit_log, "append_batch", fail)
     with pytest.raises(AuditLogError):
         relay_session.process_frame(payload, producer)
-    assert relay_session.control_localization(1) is None
+    with pytest.raises(AuditLogError):
+        relay_session.control_localization(1)
     assert payload["event_id"] not in relay_session._seen_transport_event_ids
+    assert control_store._patches == {}
