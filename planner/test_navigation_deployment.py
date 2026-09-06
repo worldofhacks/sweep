@@ -48,6 +48,7 @@ def _config(bundle: Path, geometry: Path) -> dict[str, object]:
                 "pose_uncertainty_m": 0.02,
                 "tracking_allowance_m": 0.1,
                 "stopping_allowance_m": 0.1,
+                "max_altitude_layer_offset_m": 0.2,
             },
             "speed_m_s": 0.5,
             "position_tolerance_m": 0.05,

@@ -135,6 +135,21 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
             <p className="gs-eyebrow">Candidate intent preview</p>
             <CandidatePreview controller={controller} view={view} />
             <p className="gs-eyebrow">Readout</p>
+            <div className="gs-recording">
+              <span>
+                Session recording: {view.recording.size} entries
+                {view.recording.dropped > 0 ? ` (${view.recording.dropped} oldest dropped)` : ''}
+              </span>
+              <div>
+                <button type="button" className="text-button" onClick={downloadRecording}>
+                  Download session (JSONL)
+                </button>
+                <button type="button" className="text-button" onClick={clearRecording}>
+                  Clear recording
+                </button>
+              </div>
+            </div>
+            <div className="gs-log-scroll" data-scroll="1">
             {readout.length === 0 ? (
               <p className="gs-log-empty">
                 Nothing recognised yet. Every outcome is recorded here, including the ones that emit nothing.
@@ -152,19 +167,6 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
                 ))}
               </ul>
             )}
-            <div className="gs-recording">
-              <span>
-                Session recording: {view.recording.size} entries
-                {view.recording.dropped > 0 ? ` (${view.recording.dropped} oldest dropped)` : ''}
-              </span>
-              <div>
-                <button type="button" className="text-button" onClick={downloadRecording}>
-                  Download session (JSONL)
-                </button>
-                <button type="button" className="text-button" onClick={clearRecording}>
-                  Clear recording
-                </button>
-              </div>
             </div>
           </div>
         </div>
