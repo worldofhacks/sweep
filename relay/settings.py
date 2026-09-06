@@ -40,6 +40,7 @@ class RelaySettings:
     transport_event_max_age_ms: int = 5_000
     future_clock_skew_ms: int = 1_000
     telemetry_freshness_ms: int = 1_000
+    transcript_upload_timeout_ms: int = 15_000
     fanout_hz: int = 10
     adapter_backend: AdapterBackend = AdapterBackend.SIM
     command_ttl_ms: int = 2_000
@@ -96,6 +97,11 @@ class RelaySettings:
             )
         object.__setattr__(self, "adapter_keys", MappingProxyType(adapter_keys))
         object.__setattr__(self, "localization_keys", MappingProxyType(localization_keys))
+        if (
+            type(self.transcript_upload_timeout_ms) is not int
+            or self.transcript_upload_timeout_ms <= 0
+        ):
+            raise SettingsError("SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS must be a positive integer")
         if self.fanout_hz != 10:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
@@ -172,6 +178,10 @@ class RelaySettings:
             telemetry_freshness_ms=_positive_integer(
                 values.get("SWEEP_TELEMETRY_FRESHNESS_MS", "1000"),
                 "SWEEP_TELEMETRY_FRESHNESS_MS",
+            ),
+            transcript_upload_timeout_ms=_positive_integer(
+                values.get("SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS", "15000"),
+                "SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS",
             ),
             adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
             command_ttl_ms=_positive_integer(
