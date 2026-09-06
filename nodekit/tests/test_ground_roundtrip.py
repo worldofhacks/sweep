@@ -47,7 +47,11 @@ def _wait_until(predicate, *, what: str) -> None:  # type: ignore[no-untyped-def
 
 
 def build_settings(
-    tmp_path: Path, *, hold_ms: int = 2_000, failsafe_ms: int = 10_000
+    tmp_path: Path,
+    *,
+    hold_ms: int = 2_000,
+    failsafe_ms: int = 10_000,
+    command_ttl_ms: int = 2_000,
 ) -> RelaySettings:
     return RelaySettings(
         relay_token=CONSOLE_KEY,
@@ -57,6 +61,7 @@ def build_settings(
         adapter_backend=AdapterBackend.REMOTE,
         node_watchdog_hold_ms=hold_ms,
         node_watchdog_failsafe_ms=failsafe_ms,
+        command_ttl_ms=command_ttl_ms,
     )
 
 
@@ -95,8 +100,19 @@ def relay_server(tmp_path: Path) -> Iterator[RelayServer]:
 
 @pytest.fixture
 def quick_watchdog_relay(tmp_path: Path) -> Iterator[RelayServer]:
-    """A relay whose hold and failsafe windows are short enough to watch."""
-    yield from serve(build_settings(tmp_path, hold_ms=QUICK_HOLD_MS, failsafe_ms=QUICK_FAILSAFE_MS))
+    """A relay whose hold and failsafe windows are short enough to watch.
+
+    The command TTL is stretched well past them so the deadman, not the TTL, is what ends
+    the drive that was under way.
+    """
+    yield from serve(
+        build_settings(
+            tmp_path,
+            hold_ms=QUICK_HOLD_MS,
+            failsafe_ms=QUICK_FAILSAFE_MS,
+            command_ttl_ms=8_000,
+        )
+    )
 
 
 class GroundFleet:
@@ -352,7 +368,7 @@ def test_the_node_retries_until_the_relay_answers(tmp_path: Path) -> None:
     )
 
     def serve_after_a_pause() -> None:
-        time.sleep(0.8)
+        time.sleep(0.5)
         server.run(sockets=[listener])
 
     thread = threading.Thread(target=serve_after_a_pause, daemon=True)
@@ -364,6 +380,10 @@ def test_the_node_retries_until_the_relay_answers(tmp_path: Path) -> None:
             device_id=GROUND_ID,
             token=GROUND_KEY.decode(),
             adapter_id="fake-ground-1",
+            # Tighter than the shipped 0.5 to 8 seconds so several attempts fall inside
+            # the startup budget however slowly the relay comes up.
+            backoff_initial_s=0.2,
+            backoff_max_s=1.0,
         ),
         FakeGroundVehicle(),
     )
