@@ -21,6 +21,7 @@ import org.worldofhacks.sweep.bridge.core.json.JsonInt
 import org.worldofhacks.sweep.bridge.core.json.JsonNull
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonString
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
 import org.worldofhacks.sweep.bridge.core.signing.Signing
 import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
 
@@ -42,13 +43,18 @@ class RelayLinkTest {
     private val phone = PhoneStatusSource { PhoneStatus(batteryPercent = 81, thermalState = PhoneThermalState.NONE) }
     private val logs = CopyOnWriteArrayList<String>()
 
-    private fun config(stub: StubRelay, token: String = String(key, Charsets.UTF_8)) = NodeConfig(
+    private fun config(
+        stub: StubRelay,
+        token: String = String(key, Charsets.UTF_8),
+        localizationPins: LocalizationPins? = null,
+    ) = NodeConfig(
         relayUrl = stub.url,
         session = stub.session,
         droneId = 1,
         token = token,
         adapterId = "test-node-1",
         capabilities = listOf("flight", "pano_360", "reconstruct_8"),
+        localizationPins = localizationPins,
     )
 
     private fun link(
@@ -537,6 +543,139 @@ class RelayLinkTest {
                 )
                 Thread.sleep(100)
                 assertEquals(nextAcceptedAt, link.state.value.lastRelayActivityMs, "an already-expired lease is ignored")
+            }
+        }
+    }
+
+    @Test
+    fun `signed pinned control pose is a short lived diagnostic and never a control lease`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
+            RelayLink(
+                config(stub, localizationPins = pins),
+                aircraft,
+                aircraft,
+                phone,
+                timing = timing,
+                log = { logs += it },
+            ).use { link ->
+                link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
+                link.start()
+                await("ready") { link.state.value.membership == "ready" }
+                assertNull(link.state.value.lastRelayActivityMs)
+
+                val ready = stub.sendControlPose(xMm = 125, yMm = -250)
+                val readyTime = ready.int("fix_time_ms")
+                await("ready diagnostic pose") { link.state.value.controlPose?.xMm == 125L }
+                assertFalse(checkNotNull(link.state.value.controlPose).flightApproved)
+                assertNull(link.state.value.lastRelayActivityMs, "diagnostics cannot feed the flight deadman")
+                await("ready diagnostic expiry", timeoutMs = 2_000) { link.state.value.controlPose == null }
+
+                val landTime = stub.relayNow()
+                stub.sendControlPose(
+                    timestamp = landTime,
+                    poseTimeMs = landTime,
+                    fixTimeMs = readyTime,
+                    status = "land",
+                )
+                await("current land diagnostic with an old real fix") {
+                    link.state.value.controlPose?.status == org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.LAND
+                }
+                assertNull(link.state.value.lastRelayActivityMs, "LAND remains diagnostic-only")
+            }
+        }
+    }
+
+    @Test
+    fun `equal evidence time permits conservative status changes but not unsafe recovery`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
+            RelayLink(
+                config(stub, localizationPins = pins),
+                aircraft,
+                aircraft,
+                phone,
+                timing = timing,
+                log = { logs += it },
+            ).use { link ->
+                link.start()
+                await("joined") { link.state.value.joined }
+                val evidenceTime = stub.relayNow()
+                stub.sendControlPose(timestamp = evidenceTime, poseTimeMs = evidenceTime, fixTimeMs = evidenceTime)
+                await("ready diagnostic") {
+                    link.state.value.controlPose?.status == org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.READY
+                }
+
+                stub.sendControlPose(
+                    timestamp = evidenceTime,
+                    poseTimeMs = evidenceTime,
+                    fixTimeMs = evidenceTime,
+                    status = "hold",
+                )
+                await("equal-time conservative transition") {
+                    link.state.value.controlPose?.status == org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.HOLD
+                }
+
+                stub.sendControlPose(
+                    timestamp = evidenceTime,
+                    poseTimeMs = evidenceTime,
+                    fixTimeMs = evidenceTime,
+                    status = "land",
+                )
+                await("second equal-time conservative transition") {
+                    link.state.value.controlPose?.status == org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.LAND
+                }
+
+                stub.sendControlPose(
+                    timestamp = evidenceTime,
+                    poseTimeMs = evidenceTime,
+                    fixTimeMs = evidenceTime,
+                    status = "hold",
+                )
+                Thread.sleep(100)
+                assertEquals(
+                    org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.LAND,
+                    link.state.value.controlPose?.status,
+                    "the same evidence cannot recover from a conservative status",
+                )
+                assertTrue(logs.any { it.contains("same-evidence less-conservative control_pose") })
+            }
+        }
+    }
+
+    @Test
+    fun `control pose rejects approval stale events wrong pins forgery and out of bounds values`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
+            RelayLink(
+                config(stub, localizationPins = pins),
+                aircraft,
+                aircraft,
+                phone,
+                timing = timing,
+                log = { logs += it },
+            ).use { link ->
+                link.start()
+                await("joined") { link.state.value.joined }
+
+                stub.sendControlPose(flightApproved = true)
+                stub.sendControlPose(timestamp = stub.relayNow() - 2_000)
+                val readyCutoff = stub.relayNow()
+                stub.sendControlPose(
+                    timestamp = readyCutoff,
+                    poseTimeMs = readyCutoff - 500,
+                    fixTimeMs = readyCutoff - 500,
+                )
+                stub.sendControlPose(mapId = "wrong-map")
+                stub.sendControlPose(connectionEpoch = stub.epoch.get() + 1)
+                stub.sendControlPose(signingKey = "forged".toByteArray())
+                stub.sendControlPose(xMm = 1_000_001)
+                await("all diagnostic rejections") { logs.count { it.contains("dropping") && it.contains("control_pose") } >= 7 }
+                assertNull(link.state.value.controlPose)
+                assertNull(link.state.value.lastRelayActivityMs)
             }
         }
     }

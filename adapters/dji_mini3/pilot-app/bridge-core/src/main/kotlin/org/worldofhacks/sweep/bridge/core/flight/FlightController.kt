@@ -1,8 +1,6 @@
 package org.worldofhacks.sweep.bridge.core.flight
 
 import kotlin.math.abs
-import kotlin.math.hypot
-import kotlin.math.sqrt
 import org.worldofhacks.sweep.bridge.core.admission.Clock
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.watchdog.Watchdog
@@ -68,15 +66,6 @@ class FlightController(
 
         data class Running(val steps: List<MotionStep>, val index: Int, val startedMs: Long, val yawSettledSinceMs: Long?) : Phase
 
-        data class LocalizedGoto(
-            val target: Triple<Long, Long, Long>,
-            val start: Pair<Long, Long>,
-            val speedMmS: Long,
-            val lostSinceMs: Long? = null,
-            val settledSinceMs: Long? = null,
-            val body: BodyVelocity = BodyVelocity(),
-        ) : Phase
-
         data class Settling(val untilMs: Long, val detail: String) : Phase
 
         data class TakingOff(val startedMs: Long, val targetZM: Double, val hoverSinceMs: Long?) : Phase
@@ -100,7 +89,6 @@ class FlightController(
     }
 
     var mapping: AxisMapping = config.mapping
-    var localization: LocalizationConfig? = config.localization
 
     /** Called on the loop thread whenever the observable status changes. */
     var onStatus: ((FlightStatus) -> Unit)? = null
@@ -352,19 +340,6 @@ class FlightController(
             fail(sink, FlightReason.NOT_AIRBORNE, "aircraft is ${facts.flightState}; goto needs a hovering aircraft")
             return
         }
-        val configuredLocalization = localization
-        if (configuredLocalization != null) {
-            val pose = freshPose(now, configuredLocalization)
-            if (pose == null || pose.status != org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.READY) {
-                fail(sink, FlightReason.LOCALIZATION_UNAVAILABLE, "localized navigation requires a fresh ready signed control pose")
-                return
-            }
-            active = Active(command, sink, now, "localized goto to ${args.xMm}, ${args.yMm}, ${args.zMm} mm")
-            beginVirtualStick(now) {
-                transition(Phase.LocalizedGoto(Triple(args.xMm, args.yMm, args.zMm), pose.xMm to pose.yMm, args.speedMmS))
-            }
-            return
-        }
         val step = MotionPlanner.goto(args, facts, config.limits, config.minDisplacementM)
         if (step == null) {
             sink.executing("already within ${format(config.minDisplacementM)} m of the target")
@@ -594,7 +569,6 @@ class FlightController(
                 transition(Phase.Idle)
             }
             is Phase.Running -> advanceRunning(current, now)
-            is Phase.LocalizedGoto -> advanceLocalizedGoto(current, now)
             is Phase.Settling -> if (now >= current.untilMs) {
                 completeActive("${current.detail}; measured speed ${format(facts.speedMS)} m/s")
                 releaseVirtualStick()
@@ -639,71 +613,6 @@ class FlightController(
                 progress(now, "${describe(step, current.index + 1, current.steps.size)}: heading ${format(facts.yawDeg)}, error ${format(error)} deg, $elapsed ms")
             }
         }
-    }
-
-    private fun advanceLocalizedGoto(current: Phase.LocalizedGoto, now: Long) {
-        val settings = localization ?: return
-        val pose = freshPose(now, settings)
-        if (pose == null || pose.status == org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.HOLD) {
-            val lostSince = current.lostSinceMs ?: now
-            if (now - lostSince >= settings.tagLossLandAfterMs) {
-                failActive(FlightReason.LOCALIZATION_LOST, "control pose absent or held for ${now - lostSince} ms; landing")
-                startLanding(now, "localization_lost")
-            } else {
-                phase = current.copy(lostSinceMs = lostSince, settledSinceMs = null, body = BodyVelocity())
-                progress(now, "localized goto holding for fresh control pose")
-            }
-            return
-        }
-        if (pose.status == org.worldofhacks.sweep.bridge.core.frames.ControlPose.Status.LAND) {
-            failActive(FlightReason.LOCALIZATION_LOST, "control pose requested landing")
-            startLanding(now, "localization_land")
-            return
-        }
-        val dx = current.target.first - pose.xMm
-        val dy = current.target.second - pose.yMm
-        val dz = current.target.third - pose.zMm
-        val horizontal = hypot(dx.toDouble(), dy.toDouble())
-        val distance = sqrt(dx.toDouble() * dx + dy.toDouble() * dy + dz.toDouble() * dz)
-        if (outsideTrackingTube(current, pose.xMm, pose.yMm, settings.trackingTubeMm)) {
-            failActive(FlightReason.TRACKING_DRIFT, "observed pose left the ${settings.trackingTubeMm} mm tracking tube")
-            releaseVirtualStick()
-            return
-        }
-        if (distance <= settings.targetToleranceMm) {
-            val settled = current.settledSinceMs ?: now
-            if (now - settled >= settings.settledHoldMs) {
-                completeActive("localized pose observed within ${settings.targetToleranceMm} mm for ${settings.settledHoldMs} ms")
-                releaseVirtualStick()
-            } else {
-                phase = current.copy(lostSinceMs = null, settledSinceMs = settled, body = BodyVelocity())
-            }
-            return
-        }
-        val speed = (current.speedMmS / 1000.0).coerceAtLeast(0.01)
-        val seconds = maxOf(horizontal / 1000.0 / config.limits.maxHorizontalMS, abs(dz) / 1000.0 / config.limits.maxVerticalMS, distance / 1000.0 / speed)
-        val (forward, right) = GroundFrame.toBody(dx / 1000.0 / seconds, dy / 1000.0 / seconds, facts.yawDeg)
-        val body = config.limits.clamp(BodyVelocity(forwardMS = forward, rightMS = right, upMS = dz / 1000.0 / seconds))
-        phase = current.copy(lostSinceMs = null, settledSinceMs = null, body = body)
-        progress(now, "localized goto: ${distance.toLong()} mm remaining")
-    }
-
-    private fun freshPose(now: Long, settings: LocalizationConfig): org.worldofhacks.sweep.bridge.core.frames.ControlPose? {
-        val pose = link.controlPose ?: return null
-        return pose.takeIf {
-            it.mapId == settings.mapId && it.geometryId == settings.geometryId &&
-                it.cameraCalibrationId == settings.cameraCalibrationId && it.bodyExtrinsicsId == settings.bodyExtrinsicsId &&
-                (link.controlPoseFreshUntilMs?.let { expiry -> now <= expiry }
-                    ?: (now - it.fixTimeMs in 0..settings.fixFreshnessMs && now - it.poseTimeMs in 0..settings.poseFreshnessMs))
-        }
-    }
-
-    private fun outsideTrackingTube(current: Phase.LocalizedGoto, x: Long, y: Long, tubeMm: Long): Boolean {
-        val sx = current.start.first.toDouble(); val sy = current.start.second.toDouble()
-        val tx = current.target.first.toDouble(); val ty = current.target.second.toDouble()
-        val length = hypot(tx - sx, ty - sy)
-        if (length == 0.0) return hypot(x - sx, y - sy) > tubeMm
-        return abs((ty - sy) * (x - sx) - (tx - sx) * (y - sy)) / length > tubeMm
     }
 
     private fun nextStep(current: Phase.Running, now: Long) {
@@ -818,7 +727,6 @@ class FlightController(
         if (!vsEnabled) return
         val frame = when (val current = phase) {
             is Phase.Running -> frameFor(current.steps[current.index])
-            is Phase.LocalizedGoto -> mapping.toFrame(current.body)
             is Phase.Bench -> current.frame
             else -> StickFrame.NEUTRAL
         }
@@ -971,7 +879,6 @@ class FlightController(
             is MotionStep.Velocity -> "velocity_step"
             is MotionStep.Yaw -> "yaw_step"
         }
-        is Phase.LocalizedGoto -> "localized_goto"
         is Phase.Settling -> "settling"
         is Phase.TakingOff -> "taking_off"
         is Phase.Landing -> "landing"

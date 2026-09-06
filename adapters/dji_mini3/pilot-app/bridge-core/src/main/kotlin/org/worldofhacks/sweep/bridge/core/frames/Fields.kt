@@ -125,4 +125,21 @@ internal object Fields {
 
     fun isMachineCode(value: String): Boolean =
         value.isNotEmpty() && value.all { it in 'a'..'z' || it in '0'..'9' || it == '_' }
+
+    /** Mirrors Python's trimmed `str.isprintable()` identifier rule. */
+    fun isCanonicalPrintable(value: String, maxLength: Int): Boolean =
+        value.isNotEmpty() && value.length <= maxLength && value == value.trim() && value.all { char ->
+            when (char.category) {
+                CharCategory.CONTROL,
+                CharCategory.FORMAT,
+                CharCategory.SURROGATE,
+                CharCategory.PRIVATE_USE,
+                CharCategory.UNASSIGNED,
+                CharCategory.LINE_SEPARATOR,
+                CharCategory.PARAGRAPH_SEPARATOR,
+                -> false
+                CharCategory.SPACE_SEPARATOR -> char == ' '
+                else -> true
+            }
+        }
 }

@@ -2,7 +2,6 @@ package org.worldofhacks.sweep.bridge.core.flight
 
 import kotlin.math.hypot
 import kotlin.math.sqrt
-import org.worldofhacks.sweep.bridge.core.frames.ControlPose
 
 /**
  * The aircraft facts the control loop reads on every tick, in the planner's telemetry frame
@@ -74,6 +73,4 @@ data class LinkFacts(
     val lastRelayActivityMs: Long? = null,
     val controlAuthorityGranted: Boolean = false,
     val settings: FlightSettings? = null,
-    val controlPose: ControlPose? = null,
-    val controlPoseFreshUntilMs: Long? = null,
 )

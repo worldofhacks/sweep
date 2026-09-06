@@ -12,9 +12,11 @@ import org.worldofhacks.sweep.bridge.core.flight.StickFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.PhoneThermalState
+import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonBool
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonString
+import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
 import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.LinkTiming
@@ -45,12 +47,20 @@ class FlightExecutorTest {
     }
 
     /** The stub emits the real relay's signed control heartbeat unless a silence test disables it. */
-    private fun node(stub: StubRelay, flying: Boolean): Node {
+    private fun node(stub: StubRelay, flying: Boolean, localizationPins: LocalizationPins? = null): Node {
         val aircraft = FakeFlightAircraft()
         aircraft.setConnected(true)
         if (flying) aircraft.place(zUp = 1.2, flying = true)
         val executor = FlightExecutor(aircraft, aircraft, aircraft.fake, config = config, log = { logs += it })
-        val nodeConfig = NodeConfig(stub.url, stub.session, 1, String(key, Charsets.UTF_8), "test-node-1", listOf("flight"))
+        val nodeConfig = NodeConfig(
+            stub.url,
+            stub.session,
+            1,
+            String(key, Charsets.UTF_8),
+            "test-node-1",
+            listOf("flight"),
+            localizationPins,
+        )
         val link = RelayLink(nodeConfig, aircraft, executor, phone, timing = timing, log = { logs += it })
         // The loop's status feeds the snapshot fields the link reports (the sessions do this on the phone).
         Thread {
@@ -96,10 +106,13 @@ class FlightExecutorTest {
     private fun StubRelay.acks(commandId: String): List<JsonObject> = frames("acknowledgement") { it.str("command_id") == commandId }
 
     @Test
-    fun `takeoff goto hover and land acknowledge accepted executing then completed with progress detail`() {
+    fun `diagnostic localization cannot advertise navigation or alter the existing goto path`() {
         StubRelay(key).use { stub ->
-            node(stub, flying = false).use { node ->
+            val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
+            node(stub, flying = false, localizationPins = pins).use { node ->
                 await("ready") { node.link.state.value.membership == "ready" }
+                val join = stub.frames("membership") { it.str("action") == "join" }.single()
+                assertEquals(Json.value(listOf("flight")), join["capabilities"])
                 val takeoff = stub.issueCommand(CommandArgs.Takeoff(zMm = 1200))
                 stub.awaitAck(takeoff.commandId, "completed")
                 val takeoffAcks = stub.acks(takeoff.commandId).map { it.str("status") }
@@ -107,6 +120,15 @@ class FlightExecutorTest {
                 assertEquals("executing", takeoffAcks[1])
                 assertEquals("completed", takeoffAcks.last())
                 assertEquals(FlightStates.HOVERING, node.aircraft.snapshot.value.state)
+
+                val beforeDiagnostic = node.aircraft.snapshot.value
+                stub.sendControlPose(xMm = 900_000, yMm = -900_000, zMm = 900_000)
+                await("signed diagnostic pose") { node.link.state.value.controlPose?.xMm == 900_000L }
+                Thread.sleep(100)
+                val afterDiagnostic = node.aircraft.snapshot.value
+                assertEquals(beforeDiagnostic.x, afterDiagnostic.x, 0.001, "diagnostic x cannot move hardware")
+                assertEquals(beforeDiagnostic.y, afterDiagnostic.y, 0.001, "diagnostic y cannot move hardware")
+                assertEquals(beforeDiagnostic.z, afterDiagnostic.z, 0.001, "diagnostic z cannot move hardware")
 
                 val goto = stub.issueCommand(CommandArgs.Goto(xMm = 0, yMm = 1000, zMm = 1200, speedMmS = 500))
                 stub.awaitFrame("node_status") { it.bool("virtual_stick_enabled") }

@@ -209,6 +209,61 @@ class FramesTest {
     }
 
     @Test
+    fun `control pose is exact bounded signed and explicitly not flight approved`() {
+        val unsigned = Json.json(
+            "v" to 1,
+            "t" to 2_500,
+            "type" to "control_pose",
+            "event_id" to "evt-pose-1",
+            "session" to "session-a",
+            "drone_id" to 1,
+            "connection_epoch" to 2,
+            "map_id" to "map-a",
+            "geometry_id" to "geometry-a",
+            "camera_calibration_id" to "camera-a",
+            "body_extrinsics_id" to "body-a",
+            "pose_time_ms" to 2_490,
+            "fix_time_ms" to 2_480,
+            "position_frame" to "map_enu",
+            "x_mm" to 100,
+            "y_mm" to -200,
+            "z_mm" to 1_000,
+            "position_uncertainty_mm" to 25,
+            "status" to "ready",
+            "flight_approved" to false,
+        )
+        val signingKey = "adapter-key".toByteArray()
+        val wire = unsigned.with(
+            "signature",
+            org.worldofhacks.sweep.bridge.core.json.JsonString(Signing.sign(unsigned, signingKey)),
+        )
+
+        val pose = ControlPose.parse(wire)
+        assertFalse(pose.flightApproved)
+        assertEquals(100, pose.xMm)
+        assertTrue(pose.verifies(signingKey))
+
+        for (invalid in listOf(
+            wire.with("flight_approved", Json.value(true)),
+            wire.with("x_mm", Json.value(ControlPose.MAX_ABS_POSITION_MM + 1)),
+            wire.with("pose_time_ms", Json.value(2_501)),
+            wire.with("position_frame", Json.value("body_frd")),
+            wire.with("map_id", Json.value(" map-a")),
+            wire.with("event_id", Json.value(" evt-pose-1")),
+            wire.with("event_id", Json.value("evt-\u200bpose-1")),
+            wire.with("session", Json.value(" session-a")),
+            wire.with("session", Json.value("s".repeat(ControlPose.MAX_SESSION_LENGTH + 1))),
+            JsonObject(wire.fields - "position_uncertainty_mm"),
+        )) {
+            assertThrows(ContractError::class.java) { ControlPose.parse(invalid) }
+        }
+        assertEquals(
+            ControlPose.MAX_SESSION_LENGTH,
+            ControlPose.parse(wire.with("session", Json.value("s".repeat(ControlPose.MAX_SESSION_LENGTH)))).session.length,
+        )
+    }
+
+    @Test
     fun `telemetry encodes and parses`() {
         val telemetry = TelemetryFrame(
             t = 2000,

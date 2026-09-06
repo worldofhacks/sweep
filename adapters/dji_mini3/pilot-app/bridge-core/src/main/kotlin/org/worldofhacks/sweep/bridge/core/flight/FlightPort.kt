@@ -54,9 +54,6 @@ enum class FlightReason(val wire: String, val retryable: Boolean) {
     LANDING_TIMEOUT("landing_timeout", true),
     LANDING_IN_PROGRESS("landing_in_progress", true),
     YAW_NOT_REACHED("yaw_not_reached", true),
-    LOCALIZATION_UNAVAILABLE("localization_unavailable", true),
-    LOCALIZATION_LOST("localization_lost", true),
-    TRACKING_DRIFT("tracking_drift", true),
     NODE_BUSY("node_busy", true),
     SUPERSEDED("superseded", true),
     UNSUPPORTED("unsupported", false);

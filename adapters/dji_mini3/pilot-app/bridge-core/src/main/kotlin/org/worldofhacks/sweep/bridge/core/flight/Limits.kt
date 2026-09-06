@@ -123,40 +123,4 @@ data class FlightConfig(
     /** PRD 5.5: network stop holds, then lands if the stop stays asserted this long. */
     val estopLandAfterMs: Long = 5_000,
     val defaultStickHz: Int = FlightSettings.DEFAULT_STICK_HZ,
-    val localization: LocalizationConfig? = null,
 )
-
-data class LocalizationConfig(
-    val mapId: String,
-    val geometryId: String,
-    val cameraCalibrationId: String,
-    val bodyExtrinsicsId: String,
-    val fixFreshnessMs: Long = 500,
-    val poseFreshnessMs: Long = 500,
-    val trackingTubeMm: Long = 500,
-    val targetToleranceMm: Long = 150,
-    val settledHoldMs: Long = 500,
-    val tagLossLandAfterMs: Long = 3_000,
-) {
-    init {
-        require(listOf(mapId, geometryId, cameraCalibrationId, bodyExtrinsicsId).all(::validIdentity)) {
-            "localization identities must be pinned"
-        }
-        require(fixFreshnessMs in 1..MAX_FIX_FRESHNESS_MS && poseFreshnessMs in 1..MAX_POSE_FRESHNESS_MS && trackingTubeMm in 1..MAX_TRACKING_TUBE_MM && targetToleranceMm in 1..MAX_TARGET_TOLERANCE_MM && settledHoldMs in 0..MAX_SETTLED_HOLD_MS && tagLossLandAfterMs in 1..MAX_TAG_LOSS_LAND_AFTER_MS) {
-            "localization bounds are invalid"
-        }
-    }
-
-    companion object {
-        const val MAX_ID_LENGTH = 128
-        const val MAX_FIX_FRESHNESS_MS = 500L
-        const val MAX_POSE_FRESHNESS_MS = 10_000L
-        const val MAX_TRACKING_TUBE_MM = 10_000L
-        const val MAX_TARGET_TOLERANCE_MM = 5_000L
-        const val MAX_SETTLED_HOLD_MS = 10_000L
-        const val MAX_TAG_LOSS_LAND_AFTER_MS = 60_000L
-
-        private fun validIdentity(value: String): Boolean =
-            value.isNotBlank() && value.length <= MAX_ID_LENGTH && value == value.trim()
-    }
-}
