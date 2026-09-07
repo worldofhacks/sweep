@@ -304,3 +304,121 @@ def test_measured_geometry_bounds_authoring_and_loader_rederives_files(tmp_path:
     _write(output / "geometry.json", report)
     with pytest.raises(ValueError, match="not derived"):
         NavigationArtifact.from_geometry_directory(bundle, output, accepted, authoring=authoring)
+
+
+def test_measured_geometry_proves_the_continuous_route_capsule(tmp_path: Path) -> None:
+    bundle, accepted = _held_out_world_bundle(tmp_path)
+    obstacles = json.loads((bundle / "obstacles.yaml").read_text())
+    obstacles["obstacles"].append(
+        {
+            "id": "centerline-needle",
+            "floor_id": "level_1",
+            "polygon": [
+                [0.024, -0.0001],
+                [0.026, -0.0001],
+                [0.026, 0.0001],
+                [0.024, 0.0001],
+                [0.024, -0.0001],
+            ],
+            "z_min_m": 0,
+            "z_max_m": 3,
+        }
+    )
+    _write(bundle / "obstacles.yaml", obstacles)
+    manifest = _seal(bundle)
+    accepted = {manifest["bundle_version"]: manifest["content_sha256"]}
+    authoring = _authoring(tmp_path, bundle)
+    request = _request(authoring)
+    request["clearance"]["aircraft_radius_m"] = 0.01
+    request["routes"][0]["half_width_m"] = 0.01
+    _write(authoring, request)
+
+    report = generate(bundle, authoring, tmp_path / "needle", accepted)
+
+    assert report["routes"][0]["geometry_clear"] is False
+
+
+def test_visibility_requires_a_verified_tag_on_the_route_floor() -> None:
+    from tools.map_geometry import _v2_visibility
+
+    route = {
+        "centerline": [[0, 0], [1, 0]],
+        "half_width_m": 0.1,
+        "z_min_m": 0.9,
+        "z_max_m": 1.1,
+        "heading_rad": 0,
+    }
+    model = {
+        "id": "forward",
+        "translation_body_m": [0, 0, 0],
+        "forward_body": [1, 0, 0],
+        "fov_rad": 3.0,
+        "min_range_m": 0.1,
+        "max_range_m": 10,
+        "minimum_face_dot": 0,
+        "focal_length_px": 1_000,
+        "minimum_tag_pixels": 1,
+        "calibration": {"path": "camera.json", "sha256": "a" * 64},
+    }
+    other_floor_tag = {
+        "id": 3,
+        "floor_id": "level_2",
+        "verified_for_flight": True,
+        "x_m": 2,
+        "y_m": 0,
+        "z_m": 1,
+        "normal": [-1, 0, 0],
+        "size_m": 0.16,
+    }
+
+    report = _v2_visibility(route, [other_floor_tag], "level_1", model, [])
+
+    assert report["covered"] is False
+    assert report["verified_tag_ids"] == []
+
+
+def test_visibility_diagnostics_are_bounded_but_preserve_the_uncovered_count() -> None:
+    from tools.map_geometry import _v2_visibility
+
+    route = {
+        "centerline": [[0, 0], [100, 0]],
+        "half_width_m": 0.01,
+        "z_min_m": 0.9,
+        "z_max_m": 0.91,
+        "heading_rad": 0,
+    }
+    model = {
+        "id": "forward",
+        "translation_body_m": [0, 0, 0],
+        "forward_body": [1, 0, 0],
+        "fov_rad": 1.0,
+        "min_range_m": 0.1,
+        "max_range_m": 1,
+        "minimum_face_dot": 1,
+        "focal_length_px": 1,
+        "minimum_tag_pixels": 1,
+        "calibration": {"path": "camera.json", "sha256": "a" * 64},
+    }
+
+    report = _v2_visibility(route, [], "level_1", model, [])
+
+    assert report["uncovered_sample_count"] > len(report["uncovered_samples_xyz"])
+    assert len(report["uncovered_samples_xyz"]) == 256
+    assert report["uncovered_samples_truncated"] is True
+
+
+def test_measured_geometry_expands_grid_free_space_by_clearance(tmp_path: Path) -> None:
+    bundle, accepted = _held_out_world_bundle(tmp_path)
+    authoring = _authoring(tmp_path, bundle)
+    request = _request(authoring)
+    request["formations"] = []
+    request["free_volumes"] = []
+    _write(authoring, request)
+
+    report = generate(bundle, authoring, tmp_path / "grid-clearance", accepted)
+    grid = __import__("numpy").load(
+        tmp_path / "grid-clearance" / report["grid_files"][0], allow_pickle=False
+    )
+
+    assert grid[12, 14] == 0
+    assert grid[13, 14] == 1

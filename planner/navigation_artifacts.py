@@ -559,7 +559,7 @@ def _validate_geometry_report_v2(report: object, validated: ValidatedBundle) -> 
             or route.get("geometry_clear") is not True
             or not isinstance(coverage, dict)
             or coverage.get("covered") is not True
-            or coverage.get("status") != "measured_camera_envelope"
+            or coverage.get("status") != "sampled_camera_envelope"
         ):
             raise ValueError("geometry route lacks measured clearance or tag coverage")
     if not isinstance(report["formations"], list) or any(

@@ -22,6 +22,7 @@ from tools.geometry_math import (
     rect_inside_polygon,
     rect_polygon_distance,
     rect_segment_distance,
+    segment_distance,
 )
 from tools.map_common import (
     finite_number,
@@ -42,7 +43,10 @@ MAX_V2_GRID_CELLS = 100_000
 MAX_V2_PLANES = 64
 MAX_V2_ROUTES = 64
 MAX_V2_FORMATIONS = 64
-MAX_V2_SAMPLES = 100_000
+MAX_V2_ROUTE_VISIBILITY_SAMPLES = 10_000
+MAX_V2_TOTAL_VISIBILITY_SAMPLES = 100_000
+MAX_V2_UNCOVERED_REPORT_SAMPLES = 256
+MAX_V2_ARTIFACT_BYTES = 2_000_000
 MAX_V2_EVIDENCE_BYTES = 1_000_000
 MAX_V2_AUTHORING_BYTES = 1_000_000
 MAX_V2_TEXT_CHARS = 128
@@ -670,40 +674,35 @@ def _v2_formation_fit(volume, separation, envelope):
     )
 
 
-def _v2_route_samples(route):
+def _v2_visibility_samples(route):
+    """Return bounded, reproducible locations for sampled camera coverage evidence."""
     width = route["half_width_m"]
-    depth = route["z_max_m"] - route["z_min_m"]
     segments = list(zip(route["centerline"], route["centerline"][1:], strict=False))
-    estimate = sum(
-        max(1, math.ceil(math.dist(start, end) / (CELL_M / 2))) + 1 for start, end in segments
+    longitudinal = sum(
+        max(1, math.ceil(math.dist(start, end) / CELL_M)) + 1 for start, end in segments
     )
-    lateral_count = max(1, math.ceil(2 * width / (CELL_M / 2))) + 1
-    vertical_count = max(1, math.ceil(depth / (CELL_M / 2))) + 1
-    cap_count = max(8, math.ceil(2 * math.pi * width / (CELL_M / 2)))
+    cap_count = max(8, math.ceil(2 * math.pi * width / CELL_M))
+    estimate = (longitudinal * 3 + 2 * cap_count) * 2
     _require(
-        estimate * lateral_count * vertical_count + 2 * cap_count * vertical_count
-        <= MAX_V2_SAMPLES,
-        "route visibility sampling exceeds the bound",
+        estimate <= MAX_V2_ROUTE_VISIBILITY_SAMPLES,
+        "route visibility sampling exceeds the per-route bound",
     )
     samples = set()
     for start, end in segments:
         distance = math.dist(start, end)
-        count = max(1, math.ceil(distance / (CELL_M / 2)))
+        count = max(1, math.ceil(distance / CELL_M))
         dx, dy = end[0] - start[0], end[1] - start[1]
         length = math.hypot(dx, dy)
         lateral = (-dy / length, dx / length)
         for index in range(count + 1):
             x, y = start[0] + dx * index / count, start[1] + dy * index / count
-            for lateral_index in range(lateral_count):
-                offset = -width + 2 * width * lateral_index / (lateral_count - 1)
-                for z_index in range(vertical_count):
-                    z = route["z_min_m"] + depth * z_index / (vertical_count - 1)
+            for offset in (-width, 0.0, width):
+                for z in (route["z_min_m"], route["z_max_m"]):
                     samples.add((x + lateral[0] * offset, y + lateral[1] * offset, z))
         for center in (start, end):
             for angle_index in range(cap_count):
                 angle = 2 * math.pi * angle_index / cap_count
-                for z_index in range(vertical_count):
-                    z = route["z_min_m"] + depth * z_index / (vertical_count - 1)
+                for z in (route["z_min_m"], route["z_max_m"]):
                     samples.add(
                         (
                             center[0] + width * math.cos(angle),
@@ -711,25 +710,81 @@ def _v2_route_samples(route):
                             z,
                         )
                     )
-    _require(len(samples) <= MAX_V2_SAMPLES, "route visibility sampling exceeds the bound")
+    _require(
+        len(samples) <= MAX_V2_ROUTE_VISIBILITY_SAMPLES,
+        "route visibility sampling exceeds the per-route bound",
+    )
     return tuple(sorted(samples))
 
 
+def _v2_segment_polygon_distance(start, end, polygon):
+    return min(
+        segment_distance(start, end, edge_start, edge_end)
+        for edge_start, edge_end in zip(polygon, polygon[1:], strict=False)
+    )
+
+
+def _v2_segment_within_corridor(start, end, route, corridor, clearance):
+    radius = route["half_width_m"] + clearance
+    available_radius = corridor["width_m"] / 2 - radius
+    if available_radius < 0:
+        return False
+    if not (
+        corridor["z_min_m"] <= route["z_min_m"] - clearance
+        and route["z_max_m"] + clearance <= corridor["z_max_m"]
+    ):
+        return False
+    for corridor_start, corridor_end, evidence in zip(
+        corridor["centerline"][:-1],
+        corridor["centerline"][1:],
+        corridor["height_evidence"],
+        strict=True,
+    ):
+        if (
+            route["z_max_m"] + clearance <= evidence["maximum_flight_height_m"]
+            and distance_to_segment(start, corridor_start, corridor_end) <= available_radius
+            and distance_to_segment(end, corridor_start, corridor_end) <= available_radius
+        ):
+            return True
+    return False
+
+
 def _v2_route_envelope_clear(route, corridors, geofence, hazards, clearance, flight):
+    """Prove the continuous route capsule and altitude prism fit the static evidence."""
     _require(
         route["half_width_m"] >= clearance, "route half width must contain the aircraft envelope"
     )
-    samples = _v2_route_samples(route)
-    for x, y, z in samples:
+    radius = route["half_width_m"] + clearance
+    for start, end in zip(route["centerline"], route["centerline"][1:], strict=False):
         if not (
-            flight[0] + clearance <= x <= flight[2] - clearance
-            and flight[1] + clearance <= y <= flight[3] - clearance
+            flight[0] + radius <= start[0] <= flight[2] - radius
+            and flight[1] + radius <= start[1] <= flight[3] - radius
+            and flight[0] + radius <= end[0] <= flight[2] - radius
+            and flight[1] + radius <= end[1] <= flight[3] - radius
+            and point_inside(geofence["polygon"], start)
+            and point_inside(geofence["polygon"], end)
+            and _v2_segment_polygon_distance(start, end, geofence["polygon"]) >= radius
         ):
             return False
-        point = (x, y, x, y)
-        if _v2_blocked(point, z, z, geofence, hazards, clearance) is not None:
+        if any(
+            _overlap(
+                route["z_min_m"] - clearance,
+                route["z_max_m"] + clearance,
+                hazard["z_min_m"],
+                hazard["z_max_m"],
+            )
+            and (
+                point_inside(hazard["polygon"], start)
+                or point_inside(hazard["polygon"], end)
+                or _v2_segment_polygon_distance(start, end, hazard["polygon"]) <= radius
+            )
+            for hazard in hazards
+        ):
             return False
-        if _v2_cell_domain(point, z, z, corridors, (), clearance) != "corridor":
+        if not any(
+            _v2_segment_within_corridor(start, end, route, corridor, clearance)
+            for corridor in corridors
+        ):
             return False
     return True
 
@@ -825,9 +880,13 @@ def _v2_visible(sample, heading, tag, model, hazards):
     return not _v2_occluded(camera, target, hazards)
 
 
-def _v2_visibility(route, tags, model, hazards):
-    samples = _v2_route_samples(route)
-    verified_tags = [tag for tag in tags if tag.get("verified_for_flight") is True]
+def _v2_visibility(route, tags, floor_id, model, hazards):
+    samples = _v2_visibility_samples(route)
+    verified_tags = [
+        tag
+        for tag in tags
+        if tag.get("verified_for_flight") is True and tag.get("floor_id") == floor_id
+    ]
     uncovered = [
         sample
         for sample in samples
@@ -836,12 +895,15 @@ def _v2_visibility(route, tags, model, hazards):
         )
     ]
     return {
-        "status": "measured_camera_envelope",
-        "sample_spacing_max_m": CELL_M / 2,
+        "status": "sampled_camera_envelope",
+        "sample_spacing_max_m": CELL_M,
         "sample_count": len(samples),
         "uncovered_sample_count": len(uncovered),
+        "uncovered_samples_xyz": [
+            list(sample) for sample in uncovered[:MAX_V2_UNCOVERED_REPORT_SAMPLES]
+        ],
+        "uncovered_samples_truncated": len(uncovered) > MAX_V2_UNCOVERED_REPORT_SAMPLES,
         "covered": not uncovered,
-        "uncovered_samples_xyz": [list(sample) for sample in uncovered],
         "verified_tag_ids": [tag["id"] for tag in verified_tags],
         "camera_model_id": model["id"],
         "calibration": model["calibration"],
@@ -1090,7 +1152,7 @@ def _generate_v2(bundle, authoring, output, accepted_versions, *, payload=None):
                 [
                     int(
                         _v2_blocked(rect, z, z, geofence, hazards, clearance_m) is not None
-                        or _v2_cell_domain(rect, z, z, corridors, free_volumes) is None
+                        or _v2_cell_domain(rect, z, z, corridors, free_volumes, clearance_m) is None
                     )
                     for rect in cells[start : start + width]
                 ]
@@ -1167,6 +1229,7 @@ def _generate_v2(bundle, authoring, output, accepted_versions, *, payload=None):
         models[ident] = model
     tags = validated.document("tags.yaml")["tags"]
     routes = []
+    total_visibility_samples = 0
     _require(
         isinstance(request["routes"], list) and 1 <= len(request["routes"]) <= MAX_V2_ROUTES,
         "routes are bounded",
@@ -1239,7 +1302,12 @@ def _generate_v2(bundle, authoring, output, accepted_versions, *, payload=None):
         route["geometry_clear"] = clear
         route["intersecting_cells"] = len(route_cells)
         route["tag_coverage"] = _v2_visibility(
-            route, tags, models[item["camera_model_id"]], hazards
+            route, tags, floor_id, models[item["camera_model_id"]], hazards
+        )
+        total_visibility_samples += route["tag_coverage"]["sample_count"]
+        _require(
+            total_visibility_samples <= MAX_V2_TOTAL_VISIBILITY_SAMPLES,
+            "geometry visibility sampling exceeds the artifact bound",
         )
         routes.append(route)
     formations = []
@@ -1373,12 +1441,22 @@ def _generate_v2(bundle, authoring, output, accepted_versions, *, payload=None):
             }
             for item in tags
         ]
-        write_preview(output / "preview.html", preview_report, grids, [], normalized_tags, [])
+        preview_path = output / "preview.html"
+        write_preview(preview_path, preview_report, grids, [], normalized_tags, [])
+        _require(
+            preview_path.stat().st_size <= MAX_V2_ARTIFACT_BYTES,
+            "geometry preview exceeds the artifact byte limit",
+        )
         report["files"] = {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(output.iterdir())
         }
-        write_document(output / "geometry.json", report)
+        report_payload = (json.dumps(report, indent=2, allow_nan=False) + "\n").encode()
+        _require(
+            len(report_payload) <= MAX_V2_ARTIFACT_BYTES,
+            "geometry report exceeds the artifact byte limit",
+        )
+        (output / "geometry.json").write_bytes(report_payload)
         os.replace(output, output_target)
         return report
     except BaseException:
