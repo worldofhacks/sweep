@@ -32,6 +32,17 @@ MAX_OFFSET_UNCERTAINTY_DEG = 5.0
 MIN_GEOMETRY_RANK = 0.03
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 MAX_OUTPUT_BYTES = 512 * 1024
+EXPECTED_LIMITS = {
+    "wheel_diameter_mm": 152.4,
+    "forward_speed_m_s": 0.04,
+    "forward_distance_m": 0.08,
+    "yaw_rate_deg_s": 10.0,
+    "yaw_degrees": 10.0,
+    "pulse_duration_s": 0.5,
+    "max_wheel_travel_m": 0.18,
+    "max_yaw_degrees": 15.0,
+    "max_runtime_s": 60.0,
+}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -82,7 +93,13 @@ def _pin(value: object, name: str) -> str | None:
 def _boot_id(value: object) -> str | None:
     if value is None:
         return None
-    if type(value) is not str or not value or value != value.strip() or len(value) > 128:
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or not value.isprintable()
+        or len(value) > 128
+    ):
         raise ValueError("boot_id must be canonical text or null")
     return value
 
@@ -239,10 +256,10 @@ def _limits(value: object) -> dict[str, float]:
         "limits",
     )
     result = {key: _number(raw[key], f"limits.{key}", minimum=0.0) for key in raw}
-    _require(
-        abs(result["wheel_diameter_mm"] - WHEEL_DIAMETER_MM) < 1e-6,
-        "limits wheel diameter mismatches Ohmni 11",
-    )
+    for name, expected in EXPECTED_LIMITS.items():
+        _require(
+            abs(result[name] - expected) < 1e-12, f"limits.{name} is not the fixed capture bound"
+        )
     return result
 
 
@@ -290,6 +307,14 @@ def parse_capture(value: object) -> dict[str, object]:
 def _rotation(angle: float) -> np.ndarray:
     cosine, sine = math.cos(angle), math.sin(angle)
     return np.array(((cosine, -sine), (sine, cosine)), dtype=float)
+
+
+def _normalized_offset(offset_deg: float) -> float:
+    return (offset_deg + 180.0) % 360.0 - 180.0
+
+
+def _offset_distance(left_deg: float, right_deg: float) -> float:
+    return abs(_normalized_offset(left_deg - right_deg))
 
 
 def predicted_raw_transform(
@@ -458,7 +483,9 @@ def _candidate(
     ]
     curvature = max((nearby[0] + nearby[1] - 2.0 * fit_score) / (step * step), 1e-12)
     uncertainty = math.sqrt(max(fit_score, 1e-12) / curvature)
-    competing = next(item for item in coarse if item[1] != sign or abs(item[2] - offset) > 10.0)
+    competing = next(
+        item for item in coarse if item[1] != sign or _offset_distance(item[2], offset) > 10.0
+    )
     if best_rms > MAX_RMS_M:
         refusals.append("scan_overlap_or_residual_failure")
     if held_out_rms > MAX_HELD_OUT_RMS_M:
@@ -477,11 +504,11 @@ def _candidate(
             for candidate_offset in np.arange(offset - 5.0, offset + 5.001, 0.25)
         )
         per_stage_offsets.append(float(local[1]))
-    if max(per_stage_offsets) - min(per_stage_offsets) > 3.0:
+    if _offset_distance(per_stage_offsets[0], per_stage_offsets[1]) > 3.0:
         refusals.append("per_stage_offset_disagreement")
     return {
         "refusal_reasons": sorted(set(refusals)),
-        "candidate": {"offset_deg": offset, "angle_sign": sign},
+        "candidate": {"offset_deg": _normalized_offset(offset), "angle_sign": sign},
         "metrics": {
             "fit_rms_m": best_rms,
             "held_out_rms_m": held_out_rms,
@@ -489,7 +516,11 @@ def _candidate(
             "held_out_mean_squared_m2": held_out_score,
             "competing_basin_mean_squared_m2": competing[0],
             "per_stage_offset_deg": dict(
-                zip(("after_forward", "after_yaw"), per_stage_offsets, strict=True)
+                zip(
+                    ("after_forward", "after_yaw"),
+                    [_normalized_offset(value) for value in per_stage_offsets],
+                    strict=True,
+                )
             ),
             **initial_metrics,
             "registration_skipped": False,

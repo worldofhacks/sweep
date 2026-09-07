@@ -201,3 +201,23 @@ def test_refuses_stale_timing_drift_and_missing_capture_provenance() -> None:
     assert "missing_boot_id" in result["refusal_reasons"]
     assert "missing_executed_bundle_source_sha256" in result["refusal_reasons"]
     assert "candidate" not in result
+
+
+def test_normalizes_an_equivalent_offset_at_the_wrap_boundary() -> None:
+    result = fit_capture(_capture(179.6, -1))
+
+    assert result["approval_status"] == "unapproved_candidate"
+    assert result["candidate"]["offset_deg"] == pytest.approx(179.6, abs=1.0)
+    assert -180.0 <= result["candidate"]["offset_deg"] < 180.0
+
+
+def test_rejects_noncanonical_provenance_and_modified_fixed_limits() -> None:
+    capture = _capture()
+    capture["boot_id"] = "\x01"
+    with pytest.raises(ValueError, match="boot_id"):
+        fit_capture(capture)
+
+    capture = _capture()
+    capture["limits"]["max_runtime_s"] = 61.0
+    with pytest.raises(ValueError, match="fixed capture bound"):
+        fit_capture(capture)
