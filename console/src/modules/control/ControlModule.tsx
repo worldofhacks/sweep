@@ -1,3 +1,4 @@
+import { NavigationPane } from './navigation/NavigationPane'
 import { useState } from 'react'
 import { captureGuidance } from '../devices/telemetry'
 import { useSecondTick } from '../live/use-second-tick'
@@ -11,10 +12,11 @@ import { RequestsPane } from './RequestsPane'
 import { SwarmPane } from './SwarmPane'
 import type { CaptureReadiness } from './controls'
 
-export type ControlPaneId = 'swarm' | 'capture' | 'commands' | 'requests' | 'fleet'
+export type ControlPaneId = 'swarm' | 'navigation' | 'capture' | 'commands' | 'requests' | 'fleet'
 
 const PANES: PaneTab[] = [
   { id: 'swarm', label: 'Swarm' },
+  { id: 'navigation', label: 'Navigate' },
   { id: 'capture', label: 'Capture' },
   { id: 'commands', label: 'Commands' },
   { id: 'requests', label: 'Requests' },
@@ -68,6 +70,9 @@ export function ControlModule({
           onFormationPreview={setFormationPreview}
         />
       )}
+      {pane === 'navigation' && <NavigationPane state={controller.state} snapshot={controller.navigation}
+        now={now()} onPreview={(zoneId) => { void controller.prepareNavigation(zoneId) }}
+        onDestinationChange={controller.invalidateNavigation} />}
       {pane === 'capture' && (
         <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={currentGuidance} />
       )}

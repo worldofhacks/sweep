@@ -1,5 +1,7 @@
 /**
  * Console-side mirror of the frozen Intent v1 contract in relay/intent_v1.py.
+ * navigate is reserved for console review integration (#143), not a deployed
+ * backend intent. Every current console transmission path rejects it.
  *
  * Relay event envelopes are deliberately kept in this one module while M1.1 is
  * integrated. Components and reducers consume these normalized shapes and do
@@ -248,7 +250,7 @@ export interface CaptureRoomArgs {
   pattern: CapturePattern
 }
 
-/** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
+/** Deployed args mirror relay/intent_v1.py; navigate is a preview-only reservation. */
 export interface IntentArgsByName {
   arm: EmptyArgs
   disarm: EmptyArgs

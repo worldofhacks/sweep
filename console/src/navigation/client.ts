@@ -5,6 +5,7 @@ export const NAVIGATION_UNAVAILABLE = 'Navigation is unavailable: no accepted-ma
 
 /** Explicit injection port only. No backend endpoints or execution API are assumed. */
 export interface NavigationClient {
+  /** Stable immutable snapshot until notification; deadlines use the console clock. */
   getSnapshot(): NavigationSnapshot
   subscribe(listener: (snapshot: NavigationSnapshot) => void): () => void
   requestPreview(request: NavigationPreviewRequest): Promise<NavigationPreview>

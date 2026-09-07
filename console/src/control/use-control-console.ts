@@ -1,3 +1,6 @@
+import { useNavigationReview } from './use-navigation-review'
+import { navigationBlockedReason, navigationTargets } from './navigation'
+import { navigationPreviewValidity, type NavigationClient, type NavigationPreview } from '../navigation'
 import { motionObservationCurrent, observedControlState } from './observation'
 import { isReady } from '../shell/derive'
 import { peripheralBlockedReason } from './peripherals'
@@ -62,6 +65,7 @@ export interface UseControlConsoleOptions {
   sessionId: string
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
+  navigation?: NavigationClient
 }
 
 /** One control press: an intent name, its args, and the aircraft it addresses. */
@@ -75,6 +79,7 @@ export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> 
 export function useControlConsole({
   sessionId,
   clients,
+  navigation: navigationClient,
   intentDependencies = browserIntentDependencies,
 }: UseControlConsoleOptions) {
   const [reportedState, dispatch] = useReducer(
@@ -91,6 +96,8 @@ export function useControlConsole({
   }, [])
   const state = useMemo(() => observedControlState(reportedState, Math.max(observationTime, intentDependencies.now())), [reportedState, intentDependencies, observationTime])
   const confirmedIds = useRef(new Set<string>())
+  const navigationGeneration = useRef(0)
+  const [navigationReset, resetNavigation] = useReducer((value: number) => value + 1, 0)
 
   // Only one pending preview can be confirmed. Retain its synchronous send
   // guard until React commits the lifecycle update, then release the entry.
@@ -243,8 +250,10 @@ export function useControlConsole({
       intent: IntentV1,
       expiresAt?: number,
       voiceBinding?: NonNullable<RequestRecord['plan']>['voiceBinding'],
+      navigation?: NavigationPreview,
     ): IntentV1 => {
       const t = intentDependencies.now()
+      if (!navigation) { navigationGeneration.current += 1; resetNavigation() }
       confirmedIds.current.delete(intent.intent_id)
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
@@ -258,6 +267,7 @@ export function useControlConsole({
         t,
         plan: {
           ...buildPlanPreview(intent, state.rosterVersion, expiresAt, voiceBinding, deviceLabeller(state.aircraft)),
+          ...(navigation ? { navigation, confirmationBlockedReason: NAVIGATION_CONFIRMATION_UNAVAILABLE } : {}),
           deviceEpochs: Object.fromEntries(intent.selection.map((id) => [id, state.aircraft[id]?.connection_epoch])),
         },
       })
@@ -266,12 +276,38 @@ export function useControlConsole({
     [intentDependencies, state.aircraft, state.requests, state.rosterVersion],
   )
 
+  const stageNavigation = useCallback((intent: IntentV1, preview: NavigationPreview) => {
+    stageForConfirmation(intent, preview.expiresAt, undefined, preview)
+  }, [stageForConfirmation])
+  const navigation = useNavigationReview({ state, client: navigationClient,
+    dependencies: intentDependencies, generationRef: navigationGeneration, reset: navigationReset, onPreview: stageNavigation })
+
+  useEffect(() => {
+    for (const request of state.requests) {
+      if (request.status !== 'pending_confirmation' || request.intent.name !== 'navigate') continue
+      const preview = request.plan?.navigation ?? null
+      const validity = navigationPreviewValidity(navigation.snapshot.preview, navigation.snapshot.catalog, {
+        session: state.sessionId, rosterVersion: state.rosterVersion, selected: navigationTargets(state),
+        destinationZoneId: preview?.destination.zoneId ?? '', intentId: request.intent.intent_id,
+        frozenPreview: preview ?? undefined, now: intentDependencies.now(),
+      })
+      const blocked = navigationBlockedReason(state)
+      if (blocked || navigation.snapshot.status !== 'ready' || !navigation.snapshot.preview ||
+        (!validity.valid && validity.code !== 'node_refused')) {
+        dispatch({ type: 'request_invalidated', intentId: request.intent.intent_id, t: intentDependencies.now(),
+          reasonCode: 'navigation_review_changed', detail: blocked ?? (!validity.valid ? validity.reason : 'The destination review changed. Request a new preview.') })
+      }
+    }
+  }, [intentDependencies, navigation.snapshot, state])
+
   /**
    * Records a freshly minted intent, then either parks it for confirmation
    * (with its plan preview) or sends it at once.
    */
   const stageIntent = useCallback(
     (intent: IntentV1, expiresAt?: number) => {
+      navigationGeneration.current += 1
+      resetNavigation()
       if (intent.name === 'select') {
         state.requests.filter((request) => request.status === 'pending_confirmation').forEach((request) => {
           dispatch({ type: 'request_invalidated', intentId: request.intent.intent_id,
@@ -667,9 +703,10 @@ export function useControlConsole({
 
   const cancelRequest = useCallback(
     (intentId: string) => {
+      navigation.invalidate()
       dispatch({ type: 'request_cancelled', intentId, t: intentDependencies.now() })
     },
-    [intentDependencies],
+    [intentDependencies, navigation],
   )
 
   const issueHold = useCallback(() => {
@@ -733,6 +770,8 @@ export function useControlConsole({
    */
   const invalidatePending = useCallback(
     (reasonCode: string, detail: string) => {
+      navigationGeneration.current += 1
+      resetNavigation()
       const t = intentDependencies.now()
       state.requests
         .filter((request) => request.status === 'pending_confirmation')
@@ -776,6 +815,9 @@ export function useControlConsole({
     /** Latest lidar scan per device and a short trail; read with useSensorStore. */
     sensors,
     pendingRequest,
+    navigation: navigation.snapshot,
+    prepareNavigation: navigation.prepare,
+    invalidateNavigation: navigation.invalidate,
     issueIntent,
     toggleAircraft,
     selectAircraft,

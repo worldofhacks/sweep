@@ -1,8 +1,13 @@
 import { useState } from 'react'
-import { navigationBlockedReason } from '../../../control/navigation'
+import { navigationBlockedReason, navigationTargets } from '../../../control/navigation'
+import { observedControlState } from '../../../control/observation'
 import { formatDeviceId, type ControlState } from '../../../control/state'
 import {
   resolveNavigationDestination,
+  resolveNavigationZoneId,
+  navigationCatalogValidity,
+  navigationPreviewValidity,
+  NAVIGATION_CONFIRMATION_UNAVAILABLE,
   type NavigationPreview,
   type NavigationSnapshot,
   type NavigationTarget,
@@ -23,18 +28,28 @@ export function NavigationPane({ state, snapshot, now, onPreview, onDestinationC
   const [query, setQuery] = useState('')
   const [chosenId, setChosenId] = useState<string | null>(null)
   const catalog = snapshot.catalog
-  const selected = state.selection.flatMap((id) => state.aircraft[id] ? [state.aircraft[id]] : [])
-  const result = resolveNavigationDestination(catalog, chosenId ?? query, now, selected.map((device) => device.device_class))
-  const search = query.trim().toLowerCase()
+  const current = observedControlState(state, now)
+  const catalogValidity = navigationCatalogValidity(catalog, state.sessionId, now)
+  const selected = navigationTargets(current)
+  const result = chosenId === null
+    ? resolveNavigationDestination(catalogValidity.valid ? catalog : null, query, now, selected.map((device) => device.deviceClass))
+    : resolveNavigationZoneId(catalogValidity.valid ? catalog : null, chosenId, now, selected.map((device) => device.deviceClass))
+  const search = normalizeSearch(query)
   const candidates = catalog?.destinations.filter((destination) =>
-    !search || [destination.zoneId, destination.name, ...destination.aliases].some((name) => name.toLowerCase().includes(search)),
+    !search || [destination.zoneId, destination.name, ...destination.aliases].some((name) => normalizeSearch(name).includes(search)),
   ) ?? []
   const unavailable = snapshot.status === 'unavailable' || snapshot.status === 'error'
   const blocked = unavailable
     ? snapshot.reason ?? 'Named destinations are unavailable from the relay.'
     : snapshot.status === 'loading'
       ? 'Waiting for the destination review.'
-      : navigationBlockedReason(state) ?? (result.kind === 'refused' ? result.reason : result.kind === 'ambiguous' ? 'Choose one canonical destination to resolve the ambiguity.' : null)
+      : navigationBlockedReason(current) ?? (!catalogValidity.valid ? catalogValidity.reason : result.kind === 'refused' ? result.reason : result.kind === 'ambiguous' ? 'Choose one canonical destination to resolve the ambiguity.' : null)
+  const preview = snapshot.preview
+  const destinationZoneId = result.kind === 'resolved' ? result.destination.zoneId : query.trim() || chosenId ? null : preview?.destination.zoneId
+  const previewValidity = preview && destinationZoneId && snapshot.status === 'ready' && navigationBlockedReason(current) === null
+    ? navigationPreviewValidity(preview, catalog, { session: state.sessionId, rosterVersion: state.rosterVersion, selected, destinationZoneId, now })
+    : null
+  const showPreview = preview !== null && (previewValidity?.valid === true || previewValidity?.code === 'node_refused')
 
   function choose(zoneId: string, name: string) {
     setChosenId(zoneId)
@@ -57,7 +72,7 @@ export function NavigationPane({ state, snapshot, now, onPreview, onDestinationC
               const device = state.aircraft[id]
               return <li className="nv-target" key={id}>
                 <strong>{device ? formatDeviceId(device) : `Device ${id}`}</strong>
-                <span>{device ? `${device.device_class === 'aircraft' ? 'Aircraft' : 'Ground robot'} · epoch ${device.connection_epoch} · ${device.flight_state ?? 'state unreported'}` : 'Current device identity unavailable'}</span>
+                <span>{device ? `${device.device_class === 'aircraft' ? 'Aircraft' : 'Ground robot'} · ID ${id} · epoch ${device.connection_epoch} · ${device.flight_state ?? 'state unreported'}` : 'Current device identity unavailable'}</span>
               </li>
             })}
           </ul>
@@ -91,18 +106,24 @@ export function NavigationPane({ state, snapshot, now, onPreview, onDestinationC
       )}
 
       {blocked && <p className="nv-note is-warning" role="status">{blocked}</p>}
+      {!blocked && snapshot.reason && <p className="nv-note is-warning" role="status">{snapshot.reason}</p>}
       <button type="button" className="nv-review" disabled={blocked !== null || result.kind !== 'resolved'} onClick={() => {
         if (blocked === null && result.kind === 'resolved') onPreview(result.destination.zoneId)
       }}>Review destination</button>
       <p className="nv-note">Navigation execution is unavailable until the relay provides a frozen confirmation contract. Reviewing a destination does not send a motion command.</p>
 
-      {snapshot.preview && <NavigationPreviewDetails preview={snapshot.preview} now={now} />}
+      {showPreview && <NavigationPreviewDetails preview={preview} now={now} />}
+      {preview && !showPreview && <p className="nv-note is-warning" role="status">The previous destination review is no longer current. {previewValidity?.reason ?? 'Review the current destination and selected devices again.'}</p>}
     </section>
   )
 }
 
 function targetName(target: NavigationTarget): string {
-  return `${target.deviceClass === 'aircraft' ? 'Aircraft' : 'Ground robot'} ${target.id} · epoch ${target.epoch}`
+  return `${target.deviceClass === 'aircraft' ? 'Aircraft' : 'Ground robot'} ID ${target.id} · epoch ${target.epoch}`
+}
+
+function normalizeSearch(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US')
 }
 
 /** Shared with the central dock; every route, slot, and outcome is the reported frozen value. */
@@ -122,6 +143,8 @@ export function NavigationPreviewDetails({ preview, now }: { preview: Navigation
         <Version label="Catalog version" value={preview.catalogVersion} />
         <Version label="Configuration version" value={preview.configVersion} />
         <Version label="Roster version" value={preview.rosterVersion} />
+        <Version label="Map approval" value={preview.map.approvalId} />
+        <Version label="Coordinate frame" value={preview.map.frame} />
       </dl>
       <ul className="nv-routes" aria-label="Per-device navigation outcomes">
         {preview.selected.map((target) => {
@@ -142,7 +165,8 @@ export function NavigationPreviewDetails({ preview, now }: { preview: Navigation
         })}
       </ul>
       <details className="nv-config"><summary>Frozen motion configuration</summary><pre>{JSON.stringify(preview.motionConfig, null, 2)}</pre></details>
-      <p className="nv-note">This review grants no takeoff, capture, survey, or formation action. Navigation confirmation and execution remain unavailable.</p>
+      <p className="nv-note">This review grants no takeoff, capture, survey, or formation action.</p>
+      <p className="nv-note">{NAVIGATION_CONFIRMATION_UNAVAILABLE}</p>
     </section>
   )
 }

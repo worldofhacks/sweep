@@ -13,7 +13,7 @@ import type {
 import { DEVICE_CLASSES, followsSelection } from '../relay/contract'
 import type { NavigationPreview } from '../navigation'
 
-export const NAVIGATION_CONFIRMATION_UNAVAILABLE = 'Navigation confirmation is unavailable until the relay implements its frozen preview and confirmation contract.'
+export { NAVIGATION_CONFIRMATION_UNAVAILABLE } from '../navigation'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'degraded' | 'disconnected'
 export type RelayTransport = 'websocket' | 'fixture' | 'unavailable'

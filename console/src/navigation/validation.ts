@@ -11,6 +11,8 @@ export const MAX_NAVIGATION_WAYPOINTS = 512
 export const MAX_NAVIGATION_TOTAL_WAYPOINTS = 8192
 export const MAX_NAVIGATION_JSON_BYTES = 1024 * 1024
 export const MAX_NAVIGATION_CONFIG_BYTES = 16 * 1024
+/** A frontend rendering bound, not a qualified physical motion limit. */
+export const MAX_NAVIGATION_COORDINATE_M = 1_000_000
 
 const encoder = new TextEncoder()
 const classes: readonly DeviceClass[] = ['aircraft', 'ground_vehicle']
@@ -30,7 +32,7 @@ function exact(value: unknown, keys: readonly string[]): value is Record<string,
 
 function text(value: unknown, max = 128): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max &&
-    value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value)
+    value === value.trim() && !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
 }
 
 function identity(value: unknown): value is string {
@@ -59,9 +61,11 @@ function boundedJson(value: unknown, maxBytes: number, maxDepth = 16, maxItems =
     if (seen.has(item)) return false
     seen.add(item)
     const descriptors = Object.getOwnPropertyDescriptors(item)
+    if (Object.getOwnPropertySymbols(item).length !== 0) return false
     if (Object.values(descriptors).some((field) => field.get !== undefined || field.set !== undefined)) return false
+    if (Object.entries(descriptors).some(([key, field]) => !field.enumerable && !(Array.isArray(item) && key === 'length'))) return false
     const entries = Object.entries(item)
-    if (Array.isArray(item) && entries.length !== item.length) return false
+    if (Array.isArray(item) && (entries.length !== item.length || entries.some(([key], index) => key !== String(index)))) return false
     if (entries.some(([key, child]) => key.length > 128 || !walk(child, depth + 1))) return false
     seen.delete(item)
     return true
@@ -96,7 +100,7 @@ function destination(value: unknown): value is NavigationDestination {
     identity(value.zoneId) && text(value.name) && identity(value.floorId) &&
     list(value.aliases, MAX_NAVIGATION_ALIASES, (item) => text(item)) &&
     new Set(value.aliases.map((alias) => normalized(alias as string))).size === value.aliases.length &&
-    typeof value.excluded === 'boolean' && ['reachable', 'unreachable', 'unknown'].includes(String(value.reachability)) &&
+    typeof value.excluded === 'boolean' && typeof value.reachability === 'string' && ['reachable', 'unreachable', 'unknown'].includes(value.reachability) &&
     list(value.allowedClasses, classes.length, (item) => classes.includes(item as DeviceClass)) &&
     new Set(value.allowedClasses).size === value.allowedClasses.length
 }
@@ -113,7 +117,7 @@ function window(value: Record<string, unknown>): boolean {
 function point(value: unknown): value is Record<string, unknown> {
   return exact(value, ['xM', 'yM', 'zM', 'floorId', 'frame']) && value.frame === 'world' &&
     identity(value.floorId) && ['xM', 'yM', 'zM'].every((key) =>
-      typeof value[key] === 'number' && Number.isFinite(value[key]) && Math.abs(value[key] as number) <= 1_000_000)
+      typeof value[key] === 'number' && Number.isFinite(value[key]) && Math.abs(value[key] as number) <= MAX_NAVIGATION_COORDINATE_M)
 }
 
 function route(value: unknown): value is Record<string, unknown> {
@@ -127,7 +131,7 @@ function route(value: unknown): value is Record<string, unknown> {
 
 function outcome(value: unknown): value is Record<string, unknown> {
   return exact(value, ['target', 'status', 'code', 'detail']) && target(value.target) &&
-    ['planned', 'refused'].includes(String(value.status)) && identity(value.code) && text(value.detail, 512)
+    typeof value.status === 'string' && ['planned', 'refused'].includes(value.status) && identity(value.code) && text(value.detail, 512)
 }
 
 function copyFrozen<T>(value: T): T {
@@ -179,7 +183,6 @@ export function parseNavigationPreview(raw: unknown): NavigationPreview | null {
       item.arrivalSlot.zoneId !== preview.destination.zoneId ||
       item.arrivalSlot.position.floorId !== preview.destination.floorId ||
       item.waypoints.some((position) => position.floorId !== preview.map.floorId)) ||
-      preview.destination.floorId !== preview.map.floorId ||
       (preview.dispatchEligible && (planned.length !== selected.size || preview.destination.excluded ||
         preview.destination.reachability !== 'reachable' || preview.selected.some((item) => !preview.destination.allowedClasses.includes(item.deviceClass))))) return null
     return copyFrozen(preview)
@@ -223,7 +226,23 @@ export function resolveNavigationDestination(
   const matches = catalog.destinations.filter((item) => [item.zoneId, item.name, ...item.aliases].some((candidate) => normalized(candidate) === name))
   if (matches.length === 0) return { kind: 'refused', code: 'destination_unknown', reason: 'No accepted destination matches this name.' }
   if (matches.length > 1) return { kind: 'ambiguous', candidates: matches }
-  const found = matches[0]
+  return destinationEligibility(catalog, matches[0], selectedClasses)
+}
+
+/** Explicit selection is a canonical identity, never reinterpreted as another zone's alias. */
+export function resolveNavigationZoneId(
+  catalog: NavigationCatalog | null, zoneId: string, now: number, selectedClasses: readonly DeviceClass[] = [],
+): NavigationDestinationResolution {
+  const current = navigationCatalogValidity(catalog, catalog?.session ?? '', now)
+  if (!current.valid || catalog === null) return { kind: 'refused', code: current.code, reason: current.reason }
+  const found = catalog.destinations.find((item) => item.zoneId === zoneId)
+  if (!found) return { kind: 'refused', code: 'destination_unknown', reason: 'This canonical destination is absent from the accepted catalog.' }
+  return destinationEligibility(catalog, found, selectedClasses)
+}
+
+function destinationEligibility(
+  catalog: NavigationCatalog, found: NavigationDestination, selectedClasses: readonly DeviceClass[],
+): NavigationDestinationResolution {
   if (found.excluded) return { kind: 'refused', code: 'destination_excluded', reason: 'This destination is excluded from navigation.' }
   if (found.floorId !== catalog.map.floorId) return { kind: 'refused', code: 'wrong_floor', reason: 'This destination is on another floor.' }
   if (found.reachability !== 'reachable') return { kind: 'refused', code: 'destination_unreachable', reason: found.reachability === 'unknown' ? 'Destination reachability has not been established.' : 'This destination is unreachable.' }
@@ -239,6 +258,7 @@ export function navigationPreviewValidity(
   if (preview === null) return fail('preview_unavailable', 'No frozen navigation preview is available.')
   if (parseNavigationPreview(preview) === null) return fail('preview_invalid', 'The navigation preview does not match the integration contract.')
   if (preview.session !== context.session) return fail('session_changed', 'The preview belongs to another session.')
+  if (context.intentId !== undefined && preview.intentId !== context.intentId) return fail('intent_changed', 'The preview belongs to another request.')
   if (context.now < preview.receivedAt) return fail('preview_not_current', 'The preview observation is in the future.')
   if (context.now >= preview.expiresAt) return fail('preview_expired', 'The navigation preview has expired.')
   if (preview.rosterVersion !== context.rosterVersion) return fail('roster_changed', 'The roster changed after preview.')
@@ -249,6 +269,11 @@ export function navigationPreviewValidity(
   if (preview.catalogVersion !== catalog.catalogVersion) return fail('catalog_changed', 'The destination catalog version changed after preview.')
   if (!same(preview.map, catalog.map)) return fail('map_changed', 'The accepted map, geometry or navigation artifact changed after preview.')
   if (preview.configVersion !== catalog.configVersion || !same(preview.motionConfig, catalog.motionConfig)) return fail('motion_config_changed', 'The authoritative motion configuration changed after preview.')
+  if (context.frozenPreview !== undefined && (parseNavigationPreview(context.frozenPreview) === null || !same(preview, context.frozenPreview))) return fail('preview_changed', 'The captured preview, route, arrival slot or hold behavior changed. Request a new preview.')
+  if (destination?.excluded) return fail('destination_excluded', 'This destination is excluded from navigation.')
+  if (destination?.floorId !== catalog.map.floorId) return fail('wrong_floor', 'This destination is on another floor.')
+  if (destination?.reachability !== 'reachable') return fail('destination_unreachable', 'Destination reachability has not been established for this preview.')
+  if (preview.selected.some((item) => !destination.allowedClasses.includes(item.deviceClass))) return fail('unsupported_selection', 'This destination does not support every selected device class.')
   if (preview.outcomes.some((item) => item.status === 'refused')) return fail('node_refused', 'At least one selected device was refused by the preview provider.')
   return valid
 }

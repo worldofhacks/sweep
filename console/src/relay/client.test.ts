@@ -1,3 +1,4 @@
+import { NAVIGATION_CONFIRMATION_UNAVAILABLE } from '../navigation'
 import { describe, expect, test } from 'vitest'
 import { WebSocketRelayClient, buildSessionWebSocketUrl } from './client'
 import { publicNodeEvents } from '../testing/public-node-events'
@@ -41,7 +42,7 @@ describe('WebSocket relay client', () => {
     socket.message({ v: 1, t: 100, type: 'auth.accepted', event_id: 'auth', session: 'session-1', source, drone_id: null })
     await expect(client.sendIntent({ v: 1, t: 100, type: 'intent', intent_id: 'nav-review', retry_of: null,
       source, session: 'session-1', name: 'navigate', args: { zone_id: 'zone-kitchen' },
-      selection: [1, 11], mode: 'indoor', confirm: true })).rejects.toThrow('Navigation confirmation is unavailable')
+      selection: [1, 11], mode: 'indoor', confirm: true })).rejects.toThrow(NAVIGATION_CONFIRMATION_UNAVAILABLE)
     expect(socket.sent.map((message) => JSON.parse(message).type)).toEqual(['auth'])
   })
 

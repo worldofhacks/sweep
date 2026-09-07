@@ -101,6 +101,10 @@ export interface NavigationContext {
   readonly selected: readonly NavigationTarget[]
   readonly destinationZoneId: string
   readonly now: number
+  /** Bind an asynchronous provider result to the request which created it. */
+  readonly intentId?: string
+  /** Captured parser output when a preview is staged; never replace it with a refresh. */
+  readonly frozenPreview?: NavigationPreview
 }
 
 export interface NavigationPreviewRequest {

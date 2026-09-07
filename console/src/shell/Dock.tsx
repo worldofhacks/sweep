@@ -1,3 +1,4 @@
+import { NavigationPreviewDetails } from '../modules/control/navigation/NavigationPane'
 import { useEffect, useRef, useState } from 'react'
 import type { DeviceLabeller, RequestRecord } from '../control/state'
 import { formatDroneId } from '../control/state'
@@ -100,7 +101,7 @@ function PendingPlan({
               aria-hidden="true"
             >
               {' '}
-              confirm within {Math.round(remainingMs / 1000)} s
+              {plan?.navigation ? 'review expires in' : 'confirm within'} {Math.round(remainingMs / 1000)} s
             </span>
           )}
           {expired && (
@@ -126,6 +127,7 @@ function PendingPlan({
         </span>
       </div>
       {plan?.confirmationBlockedReason && <p role="status" className="sh-json-note">{plan.confirmationBlockedReason}</p>}
+      {plan?.navigation && <NavigationPreviewDetails preview={plan.navigation} now={now} />}
       {plan && plan.steps.length > 0 && (
         <ol className="sh-dock-steps">
           {plan.steps.map((step) => (
@@ -144,7 +146,7 @@ function PendingPlan({
       {jsonOpen && (
         <div className="sh-json">
           <p className="sh-json-note">
-            Exact Intent v1 draft. Confirming stamps t and sets confirm true; nothing else changes.
+            {plan?.navigation ? 'Destination request draft for review. Navigation confirmation and transmission are unavailable.' : 'Exact Intent v1 draft. Confirming stamps t and sets confirm true; nothing else changes.'}
           </p>
           <pre className="sh-json-pre" data-scroll="1">
             {JSON.stringify(pending.intent, null, 2)}
