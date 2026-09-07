@@ -1,38 +1,40 @@
 import type { IntentV1 } from '../relay/contract'
-import { formatDroneId, type PlanPreview } from './state'
+import { formatDroneId, type DeviceLabeller, type PlanPreview } from './state'
 
 const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
+  arm: 'Arm session',
+  robot_peripheral: 'Robot peripheral',
+  camera_control: 'Camera control',
   capture_room: 'Capture room',
   takeoff: 'Takeoff',
   land: 'Land',
   land_all: 'Land all fleet',
   sweep: 'Sweep area',
-  ground_velocity: 'Move ground node',
-  survey_area: 'Record survey area',
 }
 
 /** Plan-card title from the design; other intents show their name. */
 export function planTitle(intent: IntentV1): string {
+  if (intent.name === 'body_pulse' && 'forward_mm_s' in intent.args) {
+    return `${intent.args.forward_mm_s > 0 ? 'Forward' : 'Backward'} ${intent.args.duration_ms / 1000} seconds`
+  }
   return PLAN_TITLES[intent.name] ?? intent.name
 }
 
-/** Ordered plain-language steps from the design's planSteps. */
-export function planSteps(intent: IntentV1): string[] {
-  const ids = intent.selection.map(formatDroneId).join(', ')
-  if (intent.name === 'ground_velocity' && 'linear_mm_s' in intent.args) {
-    const args = intent.args
+/** Ordered plain-language steps from the design's planSteps; `label` names each target by its class. */
+export function planSteps(intent: IntentV1, label: DeviceLabeller = formatDroneId): string[] {
+  const ids = intent.selection.map(label).join(', ')
+  if (intent.name === 'camera_control' && 'kind' in intent.args) return [
+    `Send ${intent.args.kind === 'photo' ? 'single photo capture' : intent.args.kind === 'ready' ? 'photo-mode preparation' : `absolute gimbal pitch ${'pitch_mdeg' in intent.args ? intent.args.pitch_mdeg / 1000 : ''}°`} only to ${ids}.`,
+    'Confirm against the current aircraft connection and SDK capability report.',
+    'Completion requires SDK evidence. Photos stay on the aircraft; media download is unavailable.',
+  ]
+  if (intent.name === 'robot_peripheral' && 'kind' in intent.args) return [`Send ${intent.args.kind} only to ${ids}, independently of the fleet motion selection.`, `Arguments: ${JSON.stringify(intent.args)}`, 'This does not arm or re-enable the drive. Vendor output is reported as submitted; physical completion is not verified.']
+  if (intent.name === 'arm') return ['Enable commands for this session. This does not start any aircraft motors.', 'Takeoff is a separate selected-aircraft command and requires another confirmation.']
+  if (intent.name === 'body_pulse' && 'forward_mm_s' in intent.args) {
     return [
-      args.linear_mm_s > 0
-        ? `Drive ${ids} forward at ${args.linear_mm_s} mm/s for ${args.duration_ms} ms.`
-        : `Turn ${ids} at ${args.angular_mrad_s} mrad/s for ${args.duration_ms} ms.`,
-      'Stop when the pulse ends. Keep the local stop within reach.',
-    ]
-  }
-  if (intent.name === 'survey_area' && 'area_id' in intent.args) {
-    return [
-      `Record lidar evidence from ${ids} for area ${intent.args.area_id}.`,
-      'The operator controls movement during recording.',
-      'Complete the recording to save a candidate occupancy map, or cancel to discard it.',
+      `Send only to ${ids}, using each aircraft’s body frame.`,
+      `Move ${intent.args.forward_mm_s > 0 ? 'forward' : 'backward'} at ${Math.abs(intent.args.forward_mm_s)} mm/s for ${intent.args.duration_ms} ms.`,
+      'The aircraft adapter ends the pulse locally and commands zero velocity. The duration is not a distance guarantee.',
     ]
   }
   if (intent.name === 'capture_room' && 'pattern' in intent.args) {
@@ -84,10 +86,11 @@ export function buildPlanPreview(
   rosterVersion: number,
   expiresAt?: number,
   voiceBinding?: PlanPreview['voiceBinding'],
+  label: DeviceLabeller = formatDroneId,
 ): PlanPreview {
   const preview: PlanPreview = {
     title: planTitle(intent),
-    steps: planSteps(intent),
+    steps: planSteps(intent, label),
     rosterVersion,
     ...(voiceBinding === undefined ? {} : { voiceBinding }),
   }

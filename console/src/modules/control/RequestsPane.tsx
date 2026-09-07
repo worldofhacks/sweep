@@ -1,5 +1,5 @@
 import type { ControlState, RequestRecord, RequestStatus } from '../../control/state'
-import { formatDroneId, isTerminalRequest } from '../../control/state'
+import { deviceLabeller, isTerminalRequest, selectionNoun } from '../../control/state'
 import { formatTime, shortId } from '../../shell/format'
 import { reasonSentence } from '../../shell/sentences'
 import type { ModuleProps } from '../types'
@@ -28,7 +28,7 @@ export function RequestsPane({ controller }: { controller: ModuleProps['controll
   const shown = state.requests.slice(0, SHOWN_REQUESTS)
   return (
     <div>
-      {outcome && <OutcomeCard request={outcome} />}
+      {outcome && <OutcomeCard request={outcome} state={state} />}
       {shown.length === 0 ? (
         <p className="ct-requests-empty">No requests in this session. Every control press appears here.</p>
       ) : (
@@ -42,9 +42,11 @@ export function RequestsPane({ controller }: { controller: ModuleProps['controll
   )
 }
 
-function OutcomeCard({ request }: { request: RequestRecord }) {
+function OutcomeCard({ request, state }: { request: RequestRecord; state: ControlState }) {
   const tone = requestTone(request.status)
-  const sentence = reasonSentence(request.reasonCode) || `The relay reported the request ${request.status}.`
+  const noun = selectionNoun(state.aircraft, request.intent.selection)
+  const sentence =
+    reasonSentence(request.reasonCode, noun) || `The relay reported the request ${request.status}.`
   return (
     <div className={`ct-outcome tone-${tone}`} aria-live="polite" aria-label="Latest outcome">
       <p className="ct-outcome-head">
@@ -68,6 +70,8 @@ function RequestRow({
 }) {
   const tone = requestTone(request.status)
   const intent = request.intent
+  const label = deviceLabeller(state.aircraft)
+  const noun = selectionNoun(state.aircraft, intent.selection)
   const canRetry = request.status === 'failed' || request.status === 'refused'
   const retryBlocked = canRetry ? retryBlockedReason(request, state) : null
   const timeline = TIMELINE_ORDER.filter((status) => request.timestamps[status] !== undefined)
@@ -79,7 +83,7 @@ function RequestRow({
         <span className="ct-request-id" title={intent.intent_id}>
           {shortId(intent.intent_id)}
         </span>{' '}
-        <span className="ct-request-targets">{intent.selection.map(formatDroneId).join(' ') || 'fleet'}</span>{' '}
+        <span className="ct-request-targets">{intent.selection.map(label).join(' ') || 'fleet'}</span>{' '}
         <span className="ct-request-source">source {intent.source}</span>
       </div>
       {intent.retry_of && (
@@ -90,7 +94,7 @@ function RequestRow({
       {request.reasonCode && (
         <p className="ct-request-reason">
           <code className={`tone-${tone}`}>{request.reasonCode}</code>
-          {reasonSentence(request.reasonCode) ? ` — ${reasonSentence(request.reasonCode)}` : ''}
+          {reasonSentence(request.reasonCode, noun) ? ` — ${reasonSentence(request.reasonCode, noun)}` : ''}
         </p>
       )}
       {request.detail && <p className="ct-request-detail">{request.detail}</p>}

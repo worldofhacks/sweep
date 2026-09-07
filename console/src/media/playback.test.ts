@@ -5,18 +5,23 @@
 import { describe, expect, test } from 'vitest'
 import { createPlaybackDescriptor, streamName } from './playback'
 
+const credentials = {
+  webrtcOrigin: 'http://ground-station:8889/',
+  readerUsername: 'console-reader',
+  readerPassword: 'read-secret',
+}
+
 describe('Media playback handoff', () => {
-  test('derives the stream name from the aircraft id alone', () => {
-    expect(streamName(1)).toBe('drone1')
-    expect(streamName(6)).toBe('drone6')
+  test('derives the canonical stream name from the global device id', () => {
+    expect(streamName({ drone_id: 1 })).toBe('drone1')
+    expect(streamName({ drone_id: 11 })).toBe('drone11')
+    expect(streamName({ drone_id: 64 })).toBe('drone64')
   })
 
   test('provides an authenticated WHEP request for the derived stream', () => {
     const descriptor = createPlaybackDescriptor({
-      droneId: 4,
-      webrtcOrigin: 'http://ground-station:8889/',
-      readerUsername: 'console-reader',
-      readerPassword: 'read-secret',
+      device: { drone_id: 4 },
+      ...credentials,
     })
 
     expect(descriptor).toEqual({
@@ -29,21 +34,48 @@ describe('Media playback handoff', () => {
     })
   })
 
-  test.each([0, 7, 1.5])('rejects invalid drone id %s', (droneId) => {
+  test('plays the explicitly configured camera without changing its device identity', () => {
+    expect(createPlaybackDescriptor({
+      ...credentials, device: { drone_id: 11 }, stream: 'robot-five-rear',
+    })).toEqual({
+      stream: 'robot-five-rear', primary: {
+        protocol: 'whep', url: 'http://ground-station:8889/robot-five-rear/whep',
+        authorization: `Basic ${btoa('console-reader:read-secret')}`,
+      },
+    })
+  })
+
+  test.each(['', '../other', '//other-host', 'https://other-host/video', 'camera?token=x', 'camera%2fother'])('rejects an arbitrary camera path %s', (stream) => {
+    expect(() => createPlaybackDescriptor({
+      ...credentials, device: { drone_id: 11 }, stream,
+    })).toThrow('Invalid configured camera stream name')
+  })
+
+  test('a physical ground vehicle uses its global device path', () => {
+    expect(
+      createPlaybackDescriptor({ device: { drone_id: 12 }, ...credentials })
+        .primary.url,
+    ).toBe('http://ground-station:8889/drone12/whep')
+    expect(
+      createPlaybackDescriptor({ device: { drone_id: 1 }, ...credentials }).stream,
+    ).toBe('drone1')
+  })
+
+  test.each([0, -1, 1.5, 65])('rejects invalid device id %s', (drone_id) => {
     expect(() =>
       createPlaybackDescriptor({
-        droneId,
+        device: { drone_id },
         webrtcOrigin: 'http://localhost:8889',
         readerUsername: 'reader',
         readerPassword: 'secret',
       }),
-    ).toThrow('droneId must be an integer from 1 through 6')
+    ).toThrow('drone_id must be an integer from 1 through 64')
   })
 
   test('rejects an empty read credential', () => {
     expect(() =>
       createPlaybackDescriptor({
-        droneId: 1,
+        device: { drone_id: 1 },
         webrtcOrigin: 'http://localhost:8889',
         readerUsername: 'reader',
         readerPassword: '',
@@ -54,7 +86,7 @@ describe('Media playback handoff', () => {
   test('rejects non-HTTP media origins', () => {
     expect(() =>
       createPlaybackDescriptor({
-        droneId: 1,
+        device: { drone_id: 1 },
         webrtcOrigin: 'javascript:alert(1)',
         readerUsername: 'reader',
         readerPassword: 'secret',
@@ -65,7 +97,7 @@ describe('Media playback handoff', () => {
   test('rejects an origin that carries its own credentials', () => {
     expect(() =>
       createPlaybackDescriptor({
-        droneId: 1,
+        device: { drone_id: 1 },
         webrtcOrigin: 'http://reader:secret@localhost:8889',
         readerUsername: 'reader',
         readerPassword: 'secret',

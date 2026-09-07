@@ -61,9 +61,9 @@ export async function openModule(user: User, label: string) {
   await user.click(rail.getByRole('button', { name: label }))
 }
 
-export async function openReferenceTab(user: User, label: string) {
-  await openModule(user, 'Reference')
-  const tabs = within(screen.getByRole('group', { name: 'Reference sections' }))
+export async function openDeviceTab(user: User, label: string) {
+  await openModule(user, 'Devices')
+  const tabs = within(screen.getByRole('group', { name: 'Device sections' }))
   await user.click(tabs.getByRole('button', { name: label }))
 }
 

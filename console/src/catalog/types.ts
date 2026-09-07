@@ -1,4 +1,4 @@
-import type { CapturePattern, DroneId } from '../relay/contract'
+import type { CapturePattern, DroneId, SweepBox } from '../relay/contract'
 
 /**
  * Catalog records for the Captures, Worlds, Connectivity, and Configuration
@@ -147,6 +147,12 @@ export interface ConfigSnapshot {
   groups: ConfigGroup[]
   staged_changes: StagedChange[]
   modes: ModeRecord[]
+  /**
+   * The safety geofence the arbiter enforces, in the room frame. The relay
+   * exposes no endpoint for it yet, so it is null in production and the map
+   * draws no box rather than a guessed one.
+   */
+  geofence: SweepBox | null
 }
 
 export interface CatalogSnapshot {

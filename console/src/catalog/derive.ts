@@ -1,8 +1,11 @@
+import { observationCurrent, motionObservationCurrent } from '../control/observation'
+import { deriveStream } from '../modules/live/derive-live'
 import type { ConnectionStatus, ControlState } from '../control/state'
-import { formatDroneId } from '../control/state'
+import { formatDroneId, type DeviceLabeller } from '../control/state'
 import type { DroneId, RelayAircraftState } from '../relay/contract'
 import { connectionTone, isLinkUp, sortedAircraft, type Tone } from '../shell/derive'
 import { formatAge } from '../shell/format'
+import { readinessNotes } from '../shell/readiness'
 import type {
   BundleRef,
   CapturePose,
@@ -136,8 +139,11 @@ export interface CaptureFilter {
   test: (capture: CaptureRecord) => boolean
 }
 
-/** All, then every project (when more than one), room and aircraft seen, then needs retake. */
-export function captureFilters(captures: CaptureRecord[]): CaptureFilter[] {
+/** All, then every project (when more than one), room and device seen, then needs retake. */
+export function captureFilters(
+  captures: CaptureRecord[],
+  label: DeviceLabeller = formatDroneId,
+): CaptureFilter[] {
   const projects = unique(captures.map((capture) => capture.project))
   const rooms = unique(captures.map((capture) => capture.room_id))
   const drones = unique(captures.map((capture) => capture.drone_id)).sort((a, b) => a - b)
@@ -157,7 +163,7 @@ export function captureFilters(captures: CaptureRecord[]): CaptureFilter[] {
     })),
     ...drones.map((id) => ({
       id: `drone:${id}`,
-      label: formatDroneId(id),
+      label: label(id),
       test: (capture: CaptureRecord) => capture.drone_id === id,
     })),
     { id: 'retake', label: 'Needs retake', test: (capture) => capture.needs_retake },
@@ -222,8 +228,10 @@ export function nodeCells(
   node: NodeRecord | null,
   now: number,
 ): NodeCell[] {
-  const down = drone.membership === 'disconnected'
-  const stale = drone.readiness_reasons.includes('telemetry_stale')
+  now = drone.client_observation?.now ?? now
+  const down = ['disconnected', 'leaving'].includes(drone.membership)
+  const current = observationCurrent(drone)
+  const stale = !current || drone.readiness_reasons.includes('telemetry_stale') || (drone.client_observation !== undefined && !motionObservationCurrent(drone))
   const rcFirmware = node?.rc_firmware ? `fw ${node.rc_firmware}` : 'fw unreported'
   const bridge =
     node === null
@@ -234,11 +242,8 @@ export function nodeCells(
     node === null || node.telemetry_rate_hz === null
       ? 'unreported'
       : `${node.telemetry_rate_hz.toFixed(1)} Hz`
-  const video = drone.video
-  const videoValue =
-    video === undefined
-      ? 'unreported'
-      : `${video.status}${video.last_frame_at !== null ? ` · ${formatAge(now - video.last_frame_at)}` : ''}`
+  const video = deriveStream(drone, now)
+  const videoValue = `${video.status}${drone.video?.last_frame_at != null ? ` · ${video.lastFrame}` : ''}`
   const storage = down
     ? 'unknown'
     : node === null || node.storage_free_gb === null
@@ -248,7 +253,7 @@ export function nodeCells(
   return [
     {
       key: 'RC controller',
-      value: `${drone.control_authority ? 'standby' : 'in control'} · ${rcFirmware}`,
+      value: `${!current ? 'Current control unknown' : drone.control_authority ? 'Sweep control granted' : 'Sweep control not granted'} · ${rcFirmware}`,
       tone: drone.control_authority ? 'ink' : 'danger',
     },
     {
@@ -261,20 +266,20 @@ export function nodeCells(
       value: lan,
       tone: node === null ? 'muted' : node.rtt_ms === null ? 'danger' : node.rtt_ms > 60 ? 'warn' : 'ink',
     },
-    { key: 'Relay', value: down ? 'disconnected' : 'connected', tone: down ? 'danger' : 'ok' },
+    { key: 'Relay', value: down ? 'disconnected' : current ? 'connected' : 'current device connection unknown', tone: down ? 'danger' : current ? 'ok' : 'warn' },
     {
       key: 'Telemetry',
-      value: stale
+      value: !current ? 'current telemetry unknown' : stale
         ? `stale ${drone.last_seen_at === null ? 'unreported' : formatAge(now - drone.last_seen_at)}`
-        : rate,
-      tone: stale ? 'warn' : rate === 'unreported' ? 'muted' : 'ink',
+        : `${rate}${drone.pos_quality === 0 ? ' · position 0%' : ''}`,
+      tone: stale || drone.pos_quality === 0 ? 'warn' : rate === 'unreported' ? 'muted' : 'ink',
     },
     {
       key: 'Camera',
-      value: patterns ? `ready · ${patterns} ${patterns === 1 ? 'pattern' : 'patterns'}` : 'not ready',
+      value: !current ? 'current camera state unknown' : patterns ? `ready · ${patterns} ${patterns === 1 ? 'pattern' : 'patterns'}` : 'not ready',
       tone: patterns ? 'ink' : 'danger',
     },
-    { key: 'Video', value: videoValue, tone: video === undefined ? 'muted' : vocabTone(video.status) },
+    { key: 'Video', value: videoValue, tone: video.tone },
     { key: 'Storage', value: storage, tone: storage === 'unreported' ? 'muted' : 'ink' },
     {
       key: 'Firmware',
@@ -286,16 +291,12 @@ export function nodeCells(
 
 /** The design's per-node error line: what is wrong and what to do. */
 export function nodeError(drone: RelayAircraftState): string | null {
-  if (drone.membership === 'disconnected') {
-    return 'Adapter connection lost. Power-cycle the bridge phone, then rejoin; the aircraft returns with a higher epoch.'
-  }
-  if (drone.readiness_reasons.includes('telemetry_stale')) {
-    return "Telemetry stopped. Check the bridge phone's LAN link before commanding motion."
-  }
-  if (!drone.control_authority) {
-    return 'The RC pilot holds authority. Sweep commands are refused until authority returns.'
-  }
-  return null
+  const reasons = [...drone.readiness_reasons]
+  if (drone.membership === 'disconnected') reasons.unshift('disconnected')
+  if (!drone.control_authority) reasons.push('control_authority_missing')
+  if (!drone.rc_safety_operator_present) reasons.push('rc_safety_operator_missing')
+  const notes = readinessNotes({ ...drone, readiness_reasons: [...new Set(reasons)] })
+  return notes.length ? notes.map(({ text }) => text).join(' ') : null
 }
 
 export function nodeRecordFor(
@@ -362,7 +363,7 @@ export interface LadderRung {
 export function ladderRungs(state: ControlState): LadderRung[] {
   const consoleUp = isLinkUp(state.connection.status)
   const keyboardUp = isLinkUp(state.keyboardConnection.status)
-  const anyVideo = sortedAircraft(state.aircraft).some((drone) => drone.video?.status === 'live')
+  const anyVideo = sortedAircraft(state.aircraft).some((drone) => deriveStream(drone, drone.client_observation?.now ?? state.lastStateEvent?.t ?? drone.last_seen_at ?? 0).status === 'live')
   const current = consoleUp
     ? anyVideo
       ? 'full'

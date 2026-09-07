@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useMemo, useReducer, type Dispatch } from 'react'
+import { motionObservationCurrent, observedControlState } from './observation'
+import { isReady } from '../shell/derive'
+import { peripheralBlockedReason } from './peripherals'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Dispatch } from 'react'
 import type { RelayClient } from '../relay/client'
 import type {
   CapturePattern,
@@ -7,13 +10,15 @@ import type {
   IntentArgsByName,
   IntentSource,
   IntentV1,
-  SurveyLifecycleRequest,
   VoicePlan,
   VoicePlanStep,
 } from '../relay/contract'
 import {
   intentFromVoicePlanStep,
+  followsSelection,
   isConsoleIntentV1,
+  isCameraControlArgs,
+  isRobotPeripheralArgs,
   requiresConfirmation,
   selectionRule,
 } from '../relay/contract'
@@ -26,13 +31,15 @@ import {
   retryIntent,
   type IntentFactoryDependencies,
 } from './intent'
+import { createSensorStore } from '../sensor/store'
 import { buildPlanPreview } from './plan'
-import { aircraftControlSelectionReason, isAircraftNode } from '../modules/control/controls'
+import { cameraControlBlockedReason } from './camera'
 import {
   capabilityBlockedReason,
   controlReducer,
   createInitialControlState,
   createRequestRecord,
+  deviceLabeller,
   isIntentEnabled,
   type ControlState,
   type RequestRecord,
@@ -56,8 +63,6 @@ export interface UseControlConsoleOptions {
   intentDependencies?: IntentFactoryDependencies
 }
 
-export const SURVEY_LIFECYCLE_TIMEOUT_MS = 15_000
-
 /** One control press: an intent name, its args, and the aircraft it addresses. */
 export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> {
   name: N
@@ -71,24 +76,54 @@ export function useControlConsole({
   clients,
   intentDependencies = browserIntentDependencies,
 }: UseControlConsoleOptions) {
-  const [state, dispatch] = useReducer(
+  const [reportedState, dispatch] = useReducer(
     controlReducer,
     sessionId,
     (id) => createInitialControlState(id, intentDependencies.now()),
   )
+  const receiveNow = useRef(intentDependencies.now)
+  useEffect(() => { receiveNow.current = intentDependencies.now }, [intentDependencies.now])
+  const [observationTime, setObservationTime] = useState(() => intentDependencies.now())
+  useEffect(() => {
+    const timer = setInterval(() => setObservationTime(receiveNow.current()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+  const state = useMemo(() => observedControlState(reportedState, Math.max(observationTime, intentDependencies.now())), [reportedState, intentDependencies, observationTime])
+  const confirmedIds = useRef(new Set<string>())
+
+  // Only one pending preview can be confirmed. Retain its synchronous send
+  // guard until React commits the lifecycle update, then release the entry.
+  useEffect(() => {
+    const pendingIds = new Set(state.requests.filter((request) => request.status === 'pending_confirmation').map((request) => request.intent.intent_id))
+    for (const id of confirmedIds.current) if (!pendingIds.has(id)) confirmedIds.current.delete(id)
+  }, [state.requests])
+  useEffect(() => { confirmedIds.current.clear() }, [sessionId])
+
+  // Scans arrive on the console connection beside telemetry and go to their
+  // own store; the reducer only records that one arrived. The ref keeps the
+  // subscription effect bound to the clients alone.
+  const [sensors] = useState(createSensorStore)
+  const sessionRef = useRef(sessionId)
+  useEffect(() => {
+    sessionRef.current = sessionId
+  }, [sessionId])
 
   useEffect(() => {
     if (state.sessionId !== sessionId) {
       dispatch({ type: 'session_changed', sessionId, t: intentDependencies.now() })
+      sensors.reset()
     }
-  }, [intentDependencies, sessionId, state.sessionId])
+  }, [intentDependencies, sensors, sessionId, state.sessionId])
 
   useEffect(() => {
     const unsubscribeConsole = clients.console.subscribe((event) => {
       if (event.kind === 'connection') {
         dispatch({ type: 'connection_changed', connection: event.connection })
       } else {
-        dispatch({ type: 'relay_event', event: event.event, source: 'console' })
+        if (event.event.type === 'sensor' && event.event.session === sessionRef.current) {
+          sensors.apply(event.event)
+        }
+        dispatch({ type: 'relay_event', event: event.event, source: 'console', receivedAt: receiveNow.current() })
       }
     })
     const subscribeLifecycleOnly = (
@@ -117,7 +152,7 @@ export function useControlConsole({
               : connectionType === 'webcam_connection_changed'
                 ? 'webcam'
                 : 'language'
-          dispatch({ type: 'relay_event', event: event.event, source })
+          dispatch({ type: 'relay_event', event: event.event, source, receivedAt: receiveNow.current() })
         }
       })
     const unsubscribeKeyboard = subscribeLifecycleOnly(clients.keyboard, 'keyboard_connection_changed')
@@ -142,7 +177,7 @@ export function useControlConsole({
       clients.webcam?.stop()
       clients.language?.stop()
     }
-  }, [clients])
+  }, [clients, sensors])
 
   const clientFor = useCallback(
     (source: IntentSource): RelayClient | null => {
@@ -166,6 +201,14 @@ export function useControlConsole({
         })
         return
       }
+      // Recheck elapsed freshness at the actual send, including direct controls
+      // and retries. A retained selection is not current motion evidence.
+      const current = observedControlState(reportedState, intentDependencies.now())
+      if (requiresCurrentMotion(intent.name) && intent.selection.some((id) => !motionObservationCurrent(current.aircraft[id]))) {
+        dispatch({ type: 'request_send_failed', intentId: intent.intent_id, t,
+          detail: 'Current target motion telemetry is unavailable. Wait for a fresh report and build a new request.' })
+        return
+      }
       dispatch({ type: 'request_sent', intentId: intent.intent_id, t })
       const client = clientFor(intent.source)
       if (!client) {
@@ -179,7 +222,7 @@ export function useControlConsole({
       }
       sendToRelay(intent, client, t, intentDependencies.now, dispatch)
     },
-    [clientFor, intentDependencies, state],
+    [clientFor, intentDependencies, reportedState, state],
   )
 
   /**
@@ -197,6 +240,7 @@ export function useControlConsole({
       voiceBinding?: NonNullable<RequestRecord['plan']>['voiceBinding'],
     ): IntentV1 => {
       const t = intentDependencies.now()
+      confirmedIds.current.delete(intent.intent_id)
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
         .filter((request) => request.status === 'pending_confirmation')
@@ -207,11 +251,14 @@ export function useControlConsole({
         type: 'request_pending_confirmation',
         intentId: intent.intent_id,
         t,
-        plan: buildPlanPreview(intent, state.rosterVersion, expiresAt, voiceBinding),
+        plan: {
+          ...buildPlanPreview(intent, state.rosterVersion, expiresAt, voiceBinding, deviceLabeller(state.aircraft)),
+          deviceEpochs: Object.fromEntries(intent.selection.map((id) => [id, state.aircraft[id]?.connection_epoch])),
+        },
       })
       return intent
     },
-    [intentDependencies, state.requests, state.rosterVersion],
+    [intentDependencies, state.aircraft, state.requests, state.rosterVersion],
   )
 
   /**
@@ -248,13 +295,9 @@ export function useControlConsole({
 
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
-      const selection = ['arm', 'land_all', 'estop'].includes(request.name)
-        ? []
-        : request.targets ?? state.selection
-      if (
-        !isIntentEnabled(state, request.name) ||
-        aircraftControlSelectionReason(state, request.name, selection) !== null
-      ) return null
+      if (!isIntentEnabled(state, request.name)) return null
+      const selection = ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection
+      if (request.name === 'body_pulse' && selection.some((id) => state.aircraft[id]?.device_class !== 'aircraft')) return null
       const intent = createIntent(
         {
           name: request.name,
@@ -269,56 +312,6 @@ export function useControlConsole({
       return intent
     },
     [intentDependencies, stageIntent, state],
-  )
-
-  const sendSurveyLifecycle = useCallback(
-    (intentId: string, operation: SurveyLifecycleRequest['operation']) => {
-      const request = state.requests.find((item) => item.intent.intent_id === intentId)
-      if (
-        request?.intent.name !== 'survey_area' ||
-        request.status !== 'executing' ||
-        request.surveyRun === undefined ||
-        state.connection.status !== 'connected'
-      ) return
-      const now = intentDependencies.now()
-      if (
-        request.surveyLifecycle !== undefined &&
-        request.surveyLifecycle.error === undefined &&
-        now - request.surveyLifecycle.sentAt < SURVEY_LIFECYCLE_TIMEOUT_MS
-      ) return
-      const groundId = request.intent.selection[0]
-      const ground = state.aircraft[groundId]
-      if (
-        ground?.node_type !== 'ground' ||
-        ground.connection_epoch !== request.surveyRun.connectionEpoch
-      ) return
-      const eventId = intentDependencies.nextId()
-      const lifecycle: SurveyLifecycleRequest = {
-        v: 1,
-        t: now,
-        type: 'survey_lifecycle',
-        event_id: eventId,
-        session: state.sessionId,
-        operation,
-        intent_id: request.intent.intent_id,
-        run_id: request.surveyRun.runId,
-        connection_epoch: request.surveyRun.connectionEpoch,
-      }
-      dispatch({
-        type: 'survey_lifecycle_sent',
-        intentId,
-        lifecycle: { operation, eventId, sentAt: now },
-      })
-      void clients.console.sendSurveyLifecycle(lifecycle).catch((error: unknown) => {
-        dispatch({
-          type: 'survey_lifecycle_send_failed',
-          intentId,
-          eventId,
-          error: error instanceof Error ? error.message : 'Survey lifecycle send failed for an unknown reason.',
-        })
-      })
-    },
-    [clients.console, intentDependencies, state],
   )
 
   /**
@@ -348,7 +341,7 @@ export function useControlConsole({
   const toggleAircraft = useCallback(
     (droneId: DroneId) => {
       const aircraft = state.aircraft[droneId]
-      if (!aircraft || aircraft.membership !== 'ready' || !aircraft.selectable) return
+      if (!isReady(aircraft)) return
       const isSelected = state.selection.includes(droneId)
       const desired = isSelected
         ? state.selection.filter((id) => id !== droneId)
@@ -366,7 +359,7 @@ export function useControlConsole({
   const selectAircraft = useCallback(
     (droneId: DroneId) => {
       const aircraft = state.aircraft[droneId]
-      if (!aircraft || aircraft.membership !== 'ready' || !aircraft.selectable) return
+      if (!isReady(aircraft)) return
       const desired = state.selection.includes(droneId)
         ? state.selection.filter((id) => id !== droneId)
         : [droneId]
@@ -377,7 +370,7 @@ export function useControlConsole({
 
   const selectAllReady = useCallback(() => {
     const ready = Object.values(state.aircraft)
-      .filter((drone) => isAircraftNode(drone) && drone.membership === 'ready' && drone.selectable)
+      .filter((drone) => isReady(drone))
       .map((drone) => drone.drone_id)
       .sort((a, b) => a - b)
     sendSelection(ready)
@@ -399,7 +392,7 @@ export function useControlConsole({
       const selectedId = state.selection[0]
       if (state.selection.length !== 1 || !selectedId) return null
       const aircraft = state.aircraft[selectedId]
-      if (!isAircraftNode(aircraft) || aircraft.membership !== 'ready' || !aircraft.selectable) return null
+      if (!isReady(aircraft)) return null
       if (!aircraft.camera_patterns.includes(pattern)) return null
       const trimmedRoomId = roomId.trim()
       if (!isValidRoomId(trimmedRoomId)) return null
@@ -443,7 +436,7 @@ export function useControlConsole({
       const desired = [...new Set(ids)].sort((a, b) => a - b)
       if (desired.length === 0) return null
       const allReady = desired.every(
-        (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
+        (id) => isReady(state.aircraft[id]),
       )
       if (!allReady) return null
       const draft = createIntent(
@@ -473,13 +466,11 @@ export function useControlConsole({
       source: DraftSource = 'console',
       expiresAt?: number,
     ): IntentV1 | null => {
+      if (!isIntentEnabled(state, request.name)) return null
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
-      if (
-        !isIntentEnabled(state, request.name) ||
-        aircraftControlSelectionReason(state, request.name, selection) !== null
-      ) return null
       if (!fleetWide && selection.length === 0) return null
+      if (request.name === 'body_pulse' && selection.some((id) => state.aircraft[id]?.device_class !== 'aircraft')) return null
       const draft = createIntent(
         {
           name: request.name,
@@ -511,10 +502,7 @@ export function useControlConsole({
         return null
       }
       const draft = intentFromVoicePlanStep(plan, step, intentDependencies.now())
-      if (
-        draft === null ||
-        aircraftControlSelectionReason(state, draft.name, draft.selection) !== null
-      ) return null
+      if (draft === null) return null
       const intentCanonical = canonicalVoiceIntent(draft)
       return stageForConfirmation(draft, expiresAt, {
         planDigest: plan.plan_digest,
@@ -536,7 +524,7 @@ export function useControlConsole({
       if (!isIntentEnabled(state, 'hold')) return null
       if (state.selection.length === 0) return null
       const selectionReady = state.selection.every(
-        (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
+        (id) => isReady(state.aircraft[id]),
       )
       if (!selectionReady) return null
       const draft = createIntent(
@@ -557,7 +545,7 @@ export function useControlConsole({
   const confirmRequest = useCallback(
     (intentId: string): IntentV1 | null => {
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
-      if (!request || request.status !== 'pending_confirmation') return null
+      if (!request || request.status !== 'pending_confirmation' || confirmedIds.current.has(intentId)) return null
       if (!isIntentEnabled(state, request.intent.name)) {
         dispatch({
           type: 'request_invalidated',
@@ -610,33 +598,58 @@ export function useControlConsole({
       }
       const selectionMatches = request.intent.selection.length === state.selection.length &&
         request.intent.selection.every((id) => state.selection.includes(id))
-      if (!selectionMatches && selectionRule(request.intent.name) !== 'all' && request.intent.name !== 'select') {
+      if (!selectionMatches && followsSelection(request.intent.name) && request.intent.name !== 'select') {
         dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
           reasonCode: 'stale_selection', detail: 'The authoritative selection changed after preview. No command was sent.' })
         return null
       }
-      const selectionStillValid =
-        selectionRule(request.intent.name) === 'all'
+      const current = observedControlState(reportedState, intentDependencies.now())
+      const epochsMatch = request.intent.selection.every((id) => request.plan?.deviceEpochs?.[id] === state.aircraft[id]?.connection_epoch)
+      const selectionStillValid = epochsMatch && (
+        request.intent.name === 'camera_control'
+          ? request.intent.selection.length === 1 && request.intent.selection.every((id) =>
+              isCameraControlArgs(request.intent.args) &&
+              cameraControlBlockedReason(current, current.aircraft[id], request.intent.args, intentDependencies.now()) === null &&
+              request.plan?.deviceEpochs?.[id] === state.aircraft[id]?.connection_epoch)
+          : request.intent.name === 'robot_peripheral'
+          ? request.intent.selection.length === 1 && request.intent.selection.every((id) => {
+              const device = current.aircraft[id]
+              return isRobotPeripheralArgs(request.intent.args) &&
+                peripheralBlockedReason(current, device, request.intent.args.kind, intentDependencies.now()) === null &&
+                request.plan?.deviceEpochs?.[id] === device?.connection_epoch
+            })
+          : selectionRule(request.intent.name) === 'all'
           ? request.intent.selection.every((id) => state.aircraft[id] !== undefined)
           : request.intent.selection.every(
-              (id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable,
-            )
+              (id) => isReady(current.aircraft[id]),
+            ))
       if (!selectionStillValid) {
         dispatch({
           type: 'request_invalidated',
           intentId,
           t: intentDependencies.now(),
           reasonCode: 'stale_selection',
-          detail: 'An aircraft in the preview is no longer ready. No command was sent.',
+          detail: 'A target in the preview is no longer eligible on its current connection. No command was sent.',
         })
+        return null
+      }
+      if (request.intent.name === 'body_pulse' && (
+        !state.armed || state.estop || request.intent.selection.some((id) =>
+          state.aircraft[id]?.device_class !== 'aircraft' ||
+          !state.aircraft[id]?.adapter_capabilities.includes('body_pulse_v1') ||
+          !['airborne', 'hovering'].includes(state.aircraft[id]?.flight_state ?? ''))
+      )) {
+        dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
+          reasonCode: 'pulse_readiness_changed', detail: 'A selected aircraft is no longer ready for a body pulse. Preview again; nothing was sent.' })
         return null
       }
       const confirmedAt = intentDependencies.now()
       const confirmed = confirmIntent(request.intent, confirmedAt)
+      confirmedIds.current.add(intentId)
       sendExistingIntent(confirmed, confirmedAt)
       return confirmed
     },
-    [intentDependencies, sendExistingIntent, state],
+    [intentDependencies, reportedState, sendExistingIntent, state],
   )
 
   const cancelRequest = useCallback(
@@ -728,7 +741,7 @@ export function useControlConsole({
       if (request.status !== 'failed' && request.status !== 'refused') return
       if (request.intent.source === 'language') return
       const intent = retryIntent(request.intent, intentDependencies)
-      if (['takeoff', 'land', 'land_all', 'capture_room'].includes(intent.name)) {
+      if (intent.source === 'webcam' || ['arm', 'body_pulse', 'takeoff', 'land', 'land_all', 'capture_room', 'robot_peripheral', 'camera_control'].includes(intent.name)) {
         stageForConfirmation({ ...intent, confirm: false })
         return
       }
@@ -746,9 +759,10 @@ export function useControlConsole({
 
   return {
     state,
+    /** Latest lidar scan per device and a short trail; read with useSensorStore. */
+    sensors,
     pendingRequest,
     issueIntent,
-    sendSurveyLifecycle,
     toggleAircraft,
     selectAircraft,
     selectAllReady,
@@ -766,6 +780,10 @@ export function useControlConsole({
     retryRequest,
     selectFeed: (droneId: DroneId) => dispatch({ type: 'feed_selected', droneId }),
   }
+}
+
+function requiresCurrentMotion(name: ConsoleIntentName): boolean {
+  return ['takeoff', 'body_pulse', 'translate', 'altitude', 'spacing', 'formation_next', 'formation_set', 'come_home', 'sweep', 'capture_room'].includes(name)
 }
 
 function canonicalVoiceIntent(intent: IntentV1): string {
@@ -796,7 +814,7 @@ function canonicalLanguageState(state: ControlState): string {
         droneId: drone.drone_id,
         connectionEpoch: drone.connection_epoch,
         membership: drone.membership,
-        selectable: drone.selectable,
+        selectable: isReady(drone),
         flightState: drone.flight_state,
         cameraPatterns: [...drone.camera_patterns].sort(),
         flightAvailable: drone.adapter_capabilities.includes('flight'),

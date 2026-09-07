@@ -1,5 +1,5 @@
-import type { IntentSource, IntentV1, RelayAuthFrame, RelayServerEvent, SurveyLifecycleRequest } from './contract'
-import { isSurveyLifecycleRequest, parseRelayServerEvent } from './contract'
+import type { IntentSource, IntentV1, RelayAuthFrame, RelayServerEvent } from './contract'
+import { parseRelayServerEvent } from './contract'
 import type { RelayConnection } from '../control/state'
 
 export type RelayClientEvent =
@@ -14,7 +14,6 @@ export interface RelayClient {
   stop(): void
   subscribe(listener: RelayClientListener): () => void
   sendIntent(intent: IntentV1): Promise<void>
-  sendSurveyLifecycle(request: SurveyLifecycleRequest): Promise<void>
 }
 
 export interface WebSocketRelayConfig {
@@ -91,6 +90,16 @@ export class WebSocketRelayClient implements RelayClient {
         return
       }
 
+      if (containsSyntheticAdapter(event)) {
+        // This transport belongs to the operator console, including when its
+        // bootstrap accidentally points at an explicitly enabled test relay.
+        // Close before publishing the frame; a disconnected observation makes
+        // any retained device state unknown and prevents further sends.
+        this.stop()
+        this.emitConnection('disconnected', 'Synthetic test data refused. This operator console requires a hardware relay session; no synthetic device state was accepted.')
+        return
+      }
+
       if (event.type === 'auth.accepted') {
         if (event.session !== this.config.sessionId) {
           this.emitConnection('degraded', 'Relay authenticated a different session; the event was ignored.')
@@ -150,16 +159,6 @@ export class WebSocketRelayClient implements RelayClient {
     this.socket.send(JSON.stringify(intent))
   }
 
-  async sendSurveyLifecycle(request: SurveyLifecycleRequest): Promise<void> {
-    if (!isSurveyLifecycleRequest(request) || request.session !== this.config.sessionId || this.config.source !== 'console') {
-      throw new Error('Survey lifecycle request does not match this console session.')
-    }
-    if (!this.socket || this.socket.readyState !== 1 || !this.authenticated) {
-      throw new Error('Relay is not authenticated; the survey request was not sent.')
-    }
-    this.socket.send(JSON.stringify(request))
-  }
-
   private emitConnection(status: RelayConnection['status'], reason?: string): void {
     this.emit({
       kind: 'connection',
@@ -175,6 +174,14 @@ export class WebSocketRelayClient implements RelayClient {
   private emit(event: RelayClientEvent): void {
     this.listeners.forEach((listener) => listener(event))
   }
+}
+
+function containsSyntheticAdapter(event: RelayServerEvent): boolean {
+  // Shared wire provenance with relay/runtime_mode.py and the fake Android build.
+  const marker = 'test:synthetic'
+  return event.type === 'membership'
+    ? event.capabilities.includes(marker)
+    : event.type === 'state' && event.drones.some((device) => device.adapter_capabilities.includes(marker))
 }
 
 export class UnavailableRelayClient implements RelayClient {
@@ -208,10 +215,6 @@ export class UnavailableRelayClient implements RelayClient {
   }
 
   async sendIntent(): Promise<void> {
-    throw new Error(this.reason)
-  }
-
-  async sendSurveyLifecycle(): Promise<void> {
     throw new Error(this.reason)
   }
 

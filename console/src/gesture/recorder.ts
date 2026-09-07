@@ -16,6 +16,8 @@ export interface RecordedOutcome {
   gesture?: string
   action?: string
   heldMs?: number
+  frames?: number
+  strongFrames?: number
   progress?: number
   score?: number
   reason?: string
@@ -195,13 +197,15 @@ export function summarizeOutcome(outcome: GesturePolicyOutcome): RecordedOutcome
     case 'unmapped':
       return { kind: 'unmapped', category: outcome.category }
     case 'low_confidence':
-      return { kind: 'low_confidence', ...pairFields(outcome.pair), score: round(outcome.score) }
+      return { kind: 'low_confidence', ...pairFields(outcome.pair), score: round(outcome.score), heldMs: outcome.heldMs, frames: outcome.frames, strongFrames: outcome.strongFrames }
     case 'candidate':
       return {
         kind: 'candidate',
         ...pairFields(outcome.pair),
         heldMs: outcome.heldMs,
         progress: round(outcome.progress),
+        frames: outcome.frames,
+        strongFrames: outcome.strongFrames,
       }
     case 'accepted':
       return { kind: 'accepted', ...pairFields(outcome.pair), heldMs: outcome.heldMs }
@@ -226,6 +230,7 @@ function pairFields(pair: GesturePair): { gesture: string; action: string } {
 }
 
 function describeAction(pair: GesturePair): string {
+  if (pair.action.kind === 'draft' && pair.action.name === 'body_pulse') return `draft:body_pulse:${pair.action.direction}`
   return pair.action.kind === 'draft' ? `draft:${pair.action.name}` : pair.action.kind
 }
 

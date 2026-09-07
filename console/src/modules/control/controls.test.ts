@@ -6,12 +6,16 @@ import {
   C2_FLEET_OPERATIONS_INTENTS,
   type RelayStateEvent,
 } from '../../relay/contract'
-import { fixtureAircraft } from '../../testing/fixture-relay-client'
+import { fixtureAircraft, fixtureScenario } from '../../testing/fixture-relay-client'
 import {
   DPAD_CELLS,
   MISSION_STEPS,
   NO_SELECTION_REASON,
+  ROBOT_UNSUPPORTED_NOTE,
   STOP_ACTIVE_REASON,
+  deviceClassBlockedReason,
+  classFormationReason,
+  noSelectionReason,
   aircraftChips,
   altitudeControls,
   captureFlow,
@@ -152,18 +156,6 @@ describe('control gating', () => {
     expect(byKey.sweep).toMatchObject({ enabled: false })
   })
 
-  test('a ground selection permits hold and stop while disabling aircraft controls', () => {
-    const [first, second] = fixtureAircraft(t)
-    const ground = { ...first, node_type: 'ground' as const, adapter_capabilities: ['ground_drive'] }
-    const state = connected([1], { drones: [ground, second] })
-    const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((spec) => [spec.key, spec]))
-    expect(byKey.hold.enabled).toBe(true)
-    expect(byKey.arm.enabled).toBe(true)
-    expect(byKey.land_all.enabled).toBe(true)
-    expect(byKey.takeoff.note).toBe('D-01 is a ground node. Aircraft controls stay disabled.')
-    expect(dpadBlockedReason(state)).toBe('D-01 is a ground node. Aircraft controls stay disabled.')
-  })
-
   test('stop active: motion is blocked with the stop reason, the pad follows stop before selection', () => {
     const state = connected([], { estop: true })
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
@@ -220,6 +212,7 @@ describe('control gating', () => {
     const fourReady = fixtureAircraft(t).map((drone) => ({
       ...drone,
       membership: 'ready' as const,
+      telemetry: { fresh: true },
       readiness_reasons: [],
       selectable: true,
     }))
@@ -253,6 +246,8 @@ describe('command catalogue', () => {
     expect(groups[1].rows.map((row) => [row.label, row.confirm, row.rule, row.status])).toEqual([
       ['Takeoff', 'confirm', 'selected', 'available'],
       ['Hold', '—', 'selected', 'available'],
+      ['Forward 0.5 seconds', 'confirm', 'selected', 'unsupported'],
+      ['Backward 0.5 seconds', 'confirm', 'selected', 'unsupported'],
       ['Come home', '—', 'selected', 'available'],
       ['Land', 'confirm', 'selected', 'available'],
       ['Land all', 'confirm', 'all', 'available'],
@@ -260,6 +255,7 @@ describe('command catalogue', () => {
       ['Spacing tighter', '—', 'selected', 'available'],
       ['Spacing wider', '—', 'selected', 'available'],
       ['Sweep', 'confirm', 'selected', 'available'],
+      ['Survey area', 'confirm', 'any', 'later'],
       ['Map area', 'confirm', 'non-empty', 'later'],
     ])
     const later = groups[1].rows.filter((row) => row.status === 'later')
@@ -372,9 +368,6 @@ describe('capture readiness', () => {
     expect(captureGate({ ...connected([1]), selection: [3] }, 'room-01', true, null).text).toBe(
       'D-03 is not ready: telemetry_stale, camera_not_ready.',
     )
-    expect(captureGate({ ...connected([1]), selection: [99] }, 'room-01', true, null).text).toBe(
-      'D-99 is no longer in the authoritative roster.',
-    )
     expect(captureGate(connected([1]), 'Kitchen', false, null).text).toBe(
       'The room identifier must be lower-case letters, digits and hyphens, 3 to 24 characters.',
     )
@@ -477,4 +470,93 @@ describe('mission steps', () => {
       ['land_all', 'available'],
     ])
   })
+})
+
+describe('control gating per device class', () => {
+  const mixed = (selection: number[]) =>
+    connected(selection, { drones: fixtureScenario('mixed').fleet(t), roster_version: 14, capability_profile: 'c2_fleet_operations', enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS] })
+  const byKey = (state: ControlState) =>
+    Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((spec) => [spec.key, spec]))
+
+  test('an all-robot selection shows the aircraft-only intents as unsupported for robots', () => {
+    const state = mixed([11, 12])
+    const specs = byKey(state)
+    for (const key of ['takeoff', 'sweep']) {
+      expect(specs[key]).toMatchObject({
+        enabled: false,
+        supported: false,
+        badge: 'unsupported',
+        note: ROBOT_UNSUPPORTED_NOTE,
+        noteTone: 'warn',
+      })
+    }
+    for (const spec of altitudeControls(state)) {
+      expect(spec).toMatchObject({ enabled: false, badge: 'unsupported', note: ROBOT_UNSUPPORTED_NOTE })
+    }
+    const land = commandCatalog(state)[1].rows.find((row) => row.label === 'Land')
+    expect(land).toMatchObject({ status: 'unsupported', enabled: false, note: ROBOT_UNSUPPORTED_NOTE })
+    // Motion the relay accepts for ground vehicles stays available.
+    expect(specs.hold).toMatchObject({ enabled: true, badge: '' })
+    expect(specs.come_home).toMatchObject({ enabled: true })
+    expect(specs.formation_next).toMatchObject({ enabled: true })
+    expect(dpadBlockedReason(state)).toBeNull()
+    // land_all addresses the roster, which still holds aircraft.
+    expect(specs.land_all).toMatchObject({ enabled: true, badge: 'confirm' })
+    expect(captureGate(mixed([11]), 'room-1', true, null)).toEqual({ ready: false, text: ROBOT_UNSUPPORTED_NOTE })
+    expect(captureFlow(mixed([11]), 'room-1', true, null)[0]).toMatchObject({
+      done: false,
+      state: 'G-01 is a robot — capture_room is not available for robots',
+    })
+  })
+
+  test('a mixed selection keeps the aircraft-only intents enabled; the relay decides per device', () => {
+    const state = mixed([1, 11])
+    const specs = byKey(state)
+    expect(specs.takeoff).toMatchObject({ enabled: true, supported: true, badge: 'confirm' })
+    expect(specs.sweep).toMatchObject({ enabled: true, supported: true })
+    expect(altitudeControls(state)[0]).toMatchObject({ enabled: true })
+    expect(deviceClassBlockedReason(state, 'takeoff', [1, 11])).toBeNull()
+    expect(deviceClassBlockedReason(state, 'takeoff', [11])).toBe(ROBOT_UNSUPPORTED_NOTE)
+    expect(deviceClassBlockedReason(state, 'hold', [11])).toBeNull()
+    expect(deviceClassBlockedReason(state, 'takeoff', [])).toBeNull()
+  })
+
+  test('land all is unsupported only when the roster has no aircraft', () => {
+    const robotsOnly = fixtureScenario('mixed').fleet(t).filter((device) => device.device_class === 'ground_vehicle')
+    const state = connected([11], { drones: robotsOnly, roster_version: 15 })
+    expect(byKey(state).land_all).toMatchObject({ enabled: false, badge: 'unsupported', note: ROBOT_UNSUPPORTED_NOTE })
+    expect(noSelectionReason({ ...state, selection: [] })).toBe('No robots selected.')
+    expect(byKey({ ...state, selection: [] }).hold).toMatchObject({ note: 'No robots selected.' })
+  })
+
+  test('chips and blockers label robots by their unit and drive state', () => {
+    const state = mixed([1])
+    expect(aircraftChips(state).map((chip) => [chip.id, chip.sub])).toEqual([
+      ['D-01', 'hovering · 78%'],
+      ['D-02', 'landed · 64%'],
+      ['G-01', 'idle · 71%'],
+      ['G-02', 'moving · 55%'],
+      ['G-03', 'docked · 98%'],
+    ])
+    expect(chipBlockers(state)).toBe('G-03 rc safety operator missing')
+    expect(fanoutFor('hold', {}, [1, 11], (id) => (id === 11 ? 'G-01' : 'D-01'))).toEqual([
+      { id: 'D-01', cmd: 'hold' },
+      { id: 'G-01', cmd: 'hold' },
+    ])
+  })
+})
+
+
+test('mixed formations apply capacity and minimums per class, while singleton classes hold', () => {
+  const robots = fixtureScenario('mixed').fleet(t).filter((device) => device.device_class === 'ground_vehicle')
+  robots.push({ ...robots[0], drone_id: 14, unit: 4 })
+  const drones = [...fixtureAircraft(t, 6), ...robots].map((device) => ({ ...device, membership: 'ready' as const, telemetry: { fresh: true }, selectable: true, readiness_reasons: [] }))
+  const all = drones.map((device) => device.drone_id)
+  const state = connected(all, { drones, capability_profile: 'c2_fleet_operations', enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS] })
+  expect(all).toHaveLength(10)
+  expect(classFormationReason(state, 'diamond')).toBeNull()
+  expect(formationControls(state).every((control) => control.enabled)).toBe(true)
+  expect(classFormationReason({ ...state, selection: [1, 11, 12] }, 'line')).toBeNull()
+  expect(classFormationReason({ ...state, selection: [1, 11, 12] }, 'diamond')).toContain('Robot group')
+  expect(classFormationReason({ ...state, selection: [1, 11] }, 'line')).toBeNull()
 })

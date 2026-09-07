@@ -18,7 +18,7 @@ type User = ReturnType<typeof userEvent.setup>
 
 function fixtureClients(
   now: () => number = () => t0,
-  capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations' | 'c1_basic_control.ground' = 'c1_basic_control',
+  capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations' = 'c1_basic_control',
 ): ControlClients & {
   console: FixtureRelayClient
   keyboard: FixtureRelayClient
@@ -225,7 +225,7 @@ describe('Control › Swarm: capability-profile behavior on the fixture client',
     expect(within(panel).getAllByText('Slot 1').length).toBeGreaterThan(0)
     expect(within(panel).queryByText(/^D-01$/)).not.toBeInTheDocument()
     expect(panel).toHaveTextContent(
-      'aircraft-to-slot assignments are not projected by the relay and are therefore not guessed',
+      'device-to-slot assignments are not projected by the relay and are therefore not guessed',
     )
   })
 
@@ -511,60 +511,6 @@ describe('Control › Capture', () => {
 })
 
 describe('Control › Commands, Fleet and the mission tracker', () => {
-  test('ground pulses and survey lifecycle use the relay-issued run identity', async () => {
-    const clients = fixtureClients(() => t0, 'c1_basic_control.ground')
-    const user = userEvent.setup()
-    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
-    await screen.findByText('1 of 4 selected')
-    const [fixture] = fixtureAircraft(t0)
-    act(() => {
-      clients.console.emitServer({
-        v: 1, t: t0 + 1, type: 'state', event_id: 'ground-state', session,
-        state_sequence: 2, roster_version: 8, armed: true, estop: false, selection: [9],
-        formation: 'none', spacing: 0.8, mode: 'indoor',
-        capability_profile: 'c1_basic_control.ground',
-        enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity', 'survey_area'],
-        pending: null, accepted_plan: null,
-        drones: [{
-          ...fixture, drone_id: 9, node_type: 'ground', connection_epoch: 3,
-          adapter_id: 'ohmni-9', adapter_capabilities: ['ground_drive'],
-          ground_readiness: { source_id: 'ohmni-pose' },
-        }],
-      })
-    })
-    await openPane(user, 'Ground')
-    expect(screen.getByText(/D-09 is ready/)).toHaveTextContent('pose source ohmni-pose')
-
-    await user.click(screen.getByRole('button', { name: 'Forward · 80 mm/s · 250 ms' }))
-    await confirmDock(user)
-    await waitFor(() => expect(clients.console.sent.at(-1)).toMatchObject({
-      name: 'ground_velocity',
-      selection: [9],
-      args: { linear_mm_s: 80, angular_mrad_s: 0, duration_ms: 250 },
-      confirm: true,
-    }))
-
-    await user.click(screen.getByRole('button', { name: /^Start survey/ }))
-    await confirmDock(user)
-    const surveyIntent = clients.console.sent.at(-1)!
-    expect(surveyIntent).toMatchObject({ name: 'survey_area', args: { area_id: '1' }, selection: [9], confirm: true })
-    act(() => {
-      clients.console.emitServer({
-        v: 1, t: t0 + 2, type: 'acknowledgement', event_id: 'survey-executing', session,
-        intent_id: surveyIntent.intent_id, command_id: null, status: 'executing', source: 'survey_area',
-        drone_id: 9, connection_epoch: 3, roster_version: 8, reason: null, detail: null,
-        result: { run_id: `survey-${surveyIntent.intent_id}`, connection_epoch: 3 },
-      })
-    })
-    await user.click(screen.getByRole('button', { name: 'Complete survey' }))
-    expect(clients.console.surveyLifecycleSent).toEqual([{
-      v: 1, t: t0, type: 'survey_lifecycle', event_id: 'intent-3', session,
-      operation: 'complete', intent_id: surveyIntent.intent_id, run_id: `survey-${surveyIntent.intent_id}`,
-      connection_epoch: 3,
-    }])
-    expect(screen.getByRole('button', { name: 'Awaiting completion' })).toBeDisabled()
-  })
-
   test('the catalogue lists every row, presses draft the same intent as the button, later rows are disabled', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
@@ -573,13 +519,13 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     await openPane(user, 'Commands')
 
     const motion = within(screen.getByRole('group', { name: 'Motion commands' }))
-    expect(motion.getAllByRole('button')).toHaveLength(10)
-    expect(motion.queryByRole('button', { name: /^Survey area/ })).not.toBeInTheDocument()
+    expect(motion.getAllByRole('button')).toHaveLength(13)
+    expect(motion.getByRole('button', { name: /^Survey area/ })).toBeDisabled()
     expect(motion.getByRole('button', { name: /^Map area/ })).toBeDisabled()
     const rows = motion.getAllByRole('button')
-    expect(rows[3]).toHaveTextContent('Land')
-    expect(rows[3]).toHaveTextContent('available')
-    expect(rows[3]).toBeEnabled()
+    expect(rows[5]).toHaveTextContent('Land')
+    expect(rows[5]).toHaveTextContent('available')
+    expect(rows[5]).toBeEnabled()
     expect(rows[0]).toHaveTextContent('Takeoff')
     expect(rows[0]).toHaveTextContent('available')
     expect(screen.getByText('Relay reports none at 0.8 m.')).toBeInTheDocument()
@@ -619,7 +565,7 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     expect(screen.getByText('Registry · roster v9')).toBeInTheDocument()
     const registry = within(screen.getByRole('region', { name: 'Registry' }))
     const d03 = within(registry.getByRole('article', { name: 'D-03 registry card' }))
-    expect(d03.getByText('degraded')).toHaveClass('tone-warn')
+    expect(d03.getByText('stale · current state unknown', { exact: true })).toHaveClass('tone-warn')
     expect(d03.getByText('41%')).toHaveClass('tone-warn')
     expect(d03.getByText('12%')).toHaveClass('tone-danger')
     expect(d03.getByText('9 s ago')).toBeInTheDocument()
@@ -627,7 +573,7 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     expect(d03.getByText(/Telemetry stopped inside the freshness window/)).toBeInTheDocument()
     expect(d03.getByRole('button', { name: 'Select D-03' })).toBeDisabled()
     const d04 = within(registry.getByRole('article', { name: 'D-04 registry card' }))
-    expect(d04.getByText('RC takeover')).toHaveClass('tone-danger')
+    expect(d04.getByText('Sweep control not granted')).toHaveClass('tone-danger')
     expect(d04.getByText('RC safety operator absent')).toHaveClass('tone-danger')
     expect(d04.getByText('epoch 5')).toBeInTheDocument()
 
@@ -654,7 +600,7 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
       reason: 'authenticated_rejoin',
     })
     expect(await screen.findByText('Rejoined as D-05 with a higher connection epoch (4).')).toBeInTheDocument()
-    expect(registry.getByRole('article', { name: 'D-05 registry card' })).toHaveTextContent('registered')
+    expect(registry.getByRole('article', { name: 'D-05 registry card' })).toHaveTextContent('unknown · motion unreported')
     expect(screen.getByText('Registry · roster v10')).toBeInTheDocument()
   })
 

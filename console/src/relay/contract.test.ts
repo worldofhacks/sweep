@@ -7,10 +7,14 @@ import {
   MAX_INTENT_DRONE_IDS,
   MAX_INTENT_IDENTIFIER_CODE_POINTS,
   MAX_INTENT_SESSION_CODE_POINTS,
+  MAP_METADATA_HEADERS,
+  MAX_SENSOR_FRAME_BYTES,
   intentFromVoicePlanStep,
   isConsoleIntentV1,
   isVoicePlan,
+  parseMapMetadata,
   parseRelayServerEvent,
+  type MapMetadata,
   type VoicePlan,
   type VoicePlanStep,
 } from './contract'
@@ -43,69 +47,54 @@ function aircraft(overrides: Record<string, unknown> = {}) {
   }
 }
 
-describe('mixed-node relay frames', () => {
-  test('accepts authoritative ground class and capability metadata while normalizing legacy aircraft state', () => {
-    const base = {
-      v: 1, t: 100, type: 'state', event_id: 'mixed-node-state', session,
-      roster_version: 1, armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8,
-      mode: 'indoor', capability_profile: 'c1_basic_control',
-      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS], pending: null, accepted_plan: null,
-    }
-    expect(parseRelayServerEvent({ ...base, drones: [aircraft()] })).toMatchObject({
-      type: 'state', drones: [expect.objectContaining({ node_type: 'aircraft' })],
-    })
-    expect(parseRelayServerEvent({
-      ...base,
-      drones: [aircraft({ drone_id: 9, node_type: 'ground', adapter_capabilities: ['ground_drive'] })],
-    })).toMatchObject({ type: 'state', drones: [expect.objectContaining({ node_type: 'ground' })] })
-  })
-
-  test('does not require aircraft-only state from a ground node', () => {
-    const ground: Record<string, unknown> = aircraft({
-      drone_id: 9, node_type: 'ground', adapter_capabilities: ['ground_drive'],
-    })
-    for (const field of [
-      'flight_state', 'battery', 'link', 'pos_quality', 'control_authority',
-      'rc_safety_operator_present', 'last_seen_at', 'camera_patterns', 'selectable',
-      'home_pose', 'telemetry', 'membership_history', 'membership_history_truncated',
-    ]) delete ground[field]
-    const parsed = parseRelayServerEvent({
-      v: 1, t: 100, type: 'state', event_id: 'ground-minimal-state', session,
-      roster_version: 1, armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8,
-      mode: 'indoor', capability_profile: 'c1_basic_control',
-      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS], pending: null, accepted_plan: null,
-      drones: [ground],
-    })
-    expect(parsed).toMatchObject({
-      type: 'state',
-      drones: [expect.objectContaining({ node_type: 'ground', control_authority: false, home_pose: null })],
-    })
-  })
-
-  test('rejects malformed node class and noncanonical capability lists', () => {
-    const base = {
-      v: 1, t: 100, type: 'state', event_id: 'bad-node-state', session,
-      roster_version: 1, armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8,
-      mode: 'indoor', capability_profile: 'c1_basic_control',
-      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS], pending: null, accepted_plan: null,
-    }
-    expect(parseRelayServerEvent({ ...base, drones: [aircraft({ node_type: 'boat' })] })).toBeNull()
-    expect(parseRelayServerEvent({ ...base, drones: [aircraft({ adapter_capabilities: ['ground_drive', 'ground_drive'] })] })).toBeNull()
-  })
-})
-
 describe('M1.1 wire compatibility', () => {
-  test('accepts a separate ground profile while preserving the frozen aircraft profile', () => {
-    const state = {
-      v: 1, t, type: 'state', event_id: 'ground-profile', session,
-      roster_version: 1, armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8, mode: 'indoor',
-      capability_profile: 'c1_basic_control.ground', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity', 'survey_area'],
-      pending: null, accepted_plan: null, drones: [aircraft()],
-    }
-    expect(parseRelayServerEvent(state)).not.toBeNull()
-    expect(parseRelayServerEvent({ ...state, capability_profile: 'c1_basic_control' })).toBeNull()
-    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...state.enabled_intent_names, 'map_area'] })).toBeNull()
+  test('accepts bounded confirmed body pulses and refuses malformed or unconfirmed wire envelopes', () => {
+    const pulse = { v: 1, t, type: 'intent', intent_id: 'bounded-pulse', retry_of: null, source: 'webcam', session,
+      name: 'body_pulse', args: { forward_mm_s: 250, duration_ms: 500 }, selection: [1, 2], mode: 'indoor', confirm: true }
+    expect(isConsoleIntentV1(pulse)).toBe(true)
+    expect(isConsoleIntentV1({ ...pulse, args: { forward_mm_s: -250, duration_ms: 100 } })).toBe(true)
+    for (const args of [
+      { forward_mm_s: 0, duration_ms: 500 }, { forward_mm_s: 251, duration_ms: 500 },
+      { forward_mm_s: -251, duration_ms: 500 }, { forward_mm_s: 250, duration_ms: 501 },
+      { forward_mm_s: 250, duration_ms: 99 }, { forward_mm_s: 0.25, duration_ms: 500 },
+      { forward_mm_s: true, duration_ms: 500 }, { forward_mm_s: 250, duration_ms: '500' },
+      { forward_mm_s: 250, duration_ms: 500, dx: 1 },
+    ]) expect(isConsoleIntentV1({ ...pulse, args })).toBe(false)
+    expect(isConsoleIntentV1({ ...pulse, confirm: false })).toBe(false)
+    expect(isConsoleIntentV1({ ...pulse, selection: [] })).toBe(false)
+    expect(isConsoleIntentV1({ ...pulse, name: 'arm', args: {}, selection: [], confirm: false })).toBe(false)
   })
+
+  test('refuses optional controls that the deployed relay does not advertise', () => {
+    const state = { v: 1, t, type: 'state', event_id: 'pulse-profile', session,
+      roster_version: 1, armed: false, estop: false, selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null, drones: [aircraft({ adapter_capabilities: ['flight', 'body_pulse_v1'] })] }
+    expect(parseRelayServerEvent(state)).not.toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse'] })).toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: ['body_pulse'] })).toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse', 'unknown'] })).toBeNull()
+  })
+
+  test('normalizes the deployed ground state and accepts its signed pose evidence', () => {
+    const state = {
+      v: 1, t, type: 'state', event_id: 'root-ground-state', session,
+      roster_version: 3, armed: false, estop: false, selection: [11], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_ground_runtime', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity', 'survey_area'],
+      pending: null, accepted_plan: null,
+      drones: [aircraft({ drone_id: 11, node_type: 'ground', ground_readiness: { source_id: 'ohmni-pose' }, adapter_capabilities: ['ground_drive'] })],
+    }
+    const parsed = parseRelayServerEvent(state)
+    expect(parsed).toMatchObject({ type: 'state', drones: [{ node_type: 'ground', device_class: 'ground_vehicle', unit: 11 }] })
+    expect(parseRelayServerEvent({ ...state, drones: [{ ...state.drones[0], device_class: 'aircraft' }] })).toBeNull()
+    expect(parseRelayServerEvent({
+      v: 1, type: 'observation', event_id: 'root-ground-pose', session, device_id: 11, connection_epoch: 2,
+      source_id: 'ohmni-pose', node_type: 'ground', frame: 'world', confidence: 0.9,
+      t_capture: null, t_source_receipt: { clock_id: 'ohmni-ms', unit: 'ms', value: 100 }, clock_mapping_id: null,
+      payload: { kind: 'pose', pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 2, y_m: -1, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } }, t_ingest: 101,
+    })).toMatchObject({ type: 'observation', payload: { kind: 'pose' } })
+  })
+
   test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
     const event = parseRelayServerEvent({
       v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,
@@ -500,32 +489,6 @@ describe('M1.1 wire compatibility', () => {
     expect(failedCommand).toMatchObject({ status: 'failed', command_id: 'command-2' })
   })
 
-  test('accepts the survey run identity emitted by the relay and rejects mismatched results', () => {
-    const relayAcknowledgement = {
-      v: 1,
-      t: 1_756_700_000_022,
-      type: 'acknowledgement',
-      event_id: 'survey-executing',
-      session,
-      intent_id: 'survey-1',
-      command_id: null,
-      status: 'executing',
-      source: 'survey_area',
-      drone_id: 9,
-      connection_epoch: 4,
-      roster_version: 4,
-      reason: null,
-      detail: null,
-      result: { run_id: 'survey-survey-1', connection_epoch: 4 },
-    }
-
-    expect(parseRelayServerEvent(relayAcknowledgement)).toMatchObject({
-      result: { run_id: 'survey-survey-1', connection_epoch: 4 },
-    })
-    expect(parseRelayServerEvent({ ...relayAcknowledgement, result: { run_id: '', connection_epoch: 4 } })).toBeNull()
-    expect(parseRelayServerEvent({ ...relayAcknowledgement, result: { run_id: 'survey-survey-1', connection_epoch: 5 } })).toBeNull()
-  })
-
   test('rejects empty command IDs while retaining nullable intent-level context', () => {
     const acknowledgement = {
       v: 1,
@@ -903,4 +866,213 @@ describe('bound voice-plan mirror', () => {
     })
     expect(intentFromVoicePlanStep(plan, { ...step }, t + 1)).toBeNull()
   })
+})
+
+function stateWith(drones: unknown[], eventId = 'state-device-class') {
+  return parseRelayServerEvent({
+    v: 1, t: 100, type: 'state', event_id: eventId, session,
+    roster_version: 1, state_sequence: 1, armed: false, estop: false,
+    selection: [], formation: 'none', spacing: 0.8, mode: 'indoor',
+    capability_profile: 'c1_basic_control',
+    enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+    pending: null, accepted_plan: null, drones,
+  })
+}
+
+function sensor(overrides: Record<string, unknown> = {}) {
+  return {
+    v: 1,
+    t: 1_720_000_000_000,
+    type: 'sensor',
+    event_id: 'sensor-1',
+    session,
+    drone_id: 11,
+    connection_epoch: 3,
+    kind: 'lidar_scan',
+    pose: { x: 1.2, y: -0.4, yaw_deg: 87.5 },
+    angle_min_deg: 0,
+    angle_increment_deg: 1,
+    range_min_m: 0.15,
+    range_max_m: 12,
+    ranges_cm: Array.from({ length: 360 }, (_, index) => (index % 5 === 0 ? 0 : 150 + (index % 40))),
+    ...overrides,
+  }
+}
+
+describe('device classes on the state projection', () => {
+  test('a relay without device classes parses as aircraft whose unit is the drone id', () => {
+    const event = stateWith([aircraft({ drone_id: 3 })])
+    expect(event?.type).toBe('state')
+    if (event?.type !== 'state') throw new Error('expected a state event')
+    expect(event.drones[0]).toMatchObject({ drone_id: 3, device_class: 'aircraft', unit: 3 })
+    expect(event.drones[0].sensor).toBeUndefined()
+  })
+
+  test('accepts a ground vehicle with its unit and sensor projection', () => {
+    const event = stateWith([
+      aircraft({
+        drone_id: 11,
+        device_class: 'ground_vehicle',
+        unit: 1,
+        flight_state: 'idle',
+        adapter_capabilities: ['class:ground_vehicle', 'ground_drive', 'lidar'],
+        camera_patterns: [],
+        sensor: { kind: 'lidar_scan', last_scan_at: 1_720_000_000_000 },
+      }),
+    ])
+    expect(event?.type).toBe('state')
+    if (event?.type !== 'state') throw new Error('expected a state event')
+    expect(event.drones[0]).toMatchObject({
+      device_class: 'ground_vehicle',
+      unit: 1,
+      sensor: { kind: 'lidar_scan', last_scan_at: 1_720_000_000_000 },
+    })
+  })
+
+  test.each([
+    ['device_class', 'boat'],
+    ['device_class', null],
+    ['unit', 0],
+    ['unit', 1.5],
+    ['unit', '1'],
+    ['sensor', { kind: 'lidar_scan' }],
+    ['sensor', { kind: 'radar', last_scan_at: null }],
+    ['sensor', { kind: 'lidar_scan', last_scan_at: -1 }],
+    ['sensor', { kind: 'lidar_scan', last_scan_at: null, url: 'x' }],
+  ])('fails closed on an invalid %s %j', (field, value) => {
+    expect(stateWith([aircraft({ [field]: value })])).toBeNull()
+  })
+})
+
+describe('sensor frames', () => {
+  test('accepts a lidar scan as the relay fans it out', () => {
+    const event = parseRelayServerEvent(sensor())
+    expect(event).toMatchObject({
+      type: 'sensor',
+      drone_id: 11,
+      connection_epoch: 3,
+      kind: 'lidar_scan',
+      angle_increment_deg: 1,
+    })
+    if (event?.type !== 'sensor') throw new Error('expected a sensor event')
+    expect(event.ranges_cm).toHaveLength(360)
+  })
+
+  test.each([
+    [0.5, 720],
+    [2, 180],
+  ])('accepts increment %s with exactly %s ranges', (increment, length) => {
+    const ranges = Array.from({ length }, () => 200)
+    expect(
+      parseRelayServerEvent(sensor({ angle_increment_deg: increment, ranges_cm: ranges })),
+    ).not.toBeNull()
+    expect(
+      parseRelayServerEvent(sensor({ angle_increment_deg: increment, ranges_cm: [...ranges, 200] })),
+    ).toBeNull()
+  })
+
+  test.each([
+    ['kind', 'radar'],
+    ['angle_increment_deg', 0.25],
+    ['angle_increment_deg', 3],
+    ['ranges_cm', Array.from({ length: 359 }, () => 100)],
+    ['ranges_cm', Array.from({ length: 360 }, () => 65_536)],
+    ['ranges_cm', Array.from({ length: 360 }, () => -1)],
+    ['ranges_cm', Array.from({ length: 360 }, () => 1.5)],
+    ['pose', { x: 0, y: 0, yaw_deg: 360 }],
+    ['pose', { x: 0, y: 0, yaw_deg: -1 }],
+    ['pose', { x: 0, y: 0 }],
+    ['pose', { x: 0, y: 0, yaw_deg: 0, z: 0 }],
+    ['range_min_m', -0.1],
+    ['range_max_m', 0.15],
+    ['range_max_m', Number.POSITIVE_INFINITY],
+    ['angle_min_deg', 'north'],
+    ['drone_id', 0],
+    ['connection_epoch', -1],
+  ])('fails closed on an invalid %s', (field, value) => {
+    expect(parseRelayServerEvent(sensor({ [field]: value }))).toBeNull()
+  })
+
+  test('rejects a frame whose canonical JSON exceeds the relay ceiling', () => {
+    const padded = sensor({ event_id: 'e'.repeat(MAX_SENSOR_FRAME_BYTES) })
+    expect(parseRelayServerEvent(padded)).toBeNull()
+    expect(parseRelayServerEvent(sensor({ event_id: 'e'.repeat(64) }))).not.toBeNull()
+  })
+})
+
+describe('map metadata headers', () => {
+  const headers: Record<string, string> = {
+    [MAP_METADATA_HEADERS.resolution_m]: '0.05',
+    [MAP_METADATA_HEADERS.origin_x]: '-8.5',
+    [MAP_METADATA_HEADERS.origin_y]: '-6',
+    [MAP_METADATA_HEADERS.width]: '340',
+    [MAP_METADATA_HEADERS.height]: '240',
+    [MAP_METADATA_HEADERS.updated_at]: '1720000000000',
+  }
+  const read = (source: Record<string, string>) => (name: string) => source[name] ?? null
+
+  test('parses every header into typed metadata', () => {
+    const expected: MapMetadata = {
+      resolution_m: 0.05,
+      origin_x: -8.5,
+      origin_y: -6,
+      width: 340,
+      height: 240,
+      updated_at: 1_720_000_000_000,
+    }
+    expect(parseMapMetadata(read(headers))).toEqual(expected)
+  })
+
+  test.each([
+    [MAP_METADATA_HEADERS.resolution_m, '0'],
+    [MAP_METADATA_HEADERS.width, '12.5'],
+    [MAP_METADATA_HEADERS.height, '0'],
+    [MAP_METADATA_HEADERS.updated_at, '-5'],
+    [MAP_METADATA_HEADERS.origin_x, 'east'],
+  ])('fails closed when %s is %s', (name, value) => {
+    expect(parseMapMetadata(read({ ...headers, [name]: value }))).toBeNull()
+    const missing = { ...headers }
+    delete missing[name]
+    expect(parseMapMetadata(read(missing))).toBeNull()
+  })
+})
+
+
+describe('explicit device camera inventory', () => {
+  const front = { camera_id: 'front', label: 'Front', stream: 'ground5', status: 'live', last_frame_at: t }
+  const rear = { camera_id: 'rear', label: 'Rear', stream: 'ground5_rear', status: 'unreported', last_frame_at: null }
+  test('preserves separate camera reports and explicit absence without inventing sensors', () => {
+    const event = stateWith([aircraft({ cameras: [front, rear], sensor: { kind: null, last_scan_at: null } })])
+    expect(event?.type).toBe('state')
+    if (event?.type !== 'state') throw new Error('expected state')
+    expect(event.drones[0].cameras).toEqual([front, rear])
+    expect(event.drones[0].sensor?.kind).toBeNull()
+    expect(stateWith([aircraft({ cameras: [] })])?.type).toBe('state')
+  })
+  test.each([
+    null, [front, front], [front, { ...rear, stream: front.stream }],
+    [{ ...front, stream: '../camera' }], [{ ...front, stream: 'https://camera' }],
+    [{ ...front, stream: 'camera\n' }], [{ ...front, camera_id: 'camera\n' }],
+    [{ ...front, label: ' Front' }], [{ ...front, last_frame_at: -1 }],
+    [{ ...front, url: 'http://camera' }],
+    Array.from({ length: 9 }, (_, index) => ({ ...front, camera_id: `cam${index}`, stream: `cam${index}` })),
+  ])('refuses malformed camera inventory %j', (cameras) => {
+    expect(stateWith([aircraft({ cameras })])).toBeNull()
+  })
+})
+
+
+test('state roster accepts 64 configured identities and rejects 65', () => {
+  const roster = Array.from({ length: 64 }, (_, index) => aircraft({ drone_id: index + 1 }))
+  expect(stateWith(roster)?.type).toBe('state')
+  expect(stateWith([...roster, aircraft({ drone_id: 65 })])).toBeNull()
+})
+
+
+test('camera labels align with Python printable Unicode code point limits', () => {
+  const camera = { camera_id: 'front', label: '🚁'.repeat(64), stream: 'ground5', status: 'unreported', last_frame_at: null }
+  expect(stateWith([aircraft({ cameras: [camera] })])?.type).toBe('state')
+  for (const label of ['🚁'.repeat(65), 'Front\u00a0camera', 'Front\u2007camera', 'Front\nCamera']) {
+    expect(stateWith([aircraft({ cameras: [{ ...camera, label }] })])).toBeNull()
+  }
 })

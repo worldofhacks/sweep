@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   C1_BASIC_CONTROL_INTENTS,
+  parseRelayServerEvent,
   type IntentV1,
   type RelayAircraftState,
   type RelayServerEvent,
@@ -10,7 +11,13 @@ import {
   controlReducer,
   createInitialControlState,
   createRequestRecord,
-  MAX_LATEST_OBSERVATIONS,
+  deviceClassFromCapabilities,
+  deviceLabeller,
+  deviceNoun,
+  formatDeviceId,
+  formatDroneId,
+  rosterNoun,
+  selectionNoun,
   type ControlState,
 } from './state'
 
@@ -20,6 +27,8 @@ const t = 1_756_700_000_000
 function drone(overrides: Partial<RelayAircraftState> = {}): RelayAircraftState {
   return {
     drone_id: 1,
+    device_class: 'aircraft',
+    unit: overrides.drone_id ?? 1,
     connection_epoch: 1,
     membership: 'ready',
     readiness_reasons: [],
@@ -109,6 +118,53 @@ function withPendingCapture(): ControlState {
 }
 
 describe('control reducer fleet lifecycle', () => {
+  test('keeps a signed root ground pose only for its admitted device identity', () => {
+    const rawState = {
+      ...stateEvent('root-ground-state', 1, [drone({ drone_id: 11, node_type: 'ground', device_class: 'ground_vehicle', unit: 11, adapter_capabilities: ['ground_drive'] })], [11]),
+      capability_profile: 'c1_ground_runtime',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity', 'survey_area'],
+    }
+    const stateFrame = parseRelayServerEvent(rawState)
+    const observation = parseRelayServerEvent({
+      v: 1, type: 'observation', event_id: 'root-ground-pose', session, device_id: 11, connection_epoch: 1,
+      source_id: 'ohmni-pose', node_type: 'ground', frame: 'world', confidence: 0.9, t_capture: null,
+      t_source_receipt: { clock_id: 'ohmni-ms', unit: 'ms', value: 100 }, clock_mapping_id: null,
+      payload: { kind: 'pose', pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 2, y_m: -1, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } }, t_ingest: 101,
+    })
+    expect(stateFrame).toMatchObject({ type: 'state', drones: [{ node_type: 'ground', device_class: 'ground_vehicle' }] })
+    expect(observation).toMatchObject({ type: 'observation', payload: { kind: 'pose' } })
+    if (!stateFrame || !observation) throw new Error('expected canonical relay frames')
+    const withState = controlReducer(createInitialControlState(session, t), { type: 'relay_event', event: stateFrame })
+    const withPose = controlReducer(withState, { type: 'relay_event', event: observation })
+    expect(Object.values(withPose.latestObservations)).toMatchObject([{ device_id: 11, source_id: 'ohmni-pose' }])
+  })
+
+  test.each([{ cameras: [] }, { cameras: [
+    { camera_id: 'front', label: 'Front', stream: 'robot-front', status: 'live' as const, last_frame_at: t },
+    { camera_id: 'rear', label: 'Rear', stream: 'robot-rear', status: 'offline' as const, last_frame_at: t - 6000 },
+  ] }])('preserves explicit camera configuration through membership transitions: %j', ({ cameras }) => {
+    const configured = drone({ cameras, video: { status: 'live', last_frame_at: t } })
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event', event: stateEvent('configured', 1, [configured], [1]),
+    })
+    const event: Extract<RelayServerEvent, { type: 'membership' }> = {
+      v: 1, t: t + 2, type: 'membership', event_id: 'changed', session, roster_version: 2,
+      action: 'readiness', drone_id: 1, connection_epoch: 1, membership: 'ready',
+      readiness_reasons: [], adapter_id: 'adapter-1', capabilities: ['flight'],
+      provenance: 'adapter_signature', reason: null,
+    }
+    state = controlReducer(state, { type: 'relay_event', event })
+    expect(state.aircraft[1].cameras).toEqual(cameras)
+    state = controlReducer(state, { type: 'relay_event', event: {
+      ...event, t: t + 3, event_id: 'rejoined', roster_version: 3,
+      action: 'join', connection_epoch: 2, membership: 'registered',
+    } })
+    expect(state.aircraft[1].cameras).toEqual(cameras.map((camera) => ({
+      ...camera, status: 'unreported', last_frame_at: null,
+    })))
+    expect(state.aircraft[1].video).toBeUndefined()
+  })
+
   test('keeps the formation and spacing the relay reports, and nothing before the first frame', () => {
     const initial = createInitialControlState(session, t)
     expect(initial.formation).toBeNull()
@@ -741,52 +797,6 @@ describe('control reducer fleet lifecycle', () => {
 })
 
 describe('request lifecycle', () => {
-  test('retains only the relay-issued survey run identity until a terminal acknowledgement', () => {
-    const intent: IntentV1 = {
-      ...captureIntent('survey-1'),
-      name: 'survey_area',
-      args: { area_id: '1' },
-      selection: [9],
-      confirm: true,
-    }
-    let state = withReadyState()
-    state = controlReducer(state, {
-      type: 'request_created',
-      request: createRequestRecord(intent, t + 1),
-    })
-    state = controlReducer(state, { type: 'request_sent', intentId: intent.intent_id, t: t + 2 })
-    state = controlReducer(state, {
-      type: 'relay_event',
-      event: {
-        v: 1, t: t + 3, type: 'acknowledgement', event_id: 'survey-executing', session,
-        intent_id: intent.intent_id, command_id: null, status: 'executing', source: 'survey_area',
-        drone_id: null, connection_epoch: 1, roster_version: 1, reason: null, detail: null,
-        result: { run_id: 'survey-survey-1', connection_epoch: 1 },
-      },
-    })
-    state = controlReducer(state, {
-      type: 'survey_lifecycle_sent',
-      intentId: intent.intent_id,
-      lifecycle: { operation: 'complete', eventId: 'complete-1', sentAt: t + 4 },
-    })
-    expect(state.requests[0]).toMatchObject({
-      status: 'executing',
-      surveyRun: { runId: 'survey-survey-1', connectionEpoch: 1 },
-      surveyLifecycle: { operation: 'complete', eventId: 'complete-1' },
-    })
-
-    state = controlReducer(state, {
-      type: 'relay_event',
-      event: {
-        v: 1, t: t + 5, type: 'acknowledgement', event_id: 'survey-completed', session,
-        intent_id: intent.intent_id, command_id: null, status: 'completed', source: 'survey_area',
-        drone_id: 9, connection_epoch: 1, roster_version: 1, reason: null, detail: 'Candidate saved.',
-      },
-    })
-    expect(state.requests[0]).toMatchObject({ status: 'completed', surveyRun: { runId: 'survey-survey-1' } })
-    expect(state.requests[0].surveyLifecycle).toBeUndefined()
-  })
-
   test('does not terminalize a request from one command in a multi-command plan', () => {
     const intent: IntentV1 = { ...captureIntent('intent-multi'), confirm: true }
     let state = withReadyState()
@@ -993,113 +1003,137 @@ describe('request lifecycle', () => {
   })
 })
 
-function observationFrame(overrides: Record<string, unknown> = {}) {
-  return {
-    v: 1,
-    type: 'observation',
-    event_id: 'observation-1',
-    session,
-    device_id: 1,
-    connection_epoch: 1,
-    source_id: 'ohmni-lidar',
-    node_type: 'aircraft',
-    frame: 'odom',
-    confidence: 0.9,
-    t_capture: null,
-    t_source_receipt: { clock_id: 'ohmni', unit: 'ms', value: 100 },
-    clock_mapping_id: null,
-    payload: {
-      kind: 'telemetry',
-      position: { frame: 'odom', x_m: 1, y_m: 2, z_m: 0 },
-      velocity: { frame: 'odom', x_m_s: 0, y_m_s: 0, z_m_s: 0 },
-      battery: 0.8,
-      link: 0.9,
-      pos_quality: 0.7,
-      state: 'ready',
-    },
-    t_ingest: t + 10,
-    ...overrides,
-  }
-}
-
-describe('latest observation retention', () => {
-  test('parses a socket-shaped observation and retains only the current producer identity', async () => {
-    const { parseRelayServerEvent } = await import('../relay/contract')
-    const parsed = parseRelayServerEvent(observationFrame())
-    expect(parsed?.type).toBe('observation')
-    if (parsed?.type !== 'observation') throw new Error('expected observation')
-
-    let state = withReadyState()
-    state = controlReducer(state, { type: 'relay_event', event: parsed })
-    expect(Object.values(state.latestObservations)).toEqual([parsed])
-
-    const newer = parseRelayServerEvent(observationFrame({ event_id: 'observation-2', t_ingest: t + 11 }))
-    if (newer?.type !== 'observation') throw new Error('expected observation')
-    state = controlReducer(state, { type: 'relay_event', event: newer })
-    expect(Object.values(state.latestObservations)).toEqual([newer])
-
-    const stale = parseRelayServerEvent(observationFrame({ event_id: 'observation-stale', connection_epoch: 2 }))
-    if (stale?.type !== 'observation') throw new Error('expected observation')
-    expect(controlReducer(state, { type: 'relay_event', event: stale })).toBe(state)
-
-    const outOfOrder = parseRelayServerEvent(observationFrame({ event_id: 'observation-old', t_ingest: t + 9 }))
-    if (outOfOrder?.type !== 'observation') throw new Error('expected observation')
-    expect(controlReducer(state, { type: 'relay_event', event: outOfOrder })).toBe(state)
+describe('device labels and nouns', () => {
+  test('labels by class and unit, and formatDroneId stays the aircraft alias', () => {
+    expect(formatDeviceId({ device_class: 'aircraft', unit: 1 })).toBe('D-01')
+    expect(formatDeviceId({ device_class: 'ground_vehicle', unit: 3 })).toBe('G-03')
+    expect(formatDeviceId({ device_class: 'aircraft', unit: 12 })).toBe('D-12')
+    expect(formatDroneId(4)).toBe('D-04')
+    expect(deviceNoun('aircraft')).toBe('aircraft')
+    expect(deviceNoun('ground_vehicle')).toBe('robot')
   })
 
-  test('clears a device on rejoin and accepts its new membership epoch', async () => {
-    const { parseRelayServerEvent } = await import('../relay/contract')
-    const first = parseRelayServerEvent(observationFrame())
-    if (first?.type !== 'observation') throw new Error('expected observation')
-    let state = controlReducer(withReadyState(), { type: 'relay_event', event: first })
-    expect(Object.keys(state.latestObservations)).toHaveLength(1)
+  test('the roster labeller names known devices by unit and unknown ids by drone id', () => {
+    const robot = drone({ drone_id: 11, device_class: 'ground_vehicle', unit: 1 })
+    const label = deviceLabeller({ 1: drone(), 11: robot })
+    expect(label(1)).toBe('D-01')
+    expect(label(11)).toBe('G-01')
+    expect(label(7)).toBe('D-07')
+    expect(rosterNoun([drone(), robot])).toBe('device')
+    expect(rosterNoun([robot])).toBe('robot')
+    expect(rosterNoun([])).toBe('device')
+    expect(selectionNoun({ 1: drone(), 11: robot }, [11])).toBe('robot')
+    expect(selectionNoun({ 1: drone(), 11: robot }, [1, 11])).toBe('device')
+  })
 
+  test('a join derives its class from the class capability, exactly once', () => {
+    expect(deviceClassFromCapabilities(['flight'])).toBe('aircraft')
+    expect(deviceClassFromCapabilities(['class:ground_vehicle', 'ground_drive'])).toBe('ground_vehicle')
+    expect(deviceClassFromCapabilities(['class:aircraft', 'flight'])).toBe('aircraft')
+    expect(deviceClassFromCapabilities(['class:boat'])).toBe('aircraft')
+    expect(deviceClassFromCapabilities(['class:ground_vehicle', 'class:aircraft'])).toBe('aircraft')
+  })
+
+  test('a ground vehicle join projects its class, keeps its unit across a rejoin, and labels its notice', () => {
+    const join = (epoch: number, eventId: string): RelayServerEvent => ({
+      v: 1,
+      t: t + epoch,
+      type: 'membership',
+      event_id: eventId,
+      session,
+      roster_version: epoch,
+      action: 'join',
+      drone_id: 11,
+      connection_epoch: epoch,
+      membership: 'registered',
+      readiness_reasons: ['readiness_not_declared'],
+      adapter_id: 'ohmni-01',
+      capabilities: ['class:ground_vehicle', 'ground_drive', 'lidar'],
+      node_type: 'ground',
+      provenance: 'adapter_signature',
+      reason: null,
+    })
+    let state = controlReducer(createInitialControlState(session, t), { type: 'relay_event', event: join(1, 'join-1') })
+    expect(state.aircraft[11]).toMatchObject({ device_class: 'ground_vehicle', unit: 11 })
+
+    const robot = drone({ drone_id: 11, device_class: 'ground_vehicle', unit: 1, connection_epoch: 1 })
+    state = controlReducer(state, { type: 'relay_event', event: stateEvent('state-robot', 1, [robot], []) })
+    expect(state.aircraft[11]).toMatchObject({ device_class: 'ground_vehicle', unit: 1 })
+
+    state = controlReducer(state, { type: 'relay_event', event: join(2, 'join-2') })
+    expect(state.aircraft[11]).toMatchObject({ device_class: 'ground_vehicle', unit: 1, connection_epoch: 2 })
+    expect(state.notices[0]).toMatchObject({ title: 'G-01 rejoined' })
+  })
+
+  test('a safety action on a robot is titled and labelled as a robot', () => {
+    const robot = drone({ drone_id: 11, device_class: 'ground_vehicle', unit: 2 })
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: stateEvent('state-safety', 1, [robot], []),
+    })
     state = controlReducer(state, {
       type: 'relay_event',
       event: {
-        v: 1, t: t + 20, type: 'membership', event_id: 'aircraft-rejoin', session,
-        roster_version: 2, action: 'join', drone_id: 1, connection_epoch: 2,
-        membership: 'registered', readiness_reasons: ['readiness_not_declared'],
-        adapter_id: 'adapter-1', capabilities: ['flight'], node_type: 'aircraft',
-        provenance: 'adapter_signature', reason: null,
+        v: 1,
+        t: t + 5,
+        type: 'safety_action',
+        event_id: 'safety-robot',
+        session,
+        drone_id: 11,
+        connection_epoch: 1,
+        reason: 'link_loss',
+        action: 'hold',
+        loss_behavior: 'hold',
       },
     })
-    expect(state.latestObservations).toEqual({})
-
-    const next = parseRelayServerEvent(observationFrame({ event_id: 'observation-epoch-2', connection_epoch: 2 }))
-    if (next?.type !== 'observation') throw new Error('expected observation')
-    state = controlReducer(state, { type: 'relay_event', event: next })
-    expect(Object.values(state.latestObservations)).toEqual([next])
-  })
-
-  test('clears observations when the console joins another session', async () => {
-    const { parseRelayServerEvent } = await import('../relay/contract')
-    const event = parseRelayServerEvent(observationFrame())
-    if (event?.type !== 'observation') throw new Error('expected observation')
-    const state = controlReducer(controlReducer(withReadyState(), {
-      type: 'relay_event',
-      event,
-    }), {
-      type: 'session_changed',
-      sessionId: 'another-session',
-      t: t + 20,
+    expect(state.notices[0]).toMatchObject({
+      level: 'danger',
+      title: 'Robot hold',
+      detail: 'G-02 applied hold after link_loss.',
     })
-    expect(state.latestObservations).toEqual({})
+  })
+})
+
+describe('sensor events in the reducer', () => {
+  const scan = (eventId: string, at: number, epoch = 1): RelayServerEvent => ({
+    v: 1,
+    t: at,
+    type: 'sensor',
+    event_id: eventId,
+    session,
+    drone_id: 11,
+    connection_epoch: epoch,
+    kind: 'lidar_scan',
+    pose: { x: 0, y: 0, yaw_deg: 0 },
+    angle_min_deg: 0,
+    angle_increment_deg: 2,
+    range_min_m: 0.15,
+    range_max_m: 12,
+    ranges_cm: Array.from({ length: 180 }, () => 100),
   })
 
-  test('bounds latest observations by producer identity', async () => {
-    const { parseRelayServerEvent } = await import('../relay/contract')
-    let state = withReadyState()
-    for (let index = 0; index <= MAX_LATEST_OBSERVATIONS; index += 1) {
-      const event = parseRelayServerEvent(observationFrame({
-        event_id: `observation-${index}`,
-        source_id: `source-${index}`,
-        t_ingest: t + index + 10,
-      }))
-      if (event?.type !== 'observation') throw new Error('expected observation')
-      state = controlReducer(state, { type: 'relay_event', event })
-    }
-    expect(Object.keys(state.latestObservations)).toHaveLength(MAX_LATEST_OBSERVATIONS)
-    expect(Object.values(state.latestObservations).some((event) => event.source_id === 'source-0')).toBe(false)
+  test('records only the last scan time, for the device at its current epoch', () => {
+    const robot = drone({ drone_id: 11, device_class: 'ground_vehicle', unit: 1, connection_epoch: 1 })
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: stateEvent('state-scan', 1, [robot], []),
+    })
+    expect(state.aircraft[11].sensor).toBeUndefined()
+
+    state = controlReducer(state, { type: 'relay_event', event: scan('scan-1', t + 10) })
+    expect(state.aircraft[11].sensor).toEqual({ kind: 'lidar_scan', last_scan_at: t + 10 })
+
+    const older = controlReducer(state, { type: 'relay_event', event: scan('scan-0', t + 5) })
+    expect(older.aircraft[11].sensor).toEqual({ kind: 'lidar_scan', last_scan_at: t + 10 })
+
+    const wrongEpoch = controlReducer(state, { type: 'relay_event', event: scan('scan-2', t + 20, 2) })
+    expect(wrongEpoch.aircraft[11].sensor).toEqual({ kind: 'lidar_scan', last_scan_at: t + 10 })
+
+    const unknown = controlReducer(state, {
+      type: 'relay_event',
+      event: { ...scan('scan-3', t + 30), drone_id: 99 } as RelayServerEvent,
+    })
+    expect(unknown.aircraft).toEqual(state.aircraft)
+    expect(unknown.seenEventIds).toContain('scan-3')
   })
 })
