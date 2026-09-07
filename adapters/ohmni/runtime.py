@@ -74,6 +74,8 @@ class GroundRuntimeConfig:
     heartbeat_failsafe_ms: int = 10_000
     telemetry_hz: float = 5.0
     outbound_queue_limit: int = 256
+    reconnect_initial_delay_s: float = 0.25
+    reconnect_max_delay_s: float = 5.0
     return_approval: ApprovedReturnRoute | None = None
     monotonic: Callable[[], float] = time.monotonic
     event_ids: Callable[[], str] = lambda: str(uuid.uuid4())
@@ -96,6 +98,16 @@ class GroundRuntimeConfig:
             raise ValueError("ground camera dimensions are invalid")
         if self.outbound_queue_limit < 8:
             raise ValueError("ground outbound queue must retain at least eight safety frames")
+        if (
+            not isinstance(self.reconnect_initial_delay_s, int | float)
+            or isinstance(self.reconnect_initial_delay_s, bool)
+            or not math.isfinite(self.reconnect_initial_delay_s)
+            or not isinstance(self.reconnect_max_delay_s, int | float)
+            or isinstance(self.reconnect_max_delay_s, bool)
+            or not math.isfinite(self.reconnect_max_delay_s)
+            or not 0.05 <= self.reconnect_initial_delay_s <= self.reconnect_max_delay_s <= 30
+        ):
+            raise ValueError("ground reconnect delays must be finite and bounded")
         if self.odom_origin_id is not None and (
             not self.odom_origin_id
             or len(self.odom_origin_id) > 128
@@ -116,6 +128,8 @@ class GroundRuntimeConfig:
             for value in mount
         ):
             raise ValueError("lidar mount requires a complete finite transform")
+        if self.lidar_mount_yaw_deg not in (None, 0.0):
+            raise ValueError("lidar scan axes are body-aligned; mount yaw must be zero")
 
 
 class OhmniRuntime:
@@ -142,6 +156,9 @@ class OhmniRuntime:
         self._thread: threading.Thread | None = None
         self._started = threading.Event()
         self._failure: BaseException | None = None
+        self._connection_authenticated = False
+        self._transport_stopped = True
+        self._command_tasks: set[asyncio.Task[None]] = set()
         self._return_controller = (
             None
             if config.return_approval is None
@@ -184,17 +201,45 @@ class OhmniRuntime:
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
-        self._outbound = asyncio.Queue(maxsize=self.config.outbound_queue_limit)
         connection_options = (
             {}
             if self.config.relay_connect_host is None
             else {"host": self.config.relay_connect_host, "proxy": None}
         )
+        delay = self.config.reconnect_initial_delay_s
         try:
-            async with connect(
-                f"{self.config.relay_url.rstrip('/')}/ws/{self.config.session}",
-                **connection_options,
-            ) as socket:
+            while not self._stop.is_set():
+                self._outbound = asyncio.Queue(maxsize=self.config.outbound_queue_limit)
+                self._connection_authenticated = False
+                self._transport_stopped = False
+                try:
+                    await self._run_connection(connection_options)
+                except (OSError, WebSocketException) as error:
+                    _LOGGER.warning("ground relay connection lost: %s", error)
+                finally:
+                    authenticated = self._connection_authenticated
+                    if not self._transport_stopped:
+                        self._local_stop("watchdog_failsafe", disable=True, publish=False)
+                    self._discard_transport_state()
+                if self._stop.is_set():
+                    break
+                if authenticated:
+                    delay = self.config.reconnect_initial_delay_s
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                except TimeoutError:
+                    delay = min(delay * 2, self.config.reconnect_max_delay_s)
+        finally:
+            self._local_stop("watchdog_failsafe", disable=True)
+            self._discard_transport_state()
+            self._started.set()
+
+    async def _run_connection(self, connection_options: Mapping[str, object]) -> None:
+        tasks: list[asyncio.Task[object]] = []
+        async with connect(
+            f"{self.config.relay_url.rstrip('/')}/ws/{self.config.session}", **connection_options
+        ) as socket:
+            try:
                 await socket.send(
                     json.dumps(
                         {
@@ -211,6 +256,7 @@ class OhmniRuntime:
                     raise RuntimeError(
                         f"relay refused adapter authentication: {accepted.get('reason')}"
                     )
+                self._connection_authenticated = True
                 initial = json.loads(await socket.recv())
                 if initial.get("type") == "state":
                     self._roster_version = int(initial["roster_version"])
@@ -230,24 +276,40 @@ class OhmniRuntime:
                     asyncio.create_task(self._watchdog()),
                     asyncio.create_task(self._stop.wait()),
                 ]
-                try:
-                    done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                finally:
-                    self._local_stop("watchdog_failsafe", disable=True)
-                    for task in tasks:
-                        task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 if not self._stop.is_set():
                     for task in done:
                         if (error := task.exception()) is not None:
                             raise error
-                    raise RuntimeError("relay closed the ground adapter socket")
-        except (OSError, WebSocketException):
-            self._local_stop("watchdog_failsafe", disable=True)
-            raise
-        finally:
-            self._local_stop("watchdog_failsafe", disable=True)
-            self._started.set()
+                    raise WebSocketException("relay closed the ground adapter socket")
+            finally:
+                # Stop the base before leaving the socket context, which may block on close.
+                self._local_stop("watchdog_failsafe", disable=True, publish=False)
+                self._transport_stopped = True
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                command_tasks = tuple(self._command_tasks)
+                for task in command_tasks:
+                    task.cancel()
+                await asyncio.gather(*command_tasks, return_exceptions=True)
+
+    def _discard_transport_state(self) -> None:
+        self._outbound = None
+        self._epoch = None
+        self._roster_version = 0
+        self._last_command_seq = 0
+        self._last_heartbeat_seq = 0
+        self._last_heartbeat_at = None
+        self._last_heartbeat_expires_at = None
+        self._ready = False
+        self._watchdog_state = "failsafe"
+        self._pose_event_id = None
+        self._last_scan_t_ms = None
+
+    def _track_command_task(self, task: asyncio.Task[None]) -> None:
+        self._command_tasks.add(task)
+        task.add_done_callback(self._command_tasks.discard)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -414,7 +476,7 @@ class OhmniRuntime:
                 return
             self._enqueue(self._ack(command, "executing"))
             assert self._loop is not None
-            self._loop.create_task(self._complete_motion(command, motion))
+            self._track_command_task(self._loop.create_task(self._complete_motion(command, motion)))
             return
         if command.operation is CommandOperation.GROUND_RETURN:
             route = self.config.return_approval
@@ -431,7 +493,7 @@ class OhmniRuntime:
                 return
             self._enqueue(self._ack(command, "executing"))
             assert self._loop is not None
-            self._loop.create_task(self._complete_return(command))
+            self._track_command_task(self._loop.create_task(self._complete_return(command)))
             return
         if command.operation is CommandOperation.HOVER:
             self._local_stop("remote_hold", disable=False)
@@ -772,7 +834,6 @@ class OhmniRuntime:
     def _lidar_sensor_pose(self, scan: RangeScan) -> tuple[float, float, float]:
         assert self.config.lidar_mount_x_m is not None
         assert self.config.lidar_mount_y_m is not None
-        assert self.config.lidar_mount_yaw_deg is not None
         heading = math.radians(scan.pose[2])
         return (
             scan.pose[0]
@@ -781,7 +842,7 @@ class OhmniRuntime:
             scan.pose[1]
             + math.sin(heading) * self.config.lidar_mount_x_m
             + math.cos(heading) * self.config.lidar_mount_y_m,
-            (scan.pose[2] + self.config.lidar_mount_yaw_deg) % 360,
+            scan.pose[2] % 360,
         )
 
     def _return_grant_active(self) -> bool:
