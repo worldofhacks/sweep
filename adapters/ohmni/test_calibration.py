@@ -167,51 +167,127 @@ def test_opposite_wheel_encoder_deltas_count_as_yaw_and_wheel_travel() -> None:
     assert progress.yaw_degrees > 0
 
 
-def test_runner_completes_three_stages_with_actual_device_steps(
+class RunnerSimulation:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, fault: str | None = None) -> None:
+        self.clock = Clock()
+        self.fault = fault
+        self.units = (0, 0)
+        self.started_moving: float | None = None
+        self.last_tick = self.clock()
+        self.last_scan = self.clock()
+        self.left = self.right = 1000.0
+        self.poll = 0
+        self.sequence = 1
+        simulation = self
+
+        class SimulatedShell(Shell):
+            def command(self, command: str, **kwargs: object) -> str:
+                super().command(command, **kwargs)
+                if command.startswith("manual_move "):
+                    self_units = tuple(map(int, command.split()[1:]))
+                    simulation.units = self_units
+                    if any(self_units) and simulation.started_moving is None:
+                        simulation.started_moving = simulation.clock()
+                if command == "sleep":
+                    simulation.units = (0, 0)
+                return ""
+
+        monkeypatch.setattr("adapters.ohmni.device.time.monotonic", self.clock)
+        self.shell = SimulatedShell()
+        self.device = OhmniDevice(
+            Config(spotter_present=True, wheel_diameter_mm=152.4),
+            shell_factory=lambda _path: self.shell,
+            lidar_discover=lambda: None,
+            autostart=False,
+        )
+        self.device.lidar = RawLidar(self.clock)  # type: ignore[assignment]
+        self.device.lidar.raw_revolution = lambda now: RawRevolution(  # type: ignore[method-assign]
+            tuple(Measurement(index == 0, 15, float(index * 3), 1000.0) for index in range(100)),
+            self.last_scan,
+        )
+        self.lease = _lease(self.clock)
+        self._sample()
+
+    def _sample(self) -> None:
+        self.poll += 1
+        self.device.odometry._update_paired_sample(
+            EncoderPair(
+                self.poll,
+                round(self.left) % 16384,
+                round(self.right) % 16384,
+                round(self.clock() * 1e9),
+                round(self.clock() * 1e9),
+            )
+        )
+
+    def sleep(self, delay: float) -> None:
+        self.clock.value += delay
+        if self.clock() - self.last_tick < 0.1 - 1e-8:
+            return
+        elapsed = self.clock() - self.last_tick
+        self.last_tick = self.clock()
+        moving = self.started_moving is not None
+        gain = 0.0 if self.fault == "no_motion" else 1.0
+        self.left += self.units[0] * 0.18 / 250 * 1000 * TICKS_PER_MM * elapsed * gain
+        self.right += self.units[1] * 0.18 / 250 * 1000 * TICKS_PER_MM * elapsed * gain
+        if not (moving and self.fault == "encoder"):
+            self._sample()
+        if not (moving and self.fault == "lidar"):
+            self.last_scan = self.clock()
+        if not (moving and self.fault == "lease"):
+            self.sequence += 1
+            assert self.lease.renew(self.sequence, b"c" * 32)
+        self.device.step(self.clock())
+
+
+def test_runner_completes_three_stages_using_command_driven_wheels_and_real_odometry(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    import json
+
     from .calibration import CalibrationRunner
 
-    clock = Clock()
-    device = _device(monkeypatch, clock)
-    lease = _lease(clock)
-    state = {"x": 0.0, "y": 0.0, "yaw": 0.0, "poll": 1, "left": 1000, "right": 1000}
-
-    def snapshot(now=None):
-        pair = EncoderPair(
-            state["poll"], state["left"], state["right"], int(clock() * 1e9), int(clock() * 1e9)
-        )
-        return Pose(state["x"], state["y"], state["yaw"], quality=0.6), pair
-
-    device.odometry.snapshot_with_sample = snapshot  # type: ignore[method-assign]
-    device.odometry.snapshot = lambda now=None: snapshot(now)[0]  # type: ignore[method-assign]
-    sequence = 1
-
-    def tick(_delay: float) -> None:
-        nonlocal sequence
-        motion = device.motion
-        if motion and motion.velocity_m_s:
-            state["x"] += motion.velocity_m_s * 0.1
-            state["left"] += 700
-            state["right"] -= 700
-        elif motion and motion.yaw_rate_deg_s:
-            state["yaw"] += motion.yaw_rate_deg_s * 0.1
-            state["left"] += 600
-            state["right"] += 600
-        clock.value += 0.1
-        state["poll"] += 1
-        assert lease.renew(sequence + 1, b"c" * 32)
-        sequence += 1
-        device.step(clock())
-
+    simulation = RunnerSimulation(monkeypatch)
     output = tmp_path / "capture.json"
-    CalibrationRunner(device, lease, output, monotonic=clock, sleep=tick).run()
-    capture = __import__("json").loads(output.read_text())
-    assert set(capture["stages"]) == {"baseline", "after_forward", "after_yaw"}
-    assert all(len(stage["revolutions"]) == 10 for stage in capture["stages"].values())
-    assert device.motion is None
-    assert not device.enabled
-    assert device.drive_shell.commands[-2:] == ["manual_move 0 0", "sleep"]
+    CalibrationRunner(
+        simulation.device,
+        simulation.lease,
+        output,
+        monotonic=simulation.clock,
+        sleep=simulation.sleep,
+    ).run()
+    capture = json.loads(output.read_text())
+    stages = capture["stages"]
+    assert set(stages) == {"baseline", "after_forward", "after_yaw"}
+    assert all(len(stage["revolutions"]) == 10 for stage in stages.values())
+    assert 0.075 <= stages["after_forward"]["pose"]["x_m"] <= 0.105
+    assert 9.5 <= stages["after_yaw"]["pose"]["yaw_deg"] <= 14.0
+    assert simulation.device.motion is None
+    assert not simulation.device.enabled
+    assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
+
+
+@pytest.mark.parametrize("fault", ["lease", "encoder", "lidar", "no_motion"])
+def test_runner_stops_and_removes_incomplete_capture_after_live_fault(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fault: str
+) -> None:
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch, fault=fault)
+    output = tmp_path / "capture.json"
+    with pytest.raises((CalibrationError, RuntimeError)):
+        CalibrationRunner(
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=simulation.sleep,
+        ).run()
+    assert simulation.started_moving is not None
+    assert not output.exists()
+    assert simulation.device.motion is None
+    assert not simulation.device.enabled
+    assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
 
 
 def test_runner_refuses_an_existing_output_before_enabling(
