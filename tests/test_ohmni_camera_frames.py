@@ -2,8 +2,11 @@ import hashlib
 import json
 import os
 import struct
+import subprocess
+import sys
 import time
 import zlib
+from pathlib import Path
 
 import pytest
 
@@ -223,6 +226,31 @@ def test_cli_extracts_bounded_pngs_with_their_source_frame_indices(tmp_path, cap
     }
     assert _png_gray8(output / "frame-000000.png") == b"\x00\x00\x40\x00\x80\xff"
     assert _png_gray8(output / "frame-000002.png") == b"\x00\x01\x02\x00\x03\x04"
+
+
+def test_module_cli_extracts_from_repo_without_pythonpath(tmp_path):
+    directory = _capture(tmp_path)
+    output = tmp_path / "pngs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tools.ohmni_camera_frames",
+            "--capture-dir",
+            str(directory),
+            "--output-dir",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[1],
+        env={"PATH": os.defpath},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["frames"] == 1
+    assert (output / "frame-000000.png").is_file()
 
 
 def test_extractor_refuses_an_existing_output_directory(tmp_path):
