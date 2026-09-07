@@ -322,10 +322,9 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         raise ValueError("home zone must have explicit arrival permission")
     execution_fields = set(NavigationExecutionConfig.__dataclass_fields__)
     execution_raw = raw["execution"]
-    if (
-        isinstance(execution_raw, dict)
-        and set(execution_raw) == execution_fields - {"max_aircraft"}
-    ):
+    if isinstance(execution_raw, dict) and set(execution_raw) == execution_fields - {
+        "max_aircraft"
+    }:
         execution = {**execution_raw, "max_aircraft": 4}
     else:
         execution = dict(_fields(execution_raw, execution_fields, "navigation execution"))
