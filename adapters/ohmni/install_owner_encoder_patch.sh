@@ -15,12 +15,23 @@ adb=${ADB:-adb}
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 module="$root/adapters/ohmni/vendor/sweep_paired_encoder_sampler.js"
 patcher="$root/adapters/ohmni/tools/prepare_owner_encoder_patch.py"
+reference_sha="f463feaab912999d3b4133fea049925ed95a6e32ee82856fb7ffa273cbe2ca3e"
+vendor_owner="1000:1000"
+vendor_mode=600
+vendor_context="u:object_r:system_app_data_file:s0"
 [ -f "$module" ] && [ -f "$patcher" ] || exit 2
 work=$(mktemp -d "${TMPDIR:-/tmp}/sweep-owner-patch.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 "$adb" -s "$serial" get-state >/dev/null
 "$adb" -s "$serial" pull "$node_dir/telebot_node.js" "$work/telebot_node.js" >/dev/null
 python3 "$patcher" "$work/telebot_node.js" "$work/telebot_node.patched.js"
+patched_sha=$(sha256sum "$work/telebot_node.patched.js" | cut -d ' ' -f 1)
+module_sha=$(sha256sum "$module" | cut -d ' ' -f 1)
+remote_sha=$("$adb" -s "$serial" shell "sha256sum $node_dir/telebot_node.js | cut -d ' ' -f 1" | tr -d '\r\n')
+[ "$remote_sha" = "$reference_sha" ] || {
+  echo 'Vendor source changed after review; refusing to install.' >&2
+  exit 1
+}
 stage=$("$adb" -s "$serial" shell 'mktemp -d /data/local/tmp/sweep-owner-patch.XXXXXXXX' | tr -d '\r')
 case "$stage" in
   /data/local/tmp/sweep-owner-patch.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
@@ -32,17 +43,30 @@ cleanup() {
 trap 'cleanup; rm -rf "$work"' EXIT HUP INT TERM
 "$adb" -s "$serial" push "$work/telebot_node.patched.js" "$stage/telebot_node.js" >/dev/null
 "$adb" -s "$serial" push "$module" "$stage/sweep_paired_encoder_sampler.js" >/dev/null
-printf '%s\n' "
+cat <<EOF | "$adb" -s "$serial" shell -T su 0 sh
 set -eu
 node_dir=$node_dir
 target=\$node_dir/telebot_node.js
 backup=\$node_dir/telebot_node.js.sweep-owner-encoder.backup
+module=\$node_dir/sweep_paired_encoder_sampler.js
+[ "\$(sha256sum \$target | cut -d ' ' -f 1)" = $reference_sha ]
+[ "\$(sha256sum $stage/telebot_node.js | cut -d ' ' -f 1)" = $patched_sha ]
+[ "\$(sha256sum $stage/sweep_paired_encoder_sampler.js | cut -d ' ' -f 1)" = $module_sha ]
 [ ! -e \$backup ]
-[ ! -e \$node_dir/sweep_paired_encoder_sampler.js ]
+[ ! -e \$module ]
 [ -f \$target ]
 cp -p \$target \$backup
-mv $stage/sweep_paired_encoder_sampler.js \$node_dir/sweep_paired_encoder_sampler.js
+[ "\$(sha256sum \$backup | cut -d ' ' -f 1)" = $reference_sha ]
+mv $stage/sweep_paired_encoder_sampler.js \$module
 mv $stage/telebot_node.js \$target
-chmod 600 \$node_dir/sweep_paired_encoder_sampler.js
-" | "$adb" -s "$serial" shell -T su 0 sh
+chown $vendor_owner \$target \$module
+chmod $vendor_mode \$target \$module
+chcon $vendor_context \$target \$module
+[ "\$(sha256sum \$target | cut -d ' ' -f 1)" = $patched_sha ]
+[ "\$(sha256sum \$module | cut -d ' ' -f 1)" = $module_sha ]
+[ "\$(stat -c '%u:%g:%a' \$target)" = $vendor_owner:$vendor_mode ]
+[ "\$(stat -c '%u:%g:%a' \$module)" = $vendor_owner:$vendor_mode ]
+[ "\$(ls -Zd \$target | awk '{print \$1}')" = $vendor_context ]
+[ "\$(ls -Zd \$module | awk '{print \$1}')" = $vendor_context ]
+EOF
 printf '%s\n' 'Patched source staged. Restart the vendor service only through a separately reviewed operation.'

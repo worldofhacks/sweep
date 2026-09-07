@@ -172,11 +172,33 @@ async function testExternalDriveEncoderReadsAreSuppressedForSamplerLifetime() {
   });
 }
 
+async function testFanoutBoundsClientsAndDropsSlowReaders() {
+  await withSampler(async ({ sampler, socketPath }) => {
+    const clients = await Promise.all(Array.from({ length: 5 }, () => connect(socketPath)));
+    try {
+      await wait(5);
+      assert.strictEqual(sampler._clients.length, 4);
+      const slow = {
+        destroyed: false,
+        writableLength: 65536,
+        destroy() { this.destroyed = true; },
+        write() { throw new Error('slow reader was written'); },
+      };
+      sampler._clients = [slow];
+      sampler._publish({ v: 1, type: 'sweep_encoder_pair' });
+      assert.strictEqual(slow.destroyed, true);
+    } finally {
+      clients.forEach((client) => client.destroy());
+    }
+  });
+}
+
 (async () => {
   await testDelayedPairFansOut();
   await testOutOfOrderReplyCannotAdvanceThePoll();
   await testIncompletePollLatchesUnavailableAndNeverReusesLateReply();
   await testExternalDriveEncoderReadsAreSuppressedForSamplerLifetime();
+  await testFanoutBoundsClientsAndDropsSlowReaders();
   process.stdout.write('paired encoder sampler tests passed\n');
 })().catch((error) => {
   process.stderr.write(error.stack + '\n');

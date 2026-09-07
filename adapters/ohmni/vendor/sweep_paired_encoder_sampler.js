@@ -8,6 +8,8 @@ const BYTES = 2;
 const READ_COMMAND = 4;
 const POLL_INTERVAL_MS = 100;
 const REPLY_TIMEOUT_MS = 100;
+const MAX_CLIENTS = 4;
+const MAX_CLIENT_BUFFER_BYTES = 64 * 1024;
 
 function monotonicNs() {
   const now = process.hrtime();
@@ -100,6 +102,10 @@ PairedEncoderSampler.prototype._createServer = function () {
     fs.unlinkSync(this._socketPath);
   }
   this._server = net.createServer((client) => {
+    if (this._clients.length >= MAX_CLIENTS) {
+      client.destroy();
+      return;
+    }
     this._clients.push(client);
     client.on('error', () => this._removeClient(client));
     client.on('close', () => this._removeClient(client));
@@ -227,7 +233,12 @@ PairedEncoderSampler.prototype._abortActive = function () {
 PairedEncoderSampler.prototype._publish = function (payload) {
   const message = JSON.stringify(payload) + '\n';
   this._clients.slice().forEach((client) => {
-    if (!client.destroyed) client.write(message);
+    if (client.destroyed) return;
+    if (client.writableLength + Buffer.byteLength(message) > MAX_CLIENT_BUFFER_BYTES) {
+      client.destroy();
+      return;
+    }
+    client.write(message);
   });
 };
 
