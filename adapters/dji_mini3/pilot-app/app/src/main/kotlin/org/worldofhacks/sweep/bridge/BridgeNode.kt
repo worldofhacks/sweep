@@ -144,6 +144,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                 logLine("cannot start the relay link: capture-alignment.json is invalid")
                 return@launch
             }
+            val navigationAdmission = try { loadNavigationAdmission(application.filesDir) } catch (_: Exception) { logLine("cannot start the relay link: navigation-admission.json is invalid"); return@launch }
             if (captureAlignment == null) logLine("body-camera localization disabled: capture-alignment.json is missing")
             val loopback = isLoopback(hostOf(setup.relayUrl))
             val wifi = wifiNetwork
@@ -178,6 +179,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     clientProvider = if (loopback) null else ({ wifi?.binding?.value?.client }),
                     videoPublish = { videoPublish.current() },
                     captureAlignmentSamples = (session as? CaptureAlignmentSession)?.captureAlignmentSamples,
+                    navigationAdmission = navigationAdmission,
                 )
                 relayLink = link
                 mirror = scope.launch {
