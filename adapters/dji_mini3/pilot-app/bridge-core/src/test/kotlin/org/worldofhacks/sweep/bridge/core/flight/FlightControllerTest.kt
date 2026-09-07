@@ -742,6 +742,27 @@ class FlightControllerTest {
     }
 
     @Test
+    fun `supervised vertical rejects negative local height before takeoff and lands after native takeoff begins`() {
+        val preflight = Harness(supervisedVertical = SupervisedVerticalConfig())
+        preflight.localHeight(-0.01)
+        preflight.join()
+        val refused = preflight.run(CommandArgs.Takeoff(zMm = 1_800))
+        assertEquals("local_height_unavailable", refused.terminal?.second, refused.events.toString())
+        assertFalse(preflight.model.motorsOn, "negative local height must not reach the SDK takeoff action")
+
+        val ongoing = Harness(supervisedVertical = SupervisedVerticalConfig())
+        ongoing.localHeight(0.0)
+        ongoing.join()
+        val takeoff = ongoing.run(CommandArgs.Takeoff(zMm = 1_800))
+        assertTrue(ongoing.model.motorsOn, "the native takeoff action was accepted")
+        ongoing.localHeight(-0.01)
+        ongoing.controller.tick(ongoing.clock.nowMs())
+        assertEquals("local_height_unavailable", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals("landing", ongoing.controller.status.phase)
+        assertTrue(ongoing.model.landing)
+    }
+
+    @Test
     fun `supervised vertical cancels an accepted auto takeoff before the aircraft reports airborne`() {
         fun startingHarness(): Pair<Harness, RecordingSink> {
             val h = Harness(supervisedVertical = SupervisedVerticalConfig())

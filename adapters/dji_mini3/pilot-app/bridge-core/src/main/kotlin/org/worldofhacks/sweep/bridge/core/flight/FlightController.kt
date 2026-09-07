@@ -1030,7 +1030,7 @@ class FlightController(
     private fun freshLocalHeight(supervised: SupervisedVerticalConfig): Double? {
         val sample = facts.localHeight ?: return null
         val ageMs = monotonicNowMs() - sample.receivedAtMonotonicMs
-        return sample.zUpM.takeIf { ageMs in 0..supervised.maximumHeightAgeMs }
+        return sample.zUpM.takeIf { it >= 0.0 && ageMs in 0..supervised.maximumHeightAgeMs }
     }
 
     private fun guardVerticalHeight(
