@@ -1091,10 +1091,12 @@ def create_autonomy_app(
 
 
 def _ground_return_selected(intent: IntentV1, state: Mapping[str, object]) -> bool:
+    if len(intent.selection) != 1:
+        return False
     drones = state.get("drones", ())
     return isinstance(drones, (list, tuple)) and any(
         isinstance(drone, Mapping)
-        and drone.get("drone_id") in intent.selection
+        and drone.get("drone_id") == intent.selection[0]
         and drone.get("node_type") == "ground"
         for drone in drones
     )

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import math
+import stat
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,7 +132,10 @@ class ApprovedReturnRoute:
     def load(cls, path: Path, approval_key: bytes) -> ApprovedReturnRoute:
         if not 32 <= len(approval_key) <= _MAX_KEY_BYTES:
             raise ValueError("return approval key has an invalid length")
-        raw = _strict_json(_read_bounded(path, _MAX_APPROVAL_BYTES), "return approval record")
+        raw = _strict_json(
+            _read_bounded(path, _MAX_APPROVAL_BYTES, "return approval record"),
+            "return approval record",
+        )
         if not isinstance(raw, dict) or not isinstance(raw.get("signature"), str):
             raise ValueError("return approval signature is required")
         required = {
@@ -466,13 +470,24 @@ def _strict_json(content: bytes, name: str) -> object:
         raise ValueError(f"{name} is unreadable") from error
 
 
-def _read_bounded(path: Path, maximum: int) -> bytes:
+def read_approval_key(path: Path) -> bytes:
+    key = _read_bounded(path, _MAX_KEY_BYTES, "return approval key")
+    if len(key) < 32:
+        raise ValueError("return approval key has an invalid length")
+    return key
+
+
+def _read_bounded(path: Path, maximum: int, name: str) -> bytes:
     try:
-        if not path.is_file() or path.stat().st_size > maximum:
-            raise ValueError("approval record exceeds the safety limit")
-        return path.read_bytes()
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise ValueError(f"{name} is unreadable")
+        with path.open("rb") as source:
+            content = source.read(maximum + 1)
     except OSError as error:
-        raise ValueError("return approval record is unreadable") from error
+        raise ValueError(f"{name} is unreadable") from error
+    if len(content) > maximum:
+        raise ValueError(f"{name} exceeds the safety limit")
+    return content
 
 
 def _transform(raw: object) -> WorldToOdom:
