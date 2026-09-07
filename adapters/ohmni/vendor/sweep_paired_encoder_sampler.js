@@ -18,6 +18,11 @@ function isPosition(value) {
   return typeof value === 'number' && value >= 0 && value < 16384 && Math.floor(value) === value;
 }
 
+function isDriveEncoderRequest(sid, command, payload) {
+  return (sid === 0 || sid === 1) && command === READ_COMMAND && payload &&
+    payload.length >= 1 && payload[0] === ADDRESS;
+}
+
 function PairedEncoderSampler(serial, socketPath, options) {
   options = options || {};
   this._serial = serial;
@@ -150,6 +155,7 @@ PairedEncoderSampler.prototype._beginPoll = function () {
 };
 
 PairedEncoderSampler.prototype._queueOrSend = function (sid, command, payload) {
+  if (isDriveEncoderRequest(sid, command, payload)) return;
   if (this._active) {
     this._deferredRequests.push({ sid: sid, command: command, payload: Buffer.from(payload) });
     return;

@@ -152,10 +152,31 @@ async function testIncompletePollLatchesUnavailableAndNeverReusesLateReply() {
   });
 }
 
+async function testExternalDriveEncoderReadsAreSuppressedForSamplerLifetime() {
+  await withSampler(async ({ serial, socketPath }) => {
+    const client = await connect(socketPath);
+    try {
+      const received = nextJson(client);
+      serial.sendCustom(0, 4, Buffer.from([58, 2]));
+      serial.sendCustom(1, 4, Buffer.from([58, 4]));
+      assert.deepStrictEqual(serial.requests.map((request) => request.sid), [0]);
+      serial.reply(0, 10);
+      assert.deepStrictEqual(serial.requests.map((request) => request.sid), [0, 1]);
+      serial.sendCustom(1, 4, Buffer.from([58, 2]));
+      assert.deepStrictEqual(serial.requests.map((request) => request.sid), [0, 1]);
+      serial.reply(1, 20);
+      assert.strictEqual((await received).type, 'sweep_encoder_pair');
+    } finally {
+      client.destroy();
+    }
+  });
+}
+
 (async () => {
   await testDelayedPairFansOut();
   await testOutOfOrderReplyCannotAdvanceThePoll();
   await testIncompletePollLatchesUnavailableAndNeverReusesLateReply();
+  await testExternalDriveEncoderReadsAreSuppressedForSamplerLifetime();
   process.stdout.write('paired encoder sampler tests passed\n');
 })().catch((error) => {
   process.stderr.write(error.stack + '\n');

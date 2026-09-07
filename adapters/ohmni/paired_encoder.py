@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 
 MAX_PAIR_SKEW_NS = 350_000_000
+MAX_PAIR_AGE_NS = 350_000_000
 MAX_LINE_BYTES = 4096
 
 
@@ -30,6 +31,7 @@ class PairedEncoderStream:
         self._socket: socket.socket | None = None
         self._buffer = b""
         self._last_poll_id = 0
+        self._last_right_receipt_ns = 0
 
     def read_pair(self, timeout: float) -> EncoderPair | None:
         deadline = time.monotonic() + timeout
@@ -41,14 +43,17 @@ class PairedEncoderStream:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("type") == "sweep_encoder_unavailable":
+            if isinstance(event, dict) and event.get("type") == "sweep_encoder_unavailable":
                 self.close()
                 reason = str(event.get("reason", "encoder stream unavailable"))
                 raise EncoderStreamUnavailable(reason)
             pair = _parse_pair(event, self._last_poll_id)
-            if pair is None:
+            if pair is None or not _is_current_pair(
+                pair, time.monotonic_ns(), self._last_right_receipt_ns
+            ):
                 continue
             self._last_poll_id = pair.poll_id
+            self._last_right_receipt_ns = pair.right_receipt_ns
             return pair
 
     def _next_line(self, deadline: float) -> str | None:
@@ -69,7 +74,7 @@ class PairedEncoderStream:
                     self._socket.settimeout(remaining)
                     self._socket.connect(self.path)
                 self._socket.settimeout(remaining)
-                chunk = self._socket.recv(MAX_LINE_BYTES - len(self._buffer))
+                chunk = self._socket.recv(MAX_LINE_BYTES + 1 - len(self._buffer))
             except OSError:
                 self.close()
                 raise
@@ -106,6 +111,14 @@ def _parse_pair(event: object, previous_poll_id: int) -> EncoderPair | None:
     if abs(right_receipt - left_receipt) > MAX_PAIR_SKEW_NS:
         return None
     return EncoderPair(poll_id, values[0], values[1], left_receipt, right_receipt)
+
+
+def _is_current_pair(pair: EncoderPair, now_ns: int, previous_right_receipt_ns: int) -> bool:
+    return (
+        pair.left_receipt_ns <= pair.right_receipt_ns <= now_ns
+        and now_ns - pair.left_receipt_ns <= MAX_PAIR_AGE_NS
+        and pair.right_receipt_ns > previous_right_receipt_ns
+    )
 
 
 def default_socket_path() -> str:
