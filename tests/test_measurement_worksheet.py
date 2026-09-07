@@ -147,8 +147,21 @@ def test_import_converts_feet_inches_and_creates_current_map_artifacts(tmp_path)
     ]
 
 
-def test_output_tags_and_independent_tape_validate_in_current_world_bundle(tmp_path):
-    documents = import_worksheet(worksheet(), json.dumps(worksheet()).encode())
+def test_floor_to_wall_tape_imports_and_validates_in_current_world_bundle(tmp_path):
+    value = worksheet()
+    value["wall_tags"][0]["center_xy"] = xy(10, 3.1496062992, 20, 3.1496062992)
+    value["independent_tape_checks"].append(
+        {
+            "name": "vertical",
+            "tag_ids": [0, 12],
+            "measured_distance": fi(4, 0),
+            "maximum_error": fi(0, 1),
+        }
+    )
+    payload = json.dumps(value).encode()
+    documents = import_worksheet(value, payload)
+    by_id = {tag["id"]: tag for tag in documents["tags.yaml"]["tags"]}
+    assert by_id[12]["tape_verification"]["measured_distance_m"] == pytest.approx(1.2192)
     bundle = Path(__file__).parent / "fixtures" / "world_bundle"
     destination = tmp_path / "bundle"
     import shutil
