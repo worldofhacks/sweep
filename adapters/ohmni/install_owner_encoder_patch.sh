@@ -15,7 +15,6 @@ adb=${ADB:-adb}
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 module="$root/adapters/ohmni/vendor/sweep_paired_encoder_sampler.js"
 patcher="$root/adapters/ohmni/tools/prepare_owner_encoder_patch.py"
-reference_sha="f463feaab912999d3b4133fea049925ed95a6e32ee82856fb7ffa273cbe2ca3e"
 vendor_owner="1000:1000"
 vendor_mode=600
 vendor_context="u:object_r:system_app_data_file:s0"
@@ -23,16 +22,18 @@ vendor_context="u:object_r:system_app_data_file:s0"
 work=$(mktemp -d "${TMPDIR:-/tmp}/sweep-owner-patch.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 "$adb" -s "$serial" get-state >/dev/null
-"$adb" -s "$serial" exec-out su 0 cat "$node_dir/telebot_node.js" > "$work/telebot_node.js"
+source="$node_dir/telebot_node.js"
+printf 'base64 %s\n' "$source" | "$adb" -s "$serial" shell -T su 0 sh | tr -d '\r' | base64 -d > "$work/telebot_node.js"
+source_sha=$(sha256sum "$work/telebot_node.js" | cut -d ' ' -f 1)
+remote_sha=$(printf 'sha256sum %s\n' "$source" | "$adb" -s "$serial" shell -T su 0 sh | awk '{print $1}' | tr -d '\r\n')
+[ "$remote_sha" = "$source_sha" ] || {
+  echo 'Vendor source changed or transport altered its bytes; refusing to install.' >&2
+  exit 1
+}
 python3 "$patcher" "$work/telebot_node.js" "$work/telebot_node.patched.js"
 patched_sha=$(sha256sum "$work/telebot_node.patched.js" | cut -d ' ' -f 1)
 module_sha=$(sha256sum "$module" | cut -d ' ' -f 1)
-remote_sha=$("$adb" -s "$serial" exec-out su 0 sha256sum "$node_dir/telebot_node.js" | awk '{print $1}' | tr -d '\r\n')
-[ "$remote_sha" = "$reference_sha" ] || {
-  echo 'Vendor source changed after review; refusing to install.' >&2
-  exit 1
-}
-stage=$("$adb" -s "$serial" shell 'mktemp -d /data/local/tmp/sweep-owner-patch.XXXXXXXX' | tr -d '\r')
+stage=$(printf '%s\n' 'mktemp -d /data/local/tmp/sweep-owner-patch.XXXXXXXX' | "$adb" -s "$serial" shell -T su 0 sh | tr -d '\r')
 case "$stage" in
   /data/local/tmp/sweep-owner-patch.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
   *) echo 'Invalid Android staging directory.' >&2; exit 1 ;;
@@ -49,14 +50,14 @@ node_dir=$node_dir
 target=\$node_dir/telebot_node.js
 backup=\$node_dir/telebot_node.js.sweep-owner-encoder.backup
 module=\$node_dir/sweep_paired_encoder_sampler.js
-[ "\$(sha256sum \$target | cut -d ' ' -f 1)" = $reference_sha ]
+[ "\$(sha256sum \$target | cut -d ' ' -f 1)" = $source_sha ]
 [ "\$(sha256sum $stage/telebot_node.js | cut -d ' ' -f 1)" = $patched_sha ]
 [ "\$(sha256sum $stage/sweep_paired_encoder_sampler.js | cut -d ' ' -f 1)" = $module_sha ]
 [ ! -e \$backup ]
 [ ! -e \$module ]
 [ -f \$target ]
 cp -p \$target \$backup
-[ "\$(sha256sum \$backup | cut -d ' ' -f 1)" = $reference_sha ]
+[ "\$(sha256sum \$backup | cut -d ' ' -f 1)" = $source_sha ]
 mv $stage/sweep_paired_encoder_sampler.js \$module
 mv $stage/telebot_node.js \$target
 chown $vendor_owner \$target \$module

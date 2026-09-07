@@ -1,39 +1,45 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 
-from .tools.prepare_owner_encoder_patch import prepare
+from .tools.prepare_owner_encoder_patch import (
+    CRLF_REFERENCE_SHA256,
+    LF_REFERENCE_SHA256,
+    prepare,
+)
+
+CRLF_PATCHED_SHA256 = "0394a830141bf8ce4343944b768de17887531f3c1d89e3521216b5f7ca5b82ea"
+LF_PATCHED_SHA256 = "ee0a0665dc1a5931960d97032405cb4e7baf731d0cc6b08738a4d33302a5bf42"
 
 
-def _source() -> bytes:
+def _lf_source() -> bytes:
     return (
-        b"const LidarNode = require('./lidar_node');\r\n"
-        b"  this._serial = new Serial();\r\n"
-        b"  this._model = new ControlModel({\r\n"
-        b'    calibpath: config_path + "/telebot_calib.json"\r\n'
-        b"  }, this._serial, this);\r\n"
-        b"  this._api = new LocalApi(this, config_path);\r\n"
-    )
+        Path(__file__).with_name("vendor") / "fixtures" / "telebot_node_reviewed_lf.js"
+    ).read_bytes()
 
 
-def test_owner_patch_is_hash_pinned_and_inserts_each_anchor_once() -> None:
-    source = _source()
-    patched = prepare(source, hashlib.sha256(source).hexdigest())
-    assert patched.count(b"sweep_paired_encoder_sampler") == 1
-    assert patched.count(b"_sweep_encoder.start()") == 1
-    assert patched.count(b"_sweep_encoder.beginInitialization()") == 1
-    assert patched.count(b"_sweep_encoder.activate()") == 1
-    model = patched.index(b"new ControlModel")
-    assert patched.index(b"_sweep_encoder.start()") < model
-    assert patched.index(b"_sweep_encoder.beginInitialization()") > model
-    assert patched.index(b"_sweep_encoder.activate()") > patched.index(b"sweepEncoderModelStart()")
+def test_owner_patch_preserves_exact_reviewed_lf_representation() -> None:
+    source = _lf_source()
+    assert hashlib.sha256(source).hexdigest() == LF_REFERENCE_SHA256
+    patched = prepare(source)
+    assert hashlib.sha256(patched).hexdigest() == LF_PATCHED_SHA256
+    assert b"\r\n" not in patched
+
+
+def test_owner_patch_preserves_exact_reviewed_crlf_representation() -> None:
+    source = _lf_source().replace(b"\n", b"\r\n")
+    assert hashlib.sha256(source).hexdigest() == CRLF_REFERENCE_SHA256
+    patched = prepare(source)
+    assert hashlib.sha256(patched).hexdigest() == CRLF_PATCHED_SHA256
+    assert b"\n" not in patched.replace(b"\r\n", b"")
 
 
 @pytest.mark.parametrize(
-    "source", [_source() + b"extra", _source().replace(b"LocalApi", b"OtherApi")]
+    "source", [_lf_source() + b"extra", _lf_source().replace(b"LocalApi", b"OtherApi")]
 )
 def test_owner_patch_refuses_unknown_or_ambiguous_vendor_source(source: bytes) -> None:
     with pytest.raises(ValueError):
-        prepare(source, hashlib.sha256(_source()).hexdigest())
+        prepare(source)
