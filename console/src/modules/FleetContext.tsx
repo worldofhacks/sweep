@@ -63,6 +63,7 @@ export function FleetRegistry({
             lastInSelection={state.selection.length === 1 && state.selection[0] === drone.drone_id}
             selectionEnabled={isIntentEnabled(state, 'select')}
             selectionDisabledReason={capabilityBlockedReason(state, 'select')}
+            capabilityProfile={state.capabilityProfile}
             scan={deviceScan(drone, snapshot)}
             onToggle={() => toggleAircraft(drone.drone_id)}
           />
@@ -116,6 +117,7 @@ function FleetCard({
   lastInSelection,
   selectionEnabled,
   selectionDisabledReason,
+  capabilityProfile,
   scan,
   onToggle,
 }: {
@@ -125,6 +127,7 @@ function FleetCard({
   lastInSelection: boolean
   selectionEnabled: boolean
   selectionDisabledReason: string | null
+  capabilityProfile: string | null
   scan: RelaySensorEvent | null
   onToggle: () => void
 }) {
@@ -169,7 +172,7 @@ function FleetCard({
       {drone.device_class === 'ground_vehicle' && drone.adapter_capabilities.includes('lidar') && (
         <LidarPolar device={drone} scan={scan} size={92} now={now} />
       )}
-      <ReadinessHelp drone={drone} className="fleet-reasons" />
+      <ReadinessHelp drone={drone} className="fleet-reasons" capabilityProfile={capabilityProfile} />
       {selected && <DeviceTelemetryPanel device={drone} now={now} scan={scan} compact />}
       <button
         type="button"
