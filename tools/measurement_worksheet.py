@@ -385,8 +385,9 @@ def _checks(document, tags):
             check["maximum_error"], f"tape check {name}.maximum_error", positive=True
         )
         _require(maximum <= 0.1, "tape maximum_error cannot exceed 0.1 m")
-        actual = _distance(
-            (tags[left]["x_m"], tags[left]["y_m"]), (tags[right]["x_m"], tags[right]["y_m"])
+        actual = math.dist(
+            (tags[left]["x_m"], tags[left]["y_m"], tags[left]["z_m"]),
+            (tags[right]["x_m"], tags[right]["y_m"], tags[right]["z_m"]),
         )
         _require(
             abs(actual - measured) <= maximum + 1e-9,
