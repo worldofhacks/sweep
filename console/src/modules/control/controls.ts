@@ -65,12 +65,12 @@ export const STOP_ACTIVE_REASON =
 export const NO_SELECTION_REASON = 'No aircraft selected.'
 export const NO_READY_REASON = 'No aircraft is ready.'
 
-export function isAircraftNode(drone: RelayAircraftState | undefined): boolean {
-  return (drone?.node_type ?? 'aircraft') === 'aircraft'
+export function isAircraftNode(drone: RelayAircraftState | undefined): drone is RelayAircraftState {
+  return drone !== undefined && (drone.node_type ?? 'aircraft') === 'aircraft'
 }
 
-export function groundSelectionReason(state: ControlState): string | null {
-  const ground = state.selection.find((id) => state.aircraft[id]?.node_type === 'ground')
+export function groundSelectionReason(state: ControlState, targets = state.selection): string | null {
+  const ground = targets.find((id) => state.aircraft[id]?.node_type === 'ground')
   return ground === undefined
     ? null
     : `${formatDroneId(ground)} is a ground node. Aircraft controls stay disabled.`
@@ -79,8 +79,11 @@ export function groundSelectionReason(state: ControlState): string | null {
 export function aircraftControlSelectionReason(
   state: ControlState,
   name: ConsoleIntentName,
+  targets = state.selection,
 ): string | null {
-  return ['estop', 'hold', 'select'].includes(name) ? null : groundSelectionReason(state)
+  return ['arm', 'disarm', 'estop', 'hold', 'land_all', 'select'].includes(name)
+    ? null
+    : groundSelectionReason(state, targets)
 }
 
 export function readyIds(state: ControlState): DroneId[] {
@@ -664,6 +667,9 @@ export function captureGate(
   }
   const drone = state.aircraft[state.selection[0]]
   const id = formatDroneId(state.selection[0])
+  if (drone === undefined) {
+    return { ready: false, text: `${id} is no longer in the authoritative roster.` }
+  }
   if (!isAircraftNode(drone)) {
     return { ready: false, text: `${id} is a ground node. Capture room requires an aircraft.` }
   }

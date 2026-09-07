@@ -245,12 +245,18 @@ export function useControlConsole({
 
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
-      if (!isIntentEnabled(state, request.name) || aircraftControlSelectionReason(state, request.name) !== null) return null
+      const selection = ['arm', 'land_all', 'estop'].includes(request.name)
+        ? []
+        : request.targets ?? state.selection
+      if (
+        !isIntentEnabled(state, request.name) ||
+        aircraftControlSelectionReason(state, request.name, selection) !== null
+      ) return null
       const intent = createIntent(
         {
           name: request.name,
           args: request.args,
-          selection: ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection,
+          selection,
           source: 'console',
           session: state.sessionId,
         },
@@ -414,9 +420,12 @@ export function useControlConsole({
       source: DraftSource = 'console',
       expiresAt?: number,
     ): IntentV1 | null => {
-      if (!isIntentEnabled(state, request.name) || aircraftControlSelectionReason(state, request.name) !== null) return null
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
+      if (
+        !isIntentEnabled(state, request.name) ||
+        aircraftControlSelectionReason(state, request.name, selection) !== null
+      ) return null
       if (!fleetWide && selection.length === 0) return null
       const draft = createIntent(
         {
@@ -449,7 +458,10 @@ export function useControlConsole({
         return null
       }
       const draft = intentFromVoicePlanStep(plan, step, intentDependencies.now())
-      if (draft === null) return null
+      if (
+        draft === null ||
+        aircraftControlSelectionReason(state, draft.name, draft.selection) !== null
+      ) return null
       const intentCanonical = canonicalVoiceIntent(draft)
       return stageForConfirmation(draft, expiresAt, {
         planDigest: plan.plan_digest,
