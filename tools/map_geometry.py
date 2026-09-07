@@ -6,7 +6,9 @@ import io
 import json
 import math
 import os
+import shutil
 import stat
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +44,13 @@ MAX_V2_ROUTES = 64
 MAX_V2_FORMATIONS = 64
 MAX_V2_SAMPLES = 100_000
 MAX_V2_EVIDENCE_BYTES = 1_000_000
+MAX_V2_AUTHORING_BYTES = 1_000_000
+MAX_V2_TEXT_CHARS = 128
+MAX_V2_POLYGON_POINTS = 128
+MAX_V2_CHECKPOINTS = 256
+MAX_V2_CAMERA_MODELS = 64
+MAX_V2_ROUTE_POINTS = 256
+MAX_V2_METRES = 10_000.0
 
 
 def _require(condition, message):
@@ -482,7 +491,13 @@ def _generate_v1(bundle, authoring, output, accepted_versions):
 
 
 def _v2_text(value, name):
-    _require(isinstance(value, str) and value and value == value.strip(), f"{name} must be text")
+    _require(
+        isinstance(value, str)
+        and value
+        and value == value.strip()
+        and len(value) <= MAX_V2_TEXT_CHARS,
+        f"{name} must be bounded text",
+    )
     return value
 
 
@@ -498,16 +513,25 @@ def _v2_sha256(value, name):
 
 def _v2_volume(value, name):
     _require(isinstance(value, dict), f"{name} must be an object")
+    _require(
+        isinstance(value.get("polygon"), list) and len(value["polygon"]) <= MAX_V2_POLYGON_POINTS,
+        f"{name} polygon exceeds the point limit",
+    )
     boundary = polygon(value["polygon"])
     low = finite_number(value["z_min_m"], f"{name} z_min_m")
     high = finite_number(value["z_max_m"], f"{name} z_max_m")
     _require(low < high, f"{name} altitude bounds must increase")
+    _require(
+        all(abs(coordinate) <= MAX_V2_METRES for point in boundary for coordinate in point)
+        and max(abs(low), abs(high)) <= MAX_V2_METRES,
+        f"{name} exceeds the metric bounds",
+    )
     return {"polygon": boundary, "z_min_m": low, "z_max_m": high}
 
 
 def _v2_positive(value, name):
     number = finite_number(value, name)
-    _require(number > 0, f"{name} must be positive")
+    _require(0 < number <= MAX_V2_METRES, f"{name} must be within the metric bounds")
     return number
 
 
@@ -515,7 +539,7 @@ def _v2_direct_child(root, name, limit, label):
     path = Path(name)
     _require(path.name == name and not path.is_absolute(), f"{label} path must be a direct child")
     candidate = root / path
-    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(candidate, flags)
     except OSError as exc:
@@ -523,6 +547,7 @@ def _v2_direct_child(root, name, limit, label):
     try:
         info = os.fstat(descriptor)
         _require(stat.S_ISREG(info.st_mode), f"{label} must be a regular file")
+        _require(info.st_size <= limit, f"{label} exceeds its byte limit")
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             payload = handle.read(limit + 1)
     finally:
@@ -547,12 +572,27 @@ def _v2_plane_list(value):
         isinstance(value, list) and 1 <= len(value) <= MAX_V2_PLANES, "altitude planes are bounded"
     )
     planes = [finite_number(item, "altitude plane") for item in value]
+    _require(
+        all(abs(item) <= MAX_V2_METRES for item in planes), "altitude planes exceed metric bounds"
+    )
     _require(planes == sorted(set(planes)), "altitude planes must be unique and increasing")
     return planes
 
 
-def _v2_cell_domain(rect, low, high, corridors, free_volumes):
-    corners = ((rect[0], rect[1]), (rect[2], rect[1]), (rect[2], rect[3]), (rect[0], rect[3]))
+def _v2_cell_domain(rect, low, high, corridors, free_volumes, clearance=0.0):
+    expanded = (
+        rect[0] - clearance,
+        rect[1] - clearance,
+        rect[2] + clearance,
+        rect[3] + clearance,
+    )
+    low, high = low - clearance, high + clearance
+    corners = (
+        (expanded[0], expanded[1]),
+        (expanded[2], expanded[1]),
+        (expanded[2], expanded[3]),
+        (expanded[0], expanded[3]),
+    )
     for corridor in corridors:
         if (
             corridor["z_min_m"] <= low
@@ -577,16 +617,22 @@ def _v2_cell_domain(rect, low, high, corridors, free_volumes):
             volume["z_min_m"] <= low
             and high <= volume["z_max_m"]
             and high <= volume["maximum_flight_height_m"]
-            and rect_inside_polygon(rect, volume["polygon"])
+            and rect_inside_polygon(expanded, volume["polygon"])
         ):
             return volume["id"]
     return None
 
 
 def _v2_blocked(rect, low, high, geofence, hazards, clearance):
+    expanded = (
+        rect[0] - clearance,
+        rect[1] - clearance,
+        rect[2] + clearance,
+        rect[3] + clearance,
+    )
     if not (
-        geofence["z_min_m"] <= low <= high <= geofence["z_max_m"]
-        and rect_inside_polygon(rect, geofence["polygon"])
+        geofence["z_min_m"] <= low - clearance <= high + clearance <= geofence["z_max_m"]
+        and rect_inside_polygon(expanded, geofence["polygon"])
     ):
         return "outside_geofence"
     for hazard in hazards:
@@ -625,22 +671,83 @@ def _v2_formation_fit(volume, separation, envelope):
 
 
 def _v2_route_samples(route):
-    samples = []
     width = route["half_width_m"]
-    for start, end in zip(route["centerline"], route["centerline"][1:], strict=False):
+    depth = route["z_max_m"] - route["z_min_m"]
+    segments = list(zip(route["centerline"], route["centerline"][1:], strict=False))
+    estimate = sum(
+        max(1, math.ceil(math.dist(start, end) / (CELL_M / 2))) + 1 for start, end in segments
+    )
+    lateral_count = max(1, math.ceil(2 * width / (CELL_M / 2))) + 1
+    vertical_count = max(1, math.ceil(depth / (CELL_M / 2))) + 1
+    cap_count = max(8, math.ceil(2 * math.pi * width / (CELL_M / 2)))
+    _require(
+        estimate * lateral_count * vertical_count + 2 * cap_count * vertical_count
+        <= MAX_V2_SAMPLES,
+        "route visibility sampling exceeds the bound",
+    )
+    samples = set()
+    for start, end in segments:
         distance = math.dist(start, end)
-        count = max(1, math.ceil(distance / CELL_M))
+        count = max(1, math.ceil(distance / (CELL_M / 2)))
         dx, dy = end[0] - start[0], end[1] - start[1]
         length = math.hypot(dx, dy)
-        lateral = (-dy / length * width, dx / length * width)
+        lateral = (-dy / length, dx / length)
         for index in range(count + 1):
-            x = start[0] + dx * index / count
-            y = start[1] + dy * index / count
-            for offset in ((0.0, 0.0), lateral, (-lateral[0], -lateral[1])):
-                for z in (route["z_min_m"], route["z_max_m"]):
-                    samples.append((x + offset[0], y + offset[1], z))
+            x, y = start[0] + dx * index / count, start[1] + dy * index / count
+            for lateral_index in range(lateral_count):
+                offset = -width + 2 * width * lateral_index / (lateral_count - 1)
+                for z_index in range(vertical_count):
+                    z = route["z_min_m"] + depth * z_index / (vertical_count - 1)
+                    samples.add((x + lateral[0] * offset, y + lateral[1] * offset, z))
+        for center in (start, end):
+            for angle_index in range(cap_count):
+                angle = 2 * math.pi * angle_index / cap_count
+                for z_index in range(vertical_count):
+                    z = route["z_min_m"] + depth * z_index / (vertical_count - 1)
+                    samples.add(
+                        (
+                            center[0] + width * math.cos(angle),
+                            center[1] + width * math.sin(angle),
+                            z,
+                        )
+                    )
     _require(len(samples) <= MAX_V2_SAMPLES, "route visibility sampling exceeds the bound")
-    return samples
+    return tuple(sorted(samples))
+
+
+def _v2_route_envelope_clear(route, corridors, geofence, hazards, clearance, flight):
+    _require(
+        route["half_width_m"] >= clearance, "route half width must contain the aircraft envelope"
+    )
+    samples = _v2_route_samples(route)
+    for x, y, z in samples:
+        if not (
+            flight[0] + clearance <= x <= flight[2] - clearance
+            and flight[1] + clearance <= y <= flight[3] - clearance
+        ):
+            return False
+        point = (x, y, x, y)
+        if _v2_blocked(point, z, z, geofence, hazards, clearance) is not None:
+            return False
+        if _v2_cell_domain(point, z, z, corridors, (), clearance) != "corridor":
+            return False
+    return True
+
+
+def _v2_formation_envelope_clear(volume, free_volumes, geofence, hazards, clearance, flight):
+    xs = [point[0] for point in volume["polygon"][:-1]]
+    ys = [point[1] for point in volume["polygon"][:-1]]
+    rect = (min(xs), min(ys), max(xs), max(ys))
+    return (
+        flight[0] <= rect[0] - clearance
+        and flight[1] <= rect[1] - clearance
+        and rect[2] + clearance <= flight[2]
+        and rect[3] + clearance <= flight[3]
+        and _v2_blocked(rect, volume["z_min_m"], volume["z_max_m"], geofence, hazards, clearance)
+        is None
+        and _v2_cell_domain(rect, volume["z_min_m"], volume["z_max_m"], (), free_volumes, clearance)
+        is not None
+    )
 
 
 def _v2_direction(heading, forward):
@@ -652,26 +759,58 @@ def _v2_direction(heading, forward):
     )
 
 
-def _v2_occluded(camera, tag, hazards):
-    distance = math.dist(camera, tag)
-    count = max(1, math.ceil(distance / 0.05))
-    for index in range(1, count):
-        ratio = index / count
-        point = tuple(camera[axis] + (tag[axis] - camera[axis]) * ratio for axis in range(3))
-        if any(
-            hazard["z_min_m"] <= point[2] <= hazard["z_max_m"]
-            and point_inside(hazard["polygon"], point[:2])
-            for hazard in hazards
-        ):
+def _v2_camera_position(sample, heading, translation):
+    cosine, sine = math.cos(heading), math.sin(heading)
+    return (
+        sample[0] + cosine * translation[0] - sine * translation[1],
+        sample[1] + sine * translation[0] + cosine * translation[1],
+        sample[2] + translation[2],
+    )
+
+
+def _v2_segment_polygon_occluded(camera, target, polygon, low, high):
+    ax, ay, az = camera
+    bx, by, bz = target
+    dx, dy = bx - ax, by - ay
+    parameters = {0.0, 1.0}
+    for start, end in zip(polygon, polygon[1:], strict=False):
+        ex, ey = end[0] - start[0], end[1] - start[1]
+        determinant = dx * ey - dy * ex
+        if abs(determinant) <= 1e-12:
+            continue
+        px, py = start[0] - ax, start[1] - ay
+        t = (px * ey - py * ex) / determinant
+        u = (px * dy - py * dx) / determinant
+        if 0 <= t <= 1 and 0 <= u <= 1:
+            parameters.add(t)
+    ordered = sorted(parameters)
+    for start, end in zip(ordered, ordered[1:], strict=False):
+        midpoint = (start + end) / 2
+        if not point_inside(polygon, (ax + dx * midpoint, ay + dy * midpoint)):
+            continue
+        z0, z1 = az + (bz - az) * start, az + (bz - az) * end
+        if _overlap(min(z0, z1), max(z0, z1), low, high):
             return True
     return False
 
 
-def _v2_visible(camera, heading, tag, model, hazards):
+def _v2_occluded(camera, tag, hazards):
+    return any(
+        _v2_segment_polygon_occluded(
+            camera, tag, hazard["polygon"], hazard["z_min_m"], hazard["z_max_m"]
+        )
+        for hazard in hazards
+    )
+
+
+def _v2_visible(sample, heading, tag, model, hazards):
+    camera = _v2_camera_position(sample, heading, model["translation_body_m"])
     target = (tag["x_m"], tag["y_m"], tag["z_m"])
     vector = tuple(target[axis] - camera[axis] for axis in range(3))
     distance = math.dist(camera, target)
     if not model["min_range_m"] <= distance <= model["max_range_m"]:
+        return False
+    if tag["size_m"] * model["focal_length_px"] / distance < model["minimum_tag_pixels"]:
         return False
     direction = _v2_direction(heading, model["forward_body"])
     forward = sum(vector[axis] * direction[axis] for axis in range(3)) / distance
@@ -688,18 +827,22 @@ def _v2_visible(camera, heading, tag, model, hazards):
 
 def _v2_visibility(route, tags, model, hazards):
     samples = _v2_route_samples(route)
+    verified_tags = [tag for tag in tags if tag.get("verified_for_flight") is True]
     uncovered = [
         sample
         for sample in samples
-        if not any(_v2_visible(sample, route["heading_rad"], tag, model, hazards) for tag in tags)
+        if not any(
+            _v2_visible(sample, route["heading_rad"], tag, model, hazards) for tag in verified_tags
+        )
     ]
     return {
         "status": "measured_camera_envelope",
-        "sample_spacing_max_m": CELL_M,
+        "sample_spacing_max_m": CELL_M / 2,
         "sample_count": len(samples),
         "uncovered_sample_count": len(uncovered),
         "covered": not uncovered,
         "uncovered_samples_xyz": [list(sample) for sample in uncovered],
+        "verified_tag_ids": [tag["id"] for tag in verified_tags],
         "camera_model_id": model["id"],
         "calibration": model["calibration"],
     }
@@ -721,6 +864,10 @@ def _v2_checkpoint_report(validated, checkpoints):
     world = {item["tag_id"]: item["xy_m"] for item in known["tags"]}
     tags = {item["id"]: item for item in validated.document("tags.yaml")["tags"]}
     fit_ids = set(registration["fit_tag_ids"])
+    _require(
+        isinstance(checkpoints, list) and 1 <= len(checkpoints) <= MAX_V2_CHECKPOINTS,
+        "held-out checkpoints are bounded",
+    )
     reports = []
     for item in checkpoints:
         _require(
@@ -741,18 +888,19 @@ def _v2_checkpoint_report(validated, checkpoints):
             tag["verified_for_flight"] is True, "checkpoint tag needs independent tape verification"
         )
         registered = apply_transform(registration["T_target_source"], local[tag_id])
-        measured = (world[tag_id][0], world[tag_id][1], tag["z_m"])
-        error = math.dist((*registered, tag["z_m"]), measured)
+        measured = (world[tag_id][0], world[tag_id][1])
+        error = math.dist(registered, measured)
         reports.append(
             {
                 "id": ident,
                 "tag_id": tag_id,
                 "local_xy_m": local[tag_id],
                 "source_scope": observed["scope"],
-                "registered_world_xyz_m": [*registered, tag["z_m"]],
-                "independent_tape_world_xyz_m": list(measured),
-                "maximum_error_m": bound,
-                "error_m": error,
+                "registered_world_xy_m": list(registered),
+                "independent_tape_world_xy_m": list(measured),
+                "height_proven": False,
+                "maximum_xy_error_m": bound,
+                "xy_error_m": error,
                 "passes": error <= bound,
             }
         )
@@ -763,10 +911,31 @@ def _v2_checkpoint_report(validated, checkpoints):
     return reports
 
 
-def _generate_v2(bundle, authoring, output, accepted_versions):
+def _v2_authoring_bytes(authoring):
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(authoring, flags)
+    except OSError as exc:
+        raise ValueError("geometry authoring must be a regular file") from exc
+    try:
+        info = os.fstat(descriptor)
+        _require(stat.S_ISREG(info.st_mode), "geometry authoring must be a regular file")
+        _require(
+            info.st_size <= MAX_V2_AUTHORING_BYTES, "geometry authoring exceeds its byte limit"
+        )
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            payload = handle.read(MAX_V2_AUTHORING_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    _require(len(payload) <= MAX_V2_AUTHORING_BYTES, "geometry authoring exceeds its byte limit")
+    return payload
+
+
+def _generate_v2(bundle, authoring, output, accepted_versions, *, payload=None):
     validated = validate_bundle(bundle, accepted_versions)
     _require(validated.get("schema_version") == 2, "geometry schema version 2 needs a world bundle")
-    payload = authoring.read_bytes()
+    if payload is None:
+        payload = _v2_authoring_bytes(authoring)
     request = parse_document(payload, str(authoring))
     _require(
         set(request)
@@ -804,7 +973,12 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
         "geometry v2 evidence kind is invalid",
     )
     flight = _point(request["flight_box_xy"], 4)
-    _require(flight[0] < flight[2] and flight[1] < flight[3], "invalid flight box")
+    _require(
+        flight[0] < flight[2]
+        and flight[1] < flight[3]
+        and all(abs(value) <= MAX_V2_METRES for value in flight),
+        "invalid flight box",
+    )
     cell_m = _v2_positive(request["cell_m"], "cell_m")
     width, height = (math.ceil((flight[index + 2] - flight[index]) / cell_m) for index in range(2))
     _require(width * height <= MAX_V2_GRID_CELLS, "grid exceeds offline authoring limit")
@@ -819,7 +993,7 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
     }
     _require(
         clearance_values["aircraft_radius_m"] > 0
-        and all(value >= 0 for value in clearance_values.values()),
+        and all(0 <= value <= MAX_V2_METRES for value in clearance_values.values()),
         "clearance must have a positive aircraft radius and nonnegative allowances",
     )
     clearance_m = sum(clearance_values.values())
@@ -862,16 +1036,25 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
             authoring, item["height_evidence"], "free-volume height evidence"
         )
         _require(
-            evidence.get("kind") == "manual_corridor_clearance",
-            "free-volume height evidence must be hand measured",
+            evidence
+            == {
+                "schema_version": 1,
+                "kind": "manual_free_volume_clearance",
+                "free_volume_id": ident,
+                "floor_id": floor_id,
+                "polygon": volume["polygon"],
+                "z_min_m": volume["z_min_m"],
+                "z_max_m": volume["z_max_m"],
+                "measured_clearance_m": evidence.get("measured_clearance_m"),
+                "maximum_flight_height_m": evidence.get("maximum_flight_height_m"),
+            },
+            "free-volume height evidence must bind this exact measured volume",
         )
-        maximum = _v2_positive(
-            evidence.get("maximum_flight_height_m"), "free-volume maximum height"
-        )
+        maximum = _v2_positive(evidence["maximum_flight_height_m"], "free-volume maximum height")
         _require(
             volume["z_max_m"]
             <= maximum
-            <= _v2_positive(evidence.get("measured_clearance_m"), "free-volume clearance"),
+            <= _v2_positive(evidence["measured_clearance_m"], "free-volume clearance"),
             "free-volume height evidence does not cover the volume",
         )
         volume.update(id=ident, maximum_flight_height_m=maximum, height_evidence=pin)
@@ -915,8 +1098,9 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
         grids[f"grid_world_{index:03d}.npy"] = rows
     models = {}
     _require(
-        isinstance(request["camera_models"], list) and request["camera_models"],
-        "camera models are required",
+        isinstance(request["camera_models"], list)
+        and 1 <= len(request["camera_models"]) <= MAX_V2_CAMERA_MODELS,
+        "camera models are required and bounded",
     )
     for item in request["camera_models"]:
         _require(
@@ -925,10 +1109,13 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
             == {
                 "id",
                 "forward_body",
+                "translation_body_m",
                 "fov_rad",
                 "min_range_m",
                 "max_range_m",
                 "minimum_face_dot",
+                "focal_length_px",
+                "minimum_tag_pixels",
                 "calibration",
             },
             "camera model schema is invalid",
@@ -941,10 +1128,13 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
             **item,
             "id": ident,
             "forward_body": forward,
+            "translation_body_m": _point(item["translation_body_m"], 3),
             "fov_rad": _v2_positive(item["fov_rad"], "camera fov"),
             "min_range_m": _v2_positive(item["min_range_m"], "camera min range"),
             "max_range_m": _v2_positive(item["max_range_m"], "camera max range"),
             "minimum_face_dot": finite_number(item["minimum_face_dot"], "camera minimum face dot"),
+            "focal_length_px": _v2_positive(item["focal_length_px"], "camera focal length"),
+            "minimum_tag_pixels": _v2_positive(item["minimum_tag_pixels"], "camera tag pixels"),
         }
         _require(
             model["fov_rad"] <= math.pi
@@ -963,10 +1153,13 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
                 "kind": "camera_visibility_envelope",
                 "camera_model_id": ident,
                 "forward_body": forward,
+                "translation_body_m": model["translation_body_m"],
                 "fov_rad": model["fov_rad"],
                 "min_range_m": model["min_range_m"],
                 "max_range_m": model["max_range_m"],
                 "minimum_face_dot": model["minimum_face_dot"],
+                "focal_length_px": model["focal_length_px"],
+                "minimum_tag_pixels": model["minimum_tag_pixels"],
             },
             "camera calibration does not bind the visibility envelope",
         )
@@ -1004,7 +1197,7 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
             "heading_rad": finite_number(item["heading_rad"], "route heading"),
         }
         _require(
-            2 <= len(route["centerline"]) <= 256
+            2 <= len(route["centerline"]) <= MAX_V2_ROUTE_POINTS
             and route["z_min_m"] < route["z_max_m"]
             and all(
                 start != end
@@ -1012,10 +1205,22 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
             ),
             "route bounds are invalid",
         )
+        _require(
+            all(
+                all(abs(value) <= MAX_V2_METRES for value in point) for point in route["centerline"]
+            )
+            and sum(
+                math.dist(start, end)
+                for start, end in zip(route["centerline"], route["centerline"][1:], strict=False)
+            )
+            <= MAX_V2_METRES,
+            "route exceeds the metric bounds",
+        )
         ids = item["corridor_ids"]
         _require(
             isinstance(ids, list)
             and ids
+            and len(ids) <= MAX_V2_ROUTES
             and len(set(ids)) == len(ids)
             and set(ids) <= set(corridor_by_id),
             "route corridors are invalid",
@@ -1028,16 +1233,8 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
         _require(item["camera_model_id"] in models, "route camera model is unknown")
         route_cells = _v2_route_cells(cells, route)
         selected_corridors = [corridor_by_id[ident] for ident in ids]
-        clear = bool(route_cells) and all(
-            _v2_blocked(
-                cells[index], route["z_min_m"], route["z_max_m"], geofence, hazards, clearance_m
-            )
-            is None
-            and _v2_cell_domain(
-                cells[index], route["z_min_m"], route["z_max_m"], selected_corridors, ()
-            )
-            == "corridor"
-            for index in route_cells
+        clear = bool(route_cells) and _v2_route_envelope_clear(
+            route, selected_corridors, geofence, hazards, clearance_m, flight
         )
         route["geometry_clear"] = clear
         route["intersecting_cells"] = len(route_cells)
@@ -1062,6 +1259,7 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
         _require(
             isinstance(ids, list)
             and ids
+            and len(ids) <= MAX_V2_ROUTES
             and len(set(ids)) == len(ids)
             and set(ids) <= set(free_by_id),
             "formation free volumes are invalid",
@@ -1073,20 +1271,8 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
         ]
         separation = _v2_positive(item["separation_m"], "formation separation")
         static_fit = _v2_formation_fit(volume, separation, clearance_m)
-        clear = bool(selected) and all(
-            _v2_blocked(
-                cells[index], volume["z_min_m"], volume["z_max_m"], geofence, hazards, clearance_m
-            )
-            is None
-            and _v2_cell_domain(
-                cells[index],
-                volume["z_min_m"],
-                volume["z_max_m"],
-                (),
-                [free_by_id[ident] for ident in ids],
-            )
-            is not None
-            for index in selected
+        clear = bool(selected) and _v2_formation_envelope_clear(
+            volume, [free_by_id[ident] for ident in ids], geofence, hazards, clearance_m, flight
         )
         formations.append(
             {
@@ -1115,91 +1301,100 @@ def _generate_v2(bundle, authoring, output, accepted_versions):
         )
     checkpoints = _v2_checkpoint_report(validated, request["held_out_checkpoints"])
     _require(not output.exists(), "output directory already exists; use a new path")
-    output.mkdir(parents=True)
-    for name, rows in grids.items():
-        np.save(output / name, np.asarray(rows, dtype=np.uint8), allow_pickle=False)
-    report = {
-        "schema_version": 2,
-        "status": "offline_authoring",
-        "flight_approved": False,
-        "evidence_kind": request["evidence_kind"],
-        "frame": "world",
-        "floor_id": floor_id,
-        "bundle_version": validated["bundle_version"],
-        "bundle_content_sha256": validated["content_sha256"],
-        "authoring_sha256": hashlib.sha256(payload).hexdigest(),
-        "units": "meters",
-        "cell_m": cell_m,
-        "origin_xy": origin,
-        "shape_yx": [height, width],
-        "blocked_value": 1,
-        "candidate_value": 0,
-        "altitude_planes_m": planes,
-        "clearance": clearance_values,
-        "clearance_m": clearance_m,
-        "routes": routes,
-        "formations": formations,
-        "held_out_checkpoints": checkpoints,
-        "free_volumes": free_volumes,
-        "grid_files": list(grids),
-        "static_geometry_only": True,
-    }
-    preview_report = {
-        "origin_xy": origin,
-        "shape_yx": [height, width],
-        "cell_m": cell_m,
-        "floor_elevation_m": 0,
-        "evidence_kind": request["evidence_kind"],
-        "route": {
-            "tube": {
-                "centerline": routes[0]["centerline"],
-                "half_width_m": routes[0]["half_width_m"],
-                "z_min": routes[0]["z_min_m"],
-                "z_max": routes[0]["z_max_m"],
+    output_target = output
+    output_target.parent.mkdir(parents=True, exist_ok=True)
+    output = Path(tempfile.mkdtemp(prefix=f".{output_target.name}.tmp-", dir=output_target.parent))
+    try:
+        for name, rows in grids.items():
+            np.save(output / name, np.asarray(rows, dtype=np.uint8), allow_pickle=False)
+        report = {
+            "schema_version": 2,
+            "status": "offline_authoring",
+            "flight_approved": False,
+            "evidence_kind": request["evidence_kind"],
+            "frame": "world",
+            "floor_id": floor_id,
+            "bundle_version": validated["bundle_version"],
+            "bundle_content_sha256": validated["content_sha256"],
+            "authoring_sha256": hashlib.sha256(payload).hexdigest(),
+            "units": "meters",
+            "cell_m": cell_m,
+            "origin_xy": origin,
+            "shape_yx": [height, width],
+            "blocked_value": 1,
+            "candidate_value": 0,
+            "altitude_planes_m": planes,
+            "clearance": clearance_values,
+            "clearance_m": clearance_m,
+            "routes": routes,
+            "formations": formations,
+            "held_out_checkpoints": checkpoints,
+            "free_volumes": free_volumes,
+            "grid_files": list(grids),
+            "static_geometry_only": True,
+        }
+        preview_report = {
+            "origin_xy": origin,
+            "shape_yx": [height, width],
+            "cell_m": cell_m,
+            "floor_elevation_m": 0,
+            "evidence_kind": request["evidence_kind"],
+            "route": {
+                "tube": {
+                    "centerline": routes[0]["centerline"],
+                    "half_width_m": routes[0]["half_width_m"],
+                    "z_min": routes[0]["z_min_m"],
+                    "z_max": routes[0]["z_max_m"],
+                },
+                "geometry_clear": routes[0]["geometry_clear"],
             },
-            "geometry_clear": routes[0]["geometry_clear"],
-        },
-        "formations": [
+            "formations": [
+                {
+                    "id": item["id"],
+                    "volume": {
+                        "polygon": item["volume"]["polygon"],
+                        "z_min": item["volume"]["z_min_m"],
+                        "z_max": item["volume"]["z_max_m"],
+                    },
+                    "candidate": item["candidate"],
+                }
+                for item in formations
+            ],
+        }
+        from tools.map_geometry_preview import write_preview
+
+        normalized_tags = [
             {
                 "id": item["id"],
-                "volume": {
-                    "polygon": item["volume"]["polygon"],
-                    "z_min": item["volume"]["z_min_m"],
-                    "z_max": item["volume"]["z_max_m"],
-                },
-                "candidate": item["candidate"],
+                "x": item["x_m"],
+                "y": item["y_m"],
+                "z": item["z_m"],
+                "T_map_tag": item["T_world_tag"],
             }
-            for item in formations
-        ],
-    }
-    from tools.map_geometry_preview import write_preview
-
-    normalized_tags = [
-        {
-            "id": item["id"],
-            "x": item["x_m"],
-            "y": item["y_m"],
-            "z": item["z_m"],
-            "T_map_tag": item["T_world_tag"],
+            for item in tags
+        ]
+        write_preview(output / "preview.html", preview_report, grids, [], normalized_tags, [])
+        report["files"] = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(output.iterdir())
         }
-        for item in tags
-    ]
-    write_preview(output / "preview.html", preview_report, grids, [], normalized_tags, [])
-    report["files"] = {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(output.iterdir())
-    }
-    write_document(output / "geometry.json", report)
-    return report
+        write_document(output / "geometry.json", report)
+        os.replace(output, output_target)
+        return report
+    except BaseException:
+        shutil.rmtree(output, ignore_errors=True)
+        raise
 
 
 def _generate(bundle, authoring, output, accepted_versions):
-    request = parse_document(Path(authoring).read_bytes(), str(authoring))
+    authoring = Path(authoring)
+    payload = _v2_authoring_bytes(authoring)
+    request = parse_document(payload, str(authoring))
     version = request.get("schema_version") if isinstance(request, dict) else None
     if version == 1:
         return _generate_v1(bundle, authoring, output, accepted_versions)
     if version == 2:
-        return _generate_v2(bundle, authoring, output, accepted_versions)
+        return _generate_v2(bundle, authoring, output, accepted_versions, payload=payload)
     raise ValueError("unsupported geometry schema")
 
 
