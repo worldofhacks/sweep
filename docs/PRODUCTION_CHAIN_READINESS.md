@@ -1,6 +1,6 @@
 # Sweep production-chain readiness
 
-At the 16:09 UTC checkpoint on 2026-09-07, neither physical flight nor wheel
+At the 16:44 UTC checkpoint on 2026-09-07, neither physical flight nor wheel
 acceptance has passed. The second supervised hover reached 1.0 m while the phone
 waited four seconds for MSDK control authority without a qualifying confirmation.
 Sweep's land command was refused. After the RC landing instruction, telemetry
@@ -10,11 +10,22 @@ reported the session armed after the console's Disarm control became unavailable
 The console now points to session `sweep-field-20260907-v2` through `/field-v2/`,
 served on loopback port 18795 by `sweep-supervised-relay-v2`. Its source is the
 previous live release plus the reviewed replay-deadline fix. Authenticated state
-reports `armed: false` and no selected devices. Public console assets and bootstrap
+initially reported `armed: false` and no selected devices. After the failed flight,
+the session remains armed with the network stop active. Public console assets and bootstrap
 match the staged artifacts. The previous v1 relay remains on 18794 under `/field/`,
 with the older observer on 18793 for rollback.
 
-The phone received APK `c386f4cb`, SHA-256
+The phone now runs registered APK `b4953916`, SHA-256
+`38144a6a1888befde1c1f0f648d473f94878a75d2b9a2008bd37206f69c915d2`,
+verified against the installed package and prior signing certificate. It adds a
+grounded authority check, fresh per-attempt hardware reads, bounded disable
+confirmation, and identity refresh on physical aircraft connection. The exact
+registered build passed 188 core, 51 bridge-node, 14 bench, and 53 probe tests.
+The phone rejoined v2 at epoch 3; physical grounded authority qualification is
+pending. [The diagnostic source PR](https://github.com/worldofhacks/sweep/pull/312)
+is separate from flight acceptance.
+
+The preceding APK `c386f4cb`, SHA-256
 `88bdd5827734e90fb82fd21617d9ee0d1b898e0d9dab0b8f8e5ef56a4d972e0d`,
 verified against the installed package. It includes stationary height polling,
 pending SDK-authority handling, and local supervised gimbal pitch controls.
@@ -38,9 +49,12 @@ After the operator's normal reboot, the vendor source on disk had reverted to
 its original hash. The sampler module remained, but its socket refused the
 qualification connection; zero encoder pairs were accepted. A single vendor
 native process was present. Sweep runtime and camera publisher remain stopped.
-The vendor code provides a plugin directory outside extracted assets; an owner
-plugin is being prepared and reviewed. Boot persistence and encoder qualification
-are unresolved. Each robot has its
+The vendor plugin now persists across normal reboots. The latest captured boot
+returned valid address-58 replies from both wheels in 7–16 ms, then stopped sampling
+at poll 35 with `missing_encoder_reply`. A trace that freezes the failure interval
+and its first subsequent replies is installed and verified; its next normal launch
+is pending. [The trace PR](https://github.com/worldofhacks/sweep/pull/310) records
+the installation state. Encoder qualification remains failed. Each robot has its
 own backup and change record; no wheel command has been issued.
 
 ## Observed field behavior
@@ -61,7 +75,11 @@ After the RC landing instruction, telemetry reported landed at 0.0 m at 15:34:27
 UTC. The bounded record is
 `/home/gauntlet/sweep-deploy/evidence/quick-hover-1788795225951`; it contains
 phone logcat and relay telemetry. Its logcat does not record `SessionModel` events,
-so it cannot establish a missing DJI callback. The separate stop record at
+so it cannot establish a missing DJI callback. The subsequently exported
+`session-probe-report-after-flight.txt` resolves this: three enabled state changes
+reported owner `UNKNOWN` before the deadline. Missing callbacks are ruled out for
+this attempt; identity was queried too early and never refreshed after the aircraft
+connection became live. The separate stop record at
 `/home/gauntlet/sweep-deploy/evidence/quick-hover-1788795291540` and the following
 state check confirmed `estop: true` while the session remained armed after the
 Disarm control was unavailable. The result does

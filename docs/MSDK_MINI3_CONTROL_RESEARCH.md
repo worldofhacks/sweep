@@ -34,7 +34,7 @@ The tagged DJI 5.18 sample registers a `VirtualStickStateListener` to update dis
 
 DJI’s normal initialization path calls `SDKManager.init`, waits for `INITIALIZE_COMPLETE`, and then calls `registerApp`. Product connection is a separate callback. [The 5.18 sample manager](https://github.com/dji-sdk/Mobile-SDK-Android-V5/blob/07d37cfdff865cdda9d523b00b723c9984575f8f/SampleCode-V5/android-sdk-v5-sample/src/main/java/dji/sampleV5/aircraft/models/MSDKManagerVM.kt) implements that order.
 
-## Current bridge behaviour
+## Behaviour of the APK used for the failed flight
 
 `SdkSession` follows DJI’s initialization order. It calls `registerApp` on `INITIALIZE_COMPLETE`, attaches probe/listener work after registration, and reads product and RC identity keys only in the SDK product-connect and product-change callbacks. The exported report records one product connection, generation 1, followed by `UNRECOGNIZED (0)` and `CORE REQUEST_HANDLER_NOT_FOUND` identity reads. It later receives telemetry, including `KeyConnection`, without another product callback or identity retry. This is a lifecycle gap: identity may be read before the aircraft-side keys are usable and then remain stale. [SdkSession](../adapters/dji_mini3/pilot-app/app/src/probe/kotlin/org/worldofhacks/sweep/bridge/SdkSession.kt) contains the affected lifecycle code.
 
@@ -65,6 +65,16 @@ Run this on the ground, with no takeoff, and with the RC operator ready to take 
 7. Exercise the chosen landing path only after the ownership result is known. Capture whether the local `KeyStartAutoLanding` action is supported and how the relay policy handles a hovering aircraft with unknown app authority. The RC operator remains the immediate fallback.
 
 This trace distinguishes a state-observation defect from a true DJI control rejection. It also produces the exact firmware and controller evidence needed to ask DJI support about a Mini 3 specific limitation.
+
+## Diagnostic build installed after this investigation
+
+At 16:38 UTC, registered APK `b4953916` was installed and its package hash verified.
+It refreshes identity on physical aircraft connection, fences old identity callbacks,
+and performs fresh paired hardware reads after each Virtual Stick enable. Its grounded
+check waits for the disable callback and fails on a bounded cleanup timeout. The
+registered build passed 188 core, 51 bridge-node, 14 bench, and 53 probe tests.
+Physical authority acquisition and release remain pending; no new flight was attempted.
+[The source PR](https://github.com/worldofhacks/sweep/pull/312) describes this diagnostic.
 
 ## Sources
 
