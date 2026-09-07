@@ -532,7 +532,7 @@ class RelaySession:
                         )
                     ]
 
-            if intent.name in _AIRCRAFT_ONLY_INTENTS and self.registry.selection_includes_ground(
+            if intent.name not in _GROUND_SAFE_INTENTS and self.registry.selection_includes_ground(
                 intent.selection
             ):
                 return [
@@ -891,6 +891,10 @@ class RelaySession:
                 if submission.session != self.session_id:
                     raise ObservationError("session_mismatch", "observation session is not current")
                 self.registry.check_current(submission.device_id, submission.connection_epoch)
+                if submission.node_type != self.registry.node_type(submission.device_id).value:
+                    raise ObservationError(
+                        "source_binding_mismatch", "observation node type differs from membership"
+                    )
                 if self.observation_ingress is None:
                     raise ObservationError(
                         "source_not_configured", "observation ingress is disabled"
@@ -916,6 +920,11 @@ class RelaySession:
             try:
                 telemetry = parse_telemetry(raw)
                 self._check_adapter_binding(telemetry.drone, principal)
+                if self.registry.node_type(telemetry.drone) is NodeType.GROUND:
+                    raise ContractError(
+                        "ground_telemetry_requires_observation",
+                        "ground telemetry requires a framed observation",
+                    )
                 if telemetry.session != self.session_id:
                     raise ContractError(
                         "session_mismatch", "telemetry session does not match the WebSocket path"
@@ -2471,23 +2480,7 @@ class RelaySession:
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
-_AIRCRAFT_ONLY_INTENTS = frozenset(
-    {
-        IntentName.ARM,
-        IntentName.DISARM,
-        IntentName.TAKEOFF,
-        IntentName.LAND,
-        IntentName.LAND_ALL,
-        IntentName.ALTITUDE,
-        IntentName.FORMATION_NEXT,
-        IntentName.FORMATION_SET,
-        IntentName.SPACING,
-        IntentName.SWEEP,
-        IntentName.CAPTURE_ROOM,
-        IntentName.SURVEY_AREA,
-        IntentName.MAP_AREA,
-    }
-)
+_GROUND_SAFE_INTENTS = frozenset({IntentName.SELECT, IntentName.HOLD, IntentName.ESTOP})
 # These two planner-owned objects share the per-aircraft projection budget. Four
 # maximum aircraft plus both maximum control objects still fit one 1 MiB record.
 MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024

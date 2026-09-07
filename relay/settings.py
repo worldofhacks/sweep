@@ -127,6 +127,16 @@ class RelaySettings:
                 "SWEEP_NODE_TYPES_JSON must map configured adapter IDs to aircraft or ground"
             )
         object.__setattr__(self, "node_types", MappingProxyType(node_types))
+        if self.observation_configuration is not None:
+            for binding in self.observation_configuration.bindings:
+                if (
+                    binding.device_id not in adapter_keys
+                    or binding.node_type
+                    != node_types.get(binding.device_id, NodeType.AIRCRAFT).value
+                ):
+                    raise SettingsError(
+                        "observation binding must match the authenticated device class"
+                    )
         if (
             type(self.transcript_upload_timeout_ms) is not int
             or not 1 <= self.transcript_upload_timeout_ms <= MAX_TRANSCRIPT_UPLOAD_TIMEOUT_MS

@@ -507,6 +507,11 @@ class FleetSnapshot:
         for item in drones_raw:
             if not isinstance(item, Mapping):
                 raise ValueError("relay drone entries must be mappings")
+            node_type = item.get("node_type", "aircraft")
+            if node_type not in ("aircraft", "ground"):
+                raise ValueError("relay node type is unknown")
+            if node_type == "ground":
+                continue
             drone_id = _positive_int(item, "drone_id")
             safety = enrichment.aircraft.get(drone_id)
             if safety is None:
