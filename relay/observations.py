@@ -107,7 +107,7 @@ class SourceTime:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "clock_id", _text(self.clock_id, "clock_id"))
-        if self.unit not in {"ms", "ns"}:
+        if type(self.unit) is not str or self.unit not in {"ms", "ns"}:
             _error("invalid_observation", "source clock unit must be ms or ns")
         object.__setattr__(self, "value", _integer(self.value, "source timestamp"))
 
@@ -136,7 +136,7 @@ class ClockMapping:
     def __post_init__(self) -> None:
         for name in ("mapping_id", "source_clock_id"):
             object.__setattr__(self, name, _text(getattr(self, name), name))
-        if self.source_unit not in {"ms", "ns"}:
+        if type(self.source_unit) is not str or self.source_unit not in {"ms", "ns"}:
             _error("invalid_clock_mapping", "source_unit must be ms or ns")
         for name in ("source_reference", "relay_reference_ms"):
             object.__setattr__(self, name, _integer(getattr(self, name), name))
@@ -182,9 +182,17 @@ class FrameDeclaration:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "frame_id", _text(self.frame_id, "frame_id"))
-        if self.kind not in {"world", "odom", "body", "camera", "lidar", "tag", "legacy_map_enu"}:
+        if type(self.kind) is not str or self.kind not in {
+            "world",
+            "odom",
+            "body",
+            "camera",
+            "lidar",
+            "tag",
+            "legacy_map_enu",
+        }:
             _error("invalid_frame_declaration", "frame kind is unknown")
-        if self.axis_convention not in {
+        if type(self.axis_convention) is not str or self.axis_convention not in {
             "right_handed_z_up",
             "east_north_up",
             "forward_left_up",
@@ -316,7 +324,7 @@ class SourceBinding:
             _integer(self.connection_epoch, "binding connection_epoch", minimum=1),
         )
         object.__setattr__(self, "source_id", _text(self.source_id, "binding source_id"))
-        if self.node_type not in {"aircraft", "ground"}:
+        if type(self.node_type) is not str or self.node_type not in {"aircraft", "ground"}:
             _error("invalid_source_binding", "binding node_type is unknown")
         if not isinstance(self.allowed_frames, tuple):
             _error("invalid_source_binding", "binding allowed frames must be a tuple")
@@ -646,7 +654,7 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
                 "reprojection_or_cheirality",
             }
         )
-        if reason not in reasons or (reason == "pose") != pose_accepted:
+        if type(reason) is not str or reason not in reasons or (reason == "pose") != pose_accepted:
             _error("invalid_payload", "tag reason must describe whether pose was accepted")
         tag_pose = value["tag_pose"]
         if (tag_pose is not None) != pose_accepted:
@@ -685,7 +693,10 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
                     for coordinate in corner
                 ]
             )
-        if value["pixel_frame"] not in {"camera", "rectified_camera"}:
+        if type(value["pixel_frame"]) is not str or value["pixel_frame"] not in {
+            "camera",
+            "rectified_camera",
+        }:
             _error("invalid_payload", "tag pixel_frame is unknown")
         rms = value["reprojection_rms_px"]
         if rms is not None:
@@ -787,7 +798,7 @@ class ObservationSubmission:
         object.__setattr__(
             self, "connection_epoch", _integer(self.connection_epoch, "connection_epoch", minimum=1)
         )
-        if self.node_type not in {"aircraft", "ground"}:
+        if type(self.node_type) is not str or self.node_type not in {"aircraft", "ground"}:
             _error("invalid_observation", "node_type is unknown")
         confidence = _number(self.confidence, "confidence", maximum=1.0)
         if confidence < 0:
