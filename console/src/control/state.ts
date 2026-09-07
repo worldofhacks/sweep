@@ -11,6 +11,9 @@ import type {
   RelayServerEvent,
 } from '../relay/contract'
 import { DEVICE_CLASSES, followsSelection } from '../relay/contract'
+import type { NavigationPreview } from '../navigation'
+
+export const NAVIGATION_CONFIRMATION_UNAVAILABLE = 'Navigation confirmation is unavailable until the relay implements its frozen preview and confirmation contract.'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'degraded' | 'disconnected'
 export type RelayTransport = 'websocket' | 'fixture' | 'unavailable'
@@ -28,6 +31,9 @@ export interface RelayConnection {
 }
 
 export interface PlanPreview {
+  /** Server-reported review evidence, never a locally generated route or permission. */
+  navigation?: NavigationPreview
+  confirmationBlockedReason?: string
   /** Explicit connected-device preview binding, independent of motion selection. */
   deviceEpochs?: Record<number, number>
   title: string

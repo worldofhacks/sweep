@@ -30,6 +30,21 @@ class TestSocket extends EventTarget {
 }
 
 describe('WebSocket relay client', () => {
+  test.each(['console', 'keyboard', 'webcam', 'language'] as const)('never sends a navigation review through the %s socket', async (source) => {
+    const socket = new TestSocket()
+    const client = new WebSocketRelayClient(
+      { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source, token: 'test-token' },
+      { now: () => 100, createSocket: () => socket as unknown as WebSocket },
+    )
+    client.start()
+    socket.open()
+    socket.message({ v: 1, t: 100, type: 'auth.accepted', event_id: 'auth', session: 'session-1', source, drone_id: null })
+    await expect(client.sendIntent({ v: 1, t: 100, type: 'intent', intent_id: 'nav-review', retry_of: null,
+      source, session: 'session-1', name: 'navigate', args: { zone_id: 'zone-kitchen' },
+      selection: [1, 11], mode: 'indoor', confirm: true })).rejects.toThrow('Navigation confirmation is unavailable')
+    expect(socket.sent.map((message) => JSON.parse(message).type)).toEqual(['auth'])
+  })
+
   test.each(['console', 'keyboard', 'webcam', 'language'] as const)('keeps %s connected through public phone events and a higher-epoch rejoin', (source) => {
     const socket = new TestSocket()
     const statuses: string[] = []

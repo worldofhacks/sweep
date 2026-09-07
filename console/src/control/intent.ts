@@ -120,7 +120,7 @@ export function retryIntent(
     retry_of: failed.intent_id,
     args: cloneArgs(failed.args),
     selection: [...failed.selection],
-    confirm: failed.confirm,
+    confirm: failed.name === 'navigate' ? false : failed.confirm,
   }
 }
 

@@ -1,6 +1,7 @@
 import type { IntentSource, IntentV1, RelayAuthFrame, RelayServerEvent } from './contract'
 import { parseRelayServerEvent } from './contract'
 import type { RelayConnection } from '../control/state'
+import { NAVIGATION_CONFIRMATION_UNAVAILABLE } from '../control/state'
 
 export type RelayClientEvent =
   | { kind: 'connection'; connection: RelayConnection }
@@ -153,6 +154,7 @@ export class WebSocketRelayClient implements RelayClient {
   }
 
   async sendIntent(intent: IntentV1): Promise<void> {
+    if (intent.name === 'navigate') throw new Error(NAVIGATION_CONFIRMATION_UNAVAILABLE)
     if (!this.socket || this.socket.readyState !== 1 || !this.authenticated) {
       throw new Error('Relay is not authenticated; the intent was not sent.')
     }

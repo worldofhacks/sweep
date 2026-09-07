@@ -10,6 +10,7 @@ const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
   land: 'Land',
   land_all: 'Land all fleet',
   sweep: 'Sweep area',
+  navigate: 'Review destination',
 }
 
 /** Plan-card title from the design; other intents show their name. */
@@ -22,6 +23,7 @@ export function planTitle(intent: IntentV1): string {
 
 /** Ordered plain-language steps from the design's planSteps; `label` names each target by its class. */
 export function planSteps(intent: IntentV1, label: DeviceLabeller = formatDroneId): string[] {
+  if (intent.name === 'navigate') return [] // Only the authoritative preview may describe routes.
   const ids = intent.selection.map(label).join(', ')
   if (intent.name === 'camera_control' && 'kind' in intent.args) return [
     `Send ${intent.args.kind === 'photo' ? 'single photo capture' : intent.args.kind === 'ready' ? 'photo-mode preparation' : `absolute gimbal pitch ${'pitch_mdeg' in intent.args ? intent.args.pitch_mdeg / 1000 : ''}°`} only to ${ids}.`,

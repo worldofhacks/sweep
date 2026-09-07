@@ -41,6 +41,7 @@ import {
   createRequestRecord,
   deviceLabeller,
   isIntentEnabled,
+  NAVIGATION_CONFIRMATION_UNAVAILABLE,
   type ControlState,
   type RequestRecord,
 } from './state'
@@ -192,6 +193,10 @@ export function useControlConsole({
   /** Marks a recorded request sent and hands it to the client its source names. */
   const sendNow = useCallback(
     (intent: IntentV1, t: number) => {
+      if (intent.name === 'navigate') {
+        dispatch({ type: 'request_send_failed', intentId: intent.intent_id, t, detail: NAVIGATION_CONFIRMATION_UNAVAILABLE })
+        return
+      }
       if (!isIntentEnabled(state, intent.name)) {
         dispatch({
           type: 'request_send_failed',
@@ -295,6 +300,7 @@ export function useControlConsole({
 
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
+      if (request.name === 'navigate') return null // Requires an authoritative destination review.
       if (!isIntentEnabled(state, request.name)) return null
       const selection = ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection
       if (request.name === 'body_pulse' && selection.some((id) => state.aircraft[id]?.device_class !== 'aircraft')) return null
@@ -466,6 +472,7 @@ export function useControlConsole({
       source: DraftSource = 'console',
       expiresAt?: number,
     ): IntentV1 | null => {
+      if (request.name === 'navigate') return null // Generic drafts cannot manufacture a route preview.
       if (!isIntentEnabled(state, request.name)) return null
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
@@ -489,6 +496,7 @@ export function useControlConsole({
   /** Stage the exact relay-minted language draft; no name-specific rewrite is allowed. */
   const prepareVoicePlanStep = useCallback(
     (plan: VoicePlan, step: VoicePlanStep, expiresAt: number): IntentV1 | null => {
+      if (step.name === 'navigate') return null // No navigation compiler/confirmation contract is deployed.
       if (
         plan.kind !== 'plan' ||
         plan.plan_digest === null ||
@@ -546,6 +554,11 @@ export function useControlConsole({
     (intentId: string): IntentV1 | null => {
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
       if (!request || request.status !== 'pending_confirmation' || confirmedIds.current.has(intentId)) return null
+      if (request.intent.name === 'navigate') {
+        dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
+          reasonCode: 'navigation_confirmation_unavailable', detail: NAVIGATION_CONFIRMATION_UNAVAILABLE })
+        return null
+      }
       if (!isIntentEnabled(state, request.intent.name)) {
         dispatch({
           type: 'request_invalidated',
@@ -739,6 +752,7 @@ export function useControlConsole({
   const retryRequest = useCallback(
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
+      if (request.intent.name === 'navigate') return // A retry must request a new authoritative preview.
       if (request.intent.source === 'language') return
       const intent = retryIntent(request.intent, intentDependencies)
       if (intent.source === 'webcam' || ['arm', 'body_pulse', 'takeoff', 'land', 'land_all', 'capture_room', 'robot_peripheral', 'camera_control'].includes(intent.name)) {

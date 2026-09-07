@@ -49,6 +49,8 @@ export type ConsoleIntentName =
   | 'formation_set'
   | 'spacing'
   | 'come_home'
+  /** Preview-only until the relay publishes its frozen navigation confirmation contract. */
+  | 'navigate'
   | 'sweep'
   | 'capture_room'
 
@@ -70,6 +72,7 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'formation_set',
   'spacing',
   'come_home',
+  'navigate',
   'sweep',
   'capture_room',
 ]
@@ -111,7 +114,7 @@ export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
 
 /** Every intent implemented by this console, independently of deployment release. */
 export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
-  [...C2_FLEET_OPERATIONS_INTENTS, 'body_pulse', 'robot_peripheral', 'camera_control'],
+  [...C2_FLEET_OPERATIONS_INTENTS, 'body_pulse', 'robot_peripheral', 'camera_control', 'navigate'],
 )
 
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
@@ -124,6 +127,7 @@ export function isSupportedIntent(name: ConsoleIntentName): boolean {
  * requires every webcam flight action, including session enable, to be confirmed.
  */
 export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  'navigate',
   'robot_peripheral',
   'camera_control',
   'body_pulse',
@@ -159,6 +163,7 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   formation_set: 'selected',
   spacing: 'selected',
   come_home: 'selected',
+  navigate: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
 }
@@ -262,6 +267,8 @@ export interface IntentArgsByName {
   formation_set: FormationSetArgs
   spacing: DeltaArgs
   come_home: EmptyArgs
+  /** Console review shape from #143; unavailable for transmission in this build. */
+  navigate: { zone_id: string }
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
 }
@@ -1592,6 +1599,8 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
         isCanonicalIntentText(args.capture_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
         CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
       )
+    case 'navigate':
+      return keys.length === 1 && isCanonicalIntentText(args.zone_id, MAX_INTENT_IDENTIFIER_CODE_POINTS)
     case 'arm':
     case 'disarm':
     case 'estop':

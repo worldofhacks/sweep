@@ -1,0 +1,33 @@
+.nv-pane { display: grid; gap: 16px; }
+.nv-pane p { margin: 0; }
+.nv-heading { display: grid; gap: 4px; }
+.nv-title { margin: 0; font-size: var(--text-16); font-weight: var(--weight-650); }
+.nv-note { color: var(--color-ink-2); font-size: var(--text-12-5); line-height: 1.45; }
+.nv-note.is-warning { color: var(--color-warn); }
+.nv-note.is-danger { color: var(--color-danger); }
+.nv-section { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--color-rule); }
+.nv-label { color: var(--color-eyebrow); font-family: var(--font-mono); font-size: var(--text-11); font-weight: var(--weight-500); letter-spacing: var(--tracking-eyebrow-13); text-transform: uppercase; }
+.nv-search { display: grid; gap: 8px; }
+.nv-search input { box-sizing: border-box; width: 100%; min-height: 40px; padding: 8px 12px; border: 1px solid var(--color-border-input); background: var(--color-surface); color: var(--color-ink); font: inherit; }
+.nv-search input:focus-visible, .nv-zone:focus-visible, .nv-review:focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; }
+.nv-zones { display: grid; gap: 4px; max-height: 280px; overflow: auto; }
+.nv-zone { display: grid; gap: 4px; width: 100%; padding: 12px; border: 1px solid var(--color-rule); background: var(--color-surface); color: var(--color-ink); text-align: left; cursor: pointer; }
+.nv-zone:hover { border-color: var(--color-ink-2); }
+.nv-zone[aria-pressed="true"] { border-color: var(--color-ink); background: var(--color-ground); }
+.nv-zone-name { font-size: var(--text-13-5); font-weight: var(--weight-600); }
+.nv-zone-meta { color: var(--color-ink-2); font-family: var(--font-mono); font-size: var(--text-11); overflow-wrap: anywhere; }
+.nv-targets, .nv-routes { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.nv-target { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: var(--text-12-5); }
+.nv-target strong { font-family: var(--font-mono); font-weight: var(--weight-600); }
+.nv-target span { color: var(--color-ink-2); }
+.nv-review { justify-self: start; min-height: 40px; padding: 8px 16px; border: 1px solid var(--color-ink); background: var(--color-surface); color: var(--color-ink); font-size: var(--text-13-5); font-weight: var(--weight-600); cursor: pointer; }
+.nv-review:disabled { border-color: var(--color-rule); background: var(--color-disabled-bg); color: var(--color-ink-2); cursor: not-allowed; }
+.nv-preview { display: grid; gap: 12px; }
+.nv-versions { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; }
+.nv-versions > div { display: grid; gap: 4px; }
+.nv-versions dt { color: var(--color-ink-2); font-size: var(--text-11); }
+.nv-versions dd { margin: 0; font-family: var(--font-mono); font-size: var(--text-12-5); overflow-wrap: anywhere; }
+.nv-route { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--color-rule); }
+.nv-route h4 { margin: 0; font-size: var(--text-13-5); font-weight: var(--weight-600); }
+.nv-route p { margin: 0; font-size: var(--text-12-5); line-height: 1.45; }
+.nv-waypoints { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding-left: 20px; font-family: var(--font-mono); font-size: var(--text-11); }

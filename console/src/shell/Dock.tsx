@@ -65,6 +65,7 @@ function PendingPlan({
   const expiresAt = plan?.expiresAt
   const remainingMs = expiresAt === undefined ? null : Math.max(0, expiresAt - now)
   const expired = remainingMs === 0
+  const confirmationBlocked = plan?.confirmationBlockedReason ?? (expired ? 'The confirmation window expired; nothing can be sent from this preview.' : null)
 
   useEffect(() => {
     region.current?.focus()
@@ -113,8 +114,8 @@ function PendingPlan({
           <button
             type="button"
             className="sh-confirm"
-            disabled={expired}
-            title={expired ? 'The confirmation window expired; nothing can be sent from this preview.' : undefined}
+            disabled={confirmationBlocked !== null}
+            title={confirmationBlocked ?? undefined}
             onClick={() => onConfirm(intentId)}
           >
             Confirm and send
@@ -124,6 +125,7 @@ function PendingPlan({
           </button>
         </span>
       </div>
+      {plan?.confirmationBlockedReason && <p role="status" className="sh-json-note">{plan.confirmationBlockedReason}</p>}
       {plan && plan.steps.length > 0 && (
         <ol className="sh-dock-steps">
           {plan.steps.map((step) => (
