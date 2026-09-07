@@ -5,11 +5,11 @@ import numpy as np
 import pytest
 
 from perception.webcam_localization import WebcamLocalization, load_config
-from tests.test_tag_localization import scene
+from tests.test_tag_localization import scene, world_config
 
 
-def webcam_scene(tmp_path):
-    _, image, camera, body_camera, config = scene(tmp_path)
+def webcam_scene(tmp_path, *, count=2):
+    _, image, camera, body_camera, config = scene(tmp_path, count=count)
     config["pipeline"].update(
         decoder_path="opencv-ffmpeg-rtsp", latency_endpoint="localization_decode"
     )
@@ -57,6 +57,22 @@ def test_real_tag_pixels_enter_capture_corrected_filter_and_age_without_frames(t
     assert result["map_sha256"] == expected_map
     assert result["bundle_version"] in config["localizer"]["accepted_versions"]
     assert "accepted_versions" not in result
+    assert loop.at(10.5)["confidence"] == "amber"
+    assert loop.at(12)["confidence"] == "red"
+
+
+def test_world_tag_pixels_enter_filter_with_world_identity_and_age(tmp_path):
+    config, image, expected = webcam_scene(tmp_path, count=1)
+    config["localizer"] = world_config(config["localizer"], tmp_path)
+    loop = WebcamLocalization(config, allow_synthetic=True)
+    result = loop.update(image, 10.1, 10.12)
+    assert result["pose_observation"]["filter_status"] == "accepted"
+    np.testing.assert_allclose(result["position_world_m"], expected[:3, 3], atol=0.04)
+    assert "position_map_m" not in result
+    assert result["pose_frame"]["name"] == "world"
+    assert result["pose_frame"]["map_id"] == "level-1-fixture"
+    assert result["pose_frame"] == result["pose_observation"]["pose_frame"]
+    assert result["control_eligible"] is False
     assert loop.at(10.5)["confidence"] == "amber"
     assert loop.at(12)["confidence"] == "red"
 
