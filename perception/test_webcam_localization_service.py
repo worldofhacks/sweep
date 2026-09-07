@@ -4,7 +4,9 @@ import time
 import numpy as np
 
 from perception.shared_camera_pipeline import CameraPipelineConfig
-from perception.webcam_localization import WebcamLocalizationService
+from perception.test_webcam_localization import webcam_scene
+from perception.webcam_localization import WebcamLocalization, WebcamLocalizationService
+from tests.test_tag_localization import scene
 
 
 class Reader:
@@ -51,7 +53,10 @@ class LiveReader:
     def push(self, value, timestamp=None):
         if timestamp is None:
             timestamp = time.monotonic()
-        self.frames.append((np.full((4, 4, 3), value, dtype=np.uint8), timestamp))
+        image = (
+            value if isinstance(value, np.ndarray) else np.full((4, 4, 3), value, dtype=np.uint8)
+        )
+        self.frames.append((image, timestamp))
         self._available.set()
 
     def read(self, timeout=0):
@@ -164,3 +169,84 @@ def test_production_service_shares_one_decoder_with_detector_and_map_consumer():
         service.close()
 
     assert reader.closed
+
+
+def test_service_uses_shared_decoder_for_configured_two_tag_preview_consensus(tmp_path):
+    config, image, _ = webcam_scene(tmp_path, count=2)
+    config["localizer"]["consensus"] = {
+        "minimum_distinct_tags": 2,
+        "maximum_translation_residual_m": 0.03,
+        "maximum_rotation_residual_rad": 0.2,
+    }
+    loop = WebcamLocalization(config, allow_synthetic=True)
+    reader = LiveReader()
+    service = WebcamLocalizationService(
+        loop,
+        "rtsp://media.example/drone1",
+        stream_factory=lambda _url: reader,
+    )
+    try:
+        service.resume(time.monotonic())
+        reader.push(image)
+        state = _poll_until(service, lambda value: value["localization_consumer_state"] == "active")
+    finally:
+        service.close()
+
+    pose = state["pose_observation"]
+    assert pose["accepted"] is True
+    assert pose["consensus_inlier_tag_ids"] == [0, 1]
+    assert state["control_eligible"] is False
+    assert pose["capture_time_verified"] is False
+
+
+def test_service_keeps_consensus_diagnostics_visible_when_a_frame_loses_quorum(tmp_path):
+    config, _, _ = webcam_scene(tmp_path / "config", count=3)
+    config["localizer"]["consensus"] = {
+        "minimum_distinct_tags": 2,
+        "maximum_translation_residual_m": 0.03,
+        "maximum_rotation_residual_rad": 0.2,
+    }
+    _, agreeing, _, _, _ = scene(tmp_path / "agreeing", count=2)
+    _, one_outlier, _, _, _ = scene(tmp_path / "outlier", count=3, inconsistent_tag=2)
+    _, disagreeing, _, _, _ = scene(tmp_path / "disagreeing", count=2, inconsistent_tag=1)
+    loop = WebcamLocalization(config, allow_synthetic=True)
+    reader = LiveReader()
+    service = WebcamLocalizationService(
+        loop,
+        "rtsp://media.example/drone1",
+        stream_factory=lambda _url: reader,
+    )
+
+    def observe(image, predicate):
+        reader.push(image)
+        return _poll_until(service, predicate)
+
+    try:
+        service.resume(time.monotonic())
+        first = observe(
+            agreeing,
+            lambda state: (
+                (state.get("pose_observation") or {}).get("consensus_inlier_tag_ids") == [0, 1]
+            ),
+        )
+        outlier = observe(
+            one_outlier,
+            lambda state: (
+                (state.get("pose_observation") or {}).get("consensus_outlier_tag_ids") == [2]
+            ),
+        )
+        rejected = observe(
+            disagreeing,
+            lambda state: (
+                (state.get("pose_observation") or {}).get("reason") == "insufficient_tag_consensus"
+            ),
+        )
+    finally:
+        service.close()
+
+    assert first["localization_consumer_state"] == "active"
+    assert outlier["pose_observation"]["consensus_inlier_tag_ids"] == [0, 1]
+    assert rejected["accepted"] is False
+    assert rejected["control_eligible"] is False
+    assert rejected["localization_consumer_state"] == "revalidating"
+    assert sorted(rejected["pose_observation"]["tag_ids"]) == [0, 1]

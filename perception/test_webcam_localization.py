@@ -193,3 +193,22 @@ def test_configured_source_refuses_unconfigured_or_mismatched_stream(
             allow_synthetic=True,
             configured_streams={11: "drone11", 12: "drone12"},
         )
+
+
+def test_consensus_rejection_keeps_the_previous_preview_fix_age(tmp_path):
+    config, good, _ = webcam_scene(tmp_path / "good", count=2)
+    config["localizer"]["consensus"] = {
+        "minimum_distinct_tags": 2,
+        "maximum_translation_residual_m": 0.03,
+        "maximum_rotation_residual_rad": 0.2,
+    }
+    _, disagreeing, _, _, _ = scene(tmp_path / "disagree", count=2, inconsistent_tag=1)
+    loop = WebcamLocalization(config, allow_synthetic=True)
+
+    accepted = loop.update(good, 10.1, 10.12)
+    rejected = loop.update(disagreeing, 10.4, 10.4)
+
+    assert accepted["pose_observation"]["consensus_inlier_tag_ids"] == [0, 1]
+    assert rejected["pose_observation"]["reason"] == "insufficient_tag_consensus"
+    assert sorted(rejected["pose_observation"]["tag_ids"]) == [0, 1]
+    assert rejected["fix_age_s"] == pytest.approx(0.4)

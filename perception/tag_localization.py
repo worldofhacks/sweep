@@ -25,6 +25,37 @@ def map_points(tag, *, world=False):
     return tag_corners(size) @ transform[:3, :3].T + transform[:3, 3]
 
 
+def _consensus_config(value):
+    if value is None:
+        return 1, None, None
+    if not isinstance(value, dict) or set(value) != {
+        "minimum_distinct_tags",
+        "maximum_translation_residual_m",
+        "maximum_rotation_residual_rad",
+    }:
+        raise ValueError("tag consensus configuration is invalid")
+    minimum = value["minimum_distinct_tags"]
+    translation = value["maximum_translation_residual_m"]
+    rotation = value["maximum_rotation_residual_rad"]
+    if (
+        type(minimum) is not int
+        or not 1 <= minimum <= 64
+        or type(translation) not in (int, float)
+        or not np.isfinite(translation)
+        or translation <= 0
+        or type(rotation) not in (int, float)
+        or not np.isfinite(rotation)
+        or not 0 < rotation <= np.pi
+    ):
+        raise ValueError("tag consensus configuration is invalid")
+    return minimum, float(translation), float(rotation)
+
+
+def _rotation_residual(first, second):
+    delta = first.T @ second
+    return float(np.arccos(np.clip((np.trace(delta) - 1) / 2, -1, 1)))
+
+
 class TagLocalizer:
     def __init__(
         self,
@@ -35,6 +66,7 @@ class TagLocalizer:
         camera_serial,
         pipeline,
         T_body_camera,
+        consensus=None,
     ):
         self.manifest = validate_bundle(bundle, accepted_versions)
         self.world = self.manifest["schema_version"] == 2
@@ -109,6 +141,11 @@ class TagLocalizer:
         self.T_body_camera = rigid(T_body_camera)
         self.tags = {t["id"]: t for t in self.manifest.document("tags.yaml")["tags"]}
         self.calibration_sha256 = calibration_sha256
+        (
+            self.minimum_consensus_tags,
+            self.maximum_translation_residual_m,
+            self.maximum_rotation_residual_rad,
+        ) = _consensus_config(consensus)
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         parameters = cv2.aruco.DetectorParameters()
         parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
@@ -146,14 +183,115 @@ class TagLocalizer:
             return report | {"reason": "no_tags"}
         identifiers = ids.flatten().tolist()
         if len(set(identifiers)) != len(identifiers) or any(
-            i not in self.tags for i in identifiers
+            identifier not in self.tags for identifier in identifiers
         ):
             return report | {"reason": "unknown_or_duplicate_tag"}
-        if self.world and any(not self.tags[i]["verified_for_flight"] for i in identifiers):
+        if self.world and any(
+            not self.tags[identifier]["verified_for_flight"] for identifier in identifiers
+        ):
             return report | {"reason": "unverified_world_tag", "tag_ids": identifiers}
-        # ArUco returns decoded TL/TR/BR/BL; these are not image-position sorting.
-        pixels = np.concatenate([c.reshape(4, 2) for c in corners]).astype(float)
-        points = np.concatenate([map_points(self.tags[i], world=self.world) for i in identifiers])
+        pixels_by_id = {
+            identifier: corner.reshape(4, 2).astype(float)
+            for identifier, corner in zip(identifiers, corners, strict=True)
+        }
+        inlier_ids, consensus = self._consensus(identifiers, pixels_by_id)
+        if inlier_ids is None:
+            return report | {
+                "reason": "insufficient_tag_consensus",
+                "tag_ids": identifiers,
+                **consensus,
+            }
+        points = np.concatenate(
+            [map_points(self.tags[identifier], world=self.world) for identifier in inlier_ids]
+        )
+        pixels = np.concatenate([pixels_by_id[identifier] for identifier in inlier_ids])
+        camera, error, reason = self._camera_pose(points, pixels, inlier_ids)
+        if camera is None:
+            return report | {"reason": reason, "tag_ids": identifiers, **consensus}
+        body = camera @ np.linalg.inv(self.T_body_camera)
+        return (
+            report
+            | dict(
+                accepted=True,
+                reason="pose",
+                tag_ids=identifiers,
+                reprojection_rms_px=error,
+                **consensus,
+            )
+            | {
+                "T_world_camera" if self.world else "T_map_camera": camera.tolist(),
+                "T_world_body" if self.world else "T_map_body": body.tolist(),
+            }
+        )
+
+    def _consensus(self, identifiers, pixels_by_id):
+        if self.minimum_consensus_tags == 1:
+            return list(identifiers), {"consensus_status": "not_required"}
+        candidates = {}
+        for identifier in identifiers:
+            points = map_points(self.tags[identifier], world=self.world)
+            camera, error, _ = self._camera_pose(points, pixels_by_id[identifier], [identifier])
+            if camera is not None:
+                candidates[identifier] = (camera, error)
+        ids = sorted(candidates)
+        memberships = []
+        for center in ids:
+            camera, _ = candidates[center]
+            members = [
+                identifier
+                for identifier in ids
+                if np.linalg.norm(candidates[identifier][0][:3, 3] - camera[:3, 3])
+                <= self.maximum_translation_residual_m
+                and _rotation_residual(candidates[identifier][0][:3, :3], camera[:3, :3])
+                <= self.maximum_rotation_residual_rad
+            ]
+            score = sum(
+                np.linalg.norm(candidates[identifier][0][:3, 3] - camera[:3, 3])
+                / self.maximum_translation_residual_m
+                + _rotation_residual(candidates[identifier][0][:3, :3], camera[:3, :3])
+                / self.maximum_rotation_residual_rad
+                for identifier in members
+            )
+            memberships.append((members, score, center))
+        if memberships:
+            selected, _, reference = min(
+                memberships, key=lambda item: (-len(item[0]), item[1], item[2])
+            )
+        else:
+            selected, reference = [], None
+        inliers = sorted(selected)
+        reference_camera = None if reference is None else candidates[reference][0]
+        residuals = [
+            {
+                "tag_id": identifier,
+                "reprojection_rms_px": candidates[identifier][1],
+                "translation_m": None
+                if reference_camera is None
+                else float(
+                    np.linalg.norm(candidates[identifier][0][:3, 3] - reference_camera[:3, 3])
+                ),
+                "rotation_rad": None
+                if reference_camera is None
+                else _rotation_residual(
+                    candidates[identifier][0][:3, :3], reference_camera[:3, :3]
+                ),
+            }
+            for identifier in ids
+        ]
+        diagnostics = {
+            "consensus_status": "accepted"
+            if len(inliers) >= self.minimum_consensus_tags
+            else "not_reached",
+            "consensus_required_distinct_tags": self.minimum_consensus_tags,
+            "consensus_candidate_tag_ids": ids,
+            "consensus_inlier_tag_ids": inliers,
+            "consensus_outlier_tag_ids": sorted(set(identifiers) - set(inliers)),
+            "consensus_reference_tag_id": reference,
+            "consensus_residuals": residuals,
+        }
+        return (inliers if len(inliers) >= self.minimum_consensus_tags else None), diagnostics
+
+    def _camera_pose(self, points, pixels, identifiers):
         transform_key = "T_world_tag" if self.world else "T_map_tag"
         centered = points - points.mean(axis=0)
         _, singular, axes = np.linalg.svd(centered)
@@ -184,11 +322,11 @@ class TagLocalizer:
             T_map_camera = np.linalg.inv(T_camera_map)
             if any(
                 np.dot(
-                    T_map_camera[:3, 3] - np.array(self.tags[i][transform_key])[:3, 3],
-                    np.array(self.tags[i][transform_key])[:3, 2],
+                    T_map_camera[:3, 3] - np.array(self.tags[identifier][transform_key])[:3, 3],
+                    np.array(self.tags[identifier][transform_key])[:3, 2],
                 )
                 <= 0
-                for i in identifiers
+                for identifier in identifiers
             ):
                 continue
             projected = cv2.projectPoints(
@@ -199,24 +337,11 @@ class TagLocalizer:
                 candidates.append((error, T_map_camera))
         candidates.sort(key=lambda item: item[0])
         if not candidates or candidates[0][0] > 2:
-            return report | {"reason": "reprojection_or_cheirality"}
+            return None, None, "reprojection_or_cheirality"
         if len(candidates) > 1 and (
             candidates[1][0] - candidates[0][0] < 0.5
             or candidates[1][0] < 2 * max(candidates[0][0], 1e-9)
         ):
-            return report | {"reason": "ambiguous"}
+            return None, None, "ambiguous"
         error, camera = candidates[0]
-        body = camera @ np.linalg.inv(self.T_body_camera)
-        return (
-            report
-            | dict(
-                accepted=True,
-                reason="pose",
-                tag_ids=identifiers,
-                reprojection_rms_px=error,
-            )
-            | {
-                "T_world_camera" if self.world else "T_map_camera": camera.tolist(),
-                "T_world_body" if self.world else "T_map_body": body.tolist(),
-            }
-        )
+        return camera, error, None

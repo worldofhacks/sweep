@@ -15,7 +15,7 @@ from tools.map_validate import seal_manifest
 K = np.array([[900.0, 0, 640], [0, 900, 360], [0, 0, 1]])
 
 
-def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False):
+def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False, inconsistent_tag=None):
     bundle = tmp_path / "bundle"
     shutil.copytree(Path(__file__).parent / "fixtures/mapping", bundle)
     document = json.loads((bundle / "tags.yaml").read_text())
@@ -102,7 +102,10 @@ def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False):
             @ transform[:3, :3].T
             + transform[:3, 3]
         )
-        inverse = np.linalg.inv(camera)
+        rendered_camera = camera.copy()
+        if inconsistent_tag == i:
+            rendered_camera[:3, 3] += [0.12, 0.0, 0.0]
+        inverse = np.linalg.inv(rendered_camera)
         pixels = cv2.projectPoints(
             points, cv2.Rodrigues(inverse[:3, :3])[0], inverse[:3, 3], K, np.zeros(5)
         )[0].reshape(4, 2)
@@ -360,3 +363,62 @@ def test_world_localizer_requires_exact_approved_content(tmp_path):
     reseal(path.parent)
     with pytest.raises(ValueError, match="accepted version content hash mismatch"):
         TagLocalizer(**config)
+
+
+def consensus_config():
+    return {
+        "minimum_distinct_tags": 2,
+        "maximum_translation_residual_m": 0.03,
+        "maximum_rotation_residual_rad": 0.2,
+    }
+
+
+def test_two_tag_consensus_returns_one_joint_pose(tmp_path):
+    _, image, camera, _, config = scene(tmp_path, count=2)
+    localizer = TagLocalizer(**(config | {"consensus": consensus_config()}))
+
+    result = localizer.estimate(image, 1, 1.1, 1.2)
+
+    assert result["accepted"], result
+    assert result["consensus_inlier_tag_ids"] == [0, 1]
+    assert result["consensus_outlier_tag_ids"] == []
+    np.testing.assert_allclose(result["T_map_camera"], camera, atol=0.025)
+
+
+def test_three_tag_consensus_excludes_one_inconsistent_rendered_tag(tmp_path):
+    _, image, camera, _, config = scene(tmp_path, count=3, inconsistent_tag=2)
+    localizer = TagLocalizer(**(config | {"consensus": consensus_config()}))
+
+    result = localizer.estimate(image, 1, 1.1, 1.2)
+
+    assert result["accepted"], result
+    assert result["consensus_inlier_tag_ids"] == [0, 1]
+    assert result["consensus_outlier_tag_ids"] == [2]
+    np.testing.assert_allclose(result["T_map_camera"], camera, atol=0.025)
+
+
+def test_two_disagreeing_tags_do_not_produce_a_pose(tmp_path):
+    _, image, _, _, config = scene(tmp_path, count=2, inconsistent_tag=1)
+    localizer = TagLocalizer(**(config | {"consensus": consensus_config()}))
+
+    result = localizer.estimate(image, 1, 1.1, 1.2)
+
+    assert result["accepted"] is False
+    assert result["reason"] == "insufficient_tag_consensus"
+    assert result["consensus_candidate_tag_ids"] == [0, 1]
+    assert result["consensus_inlier_tag_ids"] == [0]
+    assert result["consensus_outlier_tag_ids"] == [1]
+    assert "T_map_body" not in result
+
+
+def test_single_tag_remains_visible_without_satisfying_configured_quorum(tmp_path):
+    _, image, _, _, config = scene(tmp_path, count=1)
+    localizer = TagLocalizer(**(config | {"consensus": consensus_config()}))
+
+    result = localizer.estimate(image, 1, 1.1, 1.2)
+
+    assert result["accepted"] is False
+    assert result["reason"] == "insufficient_tag_consensus"
+    assert result["tag_ids"] == [0]
+    assert result["consensus_candidate_tag_ids"] == [0]
+    assert "T_map_body" not in result

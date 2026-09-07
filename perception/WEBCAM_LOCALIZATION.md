@@ -140,6 +140,15 @@ A legacy configuration without `source_device_id` looks like this:
 
 The example FOV bounds belong to the synthetic test camera; replace them with
 independent bounds for your camera. File paths resolve relative to the configuration.
+
+A `consensus` object in `localizer` can require multiple tag IDs before the preview
+filter accepts a frame. It has `minimum_distinct_tags`,
+`maximum_translation_residual_m`, and `maximum_rotation_residual_rad`. Set the
+minimum to 2 for two-tag preview. Choose the residual bounds from recorded-frame
+evaluation for the camera and mounting. The frame report lists candidate IDs,
+inliers, outliers, and each candidate's translation, rotation, and reprojection
+residual. A frame that misses quorum remains visible in `pose_observation` and does
+not refresh the preview fix age.
 The accepted-version mapping must come from operator-controlled configuration and
 bind the selected bundle version to its exact manifest content digest. A changed
 map, calibration, or latency file refuses startup until its pin is updated
