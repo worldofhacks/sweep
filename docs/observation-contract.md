@@ -28,6 +28,10 @@ The relay appends a non-negative integer `t_ingest` in Unix milliseconds. Produc
 
 A timestamp is `{ "clock_id": string, "unit": "ms" | "ns", "value": integer }`. When capture time is present, it uses the same declared clock as source receipt and must be no later than that receipt. A host-owned `ClockMapping` converts one declared source clock to relay milliseconds using integer numerator and denominator fields, reference points, and a bounded measured error. A submission only references that mapping by ID. Without a configured mapping, the contract makes no cross-clock capture-to-ingest claim.
 
+MCAP export stores `t_ingest` in both MCAP timestamp fields. The canonical body retains `t_capture` and its source clock unchanged. A capture-derived MCAP timestamp requires the relay to persist an authenticated mapped capture time.
+
+MCAP imports require nonzero data-section and summary CRCs. The importer validates data before replay and validates the summary before reading contract metadata. CRCs detect accidental corruption; they do not authenticate an MCAP file.
+
 ## Frame declarations
 
 A declaration has `frame_id`, `kind`, `axis_convention`, and metric `unit`. The sole global declaration has `frame_id: "world"`, `kind: "world"`, `axis_convention: "right_handed_z_up"`, `map_id`, `map_version`, and `physical_datum`.
