@@ -84,6 +84,7 @@ export const GESTURE_EMITTABLE_NAMES: ReadonlySet<ConsoleIntentName> = new Set<C
  * takeoff, selected landing and an adapter-timed, bounded body pulse.
  */
 export const NEVER_GESTURE_EMITTABLE: readonly string[] = Object.freeze([
+  'navigate',
   'estop',
   'disarm',
   'land_all',

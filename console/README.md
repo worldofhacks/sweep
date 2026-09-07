@@ -348,3 +348,26 @@ another vendor without an adapter contract and hardware evidence.
 
 Robot LiDAR readiness never becomes an aircraft flight or camera prerequisite. A playable
 camera feed does not promise panorama capture, gimbal control, or media retrieval.
+
+## Known-map destination review — issue #143
+
+Control › Navigate uses the authoritative selection, including each device's class and connection
+epoch. It resolves accepted destination names and aliases, asks for clarification when names are
+ambiguous, and refuses excluded, wrong-floor, unreachable, or unsupported destinations. Grounded
+aircraft require a separate takeoff operation; navigation review never drafts capture, survey, or
+formation jobs.
+
+`services.navigation` accepts the explicit frontend `NavigationClient` integration port. Its catalog
+must identify the accepted map, floor, world frame, approval, content hashes and geometry/navigation
+versions, plus the authoritative motion configuration. A preview binds those inputs to the request,
+roster, selected identities, per-device outcomes, routes, arrival slots and class-specific hold behavior.
+The pane and existing dock show this frozen evidence. Changed inputs, expired evidence, cancelled
+requests and replaced providers retire the review; delayed responses cannot recreate it.
+
+The deployed relay does not implement the catalog, preview, compiler or frozen-confirmation contract.
+The default port therefore reports unavailable and supplies no destinations or routes. `navigate` is
+reserved in the frontend intent model for this integration, is not added to the existing C1/C2 capability
+profiles, and is rejected by all current console transmission paths, including direct calls and retries.
+Even an injected preview cannot enable Confirm and send. No guessed HTTP routes or runtime fixtures
+are included. Backend planning, dispatch and hardware qualification remain outside this console-only
+change; it does not close [issue #143](https://github.com/worldofhacks/sweep/issues/143).

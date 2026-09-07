@@ -905,6 +905,7 @@ export function requestTone(status: RequestStatus): Tone {
 
 /** Retry is offered on failed and refused requests; the reason it is disabled is stated in text. */
 export function retryBlockedReason(request: RequestRecord, state: ControlState): string | null {
+  if (request.intent.name === 'navigate') return 'Review the destination again to obtain a new authoritative navigation preview.'
   if (request.intent.source === 'language') {
     return 'Disabled: a language plan step cannot be retried outside its exact compiler plan. Compile a fresh plan.'
   }
