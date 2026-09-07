@@ -371,3 +371,34 @@ profiles, and is rejected by all current console transmission paths, including d
 Even an injected preview cannot enable Confirm and send. No guessed HTTP routes or runtime fixtures
 are included. Backend planning, dispatch and hardware qualification remain outside this console-only
 change; it does not close [issue #143](https://github.com/worldofhacks/sweep/issues/143).
+
+## Shared map authoring — issue #248
+
+Map › Map authoring edits operator-supplied occupancy images and measured map metadata in the existing
+console. Enter the actual resolution, bottom-left origin, map version, floor and registered `world`
+frame before drawing. The editor supports named zones and aliases, corridor centerlines and widths,
+hand-measured flight heights and tolerances, geofences, no-fly polygons, and tags with provenance,
+confidence, observation references and tape-verification evidence. Numeric vertex editing and undo
+support precise corrections. A LiDAR occupancy plane does not establish aircraft clearance.
+
+Local drafts can be exported and imported as `sweep-map-draft-v1`; this is an editor document, not the
+backend's accepted-map schema. Image bytes, dimensions and hashes are checked on import. Export local
+work before leaving the Map module or closing the console. Switching between its Live observations
+and Map authoring tabs retains the local draft. Imported documents cannot confer relay validation or
+approval, and local edits invalidate previously displayed validation and approval evidence.
+
+`services.mapAuthoring` is an explicit frontend integration port for revision listing/loading, saving,
+server validation, exact-revision approval, comparison and recording associated tag observations.
+Saving returns an immutable revision/hash; validation and explicit audited approval must refer to that
+same saved identity. Drive-over tag recording names one selected ground robot and its current
+connection epoch; another device's observation is rejected. The editor rejects late responses after edits or provider changes. Local checks
+help correct geometry and evidence, but never replace the #81 backend validator or measured hardware
+qualification. Verified live position overlays additionally require the provider's observation capability,
+a matching session/map/floor, a current reported device epoch and fresh world-frame association.
+Generic telemetry coordinates are not promoted into map observations.
+
+The deployed relay does not yet expose these authoring contracts. Its default authoring port reports
+unavailable, so server actions remain disabled and no sample map, device positions, successful save,
+validation or approval is fabricated. Local authoring is available with real operator inputs. Backend
+storage/validation/approval and mapping hardware remain outside this console-only change; it does not
+close [issue #248](https://github.com/worldofhacks/sweep/issues/248).
