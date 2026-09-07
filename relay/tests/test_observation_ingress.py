@@ -7,6 +7,7 @@ from dataclasses import asdict, replace
 import pytest
 from fastapi.testclient import TestClient
 
+import relay.observation_ingress as ingress_module
 from relay.app import RelayRuntime, create_app
 from relay.auth import Principal
 from relay.observation_ingress import ObservationConfiguration
@@ -167,12 +168,16 @@ def test_membership_replay_rate_and_clock_are_checked_before_audit(settings):
     clock.advance(10)
     old = {"clock_id": "hal-monotonic", "unit": "ns", "value": 99}
     assert (
-        session.process_frame(observation(t_source_receipt=old), principal)[0]["reason"]
+        session.process_frame(observation(event_id="older", t_source_receipt=old), principal)[0][
+            "reason"
+        ]
         == "stale_observation"
     )
     changed = {"clock_id": "other", "unit": "ns", "value": 101}
     assert (
-        session.process_frame(observation(t_source_receipt=changed), principal)[0]["reason"]
+        session.process_frame(observation(event_id="changed", t_source_receipt=changed), principal)[
+            0
+        ]["reason"]
         == "source_clock_changed"
     )
     assert (
@@ -230,3 +235,46 @@ def test_unconfigured_ingress_refuses_and_other_sources_cannot_submit(settings):
         session.process_frame(observation(), Principal("console", None, CONSOLE_KEY))[0]["reason"]
         == "frame_not_allowed"
     )
+
+
+def test_advancing_receipt_cannot_reuse_an_event_identity(settings, monkeypatch):
+    clock = MutableClock()
+    session = RelayRuntime(settings, clock=clock).session(SESSION)
+    principal = Principal("adapter", 1, ADAPTER_KEY)
+    session.process_frame(membership_payload(action="join", event_id="join-1"), principal)
+    assert session.process_frame(observation(), principal)[0]["type"] == "observation"
+    clock.advance(10)
+    newer = {"clock_id": "hal-monotonic", "unit": "ns", "value": 101}
+    assert (
+        session.process_frame(observation(t_source_receipt=newer), principal)[0]["reason"]
+        == "replayed_observation"
+    )
+    monkeypatch.setattr(ingress_module, "MAX_SESSION_OBSERVATIONS", 1)
+    assert (
+        session.process_frame(observation(event_id="new", t_source_receipt=newer), principal)[0][
+            "reason"
+        ]
+        == "observation_capacity_reached"
+    )
+    assert (
+        len([row for row in session.audit_log.replay() if row["event"]["type"] == "observation"])
+        == 1
+    )
+
+
+def test_admitted_observations_do_not_refresh_adapter_watchdog(settings, monkeypatch):
+    runtime = RelayRuntime(settings, clock=MutableClock())
+    session = runtime.session(SESSION)
+    principal = Principal("adapter", 1, ADAPTER_KEY)
+    activities = []
+
+    def activity(_session, *, drone_id):
+        activities.append(drone_id)
+        return []
+
+    monkeypatch.setattr(runtime, "adapter_activity", activity)
+    runtime.process_frame(session, membership_payload(action="join", event_id="join-1"), principal)
+    assert activities == [1]
+    event = runtime.process_frame(session, observation(), principal)
+    assert event[0]["type"] == "observation"
+    assert activities == [1]

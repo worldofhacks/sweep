@@ -866,6 +866,7 @@ class RelayRuntime:
         if (
             principal.source == "adapter"
             and principal.drone_id is not None
+            and not (isinstance(frame, Mapping) and frame.get("type") == "observation")
             and not any(event.get("type") == "refusal" for event in events)
         ):
             events.extend(self.adapter_activity(session, drone_id=principal.drone_id))

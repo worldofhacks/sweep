@@ -19,6 +19,8 @@ from relay.observations import (
     ingest,
 )
 
+MAX_SESSION_OBSERVATIONS = 1_000_000
+
 
 @dataclass(frozen=True, slots=True)
 class ObservationConfiguration:
@@ -106,7 +108,8 @@ class ObservationIngress:
         self.mappings = MappingProxyType({m.mapping_id: m for m in configuration.clock_mappings})
         self.rate = RatePolicy(configuration.minimum_interval_ms)
         self.timing = TimingPolicy(skew_ms)
-        self._watermarks: dict[tuple[int, int, str], tuple[SourceTime, set[str], int]] = {}
+        self._watermarks: dict[tuple[int, int, str], tuple[SourceTime, int]] = {}
+        self._event_ids: set[tuple[int, int, str, str]] = set()
 
     def accept(self, submission: ObservationSubmission, *, now: int) -> Observation:
         key = (submission.device_id, submission.connection_epoch, submission.source_id)
@@ -123,27 +126,27 @@ class ObservationIngress:
             mappings=self.mappings,
             timing=self.timing,
         )
+        event_key = (*key, submission.event_id)
+        if event_key in self._event_ids:
+            raise ObservationError("replayed_observation", "source event ID was already admitted")
+        if len(self._event_ids) >= MAX_SESSION_OBSERVATIONS:
+            raise ObservationError(
+                "observation_capacity_reached", "start a new session for more observations"
+            )
         previous = self._watermarks.get(key)
         receipt = submission.t_source_receipt
-        ids: set[str] = set()
         if previous is not None:
-            timestamp, seen_ids, last_ingest = previous
+            timestamp, last_ingest = previous
             if (receipt.clock_id, receipt.unit) != (timestamp.clock_id, timestamp.unit):
                 raise ObservationError(
                     "source_clock_changed", "source clock changed within its epoch"
                 )
             if receipt.value < timestamp.value:
                 raise ObservationError("stale_observation", "source receipt time moved backwards")
-            if receipt.value == timestamp.value:
-                if submission.event_id in seen_ids or len(seen_ids) >= 1024:
-                    raise ObservationError(
-                        "replayed_observation", "source receipt group is replayed or full"
-                    )
-                ids = seen_ids.copy()
             if not self.rate.accepts(last_ingest, now):
                 raise ObservationError(
                     "observation_rate_limited", "source exceeds its configured rate"
                 )
-        ids.add(submission.event_id)
-        self._watermarks[key] = (receipt, ids, now)
+        self._event_ids.add(event_key)
+        self._watermarks[key] = (receipt, now)
         return observation
