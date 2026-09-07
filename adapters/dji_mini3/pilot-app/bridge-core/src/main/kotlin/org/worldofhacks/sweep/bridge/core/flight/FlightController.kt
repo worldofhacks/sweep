@@ -128,6 +128,11 @@ class FlightController(
     private var generation = 0L
     private var active: Active? = null
     private var vsEnabled = false
+    private var pendingVirtualStickAuthority: (() -> Unit)? = null
+    private var virtualStickAuthorityPending = false
+    private var observedVirtualStickEnabled: Boolean? = null
+    private var observedVirtualStickOwnedBySdk = false
+    private var observedVirtualStickOwner = "UNKNOWN"
     private var authorityLost: String? = null
     private var pilotInputNoted = false
     private var estopLatched = false
@@ -214,6 +219,8 @@ class FlightController(
         }
         event("RC takeover ($reason${detail?.let { ": $it" } ?: ""}): loop cancelled, virtual stick released")
         failActive(FlightReason.AUTHORITY_LOST, "$reason${detail?.let { ": $it" } ?: ""}; re-arm control authority on the flight card")
+        pendingVirtualStickAuthority = null
+        virtualStickAuthorityPending = false
         authorityLost = reason
         flownIntoHold = false
         supervisedFlightTargetZM = null
@@ -234,6 +241,13 @@ class FlightController(
      * cleared at once so the aircraft goes back to the flight controller and the RC.
      */
     fun onVirtualStickState(enabled: Boolean, ownedBySdk: Boolean, owner: String) {
+        observedVirtualStickEnabled = enabled
+        observedVirtualStickOwnedBySdk = ownedBySdk
+        observedVirtualStickOwner = owner
+        if (vsEnabled && pendingVirtualStickAuthority != null) {
+            resolvePendingVirtualStickAuthority(enabled, ownedBySdk, owner)
+            return
+        }
         if (vsEnabled && phase !is Phase.Enabling && (!enabled || !ownedBySdk)) {
             onTakeover("virtual_stick_dropped", if (enabled) "flight control authority is $owner" else "flight controller disabled virtual stick")
             return
@@ -609,7 +623,7 @@ class FlightController(
         // Virtual Stick off: remember that the node was flying so the failsafe still lands it.
         if (active != null || phase !is Phase.Idle) flownIntoHold = true
         failActive(FlightReason.WATCHDOG_HOLD, detail)
-        transition(if (vsEnabled) Phase.Holding(now) else Phase.Idle)
+        if (phase is Phase.Enabling && vsEnabled) releaseVirtualStick() else transition(if (vsEnabled) Phase.Holding(now) else Phase.Idle)
     }
 
     private fun enterFailsafe(now: Long, elapsedMs: Long) {
@@ -655,6 +669,8 @@ class FlightController(
             // Best effort: the SDK may be disconnected, but if only the RC dropped the flight
             // controller must not be left waiting for frames nobody sends.
             vsEnabled = false
+            pendingVirtualStickAuthority = null
+            virtualStickAuthorityPending = false
             port.disableVirtualStick { result -> if (result is PortResult.Failed) log("virtual stick disable after link loss failed: ${result.detail}") }
         }
         landingReason = null
@@ -675,7 +691,7 @@ class FlightController(
             when (phase) {
                 is Phase.Enabling -> {
                     failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted while virtual stick was enabling")
-                    transition(Phase.Idle)
+                    if (vsEnabled) releaseVirtualStick() else transition(Phase.Idle)
                 }
                 is Phase.Running, is Phase.SupervisedClimb, is Phase.Navigating, is Phase.NavigationHolding, is Phase.Bench -> {
                     failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted: sticks neutral, hovering")
@@ -740,8 +756,15 @@ class FlightController(
         when (val current = phase) {
             Phase.Idle, is Phase.Holding -> Unit
             is Phase.Enabling -> if (now - current.sinceMs > config.enableTimeoutMs) {
-                failActive(FlightReason.VIRTUAL_STICK_UNAVAILABLE, "virtual stick enable did not answer within ${config.enableTimeoutMs} ms")
-                transition(Phase.Idle)
+                val detail = if (pendingVirtualStickAuthority == null) {
+                    "virtual stick enable did not answer within ${config.enableTimeoutMs} ms"
+                } else {
+                    "virtual stick enabled but MSDK control authority was not confirmed within ${config.enableTimeoutMs} ms"
+                }
+                pendingVirtualStickAuthority = null
+                virtualStickAuthorityPending = false
+                failActive(FlightReason.VIRTUAL_STICK_UNAVAILABLE, detail)
+                releaseVirtualStick()
             }
             is Phase.Running -> advanceRunning(current, now)
             Phase.Navigating -> advanceNavigation(now)
@@ -1091,7 +1114,9 @@ class FlightController(
         if (supervised != null) {
             if (guardVerticalHeight(targetZM, supervised, now) == null) return
             event("takeoff hover reached at z ${format(facts.zUp)} m; closing the climb on fresh KeyAltitude toward ${format(targetZM)} m")
-            beginVirtualStick(now) { transition(Phase.SupervisedClimb(targetZM, null)) }
+            beginVirtualStick(now, requireOwnershipConfirmation = true) {
+                transition(Phase.SupervisedClimb(targetZM, null))
+            }
             return
         }
         val climb = MotionPlanner.climb(targetZM, facts, config.limits, config.altitudeToleranceM)
@@ -1108,6 +1133,8 @@ class FlightController(
         if (vsEnabled) {
             port.sendStick(StickFrame.NEUTRAL)
             vsEnabled = false
+            pendingVirtualStickAuthority = null
+            virtualStickAuthorityPending = false
             port.disableVirtualStick { result -> if (result is PortResult.Failed) log("virtual stick disable before landing failed: ${result.detail}") }
         }
         landingReason = reason
@@ -1170,7 +1197,7 @@ class FlightController(
     }
 
     private fun streamSticks(now: Long) {
-        if (!vsEnabled) return
+        if (!vsEnabled || pendingVirtualStickAuthority != null) return
         val frame = when (val current = phase) {
             is Phase.Running -> frameFor(current.steps[current.index])
             is Phase.SupervisedClimb -> supervisedClimbFrame(current, now)
@@ -1200,8 +1227,17 @@ class FlightController(
 
     // ---- virtual stick lifecycle ----
 
-    private fun beginVirtualStick(now: Long, then: () -> Unit) {
+    private fun beginVirtualStick(
+        now: Long,
+        requireOwnershipConfirmation: Boolean = false,
+        then: () -> Unit,
+    ) {
         if (vsEnabled) {
+            if (virtualStickAuthorityPending) {
+                failActive(FlightReason.VIRTUAL_STICK_UNAVAILABLE, "virtual stick ownership was not confirmed")
+                releaseVirtualStick()
+                return
+            }
             then()
             return
         }
@@ -1228,6 +1264,7 @@ class FlightController(
         }
         transition(Phase.Enabling(now))
         val gen = generation
+        observedVirtualStickEnabled = null
         port.enableVirtualStick { result ->
             if (gen != generation) {
                 // The loop moved on (hold, takeover, link loss) while the SDK was enabling;
@@ -1240,7 +1277,16 @@ class FlightController(
                     vsEnabled = true
                     port.setAdvancedMode(true)
                     event("virtual stick enabled (advanced mode, velocity, BODY frame, ${cadence.hz} Hz)")
-                    then()
+                    if (requireOwnershipConfirmation) {
+                        pendingVirtualStickAuthority = then
+                        virtualStickAuthorityPending = true
+                        event("virtual stick ownership pending MSDK confirmation")
+                        observedVirtualStickEnabled?.let {
+                            resolvePendingVirtualStickAuthority(it, observedVirtualStickOwnedBySdk, observedVirtualStickOwner)
+                        }
+                    } else {
+                        then()
+                    }
                 }
                 is PortResult.Failed -> {
                     failActive(FlightReason.VIRTUAL_STICK_UNAVAILABLE, "virtual stick enable refused: ${result.detail}")
@@ -1251,6 +1297,8 @@ class FlightController(
     }
 
     private fun releaseVirtualStick() {
+        pendingVirtualStickAuthority = null
+        virtualStickAuthorityPending = false
         if (vsEnabled) {
             port.sendStick(StickFrame.NEUTRAL)
             vsEnabled = false
@@ -1258,6 +1306,28 @@ class FlightController(
             event("virtual stick disabled; aircraft under the flight controller and the RC")
         }
         transition(Phase.Idle)
+    }
+
+    private fun resolvePendingVirtualStickAuthority(enabled: Boolean, ownedBySdk: Boolean, owner: String) {
+        val pending = pendingVirtualStickAuthority ?: return
+        val enabling = phase as? Phase.Enabling ?: return
+        if (clock.nowMs() - enabling.sinceMs > config.enableTimeoutMs) {
+            pendingVirtualStickAuthority = null
+            virtualStickAuthorityPending = false
+            failActive(FlightReason.VIRTUAL_STICK_UNAVAILABLE, "virtual stick enabled but MSDK control authority was not confirmed within ${config.enableTimeoutMs} ms")
+            releaseVirtualStick()
+            return
+        }
+        when {
+            !enabled -> onTakeover("virtual_stick_dropped", "flight controller disabled virtual stick")
+            ownedBySdk -> {
+                pendingVirtualStickAuthority = null
+                virtualStickAuthorityPending = false
+                event("virtual stick ownership confirmed by MSDK")
+                pending()
+            }
+            owner != "UNKNOWN" -> onTakeover("virtual_stick_dropped", "flight control authority is $owner")
+        }
     }
 
     // ---- reporting ----
@@ -1297,6 +1367,7 @@ class FlightController(
     }
 
     private fun transition(next: Phase) {
+        if (phase is Phase.Enabling && next !is Phase.Enabling) pendingVirtualStickAuthority = null
         if (next !is Phase.Idle) pilotInputNoted = false
         phase = next
         generation += 1
