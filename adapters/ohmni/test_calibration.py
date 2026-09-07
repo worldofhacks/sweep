@@ -235,8 +235,8 @@ class RunnerSimulation:
             gain = 10.0
         if self.fault == "yaw_limit" and self.units[0] == self.units[1]:
             gain = 4.0
-        self.left += self.units[0] * 0.18 / 250 * 1000 * TICKS_PER_MM * elapsed * gain
-        self.right += self.units[1] * 0.18 / 250 * 1000 * TICKS_PER_MM * elapsed * gain
+        self.left -= self.units[0] * 0.18 / 250 * 1000 * TICKS_PER_MM * elapsed * gain
+        self.right -= self.units[1] * 0.18 / 250 * 1000 * TICKS_PER_MM * elapsed * gain
         if not (moving and self.fault == "encoder"):
             self._sample()
         if not (moving and self.fault == "lidar"):

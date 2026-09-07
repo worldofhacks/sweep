@@ -2,7 +2,9 @@
 
 The separate calibration runner captures ten settled raw lidar revolutions, moves forward about 8 cm, captures again, turns counterclockwise about 10 degrees, and captures a third time. It uses the operator's 6-inch wheel diameter and recorded Ohmni 11 mount. The host fitter estimates the lidar angle offset and handedness. Its output remains an unapproved candidate until physical evidence has been reviewed.
 
-Physical testing is pending. The robots are charging and the operator is away. Resume only after the operator returns and confirms the robot is on clear floor with a spotter able to stop it.
+Field runs with the robot physically confirmed forward and left/CCW established the wheel convention: forward lowers left encoder counts and raises right counts; left/CCW raises both. Odometry negates the left delta and keeps the right delta so those motions produce positive X and positive yaw.
+
+Further physical testing is pending. Resume only after the operator confirms the robot is on clear floor with a spotter able to stop it.
 
 ## Limits and stop behavior
 
