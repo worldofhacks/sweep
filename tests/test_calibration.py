@@ -103,8 +103,6 @@ def _write_fisheye_boards(
 
     for index in range(20):
         distortion = _FISHEYE_DISTORTION
-        if mismatched_lens and index >= 10:
-            distortion = np.array([[-1.0], [0.8], [0.0], [0.0]])
         rays = np.column_stack(
             [
                 cv2.fisheye.undistortPoints(pixels, _FISHEYE_CAMERA_MATRIX, distortion).reshape(
@@ -143,6 +141,20 @@ def _write_fisheye_boards(
         image = np.full(width * height, 255, dtype=np.uint8)
         image[visible & ((squares[:, 0] + squares[:, 1]) % 2 == 0)] = 0
         image = image.reshape(height, width)
+        if mismatched_lens and index >= 10:
+            distorted_x = x_coordinates + 0.0023 * (x_coordinates - width / 2) ** 2 * np.sign(
+                x_coordinates - width / 2
+            )
+            distorted_y = y_coordinates + 0.0023 * (y_coordinates - height / 2) ** 2 * np.sign(
+                y_coordinates - height / 2
+            )
+            image = cv2.remap(
+                image,
+                distorted_x.astype(np.float32),
+                distorted_y.astype(np.float32),
+                cv2.INTER_LINEAR,
+                borderValue=255,
+            )
         if repeated_pose:
             image[0, index] = index
         assert cv2.imwrite(str(directory / f"fisheye-{index}.png"), image)
@@ -182,6 +194,7 @@ def test_fisheye_calibration_uses_detected_rendered_checkerboards(tmp_path: Path
     assert result["accepted_image_count"] == 20
     assert len(result["distortion_coefficients"]) == 4
     assert result["rms_reprojection_error_px"] < 0.5
+    assert matrix[0, 1] == 0
     assert matrix[0, 0] == pytest.approx(305.0, abs=25.0)
     assert matrix[1, 1] == pytest.approx(300.0, abs=25.0)
     assert result["pipeline"]["fov_bounds_deg"] == _fisheye_pipeline()["fov_bounds_deg"]
