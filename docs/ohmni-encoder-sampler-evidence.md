@@ -23,6 +23,8 @@ The node's 500 ms telemetry tick writes separate register-59 requests for right 
 
 ## Follow-up
 
-Add a serialized, owner-side vendor-bus sampler. Each poll must issue the two register-59 reads under one poll ID, record each receipt time, and publish a pair only after both replies arrive. The consumer must reject a missing response, a pair whose receipt skew exceeds the configured bound, or a gap over 0.35 seconds. It must never carry one wheel's prior value into a fresh pair.
+Add a serialized, owner-side vendor-bus sampler around the absolute register-58 `apos` values. Each poll must issue both reads under one poll ID, record each receipt time, and publish a pair only after both replies arrive. The consumer must reject a missing response, a pair whose receipt skew exceeds the configured bound, or a gap over 0.35 seconds. It must never carry one wheel's prior value into a fresh pair.
+
+Register 59 (`pcurr`) cannot yet serve as a continuous pose source. The native source resets it while idle. Any use needs measured origin, reset, and unwrap semantics, followed by hardware evidence that those semantics hold.
 
 The native `node.sock` cannot provide this unchanged: it holds one client and its existing `odo` cache has no paired-read guarantee. The follow-up needs a fan-out telemetry path that preserves the Android owner's connection. A hardware run should demonstrate a continuous qualified pair sequence before enabling ground motion.
