@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import uvicorn
+from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect as sync_connect
 
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
@@ -183,6 +184,7 @@ def test_numeric_dial_address_preserves_the_tls_hostname(monkeypatch):
 
     def refuse_connection(uri, **kwargs):
         calls.append((uri, kwargs))
+        node.stop()
         raise OSError("probe complete")
 
     monkeypatch.setattr(module, "connect", refuse_connection)
@@ -197,8 +199,7 @@ def test_numeric_dial_address_preserves_the_tls_hostname(monkeypatch):
         ),
         FakeGroundDevice(),
     )
-    with pytest.raises(OSError, match="probe complete"):
-        asyncio.run(node.run())
+    asyncio.run(node.run())
     assert calls == [
         (f"wss://relay.example/field/ws/{SESSION}", {"host": "192.0.2.5", "proxy": None})
     ]
@@ -948,3 +949,184 @@ def test_confirmed_console_come_home_executes_the_approved_ground_return(
         assert device.x >= 0.02
     finally:
         node.stop()
+
+
+def test_transport_drop_rejoins_without_replaying_the_prior_connection_queue(monkeypatch) -> None:
+    from . import runtime as module
+
+    class Socket:
+        def __init__(self, *, frames: list[dict[str, object] | BaseException]) -> None:
+            self._frames = iter(frames)
+            self._receipts = 0
+            self.sent: list[dict[str, object]] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def send(self, raw: str) -> None:
+            self.sent.append(json.loads(raw))
+
+        async def recv(self) -> str:
+            frame = (
+                {"type": "auth.accepted"}
+                if self._receipts == 0
+                else {"type": "state", "roster_version": 1}
+            )
+            self._receipts += 1
+            return json.dumps(frame)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            try:
+                frame = next(self._frames)
+            except StopIteration:
+                await asyncio.Future()
+            if isinstance(frame, BaseException):
+                raise frame
+            return json.dumps(frame)
+
+    now = int(time.time_ns() // 1_000_000)
+
+    def heartbeat(epoch: int) -> dict[str, object]:
+        frame: dict[str, object] = {
+            "v": 1,
+            "t": now,
+            "type": "control_heartbeat",
+            "event_id": f"heartbeat-{epoch}",
+            "session": SESSION,
+            "source": "relay",
+            "drone_id": GROUND_ID,
+            "connection_epoch": epoch,
+            "roster_version": 1,
+            "seq": 1,
+            "issued_at": now,
+            "expires_at": now + 10_000,
+            "hold_after_ms": 2_000,
+            "failsafe_after_ms": 10_000,
+        }
+        return {**frame, "signature": sign_event(frame, GROUND_KEY)}
+
+    command = command_event(
+        t=now,
+        event_id="stale-command",
+        session=SESSION,
+        command_id="stale-command",
+        intent_id="stale-command",
+        roster_version=1,
+        drone_id=GROUND_ID,
+        connection_epoch=1,
+        seq=1,
+        issued_at=now,
+        ttl_ms=1_000,
+        operation=CommandOperation.GROUND_VELOCITY,
+        args={"linear_mm_s": 100, "angular_mrad_s": 0, "duration_ms": 25},
+    )
+    command["signature"] = sign_event(command, GROUND_KEY)
+    first = Socket(
+        frames=[
+            {
+                "type": "membership",
+                "drone_id": GROUND_ID,
+                "action": "join",
+                "connection_epoch": 1,
+                "roster_version": 1,
+            },
+            heartbeat(1),
+            command,
+            WebSocketException("dropped"),
+        ]
+    )
+    second = Socket(
+        frames=[
+            {
+                "type": "membership",
+                "drone_id": GROUND_ID,
+                "action": "join",
+                "connection_epoch": 2,
+                "roster_version": 1,
+            },
+            heartbeat(2),
+        ]
+    )
+    sockets = iter((first, second))
+    monkeypatch.setattr(module, "connect", lambda *_args, **_kwargs: next(sockets))
+    runtime = OhmniRuntime(
+        GroundRuntimeConfig(
+            "ws://relay.example",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            lidar_mount_x_m=0.0,
+            lidar_mount_y_m=0.0,
+            lidar_mount_z_m=0.25,
+            lidar_mount_yaw_deg=0.0,
+            reconnect_initial_delay_s=0.05,
+            reconnect_max_delay_s=0.05,
+        ),
+        FakeGroundDevice(),
+    )
+
+    async def reconnect() -> None:
+        task = asyncio.create_task(runtime.run())
+        deadline = time.monotonic() + WAIT_S
+        while runtime.connection_epoch != 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert runtime.connection_epoch == 2
+        runtime.stop()
+        await asyncio.wait_for(task, timeout=WAIT_S)
+
+    asyncio.run(reconnect())
+    assert any(frame.get("action") == "join" for frame in second.sent)
+    assert not any(frame.get("command_id") == "stale-command" for frame in second.sent)
+    assert not runtime._command_tasks
+
+
+def test_stop_interrupts_transport_reconnect_backoff(monkeypatch) -> None:
+    from . import runtime as module
+
+    attempts = 0
+    attempted = asyncio.Event()
+
+    def refuse_connection(*_args: object, **_kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        attempted.set()
+        raise OSError("relay unavailable")
+
+    monkeypatch.setattr(module, "connect", refuse_connection)
+    device = FakeGroundDevice()
+    runtime = OhmniRuntime(
+        GroundRuntimeConfig(
+            "ws://relay.example",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            reconnect_initial_delay_s=5.0,
+            reconnect_max_delay_s=5.0,
+        ),
+        device,
+    )
+    assert device.enable()
+    runtime._estop_latched = True
+    runtime._operator_rearm_required = True
+
+    async def stop_during_backoff() -> None:
+        task = asyncio.create_task(runtime.run())
+        await asyncio.wait_for(attempted.wait(), timeout=WAIT_S)
+        await asyncio.sleep(0)
+        runtime.stop()
+        await asyncio.wait_for(task, timeout=0.5)
+
+    asyncio.run(stop_during_backoff())
+    assert attempts == 1
+    assert device.stopped
+    assert not device.enabled
+    assert runtime._estop_latched
+    assert runtime._operator_rearm_required
