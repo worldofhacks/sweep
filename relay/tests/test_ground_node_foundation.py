@@ -170,13 +170,14 @@ def test_ground_readiness_requires_the_accepted_pose_identity():
     assert transition.readiness_reasons == ("pose_identity_not_accepted",)
 
 
-def test_mixed_c2_fleet_state_audit_accepts_nine_nodes_and_rejects_ten():
+def test_mixed_fleet_audit_accepts_32_aircraft_and_three_ground_nodes_at_the_limit():
     registry = FleetRegistry(
         telemetry_freshness_ms=1_000,
         capability_profile=C2_CAPABILITY_PROFILE,
-        node_types={device_id: NodeType.GROUND for device_id in range(7, 10)},
+        aircraft_limit=32,
+        node_types={device_id: NodeType.GROUND for device_id in range(33, 36)},
     )
-    for device_id in range(1, 7):
+    for device_id in range(1, 33):
         registry.apply_join(
             parse_membership_request(
                 membership_payload(
@@ -184,10 +185,11 @@ def test_mixed_c2_fleet_state_audit_accepts_nine_nodes_and_rejects_ten():
                 )
             )
         )
-    for device_id in range(7, 10):
+    for device_id in range(33, 36):
         registry.apply_join(_ground_join(device_id, f"ground-{device_id}"))
 
     state = registry.state_event(session=SESSION, t=1_000, event_id="mixed-state")
+    assert len(state["drones"]) == 35
     _material_state_projection(state)
 
     state["drones"].append(state["drones"][0])
