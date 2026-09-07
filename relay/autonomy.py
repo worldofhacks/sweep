@@ -684,6 +684,26 @@ class AutonomySession:
                     command_deadline_ms=runtime.settings.command_deadline_ms,
                 ).dispatch(intent, session.current_state())
                 dispatcher = None
+            elif intent.name is IntentName.COME_HOME and _ground_return_selected(
+                intent, session.current_state()
+            ):
+                link = gate(
+                    RelayNodeLink(
+                        runtime,
+                        self.session_id,
+                        delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                    )
+                )
+                result = GroundCommandDispatcher(
+                    link,
+                    acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
+                    command_deadline_ms=runtime.settings.command_deadline_ms,
+                ).dispatch_return(
+                    intent,
+                    session.current_state(),
+                    return_id=runtime.settings.ground_return_id,
+                )
+                dispatcher = None
             else:
                 snapshot = current()
                 if intent.name in {IntentName.HOLD, IntentName.ESTOP}:
@@ -1068,6 +1088,16 @@ def create_autonomy_app(
     )
     composition.bind(app)
     return app, composition
+
+
+def _ground_return_selected(intent: IntentV1, state: Mapping[str, object]) -> bool:
+    drones = state.get("drones", ())
+    return isinstance(drones, (list, tuple)) and any(
+        isinstance(drone, Mapping)
+        and drone.get("drone_id") in intent.selection
+        and drone.get("node_type") == "ground"
+        for drone in drones
+    )
 
 
 def _ground_stop_targets(intent: IntentV1, state: Mapping[str, object]) -> bool:
