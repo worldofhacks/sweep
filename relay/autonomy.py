@@ -55,7 +55,7 @@ from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
 from relay.app import RelayRuntime, TranscriptServiceFactory, create_app
 from relay.bridge import RelayNodeLink, build_dispatcher
-from relay.capabilities import CapabilityProfile
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
 from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
@@ -77,6 +77,10 @@ HOLD_PREEMPTS = frozenset(
         IntentName.TRANSLATE,
         IntentName.BODY_PULSE,
         IntentName.ALTITUDE,
+        IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
+        IntentName.SPACING,
+        IntentName.SWEEP,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
     }
@@ -203,6 +207,7 @@ def relay_snapshot(
     name, are excluded: they cannot be selected or commanded until the node reports
     a state this build understands. Their ID and class remain in
     ``unobserved_devices`` so missing evidence cannot waive cross-class clearance.
+    The incomplete fleet observation also prevents withdrawing session arm authorization.
     Ground vehicles are projected with their
     ``DriveState`` and a null ``flight_state``, so one snapshot carries a mixed
     session and every fleet-wide stop, hold, and spacing check computed from it
@@ -219,6 +224,7 @@ def relay_snapshot(
     drones: list[Mapping[str, object]] = []
     unobserved_devices: dict[int, DeviceClass | None] = {}
     enrichment: dict[int, RelayAircraftSafetyEnrichment] = {}
+    fleet_observation_complete = True
     for drone in drones_raw:
         if not isinstance(drone, Mapping):
             raise ValueError("relay drone entries must be mappings")
@@ -230,6 +236,7 @@ def relay_snapshot(
             not isinstance(raw_class, str) or raw_class not in _TELEMETRY_STATES_BY_CLASS
         ):
             unobserved_devices[drone_id] = None
+            fleet_observation_complete = False
             continue
         device_class = DeviceClass.AIRCRAFT if raw_class is None else DeviceClass(raw_class)
         telemetry = drone.get("telemetry")
@@ -242,6 +249,7 @@ def relay_snapshot(
             )
         ):
             unobserved_devices[drone_id] = device_class
+            fleet_observation_complete = False
             continue
         capabilities = drone.get("camera_capabilities")
         storage = (
@@ -275,6 +283,7 @@ def relay_snapshot(
             operator_present=operator_last_seen_ms is not None,
             operator_last_seen_ms=0 if operator_last_seen_ms is None else operator_last_seen_ms,
             aircraft=enrichment,
+            fleet_observation_complete=fleet_observation_complete,
         ),
     )
     if unobserved_devices:
@@ -314,6 +323,10 @@ def control_projection(intent_name: IntentName, result: ExecutionResult) -> dict
             projection["selection"] = plan.selection_update
         if plan.armed_update is not None:
             projection["armed"] = plan.armed_update
+        if plan.formation_update is not None:
+            projection["formation"] = plan.formation_update
+        if plan.spacing_update is not None:
+            projection["spacing"] = plan.spacing_update
     return projection
 
 
@@ -339,9 +352,10 @@ def apply_result(
 ) -> list[dict[str, object]]:
     """Apply one result's control projection and lifecycle inside a session operation.
 
-    Selection and arm updates apply only while the plan's roster is still the
-    session's roster; otherwise they are dropped and the result becomes
-    ``invalidated`` with ``stale_roster``. The network stop latch is never dropped.
+    Selection, arm, formation, and spacing updates apply only while the plan's
+    roster is still the session's roster; otherwise they are dropped and the result
+    becomes ``invalidated`` with ``stale_roster``. The network stop latch is never
+    dropped.
     """
     projection = control_projection(intent.name, result)
     plan = result.plan
@@ -349,10 +363,10 @@ def apply_result(
     if (
         plan is not None
         and plan.roster_version != roster_version
-        and ("selection" in projection or "armed" in projection)
+        and any(field in projection for field in ("selection", "armed", "formation", "spacing"))
     ):
-        projection.pop("selection", None)
-        projection.pop("armed", None)
+        for field in ("selection", "armed", "formation", "spacing"):
+            projection.pop(field, None)
         result = replace(
             result,
             status=LifecycleStatus.INVALIDATED,
@@ -911,9 +925,11 @@ class AutonomySession:
 class AutonomyComposition:
     """Per-session autonomy workers behind ``create_app``'s sink and leave factories."""
 
-    def __init__(self, config: AutonomyConfig) -> None:
+    def __init__(
+        self, config: AutonomyConfig, capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
+    ) -> None:
         self.config = config
-        self.capability_profile: CapabilityProfile = config.planning.effective_capability_profile()
+        self.capability_profile = config.planning.effective_capability_profile(capability_profile)
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -979,7 +995,7 @@ def create_autonomy_app(
     """
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
-    composition = AutonomyComposition(config)
+    composition = AutonomyComposition(config, settings.capability_profile)
     control_localization_factory = (
         None
         if config.control_localization_projector is None

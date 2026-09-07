@@ -22,8 +22,10 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  *    `watchdog_hold`; failsafe commands auto-landing (indoors: land, never return to home)
  *    and fails with `watchdog_failsafe`. Neutral sticks keep flowing while Virtual Stick is
  *    enabled, so the stream never stops silently. Nothing streams without it: a Virtual Stick
- *    enable or a bench hold is refused while the deadman is disarmed or in failsafe, and a
- *    hold that interrupted a node takeoff is remembered so the failsafe still lands it.
+ *    enable or a bench hold is refused while the deadman is disarmed, holding, or in failsafe,
+ *    and a hold that interrupted a node takeoff is remembered so the failsafe still lands it.
+ *    A new command is never activity: only the caller's verified-heartbeat input can move
+ *    the watchdog from hold back to armed and reopen motion admission.
  *    The deadman lands only what the node was flying: with the loop idle and Virtual Stick
  *    off the aircraft is already under the flight controller and the RC operator, and after
  *    an RC takeover the node never commands a landing underneath the pilot.
@@ -296,6 +298,14 @@ class FlightController(
             if (vsEnabled) releaseVirtualStick()
             return
         }
+        // HOLD is already the safety action. If Virtual Stick was not active when the
+        // deadman tripped, leave control with the flight controller and the RC instead of
+        // enabling a new stick stream without a fresh verified control heartbeat.
+        if (watchdogState == WatchdogState.HOLD && !vsEnabled) {
+            sink.executing("deadman hold is active; $word keeps the aircraft under the flight controller and the RC")
+            sink.completed("watchdog hold maintained; no virtual stick enabled")
+            return
+        }
         active = Active(command, sink, now, "neutral sticks: hovering (${facts.flightState})")
         beginVirtualStick(now) {
             transition(Phase.Settling(clock.nowMs() + config.settleMs, "hover held for ${config.settleMs} ms"))
@@ -391,6 +401,10 @@ class FlightController(
     }
 
     private fun motionAllowed(sink: ReportSink): Boolean {
+        if (watchdogState == WatchdogState.HOLD) {
+            fail(sink, FlightReason.WATCHDOG_HOLD, "deadman is holding after relay silence; a fresh verified control heartbeat must re-arm it before motion")
+            return false
+        }
         val current = active
         if (current != null) {
             fail(sink, FlightReason.NODE_BUSY, "${current.command.operation} ${current.command.commandId} is still active")
@@ -431,6 +445,10 @@ class FlightController(
         when (watchdogState) {
             WatchdogState.DISARMED -> {
                 fail(sink, FlightReason.WATCHDOG_DISARMED, "deadman not armed: bench holds stream sticks only under the relay's watchdog thresholds; connect and join the relay first")
+                return false
+            }
+            WatchdogState.HOLD -> {
+                fail(sink, FlightReason.WATCHDOG_HOLD, "deadman is holding after relay silence; a fresh verified control heartbeat must re-arm it before bench motion")
                 return false
             }
             WatchdogState.FAILSAFE -> {
@@ -791,6 +809,11 @@ class FlightController(
         when (watchdogState) {
             WatchdogState.DISARMED -> {
                 failActive(FlightReason.WATCHDOG_DISARMED, "deadman not armed; the aircraft stays under the flight controller and the RC")
+                transition(Phase.Idle)
+                return
+            }
+            WatchdogState.HOLD -> {
+                failActive(FlightReason.WATCHDOG_HOLD, "deadman is holding after relay silence; no virtual stick enable until a fresh verified control heartbeat")
                 transition(Phase.Idle)
                 return
             }

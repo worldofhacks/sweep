@@ -12,7 +12,7 @@ from types import MappingProxyType
 
 from media.streams import CameraStream, validate_camera_mapping
 from planner.models import DeviceClass, DriveState, FlightState
-from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
 from relay.contracts import (
     CapabilitiesFrame,
     DeviceIdentity,
@@ -25,6 +25,7 @@ from relay.contracts import (
     VideoPublishState,
 )
 from relay.fleet_limits import MAX_FLEET_DEVICES
+from relay.intent_v1 import FORMATION_NAMES
 from relay.media import (
     CameraEvidenceProvider,
     MediaEvidenceProvider,
@@ -37,7 +38,6 @@ from relay.media import (
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
-_FORMATIONS = frozenset({"line", "column", "circle", "grid", "V"})
 # The one capability each class must advertise before readiness, and the gate it fails.
 _REQUIRED_CLASS_CAPABILITY: Mapping[DeviceClass, tuple[str, str]] = MappingProxyType(
     {
@@ -55,6 +55,19 @@ _GROUNDED_STATES: Mapping[DeviceClass, frozenset[str]] = MappingProxyType(
         ),
     }
 )
+
+MAX_PHYSICAL_AIRCRAFT = 4
+MAX_SIMULATED_AIRCRAFT = 6
+_FORMATIONS = frozenset(FORMATION_NAMES)
+
+
+def aircraft_limit_for_profile(capability_profile: CapabilityProfile) -> int:
+    """Return the registry capacity advertised by one capability profile."""
+    return (
+        MAX_SIMULATED_AIRCRAFT
+        if capability_profile.supports(IntentName.FORMATION_SET)
+        else MAX_PHYSICAL_AIRCRAFT
+    )
 
 
 class RegistryError(ValueError):
@@ -190,6 +203,7 @@ class FleetRegistry:
         )
         self.future_clock_skew_ms = future_clock_skew_ms
         self.capability_profile = capability_profile
+        self.aircraft_limit = aircraft_limit_for_profile(capability_profile)
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
         configured = {} if devices is None else dict(devices)
@@ -311,6 +325,20 @@ class FleetRegistry:
                     raise RegistryError(
                         "fleet_capacity",
                         f"session already contains {MAX_FLEET_DEVICES} stable device IDs",
+                    )
+                if (
+                    identity.device_class is DeviceClass.AIRCRAFT
+                    and self.capability_profile.supports(IntentName.FORMATION_SET)
+                    and sum(
+                        record.device_class is DeviceClass.AIRCRAFT
+                        for record in self._aircraft.values()
+                    )
+                    >= MAX_SIMULATED_AIRCRAFT
+                ):
+                    raise RegistryError(
+                        "fleet_capacity",
+                        f"C2 simulator already contains {MAX_SIMULATED_AIRCRAFT} "
+                        "stable aircraft IDs",
                     )
                 record = _AircraftRecord(
                     drone_id=request.drone_id,

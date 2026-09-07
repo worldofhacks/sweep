@@ -764,6 +764,65 @@ class RelayLinkTest {
     }
 
     @Test
+    fun `watchdog hold refuses motion before acceptance until a fresh verified heartbeat re-arms it`() {
+        val settings = NodeSettings(commandTtlMs = 2_000, virtualStickHz = 10, watchdogHoldMs = 300, watchdogFailsafeMs = 3_000)
+        val clock = SteppedClock(1_000_000)
+        StubRelay(key, nodeSettings = settings, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, timing = timing, log = { logs += it }).use { link ->
+                link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
+                link.start()
+                await("ready") { link.state.value.membership == "ready" }
+                clock.advance(settings.watchdogHoldMs)
+                stub.awaitFrame("node_status", timeoutMs = 2_000) { it.str("watchdog_state") == "hold" }
+                assertEquals(WatchdogState.HOLD, link.state.value.watchdog)
+
+                val positionBefore = aircraft.snapshot.value
+                for (args in listOf(
+                    CommandArgs.Takeoff(zMm = 1_200),
+                    CommandArgs.Goto(xMm = 1_000, yMm = 2_000, zMm = 1_200, speedMmS = 500),
+                    CommandArgs.RotateTo(yawMdeg = 90_000, speedMdegS = 30_000),
+                )) {
+                    val command = stub.issueCommand(args)
+                    val refused = stub.awaitAck(command.commandId, "failed")
+                    assertEquals("watchdog_hold", refused.str("reason"), args.operation.wire)
+                    assertTrue(refused.str("detail").contains("fresh verified control heartbeat"), refused.str("detail"))
+                    assertEquals(listOf("failed"), stub.acks(command.commandId), "${args.operation.wire} was never accepted")
+                }
+                assertEquals(positionBefore, aircraft.snapshot.value, "a HOLD refusal must not reach the aircraft executor")
+                assertEquals(0.0, aircraft.yawDeg, 1e-6)
+
+                // Safety commands remain available and do not count as control-heartbeat
+                // evidence that could reopen motion admission.
+                for (args in listOf(CommandArgs.Hover, CommandArgs.Land, CommandArgs.Estop)) {
+                    val command = stub.issueCommand(args)
+                    stub.awaitAck(command.commandId, "completed")
+                    assertEquals(listOf("accepted", "executing", "completed"), stub.acks(command.commandId), args.operation.wire)
+                }
+                assertEquals(WatchdogState.HOLD, link.state.value.watchdog)
+
+                // Neither an invalid signature nor an authentic but stale heartbeat can
+                // recover HOLD. Each following command remains a terminal refusal.
+                stub.sendControlHeartbeat(signingKey = "forged-heartbeat".toByteArray())
+                stub.sendControlHeartbeat(timestamp = stub.relayNow() - settings.watchdogHoldMs - 1_000)
+                Thread.sleep(100)
+                assertEquals(WatchdogState.HOLD, link.state.value.watchdog)
+                val stillHeld = stub.issueCommand(CommandArgs.Takeoff(zMm = 1_200))
+                assertEquals("watchdog_hold", stub.awaitAck(stillHeld.commandId, "failed").str("reason"))
+                assertEquals(listOf("failed"), stub.acks(stillHeld.commandId))
+
+                stub.sendControlHeartbeat()
+                await("fresh verified heartbeat re-arms the watchdog") { link.state.value.watchdog == WatchdogState.ARMED }
+                val admitted = stub.issueCommand(CommandArgs.Takeoff(zMm = 1_200))
+                stub.awaitAck(admitted.commandId, "completed")
+                assertEquals(listOf("accepted", "executing", "completed"), stub.acks(admitted.commandId))
+                assertEquals(FlightStates.HOVERING, aircraft.snapshot.value.state)
+                assertEquals(1.2, aircraft.snapshot.value.z)
+            }
+        }
+    }
+
+    @Test
     fun `relay silence drives the watchdog to hold then failsafe and failsafe refuses commands`() {
         val settings = NodeSettings(commandTtlMs = 2000, virtualStickHz = 10, watchdogHoldMs = 300, watchdogFailsafeMs = 900)
         StubRelay(key, nodeSettings = settings, emitControlHeartbeats = false).use { stub ->

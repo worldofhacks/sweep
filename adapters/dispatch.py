@@ -923,6 +923,7 @@ class AdapterDispatcher:
             plan,
             current,
             completed_command_ids=completed_ids,
+            geometry_snapshot=snapshot,
         )
         if authorization is not None:
             holds = self._hold_affected(

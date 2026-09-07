@@ -475,6 +475,7 @@ class FleetSnapshot:
     # Registered devices lacking current-epoch state/pose evidence remain hazards.
     # None means an unknown class; it must not silently disappear from clearance.
     unobserved_devices: Mapping[int, DeviceClass | None] = field(default_factory=dict)
+    fleet_observation_complete: bool = False
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.roster_version):
@@ -492,6 +493,8 @@ class FleetSnapshot:
             raise ValueError("armed and estop_active must be booleans")
         if not isinstance(self.operator_present, bool):
             raise ValueError("operator_present must be a boolean")
+        if not isinstance(self.fleet_observation_complete, bool):
+            raise ValueError("fleet_observation_complete must be a boolean")
         if not _is_nonnegative_int(self.operator_last_seen_ms) or not _is_nonnegative_int(
             self.now_ms
         ):
@@ -553,6 +556,9 @@ class FleetSnapshot:
         if not isinstance(selection_raw, Iterable) or isinstance(selection_raw, str | bytes):
             raise ValueError("selection must be an iterable of aircraft ids")
         selection = tuple(_parse_drone_id(value) for value in selection_raw)
+        fleet_observation_complete = raw.get("fleet_observation_complete", False)
+        if not isinstance(fleet_observation_complete, bool):
+            raise ValueError("fleet_observation_complete must be a boolean")
 
         return cls(
             roster_version=_nonnegative_int(raw, "roster_version"),
@@ -566,6 +572,7 @@ class FleetSnapshot:
             formation=_string(raw, "formation", fallback="none"),
             spacing=_number_or_default(raw, "spacing", 0.8),
             unobserved_devices=_parse_unobserved_devices(raw.get("unobserved_devices", {})),
+            fleet_observation_complete=fleet_observation_complete,
         )
 
     @classmethod
@@ -701,6 +708,7 @@ class FleetSnapshot:
             now_ms=_nonnegative_int(raw, "t"),
             formation=_string(raw, "formation", fallback="none"),
             spacing=_number_or_default(raw, "spacing", 0.8),
+            fleet_observation_complete=enrichment.fleet_observation_complete,
         )
 
     def to_dict(self) -> dict[str, JsonValue]:
@@ -725,6 +733,7 @@ class FleetSnapshot:
             "now_ms": self.now_ms,
             "formation": self.formation,
             "spacing": self.spacing,
+            "fleet_observation_complete": self.fleet_observation_complete,
         }
 
 
@@ -948,10 +957,13 @@ class RelaySnapshotEnrichment:
     operator_present: bool
     operator_last_seen_ms: int
     aircraft: Mapping[int, RelayAircraftSafetyEnrichment]
+    fleet_observation_complete: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.operator_present, bool):
             raise ValueError("operator_present must be a boolean")
+        if not isinstance(self.fleet_observation_complete, bool):
+            raise ValueError("fleet_observation_complete must be a boolean")
         if not _is_nonnegative_int(self.operator_last_seen_ms):
             raise ValueError("operator_last_seen_ms cannot be negative")
         if not isinstance(self.aircraft, Mapping):

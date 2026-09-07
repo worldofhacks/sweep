@@ -62,6 +62,18 @@ internal interface SensorRawRecorder {
 
     fun recordUltrasonicHeightDm(heightDm: Int): SensorRawAppendResult
 
+    fun recordAircraftAttitudeDegrees(
+        yawDeg: Double,
+        pitchDeg: Double,
+        rollDeg: Double,
+    ): SensorRawAppendResult
+
+    fun recordGimbalAttitudeDegrees(
+        yawDeg: Double,
+        pitchDeg: Double,
+        rollDeg: Double,
+    ): SensorRawAppendResult
+
     companion object {
         val NONE = object : SensorRawRecorder {
             override fun recordVelocityNedMps(
@@ -73,12 +85,24 @@ internal interface SensorRawRecorder {
             override fun recordBarometricHeightM(heightM: Double) = SensorRawAppendResult.NO_IDENTITY
 
             override fun recordUltrasonicHeightDm(heightDm: Int) = SensorRawAppendResult.NO_IDENTITY
+
+            override fun recordAircraftAttitudeDegrees(
+                yawDeg: Double,
+                pitchDeg: Double,
+                rollDeg: Double,
+            ) = SensorRawAppendResult.NO_IDENTITY
+
+            override fun recordGimbalAttitudeDegrees(
+                yawDeg: Double,
+                pitchDeg: Double,
+                rollDeg: Double,
+            ) = SensorRawAppendResult.NO_IDENTITY
         }
     }
 }
 
 internal object SensorRawConfiguration {
-    const val SCHEMA_VERSION = 2
+    const val SCHEMA_VERSION = 3
 
     fun sha256(applicationId: String, appVersion: String, aircraftVariant: String): String {
         val config = listOf(
@@ -89,6 +113,8 @@ internal object SensorRawConfiguration {
             "velocity_source=KeyAircraftVelocity:ned:mps",
             "barometric_height_source=KeyAltitude:m",
             "ultrasonic_height_source=KeyUltrasonicHeight:dm",
+            "aircraft_attitude_source=KeyAircraftAttitude:degrees",
+            "gimbal_attitude_source=KeyGimbalAttitude:degrees",
             "timing=android_callback_receipt_elapsed_realtime_ms",
         ).joinToString("\n")
         return MessageDigest.getInstance("SHA-256")

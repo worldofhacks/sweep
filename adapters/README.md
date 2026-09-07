@@ -57,10 +57,13 @@ sending a central command to a disconnected node. Roster reconciliation's
 wiring. `adapters.sim.app:app` is an isolated test entry point, requires
 `SWEEP_ALLOW_TEST_ADAPTERS=true`, and must use a separate test environment, relay endpoint,
 session, log directory, and test-only credentials. It never belongs behind the operator
-console. Its two-aircraft composition registers signed test nodes 1 and 2 and streams
-their synthetic telemetry at the relay cadence. It binds the shared relay, autonomy controller,
-arbiter, simulator, explicit safety enrichment, and the configured hold-then-failsafe
-watchdog. `SimCamera`
+console. C1 defaults to two aircraft. The explicit C2 simulator requires
+`SWEEP_SIM_AIRCRAFT_COUNT` from 4 through 6 and independent adapter credentials for every
+configured ID; each new relay session registers signed test nodes and streams synthetic
+telemetry at the relay cadence. It binds the shared relay, autonomy controller, arbiter,
+simulator, explicit safety enrichment, and the configured hold-then-failsafe watchdog.
+The 4–6-aircraft software mission is simulator evidence only; it does not earn #44's
+deferred production/hardware exit. `SimCamera`
 provides a full 2:1 equirectangular `pano_360`, an acknowledged-yaw `reconstruct_8`
 sequence whose retrieved files must match the eight requested headings in order within
 the plan's explicit measured yaw tolerance and measured overlap target. Completion also

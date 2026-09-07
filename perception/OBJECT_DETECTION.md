@@ -8,6 +8,10 @@ The model binary stays outside the repository. One compatible Apache-2.0 referen
 the official release at
 <https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx> and
 has SHA-256 `c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063`.
+The project-wide license decision is recorded in
+[`docs/decisions/2026-09-06-detector-license.md`](../docs/decisions/2026-09-06-detector-license.md):
+the Apache path is the default, and an AGPL detector requires a separate explicit owner decision
+and isolated integration.
 For a file-backed detector, the constructor reads at most 128 MiB once, verifies the expected
 digest, and gives those same bytes to OpenCV. Injected test nets instead require an explicit
 synthetic model fingerprint. Every processed-frame and sighting payload carries
@@ -27,7 +31,8 @@ worker run, overlapping observations share a `sighting_id` and increment
 `observation_count`; the candidate and frame identity in each emitted sighting always describe
 the same current observation. `SightingAggregator` is only bounded, short-window IoU grouping;
 it is not the BoT-SORT/camera-motion-compensated tracker selected in the prior-art decision.
-That recorded-stack implementation and validation remain open in #96.
+Any future motion-aware tracker implementation and validation belongs to the deferred perception
+track; #96 records only the resolved licensing decision.
 
 The frame time supplied by `WebcamStream` is the host's monotonic time immediately after
 OpenCV returns a decoded frame. It is explicitly published as

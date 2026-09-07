@@ -9,6 +9,7 @@ from relay.body_pulse import valid_body_pulse_args
 from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
     C1_IMPLEMENTED_INTENT_NAMES,
+    IMPLEMENTED_INTENT_NAMES,
     CapabilityProfile,
     IntentName,
 )
@@ -68,13 +69,14 @@ MAX_INTENT_NAME_CHARS = 64
 MAX_INTENT_DRONE_IDS = MAX_FLEET_DEVICES
 MAX_INTENT_DRONE_ID = (1 << 31) - 1
 MAX_INTENT_TIMESTAMP = (1 << 63) - 1
+FORMATION_NAMES = ("line", "column", "wedge", "diamond")
 
 # Operator sources that may authenticate without an aircraft binding and emit
 # Intent v1. Console buttons, the keyboard network stop, and the webcam gesture
 # producer are each bound to their own connection; an intent never moves
 # between them. Adding a source changes this constant and its conformance tests.
 REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam", "language"})
-# Intent v1 names each registered source may emit. The console owns every C1
+# Intent v1 names each registered source may emit. The console owns every implemented
 # name; the keyboard socket carries only the Shift+Escape network stop; the
 # webcam gesture producer drafts only the names its gesture policy may emit
 # (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES), so the console's
@@ -84,7 +86,7 @@ REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam", "language"})
 # registry rather than maintaining another capability list.
 SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
     {
-        "console": C1_IMPLEMENTED_INTENT_NAMES,
+        "console": IMPLEMENTED_INTENT_NAMES,
         "keyboard": frozenset({IntentName.ESTOP}),
         "webcam": frozenset(
             {
@@ -257,6 +259,12 @@ def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
         return raw["confirm"] is True and bool(raw["selection"])
     if name in {IntentName.SWEEP, IntentName.BODY_PULSE}:
         return raw["confirm"] is True and bool(raw["selection"])
+    if name is IntentName.FORMATION_NEXT:
+        return 2 <= len(raw["selection"]) <= MAX_INTENT_DRONE_IDS
+    if name is IntentName.FORMATION_SET:
+        formation_name = raw["args"].get("name")
+        minimum = 4 if formation_name in {"wedge", "diamond"} else 2
+        return minimum <= len(raw["selection"]) <= MAX_INTENT_DRONE_IDS
     return True
 
 
@@ -309,9 +317,7 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         return MappingProxyType({"delta": value["delta"]})
 
     if name is IntentName.FORMATION_SET:
-        if set(value) != {"name"} or not _is_bounded_intent_text(
-            value["name"], MAX_INTENT_IDENTIFIER_CHARS
-        ):
+        if set(value) != {"name"} or value["name"] not in FORMATION_NAMES:
             raise ValueError
         return MappingProxyType({"name": value["name"]})
 

@@ -575,3 +575,43 @@ def test_unconfigured_session_treats_every_id_as_an_aircraft_numbered_by_id(
 
     drone = events[1]["drones"][0]
     assert (drone["device_class"], drone["unit"]) == ("aircraft", 3)
+
+
+def test_periodic_events_degrade_every_device_in_a_full_registry(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    session = RelaySession(
+        session_id=SESSION,
+        audit_log=SessionAuditLog(tmp_path, SESSION),
+        limits=RelayLimits(
+            intent_max_age_ms=5_000,
+            transport_event_max_age_ms=5_000,
+            future_clock_skew_ms=1_000,
+            telemetry_freshness_ms=1_000,
+        ),
+        clock=clock,
+        event_ids=event_ids,
+    )
+    for drone_id in range(1, MAX_FLEET_DEVICES + 1):
+        principal = Principal(source="adapter", drone_id=drone_id, signing_key=ADAPTER_KEY)
+        session.process_membership(
+            membership_payload(action="join", event_id=f"join-{drone_id}", drone_id=drone_id),
+            principal,
+        )
+        session.process_telemetry(
+            telemetry_payload(event_id=f"telemetry-{drone_id}", drone_id=drone_id, state="landed"),
+            principal,
+        )
+        session.process_membership(
+            membership_payload(action="readiness", event_id=f"ready-{drone_id}", drone_id=drone_id),
+            principal,
+        )
+    assert all(row["membership"] == "ready" for row in session.current_state()["drones"])
+    clock.advance(1_001)
+
+    events = session.periodic_events()
+
+    transitions = [event for event in events if event["type"] == "membership"]
+    assert len(transitions) == MAX_FLEET_DEVICES
+    assert len({event["event_id"] for event in transitions}) == MAX_FLEET_DEVICES
+    assert all(row["membership"] == "degraded" for row in events[-1]["drones"])

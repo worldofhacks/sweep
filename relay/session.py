@@ -57,6 +57,7 @@ from relay.control_localization import (
 from relay.control_localization_contracts import session_identifier
 from relay.fleet_limits import MAX_FLEET_DEVICES
 from relay.intent_v1 import (
+    FORMATION_NAMES,
     MAX_INTENT_IDENTIFIER_CHARS,
     REGISTERED_SOURCES,
     AcceptedIntent,
@@ -111,10 +112,8 @@ class IntentSinkResult:
             not isinstance(event, Mapping) for event in self.events
         ):
             raise ValueError("sink result events must be a tuple of mappings")
-        if self.formation_update is not None and (
-            not isinstance(self.formation_update, str) or not self.formation_update
-        ):
-            raise ValueError("formation update must be a non-empty string")
+        if self.formation_update is not None and self.formation_update not in FORMATION_NAMES:
+            raise ValueError("formation update must name a supported formation")
         if self.spacing_update is not None and (
             isinstance(self.spacing_update, bool)
             or not isinstance(self.spacing_update, int | float)
@@ -1891,7 +1890,7 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            possible_ids = [self.event_ids() for _ in range(4)]
+            possible_ids = [self.event_ids() for _ in range(MAX_FLEET_DEVICES)]
             transitions = self.registry.expire_stale_telemetry(now_ms=now, event_ids=possible_ids)
             events: list[dict[str, object]] = []
             for transition in transitions:

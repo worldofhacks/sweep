@@ -17,6 +17,7 @@ from planner.models import (
     RefusalReason,
 )
 from planner.planner import DeterministicPlanner
+from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
     NOW_MS,
@@ -341,7 +342,8 @@ def test_a_mixed_translate_plan_passes_the_whole_plan_gate() -> None:
 
 def test_a_mixed_formation_plan_passes_the_whole_plan_gate() -> None:
     snapshot = make_mixed_snapshot(spacing=1.2)
-    planner = DeterministicPlanner(planning_config())
+    snapshot = replace_aircraft(snapshot, 12, pose=Position(2.0, 6.0, 0.0))
+    planner = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE)
     intent = make_intent(
         IntentName.FORMATION_SET, selection=snapshot.selection, args={"name": "line"}
     )
@@ -375,3 +377,23 @@ def test_a_stop_reaches_every_ready_device_of_both_classes() -> None:
     assert isinstance(plan, Plan)
     assert [command.drone_id for command in plan.commands] == [1, 2, 11, 12]
     assert _arbiter().check_plan(plan, snapshot) is None
+
+
+def test_unobserved_device_blocks_disarm_even_with_an_inconsistent_complete_flag() -> None:
+    snapshot = make_mixed_snapshot(
+        ground_ids=(),
+        selection=(),
+        flight_state=FlightState.LANDED,
+        fleet_observation_complete=True,
+        unobserved_devices={99: None},
+    )
+    intent = make_intent(IntentName.DISARM, selection=())
+    plan = DeterministicPlanner(planning_config(), C2_CAPABILITY_PROFILE).plan(intent, snapshot)
+
+    assert isinstance(plan, Plan)
+    for refusal in (
+        _arbiter().check_intent(intent, snapshot),
+        _arbiter().check_plan(plan, snapshot),
+    ):
+        assert refusal is not None
+        assert refusal.reason is RefusalReason.AIRCRAFT_NOT_READY

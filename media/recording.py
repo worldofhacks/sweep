@@ -20,6 +20,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    # The recording helper is also launched by absolute script path from Compose tests.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from media.streams import MAX_MEDIA_STREAMS, valid_stream_name
 
 ROOT = Path(__file__).resolve().parents[1]

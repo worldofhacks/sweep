@@ -138,7 +138,7 @@ def test_disk_full_restores_all_relay_state(
                 selection=(2,),
                 armed=True,
                 estop=True,
-                formation="circle",
+                formation="diamond",
                 spacing=1.4,
                 pending={"intent_id": "pending"},
                 accepted_plan=None,
