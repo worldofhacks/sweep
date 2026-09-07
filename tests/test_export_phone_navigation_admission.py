@@ -84,7 +84,7 @@ def test_export_uses_no_follow_private_key_and_leaves_no_partial_output(tmp_path
     key = _key(tmp_path / "key")
     key_link = tmp_path / "key-link"
     os.symlink(key, key_link)
-    with pytest.raises(ValueError, match="regular file"):
+    with pytest.raises(ValueError, match="opened safely"):
         export_phone_navigation_admission(deployment, 1, key_link, tmp_path / "linked-output")
 
     output = tmp_path / "atomic-output"
@@ -96,6 +96,22 @@ def test_export_uses_no_follow_private_key_and_leaves_no_partial_output(tmp_path
         export_phone_navigation_admission(deployment, 1, key, output)
     assert not output.exists()
     assert not list(tmp_path.glob(".atomic-output.*"))
+
+
+def test_export_refuses_a_provenance_key_replaced_after_its_fd_was_opened(tmp_path, monkeypatch):
+    key = _key(tmp_path / "key")
+    replacement = _key(tmp_path / "replacement")
+    original = admission_exporter._read_descriptor
+
+    def replace_path(descriptor, name, maximum, **kwargs):
+        value = original(descriptor, name, maximum, **kwargs)
+        if kwargs.get("private_key"):
+            os.replace(replacement, key)
+        return value
+
+    monkeypatch.setattr(admission_exporter, "_read_descriptor", replace_path)
+    with pytest.raises(ValueError, match="changed while it was read"):
+        admission_exporter._private_key(key)
 
 
 def test_export_revalidates_after_copying_its_artifact_snapshot(tmp_path, monkeypatch):

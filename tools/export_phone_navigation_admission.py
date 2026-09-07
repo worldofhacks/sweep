@@ -30,39 +30,69 @@ _FILENAMES = {
 }
 
 
-def _read_file(path: Path, name: str, maximum: int) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or not 1 <= info.st_size <= maximum:
-            raise ValueError(f"{name} must be a nonempty regular file within its size limit")
-        chunks = []
-        remaining = maximum + 1
-        while remaining:
-            chunk = os.read(descriptor, min(65_536, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        value = b"".join(chunks)
-    finally:
-        os.close(descriptor)
+def _fingerprint(info: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _read_descriptor(
+    descriptor: int, name: str, maximum: int, *, private_key: bool = False
+) -> bytes:
+    before = os.fstat(descriptor)
+    if not stat.S_ISREG(before.st_mode) or not 1 <= before.st_size <= maximum:
+        raise ValueError(f"{name} must be a nonempty regular file within its size limit")
+    if private_key and (before.st_nlink != 1 or before.st_mode & 0o077):
+        raise ValueError("provenance key must be one regular file with mode 0600")
+    chunks = []
+    remaining = maximum + 1
+    while remaining:
+        chunk = os.read(descriptor, min(65_536, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    value = b"".join(chunks)
+    after = os.fstat(descriptor)
+    if _fingerprint(after) != _fingerprint(before):
+        raise ValueError(f"{name} changed while it was read")
     if not 1 <= len(value) <= maximum:
         raise ValueError(f"{name} must be within its size limit")
     return value
 
 
+def _read_file(path: Path, name: str, maximum: int) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        return _read_descriptor(descriptor, name, maximum)
+    finally:
+        os.close(descriptor)
+
+
 def _private_key(path: Path) -> bytes:
     try:
-        info = os.stat(path, follow_symlinks=False)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as error:
         raise ValueError("provenance key could not be opened safely") from error
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
-        raise ValueError("provenance key must be one regular file with mode 0600")
     try:
-        key = _read_file(path, "provenance key", _MAX_KEY_BYTES)
+        key = _read_descriptor(descriptor, "provenance key", _MAX_KEY_BYTES, private_key=True)
+        fingerprint = _fingerprint(os.fstat(descriptor))
     except OSError as error:
         raise ValueError("provenance key could not be opened safely") from error
+    finally:
+        os.close(descriptor)
+    try:
+        named = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        raise ValueError("provenance key changed while it was read") from error
+    if _fingerprint(named) != fingerprint:
+        raise ValueError("provenance key changed while it was read")
     if len(key) < 32:
         raise ValueError("provenance key must contain at least 32 bytes")
     return key
@@ -185,13 +215,7 @@ def export_phone_navigation_admission(
     if deployment.approval.mode != "flight":
         raise ValueError("phone navigation admission requires a flight deployment")
     artifacts = _artifact_bytes(deployment, device_id)
-    refreshed = load_navigation_deployment(deployment.path)
-    if (
-        refreshed.approval != deployment.approval
-        or refreshed.config != deployment.config
-        or refreshed.wire_profiles != deployment.wire_profiles
-    ):
-        raise ValueError("navigation deployment changed while its phone bundle was exported")
+    deployment.artifact()
     profile = deployment.wire_profiles[device_id]
     key = _private_key(Path(provenance_key_path))
     bindings = [
