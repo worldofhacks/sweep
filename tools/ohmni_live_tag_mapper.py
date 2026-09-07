@@ -408,11 +408,11 @@ def scope_from_state(state: object, *, session: str, device_id: int) -> LiveScop
     epoch = drone.get("connection_epoch")
     if (
         drone.get("node_type") != "ground"
-        or drone.get("membership") != "joined"
+        or drone.get("membership") != "ready"
         or type(epoch) is not int
         or epoch <= 0
     ):
-        raise LiveMapperError("target ground node has no current joined epoch")
+        raise LiveMapperError("target ground node has no current ready epoch")
     return LiveScope(session=session, device_id=device_id, connection_epoch=epoch)
 
 

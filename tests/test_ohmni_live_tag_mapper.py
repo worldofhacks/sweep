@@ -184,7 +184,7 @@ def test_scope_uses_current_ground_epoch_from_relay_state() -> None:
                 {
                     "drone_id": 12,
                     "node_type": "ground",
-                    "membership": "joined",
+                    "membership": "ready",
                     "connection_epoch": 17,
                 }
             ],
@@ -210,7 +210,7 @@ def test_publisher_derives_scope_before_sending_canonical_events() -> None:
                                 {
                                     "drone_id": 12,
                                     "node_type": "ground",
-                                    "membership": "joined",
+                                    "membership": "ready",
                                     "connection_epoch": 17,
                                 }
                             ],
@@ -373,7 +373,7 @@ def test_publisher_archives_relay_accepted_camera_tag_pose_and_scan_events(tmp_p
                             {
                                 "drone_id": 12,
                                 "node_type": "ground",
-                                "membership": "joined",
+                                "membership": "ready",
                                 "connection_epoch": 9,
                             }
                         ],
@@ -439,7 +439,7 @@ def test_publisher_finishes_a_valid_archive_at_the_record_bound(tmp_path) -> Non
                             {
                                 "drone_id": 12,
                                 "node_type": "ground",
-                                "membership": "joined",
+                                "membership": "ready",
                                 "connection_epoch": 9,
                             }
                         ],
@@ -488,7 +488,7 @@ def test_publisher_removes_an_archive_after_a_bad_canonical_observation(tmp_path
                             {
                                 "drone_id": 12,
                                 "node_type": "ground",
-                                "membership": "joined",
+                                "membership": "ready",
                                 "connection_epoch": 9,
                             }
                         ],
@@ -638,7 +638,7 @@ def test_publisher_stops_a_silent_relay_at_the_archive_deadline(tmp_path) -> Non
                                 {
                                     "drone_id": 12,
                                     "node_type": "ground",
-                                    "membership": "joined",
+                                    "membership": "ready",
                                     "connection_epoch": 9,
                                 }
                             ],
@@ -745,7 +745,7 @@ def test_publisher_spaces_multiple_tag_events_from_one_frame(
                                 {
                                     "drone_id": 12,
                                     "node_type": "ground",
-                                    "membership": "joined",
+                                    "membership": "ready",
                                     "connection_epoch": 17,
                                 }
                             ],
@@ -808,7 +808,7 @@ def test_publisher_spaces_tag_events_across_consecutive_frames(
                                 {
                                     "drone_id": 12,
                                     "node_type": "ground",
-                                    "membership": "joined",
+                                    "membership": "ready",
                                     "connection_epoch": 17,
                                 }
                             ],
@@ -857,7 +857,7 @@ def test_relay_state_chatter_cannot_extend_submission_confirmation_deadline(
                 {
                     "drone_id": 12,
                     "node_type": "ground",
-                    "membership": "joined",
+                    "membership": "ready",
                     "connection_epoch": 9,
                 }
             ],
