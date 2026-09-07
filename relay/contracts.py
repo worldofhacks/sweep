@@ -174,6 +174,7 @@ class GroundPoseIdentity:
     event_id: str
     session: str
     connection_epoch: int
+    source_id: str
     frame: str
 
     def to_event(self) -> dict[str, object]:
@@ -181,6 +182,7 @@ class GroundPoseIdentity:
             "event_id": self.event_id,
             "session": self.session,
             "connection_epoch": self.connection_epoch,
+            "source_id": self.source_id,
             "frame": self.frame,
         }
 
@@ -785,7 +787,7 @@ def parse_membership_request(raw: object) -> MembershipRequest:
             )
             _exact_fields(
                 pose,
-                {"event_id", "session", "connection_epoch", "frame"},
+                {"event_id", "session", "connection_epoch", "source_id", "frame"},
                 "invalid_membership",
             )
             pose_identity = GroundPoseIdentity(
@@ -795,6 +797,9 @@ def parse_membership_request(raw: object) -> MembershipRequest:
                     pose["connection_epoch"],
                     "pose_identity.connection_epoch",
                     "invalid_membership",
+                ),
+                _nonempty_string(
+                    pose["source_id"], "pose_identity.source_id", "invalid_membership"
                 ),
                 _nonempty_string(pose["frame"], "pose_identity.frame", "invalid_membership"),
             )

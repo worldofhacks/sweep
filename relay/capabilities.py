@@ -78,9 +78,10 @@ C1_IMPLEMENTED_INTENT_NAMES = frozenset(
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
         IntentName.ALTITUDE,
-        IntentName.GROUND_VELOCITY,
     }
 )
+
+GROUND_ADDITIONAL_INTENT_NAMES = frozenset({IntentName.GROUND_VELOCITY})
 
 C2_ADDITIONAL_INTENT_NAMES = frozenset(
     {
@@ -92,7 +93,20 @@ C2_ADDITIONAL_INTENT_NAMES = frozenset(
     }
 )
 
-IMPLEMENTED_INTENT_NAMES = C1_IMPLEMENTED_INTENT_NAMES | C2_ADDITIONAL_INTENT_NAMES
+IMPLEMENTED_INTENT_NAMES = (
+    C1_IMPLEMENTED_INTENT_NAMES | C2_ADDITIONAL_INTENT_NAMES | GROUND_ADDITIONAL_INTENT_NAMES
+)
+
+
+def with_ground_capabilities(profile: CapabilityProfile) -> CapabilityProfile:
+    """Enable the authenticated ground route without widening the base deployment profile."""
+    if profile.supports(IntentName.GROUND_VELOCITY):
+        return profile
+    suffix = ".ground"
+    return CapabilityProfile(
+        f"{profile.name[: 64 - len(suffix)]}{suffix}",
+        profile.enabled_intent_names | GROUND_ADDITIONAL_INTENT_NAMES,
+    )
 
 C1_CAPABILITY_PROFILE = CapabilityProfile(
     name="c1_basic_control",
@@ -101,5 +115,5 @@ C1_CAPABILITY_PROFILE = CapabilityProfile(
 
 C2_CAPABILITY_PROFILE = CapabilityProfile(
     name="c2_fleet_operations",
-    enabled_intent_names=IMPLEMENTED_INTENT_NAMES,
+    enabled_intent_names=C1_IMPLEMENTED_INTENT_NAMES | C2_ADDITIONAL_INTENT_NAMES,
 )

@@ -58,6 +58,7 @@ def _ground_readiness(device_id: int, event_id: str, *, authority: bool = True) 
             "event_id": "pose-1",
             "session": SESSION,
             "connection_epoch": 1,
+            "source_id": "ohmni-pose",
             "frame": "odom",
         },
     }
@@ -136,6 +137,7 @@ def test_ground_readiness_uses_ground_safety_and_pose_evidence():
         connection_epoch=1,
         event_id="pose-1",
         session=SESSION,
+        source_id="ohmni-pose",
         frame="odom",
         t=1_756_700_000_000,
     )
@@ -154,6 +156,7 @@ def test_ground_readiness_requires_the_accepted_pose_identity():
         connection_epoch=1,
         event_id="accepted-pose",
         session=SESSION,
+        source_id="ohmni-pose",
         frame="odom",
         t=1_756_700_000_000,
     )
@@ -238,3 +241,46 @@ def test_node_type_settings_require_an_authenticated_adapter_key(tmp_path):
             node_types={9: NodeType.GROUND},
             log_dir=tmp_path,
         )
+
+
+def test_ground_readiness_repetition_preserves_the_roster_version():
+    registry = FleetRegistry(telemetry_freshness_ms=1_000, node_types={9: NodeType.GROUND})
+    registry.apply_join(_ground_join(9, "ground-join"))
+    registry.apply_ground_pose_observation(
+        drone_id=9,
+        connection_epoch=1,
+        event_id="pose-1",
+        session=SESSION,
+        source_id="ohmni-pose",
+        frame="odom",
+        t=1_756_700_000_000,
+    )
+    first = registry.apply_readiness(_ground_readiness(9, "ground-ready"))
+    second = registry.apply_readiness(_ground_readiness(9, "ground-ready-refresh"))
+
+    assert first.membership.value == "ready"
+    assert second.membership.value == "ready"
+    assert second.roster_version == first.roster_version
+
+
+def test_ground_readiness_rejects_a_pose_identity_from_another_source():
+    registry = FleetRegistry(telemetry_freshness_ms=1_000, node_types={9: NodeType.GROUND})
+    registry.apply_join(_ground_join(9, "ground-join"))
+    registry.apply_ground_pose_observation(
+        drone_id=9,
+        connection_epoch=1,
+        event_id="pose-1",
+        session=SESSION,
+        source_id="ohmni-pose",
+        frame="odom",
+        t=1_756_700_000_000,
+    )
+    request = _ground_readiness(9, "ground-ready")
+    raw = request.unsigned_event()
+    raw["pose_identity"] = {**raw["pose_identity"], "source_id": "other-pose"}  # type: ignore[index]
+    raw["signature"] = sign_event(raw, GROUND_KEY)
+
+    transition = registry.apply_readiness(parse_membership_request(raw))
+
+    assert transition.membership.value == "degraded"
+    assert transition.readiness_reasons == ("pose_identity_not_accepted",)

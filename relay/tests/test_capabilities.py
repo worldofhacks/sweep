@@ -13,9 +13,11 @@ from relay.capabilities import (
     C1_IMPLEMENTED_INTENT_NAMES,
     C2_ADDITIONAL_INTENT_NAMES,
     C2_CAPABILITY_PROFILE,
+    GROUND_ADDITIONAL_INTENT_NAMES,
     IMPLEMENTED_INTENT_NAMES,
     CapabilityProfile,
     IntentName,
+    with_ground_capabilities,
 )
 from relay.intent_v1 import AcceptedIntent, RejectedIntent, validate_intent
 from relay.session import RelayLimits, RelaySession
@@ -47,11 +49,23 @@ def test_c1_profile_enables_only_earned_intents() -> None:
 
 
 def test_c2_profile_is_a_strict_c1_superset() -> None:
-    assert C2_CAPABILITY_PROFILE.enabled_intent_names == IMPLEMENTED_INTENT_NAMES
     assert C2_CAPABILITY_PROFILE.enabled_intent_names == (
         C1_CAPABILITY_PROFILE.enabled_intent_names | C2_ADDITIONAL_INTENT_NAMES
     )
     assert C1_CAPABILITY_PROFILE.enabled_intent_names < C2_CAPABILITY_PROFILE.enabled_intent_names
+    assert IMPLEMENTED_INTENT_NAMES == (
+        C2_CAPABILITY_PROFILE.enabled_intent_names | GROUND_ADDITIONAL_INTENT_NAMES
+    )
+
+
+def test_ground_profile_is_a_distinct_extension_of_the_configured_base_profile() -> None:
+    profile = with_ground_capabilities(C1_CAPABILITY_PROFILE)
+
+    assert profile.name == "c1_basic_control.ground"
+    assert profile.enabled_intent_names == (
+        C1_CAPABILITY_PROFILE.enabled_intent_names | GROUND_ADDITIONAL_INTENT_NAMES
+    )
+    assert with_ground_capabilities(profile) is profile
 
 
 def test_profile_rejects_unimplemented_intents() -> None:

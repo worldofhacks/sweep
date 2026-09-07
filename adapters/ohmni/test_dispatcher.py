@@ -102,3 +102,51 @@ def test_stop_failure_is_terminal_and_cannot_be_reported_as_accepted() -> None:
     assert result.refusal.drone_id == 10
     assert result.refusal.reason is RefusalReason.ADAPTER_FAILURE
     assert result.degraded_aircraft == (10,)
+
+
+class _FloodLink(_StopLink):
+    def await_acknowledgement(
+        self, command_id: str, *, timeout_ms: int
+    ) -> AdapterAcknowledgement | None:
+        self.events.append(("await", command_id))
+        request = self.requests[0]
+        return AdapterAcknowledgement(
+            1,
+            1,
+            "acknowledgement",
+            f"ack-{len(self.events)}",
+            "test-session",
+            request.intent_id,
+            command_id,
+            WireLifecycleStatus.ACCEPTED,
+            request.drone_id,
+            request.connection_epoch,
+            request.roster_version,
+            None,
+            None,
+        )
+
+
+def test_acknowledgement_collection_is_bounded_when_a_node_floods_nonterminal_updates() -> None:
+    link = _FloodLink()
+    dispatcher = GroundCommandDispatcher(
+        link,
+        acknowledgement_timeout_ms=10,
+        command_deadline_ms=10,
+        monotonic=lambda: 0,
+    )
+    request = CommandRequest(
+        command_id="flooded",
+        intent_id="stop-all",
+        roster_version=7,
+        drone_id=9,
+        connection_epoch=4,
+        operation=CommandOperation.ESTOP,
+        args={},
+    )
+    link.requests.append(request)
+
+    acknowledgements = dispatcher._collect(request)
+
+    assert len(acknowledgements) == 3
+    assert len(link.events) == 3

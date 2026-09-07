@@ -28,6 +28,7 @@ from relay.autonomy import (
 )
 from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
+from relay.contracts import NodeType
 from relay.control_frames import sign_localization_frame
 from relay.control_localization import ControlLocalizationWire, to_wire_payload
 from relay.intent_v1 import IntentName, IntentV1, Mode
@@ -272,6 +273,27 @@ def test_localization_config_rejects_an_unmeasured_clock_mapping() -> None:
     }
     with pytest.raises(SettingsError, match="clock mapping must be measured"):
         AutonomyConfig.from_env(environment)
+
+
+def test_autonomy_composition_advertises_ground_velocity_only_for_a_ground_roster(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY, 9: b"ground-adapter-key-that-is-at-least-32-bytes"},
+        node_types={1: NodeType.AIRCRAFT, 9: NodeType.GROUND},
+        log_dir=tmp_path,
+        adapter_backend=AdapterBackend.SIM,
+    )
+    app, composition = create_autonomy_app(settings, _config(), clock=clock, event_ids=event_ids)
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            assert runtime.capability_profile.name == "c1_basic_control.ground"
+            enabled = runtime.capability_profile.state_value()["enabled_intent_names"]
+            assert "ground_velocity" in enabled
+    finally:
+        composition.close()
 
 
 def test_autonomy_composition_threads_one_ungrounded_profile(

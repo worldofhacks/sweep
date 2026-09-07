@@ -917,12 +917,14 @@ class RelaySession:
                 if (
                     submission.node_type == NodeType.GROUND.value
                     and submission.payload["kind"] == "pose"
+                    and submission.confidence > 0
                 ):
                     self.registry.apply_ground_pose_observation(
                         drone_id=submission.device_id,
                         connection_epoch=submission.connection_epoch,
                         event_id=submission.event_id,
                         session=submission.session,
+                        source_id=submission.source_id,
                         frame=submission.frame,
                         t=observation.t_ingest,
                     )

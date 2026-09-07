@@ -459,6 +459,8 @@ class OhmniRuntime:
         )
         self._pose_event_id = pose_event["event_id"]
         self._enqueue(pose_event)
+        if confidence <= 0:
+            self._local_stop("pose_unusable", disable=True)
         self._enqueue(
             self._observation(
                 self.config.telemetry_source_id,
@@ -581,6 +583,7 @@ class OhmniRuntime:
                     "event_id": self._pose_event_id,
                     "session": self.config.session,
                     "connection_epoch": self._epoch,
+                    "source_id": self.config.pose_source_id,
                     "frame": self.config.odom_frame,
                 },
             )
