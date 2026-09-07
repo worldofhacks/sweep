@@ -762,6 +762,8 @@ class SessionAuditLog:
                     if deadline is not None and monotonic() >= deadline:
                         raise AuditLogError("session log read exceeded the live replay deadline")
                     chunk = stream.read(row.length)
+                    if deadline is not None and monotonic() >= deadline:
+                        raise AuditLogError("session log read exceeded the live replay deadline")
                     if len(chunk) != row.length or hashlib.sha256(chunk).digest() != row.digest:
                         self._fail_divergent_mirror()
                     if not parse:
@@ -770,6 +772,8 @@ class SessionAuditLog:
                         record = json.loads(chunk)
                     except (UnicodeError, ValueError, RecursionError) as error:
                         raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
+                    if deadline is not None and monotonic() >= deadline:
+                        raise AuditLogError("session log read exceeded the live replay deadline")
                     _validate_record(record, line_number, self.session, line_number)
                     records.append(record)
                 if deadline is not None and monotonic() >= deadline:
