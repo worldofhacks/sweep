@@ -72,8 +72,8 @@ class Odometry:
                 self.lost = True
                 self.pose = Pose(pose.x, pose.y, pose.yaw_deg)
                 return
-            left = encoder_delta(self._previous[0], pair[0]) / self.ticks_per_mm
-            right = -encoder_delta(self._previous[1], pair[1]) / self.ticks_per_mm
+            left = -encoder_delta(self._previous[0], pair[0]) / self.ticks_per_mm
+            right = encoder_delta(self._previous[1], pair[1]) / self.ticks_per_mm
             distance = (left + right) / 2000
             turn = (right - left) / BASE_MM
             yaw = math.radians(pose.yaw_deg)
