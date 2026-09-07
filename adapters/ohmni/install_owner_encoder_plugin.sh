@@ -10,18 +10,21 @@ adb=${ADB:-adb}
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 plugin="$root/adapters/ohmni/vendor/sweep_encoder_plugin.js"
 sampler="$root/adapters/ohmni/vendor/sweep_encoder_plugin/sampler.js"
+trace="$root/adapters/ohmni/vendor/sweep_encoder_plugin/trace.js"
 source="/data/data/com.ohmnilabs.telebot_rtc/files/assets/node-files/telebot_node.js"
 plugin_dir="/data/data/com.ohmnilabs.telebot_rtc/files/plugins"
 private_dir="$plugin_dir/sweep_encoder_plugin"
 target="$plugin_dir/sweep_encoder_plugin.js"
 target_sampler="$private_dir/sampler.js"
+target_trace="$private_dir/trace.js"
 manifest="$plugin_dir/sweep_encoder_plugin.install"
 source_sha="e128a740200b7f8d538414c8963109f1ee2f0475b340f9369814ba8446891300"
 vendor_owner="1000:1000"
 vendor_context="u:object_r:system_app_data_file:s0"
-[ -f "$plugin" ] && [ -f "$sampler" ] || exit 2
+[ -f "$plugin" ] && [ -f "$sampler" ] && [ -f "$trace" ] || exit 2
 plugin_sha=$(sha256sum "$plugin" | cut -d ' ' -f 1)
 sampler_sha=$(sha256sum "$sampler" | cut -d ' ' -f 1)
+trace_sha=$(sha256sum "$trace" | cut -d ' ' -f 1)
 "$adb" -s "$serial" get-state >/dev/null
 remote_sha=$(printf 'sha256sum %s\n' "$source" | "$adb" -s "$serial" shell -T su 0 sh | awk '{print $1}' | tr -d '\r\n')
 [ "$remote_sha" = "$source_sha" ] || {
@@ -48,6 +51,7 @@ stage_file() {
 }
 stage_file "$plugin" "$stage/sweep_encoder_plugin.js"
 stage_file "$sampler" "$stage/sampler.js"
+stage_file "$trace" "$stage/trace.js"
 cat <<EOF2 | "$adb" -s "$serial" shell -T su 0 sh
 set -eu
 source=$source
@@ -55,13 +59,16 @@ plugin_dir=$plugin_dir
 private_dir=$private_dir
 target=$target
 target_sampler=$target_sampler
+target_trace=$target_trace
 manifest=$manifest
 [ "\$(stat -c '%u:%g:%a' $stage)" = 0:0:700 ]
 [ "\$(stat -c '%a' $stage/sweep_encoder_plugin.js)" = 600 ]
 [ "\$(stat -c '%a' $stage/sampler.js)" = 600 ]
+[ "\$(stat -c '%a' $stage/trace.js)" = 600 ]
 [ "\$(sha256sum \$source | cut -d ' ' -f 1)" = $source_sha ]
 [ "\$(sha256sum $stage/sweep_encoder_plugin.js | cut -d ' ' -f 1)" = $plugin_sha ]
 [ "\$(sha256sum $stage/sampler.js | cut -d ' ' -f 1)" = $sampler_sha ]
+[ "\$(sha256sum $stage/trace.js | cut -d ' ' -f 1)" = $trace_sha ]
 [ ! -L \${plugin_dir} ]
 if [ -e \$plugin_dir ]; then
   [ -d \$plugin_dir ]
@@ -83,21 +90,25 @@ fi
 mkdir \$private_dir
 mv $stage/sweep_encoder_plugin.js \$target
 mv $stage/sampler.js \$target_sampler
+mv $stage/trace.js \$target_trace
 printf '%s\n' \\
   'vendor_source_sha=$source_sha' \\
   'plugin_sha=$plugin_sha' \\
-  'sampler_sha=$sampler_sha' \\
+  'sampler_sha=$sampler_sha' \
+  'trace_sha=$trace_sha' \\
   "plugin_dir_created=\$plugin_dir_created" > \$manifest
-chown $vendor_owner \$target \$target_sampler \$manifest
+chown $vendor_owner \$target \$target_sampler \$target_trace \$manifest
 chown $vendor_owner \$private_dir
 chmod 700 \$private_dir
-chmod 600 \$target \$target_sampler \$manifest
-chcon $vendor_context \$target \$target_sampler \$manifest \$private_dir
+chmod 600 \$target \$target_sampler \$target_trace \$manifest
+chcon $vendor_context \$target \$target_sampler \$target_trace \$manifest \$private_dir
 [ "\$(sha256sum \$source | cut -d ' ' -f 1)" = $source_sha ]
 [ "\$(sha256sum \$target | cut -d ' ' -f 1)" = $plugin_sha ]
 [ "\$(sha256sum \$target_sampler | cut -d ' ' -f 1)" = $sampler_sha ]
+[ "\$(sha256sum \$target_trace | cut -d ' ' -f 1)" = $trace_sha ]
 [ "\$(stat -c '%u:%g:%a' \$target)" = $vendor_owner:600 ]
 [ "\$(stat -c '%u:%g:%a' \$target_sampler)" = $vendor_owner:600 ]
+[ "\$(stat -c '%u:%g:%a' \$target_trace)" = $vendor_owner:600 ]
 [ "\$(stat -c '%u:%g:%a' \$private_dir)" = $vendor_owner:700 ]
 [ "\$(stat -c '%u:%g:%a' \$manifest)" = $vendor_owner:600 ]
 [ "\$(ls -Zd \$target | awk '{print \$1}')" = $vendor_context ]
