@@ -10,13 +10,8 @@ sealed interface PortResult {
     data class Failed(val detail: String) : PortResult
 }
 
-/**
- * The aircraft-facing side of the control loop. The probe flavor implements it on
- * `IVirtualStickManager` and the `KeyStartTakeoff` / `KeyStartAutoLanding` actions; the fake
- * flavor and the JVM tests implement it on [FakeFlightModel]. Results may arrive on any
- * thread; the caller marshals them back onto the loop thread before they reach the controller.
- */
 interface FlightPort {
+    /** Ok means the port completed its mode qualification; it never exposes an intermediate enabled state. */
     fun enableVirtualStick(onResult: (PortResult) -> Unit)
 
     fun disableVirtualStick(onResult: (PortResult) -> Unit)

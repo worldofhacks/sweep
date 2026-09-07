@@ -1,6 +1,7 @@
 package org.worldofhacks.sweep.bridge.flight
 
 import android.os.SystemClock
+import java.util.concurrent.locks.ReentrantLock
 import dji.sdk.keyvalue.key.DJIKey
 import dji.sdk.keyvalue.key.FlightControllerKey
 import dji.sdk.keyvalue.key.KeyTools
@@ -13,6 +14,7 @@ import dji.sdk.keyvalue.value.flightcontroller.RollPitchControlMode
 import dji.sdk.keyvalue.value.flightcontroller.VerticalControlMode
 import dji.sdk.keyvalue.value.flightcontroller.VirtualStickFlightControlParam
 import dji.sdk.keyvalue.value.flightcontroller.YawControlMode
+import dji.sdk.keyvalue.value.product.ProductType
 import dji.v5.common.callback.CommonCallbacks
 import dji.v5.common.error.IDJIError
 import dji.v5.manager.KeyManager
@@ -20,6 +22,7 @@ import dji.v5.manager.aircraft.virtualstick.Stick
 import dji.v5.manager.aircraft.virtualstick.VirtualStickManager
 import dji.v5.manager.aircraft.virtualstick.VirtualStickState
 import dji.v5.manager.aircraft.virtualstick.VirtualStickStateListener
+import kotlin.concurrent.withLock
 import kotlin.math.abs
 import org.worldofhacks.sweep.bridge.core.flight.FlightPort
 import org.worldofhacks.sweep.bridge.core.flight.PortResult
@@ -45,19 +48,27 @@ class DjiFlightPort(
     private val recordAuthorityKey: (key: String, event: String, status: String) -> Unit,
 ) : FlightPort {
     private val holder = Any()
+    private val productFence = ProductGenerationFence()
     private val authorityHolder = Any()
     private var executor: FlightExecutor? = null
+    private var pendingContractResult: Pair<AuthorityOperation, (PortResult) -> Unit>? = null
     private val authority = DirectAuthorityMonitor(
         nowMs = SystemClock::elapsedRealtime,
         record = recordAuthorityKey,
-        read = ::readAuthorityKey,
+        readMode = ::readContractMode,
         publish = { enabled, owner ->
             executor?.onVirtualStickState(enabled, owner == FlightControlAuthority.MSDK.name, owner)
         },
+        progress = ::onContractProgress,
     )
 
     private val manager
         get() = VirtualStickManager.getInstance()
+
+    private val enableFence = VirtualStickEnableFence(
+        issueCompensatingDisable = ::compensateLateEnable,
+        record = recordAuthorityKey,
+    )
 
     private val managerDiagnostic = ManagerAuthorityDiagnostic(recordAuthorityKey, SystemClock::elapsedRealtime)
 
@@ -101,8 +112,12 @@ class DjiFlightPort(
 
     /** Reads the flight controller's failsafe setting for the record; the node never changes it. */
     fun onProductConnected() {
-        executor?.let { readFailsafeSetting(it) }
+        productFence.beginTransition()
+        enableFence.abandonActive()
         val generation = authority.productConnected()
+        enableFence.productChanged()
+        productFence.completeTransition(generation)
+        executor?.let { readFailsafeSetting(it) }
         val keyManager = KeyManager.getInstance()
         keyManager.cancelListen(authorityHolder)
         listenAuthorityKeys(generation)
@@ -124,43 +139,116 @@ class DjiFlightPort(
 
     fun onProductDisconnected() {
         KeyManager.getInstance().cancelListen(authorityHolder)
+        productFence.beginTransition()
+        enableFence.abandonActive()
         authority.disconnected()
+        enableFence.productChanged()
+        productFence.completeTransition(null)
+    }
+
+    /** Accepts the product key only after SdkSession's connection-generation fence has accepted it. */
+    fun onProductType(productType: ProductType) {
+        authority.productType(productType.name, productType == ProductType.DJI_MINI_3)
     }
 
     fun detach() {
         manager.removeVirtualStickStateListener(managerDiagnosticListener)
         KeyManager.getInstance().cancelListen(holder)
         KeyManager.getInstance().cancelListen(authorityHolder)
+        productFence.beginTransition()
+        enableFence.abandonActive()
         authority.disconnected()
+        enableFence.productChanged()
+        productFence.completeTransition(null)
         executor = null
     }
 
     override fun enableVirtualStick(onResult: (PortResult) -> Unit) {
-        val generation = authority.enableIssued()
-        manager.enableVirtualStick(object : CommonCallbacks.CompletionCallback {
-            override fun onSuccess() {
-                if (authority.enableCompleted(generation, "ok")) onResult(PortResult.Ok)
-            }
+        if (!enableFence.isAvailable()) {
+            onResult(PortResult.Failed(enableFence.unavailableDetail()))
+            return
+        }
+        val operation = authority.contractEnableIssued()
+        if (operation == null) {
+            onResult(PortResult.Failed("virtual stick mode contract requires the current connected product to identify as DJI_MINI_3"))
+            return
+        }
+        synchronized(holder) { pendingContractResult = operation to onResult }
+        manager.disableVirtualStick(object : CommonCallbacks.CompletionCallback {
+            override fun onSuccess() = authority.resetCompleted(operation, "ok")
 
-            override fun onFailure(error: IDJIError) {
-                val detail = describe(error)
-                if (authority.enableCompleted(generation, detail)) onResult(PortResult.Failed(detail))
-            }
+            override fun onFailure(error: IDJIError) = authority.resetCompleted(operation, describe(error))
         })
     }
 
     override fun disableVirtualStick(onResult: (PortResult) -> Unit) {
-        val generation = authority.disableIssued()
+        val operation = authority.disableIssued()
+        synchronized(holder) {
+            pendingContractResult?.first?.let(enableFence::abandon)
+            pendingContractResult = null
+        }
+        enableFence.abandonActive()
+        enableFence.cleanupIssued(operation)
         manager.disableVirtualStick(object : CommonCallbacks.CompletionCallback {
             override fun onSuccess() {
-                if (authority.disableCompleted(generation, "ok")) onResult(PortResult.Ok)
+                enableFence.cleanupCompleted(operation)
+                if (authority.disableCompleted(operation, "ok")) onResult(PortResult.Ok)
             }
 
             override fun onFailure(error: IDJIError) {
                 val detail = describe(error)
-                if (authority.disableCompleted(generation, detail)) onResult(PortResult.Failed(detail))
+                if (authority.disableCompleted(operation, detail)) onResult(PortResult.Failed(detail))
             }
         })
+    }
+
+    private fun compensateLateEnable(operation: AuthorityOperation, onResult: (String) -> Unit) {
+        if (!productFence.reserveIssuance(operation)) {
+            onResult("product_generation_changed")
+            return
+        }
+        try {
+            manager.disableVirtualStick(object : CommonCallbacks.CompletionCallback {
+                override fun onSuccess() = onResult("ok")
+
+                override fun onFailure(error: IDJIError) = onResult(describe(error))
+            })
+        } finally {
+            productFence.releaseIssuance()
+        }
+    }
+
+    private fun onContractProgress(progress: ContractProgress) {
+        when (progress) {
+            is ContractProgress.IssueEnable -> {
+                val started = enableFence.start(
+                    operation = progress.operation,
+                    issueEnable = { complete ->
+                        manager.enableVirtualStick(object : CommonCallbacks.CompletionCallback {
+                            override fun onSuccess() = complete("ok")
+
+                            override fun onFailure(error: IDJIError) = complete(describe(error))
+                        })
+                    },
+                    onResult = { status -> authority.enableCompleted(progress.operation, status) },
+                )
+                if (!started) authority.enableCompleted(progress.operation, "previous virtual stick enable is still being cleaned up")
+            }
+            is ContractProgress.Verified -> completeContract(progress.operation, PortResult.Ok)
+            is ContractProgress.Failed -> completeContract(progress.operation, PortResult.Failed(progress.detail))
+        }
+    }
+
+    private fun completeContract(operation: AuthorityOperation, result: PortResult) {
+        if (result is PortResult.Failed) enableFence.abandon(operation)
+        val callback = synchronized(holder) {
+            val pending = pendingContractResult
+            if (pending?.first != operation) null else {
+                pendingContractResult = null
+                pending.second
+            }
+        }
+        callback?.invoke(result)
     }
 
     override fun setAdvancedMode(enabled: Boolean) = manager.setVirtualStickAdvancedModeEnabled(enabled)
@@ -203,46 +291,19 @@ class DjiFlightPort(
         }
     }
 
-    private fun readAuthorityKey(key: AuthorityKey, request: AuthorityReadRequest) {
-        when (key) {
-            AuthorityKey.VIRTUAL_STICK_ENABLED -> readAuthorityKey(
-                key,
-                KeyTools.createKey(FlightControllerKey.KeyVirtualStickEnabled),
-                request,
-            ) { it.toString() }
-            AuthorityKey.FLIGHT_CONTROL_CURRENT_AUTHORITY -> readAuthorityKey(
-                key,
-                KeyTools.createKey(FlightControllerKey.KeyFlightControlCurrentAuthority),
-                request,
-            ) { it.name }
-            AuthorityKey.FLIGHT_CONTROL_AUTHORITY_CHANGE_REASON -> Unit
-        }
-    }
-
-    private fun <T : Any> readAuthorityKey(
-        authorityKey: AuthorityKey,
-        key: DJIKey<T>,
-        request: AuthorityReadRequest,
-        encode: (T) -> String,
-    ) {
+    private fun readContractMode(request: AuthorityReadRequest) {
+        val key = KeyTools.createKey(FlightControllerKey.KeyVirtualStickEnabled)
         val keyManager = KeyManager.getInstance()
         if (!keyManager.isKeySupported(key)) {
-            authority.readResult(authorityKey, request, "unsupported", null)
+            authority.readResult(request, "unsupported", null)
             return
         }
         keyManager.getValue(
             key,
-            object : CommonCallbacks.CompletionCallbackWithParam<T> {
-                override fun onSuccess(value: T?) {
-                    authority.readResult(authorityKey, request, "ok", value?.let(encode))
-                }
+            object : CommonCallbacks.CompletionCallbackWithParam<Boolean> {
+                override fun onSuccess(value: Boolean?) = authority.readResult(request, "ok", value?.toString())
 
-                override fun onFailure(error: IDJIError) = authority.readResult(
-                    authorityKey,
-                    request,
-                    "error",
-                    describe(error),
-                )
+                override fun onFailure(error: IDJIError) = authority.readResult(request, "error", describe(error))
             },
         )
     }
@@ -331,70 +392,262 @@ internal data class AuthorityOperation(val productGeneration: Long, val token: L
 internal data class AuthorityReadRequest(
     val productGeneration: Long,
     val operationToken: Long,
-    val snapshotToken: Long,
     val issuedAtMs: Long,
-    val postEnable: Boolean,
+    val expectedEnabled: Boolean,
 )
 
+internal sealed interface ContractProgress {
+    data class IssueEnable(val operation: AuthorityOperation) : ContractProgress
+    data class Verified(val operation: AuthorityOperation) : ContractProgress
+    data class Failed(val operation: AuthorityOperation, val detail: String) : ContractProgress
+}
+
+internal class ProductGenerationFence {
+    private val lock = ReentrantLock()
+    private val noIssuance = lock.newCondition()
+    private var changing = false
+    private var currentGeneration: Long? = null
+    private var issuanceReserved = false
+
+    fun beginTransition() = lock.withLock {
+        changing = true
+        while (issuanceReserved) noIssuance.await()
+    }
+
+    fun completeTransition(generation: Long?) = lock.withLock {
+        currentGeneration = generation
+        changing = false
+    }
+
+    fun reserveIssuance(operation: AuthorityOperation): Boolean = lock.withLock {
+        if (changing || currentGeneration != operation.productGeneration) false else {
+            issuanceReserved = true
+            true
+        }
+    }
+
+    fun releaseIssuance() = lock.withLock {
+        issuanceReserved = false
+        noIssuance.signalAll()
+    }
+}
+
+internal class VirtualStickEnableFence(
+    private val issueCompensatingDisable: (AuthorityOperation, onResult: (String) -> Unit) -> Unit,
+    private val record: (key: String, event: String, status: String) -> Unit,
+) {
+    private data class Pending(val operation: AuthorityOperation, var abandoned: Boolean = false)
+
+    private val lock = Any()
+    private var pending: Pending? = null
+    private var compensating: AuthorityOperation? = null
+    private var failedCompensation = false
+    private val cleanups = mutableSetOf<AuthorityOperation>()
+
+    fun isAvailable(): Boolean = synchronized(lock) {
+        pending == null && compensating == null && !failedCompensation && cleanups.isEmpty()
+    }
+
+    fun unavailableDetail(): String = synchronized(lock) {
+        if (failedCompensation) {
+            "late virtual stick enable compensation failed; reconnect the aircraft before re-enabling virtual stick"
+        } else {
+            "a previous virtual stick enable is still being cleaned up"
+        }
+    }
+
+    fun start(
+        operation: AuthorityOperation,
+        issueEnable: (onResult: (String) -> Unit) -> Unit,
+        onResult: (String) -> Unit,
+    ): Boolean {
+        synchronized(lock) {
+            if (pending != null || compensating != null || failedCompensation || cleanups.isNotEmpty()) return false
+            pending = Pending(operation)
+        }
+        issueEnable { status -> completed(operation, status, onResult) }
+        return true
+    }
+
+    fun abandon(operation: AuthorityOperation) {
+        synchronized(lock) { pending?.takeIf { it.operation == operation }?.abandoned = true }
+    }
+
+    fun abandonActive() {
+        synchronized(lock) { pending?.abandoned = true }
+    }
+
+    fun cleanupIssued(operation: AuthorityOperation) {
+        synchronized(lock) { cleanups += operation }
+    }
+
+    fun cleanupCompleted(operation: AuthorityOperation) {
+        synchronized(lock) { cleanups -= operation }
+    }
+
+    private fun compensationCompleted(operation: AuthorityOperation, result: String) {
+        synchronized(lock) {
+            if (compensating != operation) return
+            compensating = null
+            if (result != "ok") failedCompensation = true
+        }
+    }
+
+    fun productChanged() {
+        synchronized(lock) {
+            pending = null
+            compensating = null
+            failedCompensation = false
+            cleanups.clear()
+        }
+    }
+
+    private fun completed(operation: AuthorityOperation, status: String, onResult: (String) -> Unit) {
+        var deliver: String? = null
+        val compensate = synchronized(lock) {
+            val current = pending?.takeIf { it.operation == operation } ?: return
+            pending = null
+            if (current.abandoned && status == "ok") {
+                compensating = operation
+                true
+            } else {
+                if (!current.abandoned) deliver = status
+                false
+            }
+        }
+        deliver?.let(onResult)
+        if (!compensate) return
+        record(
+            "VirtualStickManager.disableVirtualStick",
+            "late_enable_compensation_issued",
+            "generation=${operation.productGeneration}/${operation.token}",
+        )
+        issueCompensatingDisable(operation) { result ->
+            compensationCompleted(operation, result)
+            record(
+                "VirtualStickManager.disableVirtualStick",
+                "late_enable_compensation_completion",
+                "$result generation=${operation.productGeneration}/${operation.token}" +
+                    if (result == "ok") "" else " recovery=product_reconnect_required",
+            )
+        }
+    }
+}
+
+/**
+ * Confirms the DJI virtual-stick mode contract without recasting unavailable authority telemetry
+ * as an MSDK owner value. The direct Virtual Stick key supplies state only; a current operation
+ * needs reset acknowledgement plus a direct false read, then enable acknowledgement, a
+ * post-enable true callback, and a fresh true read before the port admits a stick stream.
+ */
 internal class DirectAuthorityMonitor(
     private val nowMs: () -> Long,
     private val record: (key: String, event: String, status: String) -> Unit,
-    private val read: (AuthorityKey, AuthorityReadRequest) -> Unit,
+    private val readMode: (AuthorityReadRequest) -> Unit,
     private val publish: (enabled: Boolean, owner: String) -> Unit,
+    private val progress: (ContractProgress) -> Unit,
 ) {
-    private data class Sample(val value: String, val receivedAtMs: Long)
+    private enum class Stage { RESETTING, RESET_READING, ENABLING, READING, VERIFIED }
 
     private var productGeneration = 0L
     private var operationToken = 0L
-    private var snapshotToken = 0L
-    private var activeEnable: AuthorityOperation? = null
-    private var snapshot: AuthorityReadRequest? = null
-    private var samples = mutableMapOf<AuthorityKey, Sample>()
+    private var mini3Verified = false
+    private var active: AuthorityOperation? = null
+    private var stage: Stage? = null
+    private var resetIssuedAtMs = 0L
+    private var resetAcknowledged = false
+    private var resetFalseAtMs: Long? = null
+    private var enableIssuedAtMs = 0L
+    private var enableAcknowledged = false
+    private var enableAcknowledgedAtMs: Long? = null
+    private var enableTrueAtMs: Long? = null
+    private var readRequest: AuthorityReadRequest? = null
 
     @Synchronized
     fun productConnected(): Long {
         productGeneration += 1
         invalidate()
-        beginSnapshot(postEnable = false)
+        mini3Verified = false
+        record("virtual_stick_mode_contract", "product_connected", "generation=$productGeneration product_type=unverified raw_owner=UNKNOWN t_ms=${nowMs()}")
         return productGeneration
     }
 
     @Synchronized
-    fun disconnected() {
-        productGeneration += 1
-        invalidate()
-        record("direct_authority", "product_disconnected", "generation=$productGeneration t_ms=${nowMs()}")
+    fun productType(name: String, supported: Boolean) {
+        mini3Verified = supported
+        record(
+            "virtual_stick_mode_contract",
+            "product_type",
+            "generation=$productGeneration product_type=$name supported_mini3=$supported raw_owner=UNKNOWN t_ms=${nowMs()}",
+        )
+        if (!supported) active?.let { fail(it, "product type changed during virtual stick mode contract verification") }
     }
 
     @Synchronized
-    fun enableIssued(): AuthorityOperation {
+    fun disconnected() {
+        val operation = active
+        productGeneration += 1
+        invalidate()
+        mini3Verified = false
+        record("virtual_stick_mode_contract", "product_disconnected", "generation=$productGeneration raw_owner=UNKNOWN t_ms=${nowMs()}")
+        if (operation != null) progress(ContractProgress.Failed(operation, "product disconnected during virtual stick mode contract verification"))
+    }
+
+    @Synchronized
+    fun contractEnableIssued(): AuthorityOperation? {
+        if (!mini3Verified) {
+            record("virtual_stick_mode_contract", "rejected", "generation=$productGeneration reason=product_type_unverified raw_owner=UNKNOWN t_ms=${nowMs()}")
+            return null
+        }
         operationToken += 1
-        snapshot = null
-        samples.clear()
         val operation = AuthorityOperation(productGeneration, operationToken)
-        activeEnable = operation
-        record("VirtualStickManager.enableVirtualStick", "issued", "generation=${operation.productGeneration}/${operation.token} t_ms=${nowMs()}")
+        active = operation
+        stage = Stage.RESETTING
+        resetIssuedAtMs = nowMs()
+        resetAcknowledged = false
+        resetFalseAtMs = null
+        enableAcknowledged = false
+        enableAcknowledgedAtMs = null
+        enableTrueAtMs = null
+        readRequest = null
+        record("VirtualStickManager.disableVirtualStick", "contract_reset_issued", "generation=${operation.productGeneration}/${operation.token} proof_category=virtual_stick_mode_contract raw_owner=UNKNOWN t_ms=$resetIssuedAtMs")
         return operation
     }
 
     @Synchronized
-    fun enableCompleted(operation: AuthorityOperation, status: String): Boolean {
-        if (operation != activeEnable) {
-            record("VirtualStickManager.enableVirtualStick", "completion_dropped", "$status generation=${operation.productGeneration}/${operation.token} current=$productGeneration/$operationToken t_ms=${nowMs()}")
-            return false
+    fun resetCompleted(operation: AuthorityOperation, status: String) {
+        if (!matches(operation, Stage.RESETTING, "VirtualStickManager.disableVirtualStick", "reset_completion_dropped", status)) return
+        record("VirtualStickManager.disableVirtualStick", "contract_reset_completion", "$status generation=${operation.productGeneration}/${operation.token} t_ms=${nowMs()}")
+        if (status != "ok") {
+            fail(operation, "virtual stick reset failed: $status")
+            return
         }
-        record("VirtualStickManager.enableVirtualStick", "completion", "$status generation=${operation.productGeneration}/${operation.token} t_ms=${nowMs()}")
-        if (status == "ok") beginSnapshot(postEnable = true) else activeEnable = null
-        return true
+        resetAcknowledged = true
+        stage = Stage.RESET_READING
+        val request = AuthorityReadRequest(operation.productGeneration, operation.token, nowMs(), expectedEnabled = false)
+        readRequest = request
+        record("KeyVirtualStickEnabled", "contract_reset_read_issued", "generation=${request.productGeneration}/${request.operationToken} t_ms=${request.issuedAtMs}")
+        readMode(request)
+    }
+
+    @Synchronized
+    fun enableCompleted(operation: AuthorityOperation, status: String) {
+        if (!matches(operation, Stage.ENABLING, "VirtualStickManager.enableVirtualStick", "completion_dropped", status)) return
+        record("VirtualStickManager.enableVirtualStick", "contract_enable_completion", "$status generation=${operation.productGeneration}/${operation.token} t_ms=${nowMs()}")
+        if (status != "ok") {
+            fail(operation, "virtual stick enable failed: $status")
+            return
+        }
+        enableAcknowledged = true
+        enableAcknowledgedAtMs = nowMs()
+        maybeReadCurrentMode(operation)
     }
 
     @Synchronized
     fun disableIssued(): AuthorityOperation {
         operationToken += 1
-        activeEnable = null
-        snapshot = null
-        samples.clear()
         val operation = AuthorityOperation(productGeneration, operationToken)
+        invalidate()
         record("VirtualStickManager.disableVirtualStick", "issued", "generation=${operation.productGeneration}/${operation.token} t_ms=${nowMs()}")
         return operation
     }
@@ -415,10 +668,33 @@ internal class DirectAuthorityMonitor(
             record(key.wire, "listener_dropped", "$value generation=$generation current=$productGeneration t_ms=${nowMs()}")
             return false
         }
-        record(key.wire, "listener_value", "$value generation=$generation/$operationToken t_ms=${nowMs()}")
-        when {
-            key == AuthorityKey.VIRTUAL_STICK_ENABLED && value == "false" -> publish(false, "UNKNOWN")
-            key == AuthorityKey.FLIGHT_CONTROL_CURRENT_AUTHORITY && value != "MSDK" -> publish(true, value)
+        val receivedAtMs = nowMs()
+        record(key.wire, "listener_value", "$value generation=$generation/$operationToken t_ms=$receivedAtMs")
+        when (key) {
+            AuthorityKey.VIRTUAL_STICK_ENABLED -> when (value) {
+                "false" -> {
+                    publish(false, "UNKNOWN")
+                    active?.takeIf { stage == Stage.ENABLING || stage == Stage.READING }?.let {
+                        fail(it, "virtual stick disabled during mode contract verification")
+                    }
+                }
+                "true" -> {
+                    val operation = active
+                    if (operation != null && stage == Stage.ENABLING && receivedAtMs >= enableIssuedAtMs) {
+                        enableTrueAtMs = receivedAtMs
+                        maybeReadCurrentMode(operation)
+                    }
+                }
+            }
+            AuthorityKey.FLIGHT_CONTROL_CURRENT_AUTHORITY -> {
+                if (value != "MSDK" && value != "UNKNOWN") {
+                    publish(true, value)
+                    active?.takeIf { stage == Stage.ENABLING || stage == Stage.READING }?.let {
+                        fail(it, "flight control authority changed to $value during mode contract verification")
+                    }
+                }
+            }
+            AuthorityKey.FLIGHT_CONTROL_AUTHORITY_CHANGE_REASON -> Unit
         }
         return true
     }
@@ -430,65 +706,95 @@ internal class DirectAuthorityMonitor(
 
     @Synchronized
     fun diagnosticContext(): String =
-        "direct_generation=$productGeneration/$operationToken snapshot=${snapshot?.snapshotToken ?: "none"}"
+        "direct_generation=$productGeneration/$operationToken proof_category=${if (active != null) "virtual_stick_mode_contract_pending" else "none"} raw_owner=UNKNOWN"
 
     @Synchronized
-    fun readResult(key: AuthorityKey, request: AuthorityReadRequest, result: String, value: String?) {
-        val current = snapshot
-        if (request != current) {
-            record(key.wire, "read_dropped", "result_generation=${request.productGeneration}/${request.operationToken}/${request.snapshotToken} current=${current?.productGeneration}/${current?.operationToken}/${current?.snapshotToken} t_ms=${nowMs()}")
+    fun readResult(request: AuthorityReadRequest, result: String, value: String?) {
+        if (request != readRequest || request.productGeneration != productGeneration || request.operationToken != operationToken) {
+            record("KeyVirtualStickEnabled", "read_dropped", "result_generation=${request.productGeneration}/${request.operationToken} current=$productGeneration/$operationToken t_ms=${nowMs()}")
+            return
+        }
+        val expectedStage = if (request.expectedEnabled) Stage.READING else Stage.RESET_READING
+        if (stage != expectedStage) {
+            record("KeyVirtualStickEnabled", "read_dropped", "result_generation=${request.productGeneration}/${request.operationToken} current=$productGeneration/$operationToken stage=${stage ?: "none"} t_ms=${nowMs()}")
             return
         }
         val receivedAtMs = nowMs()
-        record(key.wire, "read_result", "${value ?: result} result=$result generation=${request.productGeneration}/${request.operationToken}/${request.snapshotToken} t_ms=$receivedAtMs")
-        if (result != "ok" || value == null) return
-        samples[key] = Sample(value, receivedAtMs)
-        val enabled = samples[AuthorityKey.VIRTUAL_STICK_ENABLED] ?: return
-        val owner = samples[AuthorityKey.FLIGHT_CONTROL_CURRENT_AUTHORITY] ?: return
-        val currentAttempt = !request.postEnable || (
-            activeEnable != null && request.operationToken == activeEnable?.token
-        )
-        if (
-            !currentAttempt ||
-            receivedAtMs - request.issuedAtMs > MAX_SNAPSHOT_AGE_MS ||
-            kotlin.math.abs(enabled.receivedAtMs - owner.receivedAtMs) > MAX_READ_SKEW_MS
-        ) {
-            record("direct_authority", "pair_dropped", "generation=${request.productGeneration}/${request.operationToken}/${request.snapshotToken} t_ms=$receivedAtMs")
+        record("KeyVirtualStickEnabled", "contract_read_result", "${value ?: result} result=$result generation=${request.productGeneration}/${request.operationToken} expected_enabled=${request.expectedEnabled} t_ms=$receivedAtMs")
+        val operation = active ?: return
+        if (result != "ok" || value != request.expectedEnabled.toString() || receivedAtMs - request.issuedAtMs > PROOF_TIMEOUT_MS) {
+            val expected = request.expectedEnabled
+            fail(operation, "virtual stick mode was not freshly $expected after its matching acknowledgement")
             return
         }
-        val enabledValue = enabled.value.toBooleanStrictOrNull() ?: return
-        publish(enabledValue, owner.value)
+        if (!request.expectedEnabled) {
+            resetFalseAtMs = receivedAtMs
+            readRequest = null
+            maybeIssueEnable(operation)
+            return
+        }
+        stage = Stage.VERIFIED
+        active = null
+        readRequest = null
+        record("virtual_stick_mode_contract", "verified", "generation=${operation.productGeneration}/${operation.token} proof_category=virtual_stick_mode_contract reset_false_t_ms=$resetFalseAtMs enable_ack_t_ms=$enableAcknowledgedAtMs direct_true_t_ms=$enableTrueAtMs read_true_t_ms=$receivedAtMs raw_owner=UNKNOWN")
+        progress(ContractProgress.Verified(operation))
+    }
+
+    @Synchronized
+    private fun maybeIssueEnable(operation: AuthorityOperation) {
+        if (active != operation || stage != Stage.RESET_READING || !resetAcknowledged || resetFalseAtMs == null) return
+        stage = Stage.ENABLING
+        enableIssuedAtMs = nowMs()
+        record("VirtualStickManager.enableVirtualStick", "contract_enable_issued", "generation=${operation.productGeneration}/${operation.token} proof_category=virtual_stick_mode_contract reset_false_t_ms=$resetFalseAtMs raw_owner=UNKNOWN t_ms=$enableIssuedAtMs")
+        progress(ContractProgress.IssueEnable(operation))
+    }
+
+    @Synchronized
+    private fun maybeReadCurrentMode(operation: AuthorityOperation) {
+        if (active != operation || stage != Stage.ENABLING || !enableAcknowledged || enableTrueAtMs == null) return
+        val now = nowMs()
+        if (now - enableIssuedAtMs > PROOF_TIMEOUT_MS) {
+            fail(operation, "virtual stick mode contract proof timed out")
+            return
+        }
+        stage = Stage.READING
+        val request = AuthorityReadRequest(operation.productGeneration, operation.token, now, expectedEnabled = true)
+        readRequest = request
+        record("KeyVirtualStickEnabled", "contract_read_issued", "generation=${request.productGeneration}/${request.operationToken} direct_true_t_ms=$enableTrueAtMs t_ms=$now")
+        readMode(request)
+    }
+
+    @Synchronized
+    private fun fail(operation: AuthorityOperation, detail: String) {
+        if (active != operation) return
+        active = null
+        stage = null
+        readRequest = null
+        record("virtual_stick_mode_contract", "failed", "generation=${operation.productGeneration}/${operation.token} proof_category=virtual_stick_mode_contract $detail raw_owner=UNKNOWN t_ms=${nowMs()}")
+        progress(ContractProgress.Failed(operation, detail))
+    }
+
+    @Synchronized
+    private fun matches(operation: AuthorityOperation, expected: Stage, key: String, event: String, status: String): Boolean {
+        if (active == operation && stage == expected) return true
+        record(key, event, "$status generation=${operation.productGeneration}/${operation.token} current=$productGeneration/$operationToken stage=${stage ?: "none"} t_ms=${nowMs()}")
+        return false
     }
 
     @Synchronized
     private fun invalidate() {
-        operationToken += 1
-        activeEnable = null
-        snapshot = null
-        samples.clear()
-    }
-
-    @Synchronized
-    private fun beginSnapshot(postEnable: Boolean) {
-        snapshotToken += 1
-        samples.clear()
-        val request = AuthorityReadRequest(
-            productGeneration = productGeneration,
-            operationToken = operationToken,
-            snapshotToken = snapshotToken,
-            issuedAtMs = nowMs(),
-            postEnable = postEnable,
-        )
-        snapshot = request
-        record("direct_authority", "read_issued", "generation=${request.productGeneration}/${request.operationToken}/${request.snapshotToken} post_enable=$postEnable t_ms=${request.issuedAtMs}")
-        AuthorityKey.entries
-            .filter { it != AuthorityKey.FLIGHT_CONTROL_AUTHORITY_CHANGE_REASON }
-            .forEach { read(it, request) }
+        active = null
+        stage = null
+        readRequest = null
+        resetAcknowledged = false
+        resetFalseAtMs = null
+        enableAcknowledged = false
+        enableAcknowledgedAtMs = null
+        enableTrueAtMs = null
     }
 
     private companion object {
-        const val MAX_SNAPSHOT_AGE_MS = 1_000L
-        const val MAX_READ_SKEW_MS = 250L
+        const val PROOF_TIMEOUT_MS = 4_000L
     }
 }
 

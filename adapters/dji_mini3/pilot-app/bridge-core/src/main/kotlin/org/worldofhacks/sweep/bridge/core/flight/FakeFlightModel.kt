@@ -34,6 +34,8 @@ class FakeFlightModel(
     var landingResult: PortResult = PortResult.Ok
     var stopTakeoffCalls = 0
         private set
+    var disableVirtualStickCalls = 0
+        private set
 
     /**
      * How many [advance] calls an [enableVirtualStick] waits before it answers: 0 answers at
@@ -42,6 +44,7 @@ class FakeFlightModel(
      */
     var deferEnableTicks: Int = 0
     var deferDisableTicks: Int = 0
+    var enableSetsVirtualStickBeforeResult = false
 
     private var pendingEnable: ((PortResult) -> Unit)? = null
     private var pendingEnableTicks = 0
@@ -124,6 +127,7 @@ class FakeFlightModel(
 
     override fun enableVirtualStick(onResult: (PortResult) -> Unit) {
         if (deferEnableTicks > 0) {
+            if (enableSetsVirtualStickBeforeResult) virtualStickEnabled = true
             pendingEnable = onResult
             pendingEnableTicks = deferEnableTicks
             return
@@ -142,6 +146,7 @@ class FakeFlightModel(
     }
 
     override fun disableVirtualStick(onResult: (PortResult) -> Unit) {
+        disableVirtualStickCalls += 1
         if (deferDisableTicks > 0) {
             pendingDisable = onResult
             pendingDisableTicks = deferDisableTicks
