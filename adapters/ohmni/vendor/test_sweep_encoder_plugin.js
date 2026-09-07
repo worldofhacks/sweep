@@ -18,6 +18,8 @@ class FakeSerial extends EventEmitter {
   sendCustom(sid, command, payload) {
     this.requests.push({ sid, command, payload: Buffer.from(payload) });
   }
+
+  sendBatteryQuery() {}
 }
 
 async function wait(ms) {
