@@ -75,7 +75,7 @@ adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/run.sh stop
 
 ## Owner encoder sampler
 
-The vendor Node owns paired drive-encoder reads and publishes bounded records through `sweep_encoder.sock`. No BotShell or adapter reader may query those registers while the sampler is installed. The ownership gate starts with the Node; polling begins only when the native model starts after servo initialization. A later native initialization withdraws pose through an unavailable event until a newly qualified sampler produces pairs. The patch installer only stages verified source and does not restart the vendor owner. A stock owner restart reconnects the serial bus, reinitializes the servos, enables wheel torque, and initializes the neck. A restart therefore requires a separately reviewed operator procedure after physical motion is permitted.
+The vendor Node owns paired drive-encoder reads and publishes bounded records through `sweep_encoder.sock`. No BotShell or adapter reader may query those registers while the sampler is installed. `install_owner_encoder_plugin.sh` installs the sampler through the vendor's existing `/files/plugins` loader. It verifies the original vendor source SHA-256 (`e128…1300`), refuses duplicates, and leaves the extracted assets unchanged. The plugin waits for the model start after servo initialization, then activates polling. A later native initialization withdraws pose through an unavailable event until a newly qualified sampler produces pairs. `rollback_owner_encoder_plugin.sh` removes only matching plugin files. Neither command restarts the vendor owner.
 
 ## Approved ground return
 

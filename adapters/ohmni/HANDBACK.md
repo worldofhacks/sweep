@@ -35,11 +35,13 @@ The source obtained through `adb exec-out` can acquire CRLF line endings in tran
 
 Sweep starts two optional processes from `/data/local/sweep`: `run.sh` records `node.pid` and `node.log`; `adapters/ohmni/camera.sh` records `camera.pid` and `camera.log`. They use PID validation and have no Android init, systemd, package, or boot-time service. A deployed payload can add `python/`, `lib/`, `ffmpeg`, `adapters/`, `planner/`, `relay/`, `run.sh`, and camera launcher files under that root. The handback capture records every pre-existing file path, plus hashes and metadata for direct Sweep launchers, configuration, and handback files. It records only selected process IDs and does not inspect Android service registrations. Deployment hashes identify removable additions without rehashing the bundled Python runtime.
 
-The owner patch has three exact vendor paths:
+The current encoder installer writes three files under the vendor-managed plugin directory and leaves `telebot_node.js` untouched:
 
-- `telebot_node.js`, replaced only after its original bytes are copied to `telebot_node.js.sweep-owner-encoder.backup`.
-- `telebot_node.js.sweep-owner-encoder.backup`, created from the vendor source with its metadata preserved after the installer verifies that no file already uses that path.
-- `sweep_paired_encoder_sampler.js`, created only when that path did not already exist. The installer also rejects a pre-existing disabled-patch path.
+- `sweep_encoder_plugin.js`, the loader entrypoint.
+- `sweep_encoder_plugin/sampler.js`, kept in a private subdirectory so the vendor loader does not instantiate it as a second plugin.
+- `sweep_encoder_plugin.install`, containing the vendor source and installed file hashes used by rollback.
+
+It refuses a changed vendor source, an existing plugin file, private directory, or manifest. The earlier owner-patch paths may exist only on a unit previously installed through that retired procedure; preserve them for its matching rollback instead of mixing procedures.
 
 The camera trial may create its named trial directory, the camera PID and log, and the host ADB mapping `tcp:8554 -> tcp:18554`. It does not change V4L2 configuration. The camera launcher reads existing private environment files and must leave them untouched.
 
@@ -49,7 +51,7 @@ Perform this procedure only during a supervised handover window. It is a plan fo
 
 1. Open the private capture for that robot. Confirm the serial, the vendor source snapshot SHA-256, metadata, pre-existing Sweep inventory, and pre-existing ADB reverse list. Capture fresh metadata for the known 13:04 backup paths on Ohmni 12.
 2. Stop only the Sweep processes through their own launchers: `camera.sh stop`, then `run.sh stop`. Each launcher refuses to terminate a PID that does not identify its own command. Confirm no `node.pid` or `camera.pid` process remains. Do not stop the normal Ohmni app or its native Node process by PID.
-3. If the owner patch is installed, compare the current `telebot_node.js`, its backup, and the sampler module with the manifest and the hash-pinned rollback script. Run `rollback_owner_encoder_patch.sh` only when all three match. It restores the original vendor source and metadata, then removes the matching sampler module and matching disabled patched source. Any mismatch leaves the file untouched for review.
+3. If the encoder plugin is installed, compare `sweep_encoder_plugin.js`, `sweep_encoder_plugin/sampler.js`, and `sweep_encoder_plugin.install` with the hash-pinned rollback script. Run `rollback_owner_encoder_plugin.sh` only when all match. It removes those plugin files and leaves the vendor source unchanged. For an earlier owner-patch installation, use only its matching legacy rollback procedure. Any mismatch leaves the file untouched for review.
 4. Restore a pre-existing Sweep file only from its matching recorded backup after its hash and metadata have been captured. Compare the current `/data/local/sweep` inventory with the pre-install manifest. Remove an added file only when it is recorded as Sweep-created for this deployment and its hash matches the deployment record. Leave unknown, changed, or user-created paths in place. Never use `rm -rf /data/local/sweep`.
 5. Compare `adb reverse --list` with the capture list. The unit 12 capture already contains `host tcp:8554 tcp:18554`; its current presence does not prove origin. The 13:25 camera operation record identifies the Sweep camera trial as the operation that added the mapping after reboot. Remove it only after confirming that record and the current mapping. Keep every pre-existing or unrecognized mapping.
 6. Leave `node.env`, `camera.env`, user recordings, and camera configuration untouched unless a separate capture proves a Sweep-owned replacement and supplies its original backup. Remove only the named camera trial directory when its manifest says Sweep created it and its contents match the recorded trial inventory.
