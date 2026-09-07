@@ -1,5 +1,8 @@
 import json
+import os
 import shutil
+import subprocess
+import sys
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +25,29 @@ from relay.control_frames import ControlLocalizationFrame
 from relay.observations import ClockMapping, Observation
 
 IDENTITY = ((1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+
+
+@pytest.mark.parametrize("reader", ["config", "evidence"])
+def test_localization_fifo_input_refuses_without_waiting_for_a_writer(tmp_path, reader):
+    fifo = tmp_path / "input.json"
+    os.mkfifo(fifo)
+    program = """
+import sys
+from perception.world_localization import _evidence_document
+from perception.world_localization_runtime import WorldLocalizationRuntimeConfig
+try:
+    if sys.argv[2] == 'config':
+        WorldLocalizationRuntimeConfig.load(sys.argv[1])
+    else:
+        _evidence_document(sys.argv[1], 'geometry', '0' * 64)
+except ValueError:
+    raise SystemExit(0)
+raise SystemExit(1)
+"""
+    result = subprocess.run([sys.executable, "-c", program, str(fifo), reader], timeout=5)
+    assert result.returncode == 0
+
+
 COVARIANCE = ((0.01, 0.0, 0.0), (0.0, 0.02, 0.0), (0.0, 0.0, 0.03))
 _UNSET = object()
 

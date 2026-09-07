@@ -132,7 +132,7 @@ def _evidence_document(path: str | Path, name: str, expected_sha256: str) -> Map
     source = Path(path)
     descriptor: int | None = None
     try:
-        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_EVIDENCE_BYTES:
             raise WorldLocalizationError(f"{name} evidence must be a bounded regular file")

@@ -50,7 +50,8 @@ from relay.control_localization_contracts import (
 LIVE_PUBLISH_INTERVAL_S = 0.1
 LIVE_RECONNECT_BACKOFF_S = 1.0
 LIVE_SHUTDOWN_TIMEOUT_S = 6.0
-MAX_DRONES = 4
+MAX_DRONES = 6
+MAX_STATE_NODES = 9
 MAX_QUEUE_LIMIT = 4_096
 MAX_JSON_BYTES = 1_048_576
 MAX_URL_CHARS = 2_048
@@ -1033,7 +1034,7 @@ def _binding_from_state(raw: Mapping[str, object], drone_id: int, session: str) 
         or raw["type"] != "state"
         or raw["session"] != session
         or not isinstance(raw["drones"], list)
-        or len(raw["drones"]) > MAX_DRONES
+        or len(raw["drones"]) > MAX_STATE_NODES
     ):
         raise PublisherTransportError("relay state handshake is invalid")
     try:
@@ -1061,6 +1062,8 @@ def _binding_from_state(raw: Mapping[str, object], drone_id: int, session: str) 
             raise PublisherTransportError("relay state drone identities are invalid")
         seen.add(candidate)
         if candidate == drone_id:
+            if item.get("node_type", "aircraft") != "aircraft":
+                raise PublisherTransportError("localization binding requires an aircraft")
             matches.append(item)
     if len(matches) != 1:
         raise PublisherTransportError("authenticated aircraft has no current relay epoch")

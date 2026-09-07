@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -54,7 +56,15 @@ class WorldLocalizationRuntimeConfig:
     @classmethod
     def load(cls, path: str | Path) -> WorldLocalizationRuntimeConfig:
         source = Path(path)
-        encoded = source.read_bytes()
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_CONFIG_BYTES:
+                raise ValueError("world localization configuration must be a bounded regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                encoded = stream.read(_MAX_CONFIG_BYTES + 1)
+        finally:
+            os.close(descriptor)
         if len(encoded) > _MAX_CONFIG_BYTES:
             raise ValueError("world localization configuration exceeds 1 MiB")
         raw = json.loads(encoded, object_pairs_hook=_unique_json)
@@ -69,8 +79,8 @@ class WorldLocalizationRuntimeConfig:
         if not isinstance(raw["accepted_versions"], Mapping):
             raise ValueError("accepted_versions must be a map")
         accepted_versions = dict(raw["accepted_versions"])
-        if not isinstance(raw["devices"], list) or not raw["devices"]:
-            raise ValueError("world localization devices must be a nonempty array")
+        if not isinstance(raw["devices"], list) or not 1 <= len(raw["devices"]) <= 6:
+            raise ValueError("world localization devices must contain one to six aircraft")
         adapters: dict[int, WorldLocalizationAdapter] = {}
         for item in raw["devices"]:
             item = _mapping(

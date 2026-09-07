@@ -430,7 +430,9 @@ def test_config_schema_is_exact_deeply_copied_and_immutable():
     with pytest.raises(PublisherError, match="fields"):
         ControlPublisherConfig.from_mapping(unknown)
 
-    too_many_drones = config_mapping(drones=(1, 2, 3, 4, 5))
+    six_aircraft = ControlPublisherConfig.from_mapping(config_mapping(drones=(1, 2, 3, 4, 5, 6)))
+    assert len(six_aircraft.drones) == 6
+    too_many_drones = config_mapping(drones=(1, 2, 3, 4, 5, 6, 7))
     with pytest.raises(PublisherError, match="drones are invalid"):
         ControlPublisherConfig.from_mapping(too_many_drones)
 
@@ -618,6 +620,32 @@ def test_live_event_ids_are_bounded_and_unique_across_process_runs(tmp_path):
     assert first_id != second_id
     assert len(first_id) <= 128
     assert len(second_id) <= 128
+
+
+def test_localization_binding_accepts_six_aircraft_and_three_ground_nodes():
+    state = {
+        "v": 1,
+        "t": 1,
+        "type": "state",
+        "event_id": "mixed-state",
+        "session": "session-1",
+        "roster_version": 4,
+        "drones": [
+            {
+                "drone_id": number,
+                "connection_epoch": 9,
+                "membership": "ready",
+                "node_type": "aircraft" if number <= 6 else "ground",
+            }
+            for number in range(1, 10)
+        ],
+    }
+    assert _binding_from_state(state, 6, "session-1") == binding(6, 9, 4, "ready")
+    with pytest.raises(PublisherTransportError, match="requires an aircraft"):
+        _binding_from_state(state, 9, "session-1")
+    state["drones"].append({"drone_id": 10})
+    with pytest.raises(PublisherTransportError, match="handshake"):
+        _binding_from_state(state, 6, "session-1")
 
 
 def test_auth_acceptance_and_state_binding_are_strict():
