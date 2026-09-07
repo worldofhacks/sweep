@@ -180,6 +180,7 @@ class WebcamLocalizationService:
             raise ValueError("localization source ID is invalid")
         from perception.shared_camera_pipeline import SharedCameraPipeline
 
+        self._loop = loop
         provenance = getattr(loop, "provenance", None)
         self._pipeline = SharedCameraPipeline(
             url,
@@ -224,11 +225,13 @@ class WebcamLocalizationService:
         }
         if status.current_fix is not None:
             return dict(status.current_fix) | lease_state
+        last_pose = getattr(self._loop, "last_pose", None)
         return {
             "type": "webcam_localization",
             "accepted": False,
             "control_eligible": False,
             "flight_approved": False,
+            "pose_observation": None if not isinstance(last_pose, Mapping) else dict(last_pose),
         } | lease_state
 
 
