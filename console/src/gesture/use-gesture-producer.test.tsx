@@ -430,13 +430,13 @@ describe('mixed fleet gestures', () => {
     ['Victory', { dx: 1, dy: 0 }],
     ['Closed_Fist', { dx: 0, dy: -1 }],
     ['ILoveYou', { dx: -1, dy: 0 }],
-  ] as const)('%s translates a mixed subset only after a thumb confirmation', async (pose, args) => {
+  ] as const)('%s translates an aircraft subset of a mixed roster only after confirmation', async (pose, args) => {
     const { clients, get, hold, enable } = await mount({ profile: 'fleet', mixed: true })
-    await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1, 11, 12] }, targets: [1, 11, 12] }) })
+    await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1] }, targets: [1] }) })
     await enable()
     hold(pose, 650)
     const preview = get().control.pendingRequest?.intent
-    expect(preview).toMatchObject({ name: 'translate', args, selection: [1, 11, 12], source: 'webcam', confirm: false })
+    expect(preview).toMatchObject({ name: 'translate', args, selection: [1], source: 'webcam', confirm: false })
     expect(clients.webcam?.sent).toHaveLength(0)
     hold(null, 250)
     hold('Thumb_Up', 450)
@@ -458,7 +458,7 @@ describe('mixed fleet gestures', () => {
     expect(clients.webcam?.sent).toHaveLength(0)
   })
 
-  test.each([false, true])('swarm formation follows the advertised capability profile, C2=%s', async (c2) => {
+  test.each([false, true])('swarm formation refuses a mixed selection, C2=%s', async (c2) => {
     const { clients, get, hold, enable } = await mount({ profile: 'swarm', mixed: true, c2 })
     await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1, 11, 12] }, targets: [1, 11, 12] }) })
     await enable()
@@ -468,11 +468,11 @@ describe('mixed fleet gestures', () => {
       expect(get().producer.view.lastAction?.detail).toContain('disabled by relay capability profile')
       return
     }
-    expect(get().control.pendingRequest?.intent).toMatchObject({ name: 'formation_next', selection: [1, 11, 12], source: 'webcam' })
-    expect(clients.webcam?.sent).toHaveLength(0)
+    expect(get().control.pendingRequest).toBeNull()
+    expect(get().producer.view.lastAction?.detail).toContain('Select only aircraft')
     hold(null, 250)
     hold('Thumb_Up', 450)
-    expect(clients.webcam?.sent[0]).toMatchObject({ name: 'formation_next', selection: [1, 11, 12], confirm: true })
+    expect(clients.webcam?.sent).toHaveLength(0)
   })
 })
 
@@ -511,4 +511,15 @@ describe('ground gesture confirmation through the real controller', () => {
     expect(clients.webcam?.sent).toEqual([])
     expect(clients.console.sent).toEqual([])
   })
+})
+
+
+test('fleet translation gestures refuse a mixed selection without sending a preview', async () => {
+  const { clients, get, hold, enable } = await mount({ profile: 'fleet', mixed: true })
+  await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1, 11] }, targets: [1, 11] }) })
+  await enable(); hold('Pointing_Up', 650)
+  expect(get().control.pendingRequest).toBeNull()
+  expect(get().producer.view.lastAction?.detail).toContain('Select only aircraft')
+  hold(null, 250); hold('Thumb_Up', 450)
+  expect(clients.webcam?.sent).toEqual([])
 })

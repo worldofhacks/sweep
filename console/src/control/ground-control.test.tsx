@@ -1,3 +1,4 @@
+import { SwarmPane } from '../modules/control/SwarmPane'
 import { act, fireEvent, renderHook, render, screen } from '@testing-library/react'
 import { describe, expect, test } from 'vitest'
 import { FixtureRelayClient } from '../testing/fixture-relay-client'
@@ -132,4 +133,19 @@ test('public signed local height accepts only the exact bounded SDK schema', () 
   for (const patch of [{ z_m: NaN }, { source: 'guessed' }, { age_ms: -1 }, { reported_at_ms: null }, { extra: true }]) {
     expect(parseRelayServerEvent({ ...status, local_height: { ...status.local_height, ...patch } })).toBeNull()
   }
+})
+
+
+test('Swarm enables session ARM with selected ground but offers no ground translation or formation', () => {
+  const { result, clients } = mount()
+  render(<SwarmPane controller={result.current} steps={1} onSteps={() => {}} formationPreview={null} onFormationPreview={() => {}} />)
+  const arm = screen.getByRole('button', { name: 'Arm' })
+  expect(arm).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Translate north' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'line' })).toBeDisabled()
+  expect(screen.queryByRole('region', { name: 'Robot formation preview' })).not.toBeInTheDocument()
+  expect(screen.queryByText(/Robots form on the floor|Robots: room east|Robot steps resolve/)).not.toBeInTheDocument()
+  fireEvent.click(arm)
+  expect(clients.console.sent).toHaveLength(1)
+  expect(clients.console.sent[0]).toMatchObject({ name: 'arm', source: 'console', selection: [], args: {} })
 })

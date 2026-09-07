@@ -62,9 +62,9 @@ odometry or a label in the map UI cannot substitute for qualified world localiza
 Source integration and automated tests do not establish a fleet demonstration. The local
 composed configuration preserves the prior world-policy values, starts disarmed, and has
 no qualified navigation assets or speech allowlist. Reusing those values does not qualify
-them for the current devices or room. The last
-local connectivity check found G-01, G-02 and G-03 unreachable at their saved addresses,
-with no DJI controller/bridge attached. The additional ground units are in scope but their
+them for the current devices or room. G-01 recently answered at its saved network address, but its ADB connection did not
+complete. G-02 and G-03 remained unreachable at their saved addresses, and no DJI
+controller/bridge was attached during those checks. The additional ground units are in scope but their
 identities, addresses, camera publishers and sensor bindings are not provisioned here.
 
 G-01 previously produced one camera stream and authenticated diagnostic observations.

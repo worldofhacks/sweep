@@ -289,15 +289,15 @@ an older movement preview. Intent selections support up to 64 configured device 
 
 Gesture starts with Capture / HOLD. **Fleet motion** is an explicit opt-in profile:
 point up → north, Victory → east, closed fist → south, I love you → west, open palm → hold.
-Each translation drafts one relay-configured step for the selected devices. **Swarm
+Each translation drafts one relay-configured step for selected aircraft only. **Swarm
 formations** maps Victory to formation_next and open palm to hold. Thumb up confirms a
 webcam draft; thumb down cancels it. Changing profile stops tracking and cancels the pending
 preview. Arming, takeoff and landing are available only in the separate confirmed Flight profile; network stop remains manual. Gestures use the
 same Intent v1 preview, selection invalidation and relay outcome path as manual controls.
 
-Robot translation uses room +x east / +y north. Aircraft retain the relay's configured
-translation frame. No telemetry yaw extension is required. Formation previews show
-anonymous slots separately for aircraft and robots; a singleton class holds its pose.
+Aircraft use the relay's configured translation frame. Translation and formation controls
+refuse a selection containing robots; Ground provides bounded robot pulses and configured return.
+Formation previews show anonymous aircraft slots only.
 C2 formation controls remain disabled unless the relay advertises them. The simulator-only
 C2 release restriction remains in force for real hardware.
 

@@ -107,7 +107,7 @@ function GestureWorkspace({ controller, now, roomId, services, profile, changePr
       </fieldset>
       {profile === 'ground' && <p className="gs-safety-note">One selected ground robot. Point up drafts a forward pulse (80 mm/s); victory drafts left yaw and I love you drafts right yaw (350 mrad/s), each for 250 ms. Open palm drafts HOLD. Thumb up confirms only a gesture preview. These requested parameters do not guarantee distance or angle; local motion checks still apply.</p>}
       {profile === 'fleet' && <p className="gs-safety-note">One step per translation using the relay-configured frame. Ground nodes using signed local observations require the Ground pulses profile. Point up: north. Victory: east. Closed fist: south. I love you: west. Open palm: hold. Use manual controls for arming and flight actions.</p>}
-      {profile === 'swarm' && <p className="gs-safety-note">Victory drafts the next coordinated formation; open palm drafts hold. Formation availability follows the relay capability profile. Aircraft and robot groups form independently; singleton groups hold their pose.</p>}
+      {profile === 'swarm' && <p className="gs-safety-note">Victory drafts the next coordinated formation; open palm drafts hold. Formation availability follows the relay capability profile. Formations require an aircraft-only selection. Use Ground pulses for robot motion.</p>}
       {profile === 'flight' && <FlightControls controller={controller} />}
       {pane === 'camera' ? (
         <div data-two="1" className="gs-two">

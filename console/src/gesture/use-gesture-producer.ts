@@ -627,6 +627,7 @@ export function emissionBlockedReason(
   if (groundReason) return groundReason
   if (action.name === 'ground_velocity') return null
   if (action.name === 'translate' || action.name === 'formation_next') {
+    if (state.selection.some((id) => state.aircraft[id]?.device_class === 'ground_vehicle')) return 'Select only aircraft for this profile. Use Ground pulses for robots.'
     if (!state.armed) return 'Arm the session with the manual controls before drafting motion.'
     const immobile = state.selection.find((id) => {
       const device = state.aircraft[id]

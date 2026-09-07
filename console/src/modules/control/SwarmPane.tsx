@@ -147,7 +147,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
                 onChange={(event) => onSteps(clampTranslateSteps(Number(event.target.value)))}
               />
             </label>
-            <p className="ct-dpad-note">Robots: room east +x, north +y. Aircraft: relay-configured translation frame. One step is configured by the relay.</p>
+            <p className="ct-dpad-note">Aircraft only, using the relay-configured translation frame and step size. Select one robot in Ground for bounded pulses.</p>
             {dpadReason && <p className="ct-dpad-note">{dpadReason}</p>}
           </div>
         </div>
@@ -249,14 +249,8 @@ function FormationPanel({
   const { state, issueIntent } = controller
   const shown = preview ?? state.formation
   const selected = sortedAircraft(state.aircraft).filter((drone) => state.selection.includes(drone.drone_id))
-  const classes = [...new Set(selected.map((device) => device.device_class))]
-  const groups = classes.map((deviceClass) => {
-    const count = selected.filter((device) => device.device_class === deviceClass).length
-    return { deviceClass, count, dots: formationPlot(count, shown, state.spacing) }
-  })
-  const dots = groups.flatMap((group) => group.dots.map((dot) => ({ ...dot,
-    id: classes.length > 1 ? `${group.deviceClass === 'aircraft' ? 'Aircraft' : 'Robot'} ${dot.id}` : dot.id,
-  })))
+  const groundSelected = selected.some((device) => device.device_class === 'ground_vehicle')
+  const dots = groundSelected ? [] : formationPlot(selected.length, shown, state.spacing)
   const options = formationControls(state)
   return (
     <div className="ct-panel" aria-label="Formation">
@@ -288,17 +282,16 @@ function FormationPanel({
           )
         })}
       </div>
-      {groups.map((group) => <section key={group.deviceClass} aria-label={`${group.deviceClass === 'aircraft' ? 'Aircraft' : 'Robot'} formation preview`}>
-        {classes.length > 1 && <p className="ct-eyebrow">{group.deviceClass === 'aircraft' ? 'Aircraft' : 'Robots'} · {group.count}</p>}
-        {classes.length > 1 && group.count === 1 ? <p className="ct-dpad-note">Single device holds its current pose.</p> : <div className="ct-plot" aria-hidden="true">
-          {group.dots.map((dot) => <span key={dot.id} className="ct-plot-dot" style={{ left: dot.left, top: dot.top }}>{dot.id}</span>)}
-        </div>}
-      </section>)}
+      {!groundSelected && <section aria-label="Aircraft formation preview">
+        <div className="ct-plot" aria-hidden="true">
+          {dots.map((dot) => <span key={dot.id} className="ct-plot-dot" style={{ left: dot.left, top: dot.top }}>{dot.id}</span>)}
+        </div>
+      </section>}
       <p className="ct-formation-relay">{formationRelayNote(preview, state.formation)}</p>
       <p className="ct-formation-planner">
         Shape-only slots: device-to-slot assignments are not projected by the relay and are therefore not
-        guessed here. Robots form on the floor plane; aircraft retain their flight altitude. Mixed groups
-        form independently within each class, with spacing checked within that class. The arbiter refuses the whole plan if any assigned route breaks spacing, the ceiling or
+        guessed here. Formations require an aircraft-only selection. Use Ground controls for robots.
+        The arbiter refuses the whole plan if any assigned route breaks spacing, the ceiling or
         the geofence. The requested shape is not authoritative until relay state reports the completed update.
       </p>
       {dots.map((dot) => (
