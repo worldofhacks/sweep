@@ -245,7 +245,7 @@ class RelayRuntime:
                     aircraft_limit=(
                         self.settings.physical_aircraft_limit
                         if self.settings.adapter_backend is AdapterBackend.REMOTE
-                        else None
+                        else self.settings.effective_sim_aircraft_count
                     ),
                     observation_configuration=self.settings.observation_configuration,
                     node_types=self.settings.node_types,
