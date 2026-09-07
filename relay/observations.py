@@ -6,10 +6,12 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite, sqrt
+from types import MappingProxyType
 from typing import Literal
 
 MAX_EVENT_BYTES = 65_536
 MAX_IDENTIFIER_CHARS = 128
+MAX_DEVICE_ID = 2**31 - 1
 MAX_SESSION_CHARS = 512
 MAX_COORDINATE_M = 1_000_000.0
 MAX_RANGE_SAMPLES = 720
@@ -54,9 +56,31 @@ def _integer(value: object, name: str, *, minimum: int = 0, maximum: int = 2**63
 
 
 def _number(value: object, name: str, *, maximum: float = MAX_COORDINATE_M) -> float:
-    if type(value) not in {int, float} or not isfinite(value) or abs(value) > maximum:
+    if type(value) not in {int, float}:
         _error("invalid_observation", f"{name} must be a bounded finite number")
-    return float(value)
+    try:
+        result = float(value)
+    except OverflowError:
+        _error("invalid_observation", f"{name} must be a bounded finite number")
+    if not isfinite(result) or abs(result) > maximum:
+        _error("invalid_observation", f"{name} must be a bounded finite number")
+    return result
+
+
+def _freeze(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    return value
 
 
 def _exact(raw: object, fields: frozenset[str], name: str) -> Mapping[str, object]:
@@ -199,7 +223,9 @@ class FrameDeclaration:
             _error("invalid_frame_declaration", "local frames require a complete source scope")
         object.__setattr__(self, "session", _text(self.session, "frame session", MAX_SESSION_CHARS))
         object.__setattr__(
-            self, "device_id", _integer(self.device_id, "frame device_id", minimum=1)
+            self,
+            "device_id",
+            _integer(self.device_id, "frame device_id", minimum=1, maximum=MAX_DEVICE_ID),
         )
         object.__setattr__(
             self, "connection_epoch", _integer(self.connection_epoch, "frame epoch", minimum=1)
@@ -272,13 +298,16 @@ class SourceBinding:
     world_map_id: str | None = None
     world_map_version: str | None = None
     world_physical_datum: str | None = None
+    allowed_clock_mapping_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "session", _text(self.session, "binding session", MAX_SESSION_CHARS)
         )
         object.__setattr__(
-            self, "device_id", _integer(self.device_id, "binding device_id", minimum=1)
+            self,
+            "device_id",
+            _integer(self.device_id, "binding device_id", minimum=1, maximum=MAX_DEVICE_ID),
         )
         object.__setattr__(
             self,
@@ -288,10 +317,20 @@ class SourceBinding:
         object.__setattr__(self, "source_id", _text(self.source_id, "binding source_id"))
         if self.node_type not in {"aircraft", "ground"}:
             _error("invalid_source_binding", "binding node_type is unknown")
+        if not isinstance(self.allowed_frames, tuple):
+            _error("invalid_source_binding", "binding allowed frames must be a tuple")
         frames = tuple(_text(item, "allowed frame") for item in self.allowed_frames)
         if not frames or len(frames) > 32 or len(set(frames)) != len(frames):
             _error("invalid_source_binding", "binding allowed frames must be unique and bounded")
         object.__setattr__(self, "allowed_frames", frames)
+        if not isinstance(self.allowed_clock_mapping_ids, tuple):
+            _error("invalid_source_binding", "binding clock mappings must be a tuple")
+        mappings = tuple(
+            _text(item, "allowed clock mapping") for item in self.allowed_clock_mapping_ids
+        )
+        if len(mappings) > 16 or len(set(mappings)) != len(mappings):
+            _error("invalid_source_binding", "binding clock mappings must be unique and bounded")
+        object.__setattr__(self, "allowed_clock_mapping_ids", mappings)
         pins = (self.world_map_id, self.world_map_version, self.world_physical_datum)
         if "world" in frames:
             if any(item is None for item in pins):
@@ -308,7 +347,9 @@ class SourceBinding:
         elif any(item is not None for item in pins):
             _error("invalid_source_binding", "local-only binding cannot carry world map pins")
 
-    def validate(self, submission: ObservationSubmission, frames: FrameRegistry) -> None:
+    def validate(
+        self, submission: ObservationSubmission, frames: FrameRegistry
+    ) -> FrameDeclaration:
         if (
             self.session,
             self.device_id,
@@ -325,7 +366,7 @@ class SourceBinding:
             _error(
                 "source_binding_mismatch", "observation does not match its authenticated binding"
             )
-        self.require_frame(submission.frame, submission, frames)
+        return self.require_frame(submission.frame, submission, frames)
 
     def require_frame(
         self,
@@ -455,13 +496,23 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
             "aircraft telemetry",
         )
         position = FramedVector.parse(value["position"])
-        velocity = FramedVector.parse(value["velocity"])
-        if position.frame != envelope_frame or velocity.frame != envelope_frame:
+        velocity_raw = _exact(
+            value["velocity"],
+            frozenset({"frame", "x_m_s", "y_m_s", "z_m_s"}),
+            "framed velocity",
+        )
+        velocity = {
+            "frame": _text(velocity_raw["frame"], "velocity frame"),
+            "x_m_s": _number(velocity_raw["x_m_s"], "x_m_s"),
+            "y_m_s": _number(velocity_raw["y_m_s"], "y_m_s"),
+            "z_m_s": _number(velocity_raw["z_m_s"], "z_m_s"),
+        }
+        if position.frame != envelope_frame or velocity["frame"] != envelope_frame:
             _error("payload_frame_mismatch", "aircraft payload vectors must use the envelope frame")
         result: dict[str, object] = {
             "kind": kind,
             "position": position.to_mapping(),
-            "velocity": velocity.to_mapping(),
+            "velocity": velocity,
         }
         for name in ("battery", "link", "pos_quality"):
             number = _number(value[name], name, maximum=1.0)
@@ -615,7 +666,11 @@ class ObservationSubmission:
         object.__setattr__(self, "session", _text(self.session, "session", MAX_SESSION_CHARS))
         for name in ("source_id", "frame"):
             object.__setattr__(self, name, _text(getattr(self, name), name))
-        object.__setattr__(self, "device_id", _integer(self.device_id, "device_id", minimum=1))
+        object.__setattr__(
+            self,
+            "device_id",
+            _integer(self.device_id, "device_id", minimum=1, maximum=MAX_DEVICE_ID),
+        )
         object.__setattr__(
             self, "connection_epoch", _integer(self.connection_epoch, "connection_epoch", minimum=1)
         )
@@ -644,7 +699,7 @@ class ObservationSubmission:
             object.__setattr__(
                 self, "clock_mapping_id", _text(self.clock_mapping_id, "clock_mapping_id")
             )
-        object.__setattr__(self, "payload", _payload(self.payload, self.frame))
+        object.__setattr__(self, "payload", _freeze(_payload(self.payload, self.frame)))
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -661,13 +716,13 @@ class ObservationSubmission:
             "t_capture": None if self.t_capture is None else self.t_capture.to_mapping(),
             "t_source_receipt": self.t_source_receipt.to_mapping(),
             "clock_mapping_id": self.clock_mapping_id,
-            "payload": dict(self.payload),
+            "payload": _thaw(self.payload),
         }
 
     @classmethod
     def parse(cls, raw: object) -> ObservationSubmission:
         value = _exact(raw, _SUBMISSION_FIELDS, "observation submission")
-        if value["v"] != 1 or value["type"] != "observation":
+        if type(value["v"]) is not int or value["v"] != 1 or value["type"] != "observation":
             _error("invalid_observation", "observation v/type is invalid")
         capture = value["t_capture"]
         return cls(
@@ -711,11 +766,7 @@ class RatePolicy:
 
     def accepts(self, previous_t_ingest: int | None, t_ingest: int) -> bool:
         now = _integer(t_ingest, "t_ingest")
-        return (
-            previous_t_ingest is None
-            or now < previous_t_ingest
-            or now - previous_t_ingest >= self.minimum_interval_ms
-        )
+        return previous_t_ingest is None or now >= previous_t_ingest + self.minimum_interval_ms
 
 
 @dataclass(frozen=True, slots=True)
@@ -750,13 +801,23 @@ def ingest(
 ) -> Observation:
     """Stamp a producer submission after host-owned frame and clock checks."""
     ingest_time = _integer(t_ingest, "t_ingest")
-    binding.validate(submission, frames)
-    _validate_payload_frames(submission, frames, binding)
+    outer_frame = binding.validate(submission, frames)
+    _validate_payload_frames(submission, frames, binding, outer_frame)
     if submission.clock_mapping_id is None:
+        _canonical_json(submission.to_mapping())
         return Observation(submission, ingest_time)
+    if submission.clock_mapping_id not in binding.allowed_clock_mapping_ids:
+        _error(
+            "clock_mapping_not_authorized", "source binding does not authorize this clock mapping"
+        )
     mapping = mappings.get(submission.clock_mapping_id)
     if mapping is None:
         _error("unknown_clock_mapping", "observation references an unconfigured clock mapping")
+    if mapping.mapping_id != submission.clock_mapping_id:
+        _error(
+            "clock_mapping_mismatch",
+            "clock mapping lookup key does not match its configured identity",
+        )
     receipt_ms = mapping.relay_ms(submission.t_source_receipt)
     if receipt_ms > ingest_time + mapping.max_error_ms + timing.max_future_skew_ms:
         _error("source_receipt_in_future", "mapped source receipt exceeds the relay ingest bound")
@@ -764,6 +825,7 @@ def ingest(
         capture_ms = mapping.relay_ms(submission.t_capture)
         if capture_ms > ingest_time + mapping.max_error_ms + timing.max_future_skew_ms:
             _error("capture_in_future", "mapped capture exceeds the relay ingest bound")
+    _canonical_json(submission.to_mapping())
     return Observation(submission, ingest_time)
 
 
@@ -776,7 +838,10 @@ def decode_observation(encoded: bytes | str) -> Observation:
 
 
 def _decode(encoded: bytes | str) -> object:
-    raw = encoded.encode() if isinstance(encoded, str) else encoded
+    try:
+        raw = encoded.encode("utf-8") if isinstance(encoded, str) else encoded
+    except UnicodeEncodeError:
+        _error("invalid_observation", "observation is not valid UTF-8")
     if not isinstance(raw, bytes) or len(raw) > MAX_EVENT_BYTES:
         _error("observation_too_large", "encoded observation exceeds the v1 byte ceiling")
 
@@ -789,13 +854,18 @@ def _decode(encoded: bytes | str) -> object:
         return result
 
     try:
-        return json.loads(raw, object_pairs_hook=reject_duplicates)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        _error("invalid_observation", f"observation is not valid JSON: {error.msg}")
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except ObservationError:
+        raise
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError, ValueError):
+        _error("invalid_observation", "observation is not valid JSON")
 
 
 def _validate_payload_frames(
-    submission: ObservationSubmission, frames: FrameRegistry, binding: SourceBinding
+    submission: ObservationSubmission,
+    frames: FrameRegistry,
+    binding: SourceBinding,
+    outer_frame: FrameDeclaration,
 ) -> None:
     payload = submission.payload
     kind = payload["kind"]
@@ -807,10 +877,19 @@ def _validate_payload_frames(
         binding.require_frame(str(pose["parent_frame"]), submission, frames)  # type: ignore[index]
         binding.require_frame(str(pose["child_frame"]), submission, frames)  # type: ignore[index]
     elif kind == "range_scan":
+        if outer_frame.kind != "lidar" or outer_frame.axis_convention != "forward_left_up":
+            _error("payload_frame_mismatch", "range scans require a forward-left-up lidar frame")
         pose = payload["sensor_pose"]  # type: ignore[assignment]
         binding.require_frame(str(pose["parent_frame"]), submission, frames)  # type: ignore[index]
         binding.require_frame(str(pose["child_frame"]), submission, frames)  # type: ignore[index]
-    elif kind == "tag_observation":
+    elif kind in {"camera_frame", "tag_observation"}:
+        if outer_frame.kind != "camera" or outer_frame.axis_convention != "right_down_forward":
+            _error(
+                "payload_frame_mismatch",
+                "camera evidence requires a right-down-forward camera frame",
+            )
+        if kind == "camera_frame":
+            return
         pose = payload["tag_pose"]  # type: ignore[assignment]
         binding.require_frame(str(pose["parent_frame"]), submission, frames)  # type: ignore[index]
         binding.require_frame(str(pose["child_frame"]), submission, frames)  # type: ignore[index]
