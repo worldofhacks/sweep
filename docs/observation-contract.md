@@ -34,7 +34,7 @@ A declaration has `frame_id`, `kind`, `axis_convention`, and metric `unit`. The 
 
 A local declaration has kind `odom`, `body`, `camera`, `lidar`, `tag`, or `legacy_map_enu`; one of `right_handed_z_up`, `east_north_up`, `forward_left_up`, `right_down_forward`, or `right_up_outward` as appropriate. OpenCV camera coordinates use `right_down_forward`; a printed tag can use `right_up_outward`. Every local declaration has a complete session/device/epoch/source scope. Several sources may declare the same local frame ID; resolution uses the complete scope. `legacy_map_enu` preserves old aircraft semantics as a named local compatibility frame. It does not assert that a DJI local ENU origin equals `world`.
 
-A host-owned `SourceBinding` names the authenticated session, positive device ID, epoch, source ID, node type, and the frame IDs this source may publish. It supplies the exact map pins required to authorize `world`. Ingestion compares the observation identity and node type with this binding before resolving every envelope or payload frame. A producer cannot claim `world` merely because the declaration exists.
+A host-owned `SourceBinding` names the authenticated session, positive device ID, epoch, source ID, node type, exact frame IDs, and approved clock-mapping IDs this source may publish. It supplies the exact map pins required to authorize `world`. Ingestion compares the observation identity and node type with this binding before resolving every envelope or payload frame. A producer cannot claim `world` merely because the declaration exists.
 
 A `FramedVector` is `{frame, x_m, y_m, z_m}`. A `FramedPose` is `{parent_frame, child_frame, x_m, y_m, z_m, qx, qy, qz, qw}` with a unit quaternion in `[x, y, z, w]` order. Both frame IDs must be current declarations for the observation source. A pose reports a dynamic relationship. It does not register either frame to `world`.
 
@@ -44,7 +44,7 @@ A `FramedVector` is `{frame, x_m, y_m, z_m}`. A `FramedPose` is `{parent_frame, 
 
 | Kind | Body |
 | --- | --- |
-| `aircraft_telemetry` | Framed position and velocity plus battery, link, position quality, and state. |
+| `aircraft_telemetry` | Framed position in metres and velocity in metres per second, plus battery, link, position quality, and state. |
 | `pose` | A framed parent/child pose. |
 | `range_scan` | Lidar frame, associated `sensor_pose`, angular bounds, metric ranges, and mount ID. At most 720 ranges are admitted. |
 | `camera_frame` | Image identity and digest, dimensions, and calibration ID. It carries no fabricated map pose. |
@@ -55,4 +55,4 @@ The event frame is validated first. Payload frames must agree with it where they
 
 ## Reuse boundary
 
-This module owns encoding, decoding, duplicate-key rejection, frame-scope checks, clock-reference checks, timing skew checks, and a pure `RatePolicy` helper. The relay session will own authentication, node-class membership, event identity retention, rate state, consumer authorization, fan-out, audit writes, and MCAP mirroring. Consumers must explicitly authorize an observation kind. Operator sources do not receive high-rate sensor evidence by default.
+This module owns encoding, decoding, duplicate-key rejection, frame-scope checks, clock-reference checks, timing skew checks, and a pure `RatePolicy` helper that rejects a timestamp earlier than the prior admitted event. The relay session will own authentication, node-class membership, event identity retention, rate state, consumer authorization, fan-out, audit writes, and MCAP mirroring. Consumers must explicitly authorize an observation kind. Operator sources do not receive high-rate sensor evidence by default.
