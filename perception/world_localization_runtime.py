@@ -159,6 +159,7 @@ def _evidence_paths(raw: object, root: Path) -> Mapping[str, Path]:
         "uncertainty",
         "world_enu",
         "height_alignment",
+        "capture_alignment",
     }
     value = _mapping(raw, names, "world localization evidence paths")
     result: dict[str, Path] = {}
@@ -193,6 +194,8 @@ def _pins(raw: object) -> WorldLocalizationPins:
         "camera_serial",
         "camera_pipeline_id",
         "body_extrinsics_id",
+        "capture_alignment_config_id",
+        "capture_alignment_config_sha256",
         "world_enu",
         "uncertainty",
     }
