@@ -104,7 +104,6 @@ def test_node_status_height_age_uses_relay_receipt_time(
     }
 
 
-
 @pytest.mark.parametrize(
     "capabilities",
     [

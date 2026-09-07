@@ -340,9 +340,8 @@ class AircraftState:
             raise ValueError("position_loss_since_ms must be null or non-negative")
         if self.local_height is not None and not isinstance(self.local_height, LocalHeightEvidence):
             raise ValueError("local_height must be LocalHeightEvidence or null")
-        if (
-            not isinstance(self.readiness_reasons, tuple)
-            or any(not isinstance(reason, str) or not reason for reason in self.readiness_reasons)
+        if not isinstance(self.readiness_reasons, tuple) or any(
+            not isinstance(reason, str) or not reason for reason in self.readiness_reasons
         ):
             raise ValueError("readiness_reasons must be non-empty strings")
 
@@ -912,9 +911,8 @@ class RelayAircraftSafetyEnrichment:
                 raise ValueError("enrichment timestamps must be null or non-negative")
         if self.local_height is not None and not isinstance(self.local_height, LocalHeightEvidence):
             raise ValueError("local_height must be LocalHeightEvidence or null")
-        if (
-            not isinstance(self.readiness_reasons, tuple)
-            or any(not isinstance(reason, str) or not reason for reason in self.readiness_reasons)
+        if not isinstance(self.readiness_reasons, tuple) or any(
+            not isinstance(reason, str) or not reason for reason in self.readiness_reasons
         ):
             raise ValueError("readiness_reasons must be non-empty strings")
         for value in (
