@@ -82,6 +82,9 @@ def test_plugin_installer_preserves_reviewed_vendor_source_and_stages_private_mo
     assert "[ ! -e $target ]" in install
     assert "[ ! -e $private_dir ]" in install
     assert "[ ! -e $manifest ]" in install
+    assert "[ ! -L ${plugin_dir} ]" in install
+    assert "plugin_dir_created=" in install
+    assert "stat -c '%u:%g:%a' $plugin_dir" in install
     assert "cp -p $source" not in install
     assert (
         "mv /data/local/tmp/sweep-encoder-plugin.Ab12Cd34/sweep_encoder_plugin.js $target"
