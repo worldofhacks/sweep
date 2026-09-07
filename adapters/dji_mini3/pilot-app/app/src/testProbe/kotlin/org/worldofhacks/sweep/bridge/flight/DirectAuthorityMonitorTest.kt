@@ -45,6 +45,23 @@ class DirectAuthorityMonitorTest {
     }
 
     @Test
+    fun `manager owner diagnostic cannot confirm authority without direct reads`() {
+        val h = Harness()
+        h.monitor.productConnected()
+        val operation = h.monitor.enableIssued()
+        h.monitor.enableCompleted(operation, "ok")
+        val diagnostic = ManagerAuthorityDiagnostic(
+            record = { key, event, status -> h.records += Triple(key, event, status) },
+            nowMs = { 42L },
+        )
+
+        diagnostic.record(enabled = true, advanced = true, owner = "MSDK", directContext = h.monitor.diagnosticContext())
+
+        assertEquals(emptyList<Pair<Boolean, String>>(), h.states)
+        assertTrue(h.records.any { it.first == "VirtualStickManager.state" && it.third.contains("owner=MSDK diagnostic_only owner_freshness=unproven") })
+    }
+
+    @Test
     fun `connection reads cannot confirm after an enable attempt starts`() {
         val h = Harness()
         h.monitor.productConnected()
