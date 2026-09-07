@@ -118,15 +118,17 @@ def write_preview(path, report, grids, points, tags, inset_cells):
     route_status = (
         "clear within authored evidence" if report["route"]["geometry_clear"] else "blocked"
     )
-    atrium = next(f for f in report["formations"] if f["id"] == "atrium")
-    atrium_status = (
-        "candidate pending measurements"
-        if atrium["candidate"]
-        else "rejected; kitchen fallback needs acceptance"
+    formation_status = (
+        ", ".join(
+            f"{formation['id']}: "
+            + ("candidate pending measurements" if formation["candidate"] else "blocked")
+            for formation in report["formations"]
+        )
+        or "no formation volumes"
     )
     summary = (
         f"{report['evidence_kind'].capitalize()} evidence. Route geometry: {route_status}. "
-        f"Atrium: {atrium_status}. Route height: {route['z_min']:g}–{route['z_max']:g} m."
+        f"Formations: {formation_status}. Route height: {route['z_min']:g}–{route['z_max']:g} m."
     )
     Path(path).write_text(
         '<!doctype html><html lang="en"><meta charset="utf-8">'
