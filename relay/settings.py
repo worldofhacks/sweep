@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from relay.auth import StaticCredentialResolver
 from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import NodeType
+from relay.observation_ingress import ObservationConfiguration
 from relay.session import RelayLimits
 from relay.state import aircraft_limit_for_profile
 
@@ -75,6 +76,7 @@ class RelaySettings:
     media_read_password: str | None = field(default=None, repr=False)
     audit_state_interval_ms: int = 10_000
     state_membership_history: int = 8
+    observation_configuration: ObservationConfiguration | None = None
 
     def __post_init__(self) -> None:
         if type(self.relay_token) is not bytes or not 32 <= len(self.relay_token) <= 4_096:
@@ -203,6 +205,11 @@ class RelaySettings:
         )
         return cls(
             relay_token=token.encode(),
+            observation_configuration=(
+                ObservationConfiguration.load(Path(values["SWEEP_OBSERVATIONS_FILE"]))
+                if values.get("SWEEP_OBSERVATIONS_FILE")
+                else None
+            ),
             adapter_keys=adapter_keys,
             node_types=_node_types(values.get("SWEEP_NODE_TYPES_JSON", "{}")),
             localization_keys=_credential_keys(
