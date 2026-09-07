@@ -39,8 +39,9 @@ declared pipeline field is preserved in the artifact, including additional field
 Intrinsics calibration requires `fov_bounds_deg` for both axes. The example bounds
 belong to the synthetic 920/900-pixel camera fixture. Replace them with bounds from
 independent measurements or specifications for the actual decoded crop, accounting
-for zoom and stabilization. Each interval must satisfy `0 < minimum < maximum < 180`.
-Do not derive these bounds from the calibration result being checked.
+for zoom and stabilization. Pinhole intervals must satisfy
+`0 < minimum < maximum <= 180`. Do not derive these bounds from the calibration
+result being checked.
 Then run:
 
 ```bash
@@ -53,6 +54,8 @@ uv run python -m calibration intrinsics \
   --evidence-kind recorded_live \
   --output calibration/intrinsics_CAMERA-SERIAL.yaml
 ```
+
+The default model is `pinhole`. It writes the existing schema version 1 artifact.
 
 The output is formatted as JSON, which is valid YAML, and must use a new path.
 The tool writes and syncs a temporary file in the destination directory, then
@@ -81,6 +84,38 @@ assumes its model and detected corners are suitable; it cannot establish absolut
 accuracy. Independent FOV bounds provide an additional configuration check. The
 varied PNG fixture has focal standard deviations below 1%; noisy near-parallel
 regressions exceed the 5% limit despite RMS errors below 0.5 pixels.
+
+## Fisheye intrinsics
+
+Use the OpenCV fisheye model for a lens that needs its four-coefficient distortion
+model. This creates a schema version 2 artifact with `model: "fisheye"` and four
+`distortion_coefficients`. Consumers must select fisheye undistortion and pose
+handling from that field. Version 1 intrinsics artifacts remain pinhole artifacts.
+
+```bash
+uv run python -m calibration intrinsics \
+  --model fisheye \
+  --images /path/to/decoded-checkerboards \
+  --inner-corners 9x6 \
+  --square-size-m 0.024 \
+  --camera-serial CAMERA-SERIAL \
+  --pipeline /path/to/pipeline.json \
+  --evidence-kind recorded_live \
+  --output calibration/intrinsics_CAMERA-SERIAL-fisheye.yaml
+```
+
+Fisheye artifacts preserve `fov_bounds_deg` as the declared lens and pipeline
+provenance. Fisheye intervals can extend to 360 degrees. They are not validated
+against a pinhole FOV calculation and the artifact has no pinhole FOV or focal
+standard-deviation fields. Supply bounds from lens specifications or independent
+measurements for the decoded pipeline.
+
+The fisheye fit accepts 20 or more distinct detections, uses OpenCV's conditioning
+check, undistorts the detected corners before checking pose diversity, and independently
+reprojects every accepted board. Its `quality` object records the actual and required
+board counts, post-undistortion pose-constraint ratio, and reprojection RMS limits.
+These are offline image-fit checks. They do not prove camera identity, lens coverage,
+or flight readiness.
 
 For latency, provide explicit measured samples, their capture-relative measurement
 times, and the measured capture duration. Do
