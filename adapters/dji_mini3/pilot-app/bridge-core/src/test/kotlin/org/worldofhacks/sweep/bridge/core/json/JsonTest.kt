@@ -105,6 +105,12 @@ class JsonTest {
     }
 
     @Test
+    fun `parser rejects duplicate object keys`() {
+        assertThrows(JsonParseException::class.java) { Json.parse("{\"same\": 1, \"same\": 2}") }
+        assertThrows(JsonParseException::class.java) { Json.parse("{\"outer\": {\"same\": 1, \"same\": 2}}") }
+    }
+
+    @Test
     fun `builder converts kotlin values`() {
         val built = Json.json(
             "i" to 1,
