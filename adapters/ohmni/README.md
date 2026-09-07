@@ -99,3 +99,7 @@ Before enabling ground motion, record the following alongside the device/session
 - confirm that the final completion follows a measured arrival pose and that no completion is emitted when the artifact, grant, pose, scan, or footprint check is unavailable.
 
 Installation and runtime startup are separate commands. Runtime startup leaves motion subject to the local safety checks above.
+
+## Handback
+
+Before replacing a payload or installing the owner encoder patch, create a private per-robot handback capture. [The handback procedure](HANDBACK.md) records the original vendor source and metadata, the pre-existing Sweep inventory, and ADB reverse mappings, then defines the verified restoration and normal-app handover checks.

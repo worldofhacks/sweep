@@ -49,11 +49,13 @@ set -eu
 node_dir=$node_dir
 target=\$node_dir/telebot_node.js
 backup=\$node_dir/telebot_node.js.sweep-owner-encoder.backup
+disabled=\$node_dir/telebot_node.js.sweep-owner-encoder.disabled
 module=\$node_dir/sweep_paired_encoder_sampler.js
 [ "\$(sha256sum \$target | cut -d ' ' -f 1)" = $source_sha ]
 [ "\$(sha256sum $stage/telebot_node.js | cut -d ' ' -f 1)" = $patched_sha ]
 [ "\$(sha256sum $stage/sweep_paired_encoder_sampler.js | cut -d ' ' -f 1)" = $module_sha ]
 [ ! -e \$backup ]
+[ ! -e \$disabled ]
 [ ! -e \$module ]
 [ -f \$target ]
 cp -p \$target \$backup
