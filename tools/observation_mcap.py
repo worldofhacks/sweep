@@ -7,10 +7,22 @@ import json
 import os
 import secrets
 import stat
+import tempfile
 from collections.abc import Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from mcap.reader import NonSeekingReader, SeekingReader
+from mcap.records import (
+    Attachment,
+    AttachmentIndex,
+    Chunk,
+    ChunkIndex,
+    MessageIndex,
+    Metadata,
+    MetadataIndex,
+)
+from mcap.stream_reader import StreamReader
 from mcap.writer import CompressionType, Writer
 
 from relay.observations import MAX_EVENT_BYTES, Observation, decode_observation
@@ -27,33 +39,7 @@ SCHEMA_NAME = "sweep.observation.v1"
 SCHEMA_ENCODING = "jsonschema"
 MESSAGE_ENCODING = "json"
 CHANNEL_METADATA = {"sweep_contract": "observation/v1"}
-SCHEMA = json.dumps(
-    {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "sweep.observation.v1",
-        "type": "object",
-        "required": [
-            "v",
-            "type",
-            "event_id",
-            "session",
-            "device_id",
-            "connection_epoch",
-            "source_id",
-            "node_type",
-            "frame",
-            "confidence",
-            "t_capture",
-            "t_source_receipt",
-            "clock_mapping_id",
-            "payload",
-            "t_ingest",
-        ],
-        "additionalProperties": False,
-    },
-    separators=(",", ":"),
-    sort_keys=True,
-).encode()
+SCHEMA = (Path(__file__).resolve().parents[1] / "schemas/observation-v1.schema.json").read_bytes()
 
 
 class McapError(ValueError):
@@ -64,7 +50,6 @@ def export_jsonl(input_jsonl: Path, output: Path) -> int:
     records = _read_jsonl(input_jsonl)
     for observation in records:
         _ingest_time_ns(observation)
-        _publish_time_ns(observation)
     _write_mcap(records, output)
     return len(records)
 
@@ -102,10 +87,12 @@ def _read_jsonl(path: Path) -> tuple[Observation, ...]:
 
 def _read_mcap(path: Path) -> tuple[Observation, ...]:
     try:
-        _validate_mcap_header(path)
         records: list[Observation] = []
         total = 0
-        with _open_regular(path, MAX_MCAP_BYTES, "rb") as source:
+        with _mcap_snapshot(path) as source:
+            _preflight_mcap(source)
+            _validate_mcap_header(source)
+            source.seek(0)
             reader = NonSeekingReader(
                 source, validate_crcs=True, record_size_limit=MAX_MCAP_RECORD_BYTES
             )
@@ -119,8 +106,8 @@ def _read_mcap(path: Path) -> tuple[Observation, ...]:
                     raise McapError("MCAP observation body is not canonical")
                 if message.log_time != _ingest_time_ns(observation):
                     raise McapError("MCAP log time does not match relay ingest time")
-                if message.publish_time != _publish_time_ns(observation):
-                    raise McapError("MCAP publish time does not match the observation clock")
+                if message.publish_time != _ingest_time_ns(observation):
+                    raise McapError("MCAP publish time does not match relay ingest time")
                 if message.sequence != len(records):
                     raise McapError("MCAP observation sequence is not canonical")
                 total += len(canonical)
@@ -135,20 +122,46 @@ def _read_mcap(path: Path) -> tuple[Observation, ...]:
     return tuple(records)
 
 
-def _validate_mcap_header(path: Path) -> None:
-    with _open_regular(path, MAX_MCAP_BYTES, "rb") as source:
-        reader = SeekingReader(source, validate_crcs=True, record_size_limit=MAX_MCAP_RECORD_BYTES)
-        header = reader.get_header()
-        if header.profile != PROFILE or header.library != LIBRARY:
-            raise McapError("MCAP header does not declare the observation contract")
-        summary = reader.get_summary()
-        if summary.statistics is None or summary.statistics.message_count > MAX_RECORDS:
-            raise McapError("MCAP record count exceeds the observation limit")
-        if len(summary.schemas) != 1 or len(summary.channels) != 1:
-            raise McapError("MCAP must contain exactly one observation schema and channel")
-        schema = next(iter(summary.schemas.values()))
-        channel = next(iter(summary.channels.values()))
-        _validate_channel(schema, channel)
+def _preflight_mcap(source) -> None:
+    source.seek(0)
+    reader = StreamReader(
+        source,
+        emit_chunks=True,
+        validate_crcs=True,
+        record_size_limit=MAX_MCAP_RECORD_BYTES,
+    )
+    unsupported = (
+        Attachment,
+        AttachmentIndex,
+        Chunk,
+        ChunkIndex,
+        MessageIndex,
+        Metadata,
+        MetadataIndex,
+    )
+    for record in reader.records:
+        if isinstance(record, unsupported):
+            raise McapError("MCAP contains a record outside the observation contract")
+
+
+def _validate_mcap_header(source) -> None:
+    source.seek(0)
+    reader = SeekingReader(source, validate_crcs=True, record_size_limit=MAX_MCAP_RECORD_BYTES)
+    header = reader.get_header()
+    if header.profile != PROFILE or header.library != LIBRARY:
+        raise McapError("MCAP header does not declare the observation contract")
+    summary = reader.get_summary()
+    if (
+        summary is None
+        or summary.statistics is None
+        or summary.statistics.message_count > MAX_RECORDS
+    ):
+        raise McapError("MCAP record count exceeds the observation limit")
+    if len(summary.schemas) != 1 or len(summary.channels) != 1:
+        raise McapError("MCAP must contain exactly one observation schema and channel")
+    schema = next(iter(summary.schemas.values()))
+    channel = next(iter(summary.channels.values()))
+    _validate_channel(schema, channel)
 
 
 def _validate_channel(schema: object, channel: object) -> None:
@@ -182,13 +195,6 @@ def _ingest_time_ns(observation: Observation) -> int:
     return _mcap_time_ns(observation.t_ingest, "ms")
 
 
-def _publish_time_ns(observation: Observation) -> int:
-    capture = observation.submission.t_capture
-    if capture is None:
-        return _ingest_time_ns(observation)
-    return _mcap_time_ns(capture.value, capture.unit)
-
-
 def _mcap_time_ns(value: int, unit: str) -> int:
     timestamp = value * (1_000_000 if unit == "ms" else 1)
     if timestamp > MAX_MCAP_TIME_NS:
@@ -215,7 +221,7 @@ def _write_mcap(records: tuple[Observation, ...], output: Path) -> None:
                 channel_id,
                 _ingest_time_ns(observation),
                 observation.encode(),
-                _publish_time_ns(observation),
+                _ingest_time_ns(observation),
                 sequence=sequence,
             )
         writer.finish()
@@ -257,6 +263,22 @@ def _open_regular(path: Path, maximum: int, mode: str):
     except Exception:
         os.close(descriptor)
         raise
+
+
+@contextmanager
+def _mcap_snapshot(path: Path):
+    with (
+        _open_regular(path, MAX_MCAP_BYTES, "rb") as source,
+        tempfile.TemporaryFile("w+b") as snapshot,
+    ):
+        total = 0
+        while block := source.read(64 * 1024):
+            total += len(block)
+            if total > MAX_MCAP_BYTES:
+                raise McapError("MCAP input exceeds the total byte limit")
+            snapshot.write(block)
+        snapshot.seek(0)
+        yield snapshot
 
 
 def _exclusive_temporary(output: Path):

@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from jsonschema import validate
 from mcap.reader import make_reader
 from mcap.writer import CompressionType, Writer
 
@@ -45,12 +46,15 @@ def test_exported_mcap_is_readable_by_the_official_reader_and_replays_exactly(tm
         messages = list(make_reader(source).iter_messages())
     messages.sort(key=lambda item: item[2].sequence)
     assert [message.data for _, _, message in messages] == expected
+    for _, _, message in messages:
+        validate(instance=json.loads(message.data), schema=json.loads(SCHEMA))
     assert [channel.topic for _, channel, _ in messages] == [TOPIC] * 3
     assert [message.log_time for _, _, message in messages] == [
         decode_observation(record).t_ingest * 1_000_000 for record in expected
     ]
-    assert messages[0][2].publish_time == 100 * 1_000_000
-    assert messages[1][2].publish_time == messages[1][2].log_time
+    assert [message.publish_time for _, _, message in messages] == [
+        message.log_time for _, _, message in messages
+    ]
 
     replay_jsonl = tmp_path / "replay.jsonl"
     replayed = import_mcap(output, replay_jsonl)
@@ -62,7 +66,7 @@ def test_import_rejects_falsified_contract_and_corrupt_mcap(tmp_path):
     encoded = _jsonl(tmp_path / "input.jsonl", ("aircraft-world.json",))[0]
     false_contract = tmp_path / "false.mcap"
     with false_contract.open("xb") as stream:
-        writer = Writer(stream, compression=CompressionType.NONE)
+        writer = Writer(stream, compression=CompressionType.NONE, use_chunking=False)
         writer.start(profile=PROFILE, library=LIBRARY)
         schema_id = writer.register_schema(SCHEMA_NAME, SCHEMA_ENCODING, SCHEMA)
         channel_id = writer.register_channel("/other", MESSAGE_ENCODING, schema_id)
@@ -75,6 +79,30 @@ def test_import_rejects_falsified_contract_and_corrupt_mcap(tmp_path):
     corrupt.write_bytes(false_contract.read_bytes()[:-8])
     with pytest.raises(McapError, match="invalid MCAP"):
         import_mcap(corrupt)
+
+
+def test_import_rejects_compressed_chunks_before_decompression(tmp_path, monkeypatch):
+    encoded = _jsonl(tmp_path / "input.jsonl", ("aircraft-world.json",))[0]
+    compressed = tmp_path / "compressed.mcap"
+    with compressed.open("xb") as stream:
+        writer = Writer(stream, compression=CompressionType.ZSTD)
+        writer.start(profile=PROFILE, library=LIBRARY)
+        schema_id = writer.register_schema(SCHEMA_NAME, SCHEMA_ENCODING, SCHEMA)
+        channel_id = writer.register_channel(
+            TOPIC,
+            MESSAGE_ENCODING,
+            schema_id,
+            metadata={"sweep_contract": "observation/v1"},
+        )
+        writer.add_message(channel_id, 1_005_000_000, encoded, 1_005_000_000)
+        writer.finish()
+
+    def decompression_attempt(*_args, **_kwargs):
+        raise AssertionError("compressed MCAP must be rejected before decompression")
+
+    monkeypatch.setattr("mcap.stream_reader.breakup_chunk", decompression_attempt)
+    with pytest.raises(McapError, match="outside the observation contract"):
+        import_mcap(compressed)
 
 
 def test_export_rejects_noncanonical_jsonl_and_never_replaces_output(tmp_path):
