@@ -43,6 +43,7 @@ class FakeTransport:
         self.bindings = dict(bindings)
         self.authenticated = []
         self.frames = []
+        self.observations = {drone_id: [] for drone_id in bindings}
         self.failed_current = set()
         self.failed_send = set()
         self.closed = False
@@ -56,6 +57,11 @@ class FakeTransport:
         if drone_id in self.failed_current:
             raise PublisherTransportError("disconnected")
         return self.bindings[drone_id]
+
+    def take_observations(self, drone_id):
+        observations = tuple(self.observations[drone_id])
+        self.observations[drone_id].clear()
+        return observations
 
     def send(self, drone_id, frame):
         if drone_id in self.failed_send:
@@ -810,6 +816,18 @@ def test_websocket_transport_cannot_reopen_after_shutdown():
 
     with pytest.raises(PublisherTransportError, match="closed"):
         transport.authenticate(1, "localization-secret-for-drone-1-key", "session-1")
+
+
+def test_live_observation_drain_uses_the_authenticated_aircraft_socket(tmp_path):
+    publisher, transport, _audit = live_publisher(tmp_path)
+    raw = {"type": "observation", "device_id": 1, "event_id": "camera-1"}
+    transport.observations[1].append(raw)
+
+    live_binding, observations = publisher.take_live_observations(1)
+
+    assert live_binding == binding(1)
+    assert observations == (raw,)
+    assert publisher.take_live_observations(1)[1] == ()
 
 
 def test_live_current_state_roster_only_change_does_not_reset_fuser(tmp_path):

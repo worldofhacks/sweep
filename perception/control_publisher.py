@@ -21,7 +21,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_for_futures
-from dataclasses import MISSING, asdict, dataclass, fields, replace
+from dataclasses import MISSING, asdict, dataclass, field, fields, replace
 from math import isfinite
 from pathlib import Path
 from types import MappingProxyType
@@ -54,6 +54,7 @@ MAX_DRONES = 4
 MAX_QUEUE_LIMIT = 4_096
 MAX_JSON_BYTES = 1_048_576
 MAX_URL_CHARS = 2_048
+MAX_INBOUND_OBSERVATIONS = 4_096
 _ACTIVE_MEMBERSHIPS = frozenset({"registered", "ready", "degraded"})
 _MEMBERSHIPS = _ACTIVE_MEMBERSHIPS | {"leaving", "disconnected"}
 
@@ -154,6 +155,7 @@ class _SocketState:
     socket: object
     binding: LiveBinding
     failure: PublisherTransportError | None = None
+    observations: deque[dict[str, object]] = field(default_factory=deque)
 
 
 class WebSocketPublisherTransport:
@@ -254,6 +256,18 @@ class WebSocketPublisherTransport:
             self._fail(drone_id, state, failure)
             raise failure from error
 
+    def take_observations(self, drone_id: int) -> tuple[dict[str, object], ...]:
+        """Return the bounded canonical observation stream for one bound aircraft."""
+        with self._lock:
+            if self._closed:
+                raise PublisherTransportError("localization transport is closed")
+            state = self._states.get(drone_id)
+            if state is None or state.failure is not None:
+                raise PublisherTransportError("localization transport is unavailable")
+            accepted = tuple(state.observations)
+            state.observations.clear()
+            return accepted
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -271,6 +285,19 @@ class WebSocketPublisherTransport:
                     with self._lock:
                         if self._states.get(drone_id) is state:
                             state.binding = binding
+                elif event.get("type") == "observation":
+                    if event.get("device_id") != drone_id:
+                        raise PublisherTransportError(
+                            "localization received an observation for another aircraft"
+                        )
+                    with self._lock:
+                        if self._states.get(drone_id) is not state:
+                            return
+                        if len(state.observations) >= MAX_INBOUND_OBSERVATIONS:
+                            raise PublisherTransportError(
+                                "localization observation stream exceeded its bounded queue"
+                            )
+                        state.observations.append(dict(event))
         except Exception:
             self._fail(
                 drone_id,
@@ -700,6 +727,29 @@ class ControlPublisher:
             )
             raise PublisherTransportError("localization frame was not delivered") from error
         return frame
+
+    def take_live_observations(
+        self, drone_id: int
+    ) -> tuple[LiveBinding, tuple[dict[str, object], ...]]:
+        """Drain canonical evidence received on this publisher's authenticated socket."""
+        self._require_open()
+        if self.config.mode != "live" or self.transport is None:
+            raise PublisherError("replay publisher has no live observation transport")
+        binding = self._current_binding(drone_id)
+        take = getattr(self.transport, "take_observations", None)
+        if not callable(take):
+            raise PublisherTransportError("localization transport cannot receive observations")
+        try:
+            observations = take(drone_id)
+        except PublisherTransportError:
+            raise
+        except Exception as error:
+            raise PublisherTransportError("localization observation delivery failed") from error
+        if not isinstance(observations, tuple) or any(
+            not isinstance(event, dict) for event in observations
+        ):
+            raise PublisherTransportError("localization transport returned invalid observations")
+        return binding, observations
 
     def close(self) -> None:
         if self._closed:
