@@ -672,6 +672,10 @@ class RelayRuntime:
                     if (
                         event.get("type") == "observation"
                         and subscription.principal.source != "console"
+                        and not (
+                            subscription.principal.source == "localization"
+                            and subscription.principal.drone_id == event.get("device_id")
+                        )
                     ):
                         continue
                     if event.get("type") == "control_pose" and (

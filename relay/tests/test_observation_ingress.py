@@ -205,7 +205,7 @@ def test_membership_replay_rate_and_clock_are_checked_before_audit(settings):
     )
 
 
-def test_observations_fan_out_only_to_console(settings):
+def test_observations_fan_out_to_console_and_only_the_bound_localizer(settings):
     async def exercise():
         runtime = RelayRuntime(settings)
         runtime.session(SESSION)
@@ -221,11 +221,115 @@ def test_observations_fan_out_only_to_console(settings):
             )
         }
         event = {**observation(), "t_ingest": 1000}
+        other_localizer = await runtime.subscribe(
+            SESSION, Principal("localization", 2, ADAPTER_KEY)
+        )
         await runtime.publish(SESSION, [event])
         assert subscriptions.pop("console").queue.get_nowait().event == event
+        assert subscriptions.pop("localization").queue.get_nowait().event == event
+        assert other_localizer.queue.empty()
         assert all(subscription.queue.empty() for subscription in subscriptions.values())
 
     asyncio.run(exercise())
+
+
+def test_localization_role_requires_its_own_host_binding_and_current_device(settings):
+    configured = configuration()
+    source = replace(configured.bindings[0], producer_role="localization")
+    configured = replace(configured, bindings=(source,))
+    with pytest.raises(SettingsError, match="device credential"):
+        replace(settings, observation_configuration=configured)
+    settings = replace(
+        settings,
+        observation_configuration=configured,
+        localization_keys={1: b"localization-test-key-32-bytes-long"},
+    )
+
+    clock = MutableClock()
+    session = RelayRuntime(settings, clock=clock).session(SESSION)
+    adapter = Principal("adapter", 1, ADAPTER_KEY)
+    localizer = Principal("localization", 1, settings.localization_keys[1])
+    assert session.process_frame(observation(), localizer)[0]["type"] == "refusal"
+    session.process_frame(
+        membership_payload(
+            action="join", event_id="join-1", node_type="ground", capabilities=["ground_drive"]
+        ),
+        adapter,
+    )
+    assert session.process_frame(observation(), adapter)[0]["reason"] == "source_role_mismatch"
+    assert session.process_frame(observation(), localizer)[0] == {
+        **observation(),
+        "t_ingest": clock.value,
+    }
+    clock.advance(10)
+    assert session.process_frame(observation(), localizer)[0]["reason"] == "replayed_observation"
+    assert (
+        session.process_frame(observation(event_id="new", connection_epoch=2), localizer)[0][
+            "reason"
+        ]
+        == "stale_connection_epoch"
+    )
+
+
+def test_authenticated_localization_websocket_publishes_canonical_observations(settings):
+    config = configuration()
+    config = replace(config, bindings=(replace(config.bindings[0], producer_role="localization"),))
+    key = b"localization-test-key-32-bytes-long"
+    settings = replace(settings, observation_configuration=config, localization_keys={1: key})
+    clock = MutableClock()
+    app = create_app(settings, clock=clock)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/{SESSION}") as adapter:
+        adapter.send_json(
+            {
+                "v": 1,
+                "type": "auth",
+                "source": "adapter",
+                "drone_id": 1,
+                "token": ADAPTER_KEY.decode(),
+            }
+        )
+        assert adapter.receive_json()["type"] == "auth.accepted"
+        adapter.receive_json()
+        adapter.send_json(
+            membership_payload(
+                action="join", event_id="join-1", node_type="ground", capabilities=["ground_drive"]
+            )
+        )
+        for _ in range(20):
+            if adapter.receive_json()["type"] == "membership":
+                break
+        else:
+            pytest.fail("adapter did not join")
+        with client.websocket_connect(f"/ws/{SESSION}") as localizer:
+            localizer.send_json(
+                {
+                    "v": 1,
+                    "type": "auth",
+                    "source": "localization",
+                    "drone_id": 1,
+                    "token": key.decode(),
+                }
+            )
+            assert localizer.receive_json()["type"] == "auth.accepted"
+            localizer.receive_json()
+            localizer.send_json(observation())
+            for _ in range(20):
+                event = localizer.receive_json()
+                if event["type"] == "observation":
+                    break
+            else:
+                pytest.fail("canonical localization observation was not delivered")
+            assert event == {**observation(), "t_ingest": clock.value}
+            assert any(
+                row["event"] == event
+                for row in app.state.relay_runtime.session(SESSION).audit_log.replay()
+            )
+
+
+@pytest.mark.parametrize("role", ["console", "", [], None])
+def test_producer_binding_cannot_enable_an_unknown_role(role):
+    with pytest.raises(ValueError, match="producer role"):
+        replace(configuration().bindings[0], producer_role=role)
 
 
 def test_host_configuration_loads_and_rejects_duplicate_keys(tmp_path):

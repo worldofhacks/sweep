@@ -404,11 +404,11 @@ class RelaySession:
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
         if principal.source == "localization" and frame_type == "control_localization":
             return self.process_control_localization(raw, principal)
+        if principal.source in {"adapter", "localization"} and frame_type == "observation":
+            return self.process_observation(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
             return self.process_intent(raw, principal)
         if principal.source == "adapter":
-            if frame_type == "observation":
-                return self.process_observation(raw, principal)
             if frame_type == "membership":
                 return self.process_membership(raw, principal)
             if frame_type == "telemetry":
@@ -898,8 +898,13 @@ class RelaySession:
             self._ensure_mutation_usable()
             now = self.clock()
             try:
-                if principal.source != "adapter" or principal.drone_id is None:
-                    raise ObservationError("source_not_allowed", "observations require an adapter")
+                if (
+                    principal.source not in {"adapter", "localization"}
+                    or principal.drone_id is None
+                ):
+                    raise ObservationError(
+                        "source_not_allowed", "observations require a device-bound producer"
+                    )
                 submission = ObservationSubmission.parse(raw)
                 self._check_adapter_binding(submission.device_id, principal)
                 if submission.session != self.session_id:
@@ -913,7 +918,9 @@ class RelaySession:
                     raise ObservationError(
                         "source_not_configured", "observation ingress is disabled"
                     )
-                observation = self.observation_ingress.accept(submission, now=now)
+                observation = self.observation_ingress.accept(
+                    submission, now=now, producer_role=principal.source
+                )
                 if (
                     submission.node_type == NodeType.GROUND.value
                     and submission.payload["kind"] == "pose"
