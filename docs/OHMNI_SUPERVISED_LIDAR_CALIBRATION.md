@@ -8,7 +8,7 @@ Physical testing is pending. The robots are charging and the operator is away. R
 
 The calibration entry point deliberately bypasses the normal calibrated forward-sector and obstacle checks, because their axes are unknown. A fresh raw scan, fresh paired encoders, the local control loop, a host lease, and explicit `--supervised-clear-space` are required. Ordinary driving keeps its existing guards.
 
-Commands are fixed at 0.04 m/s forward or 10 degrees/s yaw, one axis at a time, in pulses of at most 0.5 seconds. The run stops after 0.18 m accumulated mean absolute wheel travel, 15 degrees accumulated absolute yaw, or 60 seconds. A pulse producing less than 1 mm translation or 0.25 degrees yaw stops the run. The runner also aborts on stale sensing, stage drift, a stalled owner loop, or lease loss. Host renewals arrive every 100 ms and expire after 350 ms; the local control tick checks the deadline.
+Commands are fixed at 0.04 m/s forward or 10 degrees/s yaw, one axis at a time, in pulses of at most 0.5 seconds. The run stops after 0.18 m accumulated mean absolute wheel travel, 15 degrees accumulated absolute yaw, or 60 seconds. A pulse producing less than 1 mm translation or 0.25 degrees yaw stops the run. The runner also aborts on stale sensing, more than 1 mm or 0.1 degrees of drift during a capture stage, a stalled owner loop, or lease loss. Host renewals arrive every 100 ms and expire after 350 ms; the local control tick checks the deadline.
 
 Closing the lease host or interrupting the foreground runner requests a stop. Retain the physical stop option throughout: a software deadline depends on the controller and motor interface remaining responsive. A failed run removes its capture. A completed capture is written only after disable returns successfully.
 
@@ -30,6 +30,8 @@ The source digest includes each relative Python path and its file digest in sort
 4. Run the node entry point in the foreground. Substitute the observed boot ID, reviewed source digest, token path, and a new capture path into the command below. Starting this command enables the fixed motion sequence.
 
 ```sh
+cd <private-extracted-directory>
+export PYTHONPATH="$PWD" PYTHONDONTWRITEBYTECODE=1
 /data/local/sweep/lib/ld-musl-x86_64.so.1 \
   /data/local/sweep/python/bin/python3.12 -B -m adapters.ohmni.calibration \
   --lease-port 18912 \
