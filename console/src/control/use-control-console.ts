@@ -7,6 +7,7 @@ import type {
   IntentArgsByName,
   IntentSource,
   IntentV1,
+  SurveyLifecycleRequest,
   VoicePlan,
   VoicePlanStep,
 } from '../relay/contract'
@@ -54,6 +55,8 @@ export interface UseControlConsoleOptions {
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
 }
+
+export const SURVEY_LIFECYCLE_TIMEOUT_MS = 15_000
 
 /** One control press: an intent name, its args, and the aircraft it addresses. */
 export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> {
@@ -266,6 +269,56 @@ export function useControlConsole({
       return intent
     },
     [intentDependencies, stageIntent, state],
+  )
+
+  const sendSurveyLifecycle = useCallback(
+    (intentId: string, operation: SurveyLifecycleRequest['operation']) => {
+      const request = state.requests.find((item) => item.intent.intent_id === intentId)
+      if (
+        request?.intent.name !== 'survey_area' ||
+        request.status !== 'executing' ||
+        request.surveyRun === undefined ||
+        state.connection.status !== 'connected'
+      ) return
+      const now = intentDependencies.now()
+      if (
+        request.surveyLifecycle !== undefined &&
+        request.surveyLifecycle.error === undefined &&
+        now - request.surveyLifecycle.sentAt < SURVEY_LIFECYCLE_TIMEOUT_MS
+      ) return
+      const groundId = request.intent.selection[0]
+      const ground = state.aircraft[groundId]
+      if (
+        ground?.node_type !== 'ground' ||
+        ground.connection_epoch !== request.surveyRun.connectionEpoch
+      ) return
+      const eventId = intentDependencies.nextId()
+      const lifecycle: SurveyLifecycleRequest = {
+        v: 1,
+        t: now,
+        type: 'survey_lifecycle',
+        event_id: eventId,
+        session: state.sessionId,
+        operation,
+        intent_id: request.intent.intent_id,
+        run_id: request.surveyRun.runId,
+        connection_epoch: request.surveyRun.connectionEpoch,
+      }
+      dispatch({
+        type: 'survey_lifecycle_sent',
+        intentId,
+        lifecycle: { operation, eventId, sentAt: now },
+      })
+      void clients.console.sendSurveyLifecycle(lifecycle).catch((error: unknown) => {
+        dispatch({
+          type: 'survey_lifecycle_send_failed',
+          intentId,
+          eventId,
+          error: error instanceof Error ? error.message : 'Survey lifecycle send failed for an unknown reason.',
+        })
+      })
+    },
+    [clients.console, intentDependencies, state],
   )
 
   /**
@@ -695,6 +748,7 @@ export function useControlConsole({
     state,
     pendingRequest,
     issueIntent,
+    sendSurveyLifecycle,
     toggleAircraft,
     selectAircraft,
     selectAllReady,

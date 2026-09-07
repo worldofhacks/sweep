@@ -741,6 +741,52 @@ describe('control reducer fleet lifecycle', () => {
 })
 
 describe('request lifecycle', () => {
+  test('retains only the relay-issued survey run identity until a terminal acknowledgement', () => {
+    const intent: IntentV1 = {
+      ...captureIntent('survey-1'),
+      name: 'survey_area',
+      args: { area_id: '1' },
+      selection: [9],
+      confirm: true,
+    }
+    let state = withReadyState()
+    state = controlReducer(state, {
+      type: 'request_created',
+      request: createRequestRecord(intent, t + 1),
+    })
+    state = controlReducer(state, { type: 'request_sent', intentId: intent.intent_id, t: t + 2 })
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: {
+        v: 1, t: t + 3, type: 'acknowledgement', event_id: 'survey-executing', session,
+        intent_id: intent.intent_id, command_id: null, status: 'executing', source: 'survey_area',
+        drone_id: null, connection_epoch: 1, roster_version: 1, reason: null, detail: null,
+        result: { run_id: 'survey-survey-1', connection_epoch: 1 },
+      },
+    })
+    state = controlReducer(state, {
+      type: 'survey_lifecycle_sent',
+      intentId: intent.intent_id,
+      lifecycle: { operation: 'complete', eventId: 'complete-1', sentAt: t + 4 },
+    })
+    expect(state.requests[0]).toMatchObject({
+      status: 'executing',
+      surveyRun: { runId: 'survey-survey-1', connectionEpoch: 1 },
+      surveyLifecycle: { operation: 'complete', eventId: 'complete-1' },
+    })
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: {
+        v: 1, t: t + 5, type: 'acknowledgement', event_id: 'survey-completed', session,
+        intent_id: intent.intent_id, command_id: null, status: 'completed', source: 'survey_area',
+        drone_id: 9, connection_epoch: 1, roster_version: 1, reason: null, detail: 'Candidate saved.',
+      },
+    })
+    expect(state.requests[0]).toMatchObject({ status: 'completed', surveyRun: { runId: 'survey-survey-1' } })
+    expect(state.requests[0].surveyLifecycle).toBeUndefined()
+  })
+
   test('does not terminalize a request from one command in a multi-command plan', () => {
     const intent: IntentV1 = { ...captureIntent('intent-multi'), confirm: true }
     let state = withReadyState()

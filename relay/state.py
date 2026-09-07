@@ -879,6 +879,13 @@ class FleetRegistry:
         battery = None if telemetry is None else telemetry["battery"]
         link = None if telemetry is None else telemetry["link"]
         pos_quality = None if telemetry is None else telemetry["pos_quality"]
+        ground_readiness = None
+        if record.node_type is NodeType.GROUND:
+            ground_readiness = {
+                "source_id": (
+                    None if record.pose_identity is None else record.pose_identity.source_id
+                ),
+            }
         return {
             "drone_id": record.drone_id,
             "node_type": record.node_type.value,
@@ -922,6 +929,7 @@ class FleetRegistry:
                     else self._media_evidence(record.drone_id, now_ms)
                 ),
             ),
+            "ground_readiness": ground_readiness,
         }
 
     def _remember(

@@ -260,7 +260,6 @@ describe('command catalogue', () => {
       ['Spacing tighter', '—', 'selected', 'available'],
       ['Spacing wider', '—', 'selected', 'available'],
       ['Sweep', 'confirm', 'selected', 'available'],
-      ['Survey area', 'confirm', 'any', 'later'],
       ['Map area', 'confirm', 'non-empty', 'later'],
     ])
     const later = groups[1].rows.filter((row) => row.status === 'later')

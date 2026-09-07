@@ -16,6 +16,7 @@ import type {
   RelayAircraftState,
   RelayServerEvent,
   IntentSource,
+  SurveyLifecycleRequest,
 } from '../relay/contract'
 import { C1_BASIC_CONTROL_INTENTS, C2_FLEET_OPERATIONS_INTENTS } from '../relay/contract'
 
@@ -79,6 +80,7 @@ const CONNECTED: FixtureLink = {
 export class FixtureRelayClient implements RelayClient {
   readonly transport = 'fixture' as const
   readonly sent: IntentV1[] = []
+  readonly surveyLifecycleSent: SurveyLifecycleRequest[] = []
   private readonly listeners = new Set<RelayClientListener>()
   private readonly scenario: FixtureScenario
   private selection: DroneId[] = [1]
@@ -86,7 +88,7 @@ export class FixtureRelayClient implements RelayClient {
   private readonly sessionId: string
   private readonly now: () => number
   private readonly source: IntentSource
-  private readonly capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations'
+  private readonly capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations' | 'c1_basic_control.ground'
   private armed: boolean
 
   constructor(
@@ -95,7 +97,7 @@ export class FixtureRelayClient implements RelayClient {
     source: IntentSource = 'console',
     scenario: FixtureFleetSize | FixtureScenarioName | boolean = 4,
     armed = true,
-    capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations' = 'c1_basic_control',
+    capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations' | 'c1_basic_control.ground' = 'c1_basic_control',
   ) {
     this.sessionId = sessionId
     this.now = now
@@ -110,9 +112,11 @@ export class FixtureRelayClient implements RelayClient {
   }
 
   private get enabledIntentNames(): readonly ConsoleIntentName[] {
-    return this.capabilityProfile === 'c2_fleet_operations'
-      ? C2_FLEET_OPERATIONS_INTENTS
-      : C1_BASIC_CONTROL_INTENTS
+    if (this.capabilityProfile === 'c2_fleet_operations') return C2_FLEET_OPERATIONS_INTENTS
+    if (this.capabilityProfile === 'c1_basic_control.ground') {
+      return [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity', 'survey_area']
+    }
+    return C1_BASIC_CONTROL_INTENTS
   }
 
   start(): void {
@@ -209,8 +213,11 @@ export class FixtureRelayClient implements RelayClient {
     })
   }
 
-  async sendSurveyLifecycle(): Promise<void> {
-    throw new Error('The fixture relay has no survey recording runtime.')
+  async sendSurveyLifecycle(request: SurveyLifecycleRequest): Promise<void> {
+    if (this.link.status === 'disconnected') {
+      throw new Error('Fixture relay is disconnected; the survey request was not sent.')
+    }
+    this.surveyLifecycleSent.push(request)
   }
 
   emitServer(event: RelayServerEvent): void {

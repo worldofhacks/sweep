@@ -1288,6 +1288,7 @@ def acknowledgement_event(
     connection_epoch: int | None = None,
     reason: str | None = None,
     detail: str | None = None,
+    result: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if status is LifecycleStatus.REFUSED:
         raise ValueError("refused outcomes use refusal_event")
@@ -1295,7 +1296,7 @@ def acknowledgement_event(
         raise ValueError("failed or invalidated acknowledgements require a reason")
     if reason is not None and not _is_machine_code(reason):
         raise ValueError("acknowledgement reason must be snake_case")
-    return {
+    event: dict[str, object] = {
         "v": 1,
         "t": t,
         "type": "acknowledgement",
@@ -1311,6 +1312,24 @@ def acknowledgement_event(
         "reason": reason,
         "detail": detail,
     }
+    if result is not None:
+        if set(result) != {"run_id", "connection_epoch"}:
+            raise ValueError("acknowledgement result must contain survey run identity")
+        run_id = result["run_id"]
+        epoch = result["connection_epoch"]
+        if (
+            not isinstance(run_id, str)
+            or not run_id
+            or len(run_id) > 256
+            or run_id != run_id.strip()
+            or not run_id.isprintable()
+            or not isinstance(epoch, int)
+            or isinstance(epoch, bool)
+            or not 1 <= epoch <= 2_147_483_647
+        ):
+            raise ValueError("acknowledgement result is not a bounded survey run identity")
+        event["result"] = {"run_id": run_id, "connection_epoch": epoch}
+    return event
 
 
 def refusal_event(

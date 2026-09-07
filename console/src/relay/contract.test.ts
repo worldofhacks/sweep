@@ -500,6 +500,32 @@ describe('M1.1 wire compatibility', () => {
     expect(failedCommand).toMatchObject({ status: 'failed', command_id: 'command-2' })
   })
 
+  test('accepts the survey run identity emitted by the relay and rejects mismatched results', () => {
+    const relayAcknowledgement = {
+      v: 1,
+      t: 1_756_700_000_022,
+      type: 'acknowledgement',
+      event_id: 'survey-executing',
+      session,
+      intent_id: 'survey-1',
+      command_id: null,
+      status: 'executing',
+      source: 'survey_area',
+      drone_id: 9,
+      connection_epoch: 4,
+      roster_version: 4,
+      reason: null,
+      detail: null,
+      result: { run_id: 'survey-survey-1', connection_epoch: 4 },
+    }
+
+    expect(parseRelayServerEvent(relayAcknowledgement)).toMatchObject({
+      result: { run_id: 'survey-survey-1', connection_epoch: 4 },
+    })
+    expect(parseRelayServerEvent({ ...relayAcknowledgement, result: { run_id: '', connection_epoch: 4 } })).toBeNull()
+    expect(parseRelayServerEvent({ ...relayAcknowledgement, result: { run_id: 'survey-survey-1', connection_epoch: 5 } })).toBeNull()
+  })
+
   test('rejects empty command IDs while retaining nullable intent-level context', () => {
     const acknowledgement = {
       v: 1,

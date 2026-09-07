@@ -59,6 +59,20 @@ export interface RequestRecord {
   detail?: string
   plan?: PlanPreview
   responseRosterVersion?: number
+  surveyRun?: SurveyRunIdentity
+  surveyLifecycle?: SurveyLifecyclePending
+}
+
+export interface SurveyRunIdentity {
+  runId: string
+  connectionEpoch: number
+}
+
+export interface SurveyLifecyclePending {
+  operation: 'complete' | 'cancel'
+  eventId: string
+  sentAt: number
+  error?: string
 }
 
 export interface DepartureRecord {
@@ -136,6 +150,8 @@ export type ControlAction =
   | { type: 'request_send_failed'; intentId: string; t: number; detail: string }
   | { type: 'request_cancelled'; intentId: string; t: number }
   | { type: 'request_invalidated'; intentId: string; t: number; reasonCode: string; detail: string }
+  | { type: 'survey_lifecycle_sent'; intentId: string; lifecycle: SurveyLifecyclePending }
+  | { type: 'survey_lifecycle_send_failed'; intentId: string; eventId: string; error: string }
   | { type: 'capture_pattern_changed'; pattern: CapturePattern }
   | { type: 'feed_selected'; droneId: DroneId }
 
@@ -261,6 +277,17 @@ export function controlReducer(state: ControlState, action: ControlAction): Cont
         action.t,
         action.reasonCode,
         action.detail,
+      )
+    case 'survey_lifecycle_sent':
+      return updateRequest(state, action.intentId, (request) => ({
+        ...request,
+        surveyLifecycle: action.lifecycle,
+      }))
+    case 'survey_lifecycle_send_failed':
+      return updateRequest(state, action.intentId, (request) =>
+        request.surveyLifecycle?.eventId !== action.eventId
+          ? request
+          : { ...request, surveyLifecycle: { ...request.surveyLifecycle, error: action.error } },
       )
     case 'capture_pattern_changed':
       return { ...state, capturePattern: action.pattern }
@@ -407,6 +434,9 @@ function reduceRelayEvent(
         rosterVersion: event.roster_version,
         droneId: event.drone_id ?? undefined,
         connectionEpoch: event.connection_epoch ?? undefined,
+        surveyRun: event.result === undefined
+          ? undefined
+          : { runId: event.result.run_id, connectionEpoch: event.result.connection_epoch },
       })
     case 'refusal':
       if (event.source === 'adapter') {
@@ -858,6 +888,7 @@ interface BackendUpdate {
   rosterVersion?: number
   droneId?: DroneId
   connectionEpoch?: number
+  surveyRun?: SurveyRunIdentity
 }
 
 function reduceBackendUpdate(state: ControlState, update: BackendUpdate): ControlState {
@@ -901,6 +932,8 @@ function reduceBackendUpdate(state: ControlState, update: BackendUpdate): Contro
           reasonCode: update.reasonCode,
           detail,
           responseRosterVersion: update.rosterVersion ?? item.responseRosterVersion,
+          surveyRun: update.surveyRun ?? item.surveyRun,
+          surveyLifecycle: isTerminalStatus(update.status) ? undefined : item.surveyLifecycle,
         }
       : item,
   )
@@ -934,6 +967,10 @@ function reduceBackendUpdate(state: ControlState, update: BackendUpdate): Contro
       ),
     ),
   }
+}
+
+function isTerminalStatus(status: RequestStatus): boolean {
+  return ['completed', 'failed', 'invalidated', 'refused', 'cancelled'].includes(status)
 }
 
 function reduceSendFailure(

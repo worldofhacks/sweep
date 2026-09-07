@@ -283,6 +283,10 @@ export interface MediaStreamState {
   last_frame_at: number | null
 }
 
+export interface GroundReadiness {
+  source_id: string | null
+}
+
 export interface RelayAircraftState {
   drone_id: DroneId
   node_type?: NodeType
@@ -305,6 +309,7 @@ export interface RelayAircraftState {
   membership_history: unknown[]
   membership_history_truncated: number
   video?: MediaStreamState
+  ground_readiness?: GroundReadiness | null
 }
 
 export interface RelayStateEvent {
@@ -408,6 +413,12 @@ export interface RelayAcknowledgementEvent {
   roster_version: number
   drone_id: DroneId | null
   connection_epoch: number | null
+  result?: SurveyRunIdentity
+}
+
+export interface SurveyRunIdentity {
+  run_id: string
+  connection_epoch: number
 }
 
 export interface RelayRefusalEvent {
@@ -855,6 +866,27 @@ function isNullableNonNegativeInteger(value: unknown): value is number | null {
   return value === null || isNonNegativeInteger(value)
 }
 
+function isSurveyRunIdentity(value: unknown): value is SurveyRunIdentity {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    isCanonicalIntentText(value.run_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+    isPositiveInt32(value.connection_epoch)
+  )
+}
+
+function isGroundReadiness(value: unknown): value is GroundReadiness | null {
+  return value === null || (
+    isRecord(value) &&
+    Object.keys(value).length === 1 &&
+    (value.source_id === null || isCanonicalIntentText(value.source_id, MAX_INTENT_IDENTIFIER_CODE_POINTS))
+  )
+}
+
+function isPositiveInt32(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 2_147_483_647
+}
+
 function isNullableUnitNumber(value: unknown): value is number | null {
   return value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1)
 }
@@ -894,7 +926,8 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
     'telemetry' in value &&
     Array.isArray(value.membership_history) &&
     isNonNegativeInteger(value.membership_history_truncated) &&
-    isVideoStreamState(value.video)
+    isVideoStreamState(value.video) &&
+    (value.ground_readiness === undefined || isGroundReadiness(value.ground_readiness))
   )
 }
 
@@ -1101,7 +1134,10 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isNullableString(value.detail) ||
       !isNonNegativeInteger(value.roster_version) ||
       !isNullableDroneId(value.drone_id) ||
-      !isNullableNonNegativeInteger(value.connection_epoch)
+      !isNullableNonNegativeInteger(value.connection_epoch) ||
+      (value.result !== undefined && !isSurveyRunIdentity(value.result)) ||
+      (value.result !== undefined &&
+        (value.source !== 'survey_area' || value.status !== 'executing' || value.connection_epoch !== value.result.connection_epoch))
     ) {
       return null
     }

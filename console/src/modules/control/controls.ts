@@ -346,7 +346,6 @@ export function commandCatalog(state: ControlState): CatalogGroup[] {
         catalogRow(motion['spacing-']),
         catalogRow(motion['spacing+']),
         catalogRow(motion.sweep),
-        laterRow('survey_area', 'Survey area', 'survey_area', 'any'),
         laterRow('map_area', 'Map area', 'map_area', 'non-empty'),
       ],
     },
