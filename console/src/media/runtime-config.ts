@@ -3,7 +3,7 @@
  * The HLS origin is no longer required because only WHEP playback is carried
  * over; an `hlsOrigin` in the payload is ignored. Reconcile when #68 merges.
  */
-import { relayHttpOrigin } from '../relay/origin'
+import { relayHttpUrl } from '../relay/origin'
 import type { MediaRuntimeConfiguration } from './playback'
 
 export const MEDIA_CONFIG_ENDPOINT = '/runtime-config.json'
@@ -21,17 +21,27 @@ export const SAME_ORIGIN_MEDIA_SOURCE: MediaConfigurationSource = { url: MEDIA_C
 /**
  * The relay serves the same JSON at `/runtime-config.json` behind its bearer token
  * (relay/README.md), so a built console can play without a host that proxies the endpoint.
- * The HTTP origin is the relay bootstrap's WebSocket origin; anything else yields no source.
+ * The relay bootstrap path is preserved, so a relay behind a path proxy works too.
  */
 export function relayMediaConfigurationSource(
   baseUrl: string,
   token: string,
 ): MediaConfigurationSource | null {
-  const origin = relayHttpOrigin(baseUrl)
-  if (!origin || !token) return null
+  const url = relayHttpUrl(relayRoot(baseUrl), MEDIA_CONFIG_ENDPOINT)
+  if (!url || !token) return null
   return {
-    url: new URL(MEDIA_CONFIG_ENDPOINT, origin).toString(),
+    url,
     authorization: `Bearer ${token}`,
+  }
+}
+
+function relayRoot(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl)
+    if (url.pathname === '/ws' || url.pathname.startsWith('/ws/')) url.pathname = '/'
+    return url.toString()
+  } catch {
+    return baseUrl
   }
 }
 

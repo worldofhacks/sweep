@@ -4,6 +4,7 @@ import { deviceCameras } from '../../media/cameras'
 import { membershipWord } from '../../control/observation'
 import { useState } from 'react'
 import { DeviceTelemetryPanel } from './DeviceTelemetryPanel'
+import { GroundObservation } from '../GroundObservation'
 import { CameraControls } from './CameraControls'
 import { RobotPeripheralControls } from './RobotPeripheralControls'
 import './devices.css'
@@ -149,6 +150,7 @@ function DeviceCard({
         {device.device_class === 'ground_vehicle' && <Row k="sensor" v={sensor.text} tone={sensor.tone} />}
         <Row k="last seen" v={device.last_seen_at === null ? 'unreported' : formatAgo(now, device.last_seen_at)} />
       </dl>
+      <GroundObservation device={device} now={now} />
       {device.device_class === 'ground_vehicle' && device.adapter_capabilities.includes('lidar') && (
         <LidarPolar device={device} scan={scan} size={104} now={now} />
       )}
