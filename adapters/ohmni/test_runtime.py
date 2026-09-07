@@ -16,8 +16,9 @@ from websockets.sync.client import connect as sync_connect
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
 from planner.models import CommandOperation
 from relay.app import RelayRuntime
+from relay.auth import sign_event
 from relay.autonomy import AutonomyConfig, create_autonomy_app
-from relay.contracts import NodeType
+from relay.contracts import NodeType, command_event, parse_command
 from relay.observation_ingress import ObservationConfiguration
 from relay.observations import FrameDeclaration, FrameRegistry, SourceBinding
 from relay.settings import AdapterBackend, RelaySettings
@@ -220,6 +221,100 @@ def test_measured_clock_correction_applies_to_envelopes_and_lease_expiry(monkeyp
     node._last_heartbeat_expires_at = 100_000
     assert node._lease_expired()
     assert node.config.source_clock_id == "ohmni-monotonic"
+
+
+def _clock_corrected_runtime() -> OhmniRuntime:
+    return OhmniRuntime(
+        GroundRuntimeConfig(
+            "ws://relay.example",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            relay_clock_offset_ms=-31_000,
+        ),
+        FakeGroundDevice(),
+    )
+
+
+def _signed_heartbeat(*, issued_at: int, expires_at: int) -> dict[str, object]:
+    frame: dict[str, object] = {
+        "v": 1,
+        "t": issued_at,
+        "type": "control_heartbeat",
+        "event_id": "heartbeat-clock-boundary",
+        "session": SESSION,
+        "source": "relay",
+        "drone_id": GROUND_ID,
+        "connection_epoch": 1,
+        "roster_version": 2,
+        "seq": 1,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "hold_after_ms": 2_000,
+        "failsafe_after_ms": 10_000,
+    }
+    frame["signature"] = sign_event(frame, GROUND_KEY)
+    return frame
+
+
+def test_relay_clock_correction_sets_heartbeat_and_command_boundaries(monkeypatch):
+    monkeypatch.setattr(time, "time_ns", lambda: 131_000_000_000)
+    node = _clock_corrected_runtime()
+    node._epoch = 1
+    node._roster_version = 2
+
+    node._on_heartbeat(_signed_heartbeat(issued_at=100_000, expires_at=100_001))
+    assert node._last_heartbeat_seq == 1
+    assert node._last_heartbeat_expires_at == 100_001
+
+    node._on_heartbeat(_signed_heartbeat(issued_at=100_000, expires_at=100_000))
+    assert node._last_heartbeat_seq == 1
+
+    at_expiry = command_event(
+        t=99_999,
+        event_id="command-clock-boundary",
+        session=SESSION,
+        command_id="command-clock-boundary",
+        intent_id="command-clock-boundary",
+        roster_version=2,
+        drone_id=GROUND_ID,
+        connection_epoch=1,
+        seq=1,
+        issued_at=99_999,
+        ttl_ms=1,
+        operation=CommandOperation.HOVER,
+        args={},
+    )
+    at_expiry["signature"] = sign_event(at_expiry, GROUND_KEY)
+    assert node._command_failure(parse_command(at_expiry)) is None
+
+    monkeypatch.setattr(time, "time_ns", lambda: 131_001_000_000)
+    expired = node._command_failure(parse_command(at_expiry))
+    assert expired is not None
+    assert expired[0] == "stale_command"
+
+
+def test_relay_clock_correction_never_changes_sensor_monotonic_receipt(monkeypatch):
+    monkeypatch.setattr(time, "time_ns", lambda: 131_000_000_000)
+    monkeypatch.setattr(time, "monotonic_ns", lambda: 555_000_000)
+    node = _clock_corrected_runtime()
+    node._epoch = 1
+    node._outbound = asyncio.Queue()
+
+    node._publish_observations()
+
+    observations = [node._outbound.get_nowait() for _ in range(node._outbound.qsize())]
+    assert len(observations) == 3
+    assert all(
+        frame["t_source_receipt"]
+        == {
+            "clock_id": "ohmni-monotonic",
+            "unit": "ns",
+            "value": 555_000_000,
+        }
+        for frame in observations
+    )
 
 
 def test_ground_runtime_joins_becomes_ready_acks_velocity_and_stops_on_lease_loss(
