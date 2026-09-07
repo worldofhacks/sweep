@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import logging
 import math
@@ -72,8 +73,15 @@ class GroundRuntimeConfig:
     outbound_queue_limit: int = 256
     monotonic: Callable[[], float] = time.monotonic
     event_ids: Callable[[], str] = lambda: str(uuid.uuid4())
+    relay_connect_host: str | None = None
+    # Measured additive wall-clock correction for relay messages; sensor clocks stay native.
+    relay_clock_offset_ms: int = 0
 
     def __post_init__(self) -> None:
+        if self.relay_connect_host is not None:
+            ipaddress.ip_address(self.relay_connect_host)
+        if type(self.relay_clock_offset_ms) is not int or abs(self.relay_clock_offset_ms) > 300_000:
+            raise ValueError("relay clock correction must be bounded to five minutes")
         if self.device_id <= 0 or not self.token or not self.session or not self.adapter_id:
             raise ValueError("ground runtime requires a session, device identity, and key")
         if not 0 < self.telemetry_hz <= 10:
@@ -144,9 +152,15 @@ class OhmniRuntime:
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
         self._outbound = asyncio.Queue(maxsize=self.config.outbound_queue_limit)
+        connection_options = (
+            {}
+            if self.config.relay_connect_host is None
+            else {"host": self.config.relay_connect_host, "proxy": None}
+        )
         try:
             async with connect(
-                f"{self.config.relay_url.rstrip('/')}/ws/{self.config.session}"
+                f"{self.config.relay_url.rstrip('/')}/ws/{self.config.session}",
+                **connection_options,
             ) as socket:
                 await socket.send(
                     json.dumps(
@@ -285,7 +299,7 @@ class OhmniRuntime:
 
     def _on_heartbeat(self, frame: Mapping[str, object]) -> None:
         unsigned = {key: value for key, value in frame.items() if key != "signature"}
-        now_ms = int(time.time_ns() // 1_000_000)
+        now_ms = self._relay_now_ms()
         issued_at = frame.get("issued_at")
         expires_at = frame.get("expires_at")
         if (
@@ -399,7 +413,7 @@ class OhmniRuntime:
             return
 
     def _command_failure(self, command: CommandFrame) -> tuple[str, str] | None:
-        now_ms = int(time.time_ns() // 1_000_000)
+        now_ms = self._relay_now_ms()
         if (
             command.connection_epoch != self._epoch
             or command.roster_version != self._roster_version
@@ -659,7 +673,7 @@ class OhmniRuntime:
     def _envelope(self, frame_type: str) -> dict[str, object]:
         return {
             "v": 1,
-            "t": int(time.time_ns() // 1_000_000),
+            "t": self._relay_now_ms(),
             "type": frame_type,
             "event_id": self.config.event_ids(),
             "session": self.config.session,
@@ -704,7 +718,10 @@ class OhmniRuntime:
 
     def _lease_expired(self) -> bool:
         expires_at = self._last_heartbeat_expires_at
-        return expires_at is None or int(time.time_ns() // 1_000_000) >= expires_at
+        return expires_at is None or self._relay_now_ms() >= expires_at
+
+    def _relay_now_ms(self) -> int:
+        return int(time.time_ns() // 1_000_000) + self.config.relay_clock_offset_ms
 
 
 def _confidence(value: object) -> float:
@@ -720,6 +737,12 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
     parser.add_argument("--device-id", type=int, default=os.environ.get("SWEEP_DEVICE_UNIT"))
     parser.add_argument("--token", default=os.environ.get("SWEEP_NODE_KEY"))
     parser.add_argument("--adapter-id", default=os.environ.get("SWEEP_ADAPTER_ID"))
+    parser.add_argument("--relay-connect-host", default=os.environ.get("SWEEP_RELAY_CONNECT_HOST"))
+    parser.add_argument(
+        "--relay-clock-offset-ms",
+        type=int,
+        default=os.environ.get("SWEEP_RELAY_CLOCK_OFFSET_MS", "0"),
+    )
     parser.add_argument("--telemetry-hz", type=float, default=5.0)
     parser.add_argument(
         "--lidar-mount-x-m", type=float, default=os.environ.get("SWEEP_LIDAR_MOUNT_X_M")
@@ -742,6 +765,8 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         device_id=args.device_id,
         token=args.token,
         adapter_id=args.adapter_id or f"ohmni-{args.device_id}",
+        relay_connect_host=args.relay_connect_host,
+        relay_clock_offset_ms=args.relay_clock_offset_ms,
         telemetry_hz=args.telemetry_hz,
         lidar_mount_x_m=args.lidar_mount_x_m,
         lidar_mount_y_m=args.lidar_mount_y_m,
