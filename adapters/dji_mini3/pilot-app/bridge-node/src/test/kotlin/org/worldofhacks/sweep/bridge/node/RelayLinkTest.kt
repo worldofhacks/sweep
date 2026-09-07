@@ -325,7 +325,7 @@ class RelayLinkTest {
         StubRelay(key, emitControlHeartbeats = false).use { stub ->
             val aircraft = FakeAircraft(connected = true)
             link(stub, aircraft).use { link ->
-                await("joined") { link.state.value.joined }
+                await("ready") { link.state.value.membership == "ready" }
                 stub.sendNavigationAuthorization()
                 stub.sendNavigationPose()
                 val command = stub.issueCommand(
@@ -348,7 +348,7 @@ class RelayLinkTest {
             val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
             val navigation = navigationAdmission()
             link(stub, aircraft, localizationPins = pins, navigationAdmission = navigation).use { link ->
-                await("joined") { link.state.value.joined }
+                await("ready") { link.state.value.membership == "ready" }
                 stub.sendNavigationAuthorization(signingKey = "wrong-key".toByteArray())
                 await("forged authorization drop") { logs.any { it.contains("navigation route authorization") } }
                 assertNull(link.state.value.navigationAuthorization)
