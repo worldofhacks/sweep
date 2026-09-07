@@ -42,7 +42,7 @@ def test_full_equirectangular_fixture_is_typed_and_deterministic() -> None:
     assert media.intrinsics.horizontal_fov_deg == 360.0
     assert len(media.checksum_sha256) == 64
     assert json.loads(json.dumps(bundle.to_dict()))["status"] == "completed"
-    assert flight.calls == []
+    assert [call.operation for call in flight.calls] == [CommandOperation.HOVER]
 
 
 def test_reconstruct_eight_fixture_preserves_headings_and_coverage_label() -> None:
@@ -77,7 +77,10 @@ def test_unsupported_camera_is_typed_before_capture(pattern: str) -> None:
     assert result.refusal is not None
     assert result.refusal.reason is RefusalReason.CAMERA_UNSUPPORTED
     assert [call[0] for call in camera.calls] == ["capabilities"]
-    assert [call.operation for call in flight.calls] == [CommandOperation.HOVER]
+    assert [call.operation for call in flight.calls] == [
+        CommandOperation.HOVER,
+        CommandOperation.HOVER,
+    ]
 
 
 def test_injected_camera_failure_holds_and_preserves_failed_bundle() -> None:
