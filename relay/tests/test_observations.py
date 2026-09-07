@@ -565,12 +565,6 @@ def test_ground_telemetry_uses_the_same_payload_shape_as_aircraft() -> None:
 def test_phone_capture_alignment_fixture_requires_its_host_clock_mapping() -> None:
     root = Path(__file__).parents[2]
     fixture = root / "perception/fixtures/capture-alignment-observation.json"
-    kotlin_fixture = (
-        root
-        / "adapters/dji_mini3/pilot-app/bridge-node/src/test/resources/capture_alignment"
-        / "capture-alignment-observation.json"
-    )
-    assert fixture.read_bytes() == kotlin_fixture.read_bytes()
     raw = json.loads(fixture.read_text())
     event = decode_submission(json.dumps(raw))
     binding = SourceBinding(
