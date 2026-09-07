@@ -258,6 +258,29 @@ class RelayLinkTest {
     }
 
     @Test
+    fun `node status publishes an identical local height when its receipt is newer`() {
+        StubRelay(key).use { stub ->
+            val clock = SteppedClock(1_000)
+            val aircraft = FakeAircraft(connected = true)
+            aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 0.0, receivedAtMonotonicMs = 900)) }
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, monotonicNowMs = clock::nowMs, timing = timing).use { link ->
+                link.start()
+                val initial = NodeStatusFrame.parse(stub.awaitFrame("node_status"))
+                assertEquals(100, initial.body.localHeight?.ageMs)
+                val initialCount = stub.frames("node_status").size
+
+                aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 0.0, receivedAtMonotonicMs = 1_900)) }
+                clock.advance(1_000)
+
+                val statuses = stub.awaitFrames("node_status", initialCount + 1)
+                val refreshed = NodeStatusFrame.parse(statuses.last())
+                assertEquals(0.0, refreshed.body.localHeight?.zM)
+                assertEquals(100, refreshed.body.localHeight?.ageMs)
+            }
+        }
+    }
+
+    @Test
     fun `node_status follows the video publisher's state`() {
         StubRelay(key).use { stub ->
             val aircraft = FakeAircraft(connected = true)
