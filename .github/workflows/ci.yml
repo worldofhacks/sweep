@@ -74,6 +74,8 @@ jobs:
           enable-cache: true
       - run: uv run python -m tools.check_phone_observation adapters/dji_mini3/pilot-app/bridge-node/build/interop/phone-observation.json
         working-directory: .
+      - run: uv run python -m tools.check_phone_control_heartbeat --android-project adapters/dji_mini3/pilot-app
+        working-directory: .
 
   android-unit:
     name: android-unit

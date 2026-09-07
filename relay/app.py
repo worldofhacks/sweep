@@ -28,6 +28,7 @@ from relay.auth import (
     sign_event,
 )
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.contracts import NodeType
 from relay.control_localization import ControlLocalizationProjector
 from relay.intent_v1 import REGISTERED_SOURCES
 from relay.media import MediaEvidence, MediaMonitor, MediaMtxClient
@@ -70,6 +71,7 @@ def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor
     return MediaMonitor(
         client,
         clock=clock,
+        drone_ids=tuple(sorted(settings.adapter_keys)),
         poll_interval_ms=settings.media_poll_interval_ms,
         stale_after_ms=settings.media_stale_after_ms,
     )
@@ -242,13 +244,13 @@ class RelayRuntime:
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
+                    node_types=self.settings.node_types,
                     aircraft_limit=(
                         self.settings.physical_aircraft_limit
                         if self.settings.adapter_backend is AdapterBackend.REMOTE
                         else self.settings.sim_aircraft_count
                     ),
                     observation_configuration=self.settings.observation_configuration,
-                    node_types=self.settings.node_types,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -786,9 +788,10 @@ class RelayRuntime:
                     sequence = (
                         self._control_heartbeat_sequence.get(subscription.connection_id, 0) + 1
                     )
+                    issued_at = self.clock()
                     unsigned: dict[str, object] = {
                         "v": 1,
-                        "t": self.clock(),
+                        "t": issued_at,
                         "type": "control_heartbeat",
                         "event_id": self.event_ids(),
                         "session": session_id,
@@ -798,6 +801,13 @@ class RelayRuntime:
                         "roster_version": roster_version,
                         "seq": sequence,
                     }
+                    if self.settings.node_types.get(principal.drone_id) == NodeType.GROUND:
+                        unsigned.update(
+                            issued_at=issued_at,
+                            expires_at=issued_at + self.settings.node_watchdog_failsafe_ms,
+                            hold_after_ms=self.settings.node_watchdog_hold_ms,
+                            failsafe_after_ms=self.settings.node_watchdog_failsafe_ms,
+                        )
                     event = {
                         **unsigned,
                         "signature": sign_event(unsigned, principal.signing_key),
