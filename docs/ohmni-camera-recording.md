@@ -26,6 +26,7 @@ format: `frames.gray`, `frames.jsonl`, and `manifest.json`. A successful capture
 has a complete manifest and no `INCOMPLETE` marker. Failures retain the marker so
 partial output cannot be mistaken for a completed recording.
 
-The manifest records wall time and CPU used by the capture process. The decoder
-runs in a separate process, so its CPU is not included. Measure decoder CPU before
-using this recording to justify a live fisheye stream.
+The manifest records wall time, CPU used by the capture process, and CPU used by all
+children reaped during the capture. In the standalone command, that child is the
+decoder. An embedding process can reap unrelated children, so its child value is not
+decoder-exclusive. Platforms without `RUSAGE_CHILDREN` mark child CPU unavailable.
