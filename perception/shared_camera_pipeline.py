@@ -124,6 +124,23 @@ class LatestFrameSubscription:
             self._owner.release(self._name)
 
 
+class SharedCameraPipelineConstructionError(RuntimeError):
+    """Construction failed after a decoder subscription was acquired."""
+
+    def __init__(
+        self, owner: SharedCameraPipeline, cause: Exception, cleanup_error: Exception
+    ) -> None:
+        super().__init__("shared camera pipeline could not release its decoder after setup failed")
+        self.owner = owner
+        self.cause = cause
+        self.cleanup_error = cleanup_error
+
+
+class _NoFrameReader:
+    def read(self, timeout: float = 0.0) -> None:
+        raise AssertionError("detector validation must not read a camera frame")
+
+
 class _SharedDecoder:
     def __init__(
         self,
@@ -377,9 +394,23 @@ class SharedCameraPipeline:
         self._detector_subscription: LatestFrameSubscription | None = None
         self._keyframes: SelectedKeyframeWorker | None = None
         self._keyframe_subscription: LatestFrameSubscription | None = None
+        if on_detection is not None and not callable(on_detection):
+            raise ValueError("on_detection must be callable")
+        if map_builder is not None and not callable(map_builder):
+            raise ValueError("map_builder must be callable")
+        if detector is not None:
+            LiveDetectionWorker(
+                _NoFrameReader(),
+                detector,
+                source_id=source_id,
+                mission_id=mission_id,
+                max_frame_age_s=config.detector_max_frame_age_s,
+                sample_interval_s=config.detector_sample_interval_s,
+                monotonic_clock=monotonic_clock,
+            )
         self._on_detection = on_detection
         self._map_builder = map_builder
-        self._callback_lock = threading.Lock()
+        self._callback_lock = threading.RLock()
         self._callback_generation = 0
         self._active_callback_generation: int | None = None
         self._started = False
@@ -405,30 +436,35 @@ class SharedCameraPipeline:
                     max_frame_age_s=config.keyframe_max_frame_age_s,
                     monotonic_clock=monotonic_clock,
                 )
-        except Exception:
-            self._release_constructor_subscriptions()
+        except Exception as error:
+            cleanup_error = self._release_constructor_subscriptions()
+            if cleanup_error is not None:
+                raise SharedCameraPipelineConstructionError(self, error, cleanup_error) from None
             raise
 
-    def _release_constructor_subscriptions(self) -> None:
+    def _release_constructor_subscriptions(self) -> Exception | None:
+        cleanup_error = None
         for subscription in (self._keyframe_subscription, self._detector_subscription):
             if subscription is None:
                 continue
             try:
                 subscription.close()
-            except Exception:
-                pass
+            except Exception as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+        return cleanup_error
 
     def _detection_callback(self, event: object) -> None:
         with self._callback_lock:
             callback = self._on_detection if self._active_callback_generation is not None else None
-        if callback is not None:
-            callback(event)
+            if callback is not None:
+                callback(event)
 
     def _map_callback(self, frame: CameraFrame) -> None:
         with self._callback_lock:
             callback = self._map_builder if self._active_callback_generation is not None else None
-        if callback is not None:
-            callback(frame)
+            if callback is not None:
+                callback(frame)
 
     def _activate_callbacks(self) -> None:
         with self._callback_lock:
