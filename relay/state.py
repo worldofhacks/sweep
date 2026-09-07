@@ -336,6 +336,18 @@ class FleetRegistry:
                     "invalid_membership_transition",
                     f"cannot declare readiness while {record.membership.value}",
                 )
+            prior_material_state = (
+                record.readiness_declared,
+                record.membership if record.node_type is NodeType.AIRCRAFT else None,
+                record.home_pose_confirmed,
+                record.control_authority,
+                record.rc_safety_operator_present,
+                record.drive_authority,
+                record.safety_operator_present,
+                record.local_stop_ready,
+                record.heartbeat_ready,
+                record.home_pose,
+            )
             record.readiness_declared = True
             if record.node_type is NodeType.GROUND:
                 if (
@@ -389,7 +401,20 @@ class FleetRegistry:
             reasons = self._readiness_reasons(record, request.t)
             record.membership = Membership.READY if not reasons else Membership.DEGRADED
             record.updated_at = request.t
-            self._roster_version += 1
+            material_state = (
+                record.readiness_declared,
+                record.membership if record.node_type is NodeType.AIRCRAFT else None,
+                record.home_pose_confirmed,
+                record.control_authority,
+                record.rc_safety_operator_present,
+                record.drive_authority,
+                record.safety_operator_present,
+                record.local_stop_ready,
+                record.heartbeat_ready,
+                record.home_pose,
+            )
+            if record.node_type is NodeType.AIRCRAFT or material_state != prior_material_state:
+                self._roster_version += 1
             self._remember(
                 record,
                 t=request.t,
@@ -428,6 +453,7 @@ class FleetRegistry:
         connection_epoch: int,
         event_id: str,
         session: str,
+        source_id: str,
         frame: str,
         t: int,
     ) -> None:
@@ -435,15 +461,26 @@ class FleetRegistry:
             record = self._require_current(drone_id, connection_epoch)
             if record.node_type is not NodeType.GROUND:
                 return
-            if not event_id or not session or not frame or t < 0:
+            if not event_id or not session or not source_id or not frame or t < 0:
                 raise ValueError("ground pose observation identity is invalid")
             record.accepted_pose_identity = GroundPoseIdentity(
                 event_id=event_id,
                 session=session,
                 connection_epoch=connection_epoch,
+                source_id=source_id,
                 frame=frame,
             )
             record.accepted_pose_at = t
+
+    def clear_ground_pose_observation(
+        self, *, drone_id: int, connection_epoch: int
+    ) -> None:
+        with self._lock:
+            record = self._require_current(drone_id, connection_epoch)
+            if record.node_type is not NodeType.GROUND:
+                return
+            record.accepted_pose_identity = None
+            record.accepted_pose_at = None
 
     def apply_graceful_leave(self, request: MembershipRequest) -> MembershipTransition:
         if request.action is not MembershipAction.GRACEFUL_LEAVE:

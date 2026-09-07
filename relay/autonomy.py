@@ -28,6 +28,7 @@ import os
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import get_origin, get_type_hints
 
@@ -59,9 +60,10 @@ from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
     SURVEY_ADDITIONAL_INTENT_NAMES,
     CapabilityProfile,
+    with_ground_capabilities,
 )
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
-from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
+from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord, NodeType
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
 from relay.control_localization import (
     ClockMapping,
@@ -690,8 +692,9 @@ class AutonomySession:
             else:
                 snapshot = current()
                 if intent.name in {IntentName.HOLD, IntentName.ESTOP}:
-                    ground_result = None
-                    if _ground_stop_targets(intent, session.current_state()):
+                    ground_dispatcher = None
+                    ground_state = session.current_state()
+                    if _ground_stop_targets(intent, ground_state):
                         link = gate(
                             RelayNodeLink(
                                 runtime,
@@ -699,13 +702,16 @@ class AutonomySession:
                                 delivery_timeout_ms=runtime.settings.command_ttl_ms,
                             )
                         )
-                        ground_result = GroundCommandDispatcher(
+                        ground_dispatcher = GroundCommandDispatcher(
                             link,
                             acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
                             command_deadline_ms=runtime.settings.command_deadline_ms,
-                        ).dispatch_stop(intent, session.current_state())
+                        )
                     air_intent, air_snapshot = _air_only_stop(intent, snapshot)
-                    if air_snapshot.aircraft:
+                    dispatch_aircraft = bool(air_snapshot.aircraft) and (
+                        intent.name is IntentName.ESTOP or bool(air_intent.selection)
+                    )
+                    if dispatch_aircraft:
                         dispatcher = build_dispatcher(
                             runtime,
                             self.session_id,
@@ -717,14 +723,33 @@ class AutonomySession:
                         controller = AutonomyController(
                             planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
                         )
+                    else:
+                        dispatcher = None
+                    if ground_dispatcher is not None and dispatch_aircraft:
+                        with ThreadPoolExecutor(max_workers=2) as workers:
+                            ground_future = workers.submit(
+                                ground_dispatcher.dispatch_stop, intent, ground_state
+                            )
+                            air_future = workers.submit(
+                                controller.execute,
+                                air_intent,
+                                air_snapshot,
+                                current_snapshot=lambda: _air_only_stop(intent, current())[1],
+                            )
+                            ground_result = ground_future.result()
+                            air_result = air_future.result()
+                    elif ground_dispatcher is not None:
+                        ground_result = ground_dispatcher.dispatch_stop(intent, ground_state)
+                        air_result = None
+                    elif dispatch_aircraft:
+                        ground_result = None
                         air_result = controller.execute(
                             air_intent,
                             air_snapshot,
                             current_snapshot=lambda: _air_only_stop(intent, current())[1],
                         )
                     else:
-                        dispatcher = None
-                        air_result = None
+                        ground_result = air_result = None
                     result = _aggregate_stop_results(intent, snapshot, ground_result, air_result)
                 else:
                     dispatcher = build_dispatcher(
@@ -1017,18 +1042,18 @@ class AutonomyComposition:
         config: AutonomyConfig,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         *,
-        survey_enabled: bool = False,
+        node_types: Mapping[int, NodeType] | None = None,
     ) -> None:
         self.config = config
-        base_profile = config.planning.effective_capability_profile(capability_profile)
-        self.capability_profile = (
-            CapabilityProfile(
-                base_profile.name,
-                base_profile.enabled_intent_names | SURVEY_ADDITIONAL_INTENT_NAMES,
+        profile = config.planning.effective_capability_profile(capability_profile)
+        if node_types is not None and any(
+            node_type is NodeType.GROUND for node_type in node_types.values()
+        ):
+            profile = with_ground_capabilities(profile)
+            profile = CapabilityProfile(
+                profile.name, profile.enabled_intent_names | SURVEY_ADDITIONAL_INTENT_NAMES
             )
-            if survey_enabled
-            else base_profile
-        )
+        self.capability_profile = profile
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -1095,11 +1120,7 @@ def create_autonomy_app(
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
     composition = AutonomyComposition(
-        config,
-        settings.capability_profile,
-        survey_enabled=any(
-            node_type.value == "ground" for node_type in settings.node_types.values()
-        ),
+        config, settings.capability_profile, node_types=settings.node_types
     )
     control_localization_factory = (
         None

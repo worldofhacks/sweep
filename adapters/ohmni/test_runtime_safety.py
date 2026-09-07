@@ -187,3 +187,22 @@ def _command_frame():
 
     runtime, _ = _runtime_for_local_test()
     return parse_command(_command(runtime, operation=CommandOperation.GROUND_VELOCITY, seq=1))
+
+
+def test_lost_pose_confidence_stops_the_ground_runtime_and_withdraws_readiness() -> None:
+    runtime, device = _runtime_for_local_test()
+    runtime._on_heartbeat(_heartbeat(runtime, seq=1))
+    device.lidar_available = False
+
+    runtime._publish_observations()
+
+    assert not device.enabled
+    assert device.stopped
+    frames = [
+        runtime._outbound.get_nowait()  # type: ignore[union-attr]
+        for _ in range(runtime._outbound.qsize())  # type: ignore[union-attr]
+    ]
+    readiness = [frame for frame in frames if frame["type"] == "membership"]
+    assert readiness[-1]["drive_authority"] is False
+    assert readiness[-1]["heartbeat_ready"] is False
+    assert readiness[-1]["pose_identity"]["source_id"] == runtime.config.pose_source_id

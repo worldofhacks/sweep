@@ -972,14 +972,21 @@ class RelaySession:
                     submission.node_type == NodeType.GROUND.value
                     and submission.payload["kind"] == "pose"
                 ):
-                    self.registry.apply_ground_pose_observation(
-                        drone_id=submission.device_id,
-                        connection_epoch=submission.connection_epoch,
-                        event_id=submission.event_id,
-                        session=submission.session,
-                        frame=submission.frame,
-                        t=observation.t_ingest,
-                    )
+                    if submission.confidence > 0:
+                        self.registry.apply_ground_pose_observation(
+                            drone_id=submission.device_id,
+                            connection_epoch=submission.connection_epoch,
+                            event_id=submission.event_id,
+                            session=submission.session,
+                            source_id=submission.source_id,
+                            frame=submission.frame,
+                            t=observation.t_ingest,
+                        )
+                    else:
+                        self.registry.clear_ground_pose_observation(
+                            drone_id=submission.device_id,
+                            connection_epoch=submission.connection_epoch,
+                        )
                 event = observation.to_mapping()
             except (ObservationError, ContractError, RegistryError) as error:
                 return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]

@@ -18,6 +18,8 @@ from planner.models import (
 )
 from relay.intent_v1 import IntentName, IntentV1
 
+_MAX_ACKNOWLEDGEMENTS = 3
+
 
 class GroundCommandDispatcher:
     """Send one confirmed ground pulse through the relay's signed node link."""
@@ -393,7 +395,10 @@ class GroundCommandDispatcher:
     def _collect(self, request: CommandRequest) -> list[CommandAcknowledgement]:
         deadline = self._monotonic() + self._command_deadline_ms / 1_000
         acknowledgements: list[CommandAcknowledgement] = []
-        while remaining := deadline - self._monotonic():
+        while len(acknowledgements) < _MAX_ACKNOWLEDGEMENTS:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                break
             wire = self._link.await_acknowledgement(
                 request.command_id,
                 timeout_ms=min(self._acknowledgement_timeout_ms, max(1, int(remaining * 1_000))),
