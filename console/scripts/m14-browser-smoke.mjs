@@ -39,7 +39,7 @@ try {
   processes.push(
     spawn(resolve(consoleRoot, 'node_modules/.bin/vite'), ['--host', '127.0.0.1', '--port', String(consolePort), '--strictPort'], {
       cwd: consoleRoot,
-      env: process.env,
+      env: { ...process.env, SWEEP_CONSOLE_TEST_MODE: 'm14-browser' },
       stdio: 'inherit',
     }),
   )
