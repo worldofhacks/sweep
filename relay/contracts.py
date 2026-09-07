@@ -157,6 +157,7 @@ COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingP
                 "duration_ms": "ground_duration_ms",
             }
         ),
+        CommandOperation.GROUND_RETURN: MappingProxyType({"return_id": "id"}),
         CommandOperation.CAMERA_CAPABILITIES: MappingProxyType({}),
         CommandOperation.SET_GIMBAL_PITCH: MappingProxyType({"pitch_mdeg": "integer"}),
         CommandOperation.CAMERA_READY: MappingProxyType({}),

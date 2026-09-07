@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from websockets.asyncio.client import connect
@@ -23,6 +24,7 @@ from relay.contracts import CommandFrame, ContractError, parse_command
 from relay.observations import ObservationSubmission
 
 from .models import GroundStatus, RangeScan
+from .return_controller import ApprovedReturnRoute, ReturnController
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,6 +56,7 @@ class GroundRuntimeConfig:
     telemetry_source_id: str = "ohmni-telemetry"
     status_source_id: str = "ohmni-status"
     odom_frame: str = "odom"
+    odom_origin_id: str | None = None
     body_frame: str = "body"
     lidar_source_id: str = "ohmni-lidar"
     lidar_frame: str = "lidar"
@@ -70,6 +73,7 @@ class GroundRuntimeConfig:
     heartbeat_failsafe_ms: int = 10_000
     telemetry_hz: float = 5.0
     outbound_queue_limit: int = 256
+    return_approval: ApprovedReturnRoute | None = None
     monotonic: Callable[[], float] = time.monotonic
     event_ids: Callable[[], str] = lambda: str(uuid.uuid4())
 
@@ -84,6 +88,15 @@ class GroundRuntimeConfig:
             raise ValueError("ground camera dimensions are invalid")
         if self.outbound_queue_limit < 8:
             raise ValueError("ground outbound queue must retain at least eight safety frames")
+        if self.odom_origin_id is not None and (
+            not self.odom_origin_id
+            or len(self.odom_origin_id) > 128
+            or self.odom_origin_id != self.odom_origin_id.strip()
+            or not self.odom_origin_id.isprintable()
+        ):
+            raise ValueError("odometry origin ID must be bounded non-empty text")
+        if self.return_approval is not None and not self.odom_origin_id:
+            raise ValueError("approved return requires an odometry origin ID")
         mount = (
             self.lidar_mount_x_m,
             self.lidar_mount_y_m,
@@ -121,6 +134,26 @@ class OhmniRuntime:
         self._thread: threading.Thread | None = None
         self._started = threading.Event()
         self._failure: BaseException | None = None
+        self._return_controller = (
+            None
+            if config.return_approval is None
+            else ReturnController(
+                config.return_approval,
+                status=device.status,
+                scan=device.latest_scan,
+                drive_velocity=device.drive_velocity,
+                motion_done=device.motion_done,
+                stop=device.stop,
+                grant_active=self._return_grant_active,
+                epoch=lambda: self._epoch,
+                session=config.session,
+                device_id=config.device_id,
+                odom_origin_id=config.odom_origin_id or "",
+                pose_source_id=config.pose_source_id,
+                odom_frame=config.odom_frame,
+                monotonic=config.monotonic,
+            )
+        )
 
     @property
     def connection_epoch(self) -> int | None:
@@ -366,6 +399,23 @@ class OhmniRuntime:
             assert self._loop is not None
             self._loop.create_task(self._complete_motion(command, motion))
             return
+        if command.operation is CommandOperation.GROUND_RETURN:
+            route = self.config.return_approval
+            if (
+                self._return_controller is None
+                or route is None
+                or command.args["return_id"] != route.return_id
+            ):
+                self._enqueue(
+                    self._ack(
+                        command, "failed", "return_route_unavailable", "no matching approved route"
+                    )
+                )
+                return
+            self._enqueue(self._ack(command, "executing"))
+            assert self._loop is not None
+            self._loop.create_task(self._complete_return(command))
+            return
         if command.operation is CommandOperation.HOVER:
             self._local_stop("remote_hold", disable=False)
             self._enqueue(self._ack(command, "executing"))
@@ -378,6 +428,18 @@ class OhmniRuntime:
             self._enqueue(self._ack(command, "executing"))
             self._enqueue(self._ack(command, "completed"))
             return
+
+    async def _complete_return(self, command: CommandFrame) -> None:
+        assert self._return_controller is not None
+        outcome = await self._return_controller.run()
+        if outcome.completed:
+            self._local_stop("return_arrived", disable=False)
+            self._enqueue(self._ack(command, "completed"))
+            return
+        self._local_stop(outcome.reason or "return_failed", disable=True)
+        self._enqueue(
+            self._ack(command, "failed", outcome.reason or "return_failed", outcome.detail)
+        )
 
     async def _complete_motion(self, command: CommandFrame, motion: str) -> None:
         while True:
@@ -409,12 +471,15 @@ class OhmniRuntime:
             return "stale_command", "command is stale or replayed"
         if command.operation not in {
             CommandOperation.GROUND_VELOCITY,
+            CommandOperation.GROUND_RETURN,
             CommandOperation.HOVER,
             CommandOperation.ESTOP,
         }:
             return "unsupported_operation", "ground route is not qualified"
         if command.operation in {CommandOperation.HOVER, CommandOperation.ESTOP}:
             return None
+        if command.operation is CommandOperation.GROUND_RETURN and self._return_controller is None:
+            return "return_route_unavailable", "no externally approved return route is configured"
         if self._operator_rearm_required:
             return "operator_rearm_required", "physical operator rearm is required after estop"
         if self._lease_expired():
@@ -702,6 +767,14 @@ class OhmniRuntime:
             (scan.pose[2] + self.config.lidar_mount_yaw_deg) % 360,
         )
 
+    def _return_grant_active(self) -> bool:
+        return (
+            not self._operator_rearm_required
+            and self._ready
+            and self._watchdog_state == "nominal"
+            and not self._lease_expired()
+        )
+
     def _lease_expired(self) -> bool:
         expires_at = self._last_heartbeat_expires_at
         return expires_at is None or int(time.time_ns() // 1_000_000) >= expires_at
@@ -720,7 +793,14 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
     parser.add_argument("--device-id", type=int, default=os.environ.get("SWEEP_DEVICE_UNIT"))
     parser.add_argument("--token", default=os.environ.get("SWEEP_NODE_KEY"))
     parser.add_argument("--adapter-id", default=os.environ.get("SWEEP_ADAPTER_ID"))
+    parser.add_argument("--odom-origin-id", default=os.environ.get("SWEEP_ODOM_ORIGIN_ID"))
     parser.add_argument("--telemetry-hz", type=float, default=5.0)
+    parser.add_argument(
+        "--return-approval-file", default=os.environ.get("SWEEP_RETURN_APPROVAL_FILE")
+    )
+    parser.add_argument(
+        "--return-approval-key-file", default=os.environ.get("SWEEP_RETURN_APPROVAL_KEY_FILE")
+    )
     parser.add_argument(
         "--lidar-mount-x-m", type=float, default=os.environ.get("SWEEP_LIDAR_MOUNT_X_M")
     )
@@ -734,8 +814,22 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         "--lidar-mount-yaw-deg", type=float, default=os.environ.get("SWEEP_LIDAR_MOUNT_YAW_DEG")
     )
     args = parser.parse_args(argv)
+    if bool(args.return_approval_file) != bool(args.return_approval_key_file):
+        parser.error("return approval and approval key files must be supplied together")
+    if args.return_approval_file and not args.odom_origin_id:
+        parser.error("return approval requires an odometry origin ID")
     if not args.relay or not args.session or not args.token or args.device_id is None:
         parser.error("relay, session, device ID, and adapter token are required")
+    try:
+        approval = (
+            None
+            if not args.return_approval_file
+            else ApprovedReturnRoute.load(
+                Path(args.return_approval_file), Path(args.return_approval_key_file).read_bytes()
+            )
+        )
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     return GroundRuntimeConfig(
         relay_url=args.relay.rstrip("/"),
         session=args.session,
@@ -743,6 +837,8 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         token=args.token,
         adapter_id=args.adapter_id or f"ohmni-{args.device_id}",
         telemetry_hz=args.telemetry_hz,
+        return_approval=approval,
+        odom_origin_id=args.odom_origin_id,
         lidar_mount_x_m=args.lidar_mount_x_m,
         lidar_mount_y_m=args.lidar_mount_y_m,
         lidar_mount_z_m=args.lidar_mount_z_m,

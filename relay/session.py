@@ -2592,6 +2592,7 @@ _GROUND_SAFE_INTENTS = frozenset(
         IntentName.ESTOP,
         IntentName.SURVEY_AREA,
         IntentName.GROUND_VELOCITY,
+        IntentName.COME_HOME,
     }
 )
 # These two planner-owned objects share the per-aircraft projection budget. Four
