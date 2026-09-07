@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from planner.navigation_runtime import NavigationRuntime
+
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from heapq import heappop, heappush
@@ -181,8 +186,10 @@ class DeterministicPlanner:
         self,
         config: PlanningConfig,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        navigation_runtime: NavigationRuntime | None = None,
     ) -> None:
         self.config = config
+        self.navigation_runtime = navigation_runtime
         self.capability_profile = config.effective_capability_profile(capability_profile)
 
     def supports(self, intent: IntentV1) -> bool:
@@ -502,6 +509,8 @@ class DeterministicPlanner:
                 builder.add(drone_id, CommandOperation.HOVER, safety_action=True)
 
         elif intent.name is IntentName.COME_HOME:
+            if self.navigation_runtime is not None:
+                return self.navigation_runtime.prepare(intent, snapshot)
             for drone_id in selected:
                 aircraft = snapshot.aircraft[drone_id]
                 if aircraft.home is None:
