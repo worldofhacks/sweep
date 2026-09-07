@@ -186,3 +186,11 @@ and independent held-out checkpoint file. Repeat with covered tags and publisher
 loss; freshness must age without a new fix. Actual HOLD/LAND and wrong-map arming
 refusal require the later relay/arbiter integration. No flight is needed for this
 hand-carried procedure.
+
+## Pause and resume the localization reader
+
+The localization process owns only its own RTSP decoder. Send `SIGUSR1` to pause it;
+the process closes that decoder and emits fail-closed localization records. Send
+`SIGUSR2` to open a new decoder. It stays unavailable until a frame decoded after
+that resume produces a newly accepted pose. These signals do not pause the media
+publisher, change DJI video capture, or issue a flight command.
