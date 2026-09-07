@@ -4,11 +4,14 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
 from relay.auth import sign_event
 
+from . import return_controller
 from .models import GroundStatus, RangeScan
 from .return_controller import ApprovedReturnRoute, ReturnController, read_approval_key
 
@@ -270,3 +273,42 @@ def test_return_refuses_an_oversized_approval_key_file(tmp_path: Path) -> None:
         assert str(error) == "return approval key exceeds the safety limit"
     else:
         raise AssertionError("an oversized approval key was accepted")
+
+
+def test_return_refuses_a_symlink_or_fifo_approval_key(tmp_path: Path) -> None:
+    target = tmp_path / "target-key"
+    target.write_bytes(APPROVAL_KEY)
+    link = tmp_path / "return-key-link"
+    link.symlink_to(target)
+    fifo = tmp_path / "return-key-fifo"
+    os.mkfifo(fifo)
+
+    for path in (link, fifo):
+        try:
+            read_approval_key(path)
+        except ValueError as error:
+            assert str(error) == "return approval key is unreadable"
+        else:
+            raise AssertionError("a non-regular approval key was accepted")
+
+
+def test_return_bounds_key_bytes_when_the_file_grows_after_stat(
+    tmp_path: Path, monkeypatch
+) -> None:
+    key_path = tmp_path / "return-key"
+    key_path.write_bytes(b"x" * 4_097)
+    original_fstat = return_controller.os.fstat
+
+    def stale_size(descriptor: int) -> os.stat_result:
+        values = list(original_fstat(descriptor))
+        values[stat.ST_SIZE] = 0
+        return os.stat_result(values)
+
+    monkeypatch.setattr(return_controller.os, "fstat", stale_size)
+
+    try:
+        read_approval_key(key_path)
+    except ValueError as error:
+        assert str(error) == "return approval key exceeds the safety limit"
+    else:
+        raise AssertionError("a growing approval key was accepted")
