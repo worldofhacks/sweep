@@ -272,7 +272,120 @@ def test_publisher_spaces_multiple_tag_events_from_one_frame(
         )
         == 3
     )
-    assert delays == [0.01]
+    assert len(delays) == 1
+    assert 0 < delays[0] <= 0.01
+
+
+def test_publisher_spaces_tag_events_across_consecutive_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import ohmni_live_tag_mapper
+
+    class SingleTagDetector(_Detector):
+        def detect(self, image: np.ndarray) -> list[dict[str, object]]:
+            return super().detect(image)[:1]
+
+    mapper = LiveTagMapper(
+        _mapper().config,
+        SingleTagDetector(),
+        receipt_time_ns=lambda: 1_100_000_000,
+        event_ids=iter(("camera-one", "tag-one", "camera-two", "tag-two")).__next__,
+    )
+
+    class Socket:
+        def __init__(self) -> None:
+            self.inbound = iter(
+                (
+                    json.dumps({"type": "auth.accepted"}),
+                    json.dumps(
+                        {
+                            "type": "state",
+                            "session": "live-12",
+                            "drones": [
+                                {
+                                    "drone_id": 12,
+                                    "node_type": "ground",
+                                    "membership": "joined",
+                                    "connection_epoch": 17,
+                                }
+                            ],
+                        }
+                    ),
+                    json.dumps({"type": "observation", "event_id": "camera:camera-one"}),
+                    json.dumps({"type": "observation", "event_id": "tag:tag-one"}),
+                    json.dumps({"type": "observation", "event_id": "camera:camera-two"}),
+                    json.dumps({"type": "observation", "event_id": "tag:tag-two"}),
+                )
+            )
+
+        async def recv(self) -> str:
+            return next(self.inbound)
+
+        async def send(self, _message: str) -> None:
+            return None
+
+    delays: list[float] = []
+
+    async def wait(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(ohmni_live_tag_mapper.asyncio, "sleep", wait)
+    assert (
+        asyncio.run(
+            publish_observations(
+                Socket(), mapper, (_frame(), _frame()), tag_submit_interval_ms=10
+            )
+        )
+        == 4
+    )
+    assert len(delays) == 1
+    assert 0 < delays[0] <= 0.01
+
+
+def test_relay_state_chatter_cannot_extend_submission_confirmation_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import ohmni_live_tag_mapper
+    from tools.ohmni_live_tag_mapper import _confirm_submission
+
+    state = json.dumps(
+        {
+            "type": "state",
+            "session": "live-12",
+            "drones": [
+                {
+                    "drone_id": 12,
+                    "node_type": "ground",
+                    "membership": "joined",
+                    "connection_epoch": 9,
+                }
+            ],
+        }
+    )
+
+    class Chatter:
+        async def recv(self) -> str:
+            await asyncio.sleep(0)
+            return state
+
+    event = _mapper().observations(LiveScope("live-12", 12, 9), _frame())[0]
+    monkeypatch.setattr(ohmni_live_tag_mapper, "_receive_timeout", lambda _value: 0.001)
+    with pytest.raises(LiveMapperError, match="timed out waiting"):
+        asyncio.run(_confirm_submission(Chatter(), LiveScope("live-12", 12, 9), event, 1))
+
+
+def test_silent_relay_times_out_during_authentication(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools import ohmni_live_tag_mapper
+    from tools.ohmni_live_tag_mapper import _authenticated_scope
+
+    class Silent:
+        async def recv(self) -> str:
+            await asyncio.Future()
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(ohmni_live_tag_mapper, "_receive_timeout", lambda _value: 0.001)
+    with pytest.raises(LiveMapperError, match="timed out waiting"):
+        asyncio.run(_authenticated_scope(Silent(), _mapper(), 1))
 
 
 def test_clock_qualification_requires_the_pinned_robot_boot_id(

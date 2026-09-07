@@ -330,24 +330,58 @@ async def publish_observations(
     frames: Sequence[CapturedFrame],
     *,
     tag_submit_interval_ms: int = 0,
+    receive_timeout_s: float = 30.0,
 ) -> int:
-    scope = await _authenticated_scope(socket, mapper)
-    return await _publish_frames(socket, mapper, scope, frames, tag_submit_interval_ms)
+    scope = await _authenticated_scope(socket, mapper, receive_timeout_s)
+    count, _ = await _publish_frames(
+        socket,
+        mapper,
+        scope,
+        frames,
+        tag_submit_interval_ms,
+        receive_timeout_s,
+    )
+    return count
 
 
-async def _authenticated_scope(socket: _Socket, mapper: LiveTagMapper) -> LiveScope:
-    accepted = json.loads(await socket.recv())
+def _receive_timeout(value: float) -> float:
+    if not isinstance(value, int | float) or isinstance(value, bool) or not math.isfinite(value):
+        raise LiveMapperError("relay receive timeout must be a finite number")
+    if not 1 <= value <= 120:
+        raise LiveMapperError("relay receive timeout must be from one through 120 seconds")
+    return float(value)
+
+
+async def _receive_until(socket: _Socket, deadline: float) -> str:
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise LiveMapperError("timed out waiting for relay confirmation")
+    try:
+        return await asyncio.wait_for(socket.recv(), remaining)
+    except TimeoutError as error:
+        raise LiveMapperError("timed out waiting for relay confirmation") from error
+
+
+async def _authenticated_scope(
+    socket: _Socket, mapper: LiveTagMapper, receive_timeout_s: float
+) -> LiveScope:
+    deadline = asyncio.get_running_loop().time() + _receive_timeout(receive_timeout_s)
+    accepted = json.loads(await _receive_until(socket, deadline))
     if not isinstance(accepted, Mapping) or accepted.get("type") != "auth.accepted":
         raise LiveMapperError("relay did not accept localization authentication")
-    state = json.loads(await socket.recv())
+    state = json.loads(await _receive_until(socket, deadline))
     return scope_from_state(state, session=mapper.config.session, device_id=mapper.config.device_id)
 
 
 async def _confirm_submission(
-    socket: _Socket, scope: LiveScope, event: ObservationSubmission
+    socket: _Socket,
+    scope: LiveScope,
+    event: ObservationSubmission,
+    receive_timeout_s: float,
 ) -> None:
+    deadline = asyncio.get_running_loop().time() + _receive_timeout(receive_timeout_s)
     while True:
-        raw = json.loads(await socket.recv())
+        raw = json.loads(await _receive_until(socket, deadline))
         if not isinstance(raw, Mapping):
             continue
         if raw.get("type") == "state":
@@ -366,23 +400,28 @@ async def _publish_frames(
     scope: LiveScope,
     frames: Sequence[CapturedFrame],
     tag_submit_interval_ms: int,
-) -> int:
+    receive_timeout_s: float,
+    last_tag_sent_at: float | None = None,
+) -> tuple[int, float | None]:
     if type(tag_submit_interval_ms) is not int or not 0 <= tag_submit_interval_ms <= 1_000:
         raise LiveMapperError("tag submit interval must be from zero through one thousand ms")
     count = 0
+    interval_s = tag_submit_interval_ms / 1_000
     for frame in frames:
-        prior_tag = False
         for event in mapper.observations(scope, frame):
             is_tag = event.source_id == mapper.config.tag_source_id
-            if is_tag and prior_tag and tag_submit_interval_ms:
-                await asyncio.sleep(tag_submit_interval_ms / 1_000)
+            if is_tag and last_tag_sent_at is not None and interval_s:
+                remaining = interval_s - (asyncio.get_running_loop().time() - last_tag_sent_at)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
             await socket.send(
                 json.dumps(event.to_mapping(), allow_nan=False, separators=(",", ":"))
             )
-            await _confirm_submission(socket, scope, event)
+            if is_tag:
+                last_tag_sent_at = asyncio.get_running_loop().time()
+            await _confirm_submission(socket, scope, event, receive_timeout_s)
             count += 1
-            prior_tag = is_tag
-    return count
+    return count, last_tag_sent_at
 
 
 async def _publish_reader(
@@ -391,14 +430,25 @@ async def _publish_reader(
     scope: LiveScope,
     frames: Iterator[CapturedFrame],
     tag_submit_interval_ms: int,
+    receive_timeout_s: float,
 ) -> int:
     count = 0
+    last_tag_sent_at: float | None = None
     while True:
         try:
             frame = next(frames)
         except StopIteration:
             return count
-        count += await _publish_frames(socket, mapper, scope, (frame,), tag_submit_interval_ms)
+        published, last_tag_sent_at = await _publish_frames(
+            socket,
+            mapper,
+            scope,
+            (frame,),
+            tag_submit_interval_ms,
+            receive_timeout_s,
+            last_tag_sent_at,
+        )
+        count += published
 
 
 def _tag_sizes(value: str) -> dict[int, float]:
@@ -554,9 +604,14 @@ async def _main_async(args: argparse.Namespace) -> int:
                         }
                     )
                 )
-                scope = await _authenticated_scope(relay, mapper)
+                scope = await _authenticated_scope(relay, mapper, args.relay_receive_timeout_s)
                 count = await _publish_reader(
-                    relay, mapper, scope, frames, args.tag_submit_interval_ms
+                    relay,
+                    mapper,
+                    scope,
+                    frames,
+                    args.tag_submit_interval_ms,
+                    args.relay_receive_timeout_s,
                 )
     finally:
         if source is not None:
@@ -575,6 +630,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pts-port", required=True, type=int)
     parser.add_argument("--sidecar-connect-timeout-s", required=True, type=float)
     parser.add_argument("--tag-submit-interval-ms", required=True, type=int)
+    parser.add_argument("--relay-receive-timeout-s", required=True, type=float)
     parser.add_argument("--camera-source-id", default="ohmni-live-camera")
     parser.add_argument("--tag-source-id", default="ohmni-live-tag")
     parser.add_argument("--camera-frame", default="camera")
@@ -601,6 +657,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         or not 1 <= args.sidecar_connect_timeout_s <= 120
         or not 1024 <= args.pts_port <= 65_535
         or not 0 <= args.tag_submit_interval_ms <= 1_000
+        or not 1 <= args.relay_receive_timeout_s <= 120
+        or not math.isfinite(args.relay_receive_timeout_s)
     ):
         parser.error("clock qualification bounds must be nonnegative with at least one probe")
     return asyncio.run(_main_async(args))
