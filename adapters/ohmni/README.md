@@ -36,13 +36,14 @@ SWEEP_ADAPTER_ID=ohmni-9
 SWEEP_RELAY_CONNECT_HOST=192.0.2.10
 SWEEP_RELAY_CLOCK_OFFSET_MS=0
 SWEEP_ODOM_ORIGIN_ID=measured-odom-origin
-# Set all five only when this node is approved to publish video.
+# Set all six when this node is approved to publish PTS-backed video for mapping.
 SWEEP_MEDIA_HOST=media-host:8554
 SWEEP_CAMERA_DEVICE=/dev/video1
 SWEEP_CAMERA_INPUT_FORMAT=mjpeg
 SWEEP_CAMERA_INPUT_FPS=native
 SWEEP_CAMERA_WIDTH_PX=640
 SWEEP_CAMERA_HEIGHT_PX=480
+SWEEP_CAMERA_PTS_PORT=18555
 SWEEP_LIDAR_MOUNT_X_M=0.00
 SWEEP_LIDAR_MOUNT_Y_M=0.00
 SWEEP_LIDAR_MOUNT_Z_M=0.25
@@ -55,11 +56,11 @@ Keep `SWEEP_RELAY_URL` at the verified `wss://` hostname. When the robot must di
 
 Measure the lidar center relative to the midpoint between the drive wheels: X forward, Y left, and Z up from the floor, in metres. Do not copy the example XYZ values. `SWEEP_LIDAR_OFFSET_DEG` and `SWEEP_LIDAR_ANGLE_SIGN` convert raw scan angles into body axes and require a stationary target check. The published scan keeps the lidar center as its origin and uses body-aligned axes, so `SWEEP_LIDAR_MOUNT_YAW_DEG` must be zero. A nonzero yaw is refused because it would rotate an already normalized scan again.
 
-Camera publishing is disabled unless `SWEEP_MEDIA_HOST` and every `SWEEP_CAMERA_*` source value are present. The source is an approved V4L node, its exact input format, its native rate (`native`) or a measured integer FPS, and its dimensions. The relay device ID derives the canonical MediaMTX path `drone{id}`; it is never renumbered to a ground-unit path. Current measured configurations are unit 11: `/dev/video1`, `mjpeg`, `native`, 640×480; unit 12: `/dev/video0`, `uyvy422`, `30`, 640×480. These identify a usable image stream only. They do not establish tag identity, camera calibration, pose, or timing.
+Camera publishing is disabled unless `SWEEP_MEDIA_HOST` and the camera source values are present. The source is an approved V4L node, its exact input format, its native rate (`native`) or a measured integer FPS, and its dimensions. `SWEEP_CAMERA_PTS_PORT` enables the private mapping sidecar and must match the mapper's `--pts-port`. The relay device ID derives the canonical MediaMTX path `drone{id}`; it is never renumbered to a ground-unit path. Current measured configurations are unit 11: `/dev/video1`, `mjpeg`, `native`, 640×480; unit 12: `/dev/video0`, `uyvy422`, `30`, 640×480. These identify a usable image stream only. They do not establish tag identity, camera calibration, pose, or timing.
 
 The publisher reports `publishing` only after ffmpeg reports a decoded frame and reverts to `failed` when progress goes stale. The field media server keeps RTSP on VPS loopback. Each camera uses `adb reverse tcp:8554 tcp:18554`, and its `camera.env` sets `SWEEP_MEDIA_HOST=127.0.0.1:8554`; the media-only publisher credential then stays inside the authenticated ADB tunnel instead of crossing the public network. `camera.env` contains only the media host and the five camera-source settings; `camera.sh` takes the device ID and node key from `node.env` and refuses a changed device ID. Keep `camera.env` mode 600 and use the separate camera process only after the payload that contains it is installed:
 
-The host-side [live tag mapper](../../docs/ohmni-live-tag-mapper.md) uses a separate ADB reverse tunnel for its private NUT sidecar. It emits raw camera-to-tag observations only. Its PTS require the documented V4L2 timestamp qualification before they can support mapped evidence.
+The host-side [live tag mapper](../../docs/ohmni-live-tag-mapper.md) uses a separate ADB reverse tunnel for its private NUT sidecar. It emits raw camera-to-tag observations only. Its PTS require the documented V4L2 timestamp qualification before they can support mapped evidence. Start the mapper first. It creates the `SWEEP_CAMERA_PTS_PORT` reverse tunnel and waits no longer than its configured sidecar timeout. Start `camera.sh` only after that listener is ready. The mapper's relay receive timeout bounds authentication and acknowledgement waits. Stop the camera before stopping the mapper.
 
 ```sh
 adb -s "$ADB_SERIAL" reverse tcp:8554 tcp:18554

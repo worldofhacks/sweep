@@ -388,6 +388,81 @@ def test_silent_relay_times_out_during_authentication(monkeypatch: pytest.Monkey
         asyncio.run(_authenticated_scope(Silent(), _mapper(), 1))
 
 
+def test_main_closes_the_sidecar_and_removes_the_reverse_tunnel_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from tools import ohmni_live_tag_mapper
+
+    class Detector:
+        camera_serial = "ohmni-live"
+        width = 16
+        height = 12
+
+    class Source:
+        closed = False
+
+        def makefile(self, _mode: str):
+            raise RuntimeError("sidecar stream failed")
+
+        def close(self) -> None:
+            self.closed = True
+
+    source = Source()
+    calls: list[tuple[str, int]] = []
+    args = SimpleNamespace(
+        calibration="unused",
+        calibration_sha256="a" * 64,
+        camera_serial="ohmni-live",
+        tag_sizes={7: 0.16},
+        session="live-12",
+        device_id=12,
+        camera_source_id="ohmni-live-camera",
+        tag_source_id="ohmni-live-tag",
+        camera_frame="camera",
+        clock_id="robot-boot",
+        clock_mapping_id="robot-live",
+        maximum_capture_lag_ms=1_000,
+        confidence=0.8,
+        covariance=(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.02),
+        adb="adb",
+        adb_serial="robot:5555",
+        pts_port=18555,
+        sidecar_connect_timeout_s=5,
+        tag_submit_interval_ms=10,
+        relay_receive_timeout_s=5,
+    )
+    monkeypatch.setattr(ohmni_live_tag_mapper, "read_calibration", lambda *_args: {})
+    monkeypatch.setattr(
+        ohmni_live_tag_mapper, "CameraTagDetector", lambda *_args, **_kwargs: Detector()
+    )
+    monkeypatch.setattr(
+        ohmni_live_tag_mapper,
+        "_qualify_clock",
+        lambda _args: SimpleNamespace(robot_time_ns=lambda value: value),
+    )
+    monkeypatch.setattr(
+        ohmni_live_tag_mapper,
+        "_adb_reverse",
+        lambda _adb, _serial, port: calls.append(("setup", port)),
+    )
+    monkeypatch.setattr(
+        ohmni_live_tag_mapper,
+        "_remove_adb_reverse",
+        lambda _adb, _serial, port: calls.append(("remove", port)),
+    )
+
+    async def serve(_port: int, _timeout_s: float) -> Source:
+        return source
+
+    monkeypatch.setattr(ohmni_live_tag_mapper, "_serve_one", serve)
+    with pytest.raises(RuntimeError, match="sidecar stream failed"):
+        asyncio.run(ohmni_live_tag_mapper._main_async(args))
+    assert source.closed is True
+    assert calls == [("setup", 18555), ("remove", 18555)]
+
+
 def test_clock_qualification_requires_the_pinned_robot_boot_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

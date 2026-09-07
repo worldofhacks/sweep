@@ -584,11 +584,11 @@ async def _main_async(args: argparse.Namespace) -> int:
     )
     mapping = _qualify_clock(args)
     _adb_reverse(args.adb, args.adb_serial, args.pts_port)
-    mapper = LiveTagMapper(
-        config, detector, receipt_time_ns=lambda: mapping.robot_time_ns(time.monotonic_ns())
-    )
     source: socket.socket | None = None
     try:
+        mapper = LiveTagMapper(
+            config, detector, receipt_time_ns=lambda: mapping.robot_time_ns(time.monotonic_ns())
+        )
         source = await _serve_one(args.pts_port, args.sidecar_connect_timeout_s)
         with source.makefile("rb") as stream:
             frames = NutCaptureReader(stream).frames()
