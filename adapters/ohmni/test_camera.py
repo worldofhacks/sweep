@@ -40,7 +40,9 @@ def test_camera_only_reports_publishing_after_current_frame_progress() -> None:
     camera._observe_progress(SimpleNamespace(stderr=io.BytesIO(b"frame=3\nprogress=continue\n")))  # type: ignore[arg-type]
     assert camera.state == "publishing"
 
-    now[0] += 3.1
+    now[0] += 2.0
+    camera._observe_progress(SimpleNamespace(stderr=io.BytesIO(b"frame=3\n")))  # type: ignore[arg-type]
+    now[0] += 1.1
     assert camera.state == "failed"
 
 

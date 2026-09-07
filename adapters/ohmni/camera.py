@@ -160,8 +160,9 @@ class Camera:
             if count <= 0:
                 continue
             with self._lock:
-                self._frames_seen = max(self._frames_seen, count)
-                self._last_frame_at = self._monotonic()
+                if count > self._frames_seen:
+                    self._frames_seen = count
+                    self._last_frame_at = self._monotonic()
 
     def _stop_process(self, process: subprocess.Popen[bytes]) -> None:
         if process.poll() is not None:
