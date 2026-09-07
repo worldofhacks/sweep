@@ -804,7 +804,9 @@ class FleetRegistry:
             reasons.append("telemetry_missing")
         elif now_ms - record.telemetry.t > self.telemetry_freshness_ms:
             reasons.append("telemetry_stale")
-        if record.home_pose is None or not record.home_pose_confirmed:
+        if self.capability_profile.requires_home_pose and (
+            record.home_pose is None or not record.home_pose_confirmed
+        ):
             reasons.append("home_pose_missing")
         if not record.control_authority:
             reasons.append("control_authority_missing")

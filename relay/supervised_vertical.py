@@ -39,6 +39,7 @@ SUPERVISED_VERTICAL_PROFILE = CapabilityProfile(
             IntentName.SURVEY_AREA,
         }
     ),
+    requires_home_pose=False,
 )
 
 
