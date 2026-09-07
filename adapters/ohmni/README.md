@@ -34,13 +34,22 @@ SWEEP_DEVICE_UNIT=9
 SWEEP_NODE_KEY=replace-with-device-key
 SWEEP_ADAPTER_ID=ohmni-9
 SWEEP_ODOM_ORIGIN_ID=measured-odom-origin
+# Set all five only when this node is approved to publish video.
+SWEEP_MEDIA_HOST=media-host:8554
+SWEEP_CAMERA_DEVICE=/dev/video1
+SWEEP_CAMERA_INPUT_FORMAT=mjpeg
+SWEEP_CAMERA_INPUT_FPS=native
+SWEEP_CAMERA_WIDTH_PX=640
+SWEEP_CAMERA_HEIGHT_PX=480
 SWEEP_LIDAR_MOUNT_X_M=0.00
 SWEEP_LIDAR_MOUNT_Y_M=0.00
 SWEEP_LIDAR_MOUNT_Z_M=0.25
 SWEEP_LIDAR_MOUNT_YAW_DEG=0.00
 ```
 
-The lidar transform values are measurements. They must not be copied from this example. Start only after the qualification checks below:
+The lidar transform values are measurements. They must not be copied from this example. Camera publishing is disabled unless `SWEEP_MEDIA_HOST` and every `SWEEP_CAMERA_*` source value are present. The source is an approved V4L node, its exact input format, its native rate (`native`) or a measured integer FPS, and its dimensions. The relay device ID derives the canonical MediaMTX path `drone{id}`; it is never renumbered to a ground-unit path. Current measured configurations are unit 11: `/dev/video1`, `mjpeg`, `native`, 640×480; unit 12: `/dev/video0`, `uyvy422`, `30`, 640×480. These identify a usable image stream only. They do not establish tag identity, camera calibration, pose, or timing.
+
+The publisher reports `publishing` only after ffmpeg reports a decoded frame and reverts to `failed` when progress goes stale. Start only after the qualification checks below:
 
 ```sh
 adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/run.sh start
