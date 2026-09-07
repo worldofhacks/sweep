@@ -88,6 +88,7 @@ def test_export_uses_no_follow_private_key_and_leaves_no_partial_output(tmp_path
         export_phone_navigation_admission(deployment, 1, key_link, tmp_path / "linked-output")
 
     output = tmp_path / "atomic-output"
+
     def fail_publish(*_):
         raise OSError("no")
 
