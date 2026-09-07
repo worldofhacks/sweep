@@ -175,6 +175,55 @@ def test_runtime_arguments_build_the_required_ground_identity() -> None:
     assert config.adapter_id == "ohmni-9"
 
 
+def test_numeric_dial_address_preserves_the_tls_hostname(monkeypatch):
+    from . import runtime as module
+
+    calls = []
+
+    def refuse_connection(uri, **kwargs):
+        calls.append((uri, kwargs))
+        raise OSError("probe complete")
+
+    monkeypatch.setattr(module, "connect", refuse_connection)
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            "wss://relay.example/field",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            relay_connect_host="192.0.2.5",
+        ),
+        FakeGroundDevice(),
+    )
+    with pytest.raises(OSError, match="probe complete"):
+        asyncio.run(node.run())
+    assert calls == [
+        (f"wss://relay.example/field/ws/{SESSION}", {"host": "192.0.2.5", "proxy": None})
+    ]
+
+
+def test_measured_clock_correction_applies_to_envelopes_and_lease_expiry(monkeypatch):
+    monkeypatch.setattr(time, "time_ns", lambda: 131_000_000_000)
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            "ws://relay.example",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            relay_clock_offset_ms=-31_000,
+        ),
+        FakeGroundDevice(),
+    )
+    assert node._envelope("membership")["t"] == 100_000
+    node._last_heartbeat_expires_at = 100_001
+    assert not node._lease_expired()
+    node._last_heartbeat_expires_at = 100_000
+    assert node._lease_expired()
+    assert node.config.source_clock_id == "ohmni-monotonic"
+
+
 def test_ground_runtime_joins_becomes_ready_acks_velocity_and_stops_on_lease_loss(
     relay_server: _RelayServer,
 ) -> None:
@@ -264,8 +313,8 @@ def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
         session = relay_server.runtime.sessions[SESSION]
         _wait_for(
             lambda: (
-                bool(session.current_state()["drones"])
-                and session.current_state()["drones"][0]["membership"] == "ready"
+                session.registry.ready_ground_identity(GROUND_ID, time.time_ns() // 1_000_000)
+                is not None
             ),
             "ground readiness",
         )
