@@ -131,6 +131,12 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                 logLine("cannot start the relay link: no setup stored")
                 return@launch
             }
+            val observationSource = try {
+                loadObservationSource(application.filesDir)
+            } catch (_: Exception) {
+                logLine("cannot start the relay link: observation-source.json is invalid")
+                return@launch
+            }
             val loopback = isLoopback(hostOf(setup.relayUrl))
             val wifi = wifiNetwork
             // Loopback (adb reverse over USB) is not on the Wi-Fi network, so do not bind it there.
@@ -152,6 +158,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     adapterId = "${BuildConfig.AIRCRAFT}-${setup.droneId}",
                     capabilities = AircraftVariant.capabilities,
                     localizationPins = setup.localizationPins,
+                    observationSource = observationSource,
                 )
                 val link = RelayLink(
                     config = config,

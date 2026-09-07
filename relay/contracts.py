@@ -34,6 +34,11 @@ class Membership(StrEnum):
     DEGRADED = "degraded"
 
 
+class NodeType(StrEnum):
+    AIRCRAFT = "aircraft"
+    GROUND = "ground"
+
+
 class MembershipAction(StrEnum):
     JOIN = "join"
     READINESS = "readiness"
@@ -166,6 +171,7 @@ class MembershipRequest:
     connection_epoch: int | None = None
     adapter_id: str | None = None
     capabilities: tuple[str, ...] = ()
+    node_type: NodeType | None = None
     home_pose_confirmed: bool | None = None
     control_authority: bool | None = None
     rc_safety_operator_present: bool | None = None
@@ -185,6 +191,8 @@ class MembershipRequest:
                 adapter_id=self.adapter_id,
                 capabilities=list(self.capabilities),
             )
+            if self.node_type is not None:
+                event["node_type"] = self.node_type.value
         elif self.action is MembershipAction.READINESS:
             event.update(
                 connection_epoch=self.connection_epoch,
@@ -672,7 +680,10 @@ def parse_membership_request(raw: object) -> MembershipRequest:
         },
         MembershipAction.GRACEFUL_LEAVE: {"connection_epoch"},
     }
-    _exact_fields(value, common | action_fields[action], "invalid_membership")
+    expected_fields = common | action_fields[action]
+    if action is MembershipAction.JOIN and "node_type" in value:
+        expected_fields.add("node_type")
+    _exact_fields(value, expected_fields, "invalid_membership")
     _common_envelope(value, expected_type="membership", code="invalid_membership")
 
     drone_id = _positive_int(value["drone_id"], "drone_id", "invalid_membership")
@@ -681,6 +692,12 @@ def parse_membership_request(raw: object) -> MembershipRequest:
     if action is MembershipAction.JOIN:
         adapter_id = _bounded_state_text(value["adapter_id"], "adapter_id", "invalid_membership")
         capabilities = _string_list(value["capabilities"], "capabilities", allow_empty=False)
+        try:
+            node_type = None if "node_type" not in value else NodeType(value["node_type"])
+        except (TypeError, ValueError):
+            raise ContractError(
+                "invalid_membership", "node_type must be aircraft or ground"
+            ) from None
         return MembershipRequest(
             1,
             value["t"],
@@ -692,6 +709,7 @@ def parse_membership_request(raw: object) -> MembershipRequest:
             signature,
             adapter_id=adapter_id,
             capabilities=capabilities,
+            node_type=node_type,
         )
 
     connection_epoch = _positive_int(

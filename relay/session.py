@@ -31,6 +31,7 @@ from relay.contracts import (
     MembershipAction,
     MembershipRequest,
     NodeStatusFrame,
+    NodeType,
     acknowledgement_event,
     command_event,
     parse_adapter_acknowledgement,
@@ -61,8 +62,11 @@ from relay.intent_v1 import (
     validate_intent,
 )
 from relay.media import MediaEvidenceProvider
+from relay.observation_ingress import ObservationConfiguration, ObservationIngress
+from relay.observations import ObservationError, ObservationSubmission
 from relay.state import (
     MAX_MEMBERSHIP_HISTORY_LIMIT,
+    MAX_PHYSICAL_GROUND,
     MAX_SIMULATED_AIRCRAFT,
     FleetRegistry,
     MembershipTransition,
@@ -292,6 +296,8 @@ class RelaySession:
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
+        observation_configuration: ObservationConfiguration | None = None,
+        node_types: Mapping[int, NodeType] | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -309,6 +315,13 @@ class RelaySession:
         self.control_localization_projector = control_localization_projector
         self.control_pose_signing_key = control_pose_signing_key
         self.relay_clock_id = relay_clock_id
+        self.observation_ingress = (
+            None
+            if observation_configuration is None
+            else ObservationIngress(
+                observation_configuration, self.session_id, limits.future_clock_skew_ms
+            )
+        )
         self._capability_profile = capability_profile
         self._intent_sink: IntentSink | None = None
         self.intent_sink = intent_sink
@@ -320,6 +333,7 @@ class RelaySession:
             capability_profile=capability_profile,
             media_evidence=media_evidence,
             membership_history_limit=limits.state_membership_history,
+            node_types=node_types,
         )
         self._audit_sampling = _AuditSampling()
         # Values are the last instant when the exact signed event could still pass
@@ -390,6 +404,8 @@ class RelaySession:
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
         if principal.source == "localization" and frame_type == "control_localization":
             return self.process_control_localization(raw, principal)
+        if principal.source in {"adapter", "localization"} and frame_type == "observation":
+            return self.process_observation(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
             return self.process_intent(raw, principal)
         if principal.source == "adapter":
@@ -515,6 +531,19 @@ class RelaySession:
                             normalized=intent,
                         )
                     ]
+
+            if intent.name not in _GROUND_SAFE_INTENTS and self.registry.selection_includes_ground(
+                intent.selection
+            ):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="ground_intent_not_supported",
+                        detail="this intent cannot target a ground node",
+                        now=now,
+                        normalized=intent,
+                    )
+                ]
 
             if self.intent_sink is None:
                 return [
@@ -850,6 +879,39 @@ class RelaySession:
                 ]
             return self._record_transition_and_state(transition, now=now)
 
+    def process_observation(self, raw: object, principal: Principal) -> list[dict[str, object]]:
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            now = self.clock()
+            try:
+                if (
+                    principal.source not in {"adapter", "localization"}
+                    or principal.drone_id is None
+                ):
+                    raise ObservationError(
+                        "source_not_allowed", "observations require a device-bound producer"
+                    )
+                submission = ObservationSubmission.parse(raw)
+                self._check_adapter_binding(submission.device_id, principal)
+                if submission.session != self.session_id:
+                    raise ObservationError("session_mismatch", "observation session is not current")
+                self.registry.check_current(submission.device_id, submission.connection_epoch)
+                if submission.node_type != self.registry.node_type(submission.device_id).value:
+                    raise ObservationError(
+                        "source_binding_mismatch", "observation node type differs from membership"
+                    )
+                if self.observation_ingress is None:
+                    raise ObservationError(
+                        "source_not_configured", "observation ingress is disabled"
+                    )
+                event = self.observation_ingress.accept(
+                    submission, now=now, producer_role=principal.source
+                ).to_mapping()
+            except (ObservationError, ContractError, RegistryError) as error:
+                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
+            self._append_audit(event)
+            return [event]
+
     def process_telemetry(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
         with self._lock, self._audit_operation():
@@ -865,6 +927,11 @@ class RelaySession:
             try:
                 telemetry = parse_telemetry(raw)
                 self._check_adapter_binding(telemetry.drone, principal)
+                if self.registry.node_type(telemetry.drone) is NodeType.GROUND:
+                    raise ContractError(
+                        "ground_telemetry_requires_observation",
+                        "ground telemetry requires a framed observation",
+                    )
                 if telemetry.session != self.session_id:
                     raise ContractError(
                         "session_mismatch", "telemetry session does not match the WebSocket path"
@@ -2420,6 +2487,7 @@ class RelaySession:
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
+_GROUND_SAFE_INTENTS = frozenset({IntentName.SELECT, IntentName.HOLD, IntentName.ESTOP})
 # These two planner-owned objects share the per-aircraft projection budget. Four
 # maximum aircraft plus both maximum control objects still fit one 1 MiB record.
 MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024
@@ -2446,6 +2514,7 @@ _MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
 _DRONE_STATE_KEYS = frozenset(
     {
         "drone_id",
+        "node_type",
         "connection_epoch",
         "membership",
         "readiness_reasons",
@@ -2576,8 +2645,8 @@ def _material_state_projection(state: Mapping[str, object]) -> str:
 
 
 def _material_drones_projection(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list) or len(value) > MAX_SIMULATED_AIRCRAFT:
-        raise AuditLogError("state drones require a bounded aircraft list")
+    if not isinstance(value, list) or len(value) > MAX_SIMULATED_AIRCRAFT + MAX_PHYSICAL_GROUND:
+        raise AuditLogError("state drones require a bounded mixed-node list")
     if not all(isinstance(drone, Mapping) for drone in value):
         raise AuditLogError("state drones must contain objects")
     return [_material_drone_projection(drone) for drone in value]
