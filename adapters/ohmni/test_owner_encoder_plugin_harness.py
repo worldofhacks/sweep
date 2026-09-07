@@ -19,7 +19,7 @@ def _write_command(directory: Path, name: str, body: str) -> None:
     path.chmod(0o700)
 
 
-def _harness(tmp_path: Path) -> tuple[dict[str, str], Path]:
+def _harness(tmp_path: Path, *, plugin_dir_exists: bool = True) -> tuple[dict[str, str], Path]:
     remote = tmp_path / "remote"
     source = remote / "files/assets/node-files/telebot_node.js"
     source.parent.mkdir(parents=True)
@@ -28,7 +28,9 @@ def _harness(tmp_path: Path) -> tuple[dict[str, str], Path]:
             Path(__file__).with_name("vendor") / "fixtures" / "telebot_node_reviewed_lf.js"
         ).read_bytes()
     )
-    (remote / "files/plugins").mkdir()
+    if plugin_dir_exists:
+        (remote / "files/plugins").mkdir()
+        (remote / "files/plugins").chmod(0o700)
     stage = remote / "local/tmp/sweep-encoder-plugin.Ab12Cd34"
     commands = tmp_path / "commands"
     commands.mkdir()
@@ -52,7 +54,8 @@ def _harness(tmp_path: Path) -> tuple[dict[str, str], Path]:
         "if sys.argv[1:3] == ['-c', '%u:%g:%a']:\n"
         "    path = sys.argv[3]\n"
         "    if path.endswith('Ab12Cd34'): print('0:0:700')\n"
-        "    elif path.endswith('sweep_encoder_plugin'): print('1000:1000:700')\n"
+        "    elif path.endswith('sweep_encoder_plugin') or path.endswith('plugins'):\n"
+        "        print('1000:1000:700')\n"
         "    else: print('1000:1000:600')\n"
         "    raise SystemExit(0)\n"
         "raise SystemExit(1)\n",
@@ -144,6 +147,31 @@ def test_plugin_install_and_rollback_execute_against_a_temporary_remote_filesyst
     assert not sampler.exists()
     assert not sampler.parent.exists()
     assert not manifest.exists()
+    assert sampler.parent.parent.exists()
+
+
+def test_plugin_install_creates_and_rollback_removes_a_missing_plugin_directory(
+    tmp_path: Path,
+) -> None:
+    environment, remote = _harness(tmp_path, plugin_dir_exists=False)
+    source = remote / "files/assets/node-files/telebot_node.js"
+    source_before = source.read_bytes()
+    install = Path(__file__).with_name("install_owner_encoder_plugin.sh")
+    rollback = Path(__file__).with_name("rollback_owner_encoder_plugin.sh")
+
+    _run(str(install), environment)
+
+    plugin_dir = remote / "files/plugins"
+    manifest = plugin_dir / "sweep_encoder_plugin.install"
+    assert plugin_dir.is_dir()
+    assert stat.S_IMODE(plugin_dir.stat().st_mode) == 0o700
+    assert "plugin_dir_created=1" in manifest.read_text()
+    assert source.read_bytes() == source_before
+
+    _run(str(rollback), environment)
+
+    assert source.read_bytes() == source_before
+    assert not plugin_dir.exists()
 
 
 def test_plugin_layout_matches_the_vendor_flat_loader_and_reviewed_sampler() -> None:

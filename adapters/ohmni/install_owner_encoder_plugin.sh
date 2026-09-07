@@ -62,7 +62,21 @@ manifest=$manifest
 [ "\$(sha256sum \$source | cut -d ' ' -f 1)" = $source_sha ]
 [ "\$(sha256sum $stage/sweep_encoder_plugin.js | cut -d ' ' -f 1)" = $plugin_sha ]
 [ "\$(sha256sum $stage/sampler.js | cut -d ' ' -f 1)" = $sampler_sha ]
-[ -d \$plugin_dir ]
+[ ! -L \${plugin_dir} ]
+if [ -e \$plugin_dir ]; then
+  [ -d \$plugin_dir ]
+  [ "\$(stat -c '%u:%g:%a' \$plugin_dir)" = $vendor_owner:700 ]
+  [ "\$(ls -Zd \$plugin_dir | awk '{print \$1}')" = $vendor_context ]
+  plugin_dir_created=0
+else
+  mkdir \$plugin_dir
+  chown $vendor_owner \$plugin_dir
+  chmod 700 \$plugin_dir
+  chcon $vendor_context \$plugin_dir
+  [ "\$(stat -c '%u:%g:%a' \$plugin_dir)" = $vendor_owner:700 ]
+  [ "\$(ls -Zd \$plugin_dir | awk '{print \$1}')" = $vendor_context ]
+  plugin_dir_created=1
+fi
 [ ! -e \$target ]
 [ ! -e \$private_dir ]
 [ ! -e \$manifest ]
@@ -72,7 +86,8 @@ mv $stage/sampler.js \$target_sampler
 printf '%s\n' \\
   'vendor_source_sha=$source_sha' \\
   'plugin_sha=$plugin_sha' \\
-  'sampler_sha=$sampler_sha' > \$manifest
+  'sampler_sha=$sampler_sha' \\
+  "plugin_dir_created=\$plugin_dir_created" > \$manifest
 chown $vendor_owner \$target \$target_sampler \$manifest
 chown $vendor_owner \$private_dir
 chmod 700 \$private_dir

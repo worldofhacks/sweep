@@ -20,6 +20,7 @@ sampler_sha="$(sha256sum "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/vendor/sw
 cat <<EOF2 | "$adb" -s "$serial" shell -T su 0 sh
 set -eu
 source=$source
+plugin_dir=$plugin_dir
 private_dir=$private_dir
 target=$target
 target_sampler=$target_sampler
@@ -33,7 +34,13 @@ manifest=$manifest
 grep -Fx 'vendor_source_sha=$source_sha' \$manifest
 grep -Fx 'plugin_sha=$plugin_sha' \$manifest
 grep -Fx 'sampler_sha=$sampler_sha' \$manifest
+case "\$(grep '^plugin_dir_created=' \$manifest)" in
+  plugin_dir_created=0) plugin_dir_created=0 ;;
+  plugin_dir_created=1) plugin_dir_created=1 ;;
+  *) echo 'Plugin directory ownership record is invalid.' >&2; exit 1 ;;
+esac
 rm \$target \$target_sampler \$manifest
 rmdir \$private_dir
+if [ "\$plugin_dir_created" = 1 ]; then rmdir \$plugin_dir; fi
 EOF2
 printf '%s\n' 'Plugin removed. The vendor source was left unchanged.'
