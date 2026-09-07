@@ -7,14 +7,18 @@ import math
 import os
 import stat
 import struct
+from collections.abc import Iterator, Mapping
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+from tools.geometry_math import point_inside, polygon, segment_distance
 from tools.map_common import finite_number, parse_document, source_path, validate_transform
 from tools.map_validate import content_hash
+from tools.ohmni_world_registration import apply_transform, register_documents
 
 _DOCUMENTS = ("manifest.yaml", "tags.yaml", "zones.yaml", "obstacles.yaml")
 _MAX_DOCUMENT_BYTES = 1_000_000
@@ -31,13 +35,29 @@ _MAX_CORRIDOR_POINTS = 256
 _MAX_OBSERVATION_REFS = 64
 
 
-class CandidateWorldBundle(dict):
+class CandidateWorldBundle(Mapping[str, object]):
     """An immutable byte snapshot of a schema-v2 world bundle candidate."""
 
-    def __init__(self, manifest: dict, documents: dict[str, bytes], sources: dict[str, bytes]):
-        super().__init__(manifest)
+    def __init__(
+        self,
+        manifest: dict,
+        documents: dict[str, bytes],
+        sources: dict[str, bytes],
+        registration: dict,
+    ):
+        self._manifest = deepcopy(manifest)
         self._documents = dict(documents)
         self._sources = dict(sources)
+        self._registration = deepcopy(registration)
+
+    def __getitem__(self, name: str) -> object:
+        return deepcopy(self._manifest[name])
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._manifest)
+
+    def __len__(self) -> int:
+        return len(self._manifest)
 
     def document(self, name: str) -> dict:
         if name not in self._documents:
@@ -49,6 +69,18 @@ class CandidateWorldBundle(dict):
 
     def source_bytes(self, name: str) -> bytes:
         return self._sources[name]
+
+    def registration(self) -> dict:
+        return deepcopy(self._registration)
+
+    def occupancy_cell_world_xy(self, column: int, row: int) -> tuple[float, float]:
+        """Return the world XY center of a PNG/PGM pixel; invalid indices raise ValueError."""
+        grid = self._manifest["occupancy"]
+        _require(type(column) is int and 0 <= column < grid["width_cells"], "column outside grid")
+        _require(type(row) is int and 0 <= row < grid["height_cells"], "row outside grid")
+        x = grid["origin_xy"][0] + (column + 0.5) * grid["cell_m"]
+        y = grid["origin_xy"][1] + (grid["height_cells"] - row - 0.5) * grid["cell_m"]
+        return apply_transform(self._registration["T_target_source"], (x, y))
 
 
 def _require(condition: bool, message: str) -> None:
@@ -121,9 +153,16 @@ class _SourceSnapshots:
         return payload
 
 
+def _bounded_number(value: object, name: str) -> float:
+    number = finite_number(value, name)
+    _require(abs(number) <= 1_000_000, f"{name} exceeds metric bounds")
+    return number
+
+
 def _point(value: object, dimensions: int, name: str) -> list[float]:
     _require(isinstance(value, list) and len(value) == dimensions, f"{name} has invalid dimensions")
-    return [finite_number(item, name) for item in value]
+    numbers = [_bounded_number(item, name) for item in value]
+    return numbers
 
 
 def _polygon(value: object, name: str) -> list[list[float]]:
@@ -132,44 +171,23 @@ def _polygon(value: object, name: str) -> list[list[float]]:
         f"{name} needs a bounded closed polygon",
     )
     points = [_point(point, 2, name) for point in value]
-    _require(points[0] == points[-1], f"{name} must be closed")
-    unique = points[:-1]
-    _require(len(set(map(tuple, unique))) == len(unique), f"{name} repeats a vertex")
-    area = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(points, points[1:], strict=False))
-    _require(abs(area) > 1e-9, f"{name} has zero area")
-    for i, (a, b) in enumerate(zip(points, points[1:], strict=False)):
-        for j, (c, d) in enumerate(zip(points, points[1:], strict=False)):
-            if j <= i + 1 or (i == 0 and j == len(points) - 2):
-                continue
-            left = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-            right = (b[0] - a[0]) * (d[1] - a[1]) - (b[1] - a[1]) * (d[0] - a[0])
-            below = (d[0] - c[0]) * (a[1] - c[1]) - (d[1] - c[1]) * (a[0] - c[0])
-            above = (d[0] - c[0]) * (b[1] - c[1]) - (d[1] - c[1]) * (b[0] - c[0])
-            _require(left * right >= 0 or below * above >= 0, f"{name} self-intersects")
-    return points
-
-
-def _inside(polygon: list[list[float]], point: list[float]) -> bool:
-    inside = False
-    for a, b in zip(polygon, polygon[1:], strict=False):
-        if (a[1] > point[1]) != (b[1] > point[1]):
-            x = a[0] + (point[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
-            if x > point[0]:
-                inside = not inside
-    return inside
+    return polygon(points)
 
 
 def _volume(value: object, name: str) -> tuple[list[list[float]], float, float]:
     _require(isinstance(value, dict), f"{name} must be an object")
     polygon = _polygon(value.get("polygon"), name)
-    low = finite_number(value.get("z_min_m"), f"{name} z_min_m")
-    high = finite_number(value.get("z_max_m"), f"{name} z_max_m")
+    low = _bounded_number(value.get("z_min_m"), f"{name} z_min_m")
+    high = _bounded_number(value.get("z_max_m"), f"{name} z_max_m")
     _require(low < high, f"{name} altitude bounds must increase")
     return polygon, low, high
 
 
 def _header(document: dict, name: str) -> None:
-    _require(document.get("schema_version") == 2, f"{name} must use schema_version 2")
+    _require(
+        document.get("schema_version") == 2 and type(document.get("schema_version")) is int,
+        f"{name} must use schema_version 2",
+    )
     _require(document.get("units") == "meters", f"{name} units must be meters")
     _require(document.get("frame") == "world", f"{name} frame must be world")
 
@@ -190,6 +208,7 @@ def _parse_pgm(payload: bytes, occupancy: dict) -> None:
     _require(
         maximum == 255 and len(parts[3]) == width * height, "occupancy PGM payload is malformed"
     )
+    _require(set(parts[3]) <= {0, 128, 255}, "occupancy contains an undefined pixel value")
 
 
 def _parse_png(payload: bytes, occupancy: dict) -> None:
@@ -215,6 +234,10 @@ def _parse_png(payload: bytes, occupancy: dict) -> None:
         and image.shape == (height, width),
         "occupancy PNG cannot be decoded as Gray8",
     )
+    _require(
+        not np.any((image != 0) & (image != 128) & (image != 255)),
+        "occupancy contains an undefined pixel value",
+    )
 
 
 def _parse_occupancy(payload: bytes, occupancy: dict) -> None:
@@ -236,7 +259,7 @@ def _evidence_document(payload: bytes, name: str) -> dict:
 
 def _validate_manifest(
     manifest: dict, documents: dict[str, bytes], sources: _SourceSnapshots
-) -> bytes:
+) -> dict:
     _require(
         set(manifest)
         == {
@@ -254,7 +277,10 @@ def _validate_manifest(
         },
         "manifest does not match schema",
     )
-    _require(manifest.get("schema_version") == 2, "world bundle must use schema_version 2")
+    _require(
+        type(manifest.get("schema_version")) is int and manifest["schema_version"] == 2,
+        "world bundle must use schema_version 2",
+    )
     _require(
         manifest.get("bundle_kind") == "world-bundle", "manifest bundle_kind must be world-bundle"
     )
@@ -297,7 +323,19 @@ def _validate_manifest(
     _require(
         isinstance(occupancy, dict)
         and set(occupancy)
-        == {"path", "sha256", "encoding", "width_cells", "height_cells", "cell_m", "origin_xy"},
+        == {
+            "path",
+            "sha256",
+            "encoding",
+            "width_cells",
+            "height_cells",
+            "cell_m",
+            "origin_xy",
+            "frame",
+            "source_scope",
+            "row_0",
+            "pixels",
+        },
         "occupancy metadata does not match schema",
     )
     width, height = occupancy["width_cells"], occupancy["height_cells"]
@@ -309,9 +347,22 @@ def _validate_manifest(
         and width * height <= _MAX_OCCUPANCY_BYTES,
         "occupancy dimensions exceed bounds",
     )
-    finite_number(occupancy["cell_m"], "occupancy cell_m")
+    _bounded_number(occupancy["cell_m"], "occupancy cell_m")
     _require(occupancy["cell_m"] > 0, "occupancy cell_m must be positive")
     _point(occupancy["origin_xy"], 2, "occupancy origin_xy")
+    _point(
+        [
+            occupancy["origin_xy"][0] + width * occupancy["cell_m"],
+            occupancy["origin_xy"][1] + height * occupancy["cell_m"],
+        ],
+        2,
+        "occupancy extent",
+    )
+    _require(occupancy["row_0"] == "maximum_y", "occupancy row 0 must represent maximum local y")
+    _require(
+        occupancy["pixels"] == {"occupied": 0, "unknown": 128, "free": 255},
+        "occupancy pixel legend is unsupported",
+    )
     payload = sources.read(
         occupancy["path"],
         occupancy["sha256"],
@@ -322,24 +373,46 @@ def _validate_manifest(
     registration = manifest.get("registration")
     _require(
         isinstance(registration, dict)
-        and set(registration) == {"source", "residual_m", "maximum_residual_m", "tie_tag_ids"},
+        and set(registration)
+        == {"source", "observed_tags", "known_tags", "held_out_tag_ids", "maximum_residual_m"},
         "registration metadata does not match schema",
     )
     _require(registration["source"] == "ohmni_slam", "registration source must be ohmni_slam")
-    residual = finite_number(registration["residual_m"], "registration residual_m")
-    maximum = finite_number(registration["maximum_residual_m"], "registration maximum_residual_m")
-    _require(
-        0 <= residual <= maximum and maximum > 0, "registration residual exceeds its threshold"
+    maximum = _bounded_number(registration["maximum_residual_m"], "registration maximum_residual_m")
+    inputs = {}
+    for name in ("observed_tags", "known_tags"):
+        item = registration[name]
+        _require(
+            isinstance(item, dict) and set(item) == {"path", "sha256"},
+            "registration input needs path and hash",
+        )
+        inputs[name] = _evidence_document(
+            sources.read(item["path"], item["sha256"], limit=_MAX_EVIDENCE_BYTES, name=name), name
+        )
+    result = register_documents(
+        inputs["observed_tags"],
+        inputs["known_tags"],
+        held_out_tag_ids=registration["held_out_tag_ids"],
     )
-    ties = registration["tie_tag_ids"]
     _require(
-        isinstance(ties, list)
-        and 3 <= len(ties) <= 32
-        and len(set(ties)) == len(ties)
-        and all(type(item) is int and 0 <= item <= 586 for item in ties),
-        "registration needs three to 32 unique tag IDs",
+        maximum > 0 and result["max_residual_m"] <= maximum,
+        "registration residual exceeds its threshold",
     )
-    return payload
+    source = result["source"]
+    _require(
+        occupancy["frame"] == source["frame"]
+        and occupancy["source_scope"]
+        == {key: source[key] for key in ("session", "device_id", "connection_epoch", "source_id")},
+        "occupancy source does not match registration",
+    )
+    target = result["target"]
+    _require(
+        target["map_id"] == manifest["map_id"]
+        and target["map_version"] == manifest["bundle_version"]
+        and target["physical_datum"] == frame["physical_datum"],
+        "registration target does not match world pins",
+    )
+    return result
 
 
 def _validate_tags(
@@ -390,8 +463,8 @@ def _validate_tags(
         )
         _require(tag["family"] == "tag36h11", "tag family must be tag36h11")
         _text(tag["floor_id"], "tag floor_id")
-        _require(finite_number(tag["size_m"], "tag size_m") > 0, "tag size_m must be positive")
-        position = [finite_number(tag[axis], axis) for axis in ("x_m", "y_m", "z_m")]
+        _require(_bounded_number(tag["size_m"], "tag size_m") > 0, "tag size_m must be positive")
+        position = _point([tag[axis] for axis in ("x_m", "y_m", "z_m")], 3, "tag position")
         transform = validate_transform(tag["T_world_tag"])
         _require(
             all(abs(position[i] - transform[i][3]) <= 1e-6 for i in range(3)),
@@ -402,7 +475,7 @@ def _validate_tags(
             all(abs(normal[i] - transform[i][2]) <= 1e-6 for i in range(3)),
             "tag normal disagrees with transform",
         )
-        yaw = finite_number(tag["yaw_rad"], "tag yaw_rad")
+        yaw = _bounded_number(tag["yaw_rad"], "tag yaw_rad")
         _require(
             math.hypot(transform[0][0], transform[1][0]) > 1e-6,
             "tag x axis needs a horizontal projection",
@@ -413,13 +486,14 @@ def _validate_tags(
             "tag yaw disagrees with transform",
         )
         _require(
-            _inside(polygon, position) and low <= position[2] <= high, "tag lies outside geofence"
+            point_inside(polygon, position) and low <= position[2] <= high,
+            "tag lies outside geofence",
         )
         _require(
             tag["source"] in {"measured", "surveyed", "auto_registered"},
             "tag source is unsupported",
         )
-        confidence = finite_number(tag["confidence"], "tag confidence")
+        confidence = _bounded_number(tag["confidence"], "tag confidence")
         _require(0 <= confidence <= 1, "tag confidence must be within [0,1]")
         references = tag["observation_refs"]
         _require(
@@ -452,12 +526,6 @@ def _validate_tags(
         "origin tag 0 disagrees with the world datum",
     )
     _require(set(tie_ids) <= set(seen), "registration tie tag is absent")
-    a, b, c = (seen[ident] for ident in tie_ids[:3])
-    area = abs(
-        (b["x_m"] - a["x_m"]) * (c["y_m"] - a["y_m"])
-        - (b["y_m"] - a["y_m"]) * (c["x_m"] - a["x_m"])
-    )
-    _require(area > 1e-6, "registration tie tags are collinear")
     for tag in seen.values():
         if tag["verified_for_flight"]:
             tape = tag["tape_verification"]
@@ -501,14 +569,16 @@ def _validate_tags(
                 evidence.get("tag_ids") == [tag["id"], other_id],
                 "tape evidence does not identify this tag pair",
             )
-            measured = finite_number(tape["measured_distance_m"], "tape measured_distance_m")
-            bound = finite_number(tape["maximum_error_m"], "tape maximum_error_m")
+            measured = _bounded_number(tape["measured_distance_m"], "tape measured_distance_m")
+            bound = _bounded_number(tape["maximum_error_m"], "tape maximum_error_m")
             _require(
-                finite_number(
+                _bounded_number(
                     evidence.get("measured_distance_m"), "tape evidence measured_distance_m"
                 )
                 == measured
-                and finite_number(evidence.get("maximum_error_m"), "tape evidence maximum_error_m")
+                and _bounded_number(
+                    evidence.get("maximum_error_m"), "tape evidence maximum_error_m"
+                )
                 == bound,
                 "tape evidence does not match the verification",
             )
@@ -573,7 +643,7 @@ def _validate_zones(
         "corridors must be a bounded list",
     )
     corridor_ids = set()
-    polygon, _, _ = next_geofence
+    polygon, fence_low, fence_high = next_geofence
     for corridor in corridors:
         _require(
             isinstance(corridor, dict)
@@ -592,16 +662,26 @@ def _validate_zones(
         )
         points = [_point(point, 2, "corridor centerline") for point in centerline]
         _require(
-            all(_inside(polygon, point) for point in points),
+            all(point_inside(polygon, point) for point in points),
             "corridor centerline lies outside geofence",
         )
         _require(
-            finite_number(corridor["width_m"], "corridor width_m") > 0,
+            _bounded_number(corridor["width_m"], "corridor width_m") > 0,
             "corridor width_m must be positive",
         )
-        low = finite_number(corridor["z_min_m"], "corridor z_min_m")
-        high = finite_number(corridor["z_max_m"], "corridor z_max_m")
-        _require(low < high, "corridor altitude bounds must increase")
+        for start, end in zip(points, points[1:], strict=False):
+            _require(start != end, "corridor has a zero-length segment")
+            clearance = min(
+                segment_distance(start, end, a, b)
+                for a, b in zip(polygon, polygon[1:], strict=False)
+            )
+            _require(
+                clearance >= corridor["width_m"] / 2 + 1e-9,
+                "corridor footprint leaves the geofence",
+            )
+        low = _bounded_number(corridor["z_min_m"], "corridor z_min_m")
+        high = _bounded_number(corridor["z_max_m"], "corridor z_max_m")
+        _require(fence_low <= low < high <= fence_high, "corridor altitude bounds exceed geofence")
         evidence = corridor["height_evidence"]
         _require(
             isinstance(evidence, list) and len(evidence) == len(points) - 1,
@@ -630,8 +710,10 @@ def _validate_zones(
                 ),
                 "corridor height evidence",
             )
-            clearance = finite_number(item["measured_clearance_m"], "corridor measured_clearance_m")
-            maximum = finite_number(
+            clearance = _bounded_number(
+                item["measured_clearance_m"], "corridor measured_clearance_m"
+            )
+            maximum = _bounded_number(
                 item["maximum_flight_height_m"], "corridor maximum_flight_height_m"
             )
             _require(
@@ -694,13 +776,20 @@ def validate_candidate(path: Path) -> CandidateWorldBundle:
         documents = {name: _read_bounded(bundle, name, _MAX_DOCUMENT_BYTES) for name in _DOCUMENTS}
         manifest = parse_document(documents["manifest.yaml"], "manifest.yaml")
         sources = _SourceSnapshots(bundle)
-        _validate_manifest(manifest, documents, sources)
+        registration = _validate_manifest(manifest, documents, sources)
         zones = parse_document(documents["zones.yaml"], "zones.yaml")
         geofence = _validate_zones(zones, sources=sources)
         tags = parse_document(documents["tags.yaml"], "tags.yaml")
-        _validate_tags(tags, geofence, manifest["registration"]["tie_tag_ids"], sources)
+        ties = registration["fit_tag_ids"] + registration["held_out_tag_ids"]
+        known_tags = _validate_tags(tags, geofence, ties, sources)
+        for tie in registration["residuals"] + registration["held_out_residuals"]:
+            tag = known_tags[tie["tag_id"]]
+            _require(
+                tie["target_xy_m"] == [tag["x_m"], tag["y_m"]],
+                "registration tie disagrees with world tag",
+            )
         _validate_obstacles(parse_document(documents["obstacles.yaml"], "obstacles.yaml"))
-        return CandidateWorldBundle(manifest, documents, sources.bytes)
+        return CandidateWorldBundle(manifest, documents, sources.bytes, registration)
     except (KeyError, TypeError, IndexError, OSError, OverflowError, ValueError) as exc:
         if isinstance(exc, ValueError):
             raise

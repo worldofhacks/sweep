@@ -12,14 +12,16 @@ Each bundle uses JSON syntax in `.yaml` files.
 
 | File | Contents |
 | --- | --- |
-| `manifest.yaml` | Bundle and map identity, local world frame, hashed Gray8 PNG Ohmni occupancy image metadata, SLAM registration residual and threshold, three or more non-collinear tie tags, document hashes, and content hash. |
+| `manifest.yaml` | Bundle and map identity, local world frame, hashed Gray8 PNG Ohmni occupancy image metadata, hashed local and measured tag documents for registration, residual threshold, document hashes, and content hash. |
 | `tags.yaml` | Tag36h11 poses in `world`, metric size, source, confidence, bounded observation references, and flight-verification state. |
 | `zones.yaml` | Geofence, named zones, and corridors with a centerline, width, altitude range, plus hand-measured clearance and flight-height evidence for every segment. |
 | `obstacles.yaml` | Static obstacle and no-fly volumes. |
 
 Tags use `measured`, `surveyed`, or `auto_registered` provenance. A verified tag requires an `independent_tape_measurement` that names another tag, carries a hashed evidence file, and is within its stated error bound. Its evidence path cannot duplicate the tag's automatic observation reference. An auto-registered tag therefore requires an independent tape tie before it can become verified.
 
-The validator accepts a 10 MB Gray8 PNG or P5 occupancy image, 1 MB per document, 512 tags, 128 zones and corridors, 512 obstacles or no-fly volumes, 256 polygon vertices, 256 corridor points, and 64 observation references per tag. The occupancy dimensions must match the PNG or PGM header and its decoded Gray8 image. Unknown or malformed data is rejected.
+The occupancy metadata names its local frame and session/device/epoch/source scope, cell size, lower-left local origin, pixel legend, and `row_0: "maximum_y"`. Those source fields must match the hashed local tag input. Registration recomputes a proper planar rotation and translation from at least three non-collinear tag pairs and checks residuals; a claimed residual alone cannot validate the grid. The target tag input pins `world`, the map ID and version, and the physical datum, and its matched coordinates must equal the bundle's world tags. Optional held-out tags are excluded from the fit and checked separately.
+
+The validator accepts a 10 MB Gray8 PNG or P5 occupancy image, 1 MB per document, 512 tags, 128 zones and corridors, 512 obstacles or no-fly volumes, 256 polygon vertices, 256 corridor points, and 64 observation references per tag. The occupancy dimensions must match the PNG or PGM header and its decoded Gray8 image. Polygon validation rejects crossings, touching nonadjacent edges, and overlapping adjacent edges. Coordinates are bounded to one million metres.
 
 ## API
 
@@ -33,6 +35,6 @@ approved = validate_bundle(
 )
 ```
 
-`validate_candidate` accepts v2 only and returns a parsed copy of each validated document through `candidate.document(name)` plus `candidate.occupancy_bytes()` and `candidate.source_bytes(path)`. It does not grant approval. `validate_bundle` accepts v1 and v2 and requires the exact external registry hash for both. Its v2 result provides the same document snapshot API; later geometry and localization consumers can migrate to the `world` fields without reopening mutable paths.
+`validate_candidate` accepts v2 only and returns a parsed copy of each validated document through `candidate.document(name)` plus `candidate.occupancy_bytes()` and `candidate.source_bytes(path)`. Manifest values and `candidate.registration()` also return copies. `candidate.occupancy_cell_world_xy(column, row)` applies the measured transform to the pixel's local centre, accounting for PNG row order. It does not grant approval. `validate_bundle` accepts v1 and v2 and requires the exact external registry hash for both. Its v2 result provides the same document snapshot API; later geometry and localization consumers can migrate to the `world` fields without reopening mutable paths.
 
 The occupancy image cannot establish aerial clearance. Flight geometry still needs corridor measurements, static hazard review, held-out checkpoint evidence, tag-visibility evidence, and downstream runtime admission.

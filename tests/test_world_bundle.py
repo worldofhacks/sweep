@@ -53,6 +53,81 @@ def test_candidate_snapshot_is_bounded_unapproved_and_external_registry_controls
     assert accepted["content_sha256"] == manifest["content_sha256"]
 
 
+def test_local_grid_cells_use_measured_rotation_translation_and_png_row_order(bundle):
+    candidate = validate_candidate(bundle)
+    assert candidate.occupancy_cell_world_xy(0, 0) == pytest.approx((1.85, -2.95))
+    assert candidate.occupancy_cell_world_xy(0, 1) == pytest.approx((1.95, -2.95))
+    assert candidate.occupancy_cell_world_xy(1, 0) == pytest.approx((1.85, -2.85))
+    with pytest.raises(ValueError, match="column"):
+        candidate.occupancy_cell_world_xy(3, 0)
+
+
+def test_manifest_and_registration_mutation_cannot_change_validated_snapshot(bundle):
+    candidate = validate_candidate(bundle)
+    candidate["occupancy"]["origin_xy"][0] = 100
+    candidate.registration()["T_target_source"]["dx_m"] = 100
+    candidate.document("tags.yaml")["tags"][0]["x_m"] = 100
+    with pytest.raises(TypeError):
+        candidate["map_id"] = "other"
+    assert candidate.occupancy_cell_world_xy(0, 0) == pytest.approx((1.85, -2.95))
+    assert candidate.document("tags.yaml")["tags"][0]["x_m"] == 0
+
+
+def test_registration_source_epoch_and_target_world_pins_are_required(bundle):
+    mutate(
+        bundle, "manifest.yaml", lambda d: d["occupancy"]["source_scope"].update(connection_epoch=4)
+    )
+    with pytest.raises(ValueError, match="source does not match"):
+        validate_candidate(bundle)
+    mutate(
+        bundle, "manifest.yaml", lambda d: d["occupancy"]["source_scope"].update(connection_epoch=3)
+    )
+    mutate(bundle, "manifest.yaml", lambda d: d.update(map_id="different-world"))
+    with pytest.raises(ValueError, match="world pins"):
+        validate_candidate(bundle)
+
+
+def test_registration_inputs_are_hashed_and_not_just_claimed_residuals(bundle):
+    path = bundle / "evidence" / "observed_tags.json"
+    document = json.loads(path.read_text())
+    document["tags"][0]["xy_m"][0] += 1
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="hash mismatch"):
+        validate_candidate(bundle)
+    mutate(
+        bundle,
+        "manifest.yaml",
+        lambda d: d["registration"]["observed_tags"].update(
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest()
+        ),
+    )
+    with pytest.raises(ValueError, match="outlier|RMS"):
+        validate_candidate(bundle)
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        [[0, 0], [2, 0], [1, 0], [1, 1], [0, 1], [0, 0]],
+        [[0, 0], [2, 0], [2, 2], [1, 0], [0, 2], [0, 0]],
+        [[0, 0], [1e308, 0], [1e308, 1e308], [0, 0]],
+    ],
+)
+def test_world_polygons_reject_overlapping_touching_and_unbounded_edges(bundle, points):
+    mutate(bundle, "zones.yaml", lambda d: d["geofence"].update(polygon=points))
+    with pytest.raises(ValueError, match="overlapping|self-intersects|metric bounds"):
+        validate_candidate(bundle)
+
+
+def test_corridor_footprint_and_height_must_stay_inside_geofence(bundle):
+    mutate(bundle, "zones.yaml", lambda d: d["corridors"][0].update(width_m=7))
+    with pytest.raises(ValueError, match="footprint"):
+        validate_candidate(bundle)
+    mutate(bundle, "zones.yaml", lambda d: d["corridors"][0].update(width_m=0.8, z_min_m=-1))
+    with pytest.raises(ValueError, match="altitude"):
+        validate_candidate(bundle)
+
+
 @pytest.mark.parametrize(
     ("name", "change", "match"),
     [
@@ -61,7 +136,7 @@ def test_candidate_snapshot_is_bounded_unapproved_and_external_registry_controls
             lambda d: d["frame"].update(axis_convention="east_north_up"),
             "canonical local",
         ),
-        ("manifest.yaml", lambda d: d["registration"].update(residual_m=0.04), "residual"),
+        ("manifest.yaml", lambda d: d["registration"].update(maximum_residual_m=0), "residual"),
         ("manifest.yaml", lambda d: d["occupancy"].update(width_cells=4), "dimensions"),
         ("tags.yaml", lambda d: d["tags"][2].update(verified_for_flight=True), "tape verification"),
         (
