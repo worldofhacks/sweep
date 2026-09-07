@@ -11,6 +11,7 @@ import termios
 import threading
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from .botshell import BotShell
@@ -43,6 +44,12 @@ def discover(sysfs: Path = Path("/sys/bus/usb-serial/devices")) -> str | None:
                 return f"/dev/{entry.name}"
             break
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class RawRevolution:
+    points: tuple[Measurement, ...]
+    monotonic_s: float
 
 
 def robot_bins(points: Iterable[Measurement], offset_deg: float, angle_sign: int) -> list[int]:
@@ -79,6 +86,8 @@ class Lidar:
         self.offset_deg, self.angle_sign = offset_deg, angle_sign
         self.updated = 0.0
         self.scan: RangeScan | None = None
+        self._raw_revolution: RawRevolution | None = None
+        self._lock = threading.RLock()
         self.error: str | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ohmni-lidar", daemon=True)
@@ -92,6 +101,9 @@ class Lidar:
         )
 
     def publish(self, points: list[Measurement], now: float) -> None:
+        revolution = tuple(points)
+        with self._lock:
+            self._raw_revolution = RawRevolution(revolution, now)
         if not self.calibrated:
             self.error = "lidar_calibration_required"
             return
@@ -99,11 +111,19 @@ class Lidar:
         if pose.quality == 0:
             self.error = "odometry_unavailable"
             return
-        bins = robot_bins(points, self.offset_deg, self.angle_sign)  # type: ignore[arg-type]
+        bins = robot_bins(revolution, self.offset_deg, self.angle_sign)  # type: ignore[arg-type]
         self.scan = RangeScan(
             int(now * 1000), (pose.x, pose.y, pose.yaw_deg), 0.0, 1.0, 0.15, 12.0, bins
         )
         self.updated, self.error = now, None
+
+    def raw_revolution(self, now: float | None = None) -> RawRevolution | None:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            revolution = self._raw_revolution
+            if revolution is None or now - revolution.monotonic_s > 0.5:
+                return None
+            return revolution
 
     def start(self) -> None:
         self._thread.start()

@@ -41,36 +41,51 @@ class Pose:
 
 
 class Odometry:
-    def __init__(self, shell: object, launch: tuple[float, float, float]) -> None:
+    def __init__(
+        self, shell: object, launch: tuple[float, float, float], *, wheel_diameter_mm: float = 150.5
+    ) -> None:
+        if not math.isfinite(wheel_diameter_mm) or wheel_diameter_mm <= 0:
+            raise ValueError("wheel diameter must be finite and positive")
         self.shell = shell
+        self.ticks_per_mm = 16384 * (30 / 11) / (math.pi * wheel_diameter_mm)
         self.pose = Pose(*launch)
         self._previous: tuple[int, int] | None = None
+        self._paired_sample: EncoderPair | None = None
         self.updated = 0.0
         self.lost = False
+        self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ohmni-encoders", daemon=True)
 
     def update(self, pair: tuple[int, int], now: float) -> None:
+        with self._lock:
+            self._update_locked(pair, now)
+            self._paired_sample = None
+
+    def _update_locked(self, pair: tuple[int, int], now: float) -> None:
         if self.lost:
             return
         pose = self.pose
         if self._previous is not None:
             dt = now - self.updated
             if not 0 < dt <= MAX_SAMPLE_GAP_S:
-                # Lost wraps cannot be recovered from absolute 14-bit positions. Do not
-                # quietly restart integrating from a false room pose after a Wi-Fi/IO gap.
                 self.lost = True
                 self.pose = Pose(pose.x, pose.y, pose.yaw_deg)
                 return
-            left = encoder_delta(self._previous[0], pair[0]) / TICKS_PER_MM
-            right = -encoder_delta(self._previous[1], pair[1]) / TICKS_PER_MM
+            left = encoder_delta(self._previous[0], pair[0]) / self.ticks_per_mm
+            right = -encoder_delta(self._previous[1], pair[1]) / self.ticks_per_mm
             distance = (left + right) / 2000
             turn = (right - left) / BASE_MM
             yaw = math.radians(pose.yaw_deg)
             dx = distance * math.cos(yaw + turn / 2)
             dy = distance * math.sin(yaw + turn / 2)
             self.pose = Pose(
-                pose.x + dx, pose.y + dy, math.degrees(yaw + turn) % 360, dx / dt, dy / dt, 0.6
+                pose.x + dx,
+                pose.y + dy,
+                math.degrees(yaw + turn) % 360,
+                dx / dt,
+                dy / dt,
+                0.6,
             )
         else:
             self.pose = Pose(pose.x, pose.y, pose.yaw_deg, quality=0.6)
@@ -78,17 +93,24 @@ class Odometry:
         self.updated = now
 
     def snapshot(self, now: float | None = None) -> Pose:
+        return self.snapshot_with_sample(now)[0]
+
+    def snapshot_with_sample(self, now: float | None = None) -> tuple[Pose, EncoderPair | None]:
         now = time.monotonic() if now is None else now
-        pose = self.pose
-        if now - self.updated > MAX_SAMPLE_GAP_S or self.lost:
-            return Pose(pose.x, pose.y, pose.yaw_deg)
-        return pose
+        with self._lock:
+            pose = self.pose
+            if now - self.updated > MAX_SAMPLE_GAP_S or self.lost:
+                return Pose(pose.x, pose.y, pose.yaw_deg), None
+            return pose, self._paired_sample
 
     def start(self) -> None:
         self._thread.start()
 
     def _update_paired_sample(self, sample: EncoderPair) -> None:
-        self.update((sample.left, sample.right), sample.right_receipt_ns / 1_000_000_000)
+        timestamp = sample.right_receipt_ns / 1_000_000_000
+        with self._lock:
+            self._update_locked((sample.left, sample.right), timestamp)
+            self._paired_sample = None if self.lost or self.updated != timestamp else sample
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -106,8 +128,10 @@ class Odometry:
                 if pair is not None:
                     self.update(pair, time.monotonic())
             except EncoderStreamUnavailable:
-                self.lost = True
-                self.pose = Pose(self.pose.x, self.pose.y, self.pose.yaw_deg)
+                with self._lock:
+                    self.lost = True
+                    self.pose = Pose(self.pose.x, self.pose.y, self.pose.yaw_deg)
+                    self._paired_sample = None
             except OSError:
                 pass  # snapshot freshness independently withdraws position quality.
             self._stop.wait(max(0.001, 0.1 - (time.monotonic() - started)))
