@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 import cv2
 import numpy as np
 
-from perception.localization_lease import LocalizationLeaseStatus, ManagedWebcamLocalizer
+from perception.localization_lease import LocalizationLeaseStatus
 from perception.tag_localization import TagLocalizer
 from perception.webcam_filter import WebcamFilter
 from perception.webcam_stream import WebcamStream
@@ -155,29 +155,70 @@ class WebcamLocalization:
 
 
 class WebcamLocalizationService:
-    """Production owner for the localization reader, independently of video and flight."""
+    """Production owner for one shared localization, detection, and map decoder."""
 
-    def __init__(self, loop, url, *, stream_factory=WebcamStream):
+    def __init__(
+        self,
+        loop,
+        url,
+        *,
+        stream_factory=WebcamStream,
+        source_id=None,
+        detector=None,
+        mission_id=None,
+        on_detection=None,
+        map_builder=None,
+        camera_pipeline_config=None,
+    ):
         if not isinstance(url, str) or not url:
             raise ValueError("localization stream URL is invalid")
         if not callable(stream_factory):
             raise ValueError("stream_factory must be callable")
-        self._lease = ManagedWebcamLocalizer(lambda: stream_factory(url), loop)
+        if source_id is None:
+            source_id = urlsplit(url).path.lstrip("/")
+        if not isinstance(source_id, str) or not source_id:
+            raise ValueError("localization source ID is invalid")
+        from perception.shared_camera_pipeline import SharedCameraPipeline
+
+        provenance = getattr(loop, "provenance", None)
+        self._pipeline = SharedCameraPipeline(
+            url,
+            loop,
+            source_id=source_id,
+            stream_factory=stream_factory,
+            detector=detector,
+            mission_id=mission_id,
+            on_detection=on_detection,
+            map_builder=map_builder,
+            alignment_evidence=provenance if isinstance(provenance, dict) else None,
+            config=camera_pipeline_config,
+        )
+        self._started = False
+
+    def _start(self):
+        if not self._started:
+            self._pipeline.start()
+            self._started = True
 
     @property
     def status(self) -> LocalizationLeaseStatus:
-        return self._lease.status
+        return self._pipeline.localization_status
 
     def resume(self, now):
-        return self._lease.resume(now)
+        self._start()
+        return self._pipeline.resume_localization(now)
 
     def pause(self):
-        return self._lease.pause()
+        return self._pipeline.pause_localization()
+
+    def close(self):
+        self._pipeline.close()
 
     def poll(self, now):
-        status = self._lease.poll(now)
+        status = self._pipeline.poll_localization(now)
+        decoder_status = self._pipeline.decoder_status
         lease_state = {
-            "stream_status": self._lease.reader_status,
+            "stream_status": status.state.value if decoder_status == "running" else decoder_status,
             "localization_consumer_state": status.state.value,
             "localization_failure_reason": status.failure_reason,
         }
@@ -225,6 +266,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--duration", type=float, default=60)
     parser.add_argument("--allow-synthetic", action="store_true")
+    parser.add_argument("--detector-model", type=Path)
+    parser.add_argument("--detector-model-sha256")
+    parser.add_argument("--mission-id")
     args = parser.parse_args()
     service = None
     previous_pause = None
@@ -240,7 +284,24 @@ def main():
         loop = WebcamLocalization(load_config(args.config), allow_synthetic=args.allow_synthetic)
         if parsed_url.path != "/" + loop.provenance["stream_path"]:
             raise ValueError("RTSP path does not match the pinned source configuration")
-        service = WebcamLocalizationService(loop, url)
+        if bool(args.detector_model) != bool(args.detector_model_sha256):
+            raise ValueError("detector model and SHA-256 must be provided together")
+        if args.detector_model is not None and not args.mission_id:
+            raise ValueError("detector requires a mission ID")
+        detector = None
+        if args.detector_model is not None:
+            from perception.yolox_onnx import YoloXOnnxDetector
+
+            detector = YoloXOnnxDetector(
+                args.detector_model, expected_model_sha256=args.detector_model_sha256
+            )
+        service = WebcamLocalizationService(
+            loop,
+            url,
+            source_id=loop.provenance["stream_path"],
+            detector=detector,
+            mission_id=args.mission_id,
+        )
         started = time.monotonic()
         service.resume(started)
         previous_pause = _install_signal(
@@ -286,7 +347,7 @@ def main():
         if previous_resume is not None:
             signal.signal(signal.SIGUSR2, previous_resume)
         if service is not None:
-            service.pause()
+            service.close()
 
 
 if __name__ == "__main__":

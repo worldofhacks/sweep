@@ -5,6 +5,7 @@ import time
 from collections import deque
 
 import numpy as np
+import pytest
 
 from perception.shared_camera_pipeline import CameraPipelineConfig, SharedCameraPipeline
 
@@ -66,6 +67,10 @@ class SlowDetector:
         return ()
 
 
+class InvalidDetector:
+    pass
+
+
 def _wait(predicate) -> None:
     deadline = time.monotonic() + 1
     while time.monotonic() < deadline:
@@ -110,6 +115,49 @@ def test_blocked_detector_does_not_delay_fresh_localization() -> None:
     finally:
         detector.release.set()
         pipeline.close()
+
+
+def test_invalid_detector_constructor_closes_the_started_decoder() -> None:
+    stream = Stream()
+
+    with pytest.raises(ValueError, match="detector must declare"):
+        SharedCameraPipeline(
+            "rtsp://camera/drone1",
+            Localizer(),
+            source_id="drone1",
+            stream_factory=lambda _url: stream,
+            detector=InvalidDetector(),
+            mission_id="mission1",
+        )
+
+    assert stream.started
+    assert stream.closed
+
+
+def test_blocked_detector_cannot_call_back_after_pipeline_close() -> None:
+    stream = Stream()
+    detector = SlowDetector()
+    callbacks = []
+    pipeline = SharedCameraPipeline(
+        "rtsp://camera/drone1",
+        Localizer(),
+        source_id="drone1",
+        stream_factory=lambda _url: stream,
+        detector=detector,
+        mission_id="mission1",
+        on_detection=callbacks.append,
+        config=_config(),
+    ).start()
+    stream.push(1, time.monotonic())
+    _wait(detector.entered.is_set)
+
+    with pytest.raises(RuntimeError, match="detector did not stop"):
+        pipeline.close()
+    detector.release.set()
+    with pytest.raises(RuntimeError, match="detector did not stop"):
+        pipeline.close()
+
+    assert callbacks == []
 
 
 def test_localization_subscription_discards_backlog_and_receives_latest_frame() -> None:

@@ -375,33 +375,87 @@ class SharedCameraPipeline:
         )
         self._detector: LiveDetectionWorker | None = None
         self._detector_subscription: LatestFrameSubscription | None = None
-        if detector is not None:
-            self._detector_subscription = self._decoder.subscribe("detector")
-            self._detector = LiveDetectionWorker(
-                self._detector_subscription,
-                detector,
-                source_id=source_id,
-                mission_id=mission_id,
-                on_event=on_detection,
-                max_frame_age_s=config.detector_max_frame_age_s,
-                sample_interval_s=config.detector_sample_interval_s,
-                monotonic_clock=monotonic_clock,
-            )
         self._keyframes: SelectedKeyframeWorker | None = None
-        if map_builder is not None:
-            self._keyframes = SelectedKeyframeWorker(
-                self._decoder.subscribe("map_builder"),
-                map_builder,
-                sample_interval_s=config.keyframe_sample_interval_s,
-                max_frame_age_s=config.keyframe_max_frame_age_s,
-                monotonic_clock=monotonic_clock,
-            )
+        self._keyframe_subscription: LatestFrameSubscription | None = None
+        self._on_detection = on_detection
+        self._map_builder = map_builder
+        self._callback_lock = threading.Lock()
+        self._callback_generation = 0
+        self._active_callback_generation: int | None = None
+        self._started = False
+        try:
+            if detector is not None:
+                self._detector_subscription = self._decoder.subscribe("detector")
+                self._detector = LiveDetectionWorker(
+                    self._detector_subscription,
+                    detector,
+                    source_id=source_id,
+                    mission_id=mission_id,
+                    on_event=self._detection_callback,
+                    max_frame_age_s=config.detector_max_frame_age_s,
+                    sample_interval_s=config.detector_sample_interval_s,
+                    monotonic_clock=monotonic_clock,
+                )
+            if map_builder is not None:
+                self._keyframe_subscription = self._decoder.subscribe("map_builder")
+                self._keyframes = SelectedKeyframeWorker(
+                    self._keyframe_subscription,
+                    self._map_callback,
+                    sample_interval_s=config.keyframe_sample_interval_s,
+                    max_frame_age_s=config.keyframe_max_frame_age_s,
+                    monotonic_clock=monotonic_clock,
+                )
+        except Exception:
+            self._release_constructor_subscriptions()
+            raise
+
+    def _release_constructor_subscriptions(self) -> None:
+        for subscription in (self._keyframe_subscription, self._detector_subscription):
+            if subscription is None:
+                continue
+            try:
+                subscription.close()
+            except Exception:
+                pass
+
+    def _detection_callback(self, event: object) -> None:
+        with self._callback_lock:
+            callback = self._on_detection if self._active_callback_generation is not None else None
+        if callback is not None:
+            callback(event)
+
+    def _map_callback(self, frame: CameraFrame) -> None:
+        with self._callback_lock:
+            callback = self._map_builder if self._active_callback_generation is not None else None
+        if callback is not None:
+            callback(frame)
+
+    def _activate_callbacks(self) -> None:
+        with self._callback_lock:
+            self._callback_generation += 1
+            self._active_callback_generation = self._callback_generation
+
+    def _deactivate_callbacks(self) -> None:
+        with self._callback_lock:
+            self._active_callback_generation = None
 
     def start(self) -> SharedCameraPipeline:
-        if self._detector is not None:
-            self._detector.start()
-        if self._keyframes is not None:
-            self._keyframes.start()
+        if self._started:
+            raise RuntimeError("shared camera pipeline is already running")
+        self._activate_callbacks()
+        try:
+            if self._detector is not None:
+                self._detector.start()
+            if self._keyframes is not None:
+                self._keyframes.start()
+        except Exception:
+            self._deactivate_callbacks()
+            try:
+                self.close()
+            except Exception:
+                pass
+            raise
+        self._started = True
         return self
 
     def resume_localization(self, now: float) -> LocalizationLeaseStatus:
@@ -431,8 +485,11 @@ class SharedCameraPipeline:
 
     def close(self) -> None:
         errors: list[Exception] = []
+        self._deactivate_callbacks()
         if self._detector is not None:
             self._detector.close()
+            if self._detector.failure_reason == "shutdown_timeout":
+                errors.append(RuntimeError("camera detector did not stop"))
         if self._detector_subscription is not None:
             try:
                 self._detector_subscription.close()

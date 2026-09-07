@@ -6,15 +6,19 @@ The localization consumer uses `ManagedWebcamLocalizer`, including its pause, re
 
 `WebcamStream` reports host decode-completion time. `CameraFrame.capture_time_monotonic_s` therefore stays `null`; the localizer continues to apply its separately measured decoder-latency estimate. The frame record carries the configured source ID and optional alignment evidence. Gimbal and body transforms remain in their respective calibration evidence.
 
-Run the production entry point with the same pinned localization configuration:
+`WebcamLocalizationService` is the production owner. It creates this pipeline for the
+existing host localization process and accepts an optional detector, detection callback,
+and map-builder callback. Those consumers share the same decoder with localization.
+
+Run the host entry point with the same pinned localization configuration:
 
 ```bash
 export SWEEP_LOCALIZATION_RTSP_URL="rtsp://127.0.0.1:8554/drone1"
-python -m perception.shared_camera_pipeline \
-  --config webcam.json --source-id drone1 --duration 120 --output shared-camera.jsonl
+python -m perception.webcam_localization \
+  --config webcam.json --duration 120 --output shared-camera.jsonl
 ```
 
-Supply `--detector-model`, `--detector-model-sha256`, and `--mission-id` to start the pinned local YOLOX detector. The default detector sample interval is 0.2 seconds and the keyframe interval is one second. Camera frame rate depends on the upstream publisher.
+Supply `--detector-model`, `--detector-model-sha256`, and `--mission-id` to start the pinned local YOLOX detector. A host composition that needs map keyframes passes its map-builder callback to `WebcamLocalizationService`. The default detector sample interval is 0.2 seconds and the keyframe interval is one second. Camera frame rate depends on the upstream publisher.
 
 Run the offline checks with:
 
