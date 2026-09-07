@@ -959,12 +959,14 @@ def test_run_pins_inputs_and_writes_a_bounded_create_only_candidate(tmp_path: Pa
         run(request_path, evidence, output)
 
 
-def test_live_mapper_capture_events_fuse_only_as_unapproved_map_candidates() -> None:
+def test_archived_live_mapper_events_fuse_only_as_unapproved_map_candidates(tmp_path: Path) -> None:
     import numpy as np
 
     from perception.ohmni_pts_capture import CapturedFrame
     from relay.observations import Observation
     from tools.ohmni_live_tag_mapper import (
+        AcceptedObservationArchive,
+        ArchiveConfig,
         LiveScope,
         LiveTagMapper,
         MapperConfig,
@@ -1043,9 +1045,20 @@ def test_live_mapper_capture_events_fuse_only_as_unapproved_map_candidates() -> 
             scope, CapturedFrame(np.zeros((480, 640, 3), np.uint8), capture)
         )
     ]
+    archive = AcceptedObservationArchive(
+        tmp_path / "archive",
+        scope=scope,
+        mapper=mapper.config,
+        config=ArchiveConfig("ohmni-pose", "ohmni-lidar", "odom", "body", "lidar"),
+    )
+    for index, capture in enumerate(captures):
+        archive.observe(_body(f"body-{index}", capture).to_mapping())
+    for item in mapper_events:
+        archive.observe(Observation(item, item.t_capture.value // 1_000_000).to_mapping())
+    archive.finish()
     events = [
-        *(_body(f"body-{index}", capture) for index, capture in enumerate(captures)),
-        *(Observation(item, item.t_capture.value // 1_000_000) for item in mapper_events),
+        decode_observation(line)
+        for line in (tmp_path / "archive" / "observations.jsonl").read_bytes().splitlines()
     ]
     request = _request()
     request["source_scopes"] = {
