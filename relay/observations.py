@@ -719,13 +719,14 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
 
 
 def _positive_semidefinite_3x3(covariance: list[float]) -> None:
-    a, b, c, _, d, e, _, _, f = covariance
-    scale = max(1.0, max(abs(value) for value in covariance))
-    tolerance = 1e-9 * scale**3
+    scale = max(abs(value) for value in covariance)
+    values = covariance if scale == 0 else [value / scale for value in covariance]
+    a, b, c, _, d, e, _, _, f = values
+    tolerance = 1e-9
     if (
-        abs(b - covariance[3]) > tolerance
-        or abs(c - covariance[6]) > tolerance
-        or abs(e - covariance[7]) > tolerance
+        abs(b - values[3]) > tolerance
+        or abs(c - values[6]) > tolerance
+        or abs(e - values[7]) > tolerance
         or a < -tolerance
         or d < -tolerance
         or f < -tolerance
