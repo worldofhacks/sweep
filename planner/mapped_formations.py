@@ -131,8 +131,8 @@ class MappedFormationRequest:
         integer(self.plan_revision, "formation plan_revision")
         if not isinstance(self.selected, tuple) or not isinstance(self.all_positions, tuple):
             raise ValueError("formation positions must be immutable tuples")
-        if len(self.selected) not in {2, 4} or len(self.all_positions) > MAX_AIRCRAFT:
-            raise ValueError("mapped formations require two or four aircraft within the MVP cap")
+        if not 2 <= len(self.selected) <= MAX_AIRCRAFT or len(self.all_positions) > MAX_AIRCRAFT:
+            raise ValueError("mapped formations require a bounded selected aircraft set")
         if not all(isinstance(item, DronePose) for item in (*self.selected, *self.all_positions)):
             raise ValueError("formation positions must contain DronePose values")
         selected_ids = {item.drone_id for item in self.selected}
@@ -157,10 +157,6 @@ class MappedFormationRequest:
             raise ValueError("formation request configuration must use contract types")
         if len(self.layout.altitude_offsets_m) != len(self.selected):
             raise ValueError("altitude offsets must match selected aircraft")
-        if len(self.selected) == 4 and len(set(self.layout.altitude_offsets_m)) != 4:
-            raise ValueError("four-aircraft formations require a distinct altitude offset per slot")
-        if len(self.selected) == 2 and self.shape not in {"line", "column"}:
-            raise ValueError("two-aircraft formations support only line and column")
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,14 +378,15 @@ def _slots(
     layout: FormationLayout,
     zone_id: str,
 ) -> tuple[FormationSlot, ...]:
-    offsets = {
-        "line": ((-1.5, 0.0), (-0.5, 0.0), (0.5, 0.0), (1.5, 0.0)),
-        "column": ((0.0, -1.5), (0.0, -0.5), (0.0, 0.5), (0.0, 1.5)),
-        "wedge": ((1.0, 0.0), (0.0, -0.75), (0.0, 0.75), (-1.0, 0.0)),
-        "diamond": ((0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)),
-    }[shape]
-    if len(layout.altitude_offsets_m) == 2:
-        offsets = offsets[1:3]
+    count = len(layout.altitude_offsets_m)
+    if shape == "line":
+        offsets = tuple((index - (count - 1) / 2, 0.0) for index in range(count))
+    elif shape == "column":
+        offsets = tuple((0.0, index - (count - 1) / 2) for index in range(count))
+    elif shape == "wedge":
+        offsets = _wedge_offsets(count)
+    else:
+        offsets = _diamond_offsets(count)
     cosine, sine = cos(layout.heading_rad), sin(layout.heading_rad)
     return tuple(
         FormationSlot(
@@ -403,6 +400,33 @@ def _slots(
         )
         for index, (x, y) in enumerate(offsets)
     )
+
+
+def _wedge_offsets(count: int) -> tuple[tuple[float, float], ...]:
+    if count % 2:
+        offsets: list[tuple[float, float]] = [(0.0, 0.0)]
+        distance = 1.0
+    else:
+        offsets = []
+        distance = 0.5
+    while len(offsets) < count:
+        offsets.extend(((-distance, -distance), (distance, -distance)))
+        distance += 1.0
+    return tuple(offsets[:count])
+
+
+def _diamond_offsets(count: int) -> tuple[tuple[float, float], ...]:
+    return tuple(_diamond_perimeter(4 * index / count) for index in range(count))
+
+
+def _diamond_perimeter(position: float) -> tuple[float, float]:
+    if position < 1:
+        return (position, 1 - position)
+    if position < 2:
+        return (2 - position, 1 - position)
+    if position < 3:
+        return (2 - position, position - 3)
+    return (position - 4, position - 3)
 
 
 def _validate_slots(

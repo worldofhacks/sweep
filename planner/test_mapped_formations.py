@@ -92,14 +92,25 @@ def request(
 
 @pytest.mark.parametrize(
     ("shape", "count"),
-    (("line", 2), ("column", 2), ("line", 4), ("column", 4), ("wedge", 4), ("diamond", 4)),
+    (
+        ("line", 2),
+        ("column", 2),
+        ("line", 3),
+        ("column", 3),
+        ("wedge", 3),
+        ("diamond", 3),
+        ("line", 5),
+        ("column", 5),
+        ("wedge", 5),
+        ("diamond", 5),
+    ),
 )
 def test_committed_shapes_produce_frozen_non_dispatchable_previews(
     shape: str,
     count: int,
 ) -> None:
     map_artifact = artifact()
-    offsets = (-0.1, 0.1) if count == 2 else (-0.15, -0.05, 0.05, 0.15)
+    offsets = tuple((index - (count - 1) / 2) / 20 for index in range(count))
     layout = FormationLayout(pose(10.0, 10.0), 0.0, 2.0, offsets)
     targets = _slots(shape, layout, "lobby")
     selected = tuple(drone(index + 1, target.pose) for index, target in enumerate(targets))
@@ -119,19 +130,20 @@ def test_committed_shapes_produce_frozen_non_dispatchable_previews(
     assert result.navigation_plan.navigation_pin != map_artifact.navigation_pin
 
 
-def test_two_aircraft_cannot_request_four_aircraft_shape() -> None:
-    layout = FormationLayout(pose(10.0, 10.0), 0.0, 2.0, (-0.1, 0.1))
-    selected = (drone(1, pose(9.0, 10.0, 1.4)), drone(2, pose(11.0, 10.0, 1.6)))
+def test_three_aircraft_line_has_three_frozen_slots() -> None:
+    layout = FormationLayout(pose(10.0, 10.0), 0.0, 2.0, (-0.1, 0.0, 0.1))
 
-    with pytest.raises(ValueError, match="line and column"):
-        request("diamond", layout, selected)
+    slots = _slots("line", layout, "lobby")
+
+    assert [slot.pose.x_m for slot in slots] == [8.0, 10.0, 12.0]
+    assert [slot.pose.z_m for slot in slots] == [1.4, 1.5, 1.6]
 
 
-def test_four_aircraft_requires_explicit_altitude_stagger() -> None:
-    layout = FormationLayout(pose(10.0, 10.0), 0.0, 2.0, (0.0, 0.0, 0.0, 0.0))
-    selected = tuple(drone(index, pose(4.0 + index, 4.0)) for index in range(1, 5))
+def test_formation_count_is_bounded_by_the_resource_limit() -> None:
+    layout = FormationLayout(pose(10.0, 10.0), 0.0, 2.0, tuple(0.0 for _ in range(33)))
+    selected = tuple(drone(index, pose(4.0 + index, 4.0)) for index in range(1, 34))
 
-    with pytest.raises(ValueError, match="distinct altitude offset"):
+    with pytest.raises(ValueError, match="bounded selected"):
         request("line", layout, selected)
 
 

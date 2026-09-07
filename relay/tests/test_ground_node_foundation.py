@@ -306,3 +306,30 @@ def test_unusable_ground_pose_clears_the_accepted_freshness_evidence():
 
     assert transition.membership.value == "degraded"
     assert transition.readiness_reasons == ("pose_identity_not_accepted",)
+
+
+def test_three_aircraft_and_two_ohmni_ground_nodes_share_one_bounded_registry():
+    registry = FleetRegistry(
+        telemetry_freshness_ms=1_000,
+        node_types={101: NodeType.GROUND, 102: NodeType.GROUND},
+    )
+    for device_id in (1, 2, 3):
+        registry.apply_join(
+            parse_membership_request(
+                membership_payload(
+                    action="join", event_id=f"aircraft-{device_id}", drone_id=device_id
+                )
+            )
+        )
+    for device_id in (101, 102):
+        registry.apply_join(_ground_join(device_id, f"ohmni-{device_id}"))
+
+    state = registry.state_event(session=SESSION, t=1_000, event_id="three-aircraft-two-ohmni")
+
+    assert [(item["drone_id"], item["node_type"]) for item in state["drones"]] == [
+        (1, "aircraft"),
+        (2, "aircraft"),
+        (3, "aircraft"),
+        (101, "ground"),
+        (102, "ground"),
+    ]

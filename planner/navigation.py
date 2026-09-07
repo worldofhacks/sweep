@@ -338,6 +338,8 @@ class NavigationPlanner:
         """Choose the minimum-cost feasible assignment with stable tie-breaking."""
         if not drones:
             return ()
+        if len(drones) > 6:
+            return self._assign_routes_greedily(drones, slots, artifact, motion, reservations)
         drone = drones[0]
         best: tuple[tuple[float, tuple[str, ...]], tuple[DroneRoute, ...]] | None = None
         for index, slot in enumerate(slots):
@@ -381,6 +383,52 @@ class NavigationPlanner:
                 if best is None or key < best[0]:
                     best = (key, candidate)
         return None if best is None else best[1]
+
+    def _assign_routes_greedily(
+        self,
+        drones: tuple[DronePose, ...],
+        slots: tuple[ArrivalSlot, ...],
+        artifact: NavigationArtifact,
+        motion: MotionConfig,
+        reservations: dict[int, Reservation],
+    ) -> tuple[DroneRoute, ...] | None:
+        # Exhaustive assignment grows factorially. This deterministic fallback may refuse a
+        # feasible alternative, but never accepts a route without the same clearance checks.
+        available = list(slots)
+        active_reservations = dict(reservations)
+        routes: list[DroneRoute] = []
+        for drone in drones:
+            candidates: list[tuple[float, str, int, DroneRoute]] = []
+            for index, slot in enumerate(available):
+                path = self._route(drone, slot.pose, artifact, motion, active_reservations)
+                if path is None:
+                    continue
+                if len(path) == 1:
+                    path = [path[0], path[0]]
+                segments = tuple(
+                    SweptSegment(
+                        start,
+                        end,
+                        motion.swept_radius_m,
+                        motion.swept_half_height_m,
+                    )
+                    for start, end in zip(path, path[1:], strict=False)
+                )
+                route = DroneRoute(drone, slot, tuple(path), segments)
+                cost = sum(dist(segment.start.xyz, segment.end.xyz) for segment in segments)
+                candidates.append((cost, slot.slot_id, index, route))
+            if not candidates:
+                return None
+            _, _, index, route = min(candidates)
+            available.pop(index)
+            active_reservations[drone.drone_id] = Reservation(
+                drone.drone_id,
+                route.arrival_slot.pose,
+                motion.swept_radius_m,
+                motion.swept_half_height_m,
+            )
+            routes.append(route)
+        return tuple(routes)
 
     def _route(
         self,
