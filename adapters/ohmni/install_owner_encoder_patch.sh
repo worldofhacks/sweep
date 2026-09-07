@@ -23,11 +23,11 @@ vendor_context="u:object_r:system_app_data_file:s0"
 work=$(mktemp -d "${TMPDIR:-/tmp}/sweep-owner-patch.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 "$adb" -s "$serial" get-state >/dev/null
-"$adb" -s "$serial" pull "$node_dir/telebot_node.js" "$work/telebot_node.js" >/dev/null
+"$adb" -s "$serial" exec-out su 0 cat "$node_dir/telebot_node.js" > "$work/telebot_node.js"
 python3 "$patcher" "$work/telebot_node.js" "$work/telebot_node.patched.js"
 patched_sha=$(sha256sum "$work/telebot_node.patched.js" | cut -d ' ' -f 1)
 module_sha=$(sha256sum "$module" | cut -d ' ' -f 1)
-remote_sha=$("$adb" -s "$serial" shell "sha256sum $node_dir/telebot_node.js | cut -d ' ' -f 1" | tr -d '\r\n')
+remote_sha=$("$adb" -s "$serial" exec-out su 0 sha256sum "$node_dir/telebot_node.js" | awk '{print $1}' | tr -d '\r\n')
 [ "$remote_sha" = "$reference_sha" ] || {
   echo 'Vendor source changed after review; refusing to install.' >&2
   exit 1

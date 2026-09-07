@@ -73,6 +73,10 @@ adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/run.sh start
 adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/run.sh stop
 ```
 
+## Owner encoder sampler
+
+The vendor Node owns paired drive-encoder reads and publishes bounded records through `sweep_encoder.sock`. No BotShell or adapter reader may query those registers while the sampler is installed. The patch installer only stages verified source and does not restart the vendor owner. A stock owner restart reconnects the serial bus, reinitializes the servos, enables wheel torque, and initializes the neck. A restart therefore requires a separately reviewed operator procedure after physical motion is permitted.
+
 ## Approved ground return
 
 A confirmed `come_home` for a selected ground node is eligible only when the relay has `SWEEP_GROUND_RETURN_ID` and the node has a matching approved return artifact. The command carries only that ID. It does not carry a route, a destination, or a way to alter the route.
