@@ -15,8 +15,10 @@ _STATUSES = ("starting", "connecting", "live", "reconnecting", "invalid_frame", 
 
 
 class _Mailbox:
-    def __init__(self, context: Any) -> None:
-        self._pixels = context.RawArray("B", 720 * 1280 * 3)
+    def __init__(self, context: Any, resolution: tuple[int, int] = (1280, 720)) -> None:
+        width, height = resolution
+        self._shape = (height, width, 3)
+        self._pixels = context.RawArray("B", width * height * 3)
         self._timestamp = context.RawValue("d", 0)
         self._lock = context.Lock()
         self._available = context.Event()
@@ -25,7 +27,7 @@ class _Mailbox:
         if not self._lock.acquire(timeout=0.01):
             return
         try:
-            np.copyto(np.frombuffer(self._pixels, dtype=np.uint8).reshape(720, 1280, 3), frame)
+            np.copyto(np.frombuffer(self._pixels, dtype=np.uint8).reshape(self._shape), frame)
             self._timestamp.value = timestamp
             self._available.set()
         finally:
@@ -38,7 +40,7 @@ class _Mailbox:
         if not self._lock.acquire(timeout=max(0, deadline - time.monotonic())):
             return None
         try:
-            frame = np.frombuffer(self._pixels, dtype=np.uint8).reshape(720, 1280, 3).copy()
+            frame = np.frombuffer(self._pixels, dtype=np.uint8).reshape(self._shape).copy()
             timestamp = self._timestamp.value
             self._available.clear()
             return frame, timestamp
@@ -46,7 +48,9 @@ class _Mailbox:
             self._lock.release()
 
 
-def _decode(url: str, mailbox: Any, stop: Any, state: Any) -> None:
+def _decode(
+    url: str, mailbox: Any, stop: Any, state: Any, resolution: tuple[int, int] = (1280, 720)
+) -> None:
     # FFmpeg error messages can include the authenticated source URL.
     with open(os.devnull, "w") as sink:
         os.dup2(sink.fileno(), 2)
@@ -67,7 +71,7 @@ def _decode(url: str, mailbox: Any, stop: Any, state: Any) -> None:
                         break
                     if (
                         not isinstance(frame, np.ndarray)
-                        or frame.shape != (720, 1280, 3)
+                        or frame.shape != (resolution[1], resolution[0], 3)
                         or frame.dtype != np.uint8
                     ):
                         state.value = 4
@@ -85,17 +89,23 @@ def _decode(url: str, mailbox: Any, stop: Any, state: Any) -> None:
 
 
 class WebcamStream:
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, *, resolution: tuple[int, int] = (1280, 720)) -> None:
+        if (
+            not isinstance(resolution, tuple)
+            or len(resolution) != 2
+            or any(type(value) is not int or not 1 <= value <= 4096 for value in resolution)
+        ):
+            raise ValueError("resolution must be two positive integers up to 4096")
         if not isinstance(url, str) or not url.startswith(("rtsp://", "rtsps://")):
             raise ValueError("webcam source must be an RTSP URL")
         self._url = url
         context = mp.get_context("spawn")
-        self._mailbox = _Mailbox(context)
+        self._mailbox = _Mailbox(context, resolution)
         self._stop = context.Event()
         self._state = context.RawValue("i", 0)
         self._process = context.Process(
             target=_decode,
-            args=(url, self._mailbox, self._stop, self._state),
+            args=(url, self._mailbox, self._stop, self._state, resolution),
             daemon=True,
         )
         self._started = False
