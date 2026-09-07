@@ -6,6 +6,7 @@ import sys
 
 import pytest
 
+from tools import ohmni_world_registration
 from tools.ohmni_world_registration import (
     MAX_RMS_RESIDUAL_M,
     apply_transform,
@@ -21,12 +22,26 @@ def _digest(label):
 
 
 def _document(frame, name, tags):
-    return {
+    document = {
         "schema_version": 1,
         "frame": frame,
         "provenance": {"name": name, "sha256": _digest(name)},
         "tags": [{"tag_id": tag_id, "xy_m": list(point)} for tag_id, point in tags.items()],
     }
+    if frame == "world":
+        document["map"] = {
+            "map_id": "lab-a",
+            "map_version": "2026-09-07",
+            "physical_datum": "tag-0 southwest corner",
+        }
+    else:
+        document["scope"] = {
+            "session": "session-a",
+            "device_id": 17,
+            "connection_epoch": 3,
+            "source_id": "ohmni-17-lidar",
+        }
+    return document
 
 
 def _valid_documents():
@@ -45,8 +60,12 @@ def test_known_proper_rigid_transform_is_recovered_from_independent_points():
 
     assert candidate["kind"] == "ohmni_world_registration_candidate"
     assert candidate["approval_status"] == "unapproved"
-    assert candidate["source"] == {"frame": "ohmni_slam", **observed["provenance"]}
-    assert candidate["target"] == {"frame": "world", **known["provenance"]}
+    assert candidate["source"] == {
+        "frame": "ohmni_slam",
+        **observed["scope"],
+        **observed["provenance"],
+    }
+    assert candidate["target"] == {"frame": "world", **known["map"], **known["provenance"]}
     assert candidate["T_target_source"] == pytest.approx(
         {"dx_m": 10, "dy_m": -4, "yaw_rad": math.pi / 2}
     )
@@ -97,7 +116,7 @@ def test_insufficient_degenerate_and_poorly_conditioned_fit_tags_are_refused(mut
         register_documents(observed, known)
 
 
-def test_reflected_ties_are_refused_instead_of_estimating_a_reflection():
+def test_reflected_ties_are_refused_by_the_residual_gate():
     observed, known = _valid_documents()
     known["tags"] = [
         {"tag_id": 4, "xy_m": [0, 0]},
@@ -106,7 +125,7 @@ def test_reflected_ties_are_refused_instead_of_estimating_a_reflection():
         {"tag_id": 99, "xy_m": [-2, 3]},
     ]
 
-    with pytest.raises(ValueError, match="reflection"):
+    with pytest.raises(ValueError, match="outlier"):
         register_documents(observed, known)
 
 
@@ -134,7 +153,7 @@ def test_held_out_tie_is_not_fitted_and_must_meet_its_own_bound():
         register_documents(observed, known, held_out_tag_ids=[99])
 
 
-def test_duplicate_nonfinite_and_nonindependent_inputs_are_refused():
+def test_duplicate_nonfinite_and_out_of_bounds_inputs_are_refused():
     observed, known = _valid_documents()
     observed["tags"].append({"tag_id": 4, "xy_m": [1, 1]})
     with pytest.raises(ValueError, match="duplicate observed"):
@@ -146,8 +165,29 @@ def test_duplicate_nonfinite_and_nonindependent_inputs_are_refused():
         register_documents(observed, known)
 
     observed, known = _valid_documents()
+    observed["tags"][0]["xy_m"] = [1_000_000.1, 0]
+    with pytest.raises(ValueError, match="frame origin"):
+        register_documents(observed, known)
+
+    observed, known = _valid_documents()
     known["provenance"]["sha256"] = observed["provenance"]["sha256"]
-    with pytest.raises(ValueError, match="independent provenance"):
+    assert register_documents(observed, known)["approval_status"] == "unapproved"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda observed, known: observed.update(frame="world"), "observed.frame"),
+        (lambda observed, known: known.update(frame="ohmni_slam"), "known.frame"),
+        (lambda observed, known: observed.pop("scope"), "observed.scope"),
+        (lambda observed, known: known["map"].pop("physical_datum"), "known.map"),
+    ],
+)
+def test_registration_binds_local_source_scope_and_pinned_world_identity(mutate, message):
+    observed, known = _valid_documents()
+    mutate(observed, known)
+
+    with pytest.raises(ValueError, match=message):
         register_documents(observed, known)
 
 
@@ -184,3 +224,59 @@ def test_cli_records_input_hashes_and_never_promotes_the_candidate(tmp_path):
         "observed_document_sha256": hashlib.sha256(observed_path.read_bytes()).hexdigest(),
         "known_document_sha256": hashlib.sha256(known_path.read_bytes()).hexdigest(),
     }
+
+
+def test_cli_parses_and_hashes_the_same_immutable_input_snapshots(tmp_path, monkeypatch):
+    observed, known = _valid_documents()
+    original_observed = json.dumps(observed).encode()
+    observed_path = tmp_path / "observed.json"
+    known_path = tmp_path / "known.json"
+    output_path = tmp_path / "candidate.json"
+    observed_path.write_bytes(original_observed)
+    known_path.write_text(json.dumps(known))
+    original_register = ohmni_world_registration.register_documents
+
+    def replace_input_then_register(*args, **kwargs):
+        observed["scope"]["session"] = "replaced-session"
+        observed_path.write_text(json.dumps(observed))
+        return original_register(*args, **kwargs)
+
+    monkeypatch.setattr(ohmni_world_registration, "register_documents", replace_input_then_register)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ohmni_world_registration",
+            str(observed_path),
+            str(known_path),
+            str(output_path),
+        ],
+    )
+
+    assert ohmni_world_registration.main() == 0
+    candidate = json.loads(output_path.read_text())
+    assert candidate["source"]["session"] == "session-a"
+    assert candidate["input_provenance"]["observed_document_sha256"] == hashlib.sha256(
+        original_observed
+    ).hexdigest()
+
+
+def test_cli_rejects_duplicate_json_keys_before_writing_a_candidate(tmp_path, monkeypatch):
+    observed, known = _valid_documents()
+    observed_path = tmp_path / "observed.json"
+    known_path = tmp_path / "known.json"
+    output_path = tmp_path / "candidate.json"
+    observed_path.write_bytes(
+        json.dumps(observed)
+        .encode()
+        .replace(b'"frame": "ohmni_slam",', b'"frame":"x","frame":"ohmni_slam",')
+    )
+    known_path.write_text(json.dumps(known))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ohmni_world_registration", str(observed_path), str(known_path), str(output_path)],
+    )
+
+    assert ohmni_world_registration.main() == 1
+    assert not output_path.exists()

@@ -8,12 +8,18 @@ Every fit-tag residual must be at most 0.100 m and RMS residual must be at most 
 
 ## Input
 
-Provide two separate JSON documents. Their `provenance.sha256` values must differ. The observed document holds local SLAM coordinates; the known document holds independently measured world coordinates. Coordinates are in meters.
+Provide two separate JSON documents. The observed document holds local SLAM coordinates and the W0 source scope that identifies the session, device, epoch, and producer. The known document holds world coordinates plus immutable map pins. Coordinates are in meters and must be within 1,000 km of their frame origin.
 
 ```json
 {
   "schema_version": 1,
   "frame": "ohmni_slam",
+  "scope": {
+    "session": "session-42",
+    "device_id": 17,
+    "connection_epoch": 3,
+    "source_id": "ohmni-17-lidar"
+  },
   "provenance": {
     "name": "ohmni-scan-2026-09-07",
     "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -24,7 +30,17 @@ Provide two separate JSON documents. Their `provenance.sha256` values must diffe
 }
 ```
 
-The known document has the same shape with a world frame and an independent source hash. Tag IDs are `tag36h11` values from 0 through 586. Duplicate IDs and nonfinite coordinates are rejected.
+The known document must use `"frame": "world"` and add:
+
+```json
+"map": {
+  "map_id": "lab-a",
+  "map_version": "2026-09-07",
+  "physical_datum": "tag-0 southwest corner"
+}
+```
+
+Each document carries a named SHA-256 provenance reference. It records the evidence supplied for the candidate; matching or differing references alone do not establish that a physical measurement is independent. Tag IDs are `tag36h11` values from 0 through 586. Duplicate IDs and nonfinite coordinates are rejected.
 
 ## Run
 
@@ -34,6 +50,6 @@ uv run python -m tools.ohmni_world_registration \
   --held-out-tag-id 42
 ```
 
-The output records source and target frame names, both source provenance records, fitted and held-out tag IDs, the transform, and residuals for every tied tag. The command also records SHA-256 hashes of both input documents. Its `approval_status` remains `unapproved`.
+The output records source scope, world-map pins, provenance references, fitted and held-out tag IDs, the transform, and residuals for every tied tag. The command parses and hashes each bounded input snapshot once, then records those two input hashes. Its `approval_status` remains `unapproved`.
 
 Weighted observation fusion, camera confidence scoring, and drive-over overrides feed later stages. This tool only evaluates explicit point ties.

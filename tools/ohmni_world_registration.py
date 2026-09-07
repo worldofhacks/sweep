@@ -4,9 +4,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
+import stat
 from pathlib import Path
 
-from tools.map_common import finite_number, read_document, write_document
+from tools.map_common import finite_number, parse_document, write_document
 
 SCHEMA_VERSION = 1
 MIN_FIT_TAGS = 3
@@ -14,6 +16,8 @@ MAX_CONDITION_NUMBER = 100.0
 MAX_TAG_RESIDUAL_M = 0.10
 MAX_RMS_RESIDUAL_M = 0.075
 MAX_HELD_OUT_RESIDUAL_M = 0.10
+MAX_COORDINATE_M = 1_000_000
+MAX_INPUT_BYTES = 1024 * 1024
 
 
 def _require(condition, message):
@@ -37,7 +41,10 @@ def _sha256(value, name):
 def _point(value, name):
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise ValueError(f"{name} must be two finite coordinates")
-    return (finite_number(value[0], f"{name}.x"), finite_number(value[1], f"{name}.y"))
+    point = (finite_number(value[0], f"{name}.x"), finite_number(value[1], f"{name}.y"))
+    if any(abs(coordinate) > MAX_COORDINATE_M for coordinate in point):
+        raise ValueError(f"{name} must be within {MAX_COORDINATE_M:g} m of its frame origin")
+    return point
 
 
 def _transform(value):
@@ -88,12 +95,6 @@ def invert_transform(transform):
     )
 
 
-# Short names keep downstream registration code readable.
-compose_transform = compose_transforms
-invert = invert_transform
-transform_point = apply_transform
-
-
 def _condition_number(points, label):
     center_x = sum(point[0] for point in points) / len(points)
     center_y = sum(point[1] for point in points) / len(points)
@@ -113,31 +114,6 @@ def _condition_number(points, label):
     return condition
 
 
-def _orientation(a, b, c):
-    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-
-
-def _reject_reflection(ties):
-    signs = []
-    for first in range(len(ties) - 2):
-        for second in range(first + 1, len(ties) - 1):
-            for third in range(second + 1, len(ties)):
-                source_area = _orientation(
-                    ties[first]["source_xy_m"],
-                    ties[second]["source_xy_m"],
-                    ties[third]["source_xy_m"],
-                )
-                target_area = _orientation(
-                    ties[first]["target_xy_m"],
-                    ties[second]["target_xy_m"],
-                    ties[third]["target_xy_m"],
-                )
-                if abs(source_area) > 1e-9 and abs(target_area) > 1e-9:
-                    signs.append(source_area * target_area > 0)
-    if signs and not any(signs):
-        raise ValueError("fit tags imply a reflection; registration permits proper rotations only")
-
-
 def fit_rigid_transform(ties):
     """Fit a proper 2D rigid transform from validated source-to-target ties."""
     if not isinstance(ties, list) or len(ties) < MIN_FIT_TAGS:
@@ -146,7 +122,6 @@ def fit_rigid_transform(ties):
     target = [_point(tie["target_xy_m"], "target_xy_m") for tie in ties]
     _condition_number(source, "source")
     _condition_number(target, "target")
-    _reject_reflection(ties)
     source_center = tuple(sum(point[index] for point in source) / len(source) for index in range(2))
     target_center = tuple(sum(point[index] for point in target) / len(target) for index in range(2))
     dot = cross = 0.0
@@ -164,7 +139,32 @@ def fit_rigid_transform(ties):
     )
 
 
-solve_rigid_transform = fit_rigid_transform
+def _scope(value):
+    if not isinstance(value, dict) or set(value) != {
+        "session",
+        "device_id",
+        "connection_epoch",
+        "source_id",
+    }:
+        raise ValueError(
+            "observed.scope requires session, device_id, connection_epoch, and source_id"
+        )
+    if type(value["device_id"]) is not int or not 1 <= value["device_id"] <= 2**31 - 1:
+        raise ValueError("observed.scope.device_id must be a positive int32")
+    if type(value["connection_epoch"]) is not int or value["connection_epoch"] < 1:
+        raise ValueError("observed.scope.connection_epoch must be positive")
+    return {
+        "session": _text(value["session"], "observed.scope.session"),
+        "device_id": value["device_id"],
+        "connection_epoch": value["connection_epoch"],
+        "source_id": _text(value["source_id"], "observed.scope.source_id"),
+    }
+
+
+def _map_pins(value):
+    if not isinstance(value, dict) or set(value) != {"map_id", "map_version", "physical_datum"}:
+        raise ValueError("known.map requires map_id, map_version, and physical_datum")
+    return {key: _text(value[key], f"known.map.{key}") for key in value}
 
 
 def _read_tag_document(document, label):
@@ -176,6 +176,14 @@ def _read_tag_document(document, label):
     ):
         raise ValueError(f"{label} requires schema_version {SCHEMA_VERSION}")
     frame = _text(document.get("frame"), f"{label}.frame")
+    if label == "known":
+        if frame != "world":
+            raise ValueError("known.frame must be world")
+        identity = {"map": _map_pins(document.get("map"))}
+    else:
+        if frame == "world":
+            raise ValueError("observed.frame must be a local frame")
+        identity = {"scope": _scope(document.get("scope"))}
     provenance = document.get("provenance")
     if not isinstance(provenance, dict) or set(provenance) != {"name", "sha256"}:
         raise ValueError(f"{label}.provenance requires name and sha256")
@@ -196,7 +204,7 @@ def _read_tag_document(document, label):
         if tag_id in tags:
             raise ValueError(f"duplicate {label} tag_id {tag_id}")
         tags[tag_id] = _point(record.get("xy_m"), f"{label} tag {tag_id}.xy_m")
-    return {"frame": frame, "provenance": provenance, "tags": tags}
+    return {"frame": frame, "provenance": provenance, "tags": tags, **identity}
 
 
 def _held_out_ids(value, available):
@@ -232,13 +240,9 @@ def _residuals(ties, transform):
 
 
 def register_documents(observed_document, known_document, *, held_out_tag_ids=()):
-    """Build an unapproved registration candidate from independent tag documents."""
+    """Build an unapproved registration candidate from scoped local and pinned world tags."""
     observed = _read_tag_document(observed_document, "observed")
     known = _read_tag_document(known_document, "known")
-    if observed["frame"] == known["frame"]:
-        raise ValueError("observed and known frames must differ")
-    if observed["provenance"]["sha256"] == known["provenance"]["sha256"]:
-        raise ValueError("observed and known documents must have independent provenance")
     matched_ids = sorted(set(observed["tags"]) & set(known["tags"]))
     held_out = _held_out_ids(held_out_tag_ids, set(matched_ids))
     fit_ids = [tag_id for tag_id in matched_ids if tag_id not in held_out]
@@ -289,8 +293,12 @@ def register_documents(observed_document, known_document, *, held_out_tag_ids=()
         "schema_version": SCHEMA_VERSION,
         "kind": "ohmni_world_registration_candidate",
         "approval_status": "unapproved",
-        "source": {"frame": observed["frame"], **observed["provenance"]},
-        "target": {"frame": known["frame"], **known["provenance"]},
+        "source": {
+            "frame": observed["frame"],
+            **observed["scope"],
+            **observed["provenance"],
+        },
+        "target": {"frame": known["frame"], **known["map"], **known["provenance"]},
         "T_target_source": transform,
         "fit_tag_ids": fit_ids,
         "held_out_tag_ids": sorted(held_out),
@@ -302,8 +310,21 @@ def register_documents(observed_document, known_document, *, held_out_tag_ids=()
     }
 
 
-def _input_sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+def _read_input_snapshot(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_INPUT_BYTES:
+            raise ValueError("registration input must be a bounded regular file")
+        with os.fdopen(descriptor, "rb") as source:
+            descriptor = None
+            payload = source.read(MAX_INPUT_BYTES + 1)
+        if len(payload) > MAX_INPUT_BYTES:
+            raise ValueError("registration input exceeds the byte limit")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return parse_document(payload, str(path)), hashlib.sha256(payload).hexdigest()
 
 
 def main():
@@ -314,14 +335,16 @@ def main():
     parser.add_argument("--held-out-tag-id", type=int, action="append", default=[])
     args = parser.parse_args()
     try:
+        observed, observed_hash = _read_input_snapshot(args.observed)
+        known, known_hash = _read_input_snapshot(args.known)
         candidate = register_documents(
-            read_document(args.observed),
-            read_document(args.known),
+            observed,
+            known,
             held_out_tag_ids=args.held_out_tag_id,
         )
         candidate["input_provenance"] = {
-            "observed_document_sha256": _input_sha256(args.observed),
-            "known_document_sha256": _input_sha256(args.known),
+            "observed_document_sha256": observed_hash,
+            "known_document_sha256": known_hash,
         }
         write_document(args.output, candidate)
     except (OSError, ValueError) as exc:
