@@ -122,7 +122,7 @@ def test_editing_loaded_deployment_invalidates_route_before_dispatch(tmp_path, g
     raw = json.loads(path.read_text())
     raw["execution"]["speed_m_s"] = 0.8
     path.write_text(json.dumps(raw))
-    with pytest.raises(ValueError, match="configuration changed|deployment or approval changed"):
+    with pytest.raises(ValueError, match="inputs changed|deployment or approval changed"):
         deployment.artifact()
 
 
@@ -130,7 +130,7 @@ def test_approval_file_changes_invalidate_loaded_deployment(tmp_path, generated_
     path = deployment_files(tmp_path, generated_geometry)
     deployment = load_navigation_deployment(path)
     (tmp_path / "approval.json").write_text("{}")
-    with pytest.raises(ValueError, match="deployment or approval changed"):
+    with pytest.raises(ValueError, match="inputs changed|deployment or approval changed"):
         deployment.artifact()
 
 
@@ -512,6 +512,30 @@ def test_flight_tracking_reuses_the_frozen_artifact_and_localization_configurati
     command = plan.commands[0]
     assert all(runtime.check_tracking(plan, command, snapshot, pose) is None for _ in range(20))
     assert calls == 1
+
+
+def test_flight_deployment_refuses_a_replaced_input_ancestor(tmp_path):
+    release = tmp_path / "release"
+    release.mkdir()
+    path, _, _ = _flight_deployment_files(release)
+    deployment = load_navigation_deployment(path)
+    relocated = tmp_path / "relocated-release"
+    os.rename(release, relocated)
+    os.symlink(relocated, release)
+
+    with pytest.raises(ValueError, match="regular file or directory"):
+        deployment.artifact()
+
+
+def test_flight_deployment_refuses_an_initial_symlinked_ancestor(tmp_path):
+    release = tmp_path / "release"
+    release.mkdir()
+    path, _, _ = _flight_deployment_files(release)
+    linked_release = tmp_path / "linked-release"
+    os.symlink(release, linked_release)
+
+    with pytest.raises(ValueError, match="regular file or directory"):
+        load_navigation_deployment(linked_release / path.name)
 
 
 @pytest.mark.parametrize("change", ("replacement", "new_bundle_file", "symlink"))

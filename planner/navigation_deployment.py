@@ -81,32 +81,62 @@ class _InputMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class _AncestorMetadata:
+    kind: str
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True, slots=True)
 class _InputGuard:
     inputs: Mapping[Path, _InputMetadata]
+    ancestors: Mapping[Path, _AncestorMetadata]
 
     @classmethod
     def capture(cls, roots: tuple[Path, ...]) -> _InputGuard:
         inputs: dict[Path, _InputMetadata] = {}
+        ancestors: dict[Path, _AncestorMetadata] = {}
         for root in roots:
-            cls._capture_path(root, inputs)
-        return cls(MappingProxyType(inputs))
+            cls._capture_path(root, inputs, ancestors)
+        return cls(MappingProxyType(inputs), MappingProxyType(ancestors))
+
+    @staticmethod
+    def _capture_ancestors(path: Path, ancestors: dict[Path, _AncestorMetadata]) -> None:
+        parent = path.parent
+        while True:
+            if parent not in ancestors:
+                metadata = _input_metadata(parent)
+                if metadata.kind != "directory":
+                    raise ValueError("navigation artifact input ancestor must be a directory")
+                ancestors[parent] = _AncestorMetadata(
+                    metadata.kind, metadata.device, metadata.inode
+                )
+            if parent == parent.parent:
+                return
+            parent = parent.parent
 
     @classmethod
-    def _capture_path(cls, path: Path, inputs: dict[Path, _InputMetadata]) -> None:
+    def _capture_path(
+        cls,
+        path: Path,
+        inputs: dict[Path, _InputMetadata],
+        ancestors: dict[Path, _AncestorMetadata],
+    ) -> None:
         if path in inputs:
             return
+        cls._capture_ancestors(path, ancestors)
         if len(inputs) >= _MAX_GUARD_INPUTS:
             raise ValueError("navigation artifact input set exceeds the bounded limit")
         metadata = _input_metadata(path)
         inputs[path] = metadata
         if metadata.kind == "directory":
             with os.scandir(path) as entries:
-                for entry in sorted(entries, key=lambda item: item.name):
-                    cls._capture_path(Path(entry.path), inputs)
+                for entry in entries:
+                    cls._capture_path(Path(entry.path), inputs, ancestors)
 
     def check(self) -> None:
-        current = _InputGuard.capture(tuple(self.inputs)).inputs
-        if current != self.inputs:
+        current = _InputGuard.capture(tuple(self.inputs))
+        if current.inputs != self.inputs or current.ancestors != self.ancestors:
             raise ValueError("navigation artifact inputs changed; load a new deployment")
 
 
@@ -363,7 +393,9 @@ def _flight_input_roots(
 
 def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
     path = Path(path).absolute()
+    config_input = _InputGuard.capture((path,))
     raw = read_document(path)
+    config_input.check()
     base_fields = {
         "schema_version",
         "bundle_directory",
@@ -455,15 +487,17 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
     execution["frames"] = tuple(frames)
     config = NavigationExecutionConfig(**execution)
     approval_path = local("approval_file")
-    approval_raw = read_document(approval_path)
     key_path = local("approval_key_file")
-    if key_path.stat().st_mode & 0o077:
+    startup_inputs = _InputGuard.capture((path, approval_path, key_path))
+    approval_raw = read_document(approval_path)
+    key_info = os.lstat(key_path)
+    if key_info.st_mode & 0o077:
         raise ValueError("navigation approval key must have mode 0600")
-    with key_path.open("rb") as stream:
-        key = stream.read(4097)
+    key = _read_bytes(key_path, "navigation approval key")
     if not 32 <= len(key) <= 4096:
         raise ValueError("navigation approval key must contain 32 through 4096 raw bytes")
     approval = NavigationApproval.verify(approval_raw, key)
+    startup_inputs.check()
     if approval.mode == "flight":
         _fields(raw, flight_fields, "flight navigation deployment")
     else:
@@ -474,6 +508,7 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         raise ValueError("flight navigation needs measured geometry authoring")
 
     def artifact() -> NavigationArtifact:
+        startup_inputs.check()
         if (
             content_digest(read_document(path)) != digest
             or read_document(approval_path) != approval_raw
@@ -482,13 +517,15 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         loaded = NavigationArtifact.from_geometry_directory(
             bundle, geometry, raw["accepted_map_versions"], tuple(slots), authoring=authoring
         )
-        return replace(
+        result = replace(
             loaded,
             zones=tuple(
                 replace(zone, owner_approved=zone.zone_id in permission.permitted_zone_ids)
                 for zone in loaded.zones
             ),
         )
+        startup_inputs.check()
+        return result
 
     if approval.mode != "flight":
         loaded = artifact()
