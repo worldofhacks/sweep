@@ -39,6 +39,13 @@ export function planSteps(intent: IntentV1, label: DeviceLabeller = formatDroneI
       'The aircraft adapter ends the pulse locally and commands zero velocity. The duration is not a distance guarantee.',
     ]
   }
+  if (intent.name === 'ground_velocity' && 'linear_mm_s' in intent.args) return [
+    `Send only to ${ids} on its current authenticated connection.`,
+    `Request forward ${intent.args.linear_mm_s} mm/s, yaw ${intent.args.angular_mrad_s} mrad/s for ${intent.args.duration_ms} ms.`,
+    'The runtime ends this pulse locally. These requested parameters do not guarantee a measured distance or angle.',
+    'The relay must still approve the configured clearance, pose, operator and local stop checks.',
+  ]
+  if (intent.name === 'come_home') return [`Request the configured return for ${ids}.`, 'The relay must resolve an approved return route; the console does not supply or invent one.']
   if (intent.name === 'capture_room' && 'pattern' in intent.args) {
     const args = intent.args
     return [

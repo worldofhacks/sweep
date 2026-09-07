@@ -90,11 +90,11 @@ def test_media_evidence_stays_bound_to_configured_device_and_expires():
     asyncio.run(monitor.poll_once())
     assert client.calls == ["ground1"]
     assert monitor.evidence(1, clock()) is None
-    first = monitor.evidence(11, clock()).last_frame_at
+    assert monitor.evidence(11, clock()).last_frame_at is None
     clock.advance(1000)
     client.paths["ground1"] = MediaPathObservation(online=True, inbound_bytes=200)
     asyncio.run(monitor.poll_once())
-    assert monitor.evidence(11, clock()).last_frame_at > first
+    assert monitor.evidence(11, clock()).last_frame_at == clock()
     clock.advance(3001)
     assert monitor.evidence(11, clock()).fresh is False
 
@@ -114,3 +114,193 @@ def test_override_cannot_alias_another_devices_default_identity(kwargs):
             node_types={1: NodeType.GROUND, 11: NodeType.GROUND},
             **kwargs,
         )
+
+
+def test_two_onboard_cameras_keep_independent_evidence_and_disconnect(tmp_path):
+    from media.streams import CameraStream
+
+    clock = MutableClock()
+    cameras = {
+        11: (CameraStream("front", "Front", "g01-front"), CameraStream("rear", "Rear", "g01-rear"))
+    }
+    client = FakePathClient()
+    monitor = MediaMonitor(client, clock=clock, drone_ids=(11,), cameras=cameras)
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={11: ADAPTER_KEY},
+        node_types={11: NodeType.GROUND},
+        device_units={11: 1},
+        media_cameras=cameras,
+        log_dir=tmp_path,
+    )
+    runtime = RelayRuntime(settings, clock=clock, media_monitor=monitor)
+    session = runtime.session(SESSION)
+    principal = Principal("adapter", 11, ADAPTER_KEY)
+    session.process_frame(
+        membership_payload(
+            action="join",
+            event_id="camera-join",
+            drone_id=11,
+            node_type="ground",
+            capabilities=["ground_drive"],
+        ),
+        principal,
+    )
+    client.paths["g01-front"] = MediaPathObservation(online=True, inbound_bytes=100)
+    asyncio.run(monitor.poll_once())
+    assert session.current_state()["drones"][0]["cameras"][0]["status"] == "unreported"
+    clock.advance(1000)
+    client.paths["g01-front"] = MediaPathObservation(online=True, inbound_bytes=200)
+    asyncio.run(monitor.poll_once())
+    projected = session.current_state()["drones"][0]["cameras"]
+    assert [(camera["camera_id"], camera["status"]) for camera in projected] == [
+        ("front", "live"),
+        ("rear", "offline"),
+    ]
+    clock.advance(1000)
+    client.paths["g01-rear"] = MediaPathObservation(online=True, inbound_bytes=250)
+    asyncio.run(monitor.poll_once())
+    assert session.current_state()["drones"][0]["cameras"][1]["status"] == "unreported"
+    clock.advance(1000)
+    client.paths["g01-rear"] = MediaPathObservation(online=True, inbound_bytes=350)
+    asyncio.run(monitor.poll_once())
+    projected = session.current_state()["drones"][0]["cameras"]
+    assert projected[1]["last_frame_at"] > projected[0]["last_frame_at"]
+    session.handle_adapter_disconnect(drone_id=11, connection_epoch=1)
+    assert all(
+        camera["status"] == "offline" for camera in session.current_state()["drones"][0]["cameras"]
+    )
+
+
+def test_camera_config_rejects_alias_of_another_devices_primary():
+    from media.streams import CameraStream
+
+    with pytest.raises(SettingsError, match="unique"):
+        RelaySettings(
+            relay_token=CONSOLE_KEY,
+            adapter_keys={1: ADAPTER_KEY, 11: ADAPTER_KEY + b"different"},
+            media_cameras={11: (CameraStream("front", "Front", "drone1"),)},
+        )
+
+
+def test_one_camera_timeout_does_not_freeze_another_camera():
+    from media.streams import CameraStream
+    from relay.media import MediaUnreachable
+
+    class PartialFailure(FakePathClient):
+        async def read_path(self, name):
+            if name == "rear":
+                raise MediaUnreachable("secondary offline")
+            return await super().read_path(name)
+
+    clock = MutableClock()
+    client = PartialFailure()
+    monitor = MediaMonitor(
+        client,
+        clock=clock,
+        drone_ids=(11,),
+        cameras={
+            11: (
+                CameraStream("front", "Front", "front"),
+                CameraStream("rear", "Rear", "rear"),
+            )
+        },
+    )
+    client.paths["front"] = MediaPathObservation(True, 100)
+    assert asyncio.run(monitor.poll_once()) is False
+    assert monitor.camera_evidence(11, "front", clock()).last_frame_at is None
+    clock.advance(1000)
+    client.paths["front"] = MediaPathObservation(True, 200)
+    assert asyncio.run(monitor.poll_once()) is False
+    assert monitor.camera_evidence(11, "front", clock()).last_frame_at == clock()
+    assert monitor.camera_evidence(11, "rear", clock()) is None
+
+
+def test_camera_evidence_cannot_cross_a_connection_epoch():
+    from relay.contracts import Membership
+    from relay.media import MediaEvidence, project_camera_video
+
+    result = project_camera_video(
+        membership=Membership.REGISTERED,
+        epoch_started_at=2000,
+        now_ms=2500,
+        evidence=MediaEvidence(True, 1500, 2500, True),
+    )
+    assert result == {"status": "unreported", "last_frame_at": None}
+
+
+@pytest.mark.parametrize(
+    "evidence,epoch,now",
+    [
+        ((True, None, 2000, True), 1000, 2000),
+        ((True, 1900, 2100, True), 1000, 2000),
+        ((True, 2100, 2000, True), 1000, 2000),
+        ((True, 1900, 2000, False), 1000, 2000),
+        ((True, 2000, 8000, True), 1000, 8000),
+        ((True, 1500, 2500, True), 2000, 2500),
+    ],
+)
+def test_camera_projection_rejects_missing_future_stale_or_pre_epoch_progress(evidence, epoch, now):
+    from relay.contracts import Membership
+    from relay.media import MediaEvidence, project_camera_video
+
+    result = project_camera_video(
+        membership=Membership.READY,
+        epoch_started_at=epoch,
+        now_ms=now,
+        evidence=MediaEvidence(*evidence),
+    )
+    assert result["status"] == "unreported"
+
+
+def test_legacy_runtime_mapping_uses_same_progress_epoch_and_stall_guards(tmp_path):
+    clock = MutableClock()
+    client = FakePathClient()
+    monitor = MediaMonitor(client, clock=clock, drone_ids=(11,), streams={11: "ground1"})
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={11: ADAPTER_KEY},
+        node_types={11: NodeType.GROUND},
+        media_streams={11: "ground1"},
+        log_dir=tmp_path,
+    )
+    runtime = RelayRuntime(settings, clock=clock, media_monitor=monitor)
+    session = runtime.session(SESSION)
+    principal = Principal("adapter", 11, ADAPTER_KEY)
+
+    def join(event_id):
+        session.process_frame(
+            membership_payload(
+                action="join",
+                event_id=event_id,
+                drone_id=11,
+                timestamp=clock(),
+                node_type="ground",
+                capabilities=["ground_drive"],
+            ),
+            principal,
+        )
+
+    def camera():
+        return session.current_state()["drones"][0]["cameras"][0]
+
+    join("legacy-camera-join")
+    client.paths["ground1"] = MediaPathObservation(True, 100)
+    asyncio.run(monitor.poll_once())
+    assert camera()["stream"] == "ground1"
+    assert camera()["status"] == "unreported"
+    clock.advance(1000)
+    client.paths["ground1"] = MediaPathObservation(True, 200)
+    asyncio.run(monitor.poll_once())
+    assert camera()["status"] == "live"
+    clock.advance(5001)
+    asyncio.run(monitor.poll_once())
+    assert camera()["status"] == "unreported"
+    session.handle_adapter_disconnect(drone_id=11, connection_epoch=1)
+    assert camera()["status"] == "offline"
+    join("legacy-camera-rejoin")
+    assert camera()["status"] == "unreported"
+    clock.advance(1000)
+    client.paths["ground1"] = MediaPathObservation(True, 300)
+    asyncio.run(monitor.poll_once())
+    assert camera()["status"] == "live"

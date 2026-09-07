@@ -4,6 +4,7 @@ import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.flight.FlightConfig
@@ -209,7 +210,7 @@ class FlightExecutorTest {
                 assertEquals("watchdog_hold", hold.str("reason"))
                 assertTrue(hold.str("detail").contains("retryable"))
                 await("loop in hold") { node.executor.status.value.phase == "watchdog_hold" }
-                assertTrue(node.aircraft.model.virtualStickEnabled, "neutral sticks keep flowing during hold")
+                assertFalse(node.aircraft.model.virtualStickEnabled, "watchdog hold disables virtual stick")
                 stub.awaitFrame("node_status") { it.str("watchdog_state") == "hold" }
                 stub.awaitFrame("node_status") { it.str("watchdog_state") == "failsafe" }
                 await("failsafe landing") { node.executor.status.value.landingReason == "watchdog_failsafe" || node.aircraft.snapshot.value.state == FlightStates.LANDED }
@@ -341,7 +342,7 @@ class FlightExecutorTest {
         await("virtual stick enabled") { aircraft.model.virtualStickEnabled }
         executor.close()
         assertTrue(!aircraft.model.virtualStickEnabled, "virtual stick released when the ticker stopped; log:\n" + logs.joinToString("\n"))
-        assertTrue(logs.any { it.contains("flight loop stopped with virtual stick enabled") }, logs.joinToString("\n"))
+        assertTrue(logs.any { it.contains("flight loop stopped while virtual stick could be enabled") }, logs.joinToString("\n"))
     }
     @Test
     fun `authorized route uses the executor and stale control evidence cannot restart it`() {

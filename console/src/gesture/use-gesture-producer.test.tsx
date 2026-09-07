@@ -1,3 +1,4 @@
+import { fieldGroundPose, fieldGroundState } from '../testing/field-ground'
 import { act, render } from '@testing-library/react'
 import { useEffect } from 'react'
 import { describe, expect, test } from 'vitest'
@@ -472,5 +473,42 @@ describe('mixed fleet gestures', () => {
     hold(null, 250)
     hold('Thumb_Up', 450)
     expect(clients.webcam?.sent[0]).toMatchObject({ name: 'formation_next', selection: [1, 11, 12], confirm: true })
+  })
+})
+
+
+describe('ground gesture confirmation through the real controller', () => {
+  test('dwell drafts a bounded ground pulse, neutral then thumb up sends only on webcam', async () => {
+    const { rig, clients, get, hold, enable } = await mount({ profile: 'ground' })
+    const t = rig.dependencies.clock.wall()
+    act(() => { clients.console.emitServer(fieldGroundState(t, session)); clients.console.emitServer(fieldGroundPose(t, session)); clients.console.emitServer(fieldGroundState(t + 1, session)) })
+    await enable()
+    hold('Pointing_Up', 650)
+    const draft = get().control.pendingRequest?.intent
+    expect(draft).toMatchObject({ name: 'ground_velocity', selection: [11], source: 'webcam', confirm: false,
+      args: { linear_mm_s: 80, angular_mrad_s: 0, duration_ms: 250 } })
+    expect(clients.webcam?.sent).toEqual([])
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toEqual([])
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({ ...draft, t: expect.any(Number), confirm: true })
+    expect(clients.console.sent).toEqual([])
+    expect(clients.keyboard.sent).toEqual([])
+  })
+
+  test('loss of drive authority after dwell prevents gesture confirmation', async () => {
+    const { rig, clients, get, hold, enable } = await mount({ profile: 'ground' })
+    const t = rig.dependencies.clock.wall()
+    act(() => { clients.console.emitServer(fieldGroundState(t, session)); clients.console.emitServer(fieldGroundPose(t, session)); clients.console.emitServer(fieldGroundState(t + 1, session)) })
+    await enable(); hold('Victory', 650)
+    expect(get().control.pendingRequest?.intent.name).toBe('ground_velocity')
+    const next = fieldGroundState(rig.dependencies.clock.wall(), session)
+    next.drones[0].control_authority = false
+    act(() => { clients.console.emitServer(next) })
+    hold(null, 250); hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toEqual([])
+    expect(clients.console.sent).toEqual([])
   })
 })

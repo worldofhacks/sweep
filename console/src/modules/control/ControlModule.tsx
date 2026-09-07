@@ -1,3 +1,4 @@
+import { GroundPane } from './GroundPane'
 import { NavigationPane } from './navigation/NavigationPane'
 import { useState } from 'react'
 import { captureGuidance } from '../devices/telemetry'
@@ -12,11 +13,12 @@ import { RequestsPane } from './RequestsPane'
 import { SwarmPane } from './SwarmPane'
 import type { CaptureReadiness } from './controls'
 
-export type ControlPaneId = 'swarm' | 'navigation' | 'capture' | 'commands' | 'requests' | 'fleet'
+export type ControlPaneId = 'swarm' | 'ground' | 'navigation' | 'capture' | 'commands' | 'requests' | 'fleet'
 
 const PANES: PaneTab[] = [
   { id: 'swarm', label: 'Swarm' },
   { id: 'navigation', label: 'Navigate' },
+  { id: 'ground', label: 'Ground' },
   { id: 'capture', label: 'Capture' },
   { id: 'commands', label: 'Commands' },
   { id: 'requests', label: 'Requests' },
@@ -70,6 +72,7 @@ export function ControlModule({
           onFormationPreview={setFormationPreview}
         />
       )}
+      {pane === 'ground' && <GroundPane controller={controller} />}
       {pane === 'navigation' && <NavigationPane state={controller.state} snapshot={controller.navigation}
         now={now()} onPreview={(zoneId) => { void controller.prepareNavigation(zoneId) }}
         onDestinationChange={controller.invalidateNavigation} verification={controller.navigationVerification}

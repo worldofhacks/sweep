@@ -28,8 +28,14 @@ class FakeFlightModel(
     @Volatile
     var connected: Boolean = true
     var enableResult: PortResult = PortResult.Ok
+    var disableResult: PortResult = PortResult.Ok
     var takeoffResult: PortResult = PortResult.Ok
+    var stopTakeoffResult: PortResult = PortResult.Ok
     var landingResult: PortResult = PortResult.Ok
+    var stopTakeoffCalls = 0
+        private set
+    var disableVirtualStickCalls = 0
+        private set
 
     /**
      * How many [advance] calls an [enableVirtualStick] waits before it answers: 0 answers at
@@ -37,9 +43,13 @@ class FakeFlightModel(
      * test can put the loop in `enabling_virtual_stick` across ticks.
      */
     var deferEnableTicks: Int = 0
+    var deferDisableTicks: Int = 0
+    var enableSetsVirtualStickBeforeResult = false
 
     private var pendingEnable: ((PortResult) -> Unit)? = null
     private var pendingEnableTicks = 0
+    private var pendingDisable: ((PortResult) -> Unit)? = null
+    private var pendingDisableTicks = 0
 
     var xEast = 0.0
         private set
@@ -117,6 +127,7 @@ class FakeFlightModel(
 
     override fun enableVirtualStick(onResult: (PortResult) -> Unit) {
         if (deferEnableTicks > 0) {
+            if (enableSetsVirtualStickBeforeResult) virtualStickEnabled = true
             pendingEnable = onResult
             pendingEnableTicks = deferEnableTicks
             return
@@ -135,10 +146,30 @@ class FakeFlightModel(
     }
 
     override fun disableVirtualStick(onResult: (PortResult) -> Unit) {
-        virtualStickEnabled = false
-        advancedMode = false
-        commanded = BodyVelocity.ZERO
-        onResult(PortResult.Ok)
+        disableVirtualStickCalls += 1
+        if (deferDisableTicks > 0) {
+            pendingDisable = onResult
+            pendingDisableTicks = deferDisableTicks
+            return
+        }
+        answerDisable(onResult)
+    }
+
+    fun completePendingDisable() {
+        pendingDisable?.let { waiting ->
+            pendingDisable = null
+            answerDisable(waiting)
+        }
+    }
+
+    private fun answerDisable(onResult: (PortResult) -> Unit) {
+        val result = disableResult
+        if (result == PortResult.Ok) {
+            virtualStickEnabled = false
+            advancedMode = false
+            commanded = BodyVelocity.ZERO
+        }
+        onResult(result)
     }
 
     override fun setAdvancedMode(enabled: Boolean) {
@@ -169,6 +200,23 @@ class FakeFlightModel(
         onResult(result)
     }
 
+    override fun stopTakeoff(onResult: (PortResult) -> Unit) {
+        stopTakeoffCalls += 1
+        if (!connected) {
+            onResult(PortResult.Failed("aircraft not connected"))
+            return
+        }
+        val result = stopTakeoffResult
+        if (result == PortResult.Ok) {
+            takingOff = false
+            motorsOn = false
+            landing = false
+            zUp = 0.0
+            vUp = 0.0
+        }
+        onResult(result)
+    }
+
     override fun startLanding(onResult: (PortResult) -> Unit) {
         if (!connected) {
             onResult(PortResult.Failed("aircraft not connected"))
@@ -193,6 +241,13 @@ class FakeFlightModel(
             if (pendingEnableTicks <= 0) {
                 pendingEnable = null
                 answerEnable(waiting)
+            }
+        }
+        pendingDisable?.let { waiting ->
+            pendingDisableTicks -= 1
+            if (pendingDisableTicks <= 0) {
+                pendingDisable = null
+                answerDisable(waiting)
             }
         }
         val previous = lastAdvanceMs

@@ -21,7 +21,7 @@ export function GroundObservation({ device, now }: { device: RelayAircraftState;
       {telemetry && <p>{current(ground.telemetry?.t_ingest) ? 'Current telemetry' : 'Last reported telemetry · stale'} · battery {formatPercent(telemetry.battery)} · link {formatPercent(telemetry.link)} · quality {formatPercent(telemetry.pos_quality)} · state {telemetry.state}</p>}
       {telemetry && <p>Local odometry · {telemetry.position.frame} · x {telemetry.position.x_m.toFixed(2)} m · y {telemetry.position.y_m.toFixed(2)} m · z {telemetry.position.z_m.toFixed(2)} m</p>}
       <p>{scan ? `${current(ground.scan?.t_ingest) ? 'Current' : 'Last reported · stale'} LiDAR · ${ground.scan?.frame} · ${ranges.length}/${scan.ranges_m.length} returns${ranges.length ? ` · closest ${Math.min(...ranges).toFixed(2)} m` : ''}` : 'LiDAR scan unreported'}</p>
-      <p>Local observations do not establish a world position or enable motion.</p>
+      <p>Local observations do not establish a world position. Motion also requires current relay readiness, drive authority and configured safety checks.</p>
     </div>
   )
 }

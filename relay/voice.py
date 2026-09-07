@@ -17,7 +17,9 @@ import av
 import httpx
 
 from arbiter.safety import CONFIRMATION_REQUIRED_INTENTS
-from relay.intent_v1 import AcceptedIntent, validate_intent
+from language.ground import ground_facts
+from relay.capabilities import C1_CAPABILITY_PROFILE, IntentName, with_ground_capabilities
+from relay.intent_v1 import MAX_INTENT_DRONE_IDS, AcceptedIntent, validate_intent
 from relay.voice_telemetry import VoiceTraceSink, get_default_voice_trace_sink
 
 WHISPER_MODEL = "whisper-1"
@@ -537,10 +539,19 @@ def _validate_voice_plan_step(step: VoicePlanStep, index: int) -> None:
         "mode": step.mode,
         "confirm": True,
     }
-    validated = validate_intent(candidate)
+    # Schema ceiling only; the compiler separately binds the deployment profile.
+    validated = validate_intent(
+        candidate, capability_profile=with_ground_capabilities(C1_CAPABILITY_PROFILE)
+    )
     if not isinstance(validated, AcceptedIntent):
         raise ValueError("voice plan step is not a canonical Intent v1 proposal")
-    if step.confirm_required != (validated.intent.name in CONFIRMATION_REQUIRED_INTENTS):
+    # COME_HOME is target-specific: ground return requires confirmation,
+    # while aircraft retains the C1 metadata. The compiler has the roster
+    # needed to choose; this standalone DTO parser does not carry that context.
+    if validated.intent.name is not IntentName.COME_HOME and step.confirm_required != (
+        validated.intent.name in CONFIRMATION_REQUIRED_INTENTS
+        or validated.intent.name is IntentName.GROUND_VELOCITY
+    ):
         raise ValueError("voice plan step confirmation policy differs from the arbiter")
 
 
@@ -760,7 +771,7 @@ def compiler_relay_state(raw: object) -> dict[str, object]:
         raise ValueError("relay state requires safety flags")
     selection = _positive_ids(raw.get("selection"))
     drones_raw = raw.get("drones")
-    if not isinstance(drones_raw, list) or len(drones_raw) > 4:
+    if not isinstance(drones_raw, list) or len(drones_raw) > MAX_INTENT_DRONE_IDS:
         raise ValueError("relay state requires a bounded drone list")
     drones: list[dict[str, object]] = []
     known_ids: set[int] = set()
@@ -788,6 +799,7 @@ def compiler_relay_state(raw: object) -> dict[str, object]:
             not isinstance(capability, str) for capability in capabilities
         ):
             raise ValueError("relay adapter capabilities are invalid")
+        ground = ground_facts(item)
         drones.append(
             {
                 "drone_id": drone_id,
@@ -795,7 +807,19 @@ def compiler_relay_state(raw: object) -> dict[str, object]:
                 "selectable": selectable,
                 "flight_state": flight_state,
                 "camera_patterns": sorted(camera_patterns),
-                "adapter_capabilities": ["flight"] if "flight" in capabilities else [],
+                "adapter_capabilities": (["flight"] if "flight" in capabilities else [])
+                + (["ground_drive"] if ground is not None and ground["drive_available"] else []),
+                **(
+                    {
+                        "node_type": "ground",
+                        "connection_epoch": ground["connection_epoch"],
+                        "control_authority": ground["control_authority"],
+                        "unit": ground["unit"],
+                        "ground_readiness": {"source_id": ground["source_id"]},
+                    }
+                    if ground is not None
+                    else {}
+                ),
             }
         )
     if any(drone_id not in known_ids for drone_id in selection):
@@ -832,6 +856,10 @@ def compiler_relay_state(raw: object) -> dict[str, object]:
             raise ValueError("relay capability profile advertisement is invalid")
         grounded["capability_profile"] = profile
         grounded["enabled_intent_names"] = sorted(set(enabled))
+        if "requires_home_pose" in raw:
+            if not isinstance(raw["requires_home_pose"], bool):
+                raise ValueError("relay home pose policy is invalid")
+            grounded["requires_home_pose"] = raw["requires_home_pose"]
     pending = raw.get("pending")
     if (
         isinstance(pending, Mapping)

@@ -4,11 +4,16 @@ Capability area: Autonomy. Milestones: M1 (`sim`), M2 (hardware).
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to the adapter interface name one change owner and require cross-review.
 
-The accepted MVP has two concrete implementations (PRD Appendix C):
+Sweep adds aerial and ground devices through vendor adapters in one console. Each ground
+robot has two cameras and one LiDAR; each aircraft has one camera and a reported depth/
+proximity sensor whose interface remains unverified. See [modular fleet integration](../docs/modular-fleet.md).
+
+Current implementations and isolated test adapters:
 
 | Package | Target | Milestone |
 |---|---|---|
 | `sim/` | Kinematic deterministic flight and camera fixtures for registry sizes 1–4 now, then 4–6; the first-class CI implementation before hardware | M1 |
+| `ohmni/` | Canonical ground observations, mandatory LiDAR avoidance, bounded drive and approved return; hardware qualification per robot | Hardware |
 | `dji_mini3/` | one Android node per Mini 3 and RC-N1 pair via the DJI Mobile SDK, proven on one exact hardware combination before duplication; the relay-side remote adapter and a fake node land first | M2 |
 
 ## Frozen protocols and dispatch

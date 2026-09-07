@@ -2,9 +2,10 @@
 
 The projection is exactly ``{"status": live|offline|unreported, "last_frame_at": int|null}``,
 the shape the console contract (``console/src/relay/contract.ts`` ``MediaStreamState``) accepts.
-MediaMTX decides the status while its API answers, because it is what the console can play;
-when it is unreachable, failing, or unconfigured the projection degrades to the node's own
-``node_status.video_publish_state`` and never upgrades anything to live on its own.
+Runtime camera projection requires current-epoch MediaMTX byte progress. It describes
+producer transport evidence; browser decoding is a separate status. The legacy registry
+projection retains node claims for compatibility, while every runtime camera uses the
+stricter ``project_camera_video`` projection.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from typing import Protocol
 
 import httpx
 
+from media.streams import CameraStream, validate_camera_mapping
 from relay.contracts import Membership, NodeStatusFrame, VideoPublishState
 
 _LOGGER = logging.getLogger(__name__)
@@ -120,6 +122,7 @@ class MediaEvidence:
 
 
 MediaEvidenceProvider = Callable[[int, int], MediaEvidence | None]
+CameraEvidenceProvider = Callable[[int, str, int], MediaEvidence | None]
 
 
 @dataclass(slots=True)
@@ -133,9 +136,8 @@ class _PathState:
 class MediaMonitor:
     """Polls MediaMTX path readiness on its own task and answers evidence reads at once.
 
-    The poll never runs inside the relay lock or the fan-out: readers get the last completed
-    cycle. A cycle counts only when every path answered; one timeout leaves the previous
-    evidence in place until it ages past ``stale_after_ms`` and the projection degrades.
+    Polling stays outside the relay lock. Each camera updates and expires independently;
+    a failed secondary path cannot freeze the primary feed.
     """
 
     def __init__(
@@ -147,6 +149,7 @@ class MediaMonitor:
         poll_interval_ms: int = 1_000,
         stale_after_ms: int = 3_000,
         streams: Mapping[int, str] | None = None,
+        cameras: Mapping[int, tuple[CameraStream, ...]] | None = None,
     ) -> None:
         if poll_interval_ms <= 0:
             raise ValueError("poll_interval_ms must be positive")
@@ -155,10 +158,28 @@ class MediaMonitor:
         self._client = client
         self._clock = clock
         self._drone_ids = tuple(drone_ids)
-        self._streams = dict(streams or {})
+        primary = dict(streams or {})
+        configured = (
+            cameras
+            if cameras is not None
+            else {
+                device_id: (
+                    CameraStream(
+                        "primary", "Primary camera", primary.get(device_id, stream_name(device_id))
+                    ),
+                )
+                for device_id in self._drone_ids
+            }
+        )
+        self._cameras = validate_camera_mapping(configured, set(self._drone_ids))
+        self._streams = {
+            (device_id, camera.camera_id): camera.stream
+            for device_id, entries in self._cameras.items()
+            for camera in entries
+        }
         self._poll_interval_s = poll_interval_ms / 1_000
         self._stale_after_ms = stale_after_ms
-        self._paths: dict[int, _PathState] = {}
+        self._paths: dict[tuple[int, str], _PathState] = {}
         self._reachable: bool | None = None
         self._task: asyncio.Task[None] | None = None
 
@@ -193,12 +214,9 @@ class MediaMonitor:
             await asyncio.sleep(self._poll_interval_s)
 
     async def poll_once(self) -> bool:
-        """Read every path once; return whether the whole cycle completed."""
+        """Read every configured device's path once; return whether the cycle completed."""
         results = await asyncio.gather(
-            *(
-                self._client.read_path(self._streams.get(drone_id, stream_name(drone_id)))
-                for drone_id in self._drone_ids
-            ),
+            *(self._client.read_path(stream) for stream in self._streams.values()),
             return_exceptions=True,
         )
         now = self._clock()
@@ -206,17 +224,20 @@ class MediaMonitor:
             if isinstance(result, asyncio.CancelledError):
                 raise result
         failures = [result for result in results if isinstance(result, Exception)]
-        if failures:
-            self._note_reachable(False, failures[0])
-            return False
-        for drone_id, result in zip(self._drone_ids, results, strict=True):
+        for key, result in zip(self._streams, results, strict=True):
+            if isinstance(result, Exception):
+                continue
             observation = result if isinstance(result, MediaPathObservation) else None
-            self._paths[drone_id] = self._merge(self._paths.get(drone_id), observation, now)
-        self._note_reachable(True, None)
-        return True
+            self._paths[key] = self._merge(self._paths.get(key), observation, now)
+        self._note_reachable(not failures, failures[0] if failures else None)
+        return not failures
 
     def evidence(self, drone_id: int, now_ms: int) -> MediaEvidence | None:
-        state = self._paths.get(drone_id)
+        entries = self._cameras.get(drone_id, ())
+        return None if not entries else self.camera_evidence(drone_id, entries[0].camera_id, now_ms)
+
+    def camera_evidence(self, drone_id: int, camera_id: str, now_ms: int) -> MediaEvidence | None:
+        state = self._paths.get((drone_id, camera_id))
         if state is None:
             return None
         age_ms = now_ms - state.observed_at
@@ -238,17 +259,19 @@ class MediaMonitor:
                 online=False, last_frame_at=last_frame_at, observed_at=now, inbound_bytes=None
             )
         inbound = observation.inbound_bytes
-        # Bytes that grew since the last read are frames; an unchanged count is a stalled path,
-        # still online but with an ageing last frame. Without a byte count, online is the evidence.
+        # A ready publisher and its first byte count establish only a baseline.
+        # Require observed byte progress before dating media; this is transport
+        # evidence, not proof that a browser decoded a video frame. A reconnect,
+        # unavailable counter or counter reset requires a new baseline too.
         if (
             inbound is None
             or previous is None
+            or not previous.online
             or previous.inbound_bytes is None
-            # A restarted path can reset the counter without an offline sample between
-            # polls. Any counter change is therefore fresh media evidence; equality is
-            # the only observation that proves a stall.
-            or inbound != previous.inbound_bytes
+            or inbound < previous.inbound_bytes
         ):
+            last_frame_at = None
+        elif inbound > previous.inbound_bytes:
             last_frame_at = now
         return _PathState(
             online=True, last_frame_at=last_frame_at, observed_at=now, inbound_bytes=inbound
@@ -280,10 +303,10 @@ def project_video(
         candidates.append(evidence.last_frame_at)
     known = [value for value in candidates if value is not None]
     last_frame_at = max(known) if known else None
-    if evidence is not None and evidence.fresh:
-        status = "live" if evidence.online else "offline"
-    elif membership is Membership.DISCONNECTED:
+    if membership in {Membership.DISCONNECTED, Membership.LEAVING}:
         status = "offline" if last_frame_at is not None else "unreported"
+    elif evidence is not None and evidence.fresh:
+        status = "live" if evidence.online else "offline"
     elif node_status is None:
         status = "unreported"
     elif node_status.video_publish_state is VideoPublishState.PUBLISHING:
@@ -291,3 +314,32 @@ def project_video(
     else:
         status = "offline"
     return {"status": status, "last_frame_at": last_frame_at}
+
+
+def project_camera_video(
+    *,
+    membership: Membership,
+    epoch_started_at: int,
+    now_ms: int,
+    evidence: MediaEvidence | None,
+) -> dict[str, object]:
+    """One camera's current-epoch byte progress; node claims cannot grant it liveness."""
+    if membership in {Membership.DISCONNECTED, Membership.LEAVING}:
+        return {"status": "offline", "last_frame_at": None}
+    current = evidence
+    if current is not None and (
+        not epoch_started_at <= current.observed_at <= now_ms
+        or current.last_frame_at is not None
+        and not epoch_started_at <= current.last_frame_at <= current.observed_at
+    ):
+        current = None
+    result = project_video(
+        membership=membership,
+        node_status=None,
+        node_publishing_at=None,
+        evidence=current,
+    )
+    frame = result["last_frame_at"]
+    if result["status"] == "live" and (frame is None or not 0 <= now_ms - frame <= 5000):
+        result["status"] = "unreported"
+    return result

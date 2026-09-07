@@ -204,6 +204,7 @@ class RelayLinkTest {
                 assertEquals("nominal", status.body.watchdogState.wire)
                 assertEquals("stopped", status.body.videoPublishState.wire)
                 assertEquals(81, status.body.phoneBatteryPercent)
+                assertNull(status.body.localHeight)
 
                 val state = link.state.value
                 assertEquals(RelayConnection.CONNECTED, state.connection)
@@ -220,6 +221,61 @@ class RelayLinkTest {
                 assertTrue(stamps.zipWithNext().all { (earlier, later) -> earlier <= later }, "timestamps regress: $stamps")
                 val ids = stub.frames.drop(1).map { it.str("event_id") }
                 assertEquals(ids.size, ids.toSet().size, "event ids repeat")
+            }
+        }
+    }
+
+    @Test
+    fun `node status reports the age of a received flight controller altitude`() {
+        StubRelay(key).use { stub ->
+            val clock = SteppedClock(1_000)
+            val aircraft = FakeAircraft(connected = true)
+            aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 1.8, receivedAtMonotonicMs = 930)) }
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, monotonicNowMs = clock::nowMs, timing = timing).use { link ->
+                link.start()
+                val status = NodeStatusFrame.parse(stub.awaitFrame("node_status"))
+
+                assertEquals(1.8, status.body.localHeight?.zM)
+                assertEquals("flight_controller_altitude", status.body.localHeight?.source?.wire)
+                assertEquals(70, status.body.localHeight?.ageMs)
+            }
+        }
+    }
+
+    @Test
+    fun `node status omits a future or stale local height receipt`() {
+        listOf(399L, 1_001L).forEach { receivedAtMs ->
+            StubRelay(key).use { stub ->
+                val clock = SteppedClock(1_000)
+                val aircraft = FakeAircraft(connected = true)
+                aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 0.0, receivedAtMonotonicMs = receivedAtMs)) }
+                RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, monotonicNowMs = clock::nowMs, timing = timing).use { link ->
+                    link.start()
+                    assertNull(NodeStatusFrame.parse(stub.awaitFrame("node_status")).body.localHeight)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `node status publishes an identical local height when its receipt is newer`() {
+        StubRelay(key).use { stub ->
+            val clock = SteppedClock(1_000)
+            val aircraft = FakeAircraft(connected = true)
+            aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 0.0, receivedAtMonotonicMs = 900)) }
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, monotonicNowMs = clock::nowMs, timing = timing).use { link ->
+                link.start()
+                val initial = NodeStatusFrame.parse(stub.awaitFrame("node_status"))
+                assertEquals(100, initial.body.localHeight?.ageMs)
+                val initialCount = stub.frames("node_status").size
+
+                aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 0.0, receivedAtMonotonicMs = 1_900)) }
+                clock.advance(1_000)
+
+                val statuses = stub.awaitFrames("node_status", initialCount + 1)
+                val refreshed = NodeStatusFrame.parse(statuses.last())
+                assertEquals(0.0, refreshed.body.localHeight?.zM)
+                assertEquals(100, refreshed.body.localHeight?.ageMs)
             }
         }
     }
@@ -292,7 +348,7 @@ class RelayLinkTest {
         StubRelay(key, emitControlHeartbeats = false).use { stub ->
             val aircraft = FakeAircraft(connected = true)
             link(stub, aircraft).use { link ->
-                await("joined") { link.state.value.joined }
+                await("ready") { link.state.value.membership == "ready" }
                 stub.sendNavigationAuthorization()
                 stub.sendNavigationPose()
                 val command = stub.issueCommand(
@@ -315,7 +371,7 @@ class RelayLinkTest {
             val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
             val navigation = navigationAdmission()
             link(stub, aircraft, localizationPins = pins, navigationAdmission = navigation).use { link ->
-                await("joined") { link.state.value.joined }
+                await("ready") { link.state.value.membership == "ready" }
                 stub.sendNavigationAuthorization(signingKey = "wrong-key".toByteArray())
                 await("forged authorization drop") { logs.any { it.contains("navigation route authorization") } }
                 assertNull(link.state.value.navigationAuthorization)

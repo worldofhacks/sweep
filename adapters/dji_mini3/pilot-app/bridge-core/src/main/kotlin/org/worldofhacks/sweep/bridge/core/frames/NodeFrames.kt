@@ -369,11 +369,53 @@ data class NodeStatusBody(
     val videoPublishState: VideoPublishState,
     val phoneBatteryPercent: Int,
     val phoneThermalState: PhoneThermalState,
+    val localHeight: LocalHeight? = null,
 ) {
     init {
         require(phoneBatteryPercent in 0..100) { "phone_battery_percent must be between 0 and 100" }
         require(authorityChangeReason == null || Fields.isMachineCode(authorityChangeReason)) {
             "authority_change_reason must be snake_case"
+        }
+    }
+}
+
+/** A receipt-aged, takeoff-relative height reported by the flight controller. */
+data class LocalHeight(
+    val zM: Double,
+    val source: Source,
+    val ageMs: Long,
+) {
+    init {
+        require(zM.isFinite()) { "local_height.z_m must be finite" }
+        require(ageMs >= 0) { "local_height.age_ms must be non-negative" }
+    }
+
+    enum class Source(val wire: String) {
+        FLIGHT_CONTROLLER_ALTITUDE("flight_controller_altitude");
+
+        companion object {
+            fun fromWire(value: String): Source? = entries.firstOrNull { it.wire == value }
+        }
+    }
+
+    fun toJson(): JsonObject = Json.json(
+        "z_m" to zM,
+        "source" to source.wire,
+        "age_ms" to ageMs,
+    )
+
+    companion object {
+        private const val CODE = "invalid_node_status"
+
+        fun parse(json: JsonObject): LocalHeight {
+            Fields.exact(json, setOf("z_m", "source", "age_ms"), CODE)
+            val source = (json["source"] as? JsonString)?.let { Source.fromWire(it.value) }
+                ?: throw ContractError(CODE, "unknown local_height.source")
+            return LocalHeight(
+                zM = Fields.finiteNumber(json["z_m"], "local_height.z_m", CODE),
+                source = source,
+                ageMs = Fields.nonNegativeInt(json["age_ms"], "local_height.age_ms", CODE),
+            )
         }
     }
 }
@@ -386,22 +428,26 @@ data class NodeStatusFrame(
     val connectionEpoch: Int,
     val body: NodeStatusBody,
 ) {
-    fun toEvent(): JsonObject = Json.json(
-        "v" to Fields.PROTOCOL_VERSION,
-        "t" to t,
-        "type" to TYPE,
-        "event_id" to eventId,
-        "session" to session,
-        "drone_id" to droneId,
-        "connection_epoch" to connectionEpoch,
-        "virtual_stick_enabled" to body.virtualStickEnabled,
-        "control_authority" to body.controlAuthority,
-        "authority_change_reason" to body.authorityChangeReason,
-        "watchdog_state" to body.watchdogState.wire,
-        "video_publish_state" to body.videoPublishState.wire,
-        "phone_battery_percent" to body.phoneBatteryPercent,
-        "phone_thermal_state" to body.phoneThermalState.wire,
-    )
+    fun toEvent(): JsonObject {
+        val fields = linkedMapOf<String, Any?>(
+            "v" to Fields.PROTOCOL_VERSION,
+            "t" to t,
+            "type" to TYPE,
+            "event_id" to eventId,
+            "session" to session,
+            "drone_id" to droneId,
+            "connection_epoch" to connectionEpoch,
+            "virtual_stick_enabled" to body.virtualStickEnabled,
+            "control_authority" to body.controlAuthority,
+            "authority_change_reason" to body.authorityChangeReason,
+            "watchdog_state" to body.watchdogState.wire,
+            "video_publish_state" to body.videoPublishState.wire,
+            "phone_battery_percent" to body.phoneBatteryPercent,
+            "phone_thermal_state" to body.phoneThermalState.wire,
+        )
+        body.localHeight?.let { fields["local_height"] = it.toJson() }
+        return Json.json(*fields.map { it.toPair() }.toTypedArray())
+    }
 
     companion object {
         const val TYPE = "node_status"
@@ -413,7 +459,9 @@ data class NodeStatusFrame(
         )
 
         fun parse(json: JsonObject): NodeStatusFrame {
-            Fields.exact(json, FIELDS, CODE)
+            if (json.keys != FIELDS && json.keys != FIELDS + "local_height") {
+                throw ContractError(CODE, "frame fields do not match the v1 contract")
+            }
             Fields.envelope(json, TYPE, CODE)
             val watchdog = enumField(json["watchdog_state"], "watchdog_state") { NodeWatchdogState.fromWire(it) }
             val publish = enumField(json["video_publish_state"], "video_publish_state") { VideoPublishState.fromWire(it) }
@@ -439,6 +487,8 @@ data class NodeStatusFrame(
                     videoPublishState = publish,
                     phoneBatteryPercent = battery,
                     phoneThermalState = thermal,
+                    localHeight = (json["local_height"] as? JsonObject)?.let(LocalHeight::parse)
+                        ?: if ("local_height" in json.keys) throw ContractError(CODE, "local_height must be an object") else null,
                 ),
             )
         }

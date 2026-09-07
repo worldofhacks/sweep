@@ -26,6 +26,7 @@ const deps = { now: () => t, nextId: () => 'intent-1' }
 
 /** The exact args each control sends, per the relay's _parse_args. */
 const ENVELOPES: Record<ConsoleIntentName, { args: IntentArgs; selection: number[] }> = {
+  ground_velocity: { args: { linear_mm_s: 80, angular_mrad_s: 0, duration_ms: 250 }, selection: [11] },
   robot_peripheral: { args: { kind: 'screen', text: 'Ready for inspection' }, selection: [11] },
   camera_control: { args: { kind: 'photo' }, selection: [1] },
   body_pulse: { args: { forward_mm_s: 250, duration_ms: 500 }, selection: [1, 2] },

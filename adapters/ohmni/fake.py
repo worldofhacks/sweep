@@ -37,6 +37,14 @@ class FakeGroundDevice:
         self.stopped = not self.enabled
         return self.enabled
 
+    def pre_enable_refusal(self) -> str | None:
+        if not self.spotter_present:
+            return "spotter_missing"
+        return None if self.lidar_available else "lidar_missing"
+
+    def stop_confirmed(self) -> bool:
+        return self.stopped
+
     def stop(self) -> None:
         self._advance()
         self._motion = None

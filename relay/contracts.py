@@ -134,7 +134,13 @@ MAX_STORAGE_REMAINING_BYTES = (1 << 63) - 1
 # cross-language float representation, the same rule signed membership claims follow.
 COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingProxyType(
     {
-        CommandOperation.TAKEOFF: MappingProxyType({"z_mm": "integer"}),
+        CommandOperation.TAKEOFF: MappingProxyType(
+            {
+                "z_mm": "integer",
+                "maximum_height_mm": "optional_positive",
+                "max_local_height_age_ms": "optional_positive",
+            }
+        ),
         CommandOperation.GOTO: MappingProxyType(
             {
                 "x_mm": "integer",
@@ -652,7 +658,7 @@ class CaptureReadinessFrame:
 
 @dataclass(frozen=True, slots=True)
 class NodeStatusFrame:
-    """Node-authored bridge health; informational and never a readiness gate."""
+    """Node-authored bridge health and optional local-height evidence."""
 
     v: Literal[1]
     t: int
@@ -668,6 +674,7 @@ class NodeStatusFrame:
     video_publish_state: VideoPublishState
     phone_battery_percent: int
     phone_thermal_state: PhoneThermalState
+    local_height: LocalHeightFrame | None = None
 
     def to_event(self) -> dict[str, object]:
         return {
@@ -681,18 +688,23 @@ class NodeStatusFrame:
             **self._payload(),
         }
 
-    def state_payload(self) -> dict[str, object]:
+    def state_payload(self, *, reported_at_ms: int | None = None) -> dict[str, object]:
         """Return the per-aircraft projection without transport-only fields."""
         return {
             "v": self.v,
             "t": self.t,
             "type": self.type,
             "drone_id": self.drone_id,
-            **self._payload(),
+            **self._payload(
+                reported_at_ms=self.t if reported_at_ms is None else reported_at_ms,
+                include_local_height=True,
+            ),
         }
 
-    def _payload(self) -> dict[str, object]:
-        return {
+    def _payload(
+        self, *, reported_at_ms: int | None = None, include_local_height: bool = False
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
             "virtual_stick_enabled": self.virtual_stick_enabled,
             "control_authority": self.control_authority,
             "authority_change_reason": self.authority_change_reason,
@@ -701,6 +713,24 @@ class NodeStatusFrame:
             "phone_battery_percent": self.phone_battery_percent,
             "phone_thermal_state": self.phone_thermal_state.value,
         }
+        if self.local_height is not None:
+            payload["local_height"] = {
+                **self.local_height.to_dict(),
+                **({"reported_at_ms": reported_at_ms} if reported_at_ms is not None else {}),
+            }
+        elif include_local_height:
+            payload["local_height"] = None
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class LocalHeightFrame:
+    z_m: float
+    source: Literal["flight_controller_altitude"]
+    age_ms: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {"z_m": self.z_m, "source": self.source, "age_ms": self.age_ms}
 
 
 def parse_membership_request(raw: object) -> MembershipRequest:
@@ -1239,6 +1269,20 @@ def parse_capture_readiness(raw: object) -> CaptureReadinessFrame:
     )
 
 
+def _local_height(value: object, code: str) -> LocalHeightFrame:
+    height = _mapping(value, code, "local_height must be an object")
+    _exact_fields(height, {"z_m", "source", "age_ms"}, code)
+    z_m = _finite_number(height["z_m"], "local_height.z_m", code)
+    source = height["source"]
+    if source != "flight_controller_altitude":
+        raise ContractError(code, "local_height.source is unsupported")
+    return LocalHeightFrame(
+        z_m=z_m,
+        source="flight_controller_altitude",
+        age_ms=_nonnegative_int(height["age_ms"], "local_height.age_ms", code),
+    )
+
+
 def parse_node_status(raw: object) -> NodeStatusFrame:
     code = "invalid_node_status"
     value = _mapping(raw, code, "node_status frame must be an object")
@@ -1253,6 +1297,8 @@ def parse_node_status(raw: object) -> NodeStatusFrame:
         "phone_battery_percent",
         "phone_thermal_state",
     }
+    if "local_height" in value:
+        fields = fields | {"local_height"}
     _exact_fields(value, fields, code)
     _common_envelope(value, expected_type="node_status", code=code)
     battery = _nonnegative_int(value["phone_battery_percent"], "phone_battery_percent", code)
@@ -1278,6 +1324,7 @@ def parse_node_status(raw: object) -> NodeStatusFrame:
         _enum(VideoPublishState, value["video_publish_state"], "video_publish_state", code),
         battery,
         _enum(PhoneThermalState, value["phone_thermal_state"], "phone_thermal_state", code),
+        None if "local_height" not in value else _local_height(value["local_height"], code),
     )
 
 
@@ -1567,16 +1614,16 @@ def _command_arguments(
 ) -> Mapping[str, int | str]:
     spec = COMMAND_ARGUMENT_FIELDS[operation]
     value = _mapping(raw, code, "command args must be an object")
-    optional = {field for field, kind in spec.items() if kind == "optional_id"}
+    optional = {field for field, kind in spec.items() if kind.startswith("optional_")}
     if not set(value).issuperset(set(spec) - optional) or not set(value).issubset(set(spec)):
         raise ContractError(code, f"{operation.value} arguments do not match the v1 contract")
     result: dict[str, int | str] = {}
     for field, kind in spec.items():
-        if kind == "optional_id" and field not in value:
+        if kind.startswith("optional_") and field not in value:
             continue
         if kind in {"id", "optional_id"}:
             result[field] = _nonempty_string(value[field], field, code)
-        elif kind == "positive":
+        elif kind in {"positive", "optional_positive"}:
             result[field] = _positive_int(value[field], field, code)
         elif kind == "ground_linear_mm_s":
             result[field] = _nonnegative_int(value[field], field, code)
@@ -1592,6 +1639,15 @@ def _command_arguments(
                 raise ContractError(code, f"{field} exceeds the ground duration cap")
         else:
             result[field] = _integer(value[field], field, code)
+    if operation is CommandOperation.TAKEOFF:
+        policy = {"maximum_height_mm", "max_local_height_age_ms"}
+        present = policy & set(result)
+        if present and (
+            present != policy
+            or not 0 < result["z_mm"] <= result["maximum_height_mm"] <= 2590
+            or result["max_local_height_age_ms"] > 500
+        ):
+            raise ContractError(code, "takeoff requires paired bounded supervised height policy")
     if operation is CommandOperation.GROUND_VELOCITY and (
         (result["linear_mm_s"] and result["angular_mrad_s"])
         or (not result["linear_mm_s"] and not result["angular_mrad_s"])

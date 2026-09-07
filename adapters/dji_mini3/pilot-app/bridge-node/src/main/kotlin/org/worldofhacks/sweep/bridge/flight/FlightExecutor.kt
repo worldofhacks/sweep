@@ -26,6 +26,7 @@ import org.worldofhacks.sweep.bridge.core.flight.FlightReason
 import org.worldofhacks.sweep.bridge.core.flight.FlightSettings
 import org.worldofhacks.sweep.bridge.core.flight.FlightStatus
 import org.worldofhacks.sweep.bridge.core.flight.LinkFacts
+import org.worldofhacks.sweep.bridge.core.flight.LocalHeightFacts
 import org.worldofhacks.sweep.bridge.core.flight.NavigationEvidence
 import org.worldofhacks.sweep.bridge.core.flight.PortResult
 import org.worldofhacks.sweep.bridge.core.flight.ReportSink
@@ -56,6 +57,7 @@ class FlightExecutor(
     private val aircraft: AircraftSource,
     private val fallback: CommandExecutor? = null,
     private val clock: Clock = SystemClock,
+    private val monotonicNowMs: () -> Long = clock::nowMs,
     config: FlightConfig = FlightConfig(),
     private val log: NodeLog = NodeLog { },
 ) : CommandExecutor, AutoCloseable {
@@ -65,7 +67,7 @@ class FlightExecutor(
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
 
     /** The pure loop; only touch it from [post]ed blocks (tests included). */
-    val controller = FlightController(PostingPort(port), clock, config) { line -> log.log("flight: $line") }
+    val controller = FlightController(PostingPort(port), clock, config, monotonicNowMs) { line -> log.log("flight: $line") }
 
     private val _status = MutableStateFlow(controller.status)
     val status: StateFlow<FlightStatus> = _status.asStateFlow()
@@ -100,10 +102,10 @@ class FlightExecutor(
             }
         } finally {
             // Only cancellation gets here; never leave Virtual Stick on with nobody streaming.
-            if (controller.virtualStickEnabled) {
+            if (controller.virtualStickMayBeEnabled) {
                 rawPort.sendStick(StickFrame.NEUTRAL)
                 rawPort.disableVirtualStick { }
-                log.log("flight loop stopped with virtual stick enabled: neutral sticks sent and virtual stick disabled")
+                log.log("flight loop stopped while virtual stick could be enabled: neutral sticks sent and virtual stick disabled")
             }
         }
     }
@@ -158,6 +160,8 @@ class FlightExecutor(
 
     fun startBench(label: String, frame: StickFrame, durationMs: Long, sink: ReportSink) = post { controller.startBench(label, frame, durationMs, sink) }
 
+    fun qualifyGroundedAuthority(sink: ReportSink) = post { controller.qualifyGroundedAuthority(sink) }
+
     fun stopBench() = post { controller.stopBench() }
 
     fun benchTakeoff(zMm: Long, sink: ReportSink) = post { controller.benchTakeoff(zMm, sink) }
@@ -192,6 +196,8 @@ class FlightExecutor(
 
         override fun startTakeoff(onResult: (PortResult) -> Unit) = inner.startTakeoff { result -> post { onResult(result) } }
 
+        override fun stopTakeoff(onResult: (PortResult) -> Unit) = inner.stopTakeoff { result -> post { onResult(result) } }
+
         override fun startLanding(onResult: (PortResult) -> Unit) = inner.startLanding { result -> post { onResult(result) } }
 
         override fun advance(nowMs: Long) = inner.advance(nowMs)
@@ -223,6 +229,7 @@ class FlightExecutor(
                 vyNorth = snapshot.vy,
                 vzUp = snapshot.vz,
                 yawDeg = snapshot.yawDeg,
+                localHeight = snapshot.localHeight?.let { LocalHeightFacts(it.zM, it.receivedAtMonotonicMs) },
             )
         }
 

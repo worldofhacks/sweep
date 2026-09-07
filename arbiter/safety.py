@@ -162,6 +162,8 @@ class SafetyConfig:
 
 
 class SafetyArbiter:
+    requires_world_positioning = True
+
     def __init__(self, config: SafetyConfig) -> None:
         self.config = config
 
@@ -261,7 +263,12 @@ class SafetyArbiter:
                     return armed_refusal
 
             if intent.name not in {IntentName.ESTOP, IntentName.HOLD, IntentName.LAND_ALL}:
-                authority_refusal = self._check_authority(intent.intent_id, snapshot, aircraft)
+                authority_refusal = self._check_authority(
+                    intent.intent_id,
+                    snapshot,
+                    aircraft,
+                    allow_landing_recovery=intent.name is IntentName.LAND,
+                )
                 if authority_refusal is not None:
                     return authority_refusal
 
@@ -663,7 +670,15 @@ class SafetyArbiter:
             if operator_refusal is not None:
                 return operator_refusal
             authority_refusal = self._check_authority(
-                command.intent_id, snapshot, aircraft, command
+                command.intent_id,
+                snapshot,
+                aircraft,
+                command,
+                allow_landing_recovery=(
+                    plan.intent_name is IntentName.LAND
+                    and plan.confirmed is True
+                    and command.operation is CommandOperation.LAND
+                ),
             )
             if authority_refusal is not None:
                 return authority_refusal
@@ -1724,8 +1739,17 @@ class SafetyArbiter:
         snapshot: FleetSnapshot,
         aircraft: AircraftState,
         command: Command | None = None,
+        *,
+        allow_landing_recovery: bool = False,
     ) -> Refusal | None:
-        if not aircraft.control_authority:
+        recovery = aircraft.landing_recovery
+        recovery_current = (
+            allow_landing_recovery
+            and recovery is not None
+            and not self.timestamp_exceeds_future_skew(snapshot, recovery.observed_at_ms)
+            and snapshot.now_ms - recovery.observed_at_ms <= self.config.max_link_age_ms
+        )
+        if not aircraft.control_authority and not recovery_current:
             return self._refusal_for(
                 intent_id,
                 snapshot,

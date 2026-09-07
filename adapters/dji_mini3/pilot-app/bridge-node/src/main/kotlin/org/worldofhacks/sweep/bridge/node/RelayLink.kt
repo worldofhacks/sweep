@@ -32,6 +32,7 @@ import org.worldofhacks.sweep.bridge.core.frames.ContractError
 import org.worldofhacks.sweep.bridge.core.frames.ControlHeartbeat
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
 import org.worldofhacks.sweep.bridge.core.frames.LifecycleStatus
+import org.worldofhacks.sweep.bridge.core.frames.LocalHeight
 import org.worldofhacks.sweep.bridge.core.frames.MembershipEvent
 import org.worldofhacks.sweep.bridge.core.frames.MembershipFrame
 import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
@@ -96,6 +97,7 @@ class RelayLink(
     private val executor: CommandExecutor,
     private val phone: PhoneStatusSource,
     private val clock: Clock = SystemClock,
+    private val monotonicNowMs: () -> Long = { System.nanoTime() / 1_000_000L },
     private val timing: LinkTiming = LinkTiming(),
     private val log: NodeLog = NodeLog { },
     client: OkHttpClient? = null,
@@ -143,6 +145,7 @@ class RelayLink(
     private var lastRcConnected: Boolean? = null
     private var lastAuthorityLost: String? = null
     private var lastNodeStatus: NodeStatusBody? = null
+    private var lastNodeStatusLocalHeightReceiptMs: Long? = null
     private val telemetryTimes = ArrayDeque<Long>()
     private val commands = LinkedHashMap<String, CommandRecord>()
 
@@ -811,9 +814,18 @@ class RelayLink(
         }
     }
 
-    private fun nodeStatusBody(): NodeStatusBody {
+    private fun nodeStatusBody(): Pair<NodeStatusBody, Long?> {
         val snapshot = aircraft.snapshot.value
         val phoneStatus = phone.current()
+        val localHeightMeasurement = snapshot.localHeight
+        val localHeight = localHeightMeasurement?.let { measurement ->
+            val ageMs = monotonicNowMs() - measurement.receivedAtMonotonicMs
+            if (ageMs !in 0..MAXIMUM_LOCAL_HEIGHT_AGE_MS) null else LocalHeight(
+                zM = measurement.zM,
+                source = LocalHeight.Source.FLIGHT_CONTROLLER_ALTITUDE,
+                ageMs = ageMs,
+            )
+        }
         return NodeStatusBody(
             virtualStickEnabled = snapshot.virtualStickEnabled, // set by the Phase E flight loop
             controlAuthority = effectiveAuthority(snapshot),
@@ -822,15 +834,16 @@ class RelayLink(
             videoPublishState = videoPublish.current(),
             phoneBatteryPercent = phoneStatus.batteryPercent.coerceIn(0, 100),
             phoneThermalState = phoneStatus.thermalState,
-        )
+            localHeight = localHeight,
+        ) to localHeight?.let { localHeightMeasurement.receivedAtMonotonicMs }
     }
 
     private fun sendNodeStatusIfChanged(force: Boolean = false) {
         val current = _state.value
         if (!current.joined) return
         val epoch = current.connectionEpoch ?: return
-        val body = nodeStatusBody()
-        if (!force && body == lastNodeStatus) return
+        val (body, localHeightReceiptMs) = nodeStatusBody()
+        if (!force && body == lastNodeStatus && localHeightReceiptMs == lastNodeStatusLocalHeightReceiptMs) return
         val frame = NodeStatusFrame(
             t = nextT(),
             eventId = eventId(),
@@ -841,6 +854,7 @@ class RelayLink(
         )
         if (send(frame.toEvent())) {
             lastNodeStatus = body
+            lastNodeStatusLocalHeightReceiptMs = localHeightReceiptMs
             update { it.copy(nodeStatus = body) }
             log.log(
                 "node_status sent: control_authority=${body.controlAuthority} reason=${body.authorityChangeReason} " +
@@ -1185,6 +1199,7 @@ class RelayLink(
         const val MAX_BACKOFF_EXPONENT = 16
         const val MAX_COMMANDS = 50
         const val MAX_DETAIL = 512
+        const val MAXIMUM_LOCAL_HEIGHT_AGE_MS = 500L
         const val RATE_WINDOW_MS = 2_000L
         const val WATCHDOG_HOLD = "watchdog_hold"
         const val WATCHDOG_FAILSAFE = "watchdog_failsafe"

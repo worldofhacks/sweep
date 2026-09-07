@@ -1,3 +1,4 @@
+import { groundControlBlockedReason } from '../../control/ground'
 import { useEffect, useReducer, useState } from 'react'
 import './speech.css'
 import {
@@ -194,7 +195,8 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
         ? prepareCapture(compiled.args.room_id, 'console', compiled.args.pattern)
         : compiled.intent === 'hold'
           ? prepareHold('console')
-          : prepareSelect(compiled.args.ids, 'console')
+          : compiled.intent === 'select' ? prepareSelect(compiled.args.ids, 'console')
+            : controller.prepareIntent({ name: compiled.intent, args: compiled.args }, 'console')
     setSpeech((previous) => ({
       ...previous,
       draftedIntentId: intent?.intent_id ?? previous.draftedIntentId,
@@ -721,6 +723,8 @@ function planTone(kind: VoicePlan['kind']): 'compiled' | 'ambiguous' | 'refused'
 function compileContext(state: ControlState, roomId: string): CompileContext {
   return {
     roomId: roomId.trim(),
+    selection: state.selection,
+    selectedGroundIds: state.selection.filter((id) => state.aircraft[id]?.node_type === 'ground'),
     pattern: state.capturePattern,
     readyIds: sortedAircraft(state.aircraft)
       .filter(isReady)
@@ -817,6 +821,7 @@ function emissionBlockedReason(
   const stale = state.selection.find(notReady)
   if (stale !== undefined) return `${label(stale)} is not ready or selectable.`
   if (compiled.intent === 'hold') return null
+  if (compiled.intent === 'ground_velocity' || compiled.intent === 'come_home') return groundControlBlockedReason(state, compiled.intent)
   if (!compiled.args.room_id) return 'Enter a room identifier.'
   if (state.selection.length !== 1) return 'Select exactly one ready aircraft for capture_room.'
   const selected = state.aircraft[state.selection[0]]

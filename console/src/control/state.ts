@@ -38,6 +38,8 @@ export interface PlanPreview {
   confirmationBlockedReason?: string
   /** Explicit connected-device preview binding, independent of motion selection. */
   deviceEpochs?: Record<number, number>
+  groundSources?: Record<number, string | null>
+  groundUnits?: Record<number, number>
   title: string
   steps: string[]
   rosterVersion: number

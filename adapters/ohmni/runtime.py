@@ -43,6 +43,8 @@ class GroundDevice(Protocol):
     def status(self) -> GroundStatus: ...
     def latest_scan(self) -> RangeScan | None: ...
     def video_publish_state(self) -> str: ...
+    def pre_enable_refusal(self) -> str | None: ...
+    def stop_confirmed(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,13 +431,15 @@ class OhmniRuntime:
         if self._watchdog_state != "nominal":
             self._watchdog_state = "nominal"
             self._publish_observations()
+            refusal = self._pre_enable_refusal()
             self._ready = (
-                self._lidar_mount_configured
-                and self.device.enable()
+                refusal is None
+                and self._watchdog_state == "nominal"
                 and self._pose_event_id is not None
+                and self.device.enable()
             )
             if not self._ready:
-                self._local_stop("ground_guard_not_ready", disable=True)
+                self._local_stop(refusal or "ground_guard_not_ready", disable=True)
             else:
                 self._local_stop_ready = self.device.status().state != "moving"
             self._publish_readiness()
@@ -496,24 +500,48 @@ class OhmniRuntime:
             self._track_command_task(self._loop.create_task(self._complete_return(command)))
             return
         if command.operation is CommandOperation.HOVER:
-            self._local_stop("remote_hold", disable=False)
             self._enqueue(self._ack(command, "executing"))
-            self._enqueue(self._ack(command, "completed"))
+            stopped = self._local_stop("remote_hold", disable=False)
+            self._enqueue(
+                self._ack(command, "completed")
+                if stopped
+                else self._ack(
+                    command,
+                    "failed",
+                    "local_stop_unconfirmed",
+                    "local STOP writes did not complete",
+                )
+            )
             return
         if command.operation is CommandOperation.ESTOP:
             self._estop_latched = True
             self._operator_rearm_required = True
-            self._local_stop("local_estop", disable=True)
             self._enqueue(self._ack(command, "executing"))
-            self._enqueue(self._ack(command, "completed"))
+            stopped = self._local_stop("local_estop", disable=True)
+            self._enqueue(
+                self._ack(command, "completed")
+                if stopped
+                else self._ack(
+                    command,
+                    "failed",
+                    "local_stop_unconfirmed",
+                    "local STOP/disable did not complete",
+                )
+            )
             return
 
     async def _complete_return(self, command: CommandFrame) -> None:
         assert self._return_controller is not None
         outcome = await self._return_controller.run()
         if outcome.completed:
-            self._local_stop("return_arrived", disable=False)
-            self._enqueue(self._ack(command, "completed"))
+            stopped = self._local_stop("return_arrived", disable=False)
+            self._enqueue(
+                self._ack(command, "completed")
+                if stopped
+                else self._ack(
+                    command, "failed", "local_stop_unconfirmed", "return STOP did not complete"
+                )
+            )
             return
         self._local_stop(outcome.reason or "return_failed", disable=True)
         self._enqueue(
@@ -532,7 +560,22 @@ class OhmniRuntime:
             if completed is False:
                 continue
             if completed is True:
-                self._enqueue(self._ack(command, "completed"))
+                try:
+                    stopped = self.device.stop_confirmed() and self.device.status().state in {
+                        "idle",
+                        "stopped",
+                    }
+                except OSError:
+                    stopped = False
+                if not stopped:
+                    self._local_stop("local_stop_unconfirmed", disable=True)
+                self._enqueue(
+                    self._ack(command, "completed")
+                    if stopped
+                    else self._ack(
+                        command, "failed", "local_stop_unconfirmed", "motion STOP did not complete"
+                    )
+                )
             else:
                 self._enqueue(
                     self._ack(command, "failed", "motion_failed", "ground motion stopped")
@@ -744,7 +787,7 @@ class OhmniRuntime:
                 "drone_id": self.config.device_id,
                 "connection_epoch": self._epoch,
                 "virtual_stick_enabled": False,
-                "control_authority": status.drive_authority,
+                "control_authority": self._ready and status.drive_authority,
                 "authority_change_reason": reason,
                 "watchdog_state": self._watchdog_state,
                 "video_publish_state": self.device.video_publish_state(),
@@ -753,23 +796,51 @@ class OhmniRuntime:
             }
         )
 
-    def _local_stop(self, reason: str, *, disable: bool, publish: bool = True) -> None:
-        try:
-            self.device.stop()
-            if disable:
-                self.device.disable()
-            status = self.device.status()
-            self._local_stop_ready = status.state in {"idle", "stopped"} and (
-                not disable or not status.drive_authority
+    def _pre_enable_refusal(self) -> str | None:
+        if not self._lidar_mount_configured:
+            return "lidar_mount_unconfigured"
+        status = self.device.status()
+        now_ms = int(self.config.monotonic() * 1_000)
+        if (
+            type(status.t_ms) is not int
+            or not 0 <= now_ms - status.t_ms <= 500
+            or status.pos_quality <= 0
+            or not all(
+                math.isfinite(value)
+                for value in (status.pos_quality, status.x, status.y, status.yaw_deg)
             )
-        except OSError:
-            _LOGGER.warning("local ground stop failed")
-            self._local_stop_ready = False
+        ):
+            return "pose_unusable"
+        guard = getattr(self.device, "pre_enable_refusal", None)
+        return "ground_safety_unconfigured" if guard is None else guard()
+
+    def _local_stop(self, reason: str, *, disable: bool, publish: bool = True) -> bool:
         self._ready = False
         self._watchdog_state = "failsafe" if disable else "hold"
+        self._local_stop_ready = False
+        failed = False
+        operations = (self.device.stop, self.device.disable) if disable else (self.device.stop,)
+        for operation in operations:
+            try:
+                operation()
+            except OSError:
+                _LOGGER.warning("local ground stop/disable failed")
+                failed = True
+        try:
+            status = self.device.status()
+            confirmed = getattr(self.device, "stop_confirmed", lambda: False)
+            self._local_stop_ready = (
+                not failed
+                and confirmed()
+                and status.state in {"idle", "stopped"}
+                and (not disable or not status.drive_authority)
+            )
+        except OSError:
+            _LOGGER.warning("local ground stop status unavailable")
         if publish and self._epoch is not None:
             self._publish_readiness()
             self._publish_status(reason)
+        return self._local_stop_ready
 
     def _membership(self, action: str, **fields: object) -> dict[str, object]:
         frame = {

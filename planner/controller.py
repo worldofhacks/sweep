@@ -1404,6 +1404,8 @@ class AutonomyController:
     ) -> PositioningLossResult:
         provider = current_snapshot or (lambda: snapshot)
         current = provider()
+        if not self.arbiter.requires_world_positioning:
+            return PositioningLossResult(False, None, None)
         affected = tuple(
             aircraft
             for aircraft in current.aircraft.values()

@@ -765,19 +765,19 @@ def test_source_allowlist_refuses_names_a_source_never_emits(
     keyboard_principal: Principal,
     webcam_principal: Principal,
 ) -> None:
-    webcam_takeoff = intent_payload(source="webcam")
-    webcam_takeoff.update(name="takeoff", confirm=True)
+    webcam_altitude = intent_payload(source="webcam")
+    webcam_altitude.update(name="altitude", args={"delta": 1}, confirm=True)
     keyboard_hold = intent_payload(source="keyboard", intent_id="intent-2")
 
-    refused_takeoff = relay_session.process_frame(webcam_takeoff, webcam_principal)
+    refused_altitude = relay_session.process_frame(webcam_altitude, webcam_principal)
     refused_hold = relay_session.process_frame(keyboard_hold, keyboard_principal)
     accepted_hold = relay_session.process_frame(
         intent_payload(source="webcam", intent_id="intent-3"), webcam_principal
     )
 
-    assert refused_takeoff[0]["type"] == "refusal"
-    assert refused_takeoff[0]["reason"] == "source_not_allowed"
-    assert refused_takeoff[0]["detail"] == "takeoff is not allowed from source webcam"
+    assert refused_altitude[0]["type"] == "refusal"
+    assert refused_altitude[0]["reason"] == "source_not_allowed"
+    assert refused_altitude[0]["detail"] == "altitude is not allowed from source webcam"
     assert refused_hold[0]["reason"] == "source_not_allowed"
     assert refused_hold[0]["detail"] == "hold is not allowed from source keyboard"
     assert accepted_hold[0]["status"] == "accepted"

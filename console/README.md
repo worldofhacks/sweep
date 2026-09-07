@@ -269,7 +269,7 @@ second before the relay's thirty-second cap. A relay plan is parsed strictly, bo
 session, correlation, state, capabilities, absolute expiry, plan digest, and deterministic step IDs,
 then staged one step at a time with source `language`. Confirmation sends only the exact staged
 payload, and any relevant state or input change invalidates it. A relayed transcript without such a
-plan is display-only. Separately typed text may use the labelled local matcher for `capture_room`,
+plan is display-only. Separately typed text may use the labelled local matcher for bounded ground pulses/return, `capture_room`,
 `hold`, or `select`; local negation and ambiguity produce no draft. Without a relay bootstrap, and
 without a configured real language service, the module reports it unavailable.
 
@@ -423,3 +423,5 @@ registration. They consume the shared observation envelope; legacy x/y is not su
 source measurements and the real Level 1 map remain hardware work under #243/#246/#247. The editor
 uses the same workflow for a real replacement map. Synthetic bundle and image fixtures live only in
 isolated tests; the operator runtime starts with real inputs or honest unavailable states.
+
+Ground nodes that report canonical signed observations use Control → Ground, the opt-in Ground pulses gesture profile, or explicit typed `pulse forward`, `pulse left`, `pulse right`, and `return home` phrases. Pulses request 250 ms at 80 mm/s forward or ±350 mrad/s yaw; the preview shows exact parameters and requires confirmation. These parameters do not establish measured distance or angle. Selection requires a fresh accepted pose from the declared source on the current connection, followed by an authoritative ready snapshot with drive authority. Connection/source, selection, authority and freshness are checked again at confirmation and send. A retry creates a fresh preview. Configured return remains unavailable until the relay advertises it and resolves its own approved return route. Ordinary map Navigate review and the existing aircraft gesture profiles remain separate capabilities; an observation in `odom` never becomes a world map pose.

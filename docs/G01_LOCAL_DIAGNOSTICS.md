@@ -1,5 +1,8 @@
 # Local G-01 diagnostics
 
+This records the preceding stationary session, which was stopped and disconnected.
+For the current integrated source and launch path see [unified fleet control](unified-fleet-control.md).
+
 The laptop console stays on `http://127.0.0.1:5173/`. This composition preserves
 the map, navigation-review, and gesture interface from `e3f2d05` and adds the
 authenticated ground-observation protocol from PR #292. PR #295 supplies the

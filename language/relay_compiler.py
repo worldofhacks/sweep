@@ -416,6 +416,16 @@ def _step(
     relay_state: Mapping[str, object],
     plan_digest: str,
 ) -> VoicePlanStep:
+    ground_return = (
+        intent.name is IntentName.COME_HOME
+        and len(intent.selection) == 1
+        and any(
+            isinstance(drone, Mapping)
+            and drone.get("drone_id") == intent.selection[0]
+            and drone.get("node_type") == "ground"
+            for drone in relay_state.get("drones", ())
+        )
+    )
     return VoicePlanStep(
         index=index,
         intent_id=_voice_intent_id(plan_digest, index),
@@ -423,7 +433,9 @@ def _step(
         args=dict(intent.semantic_dict()["args"]),
         selection=tuple(intent.selection),
         mode=intent.mode.value,
-        confirm_required=intent.name in CONFIRMATION_REQUIRED_INTENTS,
+        confirm_required=intent.name in CONFIRMATION_REQUIRED_INTENTS
+        or intent.name is IntentName.GROUND_VELOCITY
+        or ground_return,
         notes=_step_notes(index, intent, relay_state),
     )
 
@@ -453,6 +465,40 @@ def _step_notes(
         if isinstance(drone, Mapping)
     }
     name = intent.name
+    ground = [
+        drone_id
+        for drone_id in intent.selection
+        if drones.get(drone_id, {}).get("node_type") == "ground"
+    ]
+    if ground and name in {IntentName.GROUND_VELOCITY, IntentName.COME_HOME, IntentName.HOLD}:
+        labels = ", ".join(
+            f"G-{drones[item]['unit']:02d} (wire ID {item})"
+            if isinstance(drones[item].get("unit"), int)
+            else f"ground wire ID {item}"
+            for item in ground
+        )
+        notes.append(
+            f"Targets {labels}, bound to current connection epoch and declared pose source."
+        )
+        if name is IntentName.GROUND_VELOCITY:
+            notes.append(
+                f"Requested forward {intent.args['linear_mm_s']} mm/s, "
+                f"yaw {intent.args['angular_mrad_s']} mrad/s, "
+                f"duration {intent.args['duration_ms']} ms; "
+                "this is not a measured distance or turn guarantee."
+            )
+        elif name is IntentName.COME_HOME:
+            notes.append(
+                "Requests only the separately approved return configured on the relay; "
+                "no route is invented."
+            )
+        else:
+            notes.append("Requests the ground runtime stop path.")
+        notes.append(
+            "Operator confirmation and current relay motion checks are required; "
+            "no command has been sent."
+        )
+        return tuple(notes)
     if name is IntentName.SELECT:
         ids = tuple(intent.args["ids"])
         notes.append(f"Selection membership only, no motion: {_labels(ids)}.")

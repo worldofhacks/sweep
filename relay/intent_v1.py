@@ -81,7 +81,7 @@ FORMATION_NAMES = ("line", "column", "wedge", "diamond")
 REGISTERED_SOURCES = frozenset({"console", "keyboard", "webcam", "language"})
 # Intent v1 names each registered source may emit. The console owns every implemented
 # name; the keyboard socket carries only the Shift+Escape network stop; the
-# webcam gesture producer drafts only the two names its gesture policy may emit
+# webcam gesture producer drafts the bounded implemented profile names below
 # (console/src/gesture/policy.ts GESTURE_EMITTABLE_NAMES), so the console's
 # never-gesture-emittable list is enforced by the relay as well. A name outside
 # its source's set is refused with `source_not_allowed` only after the effective
@@ -91,10 +91,21 @@ SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
     {
         "console": IMPLEMENTED_INTENT_NAMES,
         "keyboard": frozenset({IntentName.ESTOP}),
-        "webcam": frozenset({IntentName.CAPTURE_ROOM, IntentName.HOLD}),
+        "webcam": frozenset(
+            {
+                IntentName.CAPTURE_ROOM,
+                IntentName.HOLD,
+                IntentName.GROUND_VELOCITY,
+                IntentName.ARM,
+                IntentName.TAKEOFF,
+                IntentName.LAND,
+                IntentName.TRANSLATE,
+                IntentName.FORMATION_NEXT,
+            }
+        ),
         # This is only the schema ceiling. RelaySession additionally requires a
         # one-shot audited compiler-plan binding for every language intent.
-        "language": C1_IMPLEMENTED_INTENT_NAMES,
+        "language": C1_IMPLEMENTED_INTENT_NAMES | frozenset({IntentName.GROUND_VELOCITY}),
     }
 )
 _REQUIRED_FIELDS = frozenset(
@@ -236,6 +247,19 @@ def _is_bounded_intent_text(value: object, maximum_chars: int) -> bool:
 
 
 def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
+    if (
+        raw["source"] == "webcam"
+        and name
+        in {
+            IntentName.ARM,
+            IntentName.TAKEOFF,
+            IntentName.LAND,
+            IntentName.TRANSLATE,
+            IntentName.FORMATION_NEXT,
+        }
+        and not raw["confirm"]
+    ):
+        return False
     if name is IntentName.CAPTURE_ROOM:
         return raw["confirm"] is True and len(raw["selection"]) == 1
     if name is IntentName.GROUND_VELOCITY:

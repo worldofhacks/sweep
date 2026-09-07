@@ -24,6 +24,10 @@ availability, RC takeover timing, deadman landing, real-camera codec compatibili
 soak, or end-to-end latency. Complete the guarded procedures below on the exact recorded
 aircraft/RC/phone tuple before describing this bridge as flight-proven.
 
+The separate [supervised vertical profile](SUPERVISED_VERTICAL.md) documents its signed
+height policy, VS-only landing recovery, compatibility requirements and pending physical
+acceptance. It does not qualify world navigation or horizontal flight.
+
 ## Modules
 
 | Module | Kind | Contents |

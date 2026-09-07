@@ -10,6 +10,7 @@ from relay.capabilities import (
 )
 from relay.contracts import Membership, parse_membership_request, parse_telemetry
 from relay.state import FleetRegistry, RegistryError
+from relay.supervised_vertical import SUPERVISED_VERTICAL_PROFILE
 from relay.tests.conftest import SESSION, membership_payload, telemetry_payload
 
 
@@ -164,6 +165,56 @@ def test_all_readiness_gates_must_pass_before_aircraft_is_selectable() -> None:
         "takeoff",
         "translate",
     ]
+
+
+def test_supervised_vertical_keeps_home_unconfirmed_but_requires_every_other_gate() -> None:
+    registry = FleetRegistry(
+        telemetry_freshness_ms=1_000,
+        capability_profile=SUPERVISED_VERTICAL_PROFILE,
+    )
+    _join(registry, 1, "join-vertical")
+    telemetry = parse_telemetry(telemetry_payload(event_id="telemetry-vertical"))
+    registry.apply_telemetry(telemetry, transition_event_id="unused")
+
+    ready = membership_payload(action="readiness", event_id="ready-vertical")
+    ready["home_pose_confirmed"] = False
+    from relay.auth import sign_event
+    from relay.tests.conftest import ADAPTER_KEY
+
+    ready["signature"] = sign_event(
+        {key: value for key, value in ready.items() if key != "signature"}, ADAPTER_KEY
+    )
+    transition = registry.apply_readiness(parse_membership_request(ready))
+    state = registry.state_event(session=SESSION, t=telemetry.t, event_id="state-vertical")
+
+    assert transition.membership is Membership.READY
+    assert transition.readiness_reasons == ()
+    assert state["drones"][0]["selectable"] is True
+    assert state["drones"][0]["home_pose"] is None
+
+    for field, reason in (
+        ("control_authority", "control_authority_missing"),
+        ("rc_safety_operator_present", "rc_safety_operator_missing"),
+    ):
+        blocked = FleetRegistry(
+            telemetry_freshness_ms=1_000,
+            capability_profile=SUPERVISED_VERTICAL_PROFILE,
+        )
+        _join(blocked, 1, f"join-{field}")
+        blocked.apply_telemetry(
+            parse_telemetry(telemetry_payload(event_id=f"telemetry-{field}")),
+            transition_event_id="unused",
+        )
+        readiness = membership_payload(action="readiness", event_id=f"ready-{field}")
+        readiness["home_pose_confirmed"] = False
+        readiness[field] = False
+        readiness["signature"] = sign_event(
+            {key: value for key, value in readiness.items() if key != "signature"}, ADAPTER_KEY
+        )
+        blocked_transition = blocked.apply_readiness(parse_membership_request(readiness))
+
+        assert blocked_transition.membership is Membership.DEGRADED
+        assert blocked_transition.readiness_reasons == (reason,)
 
 
 def test_readiness_reports_each_failed_declared_gate() -> None:

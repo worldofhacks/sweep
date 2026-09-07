@@ -34,10 +34,13 @@ class IntentName(StrEnum):
 class CapabilityProfile:
     name: str
     enabled_intent_names: frozenset[IntentName]
+    requires_home_pose: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or _SAFE_PROFILE_NAME.fullmatch(self.name) is None:
             raise ValueError("capability profile name must be a non-empty safe identifier")
+        if not isinstance(self.requires_home_pose, bool):
+            raise ValueError("requires_home_pose must be a boolean")
         raw_names = self.enabled_intent_names
         if isinstance(raw_names, (str, bytes)) or not isinstance(raw_names, Iterable):
             raise ValueError("enabled intent names must be an iterable of intent names")
@@ -61,6 +64,7 @@ class CapabilityProfile:
     def state_value(self) -> dict[str, object]:
         return {
             "capability_profile": self.name,
+            **({"requires_home_pose": False} if not self.requires_home_pose else {}),
             "enabled_intent_names": sorted(name.value for name in self.enabled_intent_names),
         }
 
@@ -111,6 +115,7 @@ def with_ground_capabilities(profile: CapabilityProfile) -> CapabilityProfile:
     return CapabilityProfile(
         f"{profile.name[: 64 - len(suffix)]}{suffix}",
         profile.enabled_intent_names | GROUND_ADDITIONAL_INTENT_NAMES,
+        requires_home_pose=profile.requires_home_pose,
     )
 
 

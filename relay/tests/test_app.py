@@ -1770,7 +1770,7 @@ def test_default_media_monitor_projects_configured_canonical_paths(
     assert media_client.closed is True
 
 
-def test_state_video_follows_mediamtx_while_it_answers_and_the_node_claim_after(
+def test_state_video_follows_mediamtx_progress_without_dating_frames_from_node_claims(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:
     media_client = _ScriptedMediaClient()
@@ -1823,6 +1823,6 @@ def test_state_video_follows_mediamtx_while_it_answers_and_the_node_claim_after(
                     )
                 )
                 still_offline = state_with_video(console, "offline")
-                assert still_offline["last_frame_at"] == clock() + 1
+                assert still_offline["last_frame_at"] == clock()
 
     assert monitors and media_client.closed is True

@@ -100,11 +100,13 @@ function GestureWorkspace({ controller, now, roomId, services, profile, changePr
         <legend>Gesture profile</legend>
         <label><input type="radio" name="gesture-profile" checked={profile === 'capture'} onChange={() => changeProfile('capture')} /> Capture / HOLD (default)</label>
         <label><input type="radio" name="gesture-profile" checked={profile === 'flight'} onChange={() => changeProfile('flight')} /> Flight (opt in)</label>
+        <label><input type="radio" name="gesture-profile" checked={profile === 'ground'} onChange={() => changeProfile('ground')} /> Ground pulses (opt in)</label>
         <label><input type="radio" name="gesture-profile" checked={profile === 'fleet'} onChange={() => changeProfile('fleet')} /> Fleet motion (opt in)</label>
         <label><input type="radio" name="gesture-profile" checked={profile === 'swarm'} onChange={() => changeProfile('swarm')} /> Swarm formations (opt in)</label>
         <p>Switching profile stops tracking, cancels the pending preview and starts a new recording. Download the current recording first if needed.</p>
       </fieldset>
-      {profile === 'fleet' && <p className="gs-safety-note">One step per translation. Robots use the room frame: east +x, north +y; aircraft use the relay-configured translation frame. Point up: north. Victory: east. Closed fist: south. I love you: west. Open palm: hold. Use manual controls for arming and flight actions.</p>}
+      {profile === 'ground' && <p className="gs-safety-note">One selected ground robot. Point up drafts a forward pulse (80 mm/s); victory drafts left yaw and I love you drafts right yaw (350 mrad/s), each for 250 ms. Open palm drafts HOLD. Thumb up confirms only a gesture preview. These requested parameters do not guarantee distance or angle; local motion checks still apply.</p>}
+      {profile === 'fleet' && <p className="gs-safety-note">One step per translation using the relay-configured frame. Ground nodes using signed local observations require the Ground pulses profile. Point up: north. Victory: east. Closed fist: south. I love you: west. Open palm: hold. Use manual controls for arming and flight actions.</p>}
       {profile === 'swarm' && <p className="gs-safety-note">Victory drafts the next coordinated formation; open palm drafts hold. Formation availability follows the relay capability profile. Aircraft and robot groups form independently; singleton groups hold their pose.</p>}
       {profile === 'flight' && <FlightControls controller={controller} />}
       {pane === 'camera' ? (
@@ -569,7 +571,7 @@ function describeNotable(outcome: GestureProducerView['outcome']): string {
 
 function pairStatus(pair: GesturePair): string {
   if (pair.action.kind === 'draft' && pair.action.name !== 'capture_room' && pair.action.name !== 'hold') {
-    return `previews ${pair.action.name === 'translate' || pair.action.name === 'formation_next' ? describeGestureAction(pair.action) : flightActionLabel(pair.action)}`
+    return `previews ${pair.action.name === 'translate' || pair.action.name === 'formation_next' || pair.action.name === 'ground_velocity' ? describeGestureAction(pair.action) : flightActionLabel(pair.action)}`
   }
   if (pair.action.kind === 'draft') return `emits ${pair.action.name} as a preview`
   return pair.action.kind === 'confirm' ? 'confirms the pending preview' : 'cancels the pending preview'

@@ -9,6 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 PACKAGES = [
     "relay",
+    "spatial",
     "planner",
     "arbiter",
     "adapters",

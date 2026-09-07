@@ -1,6 +1,11 @@
 # docs
 
-Maintained throughout M0 through M4.
+Sweep is a modular platform for aerial drones and ground robots in one console.
+
+- [Unified fleet control](unified-fleet-control.md): current integrated software, policy requirements and hardware qualification limits.
+- [Modular fleet integration](modular-fleet.md): stable identities, camera and sensor inventory, and additive provisioning.
+- [Laptop console](laptop-console.md): one operator URL and explicit runtime/build identity.
+- [Map and navigation integration](platform-integration.md): authenticated map authoring and qualified destination review.
 
 - `prd.md`: the PRD, architecture, capability areas, and delivery milestones (source of truth).
 - `mvp-plan.md`: the dependency-mapped work breakdown for the MVP.

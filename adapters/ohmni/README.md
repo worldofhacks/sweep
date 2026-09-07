@@ -12,17 +12,24 @@ SWEEP_NODE_KEY=replace-with-node-key
 SWEEP_ADAPTER_ID=ohmni-11
 SWEEP_RELAY_CONNECT_HOST=192.0.2.10
 SWEEP_RELAY_CLOCK_OFFSET_MS=0
-SWEEP_LIDAR_MOUNT_X_M=0.00
-SWEEP_LIDAR_MOUNT_Y_M=0.00
-SWEEP_LIDAR_MOUNT_Z_M=0.25
-SWEEP_LIDAR_MOUNT_YAW_DEG=0.00
+SWEEP_SPOTTER=0
 ```
 
 Keep `SWEEP_RELAY_URL` at the verified `wss://` hostname. If the robot must dial a numeric address, set `SWEEP_RELAY_CONNECT_HOST` to that IPv4 or IPv6 address. The TCP connection uses the numeric address while TLS and the HTTP Host header retain the hostname from `SWEEP_RELAY_URL`.
 
 `SWEEP_RELAY_CLOCK_OFFSET_MS` is a measured relay wall-clock correction, bounded to five minutes. It applies to signed relay envelopes and lease deadlines. It does not alter sensor receipt times or establish a capture-clock mapping.
 
-Measure the lidar center relative to the midpoint between the drive wheels: X forward, Y left, and Z up from the floor, in metres. Do not copy the example XYZ values. `SWEEP_LIDAR_OFFSET_DEG` and `SWEEP_LIDAR_ANGLE_SIGN` convert raw scan angles into body axes and require a stationary target check. The published scan keeps the lidar center as its origin and uses body-aligned axes, so `SWEEP_LIDAR_MOUNT_YAW_DEG` must be zero. A nonzero yaw is refused because it would rotate an already normalized scan again.
+Measure the lidar center relative to the midpoint between the drive wheels: X forward, Y left, and Z up from the floor, in metres. Provide those measured values as `SWEEP_LIDAR_MOUNT_X_M`, `SWEEP_LIDAR_MOUNT_Y_M`, and `SWEEP_LIDAR_MOUNT_Z_M`; no numeric deployment defaults are supplied. `SWEEP_LIDAR_OFFSET_DEG` and `SWEEP_LIDAR_ANGLE_SIGN` convert raw scan angles into body axes and require a stationary target check. The published scan keeps the lidar center as its origin and uses body-aligned axes, so `SWEEP_LIDAR_MOUNT_YAW_DEG` must be zero. A nonzero yaw is refused because it would rotate an already normalized scan again.
+
+## Mandatory ground avoidance and drive qualification
+
+Ground motion requires the configured LiDAR and a continuously valid paired-encoder pose before vendor drive initialization. `SWEEP_ALLOW_NO_LIDAR` is rejected when enabled. A spotter declaration alone does not qualify motion. Devices may join the single existing console at port 5173 and publish available observations while wheel control remains unavailable. The relay wire ID (`SWEEP_DEVICE_UNIT`) and optional host console unit mapping are separate identities; configure each additional robot explicitly with its own credentials, source bindings and sensor measurements.
+
+In addition to the measured mount and angular calibration above, wheel control requires `SWEEP_GROUND_FOOTPRINT_RADIUS_M` (a circle enclosing the complete robot), `SWEEP_GROUND_STOPPING_DISTANCE_M` (measured at the allowed speed), and `SWEEP_GROUND_CLEARANCE_MARGIN_M`. Missing or invalid measurements refuse drive. Clearance about the LiDAR origin includes the measured body radius, horizontal sensor offset, stopping distance, margin, and bounded travel during scan age, owner timeout and one drive-loop tick. All 360 one-degree bins must contain fresh positive measured returns outside that clearance. Unknown bins, stale/future scans and obstacles at the sides or rear block both forward and yaw pulses; the runtime does not infer empty space from missing returns. This conservative rule can require a better mounting position or coverage qualification before the robot can move.
+
+`ground_velocity` supports one confirmed selected ground node: a forward pulse up to 180 mm/s or yaw up to 785 mrad/s, lasting at most 500 ms. It does not support reverse or simultaneous linear/angular motion. Each hardware tick rechecks pose, all-around clearance and the local owner deadman. The relay also revalidates current accepted pose, authority and emergency-stop state atomically when signing the command. HOLD and ESTOP remain available after pose or authority loss. Completion requires successful local STOP writes; failure is reported as failed and disable is independently attempted. Successful software writes do not establish measured physical stopping distance.
+
+The production pose consumer reads the vendor owner's `sweep_encoder.sock`; it never falls back to competing direct `apos` requests. `install_owner_encoder_plugin.sh` stages the coherent PR315 loader/sampler/trace bundle without changing the reviewed vendor source or restarting it. The installer refuses occupied plugin paths and verifies exact bytes; updating an installed bundle requires preserving its matching rollback evidence first. See [HANDBACK.md](HANDBACK.md). A retained `missing_encoder_reply` fault still keeps pose invalid. PR315's recoverable normal-query timeout and a successful qualification on another robot do not qualify this robot. Vendor lifecycle changes and measured continuous encoder/STOP/clearance acceptance are separate deployment steps.
 
 ## Camera-only publisher
 

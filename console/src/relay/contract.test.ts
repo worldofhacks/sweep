@@ -1057,3 +1057,12 @@ test('camera labels align with Python printable Unicode code point limits', () =
     expect(stateWith([aircraft({ cameras: [{ ...camera, label }] })])).toBeNull()
   }
 })
+
+
+test('voice return metadata accepts the compiler target policy and preserves other gates', () => {
+  const groundReturn = voiceStep(0, { name: 'come_home', args: {}, selection: [11], confirm_required: true })
+  const aircraftReturn = voiceStep(0, { name: 'come_home', args: {}, selection: [1], confirm_required: false })
+  expect(isVoicePlan(voicePlan([groundReturn]))).toBe(true)
+  expect(isVoicePlan(voicePlan([aircraftReturn]))).toBe(true)
+  expect(isVoicePlan(voicePlan([voiceStep(0, { name: 'takeoff', args: {}, selection: [1], confirm_required: false })]))).toBe(false)
+})

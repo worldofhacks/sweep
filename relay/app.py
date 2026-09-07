@@ -32,6 +32,7 @@ from relay.contracts import NodeType
 from relay.control_localization import ControlLocalizationProjector
 from relay.intent_v1 import REGISTERED_SOURCES
 from relay.media import MediaEvidence, MediaMonitor, MediaMtxClient
+from relay.platform import PlatformServices, install_platform_routes
 from relay.session import (
     Clock,
     ControlPoseSigningKey,
@@ -74,7 +75,7 @@ def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor
         drone_ids=tuple(sorted(settings.adapter_keys)),
         poll_interval_ms=settings.media_poll_interval_ms,
         stale_after_ms=settings.media_stale_after_ms,
-        streams=settings.media_streams,
+        cameras=settings.configured_cameras(),
     )
 
 
@@ -195,6 +196,7 @@ class RelayRuntime:
             else control_pose_signing_key
         )
         self.sessions: dict[str, RelaySession] = {}
+        self.platform_services: PlatformServices | None = None
         self._subscriptions: dict[str, dict[str, _Subscription]] = {}
         self._adapter_connections: dict[tuple[str, int], str] = {}
         self._localization_connections: dict[tuple[str, int], str] = {}
@@ -248,6 +250,8 @@ class RelayRuntime:
                     node_types=self.settings.node_types,
                     device_units=self.settings.device_units,
                     media_streams=self.settings.media_streams,
+                    media_cameras=self.settings.configured_cameras(),
+                    camera_evidence=self.camera_evidence,
                     aircraft_limit=(
                         self.settings.physical_aircraft_limit
                         if self.settings.adapter_backend is AdapterBackend.REMOTE
@@ -265,6 +269,11 @@ class RelayRuntime:
         if self.media_monitor is None:
             return None
         return self.media_monitor.evidence(drone_id, now_ms)
+
+    def camera_evidence(self, device_id: int, camera_id: str, now_ms: int) -> MediaEvidence | None:
+        if self.media_monitor is None:
+            return None
+        return self.media_monitor.camera_evidence(device_id, camera_id, now_ms)
 
     def replay(self, session_id: str, *, after_sequence: int = 0) -> dict[str, object]:
         """Read active or persisted history without reopening mutable live state."""
@@ -677,6 +686,10 @@ class RelayRuntime:
         """Queue an event batch atomically with respect to subscription activation."""
         if self.navigation_events is not None:
             events = [*events, *self.navigation_events(session_id, events)]
+        if self.platform_services is not None:
+            for event in events:
+                if event.get("type") == "state":
+                    await asyncio.to_thread(self.platform_services.observe_state, session_id, event)
         deliveries: list[asyncio.Future[bool]] = []
         async with self._connection_lock:
             subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
@@ -970,6 +983,7 @@ def create_app(
     shutdown_callback: ShutdownCallback | None = None,
     media_monitor_factory: MediaMonitorFactory | None = None,
     navigation_events: NavigationEvents | None = None,
+    platform_services_factory: Callable[[RelayRuntime], PlatformServices] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -993,18 +1007,28 @@ def create_app(
             navigation_events=navigation_events,
         )
         application.state.relay_runtime = runtime
-        application.state.transcript_service = (
-            TranscriptService()
-            if transcript_service_factory is None
-            else transcript_service_factory(runtime)
-        )
-        await runtime.start()
+        platform = None
         try:
+            platform = (platform_services_factory or PlatformServices)(runtime)
+            runtime.platform_services = platform
+            application.state.platform_services = platform
+            application.state.transcript_service = (
+                TranscriptService()
+                if transcript_service_factory is None
+                else transcript_service_factory(runtime)
+            )
+            await runtime.start()
             yield
         finally:
-            await runtime.stop()
-            if shutdown_callback is not None:
-                shutdown_callback()
+            try:
+                await runtime.stop()
+            finally:
+                try:
+                    if platform is not None:
+                        platform.close()
+                finally:
+                    if shutdown_callback is not None:
+                        shutdown_callback()
 
     application = FastAPI(title="Sweep relay", version="1", lifespan=lifespan)
     application.add_middleware(
@@ -1150,6 +1174,8 @@ def create_app(
         if expected is None or supplied is None or not hmac.compare_digest(supplied, expected):
             raise HTTPException(status_code=401, detail="authentication required")
         return runtime
+
+    install_platform_routes(application, authorized_runtime)
 
     @application.get("/metrics")
     def metrics(authorization: str | None = Header(default=None)) -> dict[str, object]:

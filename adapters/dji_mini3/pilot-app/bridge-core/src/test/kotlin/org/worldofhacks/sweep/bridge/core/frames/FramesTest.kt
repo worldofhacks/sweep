@@ -10,6 +10,7 @@ import org.worldofhacks.sweep.bridge.core.Fixtures
 import org.worldofhacks.sweep.bridge.core.Fixtures.obj
 import org.worldofhacks.sweep.bridge.core.Fixtures.string
 import org.worldofhacks.sweep.bridge.core.json.Json
+import org.worldofhacks.sweep.bridge.core.json.JsonFloat
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonValue
 import org.worldofhacks.sweep.bridge.core.signing.Signing
@@ -22,6 +23,22 @@ import org.worldofhacks.sweep.bridge.core.watchdog.NodeWatchdogState
  */
 class FramesTest {
     private val frames = Fixtures.load("frames.json")
+
+    @Test
+    fun `takeoff carries an exact paired signed height policy`() {
+        val args = CommandArgs.Takeoff(1800, 2000, 200)
+        assertEquals(args, CommandArgs.parse(CommandOperation.TAKEOFF, args.toJson()))
+        for (raw in listOf(
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 2000),
+            Json.json("z_mm" to 1800, "max_local_height_age_ms" to 200),
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 1700, "max_local_height_age_ms" to 200),
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 2591, "max_local_height_age_ms" to 200),
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 2000, "max_local_height_age_ms" to 0),
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 2000, "max_local_height_age_ms" to 501),
+        )) {
+            assertThrows(ContractError::class.java) { CommandArgs.parse(CommandOperation.TAKEOFF, raw) }
+        }
+    }
 
     private fun wire(name: String): JsonObject = frames.obj(name).obj("wire")
 
@@ -683,6 +700,28 @@ class FramesTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             status.body.copy(authorityChangeReason = "Not Snake")
+        }
+    }
+
+    @Test
+    fun `node status accepts only a finite explicitly sourced local height`() {
+        val base = NodeStatusFrame.parse(wire("node_status"))
+        val evidence = LocalHeight(1.8, LocalHeight.Source.FLIGHT_CONTROLLER_ALTITUDE, 0)
+        val withHeight = base.copy(body = base.body.copy(localHeight = evidence)).toEvent()
+
+        assertEquals(evidence, NodeStatusFrame.parse(withHeight).body.localHeight)
+        assertEquals(JsonFloat(1.8), (withHeight["local_height"] as JsonObject)["z_m"])
+        assertThrows(ContractError::class.java) {
+            NodeStatusFrame.parse(withHeight.with("local_height", Json.json("z_m" to 1.8, "source" to "ultrasonic", "age_ms" to 0)))
+        }
+        assertThrows(ContractError::class.java) {
+            NodeStatusFrame.parse(withHeight.with("local_height", Json.json("z_m" to 1.8, "source" to "flight_controller_altitude", "age_ms" to -1)))
+        }
+        assertThrows(ContractError::class.java) {
+            NodeStatusFrame.parse(withHeight.with("local_height", Json.json("z_m" to 1.8, "source" to "flight_controller_altitude", "age_ms" to 0, "extra" to true)))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            LocalHeight(Double.NaN, LocalHeight.Source.FLIGHT_CONTROLLER_ALTITUDE, 0)
         }
     }
 

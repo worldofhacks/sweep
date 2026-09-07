@@ -1,3 +1,4 @@
+import { groundControlBlockedReason, hasGroundTarget } from '../../control/ground'
 import { membershipWord, motionObservationCurrent, observationCurrent } from '../../control/observation'
 /**
  * Pure derivations for the Control module, lifted from the Sweep Console v4
@@ -164,6 +165,8 @@ export function gateControl(state: ControlState, name: ConsoleIntentName, option
   if (connection) return { reason: connection, unsupported: false }
   const capability = capabilityBlockedReason(state, name)
   if (capability) return { reason: capability, unsupported: false }
+  const groundReason = groundControlBlockedReason(state, name, [...(options.targets ?? state.selection)])
+  if (groundReason) return { reason: groundReason, unsupported: false }
   const deviceClass = deviceClassBlockedReason(state, name, options.targets)
   if (deviceClass) return { reason: deviceClass, unsupported: true }
   if (options.sel && state.selection.length === 0) return { reason: noSelectionReason(state), unsupported: false }
@@ -196,7 +199,7 @@ function control(
   options: GateOptions = {},
 ): ControlSpec {
   const { name } = press
-  const confirm = requiresConfirmation(name)
+  const confirm = requiresConfirmation(name) || (name === 'come_home' && hasGroundTarget(state, press.targets ?? state.selection))
   const gate = gateControl(state, name, { ...options, targets: options.targets ?? press.targets })
   const supported = isSupportedIntent(name) && !gate.unsupported
   const enabled = gate.reason === null

@@ -124,7 +124,27 @@ data class FlightConfig(
     val estopLandAfterMs: Long = 5_000,
     val defaultStickHz: Int = FlightSettings.DEFAULT_STICK_HZ,
     val navigation: NavigationConfig? = null,
+    val supervisedVertical: SupervisedVerticalConfig? = null,
 )
+
+/** The narrow local-height takeoff profile; it does not authorize horizontal navigation. */
+data class SupervisedVerticalConfig(
+    val maximumHeightAgeMs: Long = 500,
+    val hardCeilingM: Double = 2.5908,
+    val targetToleranceM: Double = 0.05,
+    val targetSettleMs: Long = 500,
+    val approachGainPerS: Double = 1.0,
+) {
+    init {
+        require(maximumHeightAgeMs > 0) { "maximum height age must be positive" }
+        require(hardCeilingM.isFinite() && hardCeilingM > 0) { "hard ceiling must be positive and finite" }
+        require(targetToleranceM.isFinite() && targetToleranceM > 0 && targetToleranceM < hardCeilingM) {
+            "target tolerance must be positive and below the hard ceiling"
+        }
+        require(targetSettleMs >= 0) { "target settle time must be non-negative" }
+        require(approachGainPerS.isFinite() && approachGainPerS > 0) { "approach gain must be positive and finite" }
+    }
+}
 
 data class NavigationConfig(
     val navigationConfigId: String,

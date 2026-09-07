@@ -389,11 +389,19 @@ def test_ground_runtime_joins_becomes_ready_acks_velocity_and_stops_on_lease_los
         node.stop()
 
 
+class _FrozenPoseFixtureRuntime(OhmniRuntime):
+    freeze_pose = False
+
+    def _publish_observations(self):
+        if not self.freeze_pose:
+            super()._publish_observations()
+
+
 def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
     relay_server: _RelayServer,
 ) -> None:
     device = FakeGroundDevice()
-    node = OhmniRuntime(
+    node = _FrozenPoseFixtureRuntime(
         GroundRuntimeConfig(
             relay_url=relay_server.url,
             session=SESSION,
@@ -419,6 +427,10 @@ def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
             ),
             "ground readiness",
         )
+        # Keep the accepted fake pose fixed for this short lifecycle test.
+        # A newly arriving pose awaiting its separate readiness frame correctly
+        # refuses release, which the signing-boundary regressions cover separately.
+        node.freeze_pose = True
         intent_id = "ground-velocity-e2e"
         with sync_connect(f"{relay_server.url}/ws/{SESSION}", proxy=None) as console:
             console.send(
@@ -468,12 +480,13 @@ def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
             terminal = _receive_until(
                 console,
                 lambda frame: (
-                    frame.get("type") == "acknowledgement"
+                    frame.get("type") in {"acknowledgement", "refusal"}
                     and frame.get("intent_id") == intent_id
                     and frame.get("source") == "autonomy"
-                    and frame.get("status") == "completed"
+                    and frame.get("status") in {"completed", "failed", "refused"}
                 ),
             )
+            assert terminal["status"] == "completed", terminal
         assert terminal["command_id"] is None
         assert device.x > 0
         records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
@@ -720,17 +733,35 @@ def test_ground_only_hold_in_a_mixed_roster_does_not_dispatch_an_empty_aircraft_
         )
         assert _deliver(relay_server, aircraft_command, drone_id=AIRCRAFT_ID)
         _wait_for(lambda: aircraft._last_seq == 1, "aircraft command delivery")
-        motion = session.issue_command(
-            command_id="mixed-ground-motion",
-            intent_id="mixed-ground-motion",
-            roster_version=session.current_state()["roster_version"],
-            drone_id=GROUND_ID,
-            connection_epoch=state[GROUND_ID]["connection_epoch"],
-            operation=CommandOperation.GROUND_VELOCITY,
-            args={"linear_mm_s": 100, "angular_mrad_s": 0, "duration_ms": 500},
-            signing_key=GROUND_KEY,
-        )
-        assert _deliver(relay_server, motion)
+        commands = []
+
+        def issue_ready_motion():
+            # Pose and its signed readiness arrive as separate messages. Wait
+            # for the exact accepted pair before issuing this test setup pulse;
+            # the production signing gate must remain strict during that gap.
+            with session._lock:
+                current = session.current_state()
+                if not any(
+                    row["drone_id"] == GROUND_ID and row["selectable"] for row in current["drones"]
+                ):
+                    return False
+                commands.append(
+                    session.issue_command(
+                        command_id="mixed-ground-motion",
+                        intent_id="mixed-ground-motion",
+                        roster_version=current["roster_version"],
+                        drone_id=GROUND_ID,
+                        connection_epoch=state[GROUND_ID]["connection_epoch"],
+                        operation=CommandOperation.GROUND_VELOCITY,
+                        args={"linear_mm_s": 100, "angular_mrad_s": 0, "duration_ms": 500},
+                        signing_key=GROUND_KEY,
+                    )
+                )
+                return True
+
+        _wait_for(issue_ready_motion, "current ground pose/readiness release")
+        assert len(commands) == 1
+        assert _deliver(relay_server, commands[0])
         _wait_for(lambda: device.status().state == "moving", "mixed ground motion")
 
         intent_id = "mixed-ground-only-hold"

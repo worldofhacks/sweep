@@ -1,0 +1,421 @@
+{
+  "$id": "urn:sweep:observation:v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "frame_provenance": {
+            "properties": {
+              "kind": {
+                "not": {
+                  "const": "legacy_aircraft"
+                }
+              }
+            }
+          },
+          "t_capture": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "kind": {
+                "const": "legacy_aircraft_telemetry"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "confidence": {
+            "const": 0
+          },
+          "frame_provenance": {
+            "properties": {
+              "kind": {
+                "const": "legacy_aircraft"
+              }
+            }
+          },
+          "node_type": {
+            "const": "aircraft"
+          },
+          "t_capture": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "description": "Also enforce 16 KiB UTF-8 limit, timestamp/capture ordering, declared exact frame/provenance, pose-frame equality, scan span and distance bounds, source binding, epochs and admission rates using the shared decoder and receiver.",
+  "properties": {
+    "authority": {
+      "const": "diagnostic"
+    },
+    "confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "connection_epoch": {
+      "maximum": 2147483647,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "drone_id": {
+      "maximum": 2147483647,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "event_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "frame": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "frame_provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "axes": {
+          "enum": [
+            "right_handed_z_up",
+            "x_forward_y_left_z_up",
+            "x_right_y_down_z_forward",
+            "unqualified_sensor_scan_angles",
+            "unqualified_legacy_planner_axes"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "world",
+            "map",
+            "device_body",
+            "device_odometry",
+            "camera_optical",
+            "lidar_sensor",
+            "legacy_aircraft"
+          ]
+        },
+        "origin_connection_epoch": {
+          "anyOf": [
+            {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin_drone_id": {
+          "anyOf": [
+            {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transform_id": {
+          "type": "null"
+        },
+        "units": {
+          "const": "m"
+        }
+      },
+      "required": [
+        "kind",
+        "units",
+        "axes",
+        "origin_drone_id",
+        "origin_connection_epoch",
+        "transform_id"
+      ],
+      "type": "object"
+    },
+    "node_type": {
+      "enum": [
+        "aircraft",
+        "ground_vehicle"
+      ]
+    },
+    "payload": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "pose"
+            },
+            "position": {
+              "additionalProperties": false,
+              "properties": {
+                "frame": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "x_m": {
+                  "maximum": 1000,
+                  "minimum": -1000,
+                  "type": "number"
+                },
+                "y_m": {
+                  "maximum": 1000,
+                  "minimum": -1000,
+                  "type": "number"
+                },
+                "z_m": {
+                  "maximum": 1000,
+                  "minimum": -1000,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "frame",
+                "x_m",
+                "y_m",
+                "z_m"
+              ],
+              "type": "object"
+            },
+            "yaw_rad": {
+              "maximum": 3.141592653589793,
+              "minimum": -3.141592653589793,
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "position",
+            "yaw_rad"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "angle_increment_mdeg": {
+              "maximum": 360000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "angle_min_mdeg": {
+              "maximum": 180000,
+              "minimum": -180000,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "lidar_scan"
+            },
+            "range_max_mm": {
+              "maximum": 655350,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "range_min_mm": {
+              "maximum": 655350,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "ranges_mm": {
+              "items": {
+                "anyOf": [
+                  {
+                    "maximum": 655350,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "maxItems": 720,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "angle_min_mdeg",
+            "angle_increment_mdeg",
+            "range_min_mm",
+            "range_max_mm",
+            "ranges_mm"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "battery": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "capture_time_available": {
+              "const": false
+            },
+            "kind": {
+              "const": "legacy_aircraft_telemetry"
+            },
+            "link": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "pos_quality": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "position": {
+              "additionalProperties": false,
+              "properties": {
+                "frame": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "x_m": {
+                  "maximum": 1000,
+                  "minimum": -1000,
+                  "type": "number"
+                },
+                "y_m": {
+                  "maximum": 1000,
+                  "minimum": -1000,
+                  "type": "number"
+                },
+                "z_m": {
+                  "maximum": 1000,
+                  "minimum": -1000,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "frame",
+                "x_m",
+                "y_m",
+                "z_m"
+              ],
+              "type": "object"
+            },
+            "state": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "vx_m_s": {
+              "maximum": 1000,
+              "minimum": -1000,
+              "type": "number"
+            },
+            "vy_m_s": {
+              "maximum": 1000,
+              "minimum": -1000,
+              "type": "number"
+            },
+            "vz_m_s": {
+              "maximum": 1000,
+              "minimum": -1000,
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "position",
+            "vx_m_s",
+            "vy_m_s",
+            "vz_m_s",
+            "battery",
+            "state",
+            "link",
+            "pos_quality",
+            "capture_time_available"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "session": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "t": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "t_capture": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "t_ingest": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "type": {
+      "const": "observation"
+    },
+    "v": {
+      "const": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "v",
+    "type",
+    "t",
+    "event_id",
+    "session",
+    "drone_id",
+    "connection_epoch",
+    "source_id",
+    "node_type",
+    "t_capture",
+    "t_ingest",
+    "frame",
+    "confidence",
+    "payload",
+    "authority",
+    "frame_provenance"
+  ],
+  "title": "Sweep accepted diagnostic observation v1",
+  "type": "object"
+}

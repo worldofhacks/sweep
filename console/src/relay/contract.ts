@@ -46,6 +46,7 @@ export type ConsoleIntentName =
   | 'land_all'
   | 'hold'
   | 'translate'
+  | 'ground_velocity'
   | 'body_pulse'
   | 'robot_peripheral'
   | 'camera_control'
@@ -70,6 +71,7 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'hold',
   'translate',
   'body_pulse',
+  'ground_velocity',
   'robot_peripheral',
   'camera_control',
   'altitude',
@@ -119,11 +121,11 @@ export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
 
 /** Every intent implemented by this console, independently of deployment release. */
 export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
-  [...C2_FLEET_OPERATIONS_INTENTS, 'body_pulse', 'robot_peripheral', 'camera_control', 'navigate'],
+  [...C2_FLEET_OPERATIONS_INTENTS, 'body_pulse', 'robot_peripheral', 'camera_control', 'navigate', 'ground_velocity'],
 )
 
 /** Known relay advertisements do not grant this console a command implementation. */
-export type AdvertisedIntentName = ConsoleIntentName | 'ground_velocity' | 'survey_area'
+export type AdvertisedIntentName = ConsoleIntentName | 'survey_area'
 const ADVERTISED_INTENTS: ReadonlySet<string> = new Set([...SUPPORTED_INTENTS, 'ground_velocity', 'survey_area'])
 
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
@@ -137,6 +139,7 @@ export function isSupportedIntent(name: ConsoleIntentName): boolean {
  */
 export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'navigate',
+  'ground_velocity',
   'robot_peripheral',
   'camera_control',
   'body_pulse',
@@ -164,6 +167,7 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   land_all: 'all',
   hold: 'selected',
   translate: 'selected',
+  ground_velocity: 'exactly one',
   body_pulse: 'selected',
   robot_peripheral: 'connected device',
   camera_control: 'connected device',
@@ -235,6 +239,12 @@ export function isRobotPeripheralArgs(value: unknown): value is RobotPeripheralA
   return false
 }
 
+export interface GroundVelocityArgs {
+  linear_mm_s: number
+  angular_mrad_s: number
+  duration_ms: number
+}
+
 export interface BodyPulseArgs {
   /** Signed speed in the aircraft body frame: positive forward, negative backward. */
   forward_mm_s: number
@@ -268,6 +278,7 @@ export interface IntentArgsByName {
   land_all: EmptyArgs
   hold: EmptyArgs
   translate: TranslateArgs
+  ground_velocity: GroundVelocityArgs
   body_pulse: BodyPulseArgs
   robot_peripheral: RobotPeripheralArgs
   camera_control: CameraControlArgs
@@ -377,6 +388,7 @@ export interface RelayStateEvent {
   spacing: number
   mode: string
   capability_profile: string
+  requires_home_pose?: boolean
   enabled_intent_names: AdvertisedIntentName[]
   pending: Record<string, unknown> | null
   accepted_plan: Record<string, unknown> | null
@@ -554,6 +566,7 @@ export interface RelayNodeStatusEvent extends RelayNodeEventEnvelope {
   video_publish_state: 'stopped' | 'connecting' | 'publishing' | 'failed'
   phone_battery_percent: number
   phone_thermal_state: 'none' | 'light' | 'moderate' | 'severe' | 'critical' | 'emergency' | 'shutdown'
+  local_height?: { z_m: number; source: 'flight_controller_altitude'; age_ms: number; reported_at_ms?: number } | null
   device_telemetry?: DeviceTelemetry
 }
 
@@ -863,7 +876,9 @@ function isVoicePlanStep(value: unknown, index: number): value is VoicePlanStep 
     confirm: true,
   }
   if (!isConsoleIntentV1(candidate)) return false
-  if (value.confirm_required !== requiresConfirmation(candidate.name)) return false
+  // Ground COME_HOME requires confirmation; aircraft retains its C1 metadata.
+  // Target class belongs to the compiler's bound roster, not this standalone DTO.
+  if (candidate.name !== 'come_home' && value.confirm_required !== requiresConfirmation(candidate.name)) return false
   return (
     candidate.name !== 'select' ||
     ('ids' in candidate.args && sameIds(candidate.selection, candidate.args.ids))
@@ -1331,7 +1346,11 @@ function isPublicCapabilitiesEvent(value: Record<string, unknown>): boolean {
 
 function isPublicNodeStatusEvent(value: Record<string, unknown>): boolean {
   return hasPublicNodeEnvelope(value, ['virtual_stick_enabled', 'control_authority', 'authority_change_reason',
-    'watchdog_state', 'video_publish_state', 'phone_battery_percent', 'phone_thermal_state', ...(Object.hasOwn(value, 'device_telemetry') ? ['device_telemetry'] : [])]) &&
+    'watchdog_state', 'video_publish_state', 'phone_battery_percent', 'phone_thermal_state', ...(Object.hasOwn(value, 'local_height') ? ['local_height'] : []), ...(Object.hasOwn(value, 'device_telemetry') ? ['device_telemetry'] : [])]) &&
+    (!Object.hasOwn(value, 'local_height') || value.local_height === null || (isRecord(value.local_height) &&
+      hasExactFields(value.local_height, ['z_m', 'source', 'age_ms', ...(Object.hasOwn(value.local_height, 'reported_at_ms') ? ['reported_at_ms'] : [])]) &&
+      isFiniteNumber(value.local_height.z_m) && value.local_height.source === 'flight_controller_altitude' &&
+      isNonNegativeInteger(value.local_height.age_ms) && (!Object.hasOwn(value.local_height, 'reported_at_ms') || isNonNegativeInteger(value.local_height.reported_at_ms)))) &&
     (!Object.hasOwn(value, 'device_telemetry') || isDeviceTelemetry(value.device_telemetry)) &&
     typeof value.virtual_stick_enabled === 'boolean' && typeof value.control_authority === 'boolean' &&
     (value.authority_change_reason === null || (isBoundedNodeText(value.authority_change_reason) && /^[a-z0-9_]+$/.test(value.authority_change_reason))) &&
@@ -1384,6 +1403,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isFiniteNumber(value.spacing) ||
       typeof value.mode !== 'string' ||
       !isCapabilityAdvertisement(value.capability_profile, value.enabled_intent_names) ||
+      (Object.hasOwn(value, 'requires_home_pose') && typeof value.requires_home_pose !== 'boolean') ||
       !isNullableRecord(value.pending) ||
       !isNullableRecord(value.accepted_plan) ||
       !Array.isArray(drones) ||
@@ -1590,7 +1610,7 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   const selection = value.selection as DroneId[]
   if (!hasValidArgs(name, value.args)) return false
   if (requiresConfirmation(name) && !value.confirm) return false
-  if (value.source === 'webcam' && name === 'arm' && !value.confirm) return false
+  if (value.source === 'webcam' && ['arm', 'translate', 'formation_next'].includes(name) && !value.confirm) return false
   return hasValidSelection(name, selection, value.args)
 }
 
@@ -1604,6 +1624,11 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
       return isCameraControlArgs(args)
     case 'robot_peripheral':
       return isRobotPeripheralArgs(args)
+    case 'ground_velocity':
+      return keys.length === 3 && Number.isSafeInteger(args.linear_mm_s) && Number(args.linear_mm_s) >= 0 && Number(args.linear_mm_s) <= 180 &&
+        Number.isSafeInteger(args.angular_mrad_s) && Math.abs(Number(args.angular_mrad_s)) <= 785 &&
+        Number.isSafeInteger(args.duration_ms) && Number(args.duration_ms) >= 1 && Number(args.duration_ms) <= 500 &&
+        ((Number(args.linear_mm_s) > 0 && args.angular_mrad_s === 0) || (args.linear_mm_s === 0 && args.angular_mrad_s !== 0))
     case 'body_pulse':
       return keys.length === 2 && Number.isSafeInteger(args.forward_mm_s) &&
         Number(args.forward_mm_s) !== 0 && Math.abs(Number(args.forward_mm_s)) <= 250 &&

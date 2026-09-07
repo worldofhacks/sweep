@@ -34,8 +34,16 @@ fmt:
     uv run ruff check --fix .
     cd console && pnpm lint --fix
 
-# Start the console dev server
+# Start the immutable operator console on its one fixed port
 console:
+    python3 tools/console.py start
+
+# Run the explicit real-hardware fleet configuration on loopback 8010
+fleet:
+    uv run python -m tools.fleet_relay serve
+
+# Console development (same fixed port; stop the operator console first)
+console-dev:
     cd console && pnpm dev
 
 # Start MediaMTX in the foreground (Ctrl-C stops it)
@@ -43,7 +51,7 @@ media:
     docker compose up mediamtx
 
 # Run the relay with the planner, arbiter, and the SWEEP_ADAPTER_BACKEND adapters; reads .env
-relay host="127.0.0.1" port="8000": _dotenv
+relay host="127.0.0.1" port="8010": _dotenv
     uv run --env-file .env python -m relay.main --host {{host}} --port {{port}}
 
 # Connect a fake bridge node to a running relay (Ctrl-C stops it); reads .env credentials
@@ -57,5 +65,5 @@ _dotenv:
 # Create the GitLab project on labs.gauntletai.com, add the `gitlab` remote, push main
 gitlab-remote:
     glab auth status --hostname labs.gauntletai.com
-    GITLAB_HOST=labs.gauntletai.com glab repo create sweep --public --remoteName gitlab --defaultBranch main --description "One person commands 4 to 6 indoor drones through webcam gestures or spoken natural language, and sees what the swarm sees on a laptop console."
+    GITLAB_HOST=labs.gauntletai.com glab repo create sweep --public --remoteName gitlab --defaultBranch main --description "One operator controls an additive fleet of aerial drones and ground robots, cameras and sensors through one live console."
     git push gitlab main
