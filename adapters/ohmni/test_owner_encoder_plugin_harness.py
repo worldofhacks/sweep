@@ -121,6 +121,7 @@ def test_plugin_install_and_rollback_execute_against_a_temporary_remote_filesyst
     source_before = source.read_bytes()
     plugin_source = Path(__file__).with_name("vendor") / "sweep_encoder_plugin.js"
     sampler_source = Path(__file__).with_name("vendor") / "sweep_encoder_plugin/sampler.js"
+    trace_source = Path(__file__).with_name("vendor") / "sweep_encoder_plugin/trace.js"
     install = Path(__file__).with_name("install_owner_encoder_plugin.sh")
     rollback = Path(__file__).with_name("rollback_owner_encoder_plugin.sh")
 
@@ -128,12 +129,15 @@ def test_plugin_install_and_rollback_execute_against_a_temporary_remote_filesyst
 
     plugin = remote / "files/plugins/sweep_encoder_plugin.js"
     sampler = remote / "files/plugins/sweep_encoder_plugin/sampler.js"
+    trace = remote / "files/plugins/sweep_encoder_plugin/trace.js"
     manifest = remote / "files/plugins/sweep_encoder_plugin.install"
     assert source.read_bytes() == source_before
     assert plugin.read_bytes() == plugin_source.read_bytes()
     assert sampler.read_bytes() == sampler_source.read_bytes()
+    assert trace.read_bytes() == trace_source.read_bytes()
     assert stat.S_IMODE(plugin.stat().st_mode) == 0o600
     assert stat.S_IMODE(sampler.stat().st_mode) == 0o600
+    assert stat.S_IMODE(trace.stat().st_mode) == 0o600
     assert stat.S_IMODE(sampler.parent.stat().st_mode) == 0o700
     assert (
         "vendor_source_sha=e128a740200b7f8d538414c8963109f1ee2f0475b340f9369814ba8446891300"
@@ -145,6 +149,7 @@ def test_plugin_install_and_rollback_execute_against_a_temporary_remote_filesyst
     assert source.read_bytes() == source_before
     assert not plugin.exists()
     assert not sampler.exists()
+    assert not trace.exists()
     assert not sampler.parent.exists()
     assert not manifest.exists()
     assert sampler.parent.parent.exists()
@@ -185,3 +190,4 @@ def test_plugin_layout_matches_the_vendor_flat_loader_and_reviewed_sampler() -> 
     assert 'if (!f.endsWith(".js")) return;' in vendor_source
     assert "sweep_encoder_plugin/sampler.js" not in plugin.read_text()
     assert sampler.read_bytes() == reviewed_sampler.read_bytes()
+    assert "sweep_encoder_plugin/trace" in plugin.read_text()

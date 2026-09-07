@@ -79,6 +79,7 @@ def test_plugin_installer_preserves_reviewed_vendor_source_and_stages_private_mo
     assert f"sha256sum {VENDOR_SOURCE}" in scripts[1]
     assert f"= {VENDOR_SOURCE_SHA} ]" in install
     assert "sweep_encoder_plugin/sampler.js" in install
+    assert "sweep_encoder_plugin/trace.js" in install
     assert "[ ! -e $target ]" in install
     assert "[ ! -e $private_dir ]" in install
     assert "[ ! -e $manifest ]" in install
@@ -91,8 +92,9 @@ def test_plugin_installer_preserves_reviewed_vendor_source_and_stages_private_mo
         in install
     )
     assert "mv /data/local/tmp/sweep-encoder-plugin.Ab12Cd34/sampler.js $target_sampler" in install
+    assert "mv /data/local/tmp/sweep-encoder-plugin.Ab12Cd34/trace.js $target_trace" in install
     assert "mv $source" not in install
-    assert "chown 1000:1000 $target $target_sampler $manifest" in install
+    assert "chown 1000:1000 $target $target_sampler $target_trace $manifest" in install
     assert not any(args[2] == "push" for args, _ in _calls(tmp_path))
 
 
@@ -113,6 +115,6 @@ def test_plugin_rollback_is_hash_guarded_and_leaves_vendor_source_in_place() -> 
     assert r"sha256sum \$source" in script
     assert "grep -Fx 'vendor_source_sha=" in script
     assert r"rmdir \$private_dir" in script
-    assert r"rm \$target \$target_sampler \$manifest" in script
+    assert r"rm \$target \$target_sampler \$target_trace \$manifest" in script
     assert "mv $source" not in script
     assert "telebot_node.js.sweep-owner-encoder" not in script
