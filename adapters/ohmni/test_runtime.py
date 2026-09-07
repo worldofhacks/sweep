@@ -239,18 +239,18 @@ def _clock_corrected_runtime() -> OhmniRuntime:
     )
 
 
-def _signed_heartbeat(*, issued_at: int, expires_at: int) -> dict[str, object]:
+def _signed_heartbeat(*, seq: int, issued_at: int, expires_at: int) -> dict[str, object]:
     frame: dict[str, object] = {
         "v": 1,
         "t": issued_at,
         "type": "control_heartbeat",
-        "event_id": "heartbeat-clock-boundary",
+        "event_id": f"heartbeat-clock-boundary-{seq}",
         "session": SESSION,
         "source": "relay",
         "drone_id": GROUND_ID,
         "connection_epoch": 1,
         "roster_version": 2,
-        "seq": 1,
+        "seq": seq,
         "issued_at": issued_at,
         "expires_at": expires_at,
         "hold_after_ms": 2_000,
@@ -266,12 +266,17 @@ def test_relay_clock_correction_sets_heartbeat_and_command_boundaries(monkeypatc
     node._epoch = 1
     node._roster_version = 2
 
-    node._on_heartbeat(_signed_heartbeat(issued_at=100_000, expires_at=100_001))
+    node._on_heartbeat(_signed_heartbeat(seq=1, issued_at=100_000, expires_at=100_001))
     assert node._last_heartbeat_seq == 1
     assert node._last_heartbeat_expires_at == 100_001
 
-    node._on_heartbeat(_signed_heartbeat(issued_at=100_000, expires_at=100_000))
+    node._on_heartbeat(_signed_heartbeat(seq=2, issued_at=100_000, expires_at=100_000))
     assert node._last_heartbeat_seq == 1
+    assert node._last_heartbeat_expires_at == 100_001
+
+    node._on_heartbeat(_signed_heartbeat(seq=3, issued_at=100_001, expires_at=100_002))
+    assert node._last_heartbeat_seq == 1
+    assert node._last_heartbeat_expires_at == 100_001
 
     at_expiry = command_event(
         t=99_999,
