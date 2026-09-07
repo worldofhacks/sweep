@@ -54,7 +54,7 @@ def build(artifacts: Path, output: Path) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         with tarfile.open(output, "w") as archive:
             for path in sorted(stage.iterdir()):
-                archive.add(path, arcname=path.name)
+                archive.add(path, arcname=path.name, filter=_normalized_tarinfo)
 
 
 def _manifest(artifacts: Path) -> dict[str, dict[str, str]]:
@@ -82,6 +82,17 @@ def _verify(artifacts: Path, manifest: dict[str, dict[str, str]]) -> None:
 def _extract(source: Path, destination: Path) -> None:
     with tarfile.open(source, "r:*") as archive:
         archive.extractall(destination, filter="data")
+
+
+def _normalized_tarinfo(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    info.mtime = 0
+    if info.isdir():
+        info.mode = 0o755
+    elif info.isreg():
+        info.mode = 0o755 if info.mode & 0o111 else 0o644
+    return info
 
 
 def _smoke_import(stage: Path, loader: Path) -> None:
