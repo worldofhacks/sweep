@@ -166,6 +166,8 @@ class OhmniDevice:
                 "spotter_present": self.spotter_present,
                 "last_refusal": self.last_refusal,
             },
+            pose_sample_ns=pose.sample_ns,
+            pose_sample_skew_ns=pose.sample_skew_ns,
         )
 
     def enable(self) -> bool:
