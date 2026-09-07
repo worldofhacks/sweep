@@ -76,6 +76,30 @@ registered build passed 188 core, 51 bridge-node, 14 bench, and 53 probe tests.
 Physical authority acquisition and release remain pending; no new flight was attempted.
 [The source PR](https://github.com/worldofhacks/sweep/pull/312) describes this diagnostic.
 
+## Motion prediction between camera updates
+
+The installed 5.18 key catalog exposes fused aircraft attitude and velocity, plus
+IMU health/calibration information. It does not expose a raw three-axis angular-rate
+or acceleration key. `Attitude` and `Velocity3D` contain their value components,
+without an acquisition timestamp. [DJI's IMUState reference](https://developer.dji.com/api-reference-v5/android-api/Components/IKeyManager/Value_FlightController_Struct_IMUState.html)
+describes calibration states and biases rather than a raw inertial sample stream.
+
+The phone records callback receipt time for these values. Its canonical telemetry
+still has `t_capture=null`; receipt time does not establish acquisition time.
+The shared integration estimator already supports tag, velocity, and height updates
+in `perception/_kalman_replay.py`, while the webcam preview currently supplies only
+tag fixes to a constant-velocity model. The estimator capability exists; a qualified
+live connection from the Mini 3 telemetry and camera producer remains unfinished.
+
+A next implementation can use measured DJI velocity to predict between tag fixes,
+then let accepted tags correct drift. It first needs measured callback rate and
+latency, coordinate alignment, uncertainty bounds, and the camera's changing gimbal
+transform. Raw visual-inertial odometry would additionally require a suitable IMU
+sample stream and sensor calibration. [OpenVINS documents camera/IMU bias, spatial,
+and timing requirements](https://docs.openvins.com/gs-calibration.html). The current
+RC phone's IMU measures the operator-held phone, so it cannot stand in for an
+aircraft-mounted sensor.
+
 ## Sources
 
 - [DJI Mobile SDK Android V5 tag V5.18.0](https://github.com/dji-sdk/Mobile-SDK-Android-V5/tree/07d37cfdff865cdda9d523b00b723c9984575f8f)
