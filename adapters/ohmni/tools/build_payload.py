@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import zipfile
@@ -47,6 +48,7 @@ def build(artifacts: Path, output: Path) -> None:
                 raise ValueError("websockets must be a pure Python wheel")
             wheel.extractall(site_packages)
         _copy_runtime(root, stage)
+        _smoke_import(stage, loader)
         for path in (stage / "musl", stage / "ffmpeg-unpack"):
             shutil.rmtree(path)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +82,30 @@ def _verify(artifacts: Path, manifest: dict[str, dict[str, str]]) -> None:
 def _extract(source: Path, destination: Path) -> None:
     with tarfile.open(source, "r:*") as archive:
         archive.extractall(destination, filter="data")
+
+
+def _smoke_import(stage: Path, loader: Path) -> None:
+    interpreter = stage / "python" / "bin" / "python3.12"
+    if not interpreter.is_file():
+        raise ValueError("Python archive does not contain the expected interpreter")
+    try:
+        subprocess.run(
+            [
+                str(loader),
+                str(interpreter),
+                "-I",
+                "-c",
+                "import adapters.ohmni.runtime; import relay.contracts",
+            ],
+            cwd=stage,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        raise ValueError("packaged musl Python could not start") from error
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"packaged runtime import failed: {error.stderr.strip()}") from error
 
 
 def _copy_runtime(root: Path, stage: Path) -> None:

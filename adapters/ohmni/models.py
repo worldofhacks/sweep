@@ -16,6 +16,7 @@ class GroundStatus:
     pos_quality: float
     state: str
     drive_authority: bool
+    t_ms: int | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
 

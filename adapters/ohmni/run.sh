@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Android launcher. No Docker and no pip re-execution through the unavailable loader path.
+# Android launcher for the packaged musl Python runtime.
 set -eu
 cd /data/local/sweep
 case "${1:-start}" in
@@ -15,7 +15,7 @@ case "${1:-start}" in
         esac
         kill -TERM "$pid" 2>/dev/null || true
       fi
-      # SIGTERM runs nodekit shutdown: manual_move 0 0, sleep, lidar PWM 0 + DTR set.
+      # SIGTERM reaches the runtime handler, which stops and disables local drive.
       tries=0
       while kill -0 "$pid" 2>/dev/null; do
         tries=$((tries + 1))
@@ -44,4 +44,4 @@ export PYTHONPATH=/data/local/sweep
 umask 077
 nohup ./lib/ld-musl-x86_64.so.1 ./python/bin/python3.12 -m adapters.ohmni >node.log 2>&1 &
 echo "$!" > node.pid
-echo 'Node started; local screen is http://127.0.0.1:8765/'
+echo 'Node started; inspect node.log for relay and safety state.'

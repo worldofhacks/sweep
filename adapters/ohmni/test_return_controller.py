@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from relay.auth import sign_event
@@ -22,10 +23,10 @@ def _record(tmp_path: Path) -> Path:
             {
                 "target": {"x_m": 0.0, "y_m": 0.1},
                 "footprint": [
-                    {"x_m": -0.1, "y_m": -0.2},
-                    {"x_m": 0.2, "y_m": -0.2},
-                    {"x_m": 0.2, "y_m": 0.2},
-                    {"x_m": -0.1, "y_m": 0.2},
+                    {"x_m": -0.5, "y_m": -0.5},
+                    {"x_m": 0.5, "y_m": -0.5},
+                    {"x_m": 0.5, "y_m": 0.5},
+                    {"x_m": -0.5, "y_m": 0.5},
                 ],
             }
         ],
@@ -36,6 +37,10 @@ def _record(tmp_path: Path) -> Path:
         "return_id": "room-a-return",
         "approval_id": "approval-17",
         "approval_signer": "map-operator",
+        "session": "session-a",
+        "device_id": 9,
+        "connection_epoch": 4,
+        "odom_origin_id": "origin-7",
         "source_registration_id": "registration-9",
         "pose_source_id": "ohmni-pose",
         "odom_frame": "odom",
@@ -73,6 +78,7 @@ class _Device:
             1.0,
             "idle",
             True,
+            0,
         )
 
     def scan(self) -> RangeScan:
@@ -112,6 +118,9 @@ def _controller(
         stop=device.stop,
         grant_active=lambda: grant,
         epoch=lambda: 4,
+        session="session-a",
+        device_id=9,
+        odom_origin_id="origin-7",
         pose_source_id="ohmni-pose",
         odom_frame="odom",
         monotonic=lambda: 0.0,
@@ -172,3 +181,80 @@ def test_confirmed_resume_stays_on_the_pinned_corridor(tmp_path: Path) -> None:
 
     assert outcome.completed
     assert all(linear >= 0 for linear, _yaw, _duration in device.drives)
+
+
+def _rewrite_record(path: Path, change: Callable[[dict[str, object]], None]) -> None:
+    record = json.loads(path.read_text())
+    change(record)
+    unsigned = {key: value for key, value in record.items() if key != "signature"}
+    record["signature"] = sign_event(unsigned, APPROVAL_KEY)
+    path.write_text(json.dumps(record))
+
+
+def test_return_rejects_a_route_bound_to_another_session(tmp_path: Path) -> None:
+    path = _record(tmp_path)
+    _rewrite_record(path, lambda record: record.__setitem__("session", "other-session"))
+    route = ApprovedReturnRoute.load(path, APPROVAL_KEY)
+
+    outcome = asyncio.run(_controller(route, _Device()).run())
+
+    assert outcome.reason == "return_pose_binding_mismatch"
+
+
+def test_return_rejects_stale_pose_and_future_scan(tmp_path: Path) -> None:
+    route = ApprovedReturnRoute.load(_record(tmp_path), APPROVAL_KEY)
+    device = _Device()
+    device.status = lambda: GroundStatus(  # type: ignore[method-assign]
+        device.x, device.y, device.yaw, 0.0, 0.0, 1.0, 1.0, 1.0, "idle", True, -1_000
+    )
+
+    stale = asyncio.run(_controller(route, device).run())
+
+    assert stale.reason == "return_pose_stale"
+
+    device = _Device()
+    device.scan = lambda: RangeScan(  # type: ignore[method-assign]
+        1, (device.x, device.y, device.yaw), 0.0, 1.0, 0.15, 12.0, [400] * 360
+    )
+    future = asyncio.run(_controller(route, device).run())
+
+    assert future.reason == "return_lidar_stale"
+    assert device.stopped
+
+
+def test_return_rejects_concave_footprint_that_cuts_the_fixed_segment(tmp_path: Path) -> None:
+    path = _record(tmp_path)
+
+    def change(record: dict[str, object]) -> None:
+        geometry = {
+            "type": "measured_corridor_v1",
+            "start": {"x_m": 0.0, "y_m": 0.0},
+            "segments": [
+                {
+                    "target": {"x_m": 2.0, "y_m": 2.0},
+                    "footprint": [
+                        {"x_m": -1.0, "y_m": -1.0},
+                        {"x_m": 3.0, "y_m": -1.0},
+                        {"x_m": 3.0, "y_m": 3.0},
+                        {"x_m": 1.0, "y_m": 3.0},
+                        {"x_m": 1.0, "y_m": 1.0},
+                        {"x_m": -1.0, "y_m": 1.0},
+                    ],
+                }
+            ],
+        }
+        raw = json.dumps(geometry, separators=(",", ":")).encode()
+        record["geometry_bytes_b64"] = base64.b64encode(raw).decode()
+        record["geometry_sha256"] = hashlib.sha256(raw).hexdigest()
+
+    _rewrite_record(path, change)
+
+    try:
+        ApprovedReturnRoute.load(path, APPROVAL_KEY)
+    except ValueError as error:
+        assert (
+            str(error)
+            == "return footprint cannot clear the fixed segment body and stopping distance"
+        )
+    else:
+        raise AssertionError("a concave footprint with an unsafe fixed chord was accepted")

@@ -37,6 +37,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for name in build_payload._RUNTIME_RELAY_MODULES:
         (root / "relay" / name).write_text("# runtime\n")
     monkeypatch.setattr(build_payload, "__file__", str(module))
+    monkeypatch.setattr(build_payload, "_smoke_import", lambda _stage, _loader: None)
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     _archive(artifacts / "python", {"python/bin/python3.12": b"python"})
@@ -79,3 +80,36 @@ def test_payload_refuses_an_artifact_that_changed_after_manifest_verification(
 
     with pytest.raises(ValueError, match="artifact verification failed: ffmpeg"):
         build_payload.build(artifacts, tmp_path / "ohmni-runtime.tar")
+
+
+def test_payload_smoke_import_uses_the_packaged_musl_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = tmp_path / "stage"
+    loader = stage / "lib" / "ld-musl-x86_64.so.1"
+    interpreter = stage / "python" / "bin" / "python3.12"
+    loader.parent.mkdir(parents=True)
+    interpreter.parent.mkdir(parents=True)
+    loader.write_text("")
+    interpreter.write_text("")
+    calls: list[tuple[list[str], Path]] = []
+
+    def run(command: list[str], **kwargs: object) -> None:
+        calls.append((command, kwargs["cwd"]))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(build_payload.subprocess, "run", run)
+
+    build_payload._smoke_import(stage, loader)
+
+    assert calls == [
+        (
+            [
+                str(loader),
+                str(interpreter),
+                "-I",
+                "-c",
+                "import adapters.ohmni.runtime; import relay.contracts",
+            ],
+            stage,
+        )
+    ]

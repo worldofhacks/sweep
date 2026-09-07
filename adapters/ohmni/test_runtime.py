@@ -679,6 +679,10 @@ def _approved_return() -> ApprovedReturnRoute:
         return_id="room-a-return",
         approval_id="approval-17",
         approval_signer="map-operator",
+        session=SESSION,
+        device_id=GROUND_ID,
+        connection_epoch=1,
+        odom_origin_id="origin-7",
         source_registration_id="registration-9",
         pose_source_id="ohmni-pose",
         odom_frame="odom",
@@ -688,10 +692,10 @@ def _approved_return() -> ApprovedReturnRoute:
             ReturnSegment(
                 ReturnPoint(0.05, 0.0),
                 (
-                    ReturnPoint(-0.1, -0.2),
-                    ReturnPoint(0.2, -0.2),
-                    ReturnPoint(0.2, 0.2),
-                    ReturnPoint(-0.1, 0.2),
+                    ReturnPoint(-0.5, -0.5),
+                    ReturnPoint(0.5, -0.5),
+                    ReturnPoint(0.5, 0.5),
+                    ReturnPoint(-0.5, 0.5),
                 ),
             ),
         ),
@@ -719,6 +723,7 @@ def test_confirmed_console_come_home_executes_the_approved_ground_return(
             lidar_mount_z_m=0.25,
             lidar_mount_yaw_deg=0.0,
             return_approval=_approved_return(),
+            odom_origin_id="origin-7",
         ),
         device,
     )

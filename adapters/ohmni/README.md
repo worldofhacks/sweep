@@ -33,6 +33,7 @@ SWEEP_SESSION=replace-with-current-session
 SWEEP_DEVICE_UNIT=9
 SWEEP_NODE_KEY=replace-with-device-key
 SWEEP_ADAPTER_ID=ohmni-9
+SWEEP_ODOM_ORIGIN_ID=measured-odom-origin
 SWEEP_LIDAR_MOUNT_X_M=0.00
 SWEEP_LIDAR_MOUNT_Y_M=0.00
 SWEEP_LIDAR_MOUNT_Z_M=0.25
@@ -50,9 +51,9 @@ adb -s "$ADB_SERIAL" shell /data/local/sweep/run.sh stop
 
 A confirmed `come_home` for a selected ground node is eligible only when the relay has `SWEEP_GROUND_RETURN_ID` and the node has a matching approved return artifact. The command carries only that ID. It does not carry a route, a destination, or a way to alter the route.
 
-The node reads `SWEEP_RETURN_APPROVAL_FILE` and verifies it using the separate `SWEEP_RETURN_APPROVAL_KEY_FILE`. The record is signed by the external approval authority and contains the SHA-256 of the exact base64-encoded measured geometry bytes, the source-registration ID, source/frame binding, and measured `world_to_odom` transform. Its geometry is a `measured_corridor_v1` object with one fixed start and an ordered set of fixed segment targets and footprint polygons. The source-registration ID must equal the transform registration ID.
+The node reads `SWEEP_RETURN_APPROVAL_FILE` and verifies it using the separate `SWEEP_RETURN_APPROVAL_KEY_FILE`. The record is signed by the external approval authority and contains the SHA-256 of the raw measured geometry bytes carried in base64, the session, device ID, connection epoch, odometry-origin ID, source-registration ID, source/frame binding, and measured `world_to_odom` transform. Its geometry is a `measured_corridor_v1` object with one fixed start and an ordered set of fixed segment targets and footprint polygons. The source-registration ID must equal the transform registration ID. The configured `SWEEP_ODOM_ORIGIN_ID` must equal the approved origin ID.
 
-At command admission, the controller binds the current connection epoch and checks the configured pose source and odometry frame. A confirmed start begins at the fixed start; a confirmed resume begins only inside one of the same pinned segment footprints. Before every turn and every forward pulse it requires a current external relay grant, a qualified pose in that epoch, and a current 360-degree scan aligned with that pose. Every scan bin must clear the configured robot footprint radius. It checks the current position against the segment footprint, turns in place, then drives forward. It never asks the planner for a new route and it never commands negative linear velocity. A lost grant, stale pose, changed epoch, changed source/frame binding, stale scan, incomplete footprint clearance, missing record, hash mismatch, or departure from the footprint stops and refuses the return.
+At command admission, the controller checks the approved session, device ID, connection epoch, odometry-origin ID, pose source, and odometry frame against the live node. A confirmed start begins at the fixed start; a confirmed resume begins only inside one of the same pinned segment footprints. Before every turn and every forward pulse it requires a current external relay grant, a qualified pose in that epoch, and a current 360-degree scan aligned with that pose. Every scan bin must clear the robot footprint, stopping distance, and one forward pulse. Each approved polygon is simple, and its fixed segment must maintain that same clearance from every boundary. Before each pulse, the controller verifies the current pose and remaining direct segment preserve the clearance. It never asks the planner for a new route and it never commands negative linear velocity. A lost grant, stale pose, changed epoch, changed source/frame binding, stale scan, incomplete footprint clearance, missing record, hash mismatch, or departure from the footprint stops and refuses the return.
 
 The adapter acknowledges completion after the final pose is inside the approved arrival tolerance. `accepted` and `executing` acknowledgements do not complete a return. A local stop remains in effect after arrival; no return outcome clears an estop latch or reenables a stopped robot.
 
@@ -63,7 +64,7 @@ Before any hardware deployment or motion, record the following alongside the dev
 - review the exact artifact manifest and verify the produced payload contains the musl loader, Python, runtime modules, and no credentials;
 - verify the local STOP, relay HOLD, relay ESTOP, link loss, heartbeat expiry, lost odometry, stale lidar, and spotter withdrawal all stop the robot;
 - measure and record the lidar mounting transform and angle convention for the installed kit;
-- verify the return approval signature, raw geometry SHA-256, source-registration ID, `world_to_odom` measurement, pose source, and frame against the approved map record;
+- verify the return approval signature, raw geometry SHA-256, session, device ID, connection epoch, odometry-origin ID, source-registration ID, `world_to_odom` measurement, pose source, and frame against the approved map record;
 - verify a supervised return on the marked corridor with raw pose, scan, command, acknowledgement, and camera evidence;
 - confirm that the final completion follows a measured arrival pose and that no completion is emitted when the artifact, grant, pose, scan, or footprint check is unavailable.
 
