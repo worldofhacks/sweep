@@ -284,3 +284,24 @@ def test_ground_readiness_rejects_a_pose_identity_from_another_source():
 
     assert transition.membership.value == "degraded"
     assert transition.readiness_reasons == ("pose_identity_not_accepted",)
+
+
+def test_unusable_ground_pose_clears_the_accepted_freshness_evidence():
+    registry = FleetRegistry(telemetry_freshness_ms=1_000, node_types={9: NodeType.GROUND})
+    registry.apply_join(_ground_join(9, "ground-join"))
+    registry.apply_ground_pose_observation(
+        drone_id=9,
+        connection_epoch=1,
+        event_id="pose-1",
+        session=SESSION,
+        source_id="ohmni-pose",
+        frame="odom",
+        t=1_756_700_000_000,
+    )
+    registry.apply_readiness(_ground_readiness(9, "ground-ready"))
+
+    registry.clear_ground_pose_observation(drone_id=9, connection_epoch=1)
+    transition = registry.apply_readiness(_ground_readiness(9, "ground-ready-after-loss"))
+
+    assert transition.membership.value == "degraded"
+    assert transition.readiness_reasons == ("pose_identity_not_accepted",)

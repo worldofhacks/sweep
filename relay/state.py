@@ -456,6 +456,16 @@ class FleetRegistry:
             )
             record.accepted_pose_at = t
 
+    def clear_ground_pose_observation(
+        self, *, drone_id: int, connection_epoch: int
+    ) -> None:
+        with self._lock:
+            record = self._require_current(drone_id, connection_epoch)
+            if record.node_type is not NodeType.GROUND:
+                return
+            record.accepted_pose_identity = None
+            record.accepted_pose_at = None
+
     def apply_graceful_leave(self, request: MembershipRequest) -> MembershipTransition:
         if request.action is not MembershipAction.GRACEFUL_LEAVE:
             raise ValueError("apply_graceful_leave requires a graceful_leave request")
