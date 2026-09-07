@@ -1,9 +1,11 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+import tools.export_phone_navigation_admission as admission_exporter
 from planner.test_navigation import FIXTURE
 from planner.test_navigation_deployment import _flight_deployment_files, deployment_files
 from relay.auth import verify_event_signature
@@ -52,9 +54,13 @@ def test_exported_admission_binds_the_exact_six_approved_artifact_bytes(tmp_path
     unsigned = {name: value for name, value in provenance.items() if name != "signature"}
     key = (tmp_path / "key").read_bytes()
     assert verify_event_signature(unsigned, provenance["signature"], key)
-    for binding in provenance["bindings"]:
+    bindings = {binding["kind"]: binding for binding in provenance["bindings"]}
+    for binding in bindings.values():
         payload = (output / binding["file"]).read_bytes()
         assert hashlib.sha256(payload).hexdigest() == binding["byte_sha256"]
+    assert bindings["map"]["semantic_sha256"] == manifest["map_sha256"]
+    assert bindings["map"]["byte_sha256"] != bindings["map"]["semantic_sha256"]
+    assert bindings["geometry"]["semantic_sha256"] == bindings["geometry"]["byte_sha256"]
     assert json.loads((output / "navigation-admission.json").read_text()) == manifest
 
 
@@ -71,3 +77,38 @@ def test_export_rejects_a_simulation_deployment_and_nonprivate_key(tmp_path):
     key.chmod(0o644)
     with pytest.raises(ValueError, match="mode 0600"):
         export_phone_navigation_admission(deployment, 1, key, tmp_path / "other-output")
+
+
+def test_export_uses_no_follow_private_key_and_leaves_no_partial_output(tmp_path, monkeypatch):
+    deployment, _, _ = _flight_deployment_files(tmp_path)
+    key = _key(tmp_path / "key")
+    key_link = tmp_path / "key-link"
+    os.symlink(key, key_link)
+    with pytest.raises(ValueError, match="regular file"):
+        export_phone_navigation_admission(deployment, 1, key_link, tmp_path / "linked-output")
+
+    output = tmp_path / "atomic-output"
+    def fail_publish(*_):
+        raise OSError("no")
+
+    monkeypatch.setattr(admission_exporter, "_replace_directory", fail_publish)
+    with pytest.raises(OSError, match="no"):
+        export_phone_navigation_admission(deployment, 1, key, output)
+    assert not output.exists()
+    assert not list(tmp_path.glob(".atomic-output.*"))
+
+
+def test_export_revalidates_after_copying_its_artifact_snapshot(tmp_path, monkeypatch):
+    deployment, _, _ = _flight_deployment_files(tmp_path)
+    key = _key(tmp_path / "key")
+    original = admission_exporter._artifact_bytes
+
+    def mutate_after_snapshot(active_deployment, device_id):
+        snapshot = original(active_deployment, device_id)
+        tuning = active_deployment.path.parent / "device-1-navigation.json"
+        tuning.write_text("{}")
+        return snapshot
+
+    monkeypatch.setattr(admission_exporter, "_artifact_bytes", mutate_after_snapshot)
+    with pytest.raises(ValueError, match="tuning|approved profile"):
+        export_phone_navigation_admission(deployment, 1, key, tmp_path / "output")

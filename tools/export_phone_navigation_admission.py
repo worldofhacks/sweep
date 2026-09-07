@@ -6,9 +6,11 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import stat
 from collections.abc import Mapping
 from pathlib import Path
+from tempfile import mkdtemp
 
 from planner.navigation_deployment import load_navigation_deployment, read_document
 from relay.auth import sign_event
@@ -16,6 +18,8 @@ from tools.map_common import parse_document
 
 _MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
 _MAX_KEY_BYTES = 4_096
+_replace_directory = os.replace
+
 _FILENAMES = {
     "navigation_config": "navigation_config.json",
     "map": "map.json",
@@ -49,9 +53,16 @@ def _read_file(path: Path, name: str, maximum: int) -> bytes:
 
 
 def _private_key(path: Path) -> bytes:
-    if path.stat().st_mode & 0o077:
-        raise ValueError("provenance key must have mode 0600")
-    key = _read_file(path, "provenance key", _MAX_KEY_BYTES)
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        raise ValueError("provenance key could not be opened safely") from error
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
+        raise ValueError("provenance key must be one regular file with mode 0600")
+    try:
+        key = _read_file(path, "provenance key", _MAX_KEY_BYTES)
+    except OSError as error:
+        raise ValueError("provenance key could not be opened safely") from error
     if len(key) < 32:
         raise ValueError("provenance key must contain at least 32 bytes")
     return key
@@ -174,6 +185,13 @@ def export_phone_navigation_admission(
     if deployment.approval.mode != "flight":
         raise ValueError("phone navigation admission requires a flight deployment")
     artifacts = _artifact_bytes(deployment, device_id)
+    refreshed = load_navigation_deployment(deployment.path)
+    if (
+        refreshed.approval != deployment.approval
+        or refreshed.config != deployment.config
+        or refreshed.wire_profiles != deployment.wire_profiles
+    ):
+        raise ValueError("navigation deployment changed while its phone bundle was exported")
     profile = deployment.wire_profiles[device_id]
     key = _private_key(Path(provenance_key_path))
     bindings = [
@@ -216,14 +234,27 @@ def export_phone_navigation_admission(
     destination = Path(output_directory)
     if destination.exists():
         raise ValueError("output directory must not already exist")
-    destination.mkdir(mode=0o700)
-    for kind, (encoded, _) in artifacts.items():
-        with (destination / _FILENAMES[kind]).open("xb") as stream:
-            stream.write(encoded)
-        (destination / _FILENAMES[kind]).chmod(0o600)
-    with (destination / "navigation-admission.json").open("xb") as stream:
-        stream.write(encoded_manifest)
-    (destination / "navigation-admission.json").chmod(0o600)
+    if not destination.parent.is_dir():
+        raise ValueError("output directory parent must already exist")
+    staging = Path(mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+    staging.chmod(0o700)
+    try:
+        for kind, (encoded, _) in artifacts.items():
+            target = staging / _FILENAMES[kind]
+            with target.open("xb") as stream:
+                stream.write(encoded)
+            target.chmod(0o600)
+        target = staging / "navigation-admission.json"
+        with target.open("xb") as stream:
+            stream.write(encoded_manifest)
+        target.chmod(0o600)
+        if destination.exists():
+            raise ValueError("output directory was created while the bundle was exported")
+        _replace_directory(staging, destination)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
     return manifest
 
 
