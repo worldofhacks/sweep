@@ -54,7 +54,9 @@ MAX_DRONES = 4
 MAX_QUEUE_LIMIT = 4_096
 MAX_JSON_BYTES = 1_048_576
 MAX_URL_CHARS = 2_048
-MAX_INBOUND_OBSERVATIONS = 4_096
+MAX_INBOUND_OBSERVATIONS = 64
+MAX_INBOUND_OBSERVATION_BYTES = 4 * 64 * 1024
+MAX_CANONICAL_OBSERVATION_BYTES = 64 * 1024
 _ACTIVE_MEMBERSHIPS = frozenset({"registered", "ready", "degraded"})
 _MEMBERSHIPS = _ACTIVE_MEMBERSHIPS | {"leaving", "disconnected"}
 
@@ -156,6 +158,7 @@ class _SocketState:
     binding: LiveBinding
     failure: PublisherTransportError | None = None
     observations: deque[dict[str, object]] = field(default_factory=deque)
+    observation_bytes: int = 0
 
 
 class WebSocketPublisherTransport:
@@ -266,6 +269,7 @@ class WebSocketPublisherTransport:
                 raise PublisherTransportError("localization transport is unavailable")
             accepted = tuple(state.observations)
             state.observations.clear()
+            state.observation_bytes = 0
             return accepted
 
     def close(self) -> None:
@@ -290,14 +294,24 @@ class WebSocketPublisherTransport:
                         raise PublisherTransportError(
                             "localization received an observation for another aircraft"
                         )
+                    encoded = _canonical_json(event)
+                    if len(encoded) > MAX_CANONICAL_OBSERVATION_BYTES:
+                        raise PublisherTransportError(
+                            "localization observation exceeds the canonical byte ceiling"
+                        )
                     with self._lock:
                         if self._states.get(drone_id) is not state:
                             return
-                        if len(state.observations) >= MAX_INBOUND_OBSERVATIONS:
+                        if (
+                            len(state.observations) >= MAX_INBOUND_OBSERVATIONS
+                            or state.observation_bytes + len(encoded)
+                            > MAX_INBOUND_OBSERVATION_BYTES
+                        ):
                             raise PublisherTransportError(
                                 "localization observation stream exceeded its bounded queue"
                             )
                         state.observations.append(dict(event))
+                        state.observation_bytes += len(encoded)
         except Exception:
             self._fail(
                 drone_id,

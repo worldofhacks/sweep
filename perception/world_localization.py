@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
+import stat
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from math import isfinite
 from pathlib import Path
 from typing import Literal
@@ -24,6 +28,8 @@ from tools.map_validate import validate_bundle
 
 _MAX_CACHE_ITEMS = 512
 _MAX_IDENTIFIER_CHARS = 128
+_MAX_CAPTURE_MAPPING_ERROR_MS = 100
+_MAX_EVIDENCE_BYTES = 1_048_576
 
 
 class WorldLocalizationError(ValueError):
@@ -109,14 +115,76 @@ def _pose_matrix(raw: object, name: str) -> np.ndarray:
     return _transform(matrix.tolist(), name)
 
 
+def _derived_event_id(event_id: str, kind: str) -> str:
+    return f"world-{kind}-{sha256(event_id.encode()).hexdigest()}"
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("duplicate JSON key")
+        document[key] = value
+    return document
+
+
+def _evidence_document(path: str | Path, name: str, expected_sha256: str) -> Mapping[str, object]:
+    source = Path(path)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_EVIDENCE_BYTES:
+            raise WorldLocalizationError(f"{name} evidence must be a bounded regular file")
+        chunks: list[bytes] = []
+        remaining = _MAX_EVIDENCE_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+    except OSError as error:
+        raise WorldLocalizationError(f"{name} evidence could not be opened safely") from error
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                raise WorldLocalizationError(
+                    f"{name} evidence could not be closed safely"
+                ) from error
+    if len(payload) > _MAX_EVIDENCE_BYTES:
+        raise WorldLocalizationError(f"{name} evidence exceeds 1 MiB")
+    if sha256(payload).hexdigest() != expected_sha256:
+        raise WorldLocalizationError(f"{name} evidence hash does not match its host pin")
+    try:
+        document = json.loads(payload, object_pairs_hook=_unique_json_object)
+    except (TypeError, ValueError) as error:
+        raise WorldLocalizationError(f"{name} evidence must be JSON") from error
+    if not isinstance(document, Mapping):
+        raise WorldLocalizationError(f"{name} evidence must be a JSON object")
+    return document
+
+
+def _evidence_matches(
+    document: Mapping[str, object], name: str, expected: Mapping[str, object]
+) -> None:
+    if any(document.get(key) != value for key, value in expected.items()):
+        raise WorldLocalizationError(f"{name} evidence does not match its pinned scope")
+
+
 @dataclass(frozen=True, slots=True)
 class WorldEnuTransform:
     transform_id: str
+    sha256: str
     matrix_world_enu: tuple[tuple[float, ...], ...]
     measured: bool
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "transform_id", _identifier(self.transform_id, "transform_id"))
+        object.__setattr__(self, "sha256", _digest(self.sha256, "world ENU transform sha256"))
         if self.measured is not True:
             raise WorldLocalizationError("T_world_enu must be measured")
         matrix = _transform(self.matrix_world_enu, "matrix_world_enu")
@@ -179,6 +247,8 @@ class WorldLocalizationPins:
     telemetry_source_id: str
     telemetry_frame_id: str
     height_datum_id: str
+    height_alignment_artifact_id: str
+    height_alignment_sha256: str
     height_alignment_measured: bool
     capture_clock_mapping_id: str
     camera_calibration_id: str
@@ -201,13 +271,19 @@ class WorldLocalizationPins:
             "telemetry_source_id",
             "telemetry_frame_id",
             "height_datum_id",
+            "height_alignment_artifact_id",
             "capture_clock_mapping_id",
             "camera_calibration_id",
             "camera_pipeline_id",
             "body_extrinsics_id",
         ):
             object.__setattr__(self, name, _identifier(getattr(self, name), name))
-        for name in ("map_content_sha256", "geometry_sha256", "camera_calibration_sha256"):
+        for name in (
+            "map_content_sha256",
+            "geometry_sha256",
+            "camera_calibration_sha256",
+            "height_alignment_sha256",
+        ):
             object.__setattr__(self, name, _digest(getattr(self, name), name))
         if not isinstance(self.world_enu, WorldEnuTransform):
             raise WorldLocalizationError("world_enu must be a measured transform")
@@ -235,9 +311,12 @@ class WorldPose:
 
 @dataclass(frozen=True, slots=True)
 class _CameraFrame:
-    source_id: str
-    capture_relay_ms: int
     calibration_id: str
+
+
+CaptureStamp = tuple[str, str, int]
+CameraKey = tuple[str, int, int, str, str, CaptureStamp]
+BodyKey = tuple[str, int, int, str, CaptureStamp]
 
 
 class WorldLocalizationAdapter:
@@ -250,12 +329,20 @@ class WorldLocalizationAdapter:
         pins: WorldLocalizationPins,
         capture_clock_mapping: ClockMapping,
         *,
+        evidence_paths: Mapping[str, str | Path],
+        body_extrinsics_at_capture: Callable[[Observation, float], BodyExtrinsics | None]
+        | None = None,
         allow_fixture_evidence: bool = False,
     ) -> None:
         self.pins = pins
         if capture_clock_mapping.mapping_id != pins.capture_clock_mapping_id:
             raise WorldLocalizationError("capture clock mapping does not match host pins")
+        if capture_clock_mapping.max_error_ms > _MAX_CAPTURE_MAPPING_ERROR_MS:
+            raise WorldLocalizationError(
+                "capture clock mapping error exceeds control admission bound"
+            )
         self.capture_clock_mapping = capture_clock_mapping
+        self._body_extrinsics_at_capture = body_extrinsics_at_capture
         if pins.uncertainty.evidence_kind == "approved_fixture" and not allow_fixture_evidence:
             raise WorldLocalizationError(
                 "live localization requires recorded_live uncertainty evidence"
@@ -272,6 +359,73 @@ class WorldLocalizationAdapter:
             or manifest.get("frame", {}).get("physical_datum") != pins.physical_datum
         ):
             raise WorldLocalizationError("world bundle does not match host pins")
+        expected_paths = {
+            "geometry": pins.geometry_sha256,
+            "camera_calibration": pins.camera_calibration_sha256,
+            "uncertainty": pins.uncertainty.sha256,
+            "world_enu": pins.world_enu.sha256,
+            "height_alignment": pins.height_alignment_sha256,
+        }
+        if set(evidence_paths) != set(expected_paths):
+            raise WorldLocalizationError(
+                "world localization evidence paths do not match the contract"
+            )
+        evidence = {
+            name: _evidence_document(evidence_paths[name], name, digest)
+            for name, digest in expected_paths.items()
+        }
+        _evidence_matches(
+            evidence["geometry"],
+            "geometry",
+            {
+                "artifact_id": pins.geometry_id,
+                "kind": "geometry",
+                "map_id": pins.map_id,
+                "map_version": pins.map_version,
+            },
+        )
+        _evidence_matches(
+            evidence["camera_calibration"],
+            "camera calibration",
+            {
+                "artifact_id": pins.camera_calibration_id,
+                "kind": "camera_calibration",
+                "camera_pipeline_id": pins.camera_pipeline_id,
+            },
+        )
+        _evidence_matches(
+            evidence["uncertainty"],
+            "uncertainty",
+            {
+                "artifact_id": pins.uncertainty.artifact_id,
+                "kind": "uncertainty",
+                "camera_calibration_id": pins.camera_calibration_id,
+                "camera_pipeline_id": pins.camera_pipeline_id,
+            },
+        )
+        _evidence_matches(
+            evidence["world_enu"],
+            "world ENU transform",
+            {
+                "artifact_id": pins.world_enu.transform_id,
+                "kind": "world_enu_transform",
+                "map_id": pins.map_id,
+                "map_version": pins.map_version,
+                "physical_datum": pins.physical_datum,
+                "matrix_world_enu": [list(row) for row in pins.world_enu.matrix_world_enu],
+            },
+        )
+        _evidence_matches(
+            evidence["height_alignment"],
+            "height alignment",
+            {
+                "artifact_id": pins.height_alignment_artifact_id,
+                "kind": "height_alignment",
+                "map_id": pins.map_id,
+                "telemetry_frame_id": pins.telemetry_frame_id,
+                "height_datum_id": pins.height_datum_id,
+            },
+        )
         tags = manifest.document("tags.yaml").get("tags")
         if not isinstance(tags, list):
             raise WorldLocalizationError("world bundle tags are invalid")
@@ -290,8 +444,9 @@ class WorldLocalizationAdapter:
                 raise WorldLocalizationError("world bundle verified tag is invalid") from error
         if not self._tags:
             raise WorldLocalizationError("world bundle has no tape-verified tag")
-        self._camera_frames: OrderedDict[str, _CameraFrame] = OrderedDict()
-        self._body_cameras: OrderedDict[int, np.ndarray] = OrderedDict()
+        self._camera_frames: OrderedDict[CameraKey, _CameraFrame] = OrderedDict()
+        self._body_cameras: OrderedDict[BodyKey, BodyExtrinsics] = OrderedDict()
+        self._connection_epoch: int | None = None
 
     def ingest(self, event: Observation, *, connection_epoch: int) -> tuple[object, ...]:
         """Consume one admitted observation and return ordinary fuser measurements."""
@@ -304,6 +459,10 @@ class WorldLocalizationAdapter:
             raise WorldLocalizationError(
                 "canonical observation does not match current aircraft epoch"
             )
+        if self._connection_epoch != connection_epoch:
+            self._connection_epoch = connection_epoch
+            self._camera_frames.clear()
+            self._body_cameras.clear()
         payload = submission.payload
         kind = payload["kind"]
         if kind == "camera_frame":
@@ -319,7 +478,20 @@ class WorldLocalizationAdapter:
         return ()
 
     def project_world(self, snapshot: ControlLocalizationSnapshot) -> WorldPose | None:
-        if snapshot.position_map_enu_m is None or snapshot.covariance_map_enu_m2 is None:
+        if (
+            self._connection_epoch is None
+            or snapshot.drone_id != self.pins.drone_id
+            or snapshot.connection_epoch != self._connection_epoch
+            or snapshot.map_id != self.pins.map_id
+            or snapshot.geometry_id != self.pins.geometry_id
+            or snapshot.capture_clock_id != self.pins.capture_clock_mapping_id
+            or not snapshot.control_eligible
+            or snapshot.status != "ready"
+            or snapshot.fix_age_s is None
+            or snapshot.fix_age_s < 0
+            or snapshot.position_map_enu_m is None
+            or snapshot.covariance_map_enu_m2 is None
+        ):
             return None
         transform = self.pins.world_enu.matrix
         rotation = transform[:3, :3]
@@ -335,22 +507,57 @@ class WorldLocalizationAdapter:
             _covariance(covariance, "world covariance"),
         )
 
-    def _capture_relay_ms(self, event: Observation) -> int:
+    def _capture_stamp(self, event: Observation) -> CaptureStamp:
         submission = event.submission
         if submission.clock_mapping_id != self.pins.capture_clock_mapping_id:
             raise WorldLocalizationError("canonical observation clock mapping is unpinned")
         if submission.t_capture is None:
             raise WorldLocalizationError("canonical observation requires a capture timestamp")
+        return (
+            submission.t_capture.clock_id,
+            submission.t_capture.unit,
+            submission.t_capture.value,
+        )
+
+    def _capture_relay_ms(self, event: Observation) -> int:
+        self._capture_stamp(event)
         try:
-            return self.capture_clock_mapping.relay_ms(submission.t_capture)
+            return self.capture_clock_mapping.relay_ms(event.submission.t_capture)
         except ValueError as error:
             raise WorldLocalizationError("canonical capture timestamp is invalid") from error
+
+    @staticmethod
+    def _require_positive_confidence(event: Observation) -> None:
+        if event.submission.confidence <= 0:
+            raise WorldLocalizationError("canonical evidence requires positive confidence")
+
+    def _camera_key(self, event: Observation, image_id: str) -> CameraKey:
+        submission = event.submission
+        return (
+            submission.session,
+            submission.device_id,
+            submission.connection_epoch,
+            submission.source_id,
+            image_id,
+            self._capture_stamp(event),
+        )
+
+    def _body_key(self, event: Observation, source_id: str | None = None) -> BodyKey:
+        submission = event.submission
+        return (
+            submission.session,
+            submission.device_id,
+            submission.connection_epoch,
+            source_id if source_id is not None else submission.source_id,
+            self._capture_stamp(event),
+        )
 
     def _ingest_camera_frame(self, event: Observation) -> None:
         submission = event.submission
         payload = submission.payload
         if submission.source_id != self.pins.tag_source_id or submission.frame != "camera":
             raise WorldLocalizationError("camera frame source is unpinned")
+        self._require_positive_confidence(event)
         if payload.get("calibration_id") != self.pins.camera_calibration_id:
             raise WorldLocalizationError("camera frame calibration is unpinned")
         image_id = payload.get("image_id")
@@ -358,12 +565,8 @@ class WorldLocalizationAdapter:
             raise WorldLocalizationError("camera frame image identity is invalid")
         self._remember(
             self._camera_frames,
-            image_id,
-            _CameraFrame(
-                submission.source_id,
-                self._capture_relay_ms(event),
-                self.pins.camera_calibration_id,
-            ),
+            self._camera_key(event, image_id),
+            _CameraFrame(self.pins.camera_calibration_id),
         )
 
     def _ingest_body_camera(self, event: Observation) -> None:
@@ -371,23 +574,38 @@ class WorldLocalizationAdapter:
         payload = submission.payload
         if submission.source_id != self.pins.body_pose_source_id or submission.frame != "body":
             raise WorldLocalizationError("body-camera source is unpinned")
+        self._require_positive_confidence(event)
         pose = payload.get("pose")
         if not isinstance(pose, Mapping) or (pose.get("parent_frame"), pose.get("child_frame")) != (
             "body",
             "camera",
         ):
             raise WorldLocalizationError("dynamic extrinsics must be a body-to-camera pose")
-        self._remember(
-            self._body_cameras,
-            self._capture_relay_ms(event),
-            _pose_matrix(pose, "body pose"),
-        )
+        capture_time = self._control_capture_time(self._capture_relay_ms(event))
+        if self._body_extrinsics_at_capture is None:
+            raise WorldLocalizationError(
+                "dynamic extrinsics lack measured gimbal and attitude timing"
+            )
+        measured = self._body_extrinsics_at_capture(event, capture_time)
+        if not isinstance(measured, BodyExtrinsics):
+            raise WorldLocalizationError("dynamic extrinsics evidence is unavailable")
+        if (
+            measured.extrinsics_id != self.pins.body_extrinsics_id
+            or measured.source_id != self.pins.tag_source_id
+            or measured.capture_time != capture_time
+            or measured.gimbal_time != capture_time
+            or measured.attitude_time != capture_time
+            or not np.allclose(measured.matrix, _pose_matrix(pose, "body pose"), rtol=0, atol=1e-9)
+        ):
+            raise WorldLocalizationError("dynamic extrinsics do not prove this capture-time pose")
+        self._remember(self._body_cameras, self._body_key(event), measured)
 
     def _tag_fix(self, event: Observation) -> TagFix:
         submission = event.submission
         payload = submission.payload
         if submission.source_id != self.pins.tag_source_id or submission.frame != "camera":
             raise WorldLocalizationError("tag observation source is unpinned")
+        self._require_positive_confidence(event)
         if payload.get("pose_accepted") is not True or payload.get("reason") != "pose":
             raise WorldLocalizationError("tag observation pose was not accepted")
         tag_id = payload.get("tag_id")
@@ -396,11 +614,14 @@ class WorldLocalizationAdapter:
         size = _finite(payload.get("size_m"), "tag size")
         if not np.isclose(size, self._sizes[tag_id], rtol=0, atol=1e-6):
             raise WorldLocalizationError("tag observation size does not match the surveyed tag")
-        camera_frame = self._camera_frames.get(payload.get("image_id"))
+        image_id = payload.get("image_id")
+        if type(image_id) is not str:
+            raise WorldLocalizationError("tag observation image identity is invalid")
+        camera_frame = self._camera_frames.get(self._camera_key(event, image_id))
         capture_ms = self._capture_relay_ms(event)
-        if camera_frame is None or camera_frame.capture_relay_ms != capture_ms:
+        if camera_frame is None:
             raise WorldLocalizationError("tag observation lacks a matching captured camera frame")
-        body_camera = self._body_cameras.get(capture_ms)
+        body_camera = self._body_cameras.get(self._body_key(event, self.pins.body_pose_source_id))
         if body_camera is None:
             raise WorldLocalizationError("tag observation lacks capture-time body extrinsics")
         pose = payload.get("tag_pose")
@@ -412,7 +633,7 @@ class WorldLocalizationAdapter:
         world_body = (
             self._tags[tag_id]
             @ np.linalg.inv(_pose_matrix(pose, "camera tag pose"))
-            @ np.linalg.inv(body_camera)
+            @ np.linalg.inv(np.asarray(body_camera.matrix))
         )
         enu_world = np.linalg.inv(self.pins.world_enu.matrix)
         enu_body = enu_world @ world_body
@@ -437,17 +658,18 @@ class WorldLocalizationAdapter:
             extrinsics=BodyExtrinsics(
                 extrinsics_id=self.pins.body_extrinsics_id,
                 source_id=self.pins.tag_source_id,
-                matrix=tuple(tuple(float(value) for value in row) for row in body_camera),
-                capture_time=capture_time,
-                gimbal_time=capture_time,
-                attitude_time=capture_time,
-                measured=True,
+                matrix=body_camera.matrix,
+                capture_time=body_camera.capture_time,
+                gimbal_time=body_camera.gimbal_time,
+                attitude_time=body_camera.attitude_time,
+                measured=body_camera.measured,
             ),
         )
 
     def _telemetry(self, event: Observation) -> tuple[VelocityObservation, HeightObservation]:
         submission = event.submission
         payload = submission.payload
+        self._require_positive_confidence(event)
         if (
             submission.source_id != self.pins.telemetry_source_id
             or submission.frame != self.pins.telemetry_frame_id
@@ -470,7 +692,7 @@ class WorldLocalizationAdapter:
         )
         capture_time = self._control_capture_time(self._capture_relay_ms(event))
         common = dict(
-            event_id=submission.event_id,
+            event_id=_derived_event_id(submission.event_id, "velocity"),
             drone_id=self.pins.drone_id,
             connection_epoch=submission.connection_epoch,
             map_id=self.pins.map_id,
@@ -488,7 +710,7 @@ class WorldLocalizationAdapter:
                 source_id=self.pins.telemetry_source_id,
             ),
             HeightObservation(
-                **common,
+                **{**common, "event_id": _derived_event_id(submission.event_id, "height")},
                 height_map_enu_m=float(enu_position[2]),
                 variance_m2=self.pins.uncertainty.height_variance_enu_m2,
                 source_id=self.pins.telemetry_source_id,

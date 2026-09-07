@@ -73,15 +73,24 @@ class WorldLocalizationRuntimeConfig:
             raise ValueError("world localization devices must be a nonempty array")
         adapters: dict[int, WorldLocalizationAdapter] = {}
         for item in raw["devices"]:
-            item = _mapping(item, {"pins", "capture_clock_mapping"}, "world localization device")
+            item = _mapping(
+                item,
+                {"pins", "capture_clock_mapping", "evidence_paths"},
+                "world localization device",
+            )
             pins = _pins(item["pins"])
             if pins.uncertainty.evidence_kind != "recorded_live":
                 raise ValueError(
                     "runtime configuration requires recorded_live uncertainty evidence"
                 )
             mapping = _clock_mapping(item["capture_clock_mapping"])
+            evidence_paths = _evidence_paths(item["evidence_paths"], source.parent)
             adapter = WorldLocalizationAdapter(
-                source.parent / raw["bundle"], accepted_versions, pins, mapping
+                source.parent / raw["bundle"],
+                accepted_versions,
+                pins,
+                mapping,
+                evidence_paths=evidence_paths,
             )
             publisher_drone = publisher.drones.get(pins.drone_id)
             if publisher_drone is None:
@@ -132,6 +141,24 @@ def _clock_mapping(raw: object) -> ClockMapping:
     return ClockMapping(**dict(_mapping(raw, fields, "capture clock mapping")))
 
 
+def _evidence_paths(raw: object, root: Path) -> Mapping[str, Path]:
+    names = {
+        "geometry",
+        "camera_calibration",
+        "uncertainty",
+        "world_enu",
+        "height_alignment",
+    }
+    value = _mapping(raw, names, "world localization evidence paths")
+    result: dict[str, Path] = {}
+    for name in names:
+        path = value[name]
+        if type(path) is not str or not path:
+            raise ValueError("world localization evidence path is invalid")
+        result[name] = root / path
+    return MappingProxyType(result)
+
+
 def _pins(raw: object) -> WorldLocalizationPins:
     fields = {
         "drone_id",
@@ -146,6 +173,8 @@ def _pins(raw: object) -> WorldLocalizationPins:
         "telemetry_source_id",
         "telemetry_frame_id",
         "height_datum_id",
+        "height_alignment_artifact_id",
+        "height_alignment_sha256",
         "height_alignment_measured",
         "capture_clock_mapping_id",
         "camera_calibration_id",
@@ -158,7 +187,7 @@ def _pins(raw: object) -> WorldLocalizationPins:
     value = _mapping(raw, fields, "world localization pins")
     transform = _mapping(
         value["world_enu"],
-        {"transform_id", "matrix_world_enu", "measured"},
+        {"transform_id", "sha256", "matrix_world_enu", "measured"},
         "world ENU transform",
     )
     uncertainty = _mapping(

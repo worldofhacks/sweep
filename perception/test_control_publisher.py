@@ -21,6 +21,7 @@ from perception.control_publisher import (
     _enqueue_json_line,
     _run_live,
     _run_replay,
+    _SocketState,
     _validate_auth_accepted,
 )
 from relay.control_frames import ControlLocalizationFrame
@@ -816,6 +817,39 @@ def test_websocket_transport_cannot_reopen_after_shutdown():
 
     with pytest.raises(PublisherTransportError, match="closed"):
         transport.authenticate(1, "localization-secret-for-drone-1-key", "session-1")
+
+
+def test_websocket_observation_queue_rejects_item_and_total_byte_overflow():
+    class Socket:
+        def __init__(self, messages):
+            self.messages = iter(messages)
+            self.closed = False
+
+        def recv(self):
+            return next(self.messages)
+
+        def close(self):
+            self.closed = True
+
+    oversized = WebSocketPublisherTransport("ws://relay.example/ws")
+    oversized_socket = Socket(
+        [json.dumps({"type": "observation", "device_id": 1, "blob": "x" * 65_536})]
+    )
+    oversized_state = _SocketState(oversized_socket, binding())
+    oversized._states[1] = oversized_state
+    oversized._drain(1, oversized_state)
+    assert oversized_state.failure is not None
+    assert not oversized_state.observations
+
+    bounded = WebSocketPublisherTransport("ws://relay.example/ws")
+    message = json.dumps({"type": "observation", "device_id": 1, "blob": "x" * 50_000})
+    bounded_socket = Socket([message] * 6)
+    bounded_state = _SocketState(bounded_socket, binding())
+    bounded._states[1] = bounded_state
+    bounded._drain(1, bounded_state)
+    assert bounded_state.failure is not None
+    assert len(bounded_state.observations) == 5
+    assert bounded_state.observation_bytes < 4 * 64 * 1024
 
 
 def test_live_observation_drain_uses_the_authenticated_aircraft_socket(tmp_path):
