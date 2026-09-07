@@ -1,5 +1,7 @@
 package org.worldofhacks.sweep.bridge
 
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import dji.sdk.keyvalue.key.AirLinkKey
 import dji.sdk.keyvalue.key.BatteryKey
@@ -15,6 +17,7 @@ import dji.sdk.keyvalue.value.common.LocationCoordinate3D
 import dji.sdk.keyvalue.value.common.Velocity3D
 import dji.sdk.keyvalue.value.flightcontroller.FlightMode
 import dji.v5.common.callback.CommonCallbacks
+import dji.v5.common.error.IDJIError
 import dji.v5.manager.KeyManager
 import kotlin.math.abs
 import kotlin.math.cos
@@ -101,6 +104,26 @@ internal class ProbeAircraft(
     private var signalQuality: Int? = null
     private var virtualStickEnabled = false
     private var authorityLostReason: String? = null
+    private val altitudePollHandler = Handler(Looper.getMainLooper())
+    private val altitudeHardwareKey: DJIKey<Double> by lazy { KeyTools.createKey(FlightControllerKey.KeyAltitude) }
+    private val altitudePoller = AltitudeHardwarePoller(
+        scheduler = AltitudePollScheduler { delayMs, action ->
+            altitudePollHandler.postDelayed(action, delayMs)
+        },
+        query = AltitudeHardwareQuery { callback ->
+            KeyManager.getInstance().getValue(
+                altitudeHardwareKey,
+                object : CommonCallbacks.CompletionCallbackWithParam<Double> {
+                    override fun onSuccess(value: Double?) = callback.onSuccess(value)
+
+                    override fun onFailure(error: IDJIError) = callback.onFailure()
+                },
+            )
+        },
+        monotonicNowMs = SystemClock::elapsedRealtime,
+        onSample = ::receivedHardwareAltitude,
+        guard = lock,
+    )
     private var hardware = HardwareProfile(
         aircraftModel = HardwareProfile.UNREPORTED,
         aircraftFirmware = HardwareProfile.UNREPORTED,
@@ -115,6 +138,7 @@ internal class ProbeAircraft(
     private val bindings: List<Binding<*>> = listOf(
         Binding("KeyConnection", FlightControllerKey.KeyConnection) { connected ->
             aircraftConnected = connected
+            altitudePoller.connectionChanged(connected)
             if (!connected) {
                 origin = null
                 altitude = null
@@ -126,7 +150,9 @@ internal class ProbeAircraft(
         Binding("KeyAircraftVelocity", FlightControllerKey.KeyAircraftVelocity) { velocity = it },
         Binding("KeyAircraftAttitude", FlightControllerKey.KeyAircraftAttitude) { attitude = it },
         Binding("KeyGimbalAttitude", GimbalKey.KeyGimbalAttitude, ComponentIndexType.LEFT_OR_MAIN) { },
-        Binding("KeyAltitude", FlightControllerKey.KeyAltitude) { altitude = it.takeIf { value -> value.isFinite() } },
+        Binding("KeyAltitude", FlightControllerKey.KeyAltitude) { value ->
+            value.takeIf { it.isFinite() }?.let { altitude = it }
+        },
         Binding("KeyUltrasonicHeight", FlightControllerKey.KeyUltrasonicHeight) { ultrasonicHeightDm = it },
         Binding("KeyFlightMode", FlightControllerKey.KeyFlightMode) { flightMode = it },
         Binding("KeyAreMotorsOn", FlightControllerKey.KeyAreMotorsOn) { motorsOn = it },
@@ -164,6 +190,7 @@ internal class ProbeAircraft(
             Triple(first, names.map(byName::getValue), ledger.snapshot())
         }
         registered.forEach { it.listen(manager) }
+        altitudePoller.attach()
         if (registered.isNotEmpty()) {
             log(
                 "Telemetry keys",
@@ -178,6 +205,7 @@ internal class ProbeAircraft(
 
     fun detach() {
         synchronized(lock) { if (!attached) return }
+        altitudePoller.detach()
         // The same holder every listener was registered with: MSDK v5 removes them by holder,
         // so the next attach() starts from none and cannot stack a second listener on a key.
         KeyManager.getInstance().cancelListen(holder)
@@ -208,6 +236,7 @@ internal class ProbeAircraft(
             Pair(names.map(byName::getValue), ledger.snapshot())
         }
         registered.forEach { it.listen(manager) }
+        altitudePoller.connectionChanged(connected)
         if (connected) {
             val late = if (registered.isEmpty()) "all listeners were registered before the aircraft connected" else "${registered.size} listeners registered only now"
             log("Telemetry keys", "product connected; isKeySupported now: ${support(statuses) { it.supportedAtConnect }}; $late.")
@@ -274,6 +303,9 @@ internal class ProbeAircraft(
     private fun <T : Any> received(binding: Binding<T>, value: T) {
         val now = System.currentTimeMillis()
         val (first, sinceAttachMs) = synchronized(lock) {
+            if (binding.name == "KeyAltitude" && (value as? Double)?.isFinite() == true) {
+                altitudePoller.listenerSampleReceived()
+            }
             rates.tick(binding.name, now)
             val status = if (ledger.value(binding.name, now)) ledger.status(binding.name) else null
             binding.accept(value)
@@ -302,6 +334,14 @@ internal class ProbeAircraft(
                 rawRecorder.recordGimbalAttitudeDegrees(attitude.yaw, attitude.pitch, attitude.roll)
                 captureAlignment?.recordGimbal(AttitudeSample(attitude.yaw, attitude.pitch, attitude.roll, SystemClock.elapsedRealtime()))
             }
+        }
+        publish()
+    }
+
+    private fun receivedHardwareAltitude(value: Double, receivedAtMonotonicMs: Long) {
+        synchronized(lock) {
+            altitude = value
+            altitudeReceivedAtMonotonicMs = receivedAtMonotonicMs
         }
         publish()
     }
