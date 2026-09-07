@@ -145,7 +145,7 @@ A `consensus` object in `localizer` can require multiple tag IDs before the prev
 filter accepts a frame. It has `minimum_distinct_tags`, `maximum_candidate_tags`,
 `maximum_translation_residual_m`, and `maximum_rotation_residual_rad`. Set the
 minimum to 2 for two-tag preview and bound candidates to the maximum expected mapped
-tags in one image (at most 12). Choose the residual bounds from recorded-frame
+tags in one image (at most 6). Choose the residual bounds from recorded-frame
 evaluation for the camera and mounting. Every selected pair must meet both residual
 limits; equal-size, incompatible clusters are rejected rather than selected by ID.
 The frame report lists candidate IDs, inliers, outliers, and each candidate's
