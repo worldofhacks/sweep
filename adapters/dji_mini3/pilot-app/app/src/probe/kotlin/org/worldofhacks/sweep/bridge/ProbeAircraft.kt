@@ -226,6 +226,7 @@ internal class ProbeAircraft(
         val answers = if (connected) bindings.associate { it.name to it.supported(manager) } else emptyMap()
         val (registered, statuses) = synchronized(lock) {
             aircraftConnected = connected
+            altitudePoller.connectionChanged(connected)
             if (!connected) {
                 rcConnected = false
                 origin = null
@@ -236,7 +237,6 @@ internal class ProbeAircraft(
             Pair(names.map(byName::getValue), ledger.snapshot())
         }
         registered.forEach { it.listen(manager) }
-        altitudePoller.connectionChanged(connected)
         if (connected) {
             val late = if (registered.isEmpty()) "all listeners were registered before the aircraft connected" else "${registered.size} listeners registered only now"
             log("Telemetry keys", "product connected; isKeySupported now: ${support(statuses) { it.supportedAtConnect }}; $late.")
