@@ -304,7 +304,6 @@ function poseCaptureAlignment(value: unknown): PoseCaptureAlignment | null {
   const numericFields = ['frame_capture_error_ms', 'gimbal_callback_latency_ms', 'body_attitude_callback_latency_ms', 'gimbal_callback_orientation_error_deg', 'body_attitude_callback_orientation_error_deg', 'gimbal_angular_rate_bound_deg_s', 'body_angular_rate_bound_deg_s', 'max_extrinsics_angle_error_deg'] as const
   const numbers = numericFields.map(field => number(result[field]))
   if (!alignmentSha || !calibrationSha || times.some(value => !value) || !gimbal || !body || numbers.some(value => value === null || value < 0)) return null
-  if (times[0]!.clock_id !== 'dji_stream_presentation_ms' || times[0]!.unit !== 'ms' || [times[1]!, times[2]!].some(time => time.clock_id !== 'phone_elapsed_realtime_ms' || time.unit !== 'ms')) return null
   return freeze({
     v: 1,
     alignment_config_id: text(result.alignment_config_id)!,

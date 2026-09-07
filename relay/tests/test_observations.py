@@ -636,7 +636,7 @@ def test_phone_capture_alignment_fixture_requires_its_host_clock_mapping() -> No
     assert rejected.value.code == "clock_mapping_required"
 
     raw["clock_mapping_id"] = mapping.mapping_id
-    raw["payload"]["capture_alignment"]["frame_pts"]["clock_id"] = "other"
+    raw["payload"]["capture_alignment"]["frame_pts"]["unit"] = "us"
     with pytest.raises(ObservationError) as invalid_clock:
         ObservationSubmission.parse({key: value for key, value in raw.items() if key != "t_ingest"})
-    assert invalid_clock.value.code == "invalid_payload"
+    assert invalid_clock.value.code == "invalid_observation"

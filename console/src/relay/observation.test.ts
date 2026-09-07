@@ -86,7 +86,7 @@ describe('observation v1 console mirror', () => {
     }
   })
 
-  test('rejects a capture alignment with an invalid proof clock or no host mapping', () => {
+  test('rejects a malformed capture alignment or missing host mapping', () => {
     const value = observation({
       kind: 'pose',
       pose: {
@@ -104,7 +104,7 @@ describe('observation v1 console mirror', () => {
         parent_frame: 'body', child_frame: 'camera',
         x_m: 0, y_m: 0, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1,
       },
-      capture_alignment: { ...captureAlignment(), frame_pts: { clock_id: 'other', unit: 'ms', value: 1000 } },
+      capture_alignment: { ...captureAlignment(), frame_pts: { clock_id: 'dji_stream_presentation_ms', unit: 'us', value: 1000 } },
     })
     clock.frame = 'body'
     expect(parseObservation(clock)).toBeNull()
