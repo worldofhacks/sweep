@@ -97,3 +97,87 @@ def test_calibration_runner_capture_recovers_raycast_lidar_convention(
     assert candidate["offset_deg"] == pytest.approx(offset_deg, abs=0.2)
     assert simulation.device.motion is None
     assert not simulation.device.enabled
+
+
+_WALLS = (
+    ((-4.0, -3.0), (4.5, -2.5)),
+    ((4.5, -2.5), (3.2, 3.8)),
+    ((3.2, 3.8), (-1.0, 4.6)),
+    ((-1.0, 4.6), (-4.8, 1.7)),
+    ((-4.8, 1.7), (-4.0, -3.0)),
+)
+
+
+def _cross(left: tuple[float, float], right: tuple[float, float]) -> float:
+    return left[0] * right[1] - left[1] * right[0]
+
+
+def _wall_distance(origin: tuple[float, float], direction: tuple[float, float]) -> float:
+    distances = []
+    for start, end in _WALLS:
+        edge = (end[0] - start[0], end[1] - start[1])
+        denominator = _cross(direction, edge)
+        if abs(denominator) < 1e-12:
+            continue
+        delta = (start[0] - origin[0], start[1] - origin[1])
+        distance = _cross(delta, edge) / denominator
+        fraction = _cross(delta, direction) / denominator
+        if distance > 0 and 0 <= fraction <= 1:
+            distances.append(distance)
+    assert distances
+    return min(distances)
+
+
+def _wall_revolution(
+    simulation: RunnerSimulation, *, angle_sign: int, offset_deg: float
+) -> RawRevolution:
+    pose = simulation.device.odometry.snapshot(simulation.clock())
+    yaw = math.radians(pose.yaw_deg)
+    sensor = (
+        pose.x + math.cos(yaw) * _MOUNT_X_M - math.sin(yaw) * _MOUNT_Y_M,
+        pose.y + math.sin(yaw) * _MOUNT_X_M + math.cos(yaw) * _MOUNT_Y_M,
+    )
+    points = []
+    for angle_deg in range(360):
+        bearing = yaw + math.radians(offset_deg + angle_sign * angle_deg)
+        direction = (math.cos(bearing), math.sin(bearing))
+        points.append(
+            Measurement(
+                angle_deg == 0,
+                15,
+                float(angle_deg),
+                _wall_distance(sensor, direction) * 1_000.0,
+            )
+        )
+    return RawRevolution(tuple(points), simulation.last_scan)
+
+
+@pytest.mark.parametrize(
+    ("angle_sign", "offset_deg"),
+    ((1, 31.4), (-1, -47.7)),
+)
+def test_calibration_runner_recovers_uniform_angle_asymmetric_room_scan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, angle_sign: int, offset_deg: float
+) -> None:
+    simulation = RunnerSimulation(monkeypatch)
+    simulation.device.lidar.raw_revolution = lambda _now: _wall_revolution(  # type: ignore[method-assign]
+        simulation, angle_sign=angle_sign, offset_deg=offset_deg
+    )
+    capture_path = tmp_path / "capture.json"
+    CalibrationRunner(
+        simulation.device,
+        simulation.lease,
+        capture_path,
+        monotonic=simulation.clock,
+        sleep=simulation.sleep,
+        boot_id="simulation-boot",
+        executed_bundle_source_sha256="a" * 64,
+    ).run()
+
+    result = run(capture_path, tmp_path / "candidate.json")
+
+    assert result["approval_status"] == "unapproved_candidate", json.dumps(result, indent=2)
+    assert result["refusal_reasons"] == []
+    candidate = result["candidate"]
+    assert candidate["angle_sign"] == angle_sign
+    assert candidate["offset_deg"] == pytest.approx(offset_deg, abs=1.0)
