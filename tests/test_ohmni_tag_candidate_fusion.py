@@ -24,6 +24,9 @@ from tools.ohmni_tag_candidate_fusion import (
     fuse_observations,
     run,
 )
+from tools.ohmni_tag_candidate_fusion import (
+    _request as parse_fusion_request,
+)
 from tools.ohmni_world_registration import register_documents
 
 IDENTITY = [
@@ -156,6 +159,24 @@ def _request() -> dict[str, object]:
     }
 
 
+def _local_odom_request() -> dict[str, object]:
+    return {
+        "schema_version": 4,
+        "kind": "ohmni_tag_candidate_fusion_request",
+        "candidate_mode": "local_odom",
+        "source_scopes": SOURCE_SCOPES,
+        "odom_frame": "odom",
+        "calibration_id": CALIBRATION_ID,
+        "maximum_association_error_ns": 1_000,
+        "maximum_translation_spread_m": 0.02,
+        "maximum_rotation_spread_rad": 0.02,
+        "minimum_observations_per_tag": 2,
+        "observations": {"path": "observations.jsonl", "sha256": "0" * 64},
+        "calibration": {"path": "calibration.json", "sha256": "0" * 64},
+        "mount": {"path": "mount.json", "sha256": "0" * 64},
+    }
+
+
 def _event(
     event_id: str,
     frame: str,
@@ -280,6 +301,24 @@ def _fuse(events: list[Observation], *, vertical: bool = True) -> dict[str, obje
     )
 
 
+def _fuse_local_odom(events: list[Observation]) -> dict[str, object]:
+    request = parse_fusion_request(_local_odom_request())
+    calibration = _calibration(
+        _calibration_document(), {"path": "calibration.json", "sha256": "c" * 64}
+    )
+    return fuse_observations(
+        events,
+        request=request,
+        calibration=calibration,
+        mount=_mount(_mount_document(), calibration),
+        registration=None,
+        input_pins={
+            name: {"path": f"{name}.json", "sha256": name[0] * 64}
+            for name in ("observations", "calibration", "mount")
+        },
+    )
+
+
 def test_fusion_uses_typed_canonical_observations_and_weighted_pose_chain() -> None:
     events = []
     for tag_id, x_m in ((0, 1.0), (1, 2.0)):
@@ -322,6 +361,84 @@ def test_fusion_without_measured_vertical_datum_is_explicitly_odom_only() -> Non
     assert result["candidate_frame"] == "odom"
     assert "T_odom_tag" in result["candidates"][0]
     assert "T_world_tag" not in result["candidates"][0]
+
+
+def test_local_odom_mode_fuses_camera_tag_through_measured_body_mount() -> None:
+    events = []
+    for index in range(2):
+        capture = 1_000_000 + index * 10_000
+        image = f"local-image-{index}"
+        events.extend(
+            [
+                _camera(f"local-camera-{index}", capture, image),
+                _body(f"local-body-{index}", capture),
+                _tag(f"local-tag-{index}", capture, image, 42, 1.25),
+            ]
+        )
+
+    result = _fuse_local_odom(events)
+
+    assert result["approval_status"] == "unapproved"
+    assert result["candidate_mode"] == "local_odom"
+    assert result["candidate_frame"] == "odom"
+    assert result["candidates"][0]["tag_id"] == 42
+    assert result["candidates"][0]["T_odom_tag"][0][3] == pytest.approx(1.25)
+    assert {"registration", "vertical_datum", "checkpoint"}.isdisjoint(result)
+    assert "world registered" in result["claim_scope"]
+
+
+def test_local_odom_mode_refuses_bad_capture_association_and_ambiguous_pose() -> None:
+    bad_time = _fuse_local_odom(
+        [
+            _camera("late-camera-one", 1_000, "late-one"),
+            _body("late-body-one", 3_000),
+            _tag("late-tag-one", 1_000, "late-one", 7, 1.0),
+            _camera("late-camera-two", 2_000, "late-two"),
+            _body("late-body-two", 4_000),
+            _tag("late-tag-two", 2_000, "late-two", 7, 1.0),
+        ]
+    )
+    assert bad_time["candidates"] == []
+    assert {
+        "event_id": "late-tag-one",
+        "reason": "body_pose_not_capture_associated",
+    } in bad_time["diagnostics"]
+
+    rejected_payload = dict(_tag("template", 5_000, "ambiguous", 8, 1.0).submission.payload)
+    rejected_payload.update({"pose_accepted": False, "tag_pose": None, "reason": "ambiguous"})
+    rejected_payload["covariance_m2"] = None
+    ambiguous = _fuse_local_odom(
+        [
+            _camera("ambiguous-camera", 5_000, "ambiguous"),
+            _body("ambiguous-body", 5_000),
+            _event("ambiguous-tag", "camera", 5_000, rejected_payload, TAG_SCOPE),
+        ]
+    )
+    assert ambiguous["candidates"] == []
+    assert {"event_id": "ambiguous-tag", "reason": "tag_pose_not_accepted"} in ambiguous[
+        "diagnostics"
+    ]
+
+
+def test_local_odom_mode_refuses_tag_spread_above_its_geometry_gate() -> None:
+    events = []
+    for index, x_m in enumerate((1.0, 1.1)):
+        capture = 10_000 + index * 10_000
+        image = f"spread-{index}"
+        events.extend(
+            [
+                _camera(f"spread-camera-{index}", capture, image),
+                _body(f"spread-body-{index}", capture),
+                _tag(f"spread-tag-{index}", capture, image, 9, x_m),
+            ]
+        )
+
+    result = _fuse_local_odom(events)
+
+    assert result["candidates"] == []
+    assert {"tag_id": 9, "reason": "tag translation spread exceeds the measured bound"} in result[
+        "diagnostics"
+    ]
 
 
 def test_bad_tag_pose_covariance_and_registration_independence_are_refused() -> None:
@@ -476,6 +593,90 @@ def test_actual_camera_smoke_submissions_with_receipt_only_stay_diagnostic() -> 
         {"event_id": "actual-smoke-tag", "reason": "missing_capture_time"},
         {"reason": "checkpoint_not_evaluated"},
     ]
+
+
+@pytest.mark.parametrize("missing", ("calibration", "mount"))
+def test_local_odom_run_refuses_missing_measured_camera_artifacts(
+    tmp_path: Path, missing: str
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    events = []
+    for index in range(2):
+        capture = 1_000_000 + index * 10_000
+        image = f"artifact-image-{index}"
+        events.extend(
+            [
+                _camera(f"artifact-camera-{index}", capture, image),
+                _body(f"artifact-body-{index}", capture),
+                _tag(f"artifact-tag-{index}", capture, image, 12, 1.0),
+            ]
+        )
+    observations = evidence / "observations.jsonl"
+    observations.write_bytes(b"".join(event.encode() + b"\n" for event in events))
+    calibration = evidence / "calibration.json"
+    mount = evidence / "mount.json"
+    if missing != "calibration":
+        calibration.write_text(json.dumps(_calibration_document()))
+    if missing != "mount":
+        mount.write_text(json.dumps(_mount_document()))
+    request = _local_odom_request()
+    request["observations"] = _digest(observations)
+    request["calibration"] = (
+        _digest(calibration)
+        if calibration.exists()
+        else {"path": calibration.name, "sha256": "a" * 64}
+    )
+    request["mount"] = (
+        _digest(mount) if mount.exists() else {"path": mount.name, "sha256": "b" * 64}
+    )
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request))
+    output = tmp_path / "candidate.json"
+
+    with pytest.raises(FileNotFoundError):
+        run(request_path, evidence, output)
+
+    assert not output.exists()
+
+
+def test_local_odom_run_writes_an_unapproved_candidate_without_world_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    events = []
+    for index in range(2):
+        capture = 1_000_000 + index * 10_000
+        image = f"local-run-image-{index}"
+        events.extend(
+            [
+                _camera(f"local-run-camera-{index}", capture, image),
+                _body(f"local-run-body-{index}", capture),
+                _tag(f"local-run-tag-{index}", capture, image, 31, 1.5),
+            ]
+        )
+    observations = evidence / "observations.jsonl"
+    calibration = evidence / "calibration.json"
+    mount = evidence / "mount.json"
+    observations.write_bytes(b"".join(event.encode() + b"\n" for event in events))
+    calibration.write_text(json.dumps(_calibration_document()))
+    mount.write_text(json.dumps(_mount_document()))
+    request = _local_odom_request()
+    request["observations"] = _digest(observations)
+    request["calibration"] = _digest(calibration)
+    request["mount"] = _digest(mount)
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request))
+    output = tmp_path / "candidate.json"
+
+    result = run(request_path, evidence, output)
+
+    assert output.exists()
+    assert result["candidate_mode"] == "local_odom"
+    assert result["candidate_frame"] == "odom"
+    assert [candidate["tag_id"] for candidate in result["candidates"]] == [31]
+    assert {"registration", "vertical_datum", "checkpoint"}.isdisjoint(result)
 
 
 def test_run_pins_inputs_and_writes_a_bounded_create_only_candidate(tmp_path: Path) -> None:

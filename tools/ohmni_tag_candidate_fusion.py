@@ -415,31 +415,54 @@ def _summary_matches(
 
 
 def _request(document: object) -> dict[str, object]:
+    world_fields = {
+        "schema_version",
+        "kind",
+        "source_scopes",
+        "odom_frame",
+        "calibration_id",
+        "maximum_association_error_ns",
+        "maximum_translation_spread_m",
+        "maximum_rotation_spread_rad",
+        "minimum_observations_per_tag",
+        "observations",
+        "calibration",
+        "mount",
+        "registration",
+        "vertical_datum",
+        "tape_checkpoint",
+    }
+    local_fields = {
+        "schema_version",
+        "kind",
+        "candidate_mode",
+        "source_scopes",
+        "odom_frame",
+        "calibration_id",
+        "maximum_association_error_ns",
+        "maximum_translation_spread_m",
+        "maximum_rotation_spread_rad",
+        "minimum_observations_per_tag",
+        "observations",
+        "calibration",
+        "mount",
+    }
     _require(
-        isinstance(document, Mapping)
-        and set(document)
-        == {
-            "schema_version",
-            "kind",
-            "source_scopes",
-            "odom_frame",
-            "calibration_id",
-            "maximum_association_error_ns",
-            "maximum_translation_spread_m",
-            "maximum_rotation_spread_rad",
-            "minimum_observations_per_tag",
-            "observations",
-            "calibration",
-            "mount",
-            "registration",
-            "vertical_datum",
-            "tape_checkpoint",
-        },
+        isinstance(document, Mapping),
         "fusion request schema is invalid",
     )
+    if document.get("schema_version") == 3 and set(document) == world_fields:
+        candidate_mode = "world_registered"
+    elif (
+        document.get("schema_version") == 4
+        and set(document) == local_fields
+        and document.get("candidate_mode") == "local_odom"
+    ):
+        candidate_mode = "local_odom"
+    else:
+        raise ValueError("fusion request schema is invalid")
     _require(
-        document["schema_version"] == 3
-        and document["kind"] == "ohmni_tag_candidate_fusion_request",
+        document["kind"] == "ohmni_tag_candidate_fusion_request",
         "fusion request version is invalid",
     )
     maximum_association = _integer(
@@ -469,8 +492,8 @@ def _request(document: object) -> dict[str, object]:
         and rotation_spread <= MAX_ROTATION_SPREAD_RAD,
         "fusion spread limits exceed the bounded envelope",
     )
-    vertical_datum = document["vertical_datum"]
-    if vertical_datum is not None:
+    vertical_datum = document.get("vertical_datum")
+    if candidate_mode == "world_registered" and vertical_datum is not None:
         _require(
             isinstance(vertical_datum, Mapping) and set(vertical_datum) == {"path", "sha256"},
             "vertical_datum requires a pinned artifact or null",
@@ -485,6 +508,7 @@ def _request(document: object) -> dict[str, object]:
         "maximum_rotation_spread_rad": rotation_spread,
         "minimum_observations_per_tag": minimum_observations,
         "vertical_datum": vertical_datum,
+        "candidate_mode": candidate_mode,
     }
 
 
@@ -736,17 +760,25 @@ def fuse_observations(
     request: Mapping[str, object],
     calibration: Mapping[str, object],
     mount: Mapping[str, object],
-    registration: Mapping[str, object],
-    input_pins: Mapping[str, Mapping[str, str]],
+    registration: Mapping[str, object] | None,
+    input_pins: Mapping[str, Mapping[str, str] | None],
 ) -> dict[str, object]:
     """Fuse only typed, captured canonical observations into an unapproved candidate."""
     _require(
         1 <= len(observations) <= MAX_OBSERVATIONS, "observation count is outside the fusion bound"
     )
+    candidate_mode = request.get("candidate_mode", "world_registered")
     _require(
-        set(registration) == {"transform", "fit_tag_ids", "target", "vertical_offset_m"},
-        "registration evidence is invalid",
+        candidate_mode in {"world_registered", "local_odom"}, "fusion candidate mode is invalid"
     )
+    if candidate_mode == "world_registered":
+        _require(
+            registration is not None
+            and set(registration) == {"transform", "fit_tag_ids", "target", "vertical_offset_m"},
+            "registration evidence is invalid",
+        )
+    else:
+        _require(registration is None, "local odometry fusion cannot accept registration evidence")
     scopes = request["source_scopes"]
     event_ids = [event.submission.event_id for event in observations]
     _require(len(event_ids) == len(set(event_ids)), "observation event IDs must be unique")
@@ -889,26 +921,28 @@ def fuse_observations(
             }
         )
     _require(len(fused_samples) <= MAX_TAGS, "fused tag count exceeds the global bound")
-    vertical_offset = registration["vertical_offset_m"]
+    vertical_offset = None if registration is None else registration["vertical_offset_m"]
     pose_key = "T_world_tag" if vertical_offset is not None else "T_odom_tag"
-    transform = registration["transform"]
     candidates: dict[int, dict[str, object]] = {}
     for identifier, samples in sorted(fused_samples.items()):
         try:
             candidate = _weighted_pose(samples, request, "T_odom_tag")
             if vertical_offset is not None:
                 candidate["T_world_tag"] = _multiply(
-                    _planar_world_odom(transform, vertical_offset), candidate.pop("T_odom_tag")
+                    _planar_world_odom(registration["transform"], vertical_offset),
+                    candidate.pop("T_odom_tag"),
                 )
             candidates[identifier] = candidate
         except ValueError as error:
             diagnostics.append({"tag_id": identifier, "reason": str(error)})
-    checkpoint = _checkpoint(
-        request["tape_checkpoint"], candidates, pose_key, registration["fit_tag_ids"]
-    )
-    if checkpoint["status"] == "not_evaluated":
-        diagnostics.append({"reason": "checkpoint_not_evaluated"})
-        candidates = {}
+    checkpoint: dict[str, object] | None = None
+    if candidate_mode == "world_registered":
+        checkpoint = _checkpoint(
+            request["tape_checkpoint"], candidates, pose_key, registration["fit_tag_ids"]
+        )
+        if checkpoint["status"] == "not_evaluated":
+            diagnostics.append({"reason": "checkpoint_not_evaluated"})
+            candidates = {}
     candidate = {
         "schema_version": 2,
         "kind": "ohmni_tag_candidate_fusion",
@@ -916,22 +950,28 @@ def fuse_observations(
         "claim_scope": (
             "Offline XYZ tag-center estimates only. This candidate does not approve flight "
             "or aerial clearance."
+            if candidate_mode == "world_registered"
+            else "Offline local-odometry XYZ tag-center estimates only. This candidate is not "
+            "world registered and does not approve control, flight, or aerial clearance."
         ),
         "source_scopes": {name: dict(scope) for name, scope in scopes.items()},
         "candidate_frame": "world" if vertical_offset is not None else request["odom_frame"],
-        "registration": dict(input_pins["registration"]),
-        "vertical_datum": None
-        if input_pins.get("vertical_datum") is None
-        else dict(input_pins["vertical_datum"]),
         "calibration": dict(input_pins["calibration"]),
         "mount": dict(input_pins["mount"]),
         "observations": dict(input_pins["observations"]),
         "candidates": [{"tag_id": identifier, **value} for identifier, value in candidates.items()],
-        "checkpoint": checkpoint,
         "diagnostics": diagnostics[:MAX_OBSERVATIONS],
         "diagnostic_count": len(diagnostics),
     }
-    if checkpoint["status"] == "evaluated":
+    if candidate_mode == "world_registered":
+        candidate["registration"] = dict(input_pins["registration"])
+        candidate["vertical_datum"] = None
+        if input_pins.get("vertical_datum") is not None:
+            candidate["vertical_datum"] = dict(input_pins["vertical_datum"])
+        candidate["checkpoint"] = checkpoint
+    else:
+        candidate["candidate_mode"] = "local_odom"
+    if checkpoint is not None and checkpoint["status"] == "evaluated":
         _require(checkpoint["passes"], "independent tape checkpoint exceeds its error bound")
     encoded = json.dumps(candidate, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
     _require(len(encoded) <= MAX_OUTPUT_BYTES, "fusion output exceeds the global byte limit")
@@ -992,27 +1032,30 @@ def run(request_path: Path, evidence_root: Path, output: Path) -> dict[str, obje
     )
     mount_payload, mount_pin = snapshots.read(request["mount"], "mount", maximum=1024 * 1024)
     mount = _mount(parse_document(mount_payload, mount_pin["path"]), calibration)
-    registration_payload, registration_pin = snapshots.read(
-        request["registration"], "registration", maximum=1024 * 1024
-    )
-    registration = _registration(
-        parse_document(registration_payload, registration_pin["path"]),
-        request["source_scopes"]["pose"],
-        request["odom_frame"],
-    )
+    registration: dict[str, object] | None = None
+    registration_pin: dict[str, str] | None = None
     vertical_pin: dict[str, str] | None = None
-    if request["vertical_datum"] is None:
-        registration["vertical_offset_m"] = None
-    else:
-        vertical_payload, vertical_pin = snapshots.read(
-            request["vertical_datum"], "vertical_datum", maximum=1024 * 1024
+    if request["candidate_mode"] == "world_registered":
+        registration_payload, registration_pin = snapshots.read(
+            request["registration"], "registration", maximum=1024 * 1024
         )
-        registration["vertical_offset_m"] = _vertical_datum(
-            parse_document(vertical_payload, vertical_pin["path"]),
+        registration = _registration(
+            parse_document(registration_payload, registration_pin["path"]),
             request["source_scopes"]["pose"],
             request["odom_frame"],
-            registration["target"],
         )
+        if request["vertical_datum"] is None:
+            registration["vertical_offset_m"] = None
+        else:
+            vertical_payload, vertical_pin = snapshots.read(
+                request["vertical_datum"], "vertical_datum", maximum=1024 * 1024
+            )
+            registration["vertical_offset_m"] = _vertical_datum(
+                parse_document(vertical_payload, vertical_pin["path"]),
+                request["source_scopes"]["pose"],
+                request["odom_frame"],
+                registration["target"],
+            )
     candidate = fuse_observations(
         observations,
         request=request,
