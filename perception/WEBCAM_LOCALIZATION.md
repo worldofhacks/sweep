@@ -3,7 +3,7 @@
 Run `python -m perception.webcam_localization` on the computer receiving a hand-carried
 1280×720 camera through MediaMTX. This is an observation-only webcam software slice
 of #84 built on the merged map/localization foundation. Use the calibration tool
-from #103 and the existing `drone1`–`drone6` media paths.
+from #103 and the legacy `drone1`–`drone6` media paths.
 
 The loop reuses #105's tag36h11 detector, joint PnP, ambiguity/normal checks,
 map validation, and camera-to-body transform. It emits JSONL observations only.
@@ -95,7 +95,20 @@ Every record says `capture_time_verified: false`,
    and camera mounting fixed after calibration.
 
 A configuration file looks like this; replace every placeholder and copy the complete
-pipeline object from the calibration artifact:
+pipeline object from the calibration artifact. This legacy form allows `drone1` through
+`drone6`. To track a configured relay device, add `source_device_id`. The localizer reads
+`RelaySettings` from the host environment, requires that ID to have an adapter key, and
+requires the configured path. In the current field relay, ground device 12 uses `drone12`:
+
+```json
+"stream_path": "drone12",
+"source_device_id": 12
+```
+
+The device-specific form preserves the current `drone{device_id}` media domain. It does
+not infer a `ground12` path.
+
+A legacy configuration without `source_device_id` looks like this:
 
 ```json
 {
