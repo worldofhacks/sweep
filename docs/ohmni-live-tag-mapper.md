@@ -6,6 +6,14 @@ The mapper receives its NUT sidecar from the robot through an ADB reverse tunnel
 
 Set `--tag-submit-interval-ms` to at least the tag source's relay ingress interval. Frames with several tag observations use that spacing between tag submissions. A camera observation and its tags retain the same capture timestamp and image ID.
 
+## Accepted observation archive
+
+Set `--archive-output evidence/mapping-events` to preserve the relay's accepted observation echoes for the authenticated ground node. The output directory contains canonical `observations.jsonl` and a manifest with the exact session, device, epoch, sources, frames, limits, counts, and SHA-256 digest. It contains accepted camera frames, tag observations, odom-to-body poses, and lidar scans that match the configured source IDs and local frames. The archive is evidence only and has no candidate or approval field.
+
+The default source and frame values match the Ohmni runtime: `ohmni-pose`, `ohmni-lidar`, `odom`, `body`, and `lidar`. Use `--archive-pose-source-id`, `--archive-lidar-source-id`, `--archive-odom-frame`, `--archive-body-frame`, and `--archive-lidar-frame` when the runtime uses different names. `--archive-max-records` is capped at 1024, `--archive-max-bytes` at 10 MiB, and `--archive-duration-s` at 120 seconds. Reaching a bound stops the mapper cleanly and writes the collected evidence with its `stop_reason`. After the NUT stream ends, `--archive-drain-s` reads the same subscription for up to two seconds by default, which collects relay echoes already queued for the active scope.
+
+The archive writes only observations returned by the relay after authenticated admission. It preserves each accepted `t_capture`, source receipt timestamp, clock mapping ID, and relay-assigned `t_ingest`. A missing pose capture timestamp remains null. Tag fusion needs a pose producer with a measured capture association before it can use that pose for a camera frame.
+
 ## Host command
 
 After capture qualification, use the session's reviewed configuration and measured
@@ -16,7 +24,7 @@ must match the robot boot and capture clock. The robot must have a current `regi
 Passive capture works with drive authority disabled.
 
 ```sh
-timeout --signal=INT --kill-after=5s 60s python -m tools.ohmni_live_tag_mapper \
+timeout --signal=INT --kill-after=5s 90s python -m tools.ohmni_live_tag_mapper \
   --relay-url "$RELAY_URL" --session "$SESSION" --device-id "$DEVICE_ID" \
   --token "$LOCALIZATION_TOKEN" --pts-port 19090 \
   --sidecar-connect-timeout-s 30 --relay-receive-timeout-s 5 \
@@ -28,6 +36,8 @@ timeout --signal=INT --kill-after=5s 60s python -m tools.ohmni_live_tag_mapper \
   --adb-serial "$ADB_SERIAL" --boot-id "$BOOT_ID" --clock-probes 5 \
   --maximum-clock-error-ms "$CLOCK_ERROR_LIMIT_MS" \
   --maximum-capture-lag-ms "$CAPTURE_LAG_LIMIT_MS" \
+  --archive-output "$ARCHIVE_DIRECTORY" --archive-duration-s 30 \
+  --archive-max-records 1024 --archive-max-bytes 10485760 \
   --confidence "$CONFIDENCE" --covariance "$COVARIANCE_M2" \
   --tag-sizes "$TAG_SIZES_JSON"
 ```
@@ -36,7 +46,8 @@ timeout --signal=INT --kill-after=5s 60s python -m tools.ohmni_live_tag_mapper \
 covariance. `TAG_SIZES_JSON` maps tag IDs to measured black-square sizes in metres.
 The calibration hash is the SHA-256 of the exact calibration file. Clock error,
 capture lag, confidence, and covariance must come from qualification. The command
-uses a 60-second host limit and allows five seconds for cleanup. Start the reviewed
+uses a 30-second archive limit, a 90-second host limit, and five seconds for
+cleanup. Choose a new `ARCHIVE_DIRECTORY`; an existing destination is refused. Start the reviewed
 camera publisher with its NUT output pointed at robot loopback port 19090 after
 the host listener starts. The mapper creates and removes the matching ADB reverse
 forward automatically.
