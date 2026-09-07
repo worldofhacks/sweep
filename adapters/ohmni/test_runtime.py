@@ -436,6 +436,16 @@ def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
             _receive_until(
                 console,
                 lambda frame: (
+                    frame.get("type") == "observation"
+                    and frame.get("device_id") == GROUND_ID
+                    and frame.get("connection_epoch") == 1
+                    and frame.get("source_id") == "ohmni-pose"
+                    and frame.get("payload", {}).get("kind") == "pose"
+                ),
+            )
+            _receive_until(
+                console,
+                lambda frame: (
                     frame.get("type") == "state"
                     and any(
                         drone.get("drone_id") == GROUND_ID and drone.get("selectable")
@@ -468,12 +478,18 @@ def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
             terminal = _receive_until(
                 console,
                 lambda frame: (
-                    frame.get("type") == "acknowledgement"
-                    and frame.get("intent_id") == intent_id
+                    frame.get("intent_id") == intent_id
                     and frame.get("source") == "autonomy"
-                    and frame.get("status") == "completed"
+                    and (
+                        (
+                            frame.get("type") == "acknowledgement"
+                            and frame.get("status") == "completed"
+                        )
+                        or frame.get("type") == "refusal"
+                    )
                 ),
             )
+        assert terminal["type"] == "acknowledgement", terminal
         assert terminal["command_id"] is None
         assert device.x > 0
         records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
