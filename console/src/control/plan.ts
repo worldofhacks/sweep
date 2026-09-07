@@ -7,6 +7,8 @@ const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
   land: 'Land',
   land_all: 'Land all fleet',
   sweep: 'Sweep area',
+  ground_velocity: 'Move ground node',
+  survey_area: 'Record survey area',
 }
 
 /** Plan-card title from the design; other intents show their name. */
@@ -17,6 +19,22 @@ export function planTitle(intent: IntentV1): string {
 /** Ordered plain-language steps from the design's planSteps. */
 export function planSteps(intent: IntentV1): string[] {
   const ids = intent.selection.map(formatDroneId).join(', ')
+  if (intent.name === 'ground_velocity' && 'linear_mm_s' in intent.args) {
+    const args = intent.args
+    return [
+      args.linear_mm_s > 0
+        ? `Drive ${ids} forward at ${args.linear_mm_s} mm/s for ${args.duration_ms} ms.`
+        : `Turn ${ids} at ${args.angular_mrad_s} mrad/s for ${args.duration_ms} ms.`,
+      'Stop when the pulse ends. Keep the local stop within reach.',
+    ]
+  }
+  if (intent.name === 'survey_area' && 'area_id' in intent.args) {
+    return [
+      `Record lidar evidence from ${ids} for area ${intent.args.area_id}.`,
+      'The operator controls movement during recording.',
+      'Complete the recording to save a candidate occupancy map, or cancel to discard it.',
+    ]
+  }
   if (intent.name === 'capture_room' && 'pattern' in intent.args) {
     const args = intent.args
     return [

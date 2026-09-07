@@ -81,6 +81,11 @@ export function aircraftControlSelectionReason(
   name: ConsoleIntentName,
   targets = state.selection,
 ): string | null {
+  if (name === 'ground_velocity' || name === 'survey_area') {
+    return targets.length === 1 && state.aircraft[targets[0]]?.node_type === 'ground' && isReady(state.aircraft[targets[0]])
+      ? null
+      : 'Select one ready ground node.'
+  }
   return ['arm', 'disarm', 'estop', 'hold', 'land_all', 'select'].includes(name)
     ? null
     : groundSelectionReason(state, targets)
@@ -305,7 +310,6 @@ function catalogRow(spec: ControlSpec): CatalogRow {
   }
 }
 
-/** Rows for survey_area and map_area: the console does not build these envelopes yet. */
 function laterRow(key: string, label: string, intent: string, rule: string): CatalogRow {
   return {
     key,
@@ -314,7 +318,7 @@ function laterRow(key: string, label: string, intent: string, rule: string): Cat
     confirm: 'confirm',
     rule,
     status: 'later',
-    note: `${intent} needs an area_id from the map module, which this console does not build yet.`,
+    note: `${intent} needs an area selected in the map module.`,
     noteTone: 'muted',
     enabled: false,
     spec: null,

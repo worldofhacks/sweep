@@ -95,6 +95,17 @@ describe('mixed-node relay frames', () => {
 })
 
 describe('M1.1 wire compatibility', () => {
+  test('accepts a separate ground profile while preserving the frozen aircraft profile', () => {
+    const state = {
+      v: 1, t, type: 'state', event_id: 'ground-profile', session,
+      roster_version: 1, armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control.ground', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity', 'survey_area'],
+      pending: null, accepted_plan: null, drones: [aircraft()],
+    }
+    expect(parseRelayServerEvent(state)).not.toBeNull()
+    expect(parseRelayServerEvent({ ...state, capability_profile: 'c1_basic_control' })).toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...state.enabled_intent_names, 'map_area'] })).toBeNull()
+  })
   test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
     const event = parseRelayServerEvent({
       v: 1, t: 100, type: 'state', event_id: 'sequence-test', session,

@@ -209,6 +209,10 @@ export class FixtureRelayClient implements RelayClient {
     })
   }
 
+  async sendSurveyLifecycle(): Promise<void> {
+    throw new Error('The fixture relay has no survey recording runtime.')
+  }
+
   emitServer(event: RelayServerEvent): void {
     this.emit({ kind: 'server_event', event })
   }

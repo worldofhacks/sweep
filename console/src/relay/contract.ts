@@ -25,10 +25,6 @@ export const MAX_INTENT_NAME_CODE_POINTS = 64
 export const MAX_INTENT_DRONE_IDS = 6
 export const MAX_INTENT_DRONE_ID = 2_147_483_647
 
-/**
- * Every intent name this console can build. Mirrors relay/intent_v1.py
- * IntentName minus survey_area and map_area, which the brief marks as later.
- */
 export type ConsoleIntentName =
   | 'arm'
   | 'disarm'
@@ -46,6 +42,8 @@ export type ConsoleIntentName =
   | 'come_home'
   | 'sweep'
   | 'capture_room'
+  | 'ground_velocity'
+  | 'survey_area'
 
 export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'arm',
@@ -64,6 +62,8 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'come_home',
   'sweep',
   'capture_room',
+  'ground_velocity',
+  'survey_area',
 ]
 
 /** The exact profile emitted by a C1 relay. */
@@ -103,7 +103,7 @@ export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
 
 /** Every intent implemented by this console, independently of deployment release. */
 export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
-  C2_FLEET_OPERATIONS_INTENTS,
+  [...C2_FLEET_OPERATIONS_INTENTS, 'ground_velocity', 'survey_area'],
 )
 
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
@@ -121,6 +121,8 @@ export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<
   'land_all',
   'sweep',
   'capture_room',
+  'ground_velocity',
+  'survey_area',
 ])
 
 export function requiresConfirmation(name: ConsoleIntentName): boolean {
@@ -147,6 +149,8 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   come_home: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
+  ground_velocity: 'exactly one',
+  survey_area: 'exactly one',
 }
 
 export function selectionRule(name: ConsoleIntentName): SelectionRule {
@@ -199,6 +203,40 @@ export interface CaptureRoomArgs {
   pattern: CapturePattern
 }
 
+export interface GroundVelocityArgs {
+  linear_mm_s: number
+  angular_mrad_s: number
+  duration_ms: number
+}
+
+export interface SurveyAreaArgs {
+  area_id: string
+}
+
+export interface SurveyLifecycleRequest {
+  v: 1
+  t: number
+  type: 'survey_lifecycle'
+  event_id: string
+  session: string
+  operation: 'complete' | 'cancel'
+  intent_id: string
+  run_id: string
+  connection_epoch: number
+}
+
+export function isSurveyLifecycleRequest(value: unknown): value is SurveyLifecycleRequest {
+  if (!isRecord(value) || Object.keys(value).length !== 9) return false
+  return value.v === 1 && value.type === 'survey_lifecycle' &&
+    Number.isSafeInteger(value.t) && Number(value.t) >= 0 &&
+    isCanonicalIntentText(value.event_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+    isCanonicalIntentText(value.session, MAX_INTENT_SESSION_CODE_POINTS) &&
+    isCanonicalIntentText(value.intent_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+    isCanonicalIntentText(value.run_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+    (value.operation === 'complete' || value.operation === 'cancel') &&
+    isDroneId(value.connection_epoch)
+}
+
 /** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
 export interface IntentArgsByName {
   arm: EmptyArgs
@@ -217,6 +255,8 @@ export interface IntentArgsByName {
   come_home: EmptyArgs
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
+  ground_velocity: GroundVelocityArgs
+  survey_area: SurveyAreaArgs
 }
 
 export type IntentArgs = IntentArgsByName[ConsoleIntentName]
@@ -1166,6 +1206,14 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
         isCanonicalIntentText(args.capture_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
         CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
       )
+    case 'survey_area':
+      return keys.length === 1 && isCanonicalIntentText(args.area_id, MAX_INTENT_IDENTIFIER_CODE_POINTS)
+    case 'ground_velocity':
+      return keys.length === 3 &&
+        Number.isInteger(args.linear_mm_s) && Number(args.linear_mm_s) >= 0 && Number(args.linear_mm_s) <= 180 &&
+        Number.isInteger(args.angular_mrad_s) && Math.abs(Number(args.angular_mrad_s)) <= 785 &&
+        Number.isInteger(args.duration_ms) && Number(args.duration_ms) > 0 && Number(args.duration_ms) <= 500 &&
+        ((args.linear_mm_s === 0) !== (args.angular_mrad_s === 0))
     case 'arm':
     case 'disarm':
     case 'estop':
