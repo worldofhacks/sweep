@@ -36,3 +36,6 @@ SWEEP_CAMERA_HEIGHT_PX=480
 ```
 
 The source must be an approved V4L node, `mjpeg` or `uyvy422`, its native rate or a measured integer rate, and measured dimensions. The publisher uses the node ID for the MediaMTX path `drone{id}`. It reports `publishing` only after ffmpeg reports increasing decoded-frame counts and changes to `failed` when that progress is stale.
+
+
+For camera-to-tag mapping, set `SWEEP_CAMERA_PTS_PORT` in `camera.env` to match the host mapper's `--pts-port`. Start the [live mapper](../../docs/ohmni-live-tag-mapper.md) first so its private sidecar listener and ADB reverse tunnel are ready, then start `camera.sh`. Stop the camera before stopping the mapper. Camera PTS require the documented V4L2 clock-domain qualification before they can support mapped evidence.
