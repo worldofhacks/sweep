@@ -96,19 +96,6 @@ def legacy_binding() -> SourceBinding:
     return SourceBinding("demo-1", 7, 7, "dji-bridge", "aircraft", ("legacy_map_enu",))
 
 
-def source_mapping() -> ClockMapping:
-    return ClockMapping(
-        mapping_id="ohmni-ms",
-        source_clock_id="ohmni-monotonic",
-        source_unit="ms",
-        source_reference=1_000,
-        relay_reference_ms=10_000,
-        relay_ms_numerator=1,
-        source_units_denominator=1,
-        max_error_ms=5,
-    )
-
-
 def test_aircraft_golden_decodes_ingests_and_reencodes_exactly() -> None:
     encoded = (FIXTURES / "aircraft-world.json").read_bytes()
     event = decode_observation(encoded)
@@ -349,3 +336,61 @@ def test_world_requires_matching_host_binding_pins_and_numeric_confidence() -> N
     raw["confidence"] = "high"
     with pytest.raises(ObservationError, match="confidence"):
         ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+
+
+def test_pose_camera_and_status_payloads_have_closed_encodable_shapes() -> None:
+    base = json.loads((FIXTURES / "ground-odom-range-scan.json").read_text())
+    payloads = (
+        (
+            "odom",
+            {
+                "kind": "pose",
+                "pose": {
+                    "parent_frame": "odom",
+                    "child_frame": "lidar",
+                    "x_m": 0.0,
+                    "y_m": 0.0,
+                    "z_m": 0.25,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "qw": 1.0,
+                },
+            },
+        ),
+        (
+            "camera",
+            {
+                "kind": "camera_frame",
+                "image_id": "image-001",
+                "sha256": "a" * 64,
+                "width_px": 1280,
+                "height_px": 720,
+                "calibration_id": "ohmni-head-v1",
+            },
+        ),
+        (
+            "lidar",
+            {
+                "kind": "status",
+                "code": "lidar_ready",
+                "detail": "driver is receiving scans",
+                "capabilities": ["range_scan"],
+            },
+        ),
+    )
+
+    for index, (frame, payload) in enumerate(payloads):
+        raw = {**base, "event_id": f"other-{index}", "frame": frame, "payload": payload}
+        submission = ObservationSubmission.parse(
+            {key: raw[key] for key in raw if key != "t_ingest"}
+        )
+        result = ingest(
+            submission,
+            t_ingest=raw["t_ingest"],
+            frames=local_registry(),
+            binding=local_binding(),
+            mappings={},
+            timing=TimingPolicy(25),
+        )
+        assert decode_observation(result.encode()).submission.payload["kind"] == payload["kind"]
