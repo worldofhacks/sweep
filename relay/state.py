@@ -405,6 +405,22 @@ class FleetRegistry:
                 provenance="adapter_signature",
             )
 
+    def ready_ground_identity(self, drone_id: int, now_ms: int) -> GroundPoseIdentity | None:
+        """Return the current pose identity only for a ready ground node."""
+        with self._lock:
+            record = self._aircraft.get(drone_id)
+            if (
+                record is None
+                or record.node_type is not NodeType.GROUND
+                or record.membership is not Membership.READY
+                or record.pose_identity is None
+                or record.pose_identity != record.accepted_pose_identity
+                or record.accepted_pose_at is None
+                or now_ms - record.accepted_pose_at > self.telemetry_freshness_ms
+            ):
+                return None
+            return record.pose_identity
+
     def apply_ground_pose_observation(
         self,
         *,

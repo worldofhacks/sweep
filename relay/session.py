@@ -404,6 +404,8 @@ class RelaySession:
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
         if principal.source == "localization" and frame_type == "control_localization":
             return self.process_control_localization(raw, principal)
+        if principal.source == "console" and frame_type == "survey_lifecycle":
+            return self.process_survey_lifecycle(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
             return self.process_intent(raw, principal)
         if principal.source == "adapter":
@@ -428,6 +430,32 @@ class RelaySession:
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             return self._protocol_refusal(reason=reason, detail=detail, now=self.clock())
+
+    def process_survey_lifecycle(
+        self, raw: object, principal: Principal
+    ) -> list[dict[str, object]]:
+        """Route a console-authenticated complete/cancel request to the active survey owner."""
+        from relay.survey_area import SurveyLifecycleError, SurveyLifecycleRequest
+
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            try:
+                request = SurveyLifecycleRequest.parse(raw)
+                if request.session != self.session_id:
+                    raise SurveyLifecycleError(
+                        "session_mismatch", "survey lifecycle session is not current"
+                    )
+                self._claim_transport_event(request.event_id, request.t, principal, now)
+                handler = getattr(self.intent_sink, "survey_lifecycle", None)
+                if not callable(handler):
+                    raise SurveyLifecycleError(
+                        "survey_not_configured", "survey lifecycle is unavailable"
+                    )
+                self._append_audit({**request.to_event(), "source": principal.source})
+                return handler(request)
+            except (SurveyLifecycleError, ContractError) as error:
+                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
 
     def process_intent(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -2493,7 +2521,9 @@ class RelaySession:
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
-_GROUND_SAFE_INTENTS = frozenset({IntentName.SELECT, IntentName.HOLD, IntentName.ESTOP})
+_GROUND_SAFE_INTENTS = frozenset(
+    {IntentName.SELECT, IntentName.HOLD, IntentName.ESTOP, IntentName.SURVEY_AREA}
+)
 # These two planner-owned objects share the per-aircraft projection budget. Four
 # maximum aircraft plus both maximum control objects still fit one 1 MiB record.
 MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024

@@ -53,7 +53,11 @@ from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
 from relay.app import RelayRuntime, TranscriptServiceFactory, create_app
 from relay.bridge import RelayNodeLink, build_dispatcher
-from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    SURVEY_ADDITIONAL_INTENT_NAMES,
+    CapabilityProfile,
+)
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
 from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
@@ -884,6 +888,53 @@ class AutonomySession:
         guarded()
 
 
+class SurveyIntentRouter:
+    """Combines pilot-assisted ground recording with the existing autonomous intent sink."""
+
+    def __init__(self, autonomy: AutonomySession, session: RelaySession) -> None:
+        from relay.survey_area import SurveyAreaLifecycle, SurveyCandidateRegistry
+
+        self.autonomy = autonomy
+        self.capability_profile = autonomy.capability_profile
+        self.survey = SurveyAreaLifecycle(
+            session, SurveyCandidateRegistry(session.audit_log.root / "survey_candidates")
+        )
+
+    def __call__(self, intent: IntentV1, state: dict[str, object]) -> object:
+        if intent.name is IntentName.SURVEY_AREA:
+            return self.survey.start(intent)
+        return self.autonomy(intent, state)
+
+    def survey_lifecycle(self, request: object) -> list[dict[str, object]]:
+        from relay.survey_area import SurveyLifecycleRequest
+
+        if not isinstance(request, SurveyLifecycleRequest):
+            raise ValueError("survey lifecycle request is invalid")
+        return self.survey.process(request)
+
+    def accepted_observation(self, observation: object) -> list[dict[str, object]]:
+        from relay.observations import Observation
+
+        return (
+            []
+            if not isinstance(observation, Observation)
+            else self.survey.accepted_observation(observation)
+        )
+
+    def adapter_disconnected(
+        self, *, drone_id: int, connection_epoch: int, relay_state: dict[str, object]
+    ) -> list[dict[str, object]]:
+        return self.survey.adapter_disconnected(
+            drone_id=drone_id, connection_epoch=connection_epoch
+        )
+
+    def periodic_events(self, _state: object) -> list[dict[str, object]]:
+        return self.survey.periodic_events()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.autonomy, name)
+
+
 class AutonomyComposition:
     """Per-session autonomy workers behind ``create_app``'s sink and leave factories."""
 
@@ -891,7 +942,11 @@ class AutonomyComposition:
         self, config: AutonomyConfig, capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
     ) -> None:
         self.config = config
-        self.capability_profile = config.planning.effective_capability_profile(capability_profile)
+        base_profile = config.planning.effective_capability_profile(capability_profile)
+        self.capability_profile = CapabilityProfile(
+            f"{base_profile.name}.ground_survey",
+            base_profile.enabled_intent_names | SURVEY_ADDITIONAL_INTENT_NAMES,
+        )
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -921,7 +976,7 @@ class AutonomyComposition:
         return self._runtime_source()
 
     def intent_sink_factory(self, session: RelaySession) -> IntentSink:
-        return self.session(session.session_id)
+        return SurveyIntentRouter(self.session(session.session_id), session)
 
     def leave_authorizer_factory(self, session_id: str) -> LeaveAuthorizer:
         return self.session(session_id).authorize_leave

@@ -867,6 +867,32 @@ class RelayRuntime:
         if (
             principal.source == "adapter"
             and principal.drone_id is not None
+            and isinstance(frame, Mapping)
+            and frame.get("type") == "observation"
+            and not any(event.get("type") == "refusal" for event in events)
+        ):
+            accepted = getattr(session.intent_sink, "accepted_observation", None)
+            if callable(accepted):
+                try:
+                    observation = next(
+                        (event for event in events if event.get("type") == "observation"), None
+                    )
+                    if observation is not None:
+                        from relay.observations import Observation
+
+                        events.extend(accepted(Observation.parse(observation)))
+                except AuditLogError:
+                    raise
+                except Exception:
+                    events.append(
+                        session.protocol_refusal(
+                            reason="safety_runtime_error",
+                            detail="the configured survey runtime failed closed",
+                        )
+                    )
+        if (
+            principal.source == "adapter"
+            and principal.drone_id is not None
             and not (isinstance(frame, Mapping) and frame.get("type") == "observation")
             and not any(event.get("type") == "refusal" for event in events)
         ):

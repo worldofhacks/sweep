@@ -47,16 +47,17 @@ def test_c1_profile_enables_only_earned_intents() -> None:
 
 
 def test_c2_profile_is_a_strict_c1_superset() -> None:
-    assert C2_CAPABILITY_PROFILE.enabled_intent_names == IMPLEMENTED_INTENT_NAMES
     assert C2_CAPABILITY_PROFILE.enabled_intent_names == (
         C1_CAPABILITY_PROFILE.enabled_intent_names | C2_ADDITIONAL_INTENT_NAMES
     )
     assert C1_CAPABILITY_PROFILE.enabled_intent_names < C2_CAPABILITY_PROFILE.enabled_intent_names
 
 
-def test_profile_rejects_unimplemented_intents() -> None:
-    with pytest.raises(ValueError, match="unimplemented intents: survey_area"):
-        CapabilityProfile("unsafe", frozenset({IntentName.SURVEY_AREA}))
+def test_profile_accepts_the_implemented_survey_intent() -> None:
+    profile = CapabilityProfile("survey", frozenset({IntentName.SURVEY_AREA}))
+
+    assert profile.supports(IntentName.SURVEY_AREA)
+    assert IntentName.SURVEY_AREA in IMPLEMENTED_INTENT_NAMES
 
     with pytest.raises(ValueError, match="must not be empty"):
         CapabilityProfile("empty", frozenset())
@@ -111,7 +112,7 @@ def test_profile_normalizes_caller_owned_sets_and_string_members() -> None:
     assert from_string.state_value()["enabled_intent_names"] == ["land"]
 
 
-@pytest.mark.parametrize("name", ["survey_area", "not_registered"])
+@pytest.mark.parametrize("name", ["not_registered"])
 def test_profile_rejects_unsupported_string_members_as_value_errors(name: str) -> None:
     with pytest.raises(ValueError):
         CapabilityProfile("unsafe", frozenset({name}))  # type: ignore[arg-type]
