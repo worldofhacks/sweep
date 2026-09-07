@@ -213,8 +213,8 @@ def test_lost_pose_confidence_stops_the_ground_runtime_and_withdraws_readiness()
 
 def test_sigterm_stops_the_runtime_before_the_process_exits(tmp_path: Path) -> None:
     marker = tmp_path / "stopped"
-    program = """import signal
-import sys
+    program = """import sys
+import time
 from pathlib import Path
 from adapters.ohmni.runtime import _install_sigterm_stop
 
@@ -228,7 +228,7 @@ node = Node()
 restore = _install_sigterm_stop(node)
 print("ready", flush=True)
 while not node.stopped:
-    signal.pause()
+    time.sleep(0.01)
 restore()
 """
     process = subprocess.Popen(
