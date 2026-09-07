@@ -31,6 +31,7 @@ from relay.contracts import (
     MembershipAction,
     MembershipRequest,
     NodeStatusFrame,
+    NodeType,
     acknowledgement_event,
     command_event,
     parse_adapter_acknowledgement,
@@ -63,6 +64,7 @@ from relay.intent_v1 import (
 from relay.media import MediaEvidenceProvider
 from relay.state import (
     MAX_MEMBERSHIP_HISTORY_LIMIT,
+    MAX_PHYSICAL_GROUND,
     MAX_SIMULATED_AIRCRAFT,
     FleetRegistry,
     MembershipTransition,
@@ -292,6 +294,7 @@ class RelaySession:
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
+        node_types: Mapping[int, NodeType] | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -320,6 +323,7 @@ class RelaySession:
             capability_profile=capability_profile,
             media_evidence=media_evidence,
             membership_history_limit=limits.state_membership_history,
+            node_types=node_types,
         )
         self._audit_sampling = _AuditSampling()
         # Values are the last instant when the exact signed event could still pass
@@ -515,6 +519,19 @@ class RelaySession:
                             normalized=intent,
                         )
                     ]
+
+            if intent.name in _AIRCRAFT_ONLY_INTENTS and self.registry.selection_includes_ground(
+                intent.selection
+            ):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="ground_intent_not_supported",
+                        detail="this intent cannot target a ground node",
+                        now=now,
+                        normalized=intent,
+                    )
+                ]
 
             if self.intent_sink is None:
                 return [
@@ -2420,6 +2437,23 @@ class RelaySession:
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
+_AIRCRAFT_ONLY_INTENTS = frozenset(
+    {
+        IntentName.ARM,
+        IntentName.DISARM,
+        IntentName.TAKEOFF,
+        IntentName.LAND,
+        IntentName.LAND_ALL,
+        IntentName.ALTITUDE,
+        IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
+        IntentName.SPACING,
+        IntentName.SWEEP,
+        IntentName.CAPTURE_ROOM,
+        IntentName.SURVEY_AREA,
+        IntentName.MAP_AREA,
+    }
+)
 # These two planner-owned objects share the per-aircraft projection budget. Four
 # maximum aircraft plus both maximum control objects still fit one 1 MiB record.
 MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024
@@ -2446,6 +2480,7 @@ _MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
 _DRONE_STATE_KEYS = frozenset(
     {
         "drone_id",
+        "node_type",
         "connection_epoch",
         "membership",
         "readiness_reasons",
@@ -2576,8 +2611,8 @@ def _material_state_projection(state: Mapping[str, object]) -> str:
 
 
 def _material_drones_projection(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list) or len(value) > MAX_SIMULATED_AIRCRAFT:
-        raise AuditLogError("state drones require a bounded aircraft list")
+    if not isinstance(value, list) or len(value) > MAX_SIMULATED_AIRCRAFT + MAX_PHYSICAL_GROUND:
+        raise AuditLogError("state drones require a bounded mixed-node list")
     if not all(isinstance(drone, Mapping) for drone in value):
         raise AuditLogError("state drones must contain objects")
     return [_material_drone_projection(drone) for drone in value]

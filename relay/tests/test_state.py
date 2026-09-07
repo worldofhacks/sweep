@@ -412,6 +412,7 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
     }
     assert set(drone) == {
         "drone_id",
+        "node_type",
         "connection_epoch",
         "membership",
         "readiness_reasons",

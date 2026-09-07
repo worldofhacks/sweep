@@ -36,6 +36,7 @@ Install the locked environment, copy `.env.example` to the git-ignored `.env`, a
 ```dotenv
 SWEEP_RELAY_TOKEN=<at-least-32-characters>
 SWEEP_ADAPTER_KEYS_JSON='{"1":"<adapter-1-key-at-least-32-characters>"}'
+SWEEP_NODE_TYPES_JSON='{}'
 SWEEP_LOCALIZATION_KEYS_JSON='{}'
 SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 ```
@@ -43,6 +44,8 @@ SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 Single-quote JSON values in `.env`: `just relay` and `just fake-node` read the file with `uv run --env-file`, which strips double quotes from unquoted values.
 
 `SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true` is a demo-only fallback. It proves that a frame came from a holder of the shared secret, but cannot prove which aircraft sent it; keep it false for hardware. The freshness settings in `.env.example` are explicit demo values and must be measured and configured for a hardware session.
+
+`SWEEP_NODE_TYPES_JSON` is an optional map from configured adapter IDs to `aircraft` or `ground`; absent IDs are aircraft for compatibility. For example, `'{"9":"ground"}'` assigns adapter ID 9 to the ground class. The host configuration is authoritative: a configured ground node must sign `node_type: "ground"` on join, while a legacy join without that field is accepted only for aircraft. A session permits four aircraft on C1 or six on C2, plus up to three ground nodes. State and membership records expose each node's class and signed adapter capabilities.
 
 `SWEEP_LOCALIZATION_KEYS_JSON` is an optional, separately generated per-aircraft credential map. It defaults to empty, and every configured relay, adapter, and localization secret must be distinct. `relay.main` enables diagnostic localization only when `SWEEP_CONTROL_LOCALIZATION_JSON` supplies every deployment pin and bound. A projected pose also requires an explicit per-aircraft adapter key; the demo-only shared relay-token fallback is never used to sign one. The pose remains diagnostic and has `flight_approved: false`.
 
