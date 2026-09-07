@@ -66,6 +66,35 @@ _REPORT_FIELDS = frozenset(
         "files",
     }
 )
+_REPORT_V2_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "flight_approved",
+        "evidence_kind",
+        "frame",
+        "floor_id",
+        "bundle_version",
+        "bundle_content_sha256",
+        "authoring_sha256",
+        "units",
+        "cell_m",
+        "origin_xy",
+        "shape_yx",
+        "blocked_value",
+        "candidate_value",
+        "altitude_planes_m",
+        "clearance",
+        "clearance_m",
+        "routes",
+        "formations",
+        "held_out_checkpoints",
+        "free_volumes",
+        "grid_files",
+        "static_geometry_only",
+        "files",
+    }
+)
 
 
 @contextmanager
@@ -88,14 +117,15 @@ def _bounded_bytes(directory_descriptor: int, filename: str, limit: int, name: s
     """Read one confined, no-follow descriptor snapshot and bound those exact bytes."""
     if Path(filename).name != filename or not hasattr(os, "O_NOFOLLOW"):
         raise ValueError(f"{name} must be a regular direct child")
-    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(filename, flags, dir_fd=directory_descriptor)
     except OSError as exc:
         raise ValueError(f"{name} must be a regular direct child") from exc
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise ValueError(f"{name} must be a regular file")
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError(f"{name} must be a regular file within its byte limit")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             payload = stream.read(limit + 1)
     finally:
@@ -197,6 +227,8 @@ class NavigationArtifact:
         accepted_map_versions: dict[str, str],
         arrival_slots: tuple[ArrivalSlot, ...] = (),
         connectors: tuple[Connector, ...] = (),
+        *,
+        authoring: str | Path | None = None,
     ) -> NavigationArtifact:
         """Load an accepted map plus pinned offline geometry as a non-dispatchable preview."""
         if not isinstance(accepted_map_versions, dict) or any(
@@ -227,11 +259,31 @@ class NavigationArtifact:
                     "geometry report",
                 )
                 report = parse_document(report_payload, "geometry.json")
-                bands = _validate_geometry_report(report, validated)
-                height, width = report["shape_yx"]
-                grids = tuple(
-                    _load_grid(directory_descriptor, report, band, height, width) for band in bands
+                v2 = report.get("schema_version") == 2
+                bands = (
+                    _validate_geometry_report_v2(report, validated)
+                    if v2
+                    else _validate_geometry_report(report, validated)
                 )
+                height, width = report["shape_yx"]
+                if v2:
+                    _verify_v2_derivation(
+                        bundle,
+                        directory_descriptor,
+                        accepted_map_versions,
+                        authoring,
+                        report_payload,
+                        report,
+                    )
+                    grids = tuple(
+                        _load_grid_v2(directory_descriptor, report, name, z, height, width)
+                        for name, z in zip(report["grid_files"], bands, strict=True)
+                    )
+                else:
+                    grids = tuple(
+                        _load_grid(directory_descriptor, report, band, height, width)
+                        for band in bands
+                    )
             map_pin = ArtifactPin(validated["bundle_version"], validated["content_sha256"])
             geometry_pin = ArtifactPin(
                 report["authoring_sha256"], sha256(report_payload).hexdigest()
@@ -247,25 +299,32 @@ class NavigationArtifact:
                 Zone(
                     item["id"],
                     item["floor_id"],
-                    item["owner_approved"],
+                    False if v2 else item["owner_approved"],
                     tuple(tuple(point) for point in item["polygon"]),
-                    item["z_min"],
-                    item["z_max"],
+                    item["z_min_m"] if v2 else item["z_min"],
+                    item["z_max_m"] if v2 else item["z_max"],
                     tuple(sorted(slot_groups.get(item["id"], ()), key=lambda slot: slot.slot_id)),
                 )
                 for item in sorted(zones_document["zones"], key=lambda item: item["id"])
             )
-            _validate_connectors_against_graph(connectors, zones_document["room_graph"])
+            if v2:
+                if connectors:
+                    raise ValueError("world geometry preview does not define connectors")
+            else:
+                _validate_connectors_against_graph(connectors, zones_document["room_graph"])
             geofence = zones_document["geofence"]
+            clearance = report["clearance_m"] if v2 else report["hazard_margin_m"]
+            geofence_low = geofence["z_min_m"] if v2 else geofence["z_min"]
+            geofence_high = geofence["z_max_m"] if v2 else geofence["z_max"]
             navigation_pin = ArtifactPin(
                 "preview",
                 _navigation_configuration_sha256(
                     map_pin,
                     geometry_pin,
-                    report["hazard_margin_m"],
+                    clearance,
                     tuple(tuple(point) for point in geofence["polygon"]),
-                    geofence["z_min"],
-                    geofence["z_max"],
+                    geofence_low,
+                    geofence_high,
                     grids,
                     zones,
                     connectors,
@@ -276,10 +335,10 @@ class NavigationArtifact:
                 geometry_pin,
                 navigation_pin,
                 preview_evidence(report["evidence_kind"]),
-                report["hazard_margin_m"],
+                clearance,
                 tuple(tuple(point) for point in geofence["polygon"]),
-                geofence["z_min"],
-                geofence["z_max"],
+                geofence_low,
+                geofence_high,
                 grids,
                 zones,
                 connectors,
@@ -333,6 +392,201 @@ def _load_grid(
         height,
         frozenset((int(x), int(y)) for y, x in zip(*np.where(rows == 1), strict=True)),
     )
+
+
+def _load_grid_v2(
+    directory_descriptor: int,
+    report: dict,
+    name: str,
+    z_m: float,
+    height: int,
+    width: int,
+) -> GridLevel:
+    payload = _bounded_bytes(
+        directory_descriptor,
+        name,
+        _MAX_GRID_BYTES,
+        f"geometry grid {name}",
+    )
+    if report["files"][name] != sha256(payload).hexdigest():
+        raise ValueError(f"geometry grid hash mismatch: {name}")
+    try:
+        header = io.BytesIO(payload)
+        if np.lib.format.read_magic(header) != (1, 0):
+            raise ValueError("unsupported NPY format")
+        shape, fortran_order, dtype = np.lib.format.read_array_header_1_0(header)
+        if dtype != np.dtype(np.uint8) or fortran_order or shape != (height, width):
+            raise ValueError("grid header disagrees with the report")
+        rows = np.load(io.BytesIO(payload), allow_pickle=False)
+    except (EOFError, ValueError) as exc:
+        raise ValueError(f"invalid geometry grid: {name}") from exc
+    if rows.dtype != np.uint8 or rows.ndim != 2 or not np.isin(rows, (0, 1)).all():
+        raise ValueError(f"invalid binary uint8 geometry grid: {name}")
+    return GridLevel(
+        report["floor_id"],
+        z_m,
+        (report["origin_xy"][0], report["origin_xy"][1]),
+        report["cell_m"],
+        width,
+        height,
+        frozenset((int(x), int(y)) for y, x in zip(*np.where(rows == 1), strict=True)),
+    )
+
+
+def _bounded_path_bytes(path: Path, limit: int, label: str) -> bytes:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"{label} cannot be read") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError(f"{label} must be a bounded regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            payload = stream.read(limit + 1)
+    finally:
+        os.close(descriptor)
+    if len(payload) > limit:
+        raise ValueError(f"{label} exceeds its byte limit")
+    return payload
+
+
+def _verify_v2_derivation(
+    bundle, directory_descriptor, accepted_versions, authoring, report_payload, report
+):
+    if authoring is None:
+        raise ValueError("world geometry requires its immutable authoring input")
+    authoring_path = Path(authoring)
+    payload = _bounded_path_bytes(authoring_path, _MAX_REPORT_BYTES, "world geometry authoring")
+    if sha256(payload).hexdigest() != report["authoring_sha256"]:
+        raise ValueError("world geometry authoring hash mismatch")
+    import tempfile
+
+    from tools.map_geometry import generate
+
+    with tempfile.TemporaryDirectory(prefix="world-geometry-verify-") as temporary:
+        expected_directory = Path(temporary) / "expected"
+        expected = generate(bundle, authoring_path, expected_directory, accepted_versions)
+        if (expected_directory / "geometry.json").read_bytes() != report_payload:
+            raise ValueError("world geometry report is not derived from its pinned authoring")
+        preview = _bounded_bytes(
+            directory_descriptor, "preview.html", _MAX_REPORT_BYTES, "geometry preview"
+        )
+        if sha256(preview).hexdigest() != expected["files"]["preview.html"]:
+            raise ValueError("world geometry files are not derived from pinned authoring")
+
+
+def _validate_geometry_report_v2(report: object, validated: ValidatedBundle) -> tuple[float, ...]:
+    if not isinstance(report, dict) or set(report) != _REPORT_V2_FIELDS:
+        raise ValueError("geometry report does not match schema version 2")
+    exact = {
+        "schema_version": 2,
+        "status": "offline_authoring",
+        "flight_approved": False,
+        "frame": "world",
+        "units": "meters",
+        "blocked_value": 1,
+        "candidate_value": 0,
+        "static_geometry_only": True,
+    }
+    if any(
+        type(report.get(key)) is not type(expected) or report.get(key) != expected
+        for key, expected in exact.items()
+    ):
+        raise ValueError("geometry report status, frame, or cell semantics are unsupported")
+    if validated.get("schema_version") != 2:
+        raise ValueError("geometry report version 2 needs a world bundle")
+    if report["evidence_kind"] not in {"synthetic", "measured"}:
+        raise ValueError("geometry report evidence_kind is unsupported")
+    if (
+        report["bundle_version"] != validated["bundle_version"]
+        or report["bundle_content_sha256"] != validated["content_sha256"]
+    ):
+        raise ValueError("geometry artifact does not match the accepted map")
+    sha256_digest(report["authoring_sha256"], "geometry authoring_sha256")
+    if not isinstance(report["floor_id"], str) or not report["floor_id"]:
+        raise ValueError("geometry report floor is invalid")
+    finite_number(report["cell_m"], "cell_m", positive=True)
+    finite_number(report["clearance_m"], "clearance_m", positive=True)
+    clearance = report["clearance"]
+    if (
+        not isinstance(clearance, dict)
+        or set(clearance) != {"aircraft_radius_m", "uncertainty_m", "stopping_m"}
+        or any(finite_number(value, "clearance component") < 0 for value in clearance.values())
+        or finite_number(clearance["aircraft_radius_m"], "aircraft radius") <= 0
+        or abs(sum(clearance.values()) - report["clearance_m"]) > 1e-9
+    ):
+        raise ValueError("geometry clearance is invalid")
+    origin = report["origin_xy"]
+    if not isinstance(origin, list) or len(origin) != 2:
+        raise ValueError("geometry origin_xy must have two coordinates")
+    for value in origin:
+        finite_number(value, "geometry origin")
+    shape = report["shape_yx"]
+    if (
+        not isinstance(shape, list)
+        or len(shape) != 2
+        or any(type(value) is not int or value < 1 for value in shape)
+        or shape[0] * shape[1] > MAX_GRID_CELLS
+    ):
+        raise ValueError("geometry shape_yx is invalid or exceeds the cell limit")
+    planes = report["altitude_planes_m"]
+    if not isinstance(planes, list) or not 1 <= len(planes) <= 64:
+        raise ValueError("geometry altitude planes are invalid")
+    values = tuple(finite_number(value, "geometry altitude plane") for value in planes)
+    if list(values) != sorted(set(values)):
+        raise ValueError("geometry altitude planes must be unique and increasing")
+    names = report["grid_files"]
+    if (
+        not isinstance(names, list)
+        or len(names) != len(values)
+        or len(set(names)) != len(names)
+        or any(not isinstance(name, str) or Path(name).name != name for name in names)
+    ):
+        raise ValueError("geometry grid files are invalid")
+    files = report["files"]
+    if not isinstance(files, dict) or set(files) != {*names, "preview.html"}:
+        raise ValueError("geometry report file manifest is not exact")
+    for digest in files.values():
+        sha256_digest(digest, "geometry file pin")
+    if not isinstance(report["routes"], list) or not report["routes"]:
+        raise ValueError("geometry report routes are missing")
+    for route in report["routes"]:
+        coverage = route.get("tag_coverage") if isinstance(route, dict) else None
+        if (
+            not isinstance(route, dict)
+            or route.get("geometry_clear") is not True
+            or not isinstance(coverage, dict)
+            or coverage.get("covered") is not True
+            or coverage.get("status") != "sampled_camera_envelope"
+        ):
+            raise ValueError("geometry route lacks measured clearance or tag coverage")
+    if not isinstance(report["formations"], list) or any(
+        not isinstance(item, dict)
+        or item.get("candidate") is not True
+        or item.get("two_aircraft_static_fit") is not True
+        or item.get("aircraft_envelope_m") != report["clearance_m"]
+        for item in report["formations"]
+    ):
+        raise ValueError("geometry formation lacks measured clearance")
+    checkpoints = report["held_out_checkpoints"]
+    if (
+        not isinstance(checkpoints, list)
+        or not checkpoints
+        or any(
+            not isinstance(item, dict)
+            or item.get("passes") is not True
+            or item.get("height_proven") is not False
+            or finite_number(
+                item.get("maximum_xy_error_m"), "checkpoint maximum XY error", positive=True
+            )
+            > 0.10
+            for item in checkpoints
+        )
+    ):
+        raise ValueError("geometry checkpoints do not satisfy the map bound")
+    return values
 
 
 def _validate_geometry_report(report: object, validated: ValidatedBundle) -> tuple[float, ...]:
