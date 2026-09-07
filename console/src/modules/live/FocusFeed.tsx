@@ -1,3 +1,5 @@
+import { membershipWord } from '../../control/observation'
+import { DeviceTelemetryPanel } from '../devices/DeviceTelemetryPanel'
 import type { RequestRecord } from '../../control/state'
 import { deviceNoun, formatDeviceId } from '../../control/state'
 import { LivePlayer } from '../../media/LivePlayer'
@@ -79,6 +81,7 @@ export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
             another device.
           </p>
         )}
+        {focused && <DeviceTelemetryPanel device={focused} now={now} />}
       </div>
     </section>
   )
@@ -135,9 +138,9 @@ function deriveRows(drone: RelayAircraftState, requests: RequestRecord[], now: n
     { key: 'battery', value: formatPercent(drone.battery), tone: 'ink' },
     { key: 'link', value: formatPercent(drone.link), tone: 'ink' },
     { key: 'position quality', value: formatPercent(drone.pos_quality), tone: 'ink' },
-    { key: 'membership', value: drone.membership, tone: membershipTone(drone.membership) },
+    { key: 'membership', value: membershipWord(drone), tone: membershipTone(drone.membership) },
     { key: 'readiness', value: readiness.text, tone: readiness.tone },
-    { key: 'guidance mode', value: 'unreported', tone: 'muted' },
+    { key: 'guidance mode', value: drone.capture_readiness?.guidance_mode ?? 'unreported', tone: 'muted' },
     { key: 'capture progress', value: capture.text, tone: capture.tone },
   ]
 }

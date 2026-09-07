@@ -1,6 +1,6 @@
 import type { ControlState, OutcomeSummary, RequestRecord } from '../../control/state'
 import type { DroneId, RelayAircraftState } from '../../relay/contract'
-import { formatAgo } from '../../shell/format'
+import { sensorStatus } from '../../sensor/status'
 
 /** The newest refusal that named this device: a request it was selected for, or an adapter refusal. */
 export function lastRefusal(
@@ -30,12 +30,7 @@ export function lastRefusal(
 
 /** The sensor line: no lidar advertised, a scan age, or a kit that has not reported. */
 export function sensorWord(device: RelayAircraftState, now: number): { text: string; tone: string } {
-  const advertised = device.adapter_capabilities.includes('lidar')
-  if (!advertised) return { text: 'no lidar', tone: 'muted' }
-  const sensor = device.sensor
-  if (!sensor) return { text: 'lidar advertised · no scan reported', tone: 'muted' }
-  if (sensor.last_scan_at === null) return { text: `${sensor.kind} · no scan yet`, tone: 'muted' }
-  return { text: `${sensor.kind} · ${formatAgo(now, sensor.last_scan_at)}`, tone: 'ink' }
+  return sensorStatus(device, now)
 }
 
 /** The lines a node's environment needs; the key line is a placeholder, never a value. */

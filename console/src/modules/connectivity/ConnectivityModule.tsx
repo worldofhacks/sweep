@@ -15,7 +15,7 @@ import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
 
 /**
- * Connectivity and health, rendered under Reference › Health: health metrics,
+ * Connectivity and health, rendered under Devices › Health: health metrics,
  * one row per aircraft node, the shared services, and the degradation ladder.
  * Node rows come from relay aircraft state; versions, RTT, rate and storage
  * come from the catalog and read unreported until a node endpoint exists.

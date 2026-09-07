@@ -266,13 +266,13 @@ describe('connectivity', () => {
       now,
     )
     expect(down.map((cell) => cell.value)).toEqual([
-      'Sweep control not granted · fw 2.4.1',
+      'Current control unknown · fw 2.4.1',
       'down',
       'no route',
       'disconnected',
-      '29.4 Hz',
-      'not ready',
-      'live · just now',
+      'current telemetry unknown',
+      'current camera state unknown',
+      'offline · just now',
       'unknown',
       'aircraft 0.9.7',
     ])
@@ -281,9 +281,9 @@ describe('connectivity', () => {
       'danger',
       'danger',
       'danger',
-      'ink',
+      'warn',
       'danger',
-      'ok',
+      'warn',
       'ink',
       'ink',
     ])

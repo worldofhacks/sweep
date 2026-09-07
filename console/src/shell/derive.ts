@@ -1,3 +1,4 @@
+import { motionObservationCurrent, observationCurrent } from '../control/observation'
 import type {
   ConnectionStatus,
   ControlState,
@@ -94,7 +95,7 @@ export function sortedAircraft(aircraft: ControlState['aircraft']): RelayAircraf
 }
 
 export function isReady(drone: RelayAircraftState | undefined): boolean {
-  return Boolean(drone && drone.membership === 'ready' && drone.selectable)
+  return Boolean(drone && motionObservationCurrent(drone) && drone.membership === 'ready' && drone.selectable)
 }
 
 export function deriveSelectionLabel(
@@ -129,8 +130,8 @@ export function authorityWords(drone: RelayAircraftState): {
 } {
   const ground = drone.device_class === 'ground_vehicle'
   return {
-    authority: drone.control_authority ? 'Sweep' : 'Sweep control not granted',
-    operator: ground ? 'Spotter' : 'RC safety operator',
+    authority: !observationCurrent(drone) ? 'Current control unknown' : drone.control_authority ? 'Sweep' : 'Sweep control not granted',
+    operator: `${observationCurrent(drone) ? '' : 'Last reported '}${ground ? 'Spotter' : 'RC safety operator'}`,
     operatorShort: ground ? 'Spotter' : 'RC operator',
   }
 }
@@ -144,6 +145,7 @@ export function deriveRcLine(state: ControlState): RcLine {
     .map((id) => {
       const drone = state.aircraft[id]
       if (!drone) return `${label(id)} unreported`
+      if (!observationCurrent(drone)) return `${label(id)} ${drone.membership === 'disconnected' ? 'offline' : 'current state unknown'}`
       const words = authorityWords(drone)
       const rc = drone.rc_safety_operator_present ? 'present' : 'absent'
       return `${label(id)} ${words.authority} · ${words.operatorShort} ${rc}`

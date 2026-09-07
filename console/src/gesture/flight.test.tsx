@@ -53,6 +53,32 @@ async function mount() {
 }
 
 describe('Flight profile with two selected-capable nodes', () => {
+  test('same-ID rejoin invalidates a gesture preview before confirmation on a new epoch', async () => {
+    const { clients, get, hold, emitState, drones } = await mount()
+    hold('Victory', 650)
+    const draft = get().control.pendingRequest!.intent
+    emitState([1], { drones: drones().map((drone) => drone.drone_id === 1 ? { ...drone, connection_epoch: drone.connection_epoch + 1 } : drone) })
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam.sent).toEqual([])
+    expect(get().control.state.requests.find((request) => request.intent.intent_id === draft.intent_id)?.status).toBe('invalidated')
+  })
+
+  test('a confirmation thumb shown directly after a Flight draft cannot bypass neutral release', async () => {
+    const { clients, get, hold } = await mount()
+    hold('Victory', 650)
+    const draft = get().control.pendingRequest!.intent
+    hold('Thumb_Up', 900)
+    expect(clients.webcam.sent).toEqual([])
+    expect(get().control.pendingRequest?.intent.intent_id).toBe(draft.intent_id)
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam.sent).toHaveLength(1)
+    expect(clients.webcam.sent[0]).toMatchObject({ ...draft, confirm: true, t: expect.any(Number) })
+    hold('Thumb_Up', 1000)
+    expect(clients.webcam.sent).toHaveLength(1)
+  })
+
   test('a mixed aircraft and robot selection blocks Flight buttons and recognition before creating an intent', async () => {
     const { clients, get, hold, emitState, drones } = await mount()
     const robot: RelayAircraftState = {
@@ -151,7 +177,13 @@ describe('Flight profile with two selected-capable nodes', () => {
   test('arm session has no motor targets and can be confirmed with both aircraft selected', async () => {
     const { clients, get, hold, emitState } = await mount()
     emitState([1, 2], { armed: false })
+    expect(get().producer.view.actionReadiness.find((item) => item.pair.action.kind === 'draft' && item.pair.action.name === 'arm')).toMatchObject({
+      targets: [], scope: 'session', blockedReason: null,
+    })
     hold('Open_Palm', 650)
+    expect(get().producer.view.actionReadiness.find((item) => item.pair.action.kind === 'confirm')).toMatchObject({
+      targets: [], scope: 'session', blockedReason: null,
+    })
     const draft = get().control.pendingRequest!.intent
     expect(draft).toMatchObject({ name: 'arm', args: {}, selection: [], confirm: false })
     expect(get().control.pendingRequest!.plan?.steps.join(' ')).toContain('does not start any aircraft motors')

@@ -3,6 +3,8 @@ import { formatDroneId, type DeviceLabeller, type PlanPreview } from './state'
 
 const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
   arm: 'Arm session',
+  robot_peripheral: 'Robot peripheral',
+  camera_control: 'Camera control',
   capture_room: 'Capture room',
   takeoff: 'Takeoff',
   land: 'Land',
@@ -21,6 +23,12 @@ export function planTitle(intent: IntentV1): string {
 /** Ordered plain-language steps from the design's planSteps; `label` names each target by its class. */
 export function planSteps(intent: IntentV1, label: DeviceLabeller = formatDroneId): string[] {
   const ids = intent.selection.map(label).join(', ')
+  if (intent.name === 'camera_control' && 'kind' in intent.args) return [
+    `Send ${intent.args.kind === 'photo' ? 'single photo capture' : intent.args.kind === 'ready' ? 'photo-mode preparation' : `absolute gimbal pitch ${'pitch_mdeg' in intent.args ? intent.args.pitch_mdeg / 1000 : ''}°`} only to ${ids}.`,
+    'Confirm against the current aircraft connection and SDK capability report.',
+    'Completion requires SDK evidence. Photos stay on the aircraft; media download is unavailable.',
+  ]
+  if (intent.name === 'robot_peripheral' && 'kind' in intent.args) return [`Send ${intent.args.kind} only to ${ids}, independently of the fleet motion selection.`, `Arguments: ${JSON.stringify(intent.args)}`, 'This does not arm or re-enable the drive. Vendor output is reported as submitted; physical completion is not verified.']
   if (intent.name === 'arm') return ['Enable commands for this session. This does not start any aircraft motors.', 'Takeoff is a separate selected-aircraft command and requires another confirmation.']
   if (intent.name === 'body_pulse' && 'forward_mm_s' in intent.args) {
     return [

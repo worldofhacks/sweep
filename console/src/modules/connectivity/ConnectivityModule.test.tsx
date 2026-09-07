@@ -1,12 +1,12 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
-import { openReferenceTab, renderCatalogConsole } from '../../testing/catalog-console'
+import { openDeviceTab, renderCatalogConsole } from '../../testing/catalog-console'
 
 type User = ReturnType<typeof userEvent.setup>
 
 async function openHealth(user: User) {
-  await openReferenceTab(user, 'Health')
+  await openDeviceTab(user, 'Health')
   expect(screen.getByText(/Connectivity and health — Nodes, services, metrics/)).toBeInTheDocument()
 }
 
@@ -60,7 +60,7 @@ describe('Connectivity module', () => {
     expect(cell(rows[0], 'Firmware')).toHaveTextContent('aircraft 0.9.7')
     expect(within(rows[0]).queryByText(/Adapter connection lost|Telemetry stopped|RC pilot/)).not.toBeInTheDocument()
 
-    expect(cell(rows[2], 'Telemetry')).toHaveTextContent(/^stale /)
+    expect(cell(rows[2], 'Telemetry')).toHaveTextContent('current telemetry unknown')
     expect(cell(rows[2], 'Telemetry')).toHaveClass('tone-warn')
     expect(
       within(rows[2]).getByText(/Telemetry stopped inside the freshness window/),

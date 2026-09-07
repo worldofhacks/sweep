@@ -1,9 +1,18 @@
+import { motionObservationCurrent } from '../../control/observation'
+import { deriveStream } from '../live/derive-live'
+import { membershipWord } from '../../control/observation'
 import { useState } from 'react'
+import { DeviceTelemetryPanel } from './DeviceTelemetryPanel'
+import { CameraControls } from './CameraControls'
+import { RobotPeripheralControls } from './RobotPeripheralControls'
 import './devices.css'
 import type { DepartureRecord } from '../../control/state'
 import { deviceNoun, formatDeviceId, pluralNoun, rosterNoun } from '../../control/state'
-import type { DroneId, RelayAircraftState } from '../../relay/contract'
+import type { DroneId, RelayAircraftState, RelaySensorEvent } from '../../relay/contract'
+import { useSensorStore } from '../../sensor/store'
 import { Pane } from '../../shell/Pane'
+import { ConfigModule } from '../config/ConfigModule'
+import { ConnectivityModule } from '../connectivity/ConnectivityModule'
 import { authorityWords, membershipTone, sortedAircraft } from '../../shell/derive'
 import { formatAgo, formatPercent, formatTime } from '../../shell/format'
 import { readinessNotes } from '../../shell/readiness'
@@ -11,6 +20,8 @@ import { membershipReasonSentence, reasonSentence } from '../../shell/sentences'
 import { ReadinessHelp } from '../ReadinessHelp'
 import { motionStateWord } from '../control/controls'
 import { useSecondTick } from '../live/use-second-tick'
+import { deviceScan } from '../map/derive-map'
+import { LidarPolar } from '../map/LidarPolar'
 import type { ModuleProps } from '../types'
 import { lastRefusal, nodeConfigurationText, sensorWord } from './derive-devices'
 
@@ -26,19 +37,26 @@ const CLASS_WORD: Record<RelayAircraftState['device_class'], string> = {
  * The device key is never shown here: the relay never sends it, and a
  * person types it on the device.
  */
-export function DevicesModule({ controller, now, relayBaseUrl }: ModuleProps) {
-  const { state } = controller
+export function DevicesModule(props: ModuleProps) {
+  const { controller, now, relayBaseUrl } = props
+  const [tab, setTab] = useState('registry')
+  const { state, sensors } = controller
+  const snapshot = useSensorStore(sensors)
   const fleet = sortedAircraft(state.aircraft)
-  useSecondTick(fleet.some((device) => device.video?.last_frame_at != null || device.sensor?.last_scan_at != null))
+  useSecondTick(fleet.length > 0)
   const at = now()
   return (
     <Pane
       title="Devices"
-      note="Every device the relay reports, its class and feeds, and the configuration a node needs to join."
+      note={tab === 'health' ? 'Connectivity and health — Nodes, services, metrics, and the degradation ladder.' : tab === 'config' ? 'Configuration — Ordinary settings apply now; safety-sensitive ones are staged.' : 'Every device the relay reports, its class and feeds, and the configuration a node needs to join.'}
+      tabs={[{ id: 'registry', label: 'Registry' }, { id: 'health', label: 'Health' }, { id: 'config', label: 'Config' }]}
+      activeTab={tab}
+      onTabChange={setTab}
+      tabsLabel="Device sections"
     >
-      <div data-two="1" className="dv-two">
+      {tab === 'health' ? <ConnectivityModule {...props} /> : tab === 'config' ? <ConfigModule {...props} /> : <div data-two="1" className="dv-two">
         <div className="dv-column">
-          <p className="dv-eyebrow">Connected · roster v{state.rosterVersion}</p>
+          <p className="dv-eyebrow">Registry · roster v{state.rosterVersion}</p>
           {fleet.length === 0 ? (
             <p className="dv-empty">No devices have joined this session. The relay reports an empty roster.</p>
           ) : (
@@ -46,7 +64,9 @@ export function DevicesModule({ controller, now, relayBaseUrl }: ModuleProps) {
               <DeviceCard
                 key={device.drone_id}
                 device={device}
+                controller={controller}
                 now={at}
+                scan={deviceScan(device, snapshot)}
                 refusal={lastRefusal(state, device.drone_id)}
               />
             ))
@@ -71,31 +91,35 @@ export function DevicesModule({ controller, now, relayBaseUrl }: ModuleProps) {
             knownIds={fleet.map((device) => device.drone_id)}
           />
         </div>
-      </div>
+      </div>}
     </Pane>
   )
 }
 
 function DeviceCard({
   device,
+  controller,
   now,
+  scan,
   refusal,
 }: {
   device: RelayAircraftState
+  controller: ModuleProps['controller']
   now: number
+  scan: RelaySensorEvent | null
   refusal: { t: number; reasonCode: string; detail: string } | null
 }) {
   const id = formatDeviceId(device)
   const noun = deviceNoun(device.device_class)
   const words = authorityWords(device)
-  const video = device.video
+  const video = deriveStream(device, now)
   const sensor = sensorWord(device, now)
   return (
     <article className="dv-card" aria-label={`${id} device card`}>
       <div className="dv-card-head">
         <span className="dv-id">{id}</span>
         <span className="dv-class">{CLASS_WORD[device.device_class]}</span>
-        <span className={`dv-membership tone-${membershipTone(device.membership, device.pos_quality)}`}>{device.membership}</span>
+        <span className={`dv-membership tone-${membershipTone(device.membership, device.pos_quality)}`}>{membershipWord(device)}</span>
         <span className="dv-state">{motionStateWord(device)}</span>
       </div>
       <dl className="dv-rows">
@@ -112,17 +136,23 @@ function DeviceCard({
         <Row k="authority" v={`${words.authority} · ${words.operator.toLowerCase()} ${device.rc_safety_operator_present ? 'present' : 'absent'}`} />
         <Row
           k="video"
-          v={video ? `${video.status}${video.last_frame_at === null ? '' : ` · ${formatAgo(now, video.last_frame_at)}`}` : 'unreported'}
-          tone={video ? (video.status === 'live' ? 'ok' : 'warn') : 'muted'}
+          v={`${video.status} · ${video.lastFrame}`}
+          tone={video.tone}
         />
-        <Row k="sensor" v={sensor.text} tone={sensor.tone} />
+        {device.device_class === 'ground_vehicle' && <Row k="sensor" v={sensor.text} tone={sensor.tone} />}
         <Row k="last seen" v={device.last_seen_at === null ? 'unreported' : formatAgo(now, device.last_seen_at)} />
       </dl>
+      {device.device_class === 'ground_vehicle' && device.adapter_capabilities.includes('lidar') && (
+        <LidarPolar device={device} scan={scan} size={104} now={now} />
+      )}
       {readinessNotes(device).length > 0 ? (
         <ReadinessHelp drone={device} className="dv-reasons" />
       ) : (
-        <p className="dv-ready tone-ok">ready</p>
+        <p className={`dv-ready tone-${motionObservationCurrent(device) ? 'ok' : 'warn'}`}>{motionObservationCurrent(device) && device.membership === 'ready' ? 'ready' : 'Current device state unknown; retained readings are last reported.'}</p>
       )}
+      <RobotPeripheralControls controller={controller} device={device} />
+      <CameraControls controller={controller} device={device} now={now} />
+      <DeviceTelemetryPanel device={device} now={now} scan={scan} />
       <p className="dv-refusal">
         {refusal ? (
           <>

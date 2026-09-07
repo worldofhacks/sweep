@@ -4,6 +4,7 @@ import {
   type MediaConfigurationSource,
 } from '../media/runtime-config'
 import { HttpTranscriptClient, type TranscriptClient } from '../voice/client'
+import { relayMapEndpoint, type MapEndpoint } from './map-endpoint'
 
 export interface SweepRelayRuntimeConfig {
   baseUrl: string
@@ -24,6 +25,11 @@ export interface ConsoleRuntime {
    * console can play; null when no relay bootstrap exists.
    */
   mediaConfigurationSource: MediaConfigurationSource | null
+  /**
+   * The session's occupancy map behind the relay bearer; null when no relay
+   * bootstrap exists, and the Map pane says so rather than drawing a raster.
+   */
+  mapEndpoint: MapEndpoint | null
   sessionId: string
   /** The relay base URL a node would connect to; null without a bootstrap. */
   baseUrl: string | null
@@ -53,6 +59,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       ),
       transcriptClient: null,
       mediaConfigurationSource: null,
+      mapEndpoint: null,
       baseUrl: null,
     }
   }
@@ -86,5 +93,6 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
     }),
     transcriptClient: new HttpTranscriptClient({ baseUrl: config.baseUrl, token: config.token }),
     mediaConfigurationSource: relayMediaConfigurationSource(config.baseUrl, config.token),
+    mapEndpoint: relayMapEndpoint(config.baseUrl, config.sessionId, config.token),
   }
 }

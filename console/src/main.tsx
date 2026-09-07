@@ -10,40 +10,13 @@ import {
   loadMediaRuntimeConfiguration,
 } from './media/runtime-config.ts'
 import { bootstrapConsoleRuntime } from './relay/bootstrap.ts'
-import {
-  FixtureCatalogClient,
-  FixtureRelayClient,
-  isFixtureScenarioName,
-} from './testing/fixture-relay-client.ts'
-
-const requestedFixture = new URLSearchParams(window.location.search).get('fixture')
-const fixtureScenario =
-  import.meta.env.DEV && requestedFixture !== null && isFixtureScenarioName(requestedFixture)
-    ? requestedFixture
-    : null
-const fixtureSessionId = 'fixture-control-session'
 const root = createRoot(document.getElementById('root')!)
 
 // The relay bootstrap is resolved once before the runtime exists: the host
-// global, else one same-origin read of the bootstrap endpoint. The fixture
-// path never reads it. Without either source the console mounts as before,
-// visibly disconnected with network controls unavailable.
+// global, else one same-origin read of the bootstrap endpoint. Every build uses
+// real relay data. Without configuration the console is visibly disconnected,
+// with unavailable controls and an empty roster. URL parameters cannot create data.
 async function resolveRuntime() {
-  if (fixtureScenario) {
-    return {
-      sessionId: fixtureSessionId,
-      client: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'console', fixtureScenario),
-      keyboardClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'keyboard', fixtureScenario),
-      webcamClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'webcam', fixtureScenario),
-      languageClient: new FixtureRelayClient(fixtureSessionId, () => Date.now(), 'language', fixtureScenario),
-      // The fixture has no transcription endpoint; the Speech module says so and accepts typed text.
-      transcriptClient: null,
-      // The fixture has no relay, so only a same-origin media endpoint can enable playback.
-      mediaConfigurationSource: null,
-      baseUrl: null,
-      catalogClient: new FixtureCatalogClient(fixtureScenario, () => Date.now()),
-    }
-  }
   return { ...(await bootstrapConsoleRuntime()), catalogClient: new UnreportedCatalogClient() }
 }
 
@@ -75,6 +48,7 @@ void resolveRuntime().then((runtime) => {
           services={services}
           media={configuration ? createMediaRuntime(configuration) : undefined}
           relayBaseUrl={runtime.baseUrl ?? undefined}
+          mapEndpoint={runtime.mapEndpoint ?? undefined}
         />
       </StrictMode>,
     )

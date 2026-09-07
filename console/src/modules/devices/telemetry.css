@@ -1,0 +1,24 @@
+.tm-panel { min-width: 0; margin-top: 12px; font-size: var(--text-12); }
+.tm-rows { margin: 8px 0; }
+.tm-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid var(--color-rule-inner); }
+.tm-row dt { flex: 0 1 44%; color: var(--color-ink-2); }
+.tm-row dd { flex: 1; min-width: 0; margin: 0; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tm-details { padding: 8px 0; border-top: 1px solid var(--color-hairline); }
+.tm-details summary, .tm-group summary { cursor: pointer; color: var(--color-ink); font-weight: var(--weight-500); }
+.tm-details summary:focus-visible, .tm-group summary:focus-visible { outline: 2px solid var(--color-ink); outline-offset: 4px; }
+.tm-details p { color: var(--color-ink-2); line-height: var(--leading-1-5); }
+.tm-group { margin: 8px 0 8px 12px; }
+.tm-details pre { max-height: var(--size-json-max); overflow: auto; padding: 12px; border: 1px solid var(--color-hairline); font: inherit; font-family: var(--font-mono); background: var(--color-surface); }
+
+.tm-raw-scan { display: flex; align-items: center; gap: 12px; margin: 8px 0; color: var(--color-ink-2); }
+.tm-raw-scan svg { flex: 0 0 128px; }
+.tm-raw-scan figcaption { line-height: var(--leading-1-5); }
+.rp-controls fieldset { min-width: 0; margin: 12px 0; padding: 12px; border: 1px solid var(--color-hairline); }
+.rp-controls legend { padding: 0 4px; font-weight: var(--weight-500); }
+.rp-controls label { display: flex; flex-direction: column; gap: 4px; color: var(--color-ink-2); }
+.rp-controls input, .rp-controls textarea { min-width: 0; width: 100%; padding: 8px; border: 1px solid var(--color-border-input); font: inherit; font-family: var(--font-mono); color: var(--color-ink); background: var(--color-surface); }
+.rp-controls input { max-width: 112px; }
+.rp-hsv { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.rp-action { margin-top: 8px; }
+.rp-action button { padding: 8px 12px; min-height: var(--min-h-38); border: 1px solid var(--color-ink); color: var(--color-ink); background: var(--color-surface); font: inherit; cursor: pointer; }
+.rp-action button:disabled { opacity: 0.6; cursor: default; }

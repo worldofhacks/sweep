@@ -48,6 +48,13 @@
   --color-stream-live: #5FBF86;
   --color-stream-offline: #E8A33D;
   --color-stream-unreported: #B9B5A8;
+  /* Fleet map: one hue per lidar-fitted device, plus the frame the map is drawn in. */
+  --color-scan-1: #2F7F9E;
+  --color-scan-2: #B4622B;
+  --color-scan-3: #6B5AA6;
+  --color-scan-4: #1B6A3F;
+  --color-map-frame: #C9C4B6;
+  --color-map-geofence: #8A5A00;
   --color-cam-tracking: #7FD09B;
   --color-cam-label: #D9D5CA;
   --color-cam-label-bg: rgba(22, 21, 15, .72);

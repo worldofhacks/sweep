@@ -1,3 +1,9 @@
+import { membershipWord } from '../../control/observation'
+import { sensorStatus } from '../../sensor/status'
+import { useSensorStore } from '../../sensor/store'
+import { deviceScan } from '../map/derive-map'
+import { LidarPolar } from '../map/LidarPolar'
+import { useSecondTick } from '../live/use-second-tick'
 import type { DepartureRecord } from '../../control/state'
 import {
   capabilityBlockedReason,
@@ -7,7 +13,7 @@ import {
   pluralNoun,
   rosterNoun,
 } from '../../control/state'
-import type { RelayAircraftState } from '../../relay/contract'
+import type { RelayAircraftState, RelaySensorEvent } from '../../relay/contract'
 import { authorityWords, isReady, membershipTone, metricTone, sortedAircraft } from '../../shell/derive'
 import { formatAgo, formatPercent, formatTime } from '../../shell/format'
 import { membershipReasonSentence } from '../../shell/sentences'
@@ -23,7 +29,9 @@ export interface FleetPaneProps {
 /** Control › Fleet: the registry, wide, and the departed list. Every value is from relay state frames. */
 export function FleetPane({ controller, now }: FleetPaneProps) {
   const { state, toggleAircraft } = controller
+  const snapshot = useSensorStore(controller.sensors)
   const fleet = sortedAircraft(state.aircraft)
+  useSecondTick(fleet.some((device) => device.sensor?.last_scan_at != null))
   const at = now()
   return (
     <div data-two="1" className="ct-two">
@@ -39,6 +47,7 @@ export function FleetPane({ controller, now }: FleetPaneProps) {
               key={drone.drone_id}
               drone={drone}
               now={at}
+              scan={deviceScan(drone, snapshot)}
               selected={state.selection.includes(drone.drone_id)}
               lastInSelection={state.selection.length === 1 && state.selection[0] === drone.drone_id}
               selectionEnabled={isIntentEnabled(state, 'select')}
@@ -73,6 +82,7 @@ export function FleetPane({ controller, now }: FleetPaneProps) {
 function RegistryCard({
   drone,
   now,
+  scan,
   selected,
   lastInSelection,
   selectionEnabled,
@@ -81,6 +91,7 @@ function RegistryCard({
 }: {
   drone: RelayAircraftState
   now: number
+  scan: RelaySensorEvent | null
   selected: boolean
   lastInSelection: boolean
   selectionEnabled: boolean
@@ -101,7 +112,7 @@ function RegistryCard({
     <article className="ct-registry-card" aria-label={`${id} registry card`}>
       <div className="ct-registry-head">
         <span className="ct-registry-id">{id}</span>{' '}
-        <span className={`ct-registry-membership tone-${membershipTone(drone.membership, drone.pos_quality)}`}>{drone.membership}</span>{' '}
+        <span className={`ct-registry-membership tone-${membershipTone(drone.membership, drone.pos_quality)}`}>{membershipWord(drone)}</span>{' '}
         <span className="ct-registry-flight">{motionStateWord(drone)}</span>{' '}
         <span className="ct-registry-stamp">epoch {drone.connection_epoch}</span>{' '}
         <span className="ct-registry-stamp">{formatAgo(now, drone.last_seen_at)}</span>
@@ -117,6 +128,8 @@ function RegistryCard({
           {words.operator} {drone.rc_safety_operator_present ? 'present' : 'absent'}
         </span>
       </p>
+      <p className={`ct-dpad-note tone-${sensorStatus(drone, now).tone}`}>{sensorStatus(drone, now).text}</p>
+      {drone.adapter_capabilities.includes('lidar') && <LidarPolar device={drone} scan={scan} now={now} />}
       <div className="ct-registry-patterns" aria-label="Advertised capture patterns">
         {drone.camera_patterns.length === 0 ? (
           <span className="ct-registry-pattern">no capture pattern advertised</span>

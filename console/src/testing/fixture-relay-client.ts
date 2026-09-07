@@ -9,7 +9,9 @@ import type {
 } from '../catalog/types'
 import type { RelayClient, RelayClientEvent, RelayClientListener } from '../relay/client'
 import type {
+  ConsoleIntentName,
   DroneId,
+  FormationName,
   IntentV1,
   RelayAircraftState,
   RelaySensorEvent,
@@ -17,7 +19,7 @@ import type {
   IntentSource,
   SensorPose,
 } from '../relay/contract'
-import { C1_BASIC_CONTROL_INTENTS, isSupportedIntent } from '../relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, C2_FLEET_OPERATIONS_INTENTS } from '../relay/contract'
 
 export type FixtureFleetSize = 4 | 6
 
@@ -61,7 +63,7 @@ interface FixtureDeparture {
 export interface FixtureScenario {
   name: FixtureScenarioName
   rosterVersion: number
-  formation: string
+  formation: 'none' | FormationName
   spacing: number
   console: FixtureLink
   keyboard: FixtureLink
@@ -91,7 +93,10 @@ export class FixtureRelayClient implements RelayClient {
   private readonly sessionId: string
   private readonly now: () => number
   private readonly source: IntentSource
+  private readonly capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations'
   private armed: boolean
+  private readonly liveSensors: boolean
+  private sensorTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
     sessionId: string,
@@ -99,10 +104,14 @@ export class FixtureRelayClient implements RelayClient {
     source: IntentSource = 'console',
     scenario: FixtureFleetSize | FixtureScenarioName | boolean = 4,
     armed = true,
+    capabilityProfile: 'c1_basic_control' | 'c2_fleet_operations' = 'c1_basic_control',
+    liveSensors = false,
   ) {
+    this.liveSensors = liveSensors
     this.sessionId = sessionId
     this.now = now
     this.source = source
+    this.capabilityProfile = capabilityProfile
     this.armed = typeof scenario === 'boolean' ? scenario : armed
     this.scenario = typeof scenario === 'boolean' ? controlScenario(4) : typeof scenario === 'number' ? controlScenario(scenario) : fixtureScenario(scenario)
   }
@@ -111,7 +120,14 @@ export class FixtureRelayClient implements RelayClient {
     return this.source === 'keyboard' ? this.scenario.keyboard : this.scenario.console
   }
 
+  private get enabledIntentNames(): readonly ConsoleIntentName[] {
+    return this.capabilityProfile === 'c2_fleet_operations'
+      ? C2_FLEET_OPERATIONS_INTENTS
+      : C1_BASIC_CONTROL_INTENTS
+  }
+
   start(): void {
+    this.stop()
     const link = this.link
     this.emitConnection(link.status, link.reason)
     if (link.status === 'disconnected') return
@@ -148,10 +164,21 @@ export class FixtureRelayClient implements RelayClient {
       for (const scan of this.scenario.scans?.(this.now()) ?? []) {
         this.emitServer({ ...scan, v: 1, event_id: this.nextEventId(), session: this.sessionId })
       }
+      if (this.liveSensors && this.scenario.scans) {
+        this.sensorTimer = setInterval(() => {
+          this.emitState(this.now())
+          for (const scan of this.scenario.scans?.(this.now()) ?? []) {
+            this.emitServer({ ...scan, v: 1, event_id: this.nextEventId(), session: this.sessionId })
+          }
+        }, 1_000)
+      }
     }
   }
 
-  stop(): void {}
+  stop(): void {
+    if (this.sensorTimer !== null) clearInterval(this.sensorTimer)
+    this.sensorTimer = null
+  }
 
   subscribe(listener: RelayClientListener): () => void {
     this.listeners.add(listener)
@@ -164,7 +191,7 @@ export class FixtureRelayClient implements RelayClient {
       throw new Error('Fixture relay is disconnected; the intent was not sent.')
     }
     const t = this.now()
-    if (!isSupportedIntent(intent.name)) {
+    if (!this.enabledIntentNames.includes(intent.name)) {
       // The same refusal relay/intent_v1.py returns for a name outside the advertised profile.
       this.emitServer({
         v: 1,
@@ -177,7 +204,7 @@ export class FixtureRelayClient implements RelayClient {
         status: 'refused',
         source: 'relay',
         reason: 'unsupported',
-        detail: `${intent.name} is outside the M2.0 capability set`,
+        detail: `${intent.name} is outside the ${this.capabilityProfile} fixture capability set`,
         roster_version: this.scenario.rosterVersion,
         drone_id: null,
         connection_epoch: null,
@@ -240,8 +267,8 @@ export class FixtureRelayClient implements RelayClient {
       formation: this.scenario.formation,
       spacing: this.scenario.spacing,
       mode: 'indoor',
-      capability_profile: 'c1_basic_control',
-      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      capability_profile: this.capabilityProfile,
+      enabled_intent_names: [...this.enabledIntentNames],
       pending: this.scenario.pending,
       accepted_plan: null,
       drones: this.scenario.fleet(this.now()),
@@ -383,7 +410,7 @@ function mixedFleet(now: number): RelayAircraftState[] {
       ],
       camera_patterns: [],
       home_pose: { x: entry.pose.x, y: entry.pose.y, z: 0 },
-      telemetry: { x: entry.pose.x, y: entry.pose.y, z: 0, yaw_deg: entry.pose.yaw_deg },
+      telemetry: { t: now - 1_200, x: entry.pose.x, y: entry.pose.y, z: 0, yaw_deg: entry.pose.yaw_deg },
       sensor: entry.lidar ? { kind: 'lidar_scan', last_scan_at: now - 200 } : undefined,
       ...overrides,
     })
@@ -733,7 +760,7 @@ export function emptyCatalog(): CatalogSnapshot {
     nodes: {},
     services: [],
     metrics: [],
-    config: { groups: [], staged_changes: [], modes: [] },
+    config: { groups: [], staged_changes: [], modes: [], geofence: null },
   }
 }
 
@@ -1068,6 +1095,9 @@ export function designCatalog(now: number, fleetSize: FixtureFleetSize): Catalog
           status: 'unsupported',
         },
       ],
+      // The demo floor the design's thresholds were written for; a relay
+      // endpoint for the arbiter's geofence would replace it.
+      geofence: { ...FIXTURE_ROOM },
     },
   }
 }
@@ -1103,7 +1133,7 @@ function designDrone(now: number, id: DroneId, overrides: Partial<RelayAircraftS
     adapter_id: `sim-${String(id).padStart(2, '0')}`,
     adapter_capabilities: ['flight', 'camera'],
     home_pose: { x: 0, y: 0, z: 0 },
-    telemetry: { x: 0.4, y: 1.1, z: 1.4 },
+    telemetry: { t: now - 1_200, x: 0.4, y: 1.1, z: 1.4 },
     membership_history: [],
     membership_history_truncated: 0,
     video: { status: 'live', last_frame_at: now - 400 },

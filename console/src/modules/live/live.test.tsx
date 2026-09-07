@@ -272,7 +272,7 @@ describe('Live module focus', () => {
     expect(screen.getByRole('button', { name: 'Focus D-04' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Focus D-01' })).toHaveAttribute('aria-pressed', 'false')
 
-    await openModule(user, 'Reference')
+    await openModule(user, 'Devices')
     await openModule(user, 'Live')
     expect(screen.getByRole('button', { name: 'Focus D-04' })).toHaveAttribute('aria-pressed', 'true')
     await focusDevice(user, 'D-04')

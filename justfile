@@ -34,9 +34,17 @@ fmt:
     uv run ruff check --fix .
     cd console && pnpm lint --fix
 
-# Start the console dev server
+# Start the single built operator console; leaves relay and devices unchanged
 console:
-    cd console && pnpm dev
+    python3 tools/console.py start
+
+# Identify the running console build, relay and session
+console-status:
+    python3 tools/console.py status
+
+# Stop only the console process owned by this launcher
+console-stop:
+    python3 tools/console.py stop
 
 # Start MediaMTX in the foreground (Ctrl-C stops it)
 media:

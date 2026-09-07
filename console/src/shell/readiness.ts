@@ -9,6 +9,14 @@ export function readinessNotes(drone: RelayAircraftState): { code: string | null
     code,
     text: readinessSentence(code, deviceNoun(drone.device_class)) ?? humanizeCode(code),
   }))
+  const safety = drone.node_status?.device_telemetry?.safety
+  if (safety && typeof safety === 'object' && !Array.isArray(safety) && safety.blocked === true && Array.isArray(safety.reasons)) {
+    for (const reason of safety.reasons) {
+      if (typeof reason === 'string' && !notes.some((note) => note.code === reason)) {
+        notes.push({ code: reason, text: `Robot safety guard reports ${humanizeCode(reason).toLowerCase()}. Motion remains blocked until the guard clears.` })
+      }
+    }
+  }
   if (drone.pos_quality === 0) notes.push({ code: null, text: ZERO_POSITION_QUALITY_HELP })
   return notes
 }

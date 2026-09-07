@@ -42,7 +42,7 @@ function drone(overrides: Partial<RelayAircraftState> = {}): RelayAircraftState 
     adapter_id: 'adapter-1',
     adapter_capabilities: ['flight'],
     home_pose: null,
-    telemetry: null,
+    telemetry: { t },
     membership_history: [],
     membership_history_truncated: 0,
     ...overrides,

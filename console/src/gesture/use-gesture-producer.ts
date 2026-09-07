@@ -1,3 +1,4 @@
+import { isReady } from '../shell/derive'
 /**
  * Binds the webcam camera, the MediaPipe recognizer, and the pure policy to the
  * existing control flow. An accepted draft gesture becomes a previewed Intent v1
@@ -9,11 +10,15 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { capabilityBlockedReason, deviceLabeller, rosterNoun, type ControlState, type RequestRecord } from '../control/state'
+import { createTranslateArgs, isValidRoomId } from '../control/intent'
 import type { IntentRequest } from '../control/use-control-console'
 import type { IntentV1 } from '../relay/contract'
 import { createCameraController, type CameraController, type CameraState } from './camera'
 import {
   DEFAULT_GESTURE_POLICY_CONFIG,
+  observeHand,
+  FLEET_GESTURE_POLICY_CONFIG,
+  SWARM_GESTURE_POLICY_CONFIG,
   FLIGHT_GESTURE_POLICY_CONFIG,
   createGesturePolicyState,
   stepGesturePolicy,
@@ -122,6 +127,14 @@ export interface GestureActionRecord {
   intentId: string | null
 }
 
+export interface GestureActionReadiness {
+  pair: GesturePair
+  blockedReason: string | null
+  /** Decisions retain the frozen preview targets; session arm has no motor targets. */
+  targets: readonly number[]
+  scope: 'session' | 'devices'
+}
+
 export interface GestureProducerView {
   enabled: boolean
   status: GestureProducerStatus
@@ -141,6 +154,7 @@ export interface GestureProducerView {
   /** Why an accepted gesture would emit nothing right now, or null when it could act. */
   emissionBlockedReason: string | null
   pairBlockedReasons: Partial<Record<GestureCategory, string | null>>
+  actionReadiness: readonly GestureActionReadiness[]
   recording: { size: number; dropped: number }
 }
 
@@ -163,7 +177,7 @@ const NOTABLE_KINDS = new Set<GesturePolicyOutcome['kind']>([
 export function useGestureProducer({ control, roomId, dependencies, profile = 'capture' }: UseGestureProducerOptions) {
   const [deps] = useState(() => {
     const base = dependencies ?? createBrowserGestureDependencies()
-    return profile === 'flight' ? { ...base, policy: FLIGHT_GESTURE_POLICY_CONFIG } : base
+    return profile === 'fleet' ? { ...base, policy: FLEET_GESTURE_POLICY_CONFIG } : profile === 'swarm' ? { ...base, policy: SWARM_GESTURE_POLICY_CONFIG } : profile === 'flight' ? { ...base, policy: FLIGHT_GESTURE_POLICY_CONFIG } : base
   })
   const [recorder] = useState<SessionRecorder>(() =>
     createSessionRecorder({
@@ -267,7 +281,9 @@ export function useGestureProducer({ control, roomId, dependencies, profile = 'c
             ? bindings.prepareCapture(roomIdRef.current, 'webcam')
             : pair.action.name === 'hold'
               ? bindings.prepareHold('webcam')
-              : bindings.prepareIntent(flightIntentRequest(pair.action, bindings.state.selection), 'webcam')
+              : bindings.prepareIntent(pair.action.name === 'translate'
+                ? { name: 'translate', args: createTranslateArgs(pair.action.direction, 1) }
+                : pair.action.name === 'formation_next' ? { name: 'formation_next', args: {} } : flightIntentRequest(pair.action, bindings.state.selection), 'webcam')
         const detail = intent
           ? `${pair.gesture} drafted ${intent.name} for preview; nothing sent.`
           : `${pair.gesture} could not draft ${pair.action.name}; the control flow refused it.`
@@ -338,7 +354,7 @@ export function useGestureProducer({ control, roomId, dependencies, profile = 'c
     const hand = frame.hands[0]
     const step = stepGesturePolicy(
       policyRef.current,
-      { t, category: hand?.category ?? null, score: hand?.score ?? 0 },
+      observeHand(t, hand),
       deps.policy,
     )
     const phaseChanged = step.state.phase !== policyRef.current.phase
@@ -509,6 +525,13 @@ export function useGestureProducer({ control, roomId, dependencies, profile = 'c
     emissionBlockedReason:
       status.status === 'tracking' ? emissionBlockedReason(control, null, roomId) : status.detail ?? 'Tracking is not active.',
     pairBlockedReasons: Object.fromEntries(deps.policy.pairs.map((pair) => [pair.gesture, emissionBlockedReason(control, pair, roomId)])),
+    actionReadiness: deps.policy.pairs.map((pair) => ({
+      pair,
+      blockedReason: status.status === 'tracking' ? emissionBlockedReason(control, pair, roomId) : status.detail ?? 'Tracking is not active.',
+      targets: [...(pair.action.kind !== 'draft' ? control.pendingRequest?.intent.selection ?? []
+        : pair.action.name === 'arm' ? [] : control.state.selection)],
+      scope: (pair.action.kind === 'draft' ? pair.action.name : control.pendingRequest?.intent.name) === 'arm' ? 'session' : 'devices',
+    })),
     recording,
   }
 
@@ -590,15 +613,28 @@ export function emissionBlockedReason(
     return `Select at least one ready ${rosterNoun(Object.values(state.aircraft))}.`
   }
   const notReady = state.selection.find(
-    (id) => state.aircraft[id]?.membership !== 'ready' || !state.aircraft[id]?.selectable,
+    (id) => !isReady(state.aircraft[id]),
   )
   if (notReady !== undefined) return `${label(notReady)} is not ready or selectable.`
   if (!action) return null
-  if (action.name !== 'capture_room' && action.name !== 'hold') return flightActionBlockedReason(state, pendingRequest, action)
   const capability = capabilityBlockedReason(state, action.name)
   if (capability) return capability
+  if (state.estop) return 'The network stop is active.'
+  if (action.name === 'translate' || action.name === 'formation_next') {
+    if (!state.armed) return 'Arm the session with the manual controls before drafting motion.'
+    const immobile = state.selection.find((id) => {
+      const device = state.aircraft[id]
+      const telemetry = device.telemetry as { state?: string } | null
+      return device.device_class === 'ground_vehicle'
+        ? !['idle', 'moving', 'stopped'].includes(telemetry?.state ?? device.flight_state ?? '')
+        : !['airborne', 'hovering'].includes(device.flight_state ?? '')
+    })
+    if (immobile !== undefined) return `${label(immobile)} is not mobile; aircraft must be airborne and robots idle, moving or stopped.`
+    return null
+  }
+  if (action.name !== 'capture_room' && action.name !== 'hold') return flightActionBlockedReason(state, pendingRequest, action)
   if (action.name === 'hold') return null
-  if (!roomId.trim()) return 'Enter a room identifier.'
+  if (!isValidRoomId(roomId.trim())) return 'Enter a valid room identifier (3–24 lowercase letters, digits or hyphens).'
   if (state.selection.length !== 1) return 'Select exactly one ready aircraft for capture_room.'
   const selected = state.aircraft[state.selection[0]]
   if (selected.device_class === 'ground_vehicle') {

@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { bootstrapConsoleRuntime, loadRelayBootstrap, normalizeRelayBootstrap } from './bootstrap'
 import {
-  DEFAULT_RELAY_ORIGIN,
-  DEFAULT_RELAY_SESSION_ID,
   RELAY_BOOTSTRAP_ENDPOINT,
   relayFromEnvironment,
 } from './bootstrap-endpoint'
@@ -22,12 +20,8 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 describe('relay bootstrap endpoint payload', () => {
-  test('builds the payload from the relay variable names with loopback defaults', () => {
-    expect(relayFromEnvironment({ SWEEP_RELAY_TOKEN: 'token' })).toEqual({
-      baseUrl: DEFAULT_RELAY_ORIGIN,
-      sessionId: DEFAULT_RELAY_SESSION_ID,
-      token: 'token',
-    })
+  test('requires an explicit origin, session and token without loopback or demo defaults', () => {
+    expect(relayFromEnvironment({ SWEEP_RELAY_TOKEN: 'token' })).toBeNull()
     expect(
       relayFromEnvironment({
         SWEEP_RELAY_ORIGIN: 'wss://relay.example.internal',
@@ -45,6 +39,19 @@ describe('relay bootstrap endpoint payload', () => {
       relayFromEnvironment({ SWEEP_RELAY_ORIGIN: 'ws://127.0.0.1:8000', SWEEP_SESSION_ID: 'demo', ...env }),
     ).toBeNull()
   })
+  test.each([
+    { SWEEP_RELAY_ORIGIN: undefined },
+    { SWEEP_SESSION_ID: undefined },
+    { SWEEP_RELAY_TOKEN: '   ' },
+    { SWEEP_SESSION_ID: '   ' },
+    { SWEEP_RELAY_ORIGIN: 'not-a-url' },
+    { SWEEP_RELAY_ORIGIN: 'http://localhost:8000' },
+    { SWEEP_RELAY_ORIGIN: 'ws://user:password@localhost:8000' },
+    { SWEEP_RELAY_ORIGIN: 'ws://localhost:8000?token=secret' },
+  ])('refuses incomplete or invalid environment configuration %j', (override) => {
+    expect(relayFromEnvironment({ SWEEP_RELAY_ORIGIN: 'ws://localhost:8000', SWEEP_SESSION_ID: 'fleet', SWEEP_RELAY_TOKEN: 'test-token', ...override })).toBeNull()
+  })
+
 })
 
 describe('relay bootstrap loader', () => {

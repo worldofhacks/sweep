@@ -7,8 +7,6 @@
  */
 
 export const RELAY_BOOTSTRAP_ENDPOINT = '/relay-bootstrap.json'
-export const DEFAULT_RELAY_ORIGIN = 'ws://127.0.0.1:8000'
-export const DEFAULT_RELAY_SESSION_ID = 'demo'
 
 export interface RelayBootstrap {
   baseUrl: string
@@ -18,17 +16,22 @@ export interface RelayBootstrap {
 
 /**
  * Builds the endpoint payload from the relay's own variable names, so one
- * `.env` serves both processes. Without a token there is no bootstrap: the
+ * `.env` serves both processes. Without an explicit origin, session and token, the
  * endpoint answers 503 and the console stays visibly disconnected.
  */
 export function relayFromEnvironment(
   env: Readonly<Record<string, string | undefined>>,
 ): RelayBootstrap | null {
   const token = env.SWEEP_RELAY_TOKEN
-  if (!token) return null
-  return {
-    baseUrl: env.SWEEP_RELAY_ORIGIN || DEFAULT_RELAY_ORIGIN,
-    sessionId: env.SWEEP_SESSION_ID || DEFAULT_RELAY_SESSION_ID,
-    token,
+  const baseUrl = env.SWEEP_RELAY_ORIGIN
+  const sessionId = env.SWEEP_SESSION_ID
+  if (!token?.trim() || !baseUrl?.trim() || !sessionId?.trim()) return null
+  if (baseUrl !== baseUrl.trim() || sessionId !== sessionId.trim()) return null
+  try {
+    const url = new URL(baseUrl)
+    if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null
+  } catch {
+    return null
   }
+  return { baseUrl, sessionId, token }
 }

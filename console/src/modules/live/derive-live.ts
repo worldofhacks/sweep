@@ -1,3 +1,4 @@
+import { membershipWord, motionObservationCurrent, observationCurrent } from '../../control/observation'
 import type { RequestRecord } from '../../control/state'
 import type { DroneId, MediaStreamStatus, RelayAircraftState } from '../../relay/contract'
 import type { Tone } from '../../shell/derive'
@@ -29,16 +30,27 @@ export function formatAge(ageMs: number): string {
   return seconds < 1 ? 'just now' : `${seconds} s ago`
 }
 
-export function deriveStream(drone: RelayAircraftState, now: number): StreamView {
+export const VIDEO_FRESH_MS = 5_000
+
+export function deriveStream(drone: RelayAircraftState, at: number): StreamView {
+  const now = drone.client_observation?.now ?? at
   const video = drone.video
-  const status: MediaStreamStatus = video?.status ?? 'unreported'
+  let status: MediaStreamStatus = video?.status ?? 'unreported'
+  let reason = ''
   const lastFrameAt = video?.last_frame_at ?? null
+  if (!observationCurrent(drone)) {
+    status = drone.membership === 'disconnected' || drone.membership === 'leaving' ? 'offline' : 'unreported'
+    reason = 'Current video unavailable. The device is offline or its relay observation is stale.'
+  } else if (status === 'live' && (lastFrameAt === null || now < lastFrameAt || now - lastFrameAt > VIDEO_FRESH_MS)) {
+    status = 'unreported'
+    reason = 'Video report is stale or has no current frame timestamp. Current stream status is unknown.'
+  }
   return {
     status,
     tone: STREAM_TONE[status],
     lastFrame: lastFrameAt === null ? 'no frame reported' : formatAge(now - lastFrameAt),
     degraded: status !== 'live',
-    degradedWord: status === 'live' ? '' : DEGRADED_WORD[status],
+    degradedWord: status === 'live' ? '' : reason || DEGRADED_WORD[status],
   }
 }
 
@@ -48,6 +60,8 @@ export interface Word {
 }
 
 export function deriveReadiness(drone: RelayAircraftState): Word {
+  if (!observationCurrent(drone)) return { text: membershipWord(drone), tone: 'warn' }
+  if (drone.client_observation && !motionObservationCurrent(drone) && drone.readiness_reasons.length === 0) return { text: 'Current motion telemetry unknown', tone: 'warn' }
   return drone.readiness_reasons.length > 0
     ? {
         text: drone.readiness_reasons.map((reason) => reason === 'control_authority_missing'

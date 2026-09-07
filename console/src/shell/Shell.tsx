@@ -5,6 +5,7 @@ import { deviceLabeller } from '../control/state'
 import type { MediaRuntime } from '../media/runtime'
 import { MODULES, getModule } from '../modules/registry'
 import type { ConsoleController, ModuleId, ModuleServices } from '../modules/types'
+import type { MapEndpoint } from '../relay/map-endpoint'
 import { ContextColumn } from './ContextColumn'
 import { DangerBanner } from './DangerBanner'
 import { Dock } from './Dock'
@@ -31,6 +32,7 @@ export interface ShellProps {
   media?: MediaRuntime
   /** Relay WebSocket base URL from the bootstrap; absent in the fixture and without a bootstrap. */
   relayBaseUrl?: string
+  mapEndpoint?: MapEndpoint
 }
 
 const TICK_MS = 1_000
@@ -44,6 +46,7 @@ export function Shell({
   services = {},
   media,
   relayBaseUrl,
+  mapEndpoint,
 }: ShellProps) {
   const { state, pendingRequest, confirmRequest, cancelRequest, issueNetworkStop } = controller
   const [activeId, setActiveId] = useState<ModuleId>(initialModule)
@@ -75,6 +78,7 @@ export function Shell({
     services,
     media,
     relayBaseUrl,
+    mapEndpoint,
   }
 
   return (

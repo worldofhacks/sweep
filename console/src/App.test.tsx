@@ -122,7 +122,7 @@ describe('Control / Capture console', () => {
       armed: true,
       estop: false,
       selection: [1],
-      formation: 'none',
+      formation: 'none' as const,
       spacing: 0.8,
       mode: 'indoor',
       capability_profile: 'c1_basic_control',
@@ -161,7 +161,7 @@ describe('Control / Capture console', () => {
     expect(await screen.findByText(/Development fixture active/i)).toBeInTheDocument()
     const snapshot = {
       v: 1 as const, t: clock(), type: 'state' as const, session, armed: true, estop: false,
-      formation: 'none', spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
+      formation: 'none' as const, spacing: 0.8, mode: 'indoor', pending: null, accepted_plan: null,
       ...capabilityFields(),
     }
     const lossState = { ...snapshot, event_id: 'loss-state', roster_version: 8, state_sequence: 20,
@@ -258,6 +258,13 @@ describe('Control / Capture console', () => {
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(within(dock).getByText(/"intent_id": "delayed-capture-intent"/)).toBeInTheDocument()
     currentTime += 30_000
+    // Device reports continue while the operator reads the preview.
+    act(() => clients.console.emitServer({
+      v: 1, t: currentTime, type: 'state', event_id: 'delayed-current-report', session,
+      roster_version: 7, armed: true, estop: false, selection: [1], formation: 'none', spacing: 0.8,
+      mode: 'indoor', ...capabilityFields(), pending: null, accepted_plan: null,
+      drones: fixtureAircraft(currentTime),
+    }))
     await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
 
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
@@ -325,7 +332,7 @@ describe('Control / Capture console', () => {
       armed: true,
       estop: true,
       selection: [1],
-      formation: 'none',
+      formation: 'none' as const,
       spacing: 0.8,
       mode: 'indoor',
       ...capabilityFields(),
@@ -350,7 +357,7 @@ describe('Control / Capture console', () => {
       roster_version: 2,
       armed: true,
       selection: [1],
-      formation: 'none',
+      formation: 'none' as const,
       spacing: 0.8,
       mode: 'indoor',
       ...capabilityFields(),
@@ -386,7 +393,7 @@ describe('Control / Capture console', () => {
     const snapshot = {
       v: 1 as const, t: clock(), type: 'state' as const, session,
       roster_version: 2, armed: true, estop: false, selection: [2],
-      formation: 'none', spacing: 0.8, mode: 'indoor', pending: null,
+      formation: 'none' as const, spacing: 0.8, mode: 'indoor', pending: null,
       ...capabilityFields(),
       accepted_plan: null, drones: fixtureAircraft(clock()).slice(0, 2),
     }
@@ -422,7 +429,7 @@ describe('Control / Capture console', () => {
         armed: true,
         estop: true,
         selection: [1],
-        formation: 'none',
+        formation: 'none' as const,
         spacing: 0.8,
         mode: 'indoor',
         ...capabilityFields(),
@@ -447,7 +454,7 @@ describe('Control / Capture console', () => {
         armed: true,
         estop: false,
         selection: [1],
-        formation: 'none',
+        formation: 'none' as const,
         spacing: 0.8,
         mode: 'indoor',
         ...capabilityFields(),
@@ -578,7 +585,7 @@ describe('Control / Capture console', () => {
     render(<App sessionId={session} clients={clients} />)
     await screen.findByText(/Development fixture active/i)
 
-    await user.click(screen.getByRole('button', { name: /^D-02 / }))
+    await user.click(screen.getByRole('button', { name: 'Select only D-02' }))
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
     expect(clients.console.sent[0]).toMatchObject({ name: 'select', args: { ids: [2] } })
     expect(screen.getByRole('button', { name: /^D-02 / })).toHaveAttribute('aria-pressed', 'true')

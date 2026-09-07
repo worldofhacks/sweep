@@ -173,7 +173,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
             >
               <span className="tg-chip-id">{formatDeviceId(drone)}</span>
               <span className="tg-chip-sub">
-                {drone.flight_state ?? motionStateWord(drone)} · {formatPercent(drone.battery)}
+                {motionStateWord(drone)} · {formatPercent(drone.battery)}
               </span>
             </button>
           )

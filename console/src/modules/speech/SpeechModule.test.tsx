@@ -188,7 +188,7 @@ function authoritativeState(selection: number[], t: number, sequence: number) {
     armed: true,
     estop: false,
     selection,
-    formation: 'line',
+    formation: 'line' as const,
     spacing: 1.2,
     mode: 'indoor',
     capability_profile: 'c1_basic_control',
@@ -683,6 +683,13 @@ describe('Speech module', () => {
     expect(planCard()).toHaveTextContent('Plan halted at step 1 (invalidated, confirmation_window_expired).')
     expect(screen.queryByRole('button', { name: /^Stage step/ })).not.toBeInTheDocument()
 
+    // Fresh reports allow a new plan after the previous plan's deadline.
+    act(() => clients.console.emitServer({
+      v: 1, t: T0 + 31_000, type: 'state', event_id: 'fresh-after-expired-plan', session,
+      roster_version: 7, armed: true, estop: false, selection: [1], formation: 'none', spacing: 0.8,
+      mode: 'indoor', capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null, drones: fixtureAircraft(T0 + 31_000),
+    }))
     // Hold: once the rendered countdown reaches zero the dock disables Confirm outright.
     await record()
     await u.click(await screen.findByRole('button', { name: 'Stage step 1: hold' }))

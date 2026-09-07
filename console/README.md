@@ -4,17 +4,21 @@ Capability area: Interaction. Milestone: M0 onward.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to shared contracts or safety-critical paths name one change owner and require cross-review.
 
-The operator console: map, gesture readout, ledger, All devices video wall, per-device focus inspection, attention promotion, health strip, and the language input with plan preview. A static web app; all state comes from the relay over WebSocket.
+The operator console: map, gesture readout, ledger, video mosaic, focus pane, attention promotion, health strip, and the language input with plan preview. A static web app; all state comes from the relay over WebSocket.
 
 Stack: Vite, React, TypeScript, pnpm. Webcam hand landmarks come from MediaPipe Tasks.
 
+For the laptop operator console, use `python3 tools/console.py start` from the repository root.
+The one URL is **http://127.0.0.1:5173/**. [Operating guide](../docs/laptop-console.md).
+The commands below are for console development; the development server uses that same fixed port.
+
     pnpm install
-    pnpm dev        # http://localhost:5173
+    pnpm dev        # http://127.0.0.1:5173; refuses occupied/alternate ports
     pnpm lint
     pnpm test       # deterministic contract, reducer, client, and component tests
     pnpm build      # static files in dist/
 
-M0's `swarm-gesture-console.html` (ten intents, dwell and confirmations, six-drone map sim, session recording, WebSocket intent emission) drops into `public/phase0/`. Vite serves it unchanged at `/phase0/swarm-gesture-console.html` while it is ported into components. First M1 job: point it at the relay instead of its internal sim.
+Every running console uses real relay data. Synthetic scenarios and recorded gesture sessions are isolated test inputs and cannot be selected by a browser URL.
 
 PRD: sections 4.2, 5.8.
 
@@ -36,11 +40,11 @@ or serves the same three values as same-origin JSON at `/relay-bootstrap.json`, 
 endpoint is read exactly once (`src/relay/bootstrap.ts`) before the runtime is created, and only a
 complete payload whose `baseUrl` parses as `ws:` or `wss:` is accepted. `pnpm dev` serves that
 endpoint from the relay's own variables, so one exported `.env` serves both processes:
-`SWEEP_RELAY_ORIGIN` (default `ws://127.0.0.1:8000`), `SWEEP_SESSION_ID` (default `demo`), and
-`SWEEP_RELAY_TOKEN` (no default). With the token unset it answers 503 with `{ "relay": null }` and
+`SWEEP_RELAY_ORIGIN`, `SWEEP_SESSION_ID`, and `SWEEP_RELAY_TOKEN` (all explicit, no defaults).
+With configuration missing or invalid it answers 503 with `{ "relay": null }` and
 the console runs as before: visibly disconnected, network controls unavailable, no retry. The built
 `dist/` contains neither the endpoint nor the token, so a production host must serve the same JSON
-at that path or set the global itself. The `?fixture=` path never reads the endpoint.
+at that path or set the global itself. URL query parameters cannot switch to fixtures.
 
 The client opens `/ws/{session_id}` four times: one connection authenticates as `console` for
 buttons and state, a separate connection authenticates as `keyboard` for the Shift+Escape network
@@ -83,15 +87,15 @@ reducer records only `sensor.last_scan_at`, mirroring the relay's projection. `M
 
 ## Camera dashboard
 
-The Live module's walls and focus feed use the authoritative device ID, class, unit, connection
+The Live module's single wall and device inspection use the authoritative device ID, class, unit, connection
 epoch, telemetry, membership, readiness reasons, and a closed media status with a last-frame
 timestamp. The console derives the stream name from the class and unit, `drone{unit}` for aircraft
 and `ground{unit}` for ground vehicles (`streamName` in `src/media/playback.ts`), and does not
 render adapter-provided media URLs. `All devices` is the default for every roster: its responsive
 wall has exactly one tile per reported device, adds new joins automatically, and keeps known
 offline feeds visible. There are no empty hardware slots or six-device display cap; it supports
-the configured four-aircraft/four-robot capacity. The aircraft walls and Ground pane remain
-available as secondary views; the focus feed follows any device. With device IDs
+the configured four-aircraft/four-robot capacity. Focus opens local device inspection with
+a Back to All devices action; no extra wall modes or command selection changes are needed. With device IDs
 `1,2,11,12,13` configured as two aircraft and three robots, the paths are `drone1`, `drone2`,
 `ground1`, `ground2`, `ground3`; command envelopes retain the global IDs. One console uses one
 authoritative relay/session; it does not combine rosters from separate relay instances.
@@ -130,10 +134,6 @@ the relay's `SWEEP_CONSOLE_ORIGINS`. With neither source the console runs with p
 and says so on every live tile. The player files under `src/media/` come from PR #68 and will be
 reconciled when it merges.
 
-For visual development only, `pnpm dev` may open `/?fixture=control`. The page displays a persistent
-development-fixture banner, and the fixture is gated by Vite's `DEV` flag so a production build
-cannot enable it. It is a UI/contract fixture, not acceptance evidence and not a flight simulator.
-
 ## Shell and modules
 
 `src/tokens.css` holds the design tokens (colour, type, spacing, radii, shadows, motion,
@@ -144,16 +144,8 @@ the one pending plan with its full Intent v1 envelope. The newest warning or inf
 a line under the header row as a polite live region, the newest danger is the banner alert, and the
 session sheet keeps the capped history. `src/modules/registry.ts` declares each
 module (id, label, component, context renderer) in navigation order: Control, Live, Gesture,
-Speech, Captures, Worlds, Devices, Reference. Module selection lives in the shell and a pending
+Speech, Captures, Worlds, Devices, Map. Module selection lives in the shell and a pending
 request survives switching. Modules the relay does not feed yet render an honest empty state.
-
-Fixture scenarios are data only and exist only in development builds: `/?fixture=control`,
-`pending4`, `six6`, `down`, or `mixed` select a `FixtureRelayClient` scenario for the console,
-keyboard and webcam sources and the matching `FixtureCatalogClient` tables. `mixed` reports two
-aircraft beside three ground vehicles (ids 11 to 13, units 1 to 3; two with the lidar kit, one
-docked without it) and emits one burst of synthetic room-shaped scans on the console source after
-the first state frame (`syntheticRoomScan`). Production runs on the real relay WebSocket with no
-fixture fallback.
 
 ## Devices module
 
@@ -165,14 +157,47 @@ device. Beside the list is the configuration a node needs to join: the relay URL
 bootstrap (or a note that none was given), the session, and a device id, as a copyable block. The
 device key is never shown; the relay never sends it, and a person enters it on the device.
 
+## Fleet map
+
+`Map` draws one canvas (`src/modules/map/FleetMap.tsx`) with ordered passes: the
+relay's occupancy raster, the geofence box, each scanning device's short trail, its newest lidar
+returns in that device's colour, and every device that reports a position as a heading triangle
+labelled with its device id. The room frame is x east, y north, in metres; the canvas is y-down,
+so every projection flips y exactly once (`projection.ts`). Dragging pans, the wheel zooms about
+the pointer, the zoom buttons about the centre, and Fit view frames the geofence, or the placed
+fleet when there is none.
+
+The raster comes from `GET /api/sessions/{id}/map` under the relay bootstrap URL read as HTTP,
+behind the relay bearer, the same base and bearer the transcripts endpoint uses
+(`src/relay/map-endpoint.ts`, `src/relay/origin.ts`). It is read once on mount and once a second
+while the pane is mounted, and never after it unmounts. Image row 0 is the grid's maximum y and
+`X-Sweep-Map-Origin-X`/`-Y` name the bottom-left cell corner, so the raster is placed from
+`(origin_x, origin_y + height × resolution)`. Headers that do not describe a grid, a body that
+does not decode, or a refusal draw no raster and say so; 404 is the honest "the relay has no grid
+for this session yet"; without a bootstrap nothing is read at all and `Reset map` is disabled.
+`Reset map` posts to `…/map/reset` and reports what the relay answered.
+
+Positions come from the relay's telemetry projection (`x`, `y`, and an optional `heading_deg`, or
+`yaw_deg` from a node that names it that way), else from the pose of the device's newest scan in
+the current connection epoch. A device that reports neither is named under the map rather than
+placed, and a device with no heading is drawn as a circle rather than a guessed direction. Scans
+and trails come from the sensor store's ring, never from the control reducer. The geofence is read
+from the catalog's configuration snapshot, which the relay does not serve yet, so production draws
+no box until real configuration is available.
+
+Each scanning device keeps one hue by unit (`--color-scan-1` to `--color-scan-4`, beside
+`--color-stream-*`); the map ground is `--color-map-grid`, the raster frame `--color-map-frame`,
+the geofence `--color-map-geofence`. `LidarPolar` (`src/modules/map/LidarPolar.tsx`) plots the same
+newest scan in the device's own frame with forward up, on every ground-vehicle registry card and
+device card that advertises `lidar`.
+
 ## Control module
 
 `src/modules/control/` is the Control and capture module from the v4 design: Swarm (selection
 chips, fleet and motion controls, the translate pad, the formation panel), Capture (the three-step
 flow, room field with inline validation, pattern cards, Capture room, the capture-readiness mirror,
 the plan detail), Commands (the catalogue), Requests (lifecycle rows with a timestamp per state and
-retry as a new intent with `retry_of`), and Fleet (registry rows and the departed list), plus the
-Appendix E mission tracker under Reference › Mission. `controls.ts` holds the pure gating and
+retry as a new intent with `retry_of`), and Fleet (registry rows and the departed list). `controls.ts` holds the pure gating and
 geometry; every control builds its envelope through `control/intent.ts`, which now covers every
 Appendix E name the contract lists. `takeoff`, `land`, `land_all`, `sweep` and `capture_room` park
 in the dock until the operator confirms the exact envelope; the rest send at once. A retry creates a new intent id with `retry_of` set. Takeoff, fleet landing and capture retries
@@ -189,14 +214,11 @@ its own supported projection is available.
 
 ## Catalog modules
 
-Captures, Worlds, and the Reference group's Health (Connectivity), Config and States sections read
+Captures, Worlds, and Devices’ Health (Connectivity) and Config sections read
 a `CatalogClient` from `src/catalog/`: captures, the building and its rooms, generation jobs,
 per-node details, shared services, health metrics and configuration groups. The relay exposes no
 endpoint for any of these yet, so production wires `UnreportedCatalogClient`: every surface reads
-unreported and every action refuses with its reason. The fixture scenarios carry the design's
-tables through `FixtureCatalogClient` (`control` present but empty, `pending4` and `six6`
-populated, `down` keeping the last snapshot while the console link is down and refusing actions);
-job chains run on an injectable scheduler so tests advance them by hand. Relay-owned facts on
+unreported and every action refuses with its reason. Relay-owned facts on
 those pages (node membership, telemetry staleness, video, the two sockets, the pending plan) come
 from the control state, never the catalog, and an apply-now configuration save invalidates a
 pending plan through the control hook so the shell states it.
@@ -213,8 +235,14 @@ an interrupted dwell, a repeated pose, a denied permission, a dropped webcam, a 
 load, and a refused webcam relay source are each shown as states that emit nothing, and a draft is
 blocked while the console connection is not connected, because the roster and selection it would
 be built from arrive on that connection. Network stop retains its button and keyboard path.
-Download session (JSONL) saves the recognizer frames,
-policy transitions, status changes, and intent events.
+Each pose shows its own readiness and targets; confirmation retains the preview's exact targets
+and connection epochs. Palm and thumb-up use a 0.60 score threshold, thumb-down 0.70, and fist
+0.80. Pointing-up, Victory and I-love-you use 0.70 pending recordings of those poses. A candidate
+needs 80% strong frames, a strong final frame and its full dwell (600 ms for drafts, 400 ms for
+decisions). A 200 ms neutral release is required before confirmation or cancellation and between
+every Flight action; repeated poses remain suppressed until neutral. Camera gaps cannot prove
+dwell or release. Download session (JSONL) saves recognizer frames, strong-frame counts, policy
+transitions, status changes and intent events. The stripped recorded-session replay stays in tests.
 
 `Flight (opt in)` maps open palm to Arm session, pointing up to Takeoff selected, Victory to
 Forward 0.5 seconds, closed fist to Backward 0.5 seconds, I love you to Land selected, thumb up
@@ -238,10 +266,87 @@ then staged one step at a time with source `language`. Confirmation sends only t
 payload, and any relevant state or input change invalidates it. A relayed transcript without such a
 plan is display-only. Separately typed text may use the labelled local matcher for `capture_room`,
 `hold`, or `select`; local negation and ambiguity produce no draft. Without a relay bootstrap, and
-in fixture mode, the module reports language disabled and still accepts separately typed text.
+without a configured real language service, the module reports it unavailable.
 
 The M2.0 control panel emits the production Intent v1 sequence for session arm, aircraft
 selection, confirmed takeoff, configured-step translation, hold, come home, and confirmed
 land-all. Takeoff and land-all stay in preview until the operator confirms the exact request,
 selection, and roster version. The network E-stop remains available from both its button and the
 separately authenticated keyboard connection.
+
+
+### Mixed fleet controls and sensing
+
+Control › Swarm chips add or remove one device from the current selection. **Only** selects
+one device; **Select aircraft**, **Select robots**, and **Select all ready** select a class
+or the full ready roster. The relay remains authoritative: a selection change invalidates
+an older movement preview. Intent selections support up to ten ids (six simulated aircraft
+plus four robots); physical capacity remains a relay concern.
+
+Gesture starts with Capture / HOLD. **Fleet motion** is an explicit opt-in profile:
+point up → north, Victory → east, closed fist → south, I love you → west, open palm → hold.
+Each translation drafts one relay-configured step for the selected devices. **Swarm
+formations** maps Victory to formation_next and open palm to hold. Thumb up confirms a
+webcam draft; thumb down cancels it. Changing profile stops tracking and cancels the pending
+preview. Arming, takeoff and landing are available only in the separate confirmed Flight profile; network stop remains manual. Gestures use the
+same Intent v1 preview, selection invalidation and relay outcome path as manual controls.
+
+Robot translation uses room +x east / +y north. Aircraft retain the relay's configured
+translation frame. No telemetry yaw extension is required. Formation previews show
+anonymous slots separately for aircraft and robots; a singleton class holds its pose.
+C2 formation controls remain disabled unless the relay advertises them. The simulator-only
+C2 release restriction remains in force for real hardware.
+
+Map reads the authenticated occupancy PNG and displays reported fresh robot LiDAR scans.
+LiDAR diagnostics apply to ground robots; the drones in this fleet do not have LiDAR.
+After two seconds without a scan, the live overlay disappears and the device reports stale
+coverage. The historical occupancy raster is retained by the relay. Devices without lidar
+report unavailable coverage; no return, no hardware, or a stale feed never means clear.
+Lidar samples a single plane and does not detect obstacles above or below that plane.
+
+### Complete device telemetry
+
+Devices, Live › Device inspection, and selected registry cards share the same diagnostics. They
+retain the typed relay telemetry, node status and camera capability projections. Custom
+`node_status.device_telemetry` groups appear as expandable readable rows; **Complete
+reported telemetry** includes every reported field, connection epoch, and available scan.
+Missing values say unreported. Bridge and capture advice show age and expire after five
+seconds; old-epoch or reordered public node reports cannot replace current diagnostics or
+grant selection/motion authority. Capture guidance is tied to the selected aircraft and
+room; missing coverage never implies accepted coverage for other sectors.
+
+Robot diagnostics name the actual guard blocker, motor/health report, scan age, coverage,
+nearest return and calibration. Uncalibrated raw ranges get a sensor-frame plot with no
+inferred robot heading; they cannot supply world-map points. Drone diagnostics include
+virtual stick, watchdog, authority reason, phone battery/thermal, hardware/firmware, camera
+support/storage/FOV, and all GPS/attitude/SDK key groups supplied by the adapter. Unsupported
+peripherals remain explicit in the adapter's controls report; no nonexistent command path
+is implied. Commands includes confirmed bounded forward/backward body pulses, gated by the
+relay capability, selected aircraft's `body_pulse_v1` claim, arm state and airborne state.
+
+The custom JSON contract mirrors `nodekit/telemetry.py`: 16 KiB, depth four including the
+root, at most 4096 values, 128 keys per object, 512 items per list and characters per string,
+64-character snake_case keys, and finite JSON-safe numbers. It carries display facts only.
+
+
+### Connected device controls
+
+Each Devices card has controls appropriate to its reported class and capabilities. Robot
+peripherals use one explicit connected target without changing the fleet motion selection,
+so speech, base lights and the local safety-page message remain usable while a robot is
+motion-blocked or the session is disarmed. Every action opens a confirmation preview bound
+to the target's current connection epoch; capability withdrawal, disconnect or rejoin
+invalidates that preview. The relay and node recheck those guards before adapter I/O.
+
+Neck tilt is bounded to vendor position 300–650 (512 forward) and requires fresh local
+enable status, a nominal watchdog, and no network stop. The adapter additionally requires
+the robot enabled, undocked and a spotter present; it never auto-wakes the neck. Base lights
+use fixed device 20 with integer HSV 0–255. Speech and safety-page messages are at most 240
+printable characters; an empty screen message clears it. The screen's STOP and spotter
+controls remain visible. Vendor acknowledgements report submission, with requested state
+and unverified physical readback labeled in telemetry.
+
+Aircraft cards separately expose camera mode, a single photo and bounded gimbal pitch when
+the connected bridge reports actual support and fresh camera readiness. These controls do
+not promise panorama capture or media retrieval. All missing capabilities remain visible
+as unsupported; robot LiDAR readiness never gates aircraft flight or camera control.

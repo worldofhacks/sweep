@@ -4,12 +4,12 @@ import { ControlModule } from './control/ControlModule'
 import { DevicesModule } from './devices/DevicesModule'
 import { GestureModule } from './gesture/GestureModule'
 import { LiveModule } from './live/LiveModule'
-import { ReferenceModule } from './reference/ReferenceModule'
+import { FleetMap } from './map/FleetMap'
 import { SpeechModule } from './speech/SpeechModule'
 import { WorldsModule } from './worlds/WorldsModule'
 import type { ModuleDefinition, ModuleId } from './types'
 
-/** Navigation order: Control, Live, Gesture, Speech, Captures, Worlds, Devices, Reference. */
+/** Navigation order: Control, Live, Gesture, Speech, Captures, Worlds, Devices, Map. */
 export const MODULES: readonly ModuleDefinition[] = [
   {
     id: 'control',
@@ -68,11 +68,11 @@ export const MODULES: readonly ModuleDefinition[] = [
     context: FleetContext,
   },
   {
-    id: 'reference',
-    label: 'Reference',
-    title: 'Reference',
-    note: 'Mission, health, configuration, ledger, map, and the states gallery.',
-    component: ReferenceModule,
+    id: 'map',
+    label: 'Map',
+    title: 'Fleet map',
+    note: 'Reported device positions, LiDAR returns, and the relay occupancy map.',
+    component: FleetMap,
     context: FleetContext,
   },
 ]

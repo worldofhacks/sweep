@@ -7,7 +7,7 @@ export interface ModuleNavProps {
 }
 
 const RAIL_NOTE =
-  'Available controls follow the relay’s advertised capabilities and current aircraft readiness. Disabled controls show their reason.'
+  'Control availability follows the relay capability profile and selected device classes. Requests show the relay outcome.'
 
 export function Rail({ modules, active, onSelect }: ModuleNavProps) {
   return (
@@ -16,7 +16,6 @@ export function Rail({ modules, active, onSelect }: ModuleNavProps) {
         const current = module.id === active
         const classes = ['sh-rail-item']
         if (current) classes.push('is-current')
-        if (module.id === 'reference') classes.push('is-reference')
         return (
           <button
             key={module.id}

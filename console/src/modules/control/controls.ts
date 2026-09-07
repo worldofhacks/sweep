@@ -1,8 +1,10 @@
+import { membershipWord, motionObservationCurrent, observationCurrent } from '../../control/observation'
 /**
  * Pure derivations for the Control module, lifted from the Sweep Console v4
  * design's controlSpec, dpad, catalog, slots, captureBlock and flow. Every
  * input is authoritative relay state; nothing here invents a value.
  */
+import { flightActionBlockedReason } from '../../gesture/flight'
 import type { ControlState, DeviceLabeller, RequestRecord, RequestStatus } from '../../control/state'
 import {
   capabilityBlockedReason,
@@ -20,10 +22,16 @@ import type {
   FormationName,
   IntentArgs,
   IntentArgsByName,
-  RelayAircraftState,
   SelectionRule,
+  RelayAircraftState,
 } from '../../relay/contract'
-import { followsSelection, isSupportedIntent, requiresConfirmation, selectionRule } from '../../relay/contract'
+import {
+  FORMATION_NAMES as CONTRACT_FORMATION_NAMES,
+  followsSelection,
+  isSupportedIntent,
+  requiresConfirmation,
+  selectionRule,
+} from '../../relay/contract'
 import { isLinkUp, isReady, sortedAircraft, type Tone } from '../../shell/derive'
 
 /** One control press: the intent it drafts and the aircraft it addresses. */
@@ -52,7 +60,8 @@ export interface ControlSpec {
   rule: SelectionRule
 }
 
-export const FORMATION_NAMES: readonly FormationName[] = ['line', 'column', 'circle', 'grid', 'V']
+export const FORMATION_NAMES = CONTRACT_FORMATION_NAMES
+const FORMATION_SPACING_CLEARANCE_FACTOR = 1.01
 
 export function connectionReason(state: ControlState): string | null {
   return isLinkUp(state.connection.status)
@@ -162,6 +171,13 @@ export function gateControl(state: ControlState, name: ConsoleIntentName, option
     const notReady = notReadySentence(state)
     if (notReady) return { reason: notReady, unsupported: false }
   }
+  if (options.sel && name !== 'hold' && name !== 'land' && state.selection.some((id) => !motionObservationCurrent(state.aircraft[id]))) {
+    return { reason: 'Current target motion telemetry is unavailable. Wait for a fresh report.', unsupported: false }
+  }
+  if (name === 'body_pulse') {
+    const reason = flightActionBlockedReason(state, null, { kind: 'draft', name: 'body_pulse', direction: 'forward' })
+    if (reason) return { reason, unsupported: false }
+  }
   if (options.extra) return { reason: options.extra, unsupported: false }
   if (!isSupportedIntent(name)) {
     return { reason: `${name} is not implemented by this console.`, unsupported: true }
@@ -208,7 +224,16 @@ export function fleetControls(state: ControlState): ControlSpec[] {
   const ready = readyIds(state)
   return [
     control(state, 'arm', 'Arm', { name: 'arm', args: {} }),
-    control(state, 'disarm', 'Disarm', { name: 'disarm', args: {} }),
+    control(
+      state,
+      'disarm',
+      'Disarm',
+      { name: 'disarm', args: {} },
+      {
+        okNote:
+          'Withdraws session arm authorization only after the relay proves the fleet grounded; it does not command the aircraft.',
+      },
+    ),
     control(
       state,
       'select-all',
@@ -238,18 +263,68 @@ export function motionControls(state: ControlState): ControlSpec[] {
     control(state, 'sweep', 'Sweep', { name: 'sweep', args: {} }, { sel: true }),
     control(state, 'spacing-', 'Spacing tighter', { name: 'spacing', args: { delta: -1 } }, { sel: true }),
     control(state, 'spacing+', 'Spacing wider', { name: 'spacing', args: { delta: 1 } }, { sel: true }),
-    control(state, 'formation_next', 'Formation next', { name: 'formation_next', args: {} }, { sel: true }),
+    control(
+      state,
+      'formation_next',
+      'Formation next',
+      { name: 'formation_next', args: {} },
+      { sel: true, extra: classFormationReason(state) },
+    ),
   ]
 }
 
 export const MOTION_FOOTNOTE =
-  'Motion controls use the authoritative selection. Steps resolve against the room frame and every target remains subject to the arbiter.'
+  'Motion controls use the authoritative selection. Robot steps resolve against the room frame; aircraft use the relay-configured frame. Every target remains subject to the arbiter.'
 
-/** Commands: the five formations and the two altitude steps. */
+/** Commands: the four MVP formations and the two altitude steps. */
 export function formationControls(state: ControlState): ControlSpec[] {
   return FORMATION_NAMES.map((name) =>
-    control(state, `formation-${name}`, name, { name: 'formation_set', args: { name } }, { sel: true }),
+    control(
+      state,
+      `formation-${name}`,
+      name,
+      { name: 'formation_set', args: { name } },
+      {
+        sel: true,
+        extra: classFormationReason(state, name),
+      },
+    ),
   )
+}
+
+/** Classes form independently; a singleton holds its pose in a mixed formation. */
+export function classFormationReason(state: ControlState, name?: FormationName): string | null {
+  const devices = state.selection.flatMap((id) => state.aircraft[id] ? [state.aircraft[id]] : [])
+  const classes = [...new Set(devices.map((device) => device.device_class))]
+  if (classes.length < 2) {
+    const reason = name ? formationSelectionReason(name, devices.length) : formationCountReason(devices.length)
+    return devices[0]?.device_class === 'ground_vehicle' ? reason?.replaceAll('aircraft', 'robots') ?? null : reason
+  }
+  for (const deviceClass of classes) {
+    const count = devices.filter((device) => device.device_class === deviceClass).length
+    if (count === 1) continue
+    const reason = name ? formationSelectionReason(name, count) : formationCountReason(count)
+    if (reason) return `${deviceClass === 'aircraft' ? 'Aircraft' : 'Robot'} group: ${reason.replaceAll('aircraft', 'devices')}`
+  }
+  return null
+}
+
+function formationSelectionReason(name: FormationName, count: number): string | null {
+  const minimum = name === 'wedge' || name === 'diamond' ? 4 : 2
+  return formationCountReason(count, minimum, name)
+}
+
+function formationCountReason(
+  count: number,
+  minimum = 2,
+  name?: FormationName,
+): string | null {
+  const subject = name === undefined ? 'formation' : `${name} formation`
+  if (count < minimum) return `${subject} requires at least ${minimum} selected aircraft.`
+  if (count > 6) {
+    return `formation supports at most 6 selected aircraft.`
+  }
+  return null
 }
 
 export function altitudeControls(state: ControlState): ControlSpec[] {
@@ -324,6 +399,8 @@ export function commandCatalog(state: ControlState): CatalogGroup[] {
       rows: [
         catalogRow(motion.takeoff),
         catalogRow(motion.hold),
+        catalogRow(control(state, 'body-forward', 'Forward 0.5 seconds', { name: 'body_pulse', args: { forward_mm_s: 250, duration_ms: 500 } }, { sel: true, ready: true })),
+        catalogRow(control(state, 'body-backward', 'Backward 0.5 seconds', { name: 'body_pulse', args: { forward_mm_s: -250, duration_ms: 500 } }, { sel: true, ready: true })),
         catalogRow(motion.come_home),
         catalogRow(control(state, 'land', 'Land', { name: 'land', args: {} }, { sel: true })),
         catalogRow(motion.land_all),
@@ -363,64 +440,102 @@ export function dpadBlockedReason(state: ControlState): string | null {
   return (
     connectionReason(state) ??
     capabilityBlockedReason(state, 'translate') ??
-    (state.estop ? STOP_ACTIVE_REASON : state.selection.length === 0 ? noSelectionReason(state) : null)
+    (state.estop ? STOP_ACTIVE_REASON : state.selection.length === 0 ? noSelectionReason(state) : null) ??
+    (state.selection.some((id) => !motionObservationCurrent(state.aircraft[id])) ? 'Current target motion telemetry is unavailable. Wait for a fresh report.' : null)
   )
 }
 
-/** Planner slot positions in metres, from the design's slots(name, n, spacing). */
+/** Planner slot positions in metres, mirroring planner/planner.py exactly. */
 export function formationSlots(name: string, count: number, spacing: number): Array<[number, number]> {
-  const n = Math.max(count, 1)
-  const mid = (n - 1) / 2
-  const out: Array<[number, number]> = []
-  for (let i = 0; i < n; i += 1) {
-    if (name === 'line') out.push([(i - mid) * spacing, 0])
-    else if (name === 'column') out.push([0, (i - mid) * spacing])
-    else if (name === 'circle') {
-      const r = n > 1 ? spacing / (2 * Math.sin(Math.PI / n)) : 0
-      const a = (2 * Math.PI * i) / n - Math.PI / 2
-      // Adding zero folds a negative zero from sin or cos into plain zero.
-      out.push([r * Math.cos(a) + 0, r * Math.sin(a) + 0])
-    } else if (name === 'grid') {
-      const c = Math.ceil(Math.sqrt(n))
-      out.push([((i % c) - (c - 1) / 2) * spacing, (Math.floor(i / c) - (Math.ceil(n / c) - 1) / 2) * spacing])
-    } else out.push([(i - mid) * spacing, Math.abs(i - mid) * spacing * 0.6])
+  if (
+    !FORMATION_NAMES.includes(name as FormationName) ||
+    !Number.isInteger(count) ||
+    count < 2 ||
+    count > 6 ||
+    !Number.isFinite(spacing) ||
+    spacing <= 0 ||
+    ((name === 'wedge' || name === 'diamond') && count < 4)
+  ) {
+    return []
   }
-  return out
+  const n = count
+  let raw: Array<[number, number]>
+  if (name === 'line') {
+    raw = Array.from({ length: n }, (_, index) => [index - (n - 1) / 2, 0])
+  } else if (name === 'column') {
+    raw = Array.from({ length: n }, (_, index) => [0, index - (n - 1) / 2])
+  } else if (name === 'wedge') {
+    raw = []
+    const firstRow = n % 2 === 0 ? 0.5 : 1
+    if (n % 2 !== 0) raw.push([0, 0])
+    for (let row = 0; row < Math.floor(n / 2); row += 1) {
+      const distance = firstRow + row
+      raw.push([-distance, -distance], [distance, -distance])
+    }
+  } else {
+    raw = Array.from({ length: n }, (_, index) => diamondPerimeter((4 * index) / n))
+  }
+  return normalizeFormationOffsets(raw).map(([x, y]) => [x * spacing + 0, y * spacing + 0])
+}
+
+function diamondPerimeter(position: number): [number, number] {
+  if (position < 1) return [position, 1 - position]
+  if (position < 2) return [2 - position, 1 - position]
+  if (position < 3) return [2 - position, position - 3]
+  return [position - 4, position - 3]
+}
+
+function normalizeFormationOffsets(raw: Array<[number, number]>): Array<[number, number]> {
+  const centerX = raw.reduce((total, [x]) => total + x / raw.length, 0)
+  const centerY = raw.reduce((total, [, y]) => total + y / raw.length, 0)
+  const centered = raw.map(([x, y]) => [x - centerX, y - centerY] as [number, number])
+  if (centered.length === 1) return [[0, 0]]
+  let minimum = Number.POSITIVE_INFINITY
+  for (let first = 0; first < centered.length; first += 1) {
+    for (let second = first + 1; second < centered.length; second += 1) {
+      minimum = Math.min(
+        minimum,
+        Math.hypot(
+          centered[first][0] - centered[second][0],
+          centered[first][1] - centered[second][1],
+        ),
+      )
+    }
+  }
+  const scale = FORMATION_SPACING_CLEARANCE_FACTOR / minimum
+  return centered.map(([x, y]) => [x * scale + 0, y * scale + 0])
 }
 
 export interface FormationDot {
   id: string
-  droneId: DroneId
   left: string
   top: string
   slot: string
-  ready: boolean
 }
 
 /**
- * Dots for the selected aircraft at their slots. The plot is scale free, so an
- * unreported spacing still places the dots; only the metre labels need it.
+ * Anonymous shape slots. The relay does not project planner assignments, so this
+ * preview deliberately carries no aircraft identity. The plot is scale free; only
+ * the metre labels need reported spacing.
  */
 export function formationPlot(
-  aircraft: RelayAircraftState[],
+  count: number,
   name: string | null,
   spacing: number | null,
 ): FormationDot[] {
-  if (name === null || aircraft.length === 0) return []
-  const slots = formationSlots(name, aircraft.length, spacing ?? 1)
+  if (name === null || count === 0) return []
+  const slots = formationSlots(name, count, spacing ?? 1)
+  if (slots.length !== count) return []
   const span = Math.max(1.2, ...slots.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y)))) * 2.4
-  return aircraft.map((drone, i) => {
-    const [x, y] = slots[i]
+  return slots.map(([x, y], i) => {
     return {
-      id: formatDeviceId(drone),
-      droneId: drone.drone_id,
+      id: `Slot ${i + 1}`,
       left: `${50 + (x / span) * 100}%`,
       top: `${50 + (y / span) * 100}%`,
       slot:
         spacing === null
           ? `slot ${i + 1} · spacing unreported`
           : `slot ${i + 1} · ${x.toFixed(1)} m, ${y.toFixed(1)} m`,
-      ready: isReady(drone),
     }
   })
 }
@@ -485,6 +600,8 @@ export interface ChipView {
 
 /** The device's motion state word: the flight state, or the drive state for a ground vehicle. */
 export function motionStateWord(drone: RelayAircraftState): string {
+  if (!observationCurrent(drone)) return `${membershipWord(drone)} · ${drone.flight_state ? `last reported ${drone.flight_state}` : 'motion unreported'}`
+  if (!motionObservationCurrent(drone)) return `current motion unknown · ${drone.flight_state ? `last reported ${drone.flight_state}` : 'motion unreported'}`
   if (drone.flight_state !== null) return drone.flight_state
   return drone.device_class === 'ground_vehicle' ? 'drive state unreported' : 'flight state unreported'
 }
@@ -522,7 +639,7 @@ export function chipBlockers(state: ControlState): string {
 /* Capture */
 
 export type GuidanceMode = 'visual_advisory' | 'registered_metric'
-export type SectorCoverage = 'accepted' | 'weak' | 'unseen'
+export type SectorCoverage = 'accepted' | 'weak' | 'unseen' | 'unreported'
 export type GateKey = 'pose' | 'clearance' | 'camera' | 'storage' | 'motion' | 'image_quality'
 
 /**
@@ -581,7 +698,7 @@ export function compassSectors(guidance: CaptureReadiness | null): SectorView[] 
 export function sectorSummary(guidance: CaptureReadiness | null): string {
   if (!guidance) return 'coverage unreported'
   const count = (value: SectorCoverage) => guidance.coverage.filter((sector) => sector === value).length
-  return `${count('unseen')} unseen, ${count('weak')} weak, ${count('accepted')} accepted`
+  return `${count('unseen')} unseen, ${count('weak')} weak, ${count('accepted')} accepted${count('unreported') ? `, ${count('unreported')} unreported` : ''}`
 }
 
 export function guidanceNote(guidance: CaptureReadiness | null): string {
@@ -756,7 +873,7 @@ export const MISSION_STEPS: readonly MissionStep[] = (
     ['Open palm', 'select', 'Select every ready aircraft.'],
     ['Open palm up', 'takeoff', 'Takeoff — risky, so the relay returns a pending object.'],
     ['Thumb up', 'confirm', 'Confirm the pending takeoff. Dwell 400 ms.'],
-    ['Circle', 'formation_set', 'Formation to circle.'],
+    ['Diamond', 'formation_set', 'Formation to diamond.'],
     ['Index swipe right, twice', 'translate', 'Translate two steps east.'],
     ['Pinch and raise', 'altitude', 'Altitude up one step.'],
     ['Two fingers held', 'sweep', 'Sweep, then thumb up to confirm, then wait for the lanes.'],

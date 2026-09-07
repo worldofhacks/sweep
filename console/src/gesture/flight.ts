@@ -1,3 +1,4 @@
+import { isReady } from '../shell/derive'
 import { capabilityBlockedReason, deviceLabeller, type ControlState, type RequestRecord } from '../control/state'
 import type { IntentRequest } from '../control/use-control-console'
 import type { FlightDraftAction } from './policy'
@@ -37,7 +38,7 @@ export function flightActionBlockedReason(
   const label = deviceLabeller(state.aircraft)
   const robot = state.selection.find((id) => state.aircraft[id]?.device_class === 'ground_vehicle')
   if (robot !== undefined) return `${label(robot)} is a robot. Select aircraft only for the Flight profile.`
-  const notReady = state.selection.find((id) => state.aircraft[id]?.membership !== 'ready' || !state.aircraft[id]?.selectable)
+  const notReady = state.selection.find((id) => !isReady(state.aircraft[id]))
   if (notReady !== undefined) return `${label(notReady)} is not ready or selectable.`
   if (action.name === 'arm') return state.armed ? 'The session is already enabled.' : null
   if (state.estop) return 'The emergency stop is active.'

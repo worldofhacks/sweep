@@ -1,3 +1,4 @@
+import { membershipWord } from '../../control/observation'
 import { deviceNoun, formatDeviceId } from '../../control/state'
 import { LivePlayer } from '../../media/LivePlayer'
 import type { MediaRuntime } from '../../media/runtime'
@@ -119,7 +120,7 @@ function Tile({
         <span className="lv-metric">bat {formatPercent(drone.battery)}</span>
         <span className="lv-metric">link {formatPercent(drone.link)}</span>
         <span className="lv-metric">pos {formatPercent(drone.pos_quality)}</span>
-        <span className={`tone-${membershipTone(drone.membership, drone.pos_quality)}`}>{drone.membership}</span>
+        <span className={`tone-${membershipTone(drone.membership, drone.pos_quality)}`}>{membershipWord(drone)}</span>
         <span className={`tone-${readiness.tone}`}>{readiness.text}</span>
       </p>
       <span className="lv-actions">

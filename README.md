@@ -1,5 +1,10 @@
 # Sweep
 
+Laptop operator console: **http://127.0.0.1:5173/**. From the canonical checkout,
+run `python3 tools/console.py start` (or `just console`). See
+[the console operating guide](docs/laptop-console.md) for build identity,
+restart, and the separate relay/video dependencies.
+
 One person creates AI-generated room worlds from guided photos, commands four indoor DJI Mini 3 drones through button controls on a laptop console, cycles aircraft into and out of the live fleet, and sees what the swarm sees. Webcam gesture work and the transcript-to-plan compiler develop against the same intent contracts as the button path; push-to-talk speech follows the M1.E gate. The simulator retains the 4-to-6-drone expansion target.
 
 The first user is a responder who needs eyes inside a building before entry. The three-guided-phone-photo Marble flow is completed feasibility evidence and remains a fallback. The first pending user-visible slice is one end-to-end drone capture: the operator clicks Capture room, reviews the Intent v1 preview, confirms it, and one DJI Mini 3 holds an approved pose while its files create a private Marble room world. The north-star command is “Map this floor.” During the MVP, it sends an operator-present two-drone subset through approved room poses on a supplied occupancy map, then generates a room-by-room visual walkthrough. Physical bring-up uses four Mini 3 aircraft, four RC-N1 controllers, and four benchmarked Android bridge nodes, one node before two and four. The session registry supports live join, readiness, graceful leave, loss, and rejoin. Four to six drones remain in simulation. Spoken language and gestures are additional MVP input sources built at their listed gates; the EMG band remains Future work. Everything is open source.
@@ -43,7 +48,7 @@ just test       # pytest (also what bare `just` runs)
 just lint       # ruff check + ruff format --check + eslint
 just fmt        # auto-format and auto-fix both
 just ci         # exactly what CI runs; run it before you push
-just console    # console dev server, http://localhost:5173 by default
+just console    # single built operator console, http://127.0.0.1:5173
 just media      # MediaMTX via docker compose, in the foreground
 ```
 

@@ -14,7 +14,7 @@ export function LiveModule({ controller, now, media }: ModuleProps) {
   const [inspecting, setInspecting] = useState(false)
   const { state, selectFeed, toggleAircraft } = controller
   const devices = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
-  useSecondTick(devices.some((drone) => drone.video?.last_frame_at != null))
+  useSecondTick(devices.length > 0)
   const currentNow = now()
   const focused =
     state.selectedFeedId === null ? null : (state.aircraft[state.selectedFeedId] ?? null)

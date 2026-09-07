@@ -1,3 +1,5 @@
+import { membershipWord } from '../control/observation'
+import { DeviceTelemetryPanel } from './devices/DeviceTelemetryPanel'
 import type { DepartureRecord } from '../control/state'
 import {
   capabilityBlockedReason,
@@ -7,11 +9,16 @@ import {
   pluralNoun,
   rosterNoun,
 } from '../control/state'
-import type { RelayAircraftState } from '../relay/contract'
+import type { RelayAircraftState, RelaySensorEvent } from '../relay/contract'
+import { sensorStatus } from '../sensor/status'
+import { useSecondTick } from './live/use-second-tick'
+import { useSensorStore } from '../sensor/store'
 import { authorityWords, isReady, membershipTone, metricTone, sortedAircraft } from '../shell/derive'
 import { formatPercent, formatTime } from '../shell/format'
 import { membershipReasonSentence } from '../shell/sentences'
 import { motionStateWord } from './control/controls'
+import { deviceScan } from './map/derive-map'
+import { LidarPolar } from './map/LidarPolar'
 import { ReadinessHelp } from './ReadinessHelp'
 import type { ModuleProps } from './types'
 
@@ -19,19 +26,23 @@ import type { ModuleProps } from './types'
  * Registry cards and the departed list, bound to the authoritative state. The
  * context column renders it for every module; Control › Fleet renders it wide.
  */
-export function FleetContext({ controller }: ModuleProps) {
-  return <FleetRegistry controller={controller} layout="column" />
+export function FleetContext({ controller, now }: ModuleProps) {
+  return <FleetRegistry controller={controller} layout="column" now={now} />
 }
 
 export function FleetRegistry({
   controller,
   layout,
+  now,
 }: {
   controller: ModuleProps['controller']
   layout: 'column' | 'two'
+  now: () => number
 }) {
-  const { state, toggleAircraft } = controller
+  const { state, toggleAircraft, sensors } = controller
+  const snapshot = useSensorStore(sensors)
   const fleet = sortedAircraft(state.aircraft)
+  useSecondTick(fleet.length > 0)
   const registry = (
     <div>
       {layout === 'two' && (
@@ -46,10 +57,12 @@ export function FleetRegistry({
           <FleetCard
             key={drone.drone_id}
             drone={drone}
+            now={now()}
             selected={state.selection.includes(drone.drone_id)}
             lastInSelection={state.selection.length === 1 && state.selection[0] === drone.drone_id}
             selectionEnabled={isIntentEnabled(state, 'select')}
             selectionDisabledReason={capabilityBlockedReason(state, 'select')}
+            scan={deviceScan(drone, snapshot)}
             onToggle={() => toggleAircraft(drone.drone_id)}
           />
         ))
@@ -97,17 +110,21 @@ export function FleetRegistry({
 
 function FleetCard({
   drone,
+  now,
   selected,
   lastInSelection,
   selectionEnabled,
   selectionDisabledReason,
+  scan,
   onToggle,
 }: {
   drone: RelayAircraftState
+  now: number
   selected: boolean
   lastInSelection: boolean
   selectionEnabled: boolean
   selectionDisabledReason: string | null
+  scan: RelaySensorEvent | null
   onToggle: () => void
 }) {
   const id = formatDeviceId(drone)
@@ -125,7 +142,7 @@ function FleetCard({
       <div className="fleet-card-head">
         <span className="fleet-id">{id}</span>
         <span className={`fleet-membership tone-${membershipTone(drone.membership, drone.pos_quality)}`}>
-          {drone.membership}
+          {membershipWord(drone)}
         </span>
         <span className="fleet-flight">{motionStateWord(drone)}</span>
       </div>
@@ -146,7 +163,12 @@ function FleetCard({
           {drone.last_seen_at === null ? 'last seen unreported' : `seen ${formatTime(drone.last_seen_at)}`}
         </span>
       </p>
+      {drone.device_class === 'ground_vehicle' && <p className={`fleet-line tone-${sensorStatus(drone, now).tone}`}>{sensorStatus(drone, now).text}</p>}
+      {drone.device_class === 'ground_vehicle' && drone.adapter_capabilities.includes('lidar') && (
+        <LidarPolar device={drone} scan={scan} size={92} now={now} />
+      )}
       <ReadinessHelp drone={drone} className="fleet-reasons" />
+      {selected && <DeviceTelemetryPanel device={drone} now={now} scan={scan} compact />}
       <button
         type="button"
         className={selected ? 'fleet-select is-selected' : 'fleet-select'}

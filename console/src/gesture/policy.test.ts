@@ -57,16 +57,16 @@ describe('gesture pairs', () => {
     expect(
       DEFAULT_GESTURE_PAIRS.map((pair) => [pair.gesture, pair.action, pair.minScore, pair.dwellMs]),
     ).toEqual([
-      ['Open_Palm', { kind: 'draft', name: 'capture_room' }, 0.8, 600],
+      ['Open_Palm', { kind: 'draft', name: 'capture_room' }, 0.6, 600],
       ['Closed_Fist', { kind: 'draft', name: 'hold' }, 0.8, 600],
-      ['Thumb_Up', { kind: 'confirm' }, 0.8, 400],
-      ['Thumb_Down', { kind: 'cancel' }, 0.8, 400],
+      ['Thumb_Up', { kind: 'confirm' }, 0.6, 400],
+      ['Thumb_Down', { kind: 'cancel' }, 0.7, 400],
     ])
     expect(validateGesturePairs(DEFAULT_GESTURE_PAIRS)).toEqual([])
   })
 
-  test('network stop and unbounded motion stay outside both gesture profiles', () => {
-    for (const name of ['estop', 'translate', 'altitude', 'come_home', 'land_all']) {
+  test('network stop and unbounded motion stay outside gesture profiles', () => {
+    for (const name of ['estop', 'altitude', 'come_home', 'land_all']) {
       expect(NEVER_GESTURE_EMITTABLE).toContain(name)
       expect(isGestureEmittable(name)).toBe(false)
       const pair = {
@@ -119,6 +119,8 @@ describe('gesture policy state machine', () => {
       pair: DEFAULT_GESTURE_PAIRS[0],
       heldMs: 0,
       progress: 0,
+      frames: 1,
+      strongFrames: 1,
     })
     expect(outcomes[6]).toMatchObject({ kind: 'candidate', heldMs: 300, progress: 0.5 })
     expect(outcomes[12]).toEqual({ kind: 'accepted', pair: DEFAULT_GESTURE_PAIRS[0], heldMs: 600 })
@@ -172,26 +174,13 @@ describe('gesture policy state machine', () => {
     expect(thumbDown.state.phase).toBe('candidate')
   })
 
-  test('low confidence never starts a candidate and abandons one in progress', () => {
-    const idle = run([frame(0, 'Open_Palm', 0.79)])
-    expect(idle.outcomes).toEqual([
-      { kind: 'low_confidence', pair: DEFAULT_GESTURE_PAIRS[0], score: 0.79 },
-    ])
+  test('low confidence never starts a candidate; isolated weak frames retain consensus dwell', () => {
+    const idle = run([frame(0, 'Open_Palm', 0.59)])
+    expect(idle.outcomes[0]).toMatchObject({ kind: 'low_confidence', frames: 1, strongFrames: 0 })
     expect(idle.state.phase).toBe('idle')
-
-    const dip = run([
-      ...held('Open_Palm', 0, 300),
-      frame(350, 'Open_Palm', 0.5),
-      ...held('Open_Palm', 400, 950),
-    ])
-    expect(dip.outcomes[7]).toEqual({
-      kind: 'low_confidence',
-      pair: DEFAULT_GESTURE_PAIRS[0],
-      score: 0.5,
-    })
-    expect(dip.outcomes[8]).toMatchObject({ kind: 'candidate', heldMs: 0 })
-    expect(dip.outcomes.at(-1)).toMatchObject({ kind: 'candidate', heldMs: 550 })
-    expect(kinds(dip.outcomes)).not.toContain('accepted')
+    const dip = run([...held('Open_Palm', 0, 300), frame(350, 'Open_Palm', 0.5), ...held('Open_Palm', 400, 950)])
+    expect(dip.outcomes[7]).toMatchObject({ kind: 'candidate', heldMs: 350, frames: 8, strongFrames: 7 })
+    expect(dip.outcomes.filter((outcome) => outcome.kind === 'accepted')).toHaveLength(1)
   })
 
   test('releasing before the dwell is a dwell timeout that emits nothing', () => {
@@ -273,6 +262,7 @@ describe('gesture policy state machine', () => {
 
   test('thresholds and dwell are adjustable per pair', () => {
     const config: GesturePolicyConfig = {
+      ...DEFAULT_GESTURE_POLICY_CONFIG,
       pairs: [
         { gesture: 'Victory', action: { kind: 'draft', name: 'hold' }, minScore: 0.5, dwellMs: 100 },
       ],

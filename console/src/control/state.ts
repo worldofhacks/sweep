@@ -28,6 +28,8 @@ export interface RelayConnection {
 }
 
 export interface PlanPreview {
+  /** Explicit connected-device preview binding, independent of motion selection. */
+  deviceEpochs?: Record<number, number>
   title: string
   steps: string[]
   rosterVersion: number
@@ -113,7 +115,7 @@ export interface ControlState {
   lastOutcome: OutcomeSummary | null
   notices: OperatorNotice[]
   seenEventIds: string[]
-  lastStateEvent: { rosterVersion: number; t: number; source: IntentSource | null; sequence?: number } | null
+  lastStateEvent: { rosterVersion: number; t: number; source: IntentSource | null; sequence?: number; receivedAt?: number } | null
 }
 
 export type ControlAction =
@@ -122,7 +124,7 @@ export type ControlAction =
   | { type: 'keyboard_connection_changed'; connection: RelayConnection }
   | { type: 'webcam_connection_changed'; connection: RelayConnection }
   | { type: 'language_connection_changed'; connection: RelayConnection }
-  | { type: 'relay_event'; event: RelayServerEvent; source?: IntentSource }
+  | { type: 'relay_event'; event: RelayServerEvent; source?: IntentSource; receivedAt?: number }
   | { type: 'request_created'; request: RequestRecord }
   | { type: 'request_pending_confirmation'; intentId: string; t: number; plan: PlanPreview }
   | { type: 'request_confirmed'; intent: IntentV1; t: number }
@@ -217,7 +219,7 @@ export function controlReducer(state: ControlState, action: ControlAction): Cont
     case 'language_connection_changed':
       return reduceLanguageConnection(state, action.connection)
     case 'relay_event':
-      return reduceRelayEvent(state, action.event, action.source ?? 'console')
+      return reduceRelayEvent(state, action.event, action.source ?? 'console', action.receivedAt)
     case 'request_created':
       return { ...state, requests: [action.request, ...state.requests] }
     case 'request_pending_confirmation':
@@ -335,6 +337,7 @@ function reduceRelayEvent(
   state: ControlState,
   event: RelayServerEvent,
   source: IntentSource,
+  receivedAt?: number,
 ): ControlState {
   if (state.seenEventIds.includes(event.event_id)) return state
   const stateWithEvent = {
@@ -363,17 +366,18 @@ function reduceRelayEvent(
     case 'auth.refused':
       return reduceAuthRefusal(stateWithEvent, event)
     case 'state':
-      return reduceStateEvent(stateWithEvent, event, source)
+      return reduceStateEvent(stateWithEvent, event, source, receivedAt)
     case 'membership':
       return reduceMembershipEvent(stateWithEvent, event)
     case 'telemetry':
+      return stateWithEvent
     case 'capabilities':
     case 'node_status':
     case 'capture_readiness':
       // Public node facts are informational here. Aircraft membership and
       // readiness still come from the relay's authoritative state projection.
       // In particular, node_status.control_authority cannot enable commands.
-      return stateWithEvent
+      return reduceNodeReport(stateWithEvent, event)
     case 'sensor':
       return reduceSensorEvent(stateWithEvent, event)
     case 'safety_action': {
@@ -443,6 +447,20 @@ function reduceSensorEvent(
       [event.drone_id]: { ...device, sensor: { kind: event.kind, last_scan_at: event.t } },
     },
   }
+}
+
+/** Reports are display facts scoped to the relay-admitted epoch, never readiness authority. */
+function reduceNodeReport(
+  state: ControlState,
+  event: Extract<RelayServerEvent, { type: 'capabilities' | 'node_status' | 'capture_readiness' }>,
+): ControlState {
+  const device = state.aircraft[event.drone_id]
+  if (!device || device.connection_epoch !== event.connection_epoch ||
+    ['leaving', 'disconnected'].includes(device.membership)) return state
+  const key = event.type === 'capabilities' ? 'camera_capabilities' : event.type
+  const previous = device[key]
+  if (previous && previous.t >= event.t) return state
+  return { ...state, aircraft: { ...state.aircraft, [event.drone_id]: { ...device, [key]: event } } }
 }
 
 function reduceAdapterRefusal(
@@ -520,6 +538,7 @@ function reduceStateEvent(
   state: ControlState,
   event: Extract<RelayServerEvent, { type: 'state' }>,
   source: IntentSource,
+  receivedAt?: number,
 ): ControlState {
   const lastStateEvent = state.lastStateEvent
   const sequenced = event.state_sequence !== undefined
@@ -537,7 +556,12 @@ function reduceStateEvent(
   const ambiguousOrder = !sequenced && lastStateEvent !== null &&
     event.roster_version === lastStateEvent.rosterVersion &&
     event.t === lastStateEvent.t && lastStateEvent.source !== source
-  const aircraft = Object.fromEntries(event.drones.map((drone) => [drone.drone_id, drone]))
+  const aircraft = Object.fromEntries(event.drones.map((drone) => {
+    const previous = state.aircraft[drone.drone_id]
+    const capture_readiness = previous?.connection_epoch === drone.connection_epoch &&
+      !['leaving', 'disconnected'].includes(drone.membership) ? previous.capture_readiness : undefined
+    return [drone.drone_id, { ...drone, capture_readiness }]
+  }))
   const staleSelection = event.selection.filter(
     (id) => aircraft[id]?.membership !== 'ready' || !aircraft[id]?.selectable,
   )
@@ -560,6 +584,7 @@ function reduceStateEvent(
       t: event.t,
       source: ambiguousOrder ? null : source,
       sequence: event.state_sequence,
+      ...(receivedAt === undefined ? {} : { receivedAt }),
     },
   }
 
@@ -790,6 +815,9 @@ function projectMembershipEvent(
     home_pose: previous?.home_pose ?? null,
     rc_safety_operator_present: previous?.rc_safety_operator_present ?? false,
     telemetry: previous?.telemetry ?? null,
+    node_status: previous?.node_status ?? null,
+    camera_capabilities: previous?.camera_capabilities ?? null,
+    capture_readiness: previous?.capture_readiness ?? null,
     membership_history: previous?.membership_history ?? [],
     membership_history_truncated: previous?.membership_history_truncated ?? 0,
     video: previous?.connection_epoch === event.connection_epoch ? previous.video : undefined,
