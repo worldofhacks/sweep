@@ -1648,11 +1648,12 @@ class AdapterDispatcher:
         acknowledgements: list[CommandAcknowledgement] = []
         for drone_id in sorted(affected):
             command = affected[drone_id]
-            if command.operation in {
-                CommandOperation.HOVER,
-                CommandOperation.LAND,
-                CommandOperation.ESTOP,
-            }:
+            if command.operation in {CommandOperation.LAND, CommandOperation.ESTOP}:
+                continue
+            if (
+                command.operation is CommandOperation.HOVER
+                and plan.intent_name is not IntentName.CAPTURE_ROOM
+            ):
                 continue
             acknowledgements.extend(
                 self._best_effort_hold(plan, command, provider, owner_still_valid=owner_still_valid)
@@ -1873,13 +1874,16 @@ class AdapterDispatcher:
         )
         if capture_command is None:
             return None
-        return (
-            str(capture_command.parameters["room_id"]),
-            str(capture_command.parameters["capture_id"]),
-            CapturePattern(str(capture_command.parameters["pattern"])),
-            capture_command.drone_id,
-            capture_command.connection_epoch,
-        )
+        try:
+            return (
+                str(capture_command.parameters["room_id"]),
+                str(capture_command.parameters["capture_id"]),
+                CapturePattern(str(capture_command.parameters["pattern"])),
+                capture_command.drone_id,
+                capture_command.connection_epoch,
+            )
+        except (KeyError, ValueError):
+            return None
 
     def _completed_bundle(
         self, plan: Plan, media_files: list[MediaFile]

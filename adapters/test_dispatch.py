@@ -145,7 +145,10 @@ def test_live_snapshot_change_mid_capture_stops_before_next_io() -> None:
     assert result.refusal is not None
     assert result.refusal.reason is RefusalReason.STALE_ROSTER
     assert camera.calls == [("capabilities", 1, None)]
-    assert [call.operation for call in flight.calls] == [CommandOperation.HOVER]
+    assert [call.operation for call in flight.calls] == [
+        CommandOperation.HOVER,
+        CommandOperation.HOVER,
+    ]
 
 
 def test_live_epoch_change_mid_capture_stops_before_next_io() -> None:
@@ -170,7 +173,10 @@ def test_live_epoch_change_mid_capture_stops_before_next_io() -> None:
     assert result.refusal is not None
     assert result.refusal.reason is RefusalReason.STALE_CONNECTION_EPOCH
     assert camera.calls == [("capabilities", 1, None)]
-    assert [call.operation for call in flight.calls] == [CommandOperation.HOVER]
+    assert [call.operation for call in flight.calls] == [
+        CommandOperation.HOVER,
+        CommandOperation.HOVER,
+    ]
 
 
 class ExecutingFlight(SimFlightAdapter):
@@ -1190,7 +1196,10 @@ def test_capture_pose_drift_during_final_retrieve_aborts_to_hold() -> None:
     assert result.refusal is not None
     assert result.refusal.reason is RefusalReason.INVALID_STATE
     assert camera.calls[-1] == ("retrieve", 1, "capture-pano-360")
-    assert [call.operation for call in flight.calls] == [CommandOperation.HOVER]
+    assert [call.operation for call in flight.calls] == [
+        CommandOperation.HOVER,
+        CommandOperation.HOVER,
+    ]
 
 
 def test_capture_plan_cannot_smuggle_pose_tolerance_above_safety_limit() -> None:
@@ -1206,10 +1215,10 @@ def test_capture_plan_cannot_smuggle_pose_tolerance_above_safety_limit() -> None
         snapshot,
     )
     assert isinstance(plan, Plan)
-    capture = plan.commands[3]
+    capture = plan.commands[4]
     parameters = dict(capture.parameters)
     parameters["pose_tolerance"] = 100.0
-    commands = (*plan.commands[:3], replace(capture, parameters=parameters), plan.commands[4])
+    commands = (*plan.commands[:4], replace(capture, parameters=parameters), plan.commands[5])
     _, _, _, dispatcher, flight, camera = make_stack(snapshot)
 
     result = dispatcher.dispatch(replace(plan, commands=commands), snapshot)
@@ -1234,7 +1243,7 @@ def test_capture_anchor_is_deeply_immutable() -> None:
         snapshot,
     )
     assert isinstance(plan, Plan)
-    approved_pose = plan.commands[3].parameters["approved_pose"]
+    approved_pose = plan.commands[4].parameters["approved_pose"]
     assert isinstance(approved_pose, MappingProxyType)
 
     with pytest.raises(TypeError):
@@ -1273,15 +1282,15 @@ def test_malformed_capture_sequence_is_refused_before_io(malformation: str) -> N
     assert isinstance(plan, Plan)
     commands = list(plan.commands)
     if malformation == "source_link":
-        commands[4] = replace(commands[4], parameters={"source_command_id": "cross-linked-command"})
+        commands[5] = replace(commands[5], parameters={"source_command_id": "cross-linked-command"})
     elif malformation == "duplicate_yaw":
-        parameters = dict(commands[6].parameters)
-        parameters["yaw"] = commands[2].parameters["yaw"]
-        commands[6] = replace(commands[6], parameters=parameters)
+        parameters = dict(commands[7].parameters)
+        parameters["yaw"] = commands[3].parameters["yaw"]
+        commands[7] = replace(commands[7], parameters=parameters)
     else:
-        parameters = dict(commands[2].parameters)
+        parameters = dict(commands[3].parameters)
         parameters["min_overlap"] = 0.0
-        commands[2] = replace(commands[2], parameters=parameters)
+        commands[3] = replace(commands[3], parameters=parameters)
     _, _, _, dispatcher, flight, camera = make_stack(snapshot)
 
     result = dispatcher.dispatch(replace(plan, commands=tuple(commands)), snapshot)

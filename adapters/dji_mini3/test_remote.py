@@ -483,14 +483,40 @@ def test_panorama_capture_round_trips_media_through_the_remote_adapter() -> None
     assert [media.file_id for media in bundle.media] == ["capture-a-pano-360"]
     assert bundle.media[0].checksum_sha256 == "a" * 64
     assert [request.operation for request in link.sent] == [
+        CommandOperation.HOVER,
         CommandOperation.CAMERA_CAPABILITIES,
         CommandOperation.SET_GIMBAL_PITCH,
         CommandOperation.CAMERA_READY,
         CommandOperation.CAPTURE_PANORAMA,
         CommandOperation.RETRIEVE_MEDIA,
     ]
-    assert dict(link.sent[3].args) == {"capture_id": "capture-a"}
-    assert dict(link.sent[4].args) == {"file_id": "capture-a-pano-360"}
+    assert dict(link.sent[4].args) == {"capture_id": "capture-a"}
+    assert dict(link.sent[5].args) == {"file_id": "capture-a-pano-360"}
+
+
+@pytest.mark.parametrize("hold_status", ["executing", "failed"])
+def test_capture_never_starts_camera_work_without_completed_hold(hold_status: str) -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    intent = make_intent(
+        IntentName.CAPTURE_ROOM,
+        selection=(1,),
+        args={"room_id": "room-a", "capture_id": "capture-a", "pattern": "pano_360"},
+        confirm=True,
+    )
+    plan = DeterministicPlanner(planning_config()).plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+    link = ScriptedLink(
+        epochs={1: 1},
+        scripts={CommandOperation.HOVER: [(hold_status, None, None)]},
+        capabilities={1: _capabilities_frame()},
+        media={"capture-a": (_panorama_record("capture-a"),)},
+    )
+
+    result = _dispatcher(_adapter(link)).dispatch(plan, snapshot)
+
+    assert result.status is not LifecycleStatus.COMPLETED
+    assert link.sent
+    assert all(request.operation is CommandOperation.HOVER for request in link.sent)
 
 
 def test_capture_without_a_media_file_and_unknown_retrieval_fail_closed() -> None:
