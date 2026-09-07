@@ -16,7 +16,7 @@ An observation submission has exactly these fields:
 | `type` | Literal `observation`. |
 | `event_id` | Bounded producer event identity. |
 | `session`, `device_id`, `connection_epoch`, `source_id` | Authenticated source identity. `device_id` is a positive signed 32-bit integer. |
-| `node_type` | `aircraft` or `ground`. The relay binds this from membership rather than deriving it from a device ID. |
+| `node_type` | `aircraft` or `ground`. The relay checks this against host configuration rather than deriving it from a device ID. |
 | `frame` | Declared coordinate frame for the observation. |
 | `confidence` | Finite numeric confidence in `[0, 1]`. Qualitative localization labels stay in their specialized payload. |
 | `t_capture` | Nullable source timestamp. `null` means the producer has no capture timestamp. |
@@ -55,4 +55,4 @@ The event frame is validated first. Payload frames must agree with it where they
 
 ## Reuse boundary
 
-`schemas/observation-v1.schema.json` is the canonical minified UTF-8 schema artifact and has no trailing newline; MCAP stores those exact bytes in its Schema record. This module owns encoding, decoding, duplicate-key rejection, frame-scope checks, clock-reference checks, timing skew checks, and a pure `RatePolicy` helper that rejects a timestamp earlier than the prior admitted event. The relay session will own authentication, node-class membership, event identity retention, rate state, consumer authorization, fan-out, audit writes, and MCAP mirroring. Consumers must explicitly authorize an observation kind. Operator sources do not receive high-rate sensor evidence by default.
+`schemas/observation-v1.schema.json` is the canonical minified UTF-8 schema artifact and has no trailing newline; MCAP stores those exact bytes in its Schema record. This module owns encoding, decoding, duplicate-key rejection, frame-scope checks, clock-reference checks, timing skew checks, and a pure `RatePolicy` helper. The [relay ingress](observation-ingress.md) owns authenticated admission, replay watermarks, rate state, console-only fan-out, and audit writes. Consumers must explicitly authorize an observation kind. Observation admission does not authorize motion.

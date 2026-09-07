@@ -480,6 +480,10 @@ def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
                 await asyncio.sleep(0.01)
                 raise WebSocketDisconnect(code=1000)
 
+            async def receive_text(self) -> str:
+                await self.receive_json()
+                raise AssertionError("expected disconnect")
+
             async def send_json(self, data: dict[str, object]) -> None:
                 self.sent.append(data)
                 if data["type"] != "auth.accepted":
@@ -1266,6 +1270,10 @@ def test_same_session_recovery_does_not_block_websocket_event_loop(
                     "token": CONSOLE_KEY.decode(),
                 }
             raise WebSocketDisconnect(code=1000)
+
+        async def receive_text(self) -> str:
+            await self.receive_json()
+            raise AssertionError("expected disconnect")
 
         async def send_json(self, _data: dict[str, object]) -> None:
             return None

@@ -239,6 +239,7 @@ class RelayRuntime:
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
+                    observation_configuration=self.settings.observation_configuration,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -667,6 +668,11 @@ class RelayRuntime:
                 if subscription.sender_failed.is_set():
                     continue
                 for event in events:
+                    if (
+                        event.get("type") == "observation"
+                        and subscription.principal.source != "console"
+                    ):
+                        continue
                     if event.get("type") == "control_pose" and (
                         subscription.principal.source != "adapter"
                         or subscription.principal.drone_id != event.get("drone_id")
@@ -1285,8 +1291,40 @@ async def _send_outbound(websocket: WebSocket, subscription: _Subscription) -> N
             _resolve_delivery(outbound, sent)
 
 
+async def _receive_frame(websocket: WebSocket) -> object:
+    encoded = await websocket.receive_text()
+    if len(encoded) > 1_048_576:
+        raise json.JSONDecodeError("frame exceeds 1 MiB", "", 0)
+
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise json.JSONDecodeError("duplicate JSON key", "", 0)
+            result[key] = value
+        return result
+
+    try:
+        frame = json.loads(encoded, object_pairs_hook=unique)
+        pending = [(frame, 0)]
+        while pending:
+            value, depth = pending.pop()
+            if depth > 32:
+                raise json.JSONDecodeError("JSON nesting exceeds 32 levels", "", 0)
+            if isinstance(value, dict):
+                pending.extend((child, depth + 1) for child in value.values())
+            elif isinstance(value, list):
+                pending.extend((child, depth + 1) for child in value)
+        if isinstance(frame, Mapping) and frame.get("type") == "observation":
+            if len(encoded.encode("utf-8")) > 65_536:
+                raise json.JSONDecodeError("observation exceeds 64 KiB", "", 0)
+        return frame
+    except (UnicodeError, RecursionError) as error:
+        raise json.JSONDecodeError("invalid JSON encoding or depth", "", 0) from error
+
+
 async def _receive_or_sender_failure(websocket: WebSocket, sender: asyncio.Task[None]) -> object:
-    receive = asyncio.create_task(websocket.receive_json())
+    receive = asyncio.create_task(_receive_frame(websocket))
     try:
         done, _ = await asyncio.wait({receive, sender}, return_when=asyncio.FIRST_COMPLETED)
         if sender in done:

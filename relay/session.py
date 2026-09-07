@@ -61,6 +61,8 @@ from relay.intent_v1 import (
     validate_intent,
 )
 from relay.media import MediaEvidenceProvider
+from relay.observation_ingress import ObservationConfiguration, ObservationIngress
+from relay.observations import ObservationError, ObservationSubmission
 from relay.state import (
     MAX_MEMBERSHIP_HISTORY_LIMIT,
     MAX_SIMULATED_AIRCRAFT,
@@ -292,6 +294,7 @@ class RelaySession:
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
+        observation_configuration: ObservationConfiguration | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -309,6 +312,13 @@ class RelaySession:
         self.control_localization_projector = control_localization_projector
         self.control_pose_signing_key = control_pose_signing_key
         self.relay_clock_id = relay_clock_id
+        self.observation_ingress = (
+            None
+            if observation_configuration is None
+            else ObservationIngress(
+                observation_configuration, self.session_id, limits.future_clock_skew_ms
+            )
+        )
         self._capability_profile = capability_profile
         self._intent_sink: IntentSink | None = None
         self.intent_sink = intent_sink
@@ -393,6 +403,8 @@ class RelaySession:
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
             return self.process_intent(raw, principal)
         if principal.source == "adapter":
+            if frame_type == "observation":
+                return self.process_observation(raw, principal)
             if frame_type == "membership":
                 return self.process_membership(raw, principal)
             if frame_type == "telemetry":
@@ -849,6 +861,28 @@ class RelaySession:
                     )
                 ]
             return self._record_transition_and_state(transition, now=now)
+
+    def process_observation(self, raw: object, principal: Principal) -> list[dict[str, object]]:
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            now = self.clock()
+            try:
+                if principal.source != "adapter" or principal.drone_id is None:
+                    raise ObservationError("source_not_allowed", "observations require an adapter")
+                submission = ObservationSubmission.parse(raw)
+                self._check_adapter_binding(submission.device_id, principal)
+                if submission.session != self.session_id:
+                    raise ObservationError("session_mismatch", "observation session is not current")
+                self.registry.check_current(submission.device_id, submission.connection_epoch)
+                if self.observation_ingress is None:
+                    raise ObservationError(
+                        "source_not_configured", "observation ingress is disabled"
+                    )
+                event = self.observation_ingress.accept(submission, now=now).to_mapping()
+            except (ObservationError, ContractError, RegistryError) as error:
+                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
+            self._append_audit(event)
+            return [event]
 
     def process_telemetry(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
