@@ -2,6 +2,7 @@ from perception.localization_lease import (
     LocalizationLeaseState,
     ManagedWebcamLocalizer,
 )
+from perception.webcam_stream import WebcamStream
 
 
 class Reader:
@@ -148,3 +149,45 @@ def test_resume_does_not_start_a_second_reader_when_release_fails():
     assert status.state is LocalizationLeaseState.UNAVAILABLE
     assert status.failure_reason == "reader_close_failed"
     assert len(created) == 1
+
+
+def test_resume_keeps_a_webcam_stream_that_cannot_stop():
+    class StubbornProcess:
+        def __init__(self):
+            self.alive = False
+
+        def start(self):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, _timeout):
+            pass
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def close(self):
+            raise AssertionError("a live decoder must not be closed")
+
+    stream = WebcamStream("rtsp://localhost/drone1")
+    stream._process = StubbornProcess()
+    factories = []
+
+    def reader_factory():
+        factories.append(True)
+        return stream
+
+    lease = ManagedWebcamLocalizer(reader_factory, Localizer())
+    lease.resume(0)
+
+    status = lease.resume(1)
+
+    assert status.state is LocalizationLeaseState.UNAVAILABLE
+    assert status.failure_reason == "reader_close_failed"
+    assert lease._reader is stream
+    assert factories == [True]

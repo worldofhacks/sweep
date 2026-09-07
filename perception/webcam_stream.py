@@ -110,6 +110,7 @@ class WebcamStream:
         )
         self._started = False
         self._closed = False
+        self._process_closed = False
 
     @property
     def status(self) -> str:
@@ -138,20 +139,23 @@ class WebcamStream:
         return self._mailbox.get(timeout=timeout)
 
     def close(self) -> None:
-        if self._closed:
+        if self._process_closed:
             return
         self._closed = True
         self._stop.set()
-        if self._started:
-            self._process.join(0.2)
-            if self._process.is_alive():
-                self._process.terminate()
-                self._process.join(0.5)
-            if self._process.is_alive():
-                self._process.kill()
-                self._process.join(0.5)
-            if not self._process.is_alive():
-                self._process.close()
+        if not self._started:
+            return
+        self._process.join(0.2)
+        if self._process.is_alive():
+            self._process.terminate()
+            self._process.join(0.5)
+        if self._process.is_alive():
+            self._process.kill()
+            self._process.join(0.5)
+        if self._process.is_alive():
+            raise RuntimeError("webcam decoder did not stop")
+        self._process.close()
+        self._process_closed = True
 
     def __enter__(self) -> WebcamStream:
         return self.start()
