@@ -150,3 +150,32 @@ def test_acknowledgement_collection_is_bounded_when_a_node_floods_nonterminal_up
 
     assert len(acknowledgements) == 3
     assert len(link.events) == 3
+
+
+def test_confirmed_come_home_releases_only_the_configured_ground_return() -> None:
+    link = _StopLink()
+    state = {
+        "roster_version": 7,
+        "drones": [
+            {
+                "drone_id": 9,
+                "node_type": "ground",
+                "connection_epoch": 4,
+                "membership": "ready",
+                "selectable": True,
+                "control_authority": True,
+                "adapter_capabilities": ["ground_drive"],
+            }
+        ],
+    }
+
+    result = _dispatcher(link).dispatch_return(
+        make_intent(IntentName.COME_HOME, selection=(9,), confirm=True, intent_id="return-ground"),
+        state,
+        return_id="room-a-return",
+    )
+
+    assert result.status is LifecycleStatus.COMPLETED
+    assert len(link.requests) == 1
+    assert link.requests[0].operation is CommandOperation.GROUND_RETURN
+    assert link.requests[0].args == {"return_id": "room-a-return"}

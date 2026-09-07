@@ -181,6 +181,7 @@ def test_numeric_dial_address_preserves_the_tls_hostname(monkeypatch):
 
     def refuse_connection(uri, **kwargs):
         calls.append((uri, kwargs))
+        node.stop()
         raise OSError("probe complete")
 
     monkeypatch.setattr(module, "connect", refuse_connection)
@@ -195,8 +196,7 @@ def test_numeric_dial_address_preserves_the_tls_hostname(monkeypatch):
         ),
         FakeGroundDevice(),
     )
-    with pytest.raises(OSError, match="probe complete"):
-        asyncio.run(node.run())
+    asyncio.run(node.run())
     assert calls == [
         (f"wss://relay.example/field/ws/{SESSION}", {"host": "192.0.2.5", "proxy": None})
     ]

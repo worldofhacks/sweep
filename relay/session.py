@@ -2522,7 +2522,13 @@ class RelaySession:
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
 _GROUND_SAFE_INTENTS = frozenset(
-    {IntentName.SELECT, IntentName.HOLD, IntentName.ESTOP, IntentName.GROUND_VELOCITY}
+    {
+        IntentName.SELECT,
+        IntentName.HOLD,
+        IntentName.ESTOP,
+        IntentName.GROUND_VELOCITY,
+        IntentName.COME_HOME,
+    }
 )
 # These two planner-owned objects share the per-aircraft projection budget. Four
 # maximum aircraft plus both maximum control objects still fit one 1 MiB record.
