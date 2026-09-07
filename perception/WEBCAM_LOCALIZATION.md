@@ -129,13 +129,16 @@ The example FOV bounds belong to the synthetic test camera; replace them with
 independent bounds for your camera. File paths resolve relative to the configuration.
 
 A `consensus` object in `localizer` can require multiple tag IDs before the preview
-filter accepts a frame. It has `minimum_distinct_tags`,
+filter accepts a frame. It has `minimum_distinct_tags`, `maximum_candidate_tags`,
 `maximum_translation_residual_m`, and `maximum_rotation_residual_rad`. Set the
-minimum to 2 for two-tag preview. Choose the residual bounds from recorded-frame
-evaluation for the camera and mounting. The frame report lists candidate IDs,
-inliers, outliers, and each candidate's translation, rotation, and reprojection
-residual. A frame that misses quorum remains visible in `pose_observation` and does
-not refresh the preview fix age.
+minimum to 2 for two-tag preview and bound candidates to the maximum expected mapped
+tags in one image (at most 12). Choose the residual bounds from recorded-frame
+evaluation for the camera and mounting. Every selected pair must meet both residual
+limits; equal-size, incompatible clusters are rejected rather than selected by ID.
+The frame report lists candidate IDs, inliers, outliers, and each candidate's
+translation, rotation, and reprojection residual relative to its deterministic
+inlier reference. A frame that misses quorum remains visible in `pose_observation`
+and does not refresh the preview fix age.
 The accepted-version mapping must come from operator-controlled configuration and
 bind the selected bundle version to its exact manifest content digest. A changed
 map, calibration, or latency file refuses startup until its pin is updated

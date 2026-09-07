@@ -8,32 +8,48 @@ import numpy as np
 import pytest
 
 from perception.position_replay import PositionReplay
-from perception.tag_localization import TagLocalizer
+from perception.tag_localization import TagLocalizer, map_points
 from tests.test_world_bundle import reseal
 from tools.map_validate import seal_manifest
 
 K = np.array([[900.0, 0, 640], [0, 900, 360], [0, 0, 1]])
 
 
-def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False, inconsistent_tag=None):
+def scene(
+    tmp_path,
+    tilt=0.45,
+    count=2,
+    tag_rotation=False,
+    nonplanar=False,
+    inconsistent_tag=None,
+    rendered_camera_offsets=None,
+    tag_transforms=None,
+    camera_transform=None,
+):
     bundle = tmp_path / "bundle"
     shutil.copytree(Path(__file__).parent / "fixtures/mapping", bundle)
     document = json.loads((bundle / "tags.yaml").read_text())
     map_count = max(count, 2 if tag_rotation else count)
-    document["tags"] = document["tags"][:map_count]
+    tags = document["tags"]
+    while len(tags) < map_count:
+        tags.append(dict(tags[-1]) | {"id": len(tags)})
+    document["tags"] = tags[:map_count]
     transforms = {}
     for i, tag in enumerate(document["tags"]):
-        transform = np.eye(4)
-        transform[:3, 3] = [i * 0.55, 0, 0]
-        if tag_rotation and i == 1:
-            transform[:3, :3] = cv2.Rodrigues(np.array([0.0, 0.0, np.pi / 2]))[0]
-        if nonplanar and i:
-            transform[:3, :3] = cv2.Rodrigues(np.array([0.4, -0.2, 0.1]))[0]
+        if tag_transforms:
+            transform = np.array(tag_transforms[i], dtype=float)
+        else:
+            transform = np.eye(4)
+            transform[:3, 3] = [i * 0.55, 0, 0]
+            if tag_rotation and i == 1:
+                transform[:3, :3] = cv2.Rodrigues(np.array([0.0, 0.0, np.pi / 2]))[0]
+            if nonplanar and i:
+                transform[:3, :3] = cv2.Rodrigues(np.array([0.4, -0.2, 0.1]))[0]
         tag.update(
             size=0.3,
-            x=i * 0.55,
-            y=0,
-            z=0,
+            x=float(transform[0, 3]),
+            y=float(transform[1, 3]),
+            z=float(transform[2, 3]),
             yaw=float(np.arctan2(transform[1, 0], transform[0, 0])),
             normal=transform[:3, 2].tolist(),
             T_map_tag=transform.tolist(),
@@ -82,16 +98,19 @@ def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False, inc
         pipeline=pipeline,
         T_body_camera=body_camera.tolist(),
     )
-    camera = np.eye(4)
-    camera[:3, :3] = cv2.Rodrigues(
-        np.array([tilt, 0.12 if tilt else 0, 0.08 if tilt else 0], dtype=float)
-    )[0] @ np.diag([1.0, -1.0, -1.0])
     visible_ids = [1] if tag_rotation and count == 1 else list(range(count))
-    camera[:3, 3] = [
-        float(np.mean([transforms[i][0, 3] for i in visible_ids])),
-        -1.5 * np.tan(tilt),
-        1.5,
-    ]
+    if camera_transform is not None:
+        camera = np.array(camera_transform, dtype=float)
+    else:
+        camera = np.eye(4)
+        camera[:3, :3] = cv2.Rodrigues(
+            np.array([tilt, 0.12 if tilt else 0, 0.08 if tilt else 0], dtype=float)
+        )[0] @ np.diag([1.0, -1.0, -1.0])
+        camera[:3, 3] = [
+            float(np.mean([transforms[i][0, 3] for i in visible_ids])),
+            -1.5 * np.tan(tilt),
+            1.5,
+        ]
     image = np.full((720, 1280), 255, np.uint8)
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
     for i in visible_ids:
@@ -105,6 +124,8 @@ def scene(tmp_path, tilt=0.45, count=2, tag_rotation=False, nonplanar=False, inc
         rendered_camera = camera.copy()
         if inconsistent_tag == i:
             rendered_camera[:3, 3] += [0.12, 0.0, 0.0]
+        if rendered_camera_offsets and i in rendered_camera_offsets:
+            rendered_camera[:3, 3] += rendered_camera_offsets[i]
         inverse = np.linalg.inv(rendered_camera)
         pixels = cv2.projectPoints(
             points, cv2.Rodrigues(inverse[:3, :3])[0], inverse[:3, 3], K, np.zeros(5)
@@ -368,6 +389,7 @@ def test_world_localizer_requires_exact_approved_content(tmp_path):
 def consensus_config():
     return {
         "minimum_distinct_tags": 2,
+        "maximum_candidate_tags": 6,
         "maximum_translation_residual_m": 0.03,
         "maximum_rotation_residual_rad": 0.2,
     }
@@ -382,6 +404,11 @@ def test_two_tag_consensus_returns_one_joint_pose(tmp_path):
     assert result["accepted"], result
     assert result["consensus_inlier_tag_ids"] == [0, 1]
     assert result["consensus_outlier_tag_ids"] == []
+    assert all(
+        residual["translation_m"] <= consensus_config()["maximum_translation_residual_m"]
+        and residual["rotation_rad"] <= consensus_config()["maximum_rotation_residual_rad"]
+        for residual in result["consensus_residuals"]
+    )
     np.testing.assert_allclose(result["T_map_camera"], camera, atol=0.025)
 
 
@@ -395,6 +422,74 @@ def test_three_tag_consensus_excludes_one_inconsistent_rendered_tag(tmp_path):
     assert result["consensus_inlier_tag_ids"] == [0, 1]
     assert result["consensus_outlier_tag_ids"] == [2]
     np.testing.assert_allclose(result["T_map_camera"], camera, atol=0.025)
+
+
+def test_consensus_uses_joint_pnp_after_single_tag_ambiguity(tmp_path):
+    transforms = []
+    for identifier in range(2):
+        transform = np.eye(4)
+        transform[:3, :3] = cv2.Rodrigues(np.array([0.005 if identifier else 0.0, 0.0, 0.0]))[0]
+        transform[:3, 3] = [identifier * 0.55, 0, 0]
+        transforms.append(transform.tolist())
+    camera = np.eye(4)
+    camera[:3, :3] = np.diag([1.0, -1.0, -1.0])
+    camera[:3, 3] = [0.275, 0, 8]
+    _, image, _, _, config = scene(
+        tmp_path,
+        count=2,
+        tag_transforms=transforms,
+        camera_transform=camera,
+    )
+    localizer = TagLocalizer(
+        **(config | {"consensus": consensus_config() | {"maximum_translation_residual_m": 0.6}})
+    )
+    corners, ids, _ = localizer.detector.detectMarkers(image)
+    pixels_by_id = {
+        identifier: corner.reshape(4, 2).astype(float)
+        for identifier, corner in zip(ids.flatten().tolist(), corners, strict=True)
+    }
+
+    assert [
+        localizer._camera_pose(
+            map_points(localizer.tags[identifier]), pixels_by_id[identifier], [identifier]
+        )[2]
+        for identifier in [0, 1]
+    ] == ["ambiguous", "ambiguous"]
+
+    result = localizer.estimate(image, 1, 1.1, 1.2)
+
+    assert result["accepted"] is True
+    assert result["consensus_inlier_tag_ids"] == [0, 1]
+
+
+def test_equal_size_rendered_consensus_clusters_are_rejected(tmp_path):
+    _, image, _, _, config = scene(
+        tmp_path,
+        count=4,
+        rendered_camera_offsets={2: [0.2, 0, 0], 3: [0.2, 0, 0]},
+    )
+    localizer = TagLocalizer(**(config | {"consensus": consensus_config()}))
+
+    result = localizer.estimate(image, 1, 1.1, 1.2)
+
+    assert result["accepted"] is False
+    assert result["reason"] == "ambiguous_consensus"
+    assert result["consensus_status"] == "ambiguous"
+    assert result["consensus_inlier_tag_ids"] == []
+    assert "T_map_body" not in result
+
+
+def test_consensus_bounds_candidate_tags_before_pose_work(tmp_path):
+    _, image, _, _, config = scene(tmp_path, count=3)
+    localizer = TagLocalizer(
+        **(config | {"consensus": consensus_config() | {"maximum_candidate_tags": 2}})
+    )
+
+    result = localizer.estimate(image, 1, 1.1, 1.2)
+
+    assert result["accepted"] is False
+    assert result["reason"] == "too_many_consensus_tags"
+    assert result["maximum_candidate_tags"] == 2
 
 
 def test_two_disagreeing_tags_do_not_produce_a_pose(tmp_path):
