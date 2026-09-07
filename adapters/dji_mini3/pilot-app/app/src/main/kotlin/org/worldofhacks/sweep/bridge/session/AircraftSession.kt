@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.StateFlow
 import org.worldofhacks.sweep.bridge.flight.FlightNode
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
+import org.worldofhacks.sweep.bridge.node.CaptureAlignmentSampleSource
 
 enum class Registration { INITIALIZING, REGISTERING, REGISTERED, FAILED }
 
@@ -73,4 +74,9 @@ interface SimulationControls {
     fun simulateDisconnect()
 
     fun simulateLateCallback()
+}
+
+/** Probe sessions expose bounded PTS/attitude samples; RelayLink maps them only with a loaded calibration artifact. */
+interface CaptureAlignmentSession {
+    val captureAlignmentSamples: CaptureAlignmentSampleSource
 }
