@@ -33,7 +33,7 @@ def _runtime_for_local_test() -> tuple[OhmniRuntime, FakeGroundDevice]:
             lidar_mount_x_m=0.1,
             lidar_mount_y_m=0.0,
             lidar_mount_z_m=0.25,
-            lidar_mount_yaw_deg=5.0,
+            lidar_mount_yaw_deg=0.0,
         ),
         device,
     )
