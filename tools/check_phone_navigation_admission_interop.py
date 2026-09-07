@@ -87,10 +87,12 @@ def check(android_project: Path) -> None:
                     "--tests",
                     _TEST_CLASS,
                     "--no-daemon",
+                    "--rerun-tasks",
                 ],
                 cwd=project,
                 env=environment,
                 check=True,
+                timeout=600,
             )
         finally:
             test_source.unlink(missing_ok=True)
