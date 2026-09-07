@@ -430,9 +430,11 @@ def test_config_schema_is_exact_deeply_copied_and_immutable():
     with pytest.raises(PublisherError, match="fields"):
         ControlPublisherConfig.from_mapping(unknown)
 
-    six_aircraft = ControlPublisherConfig.from_mapping(config_mapping(drones=(1, 2, 3, 4, 5, 6)))
-    assert len(six_aircraft.drones) == 6
-    too_many_drones = config_mapping(drones=(1, 2, 3, 4, 5, 6, 7))
+    thirty_two_aircraft = ControlPublisherConfig.from_mapping(
+        config_mapping(drones=tuple(range(1, 33)))
+    )
+    assert len(thirty_two_aircraft.drones) == 32
+    too_many_drones = config_mapping(drones=tuple(range(1, 34)))
     with pytest.raises(PublisherError, match="drones are invalid"):
         ControlPublisherConfig.from_mapping(too_many_drones)
 

@@ -79,8 +79,8 @@ class WorldLocalizationRuntimeConfig:
         if not isinstance(raw["accepted_versions"], Mapping):
             raise ValueError("accepted_versions must be a map")
         accepted_versions = dict(raw["accepted_versions"])
-        if not isinstance(raw["devices"], list) or not 1 <= len(raw["devices"]) <= 6:
-            raise ValueError("world localization devices must contain one to six aircraft")
+        if not isinstance(raw["devices"], list) or not 1 <= len(raw["devices"]) <= 32:
+            raise ValueError("world localization devices must contain one to 32 aircraft")
         adapters: dict[int, WorldLocalizationAdapter] = {}
         for item in raw["devices"]:
             item = _mapping(
