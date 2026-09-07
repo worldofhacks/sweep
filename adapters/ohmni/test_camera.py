@@ -41,6 +41,8 @@ def test_pts_sidecar_tees_one_passthrough_encoder_without_changing_the_camera_so
     output = values[-1]
     assert "f=rtsp" in output
     assert "f=nut" in output
+    assert "onfail=ignore" not in output
+    assert output.count("onfail=abort") == 2
     assert "avoid_negative_ts=disabled" in output
     assert "tcp\\://127.0.0.1\\:18555?tcp_nodelay=1" in output
 

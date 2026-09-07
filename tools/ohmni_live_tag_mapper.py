@@ -24,8 +24,6 @@ from perception.ohmni_clock_probe import ClockProbeError, clock_mapping, probe_c
 from perception.ohmni_pts_capture import CapturedFrame, NutCaptureReader
 from relay.observations import FramedPose, ObservationSubmission, decode_submission
 
-MAX_TAGS_PER_FRAME = 1
-
 
 class LiveMapperError(ValueError):
     pass
@@ -220,7 +218,11 @@ class LiveTagMapper:
         )
         events: list[ObservationSubmission] = [camera]
         detections = self.detector.detect(image)
-        for detection in detections[:MAX_TAGS_PER_FRAME]:
+        if not isinstance(detections, list):
+            raise LiveMapperError("detector must return a bounded detection list")
+        for detection in detections:
+            if not isinstance(detection, Mapping):
+                raise LiveMapperError("detector returned an invalid tag observation")
             events.append(
                 self._tag_submission(
                     scope=scope,
@@ -323,10 +325,14 @@ class _Socket(Protocol):
 
 
 async def publish_observations(
-    socket: _Socket, mapper: LiveTagMapper, frames: Sequence[CapturedFrame]
+    socket: _Socket,
+    mapper: LiveTagMapper,
+    frames: Sequence[CapturedFrame],
+    *,
+    tag_submit_interval_ms: int = 0,
 ) -> int:
     scope = await _authenticated_scope(socket, mapper)
-    return await _publish_frames(socket, mapper, scope, frames)
+    return await _publish_frames(socket, mapper, scope, frames, tag_submit_interval_ms)
 
 
 async def _authenticated_scope(socket: _Socket, mapper: LiveTagMapper) -> LiveScope:
@@ -359,15 +365,23 @@ async def _publish_frames(
     mapper: LiveTagMapper,
     scope: LiveScope,
     frames: Sequence[CapturedFrame],
+    tag_submit_interval_ms: int,
 ) -> int:
+    if type(tag_submit_interval_ms) is not int or not 0 <= tag_submit_interval_ms <= 1_000:
+        raise LiveMapperError("tag submit interval must be from zero through one thousand ms")
     count = 0
     for frame in frames:
+        prior_tag = False
         for event in mapper.observations(scope, frame):
+            is_tag = event.source_id == mapper.config.tag_source_id
+            if is_tag and prior_tag and tag_submit_interval_ms:
+                await asyncio.sleep(tag_submit_interval_ms / 1_000)
             await socket.send(
                 json.dumps(event.to_mapping(), allow_nan=False, separators=(",", ":"))
             )
             await _confirm_submission(socket, scope, event)
             count += 1
+            prior_tag = is_tag
     return count
 
 
@@ -376,6 +390,7 @@ async def _publish_reader(
     mapper: LiveTagMapper,
     scope: LiveScope,
     frames: Iterator[CapturedFrame],
+    tag_submit_interval_ms: int,
 ) -> int:
     count = 0
     while True:
@@ -383,7 +398,7 @@ async def _publish_reader(
             frame = next(frames)
         except StopIteration:
             return count
-        count += await _publish_frames(socket, mapper, scope, (frame,))
+        count += await _publish_frames(socket, mapper, scope, (frame,), tag_submit_interval_ms)
 
 
 def _tag_sizes(value: str) -> dict[int, float]:
@@ -413,7 +428,7 @@ def _covariance(value: str) -> tuple[float, ...]:
     return tuple(float(item) for item in raw)
 
 
-async def _serve_one(port: int) -> socket.socket:
+async def _serve_one(port: int, timeout_s: float) -> socket.socket:
     received: asyncio.Future[socket.socket] = asyncio.get_running_loop().create_future()
 
     async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -430,7 +445,10 @@ async def _serve_one(port: int) -> socket.socket:
 
     server = await asyncio.start_server(accept, "127.0.0.1", port)
     try:
-        return await received
+        try:
+            return await asyncio.wait_for(received, timeout_s)
+        except TimeoutError as error:
+            raise LiveMapperError("timed out waiting for the robot PTS sidecar") from error
     finally:
         server.close()
         await server.wait_closed()
@@ -452,6 +470,26 @@ def _adb_clock_query(adb: str, serial: str) -> str:
     if result.returncode != 0:
         raise LiveMapperError("ADB clock probe failed")
     return result.stdout
+
+
+def _adb_reverse(adb: str, serial: str, port: int) -> None:
+    result = subprocess.run(
+        [adb, "-s", serial, "reverse", f"tcp:{port}", f"tcp:{port}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise LiveMapperError("ADB PTS sidecar reverse tunnel setup failed")
+
+
+def _remove_adb_reverse(adb: str, serial: str, port: int) -> None:
+    subprocess.run(
+        [adb, "-s", serial, "reverse", "--remove", f"tcp:{port}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _qualify_clock(args: argparse.Namespace):
@@ -495,11 +533,13 @@ async def _main_async(args: argparse.Namespace) -> int:
         covariance_m2=args.covariance,
     )
     mapping = _qualify_clock(args)
-    source = await _serve_one(args.pts_port)
+    _adb_reverse(args.adb, args.adb_serial, args.pts_port)
     mapper = LiveTagMapper(
         config, detector, receipt_time_ns=lambda: mapping.robot_time_ns(time.monotonic_ns())
     )
+    source: socket.socket | None = None
     try:
+        source = await _serve_one(args.pts_port, args.sidecar_connect_timeout_s)
         with source.makefile("rb") as stream:
             frames = NutCaptureReader(stream).frames()
             async with connect(f"{args.relay_url.rstrip('/')}/ws/{args.session}") as relay:
@@ -515,9 +555,13 @@ async def _main_async(args: argparse.Namespace) -> int:
                     )
                 )
                 scope = await _authenticated_scope(relay, mapper)
-                count = await _publish_reader(relay, mapper, scope, frames)
+                count = await _publish_reader(
+                    relay, mapper, scope, frames, args.tag_submit_interval_ms
+                )
     finally:
-        source.close()
+        if source is not None:
+            source.close()
+        _remove_adb_reverse(args.adb, args.adb_serial, args.pts_port)
     print(json.dumps({"published": count}))
     return 0
 
@@ -529,6 +573,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--device-id", required=True, type=int)
     parser.add_argument("--token", required=True)
     parser.add_argument("--pts-port", required=True, type=int)
+    parser.add_argument("--sidecar-connect-timeout-s", required=True, type=float)
+    parser.add_argument("--tag-submit-interval-ms", required=True, type=int)
     parser.add_argument("--camera-source-id", default="ohmni-live-camera")
     parser.add_argument("--tag-source-id", default="ohmni-live-tag")
     parser.add_argument("--camera-frame", default="camera")
@@ -547,7 +593,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--covariance", required=True, type=_covariance)
     parser.add_argument("--tag-sizes", required=True, type=_tag_sizes)
     args = parser.parse_args(argv)
-    if args.clock_probes < 1 or args.maximum_clock_error_ms < 0 or args.maximum_capture_lag_ms < 0:
+    if (
+        args.clock_probes < 1
+        or args.maximum_clock_error_ms < 0
+        or args.maximum_capture_lag_ms < 0
+        or not math.isfinite(args.sidecar_connect_timeout_s)
+        or not 1 <= args.sidecar_connect_timeout_s <= 120
+        or not 1024 <= args.pts_port <= 65_535
+        or not 0 <= args.tag_submit_interval_ms <= 1_000
+    ):
         parser.error("clock qualification bounds must be nonnegative with at least one probe")
     return asyncio.run(_main_async(args))
 

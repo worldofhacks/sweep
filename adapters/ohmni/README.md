@@ -59,6 +59,8 @@ Camera publishing is disabled unless `SWEEP_MEDIA_HOST` and every `SWEEP_CAMERA_
 
 The publisher reports `publishing` only after ffmpeg reports a decoded frame and reverts to `failed` when progress goes stale. The field media server keeps RTSP on VPS loopback. Each camera uses `adb reverse tcp:8554 tcp:18554`, and its `camera.env` sets `SWEEP_MEDIA_HOST=127.0.0.1:8554`; the media-only publisher credential then stays inside the authenticated ADB tunnel instead of crossing the public network. `camera.env` contains only the media host and the five camera-source settings; `camera.sh` takes the device ID and node key from `node.env` and refuses a changed device ID. Keep `camera.env` mode 600 and use the separate camera process only after the payload that contains it is installed:
 
+The host-side [live tag mapper](../../docs/ohmni-live-tag-mapper.md) uses a separate ADB reverse tunnel for its private NUT sidecar. It emits raw camera-to-tag observations only. Its PTS require the documented V4L2 timestamp qualification before they can support mapped evidence.
+
 ```sh
 adb -s "$ADB_SERIAL" reverse tcp:8554 tcp:18554
 adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/adapters/ohmni/camera.sh start

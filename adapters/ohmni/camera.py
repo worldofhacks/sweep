@@ -124,8 +124,8 @@ def command(ffmpeg: str, url: str, source: V4LSource, *, pts_port: int | None = 
                 "-f",
                 "tee",
                 (
-                    f"[onfail=ignore:f=rtsp:rtsp_transport=tcp]{_tee_escape(url)}"
-                    "|[onfail=ignore:f=nut:syncpoints=none:write_index=0:"
+                    f"[onfail=abort:f=rtsp:rtsp_transport=tcp]{_tee_escape(url)}"
+                    "|[onfail=abort:f=nut:syncpoints=none:write_index=0:"
                     f"avoid_negative_ts=disabled]{_tee_escape(sidecar)}"
                 ),
             )
