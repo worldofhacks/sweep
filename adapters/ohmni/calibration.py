@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import math
@@ -171,9 +172,10 @@ class LeaseSocketPump:
                     try:
                         sequence_text, token_text = line.decode("ascii").strip().split(" ")
                         token = bytes.fromhex(token_text)
+                        sequence = int(sequence_text)
                     except (UnicodeDecodeError, ValueError):
                         return
-                    if not self.lease.renew(int(sequence_text), token):
+                    if not self.lease.renew(sequence, token):
                         return
         except OSError:
             pass
@@ -236,7 +238,6 @@ class CalibrationRunner:
     def run(self) -> Path:
         self.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor = os.open(self.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(descriptor)
         self._started = self.monotonic()
         stages: dict[str, object] = {}
         try:
@@ -251,12 +252,20 @@ class CalibrationRunner:
             self._yaw()
             self._settle()
             stages["after_yaw"] = self._capture_stage()
-            return self._write(stages)
+            self.device.disable()
+            self._write(stages, descriptor)
         except BaseException:
             self.output.unlink(missing_ok=True)
             raise
         finally:
-            self.device.disable()
+            try:
+                self.device.disable()
+            except BaseException:
+                self.output.unlink(missing_ok=True)
+                raise
+            finally:
+                os.close(descriptor)
+        return self.output
 
     def _initialize(self) -> None:
         deadline = self.monotonic() + STAGE_TIMEOUT_S
@@ -331,7 +340,7 @@ class CalibrationRunner:
         max_encoder_revolution_delta_s = 0.0
         while len(revolutions) < REVOLUTIONS_PER_STAGE:
             self._require_lease()
-            current, current_pair = self._snapshot()
+            current, _ = self._snapshot()
             translation_drift_m = math.hypot(current.x - pose.x, current.y - pose.y)
             yaw_drift_deg = abs(_yaw_delta(current.yaw_deg, pose.yaw_deg))
             max_translation_drift_m = max(max_translation_drift_m, translation_drift_m)
@@ -364,7 +373,7 @@ class CalibrationRunner:
                 )
                 max_encoder_revolution_delta_s = max(
                     max_encoder_revolution_delta_s,
-                    abs(revolution.monotonic_s - current_pair.right_receipt_ns / 1_000_000_000),
+                    abs(revolution.monotonic_s - pair.right_receipt_ns / 1_000_000_000),
                 )
             if len(revolutions) == REVOLUTIONS_PER_STAGE:
                 break
@@ -443,6 +452,14 @@ class CalibrationRunner:
                 self.device.stop()
                 raise CalibrationError("calibration_pulse_failed")
             pose_after, _ = self._snapshot()
+            pulse_progress = (
+                math.hypot(pose_after.x - pose_before.x, pose_after.y - pose_before.y)
+                if velocity_m_s
+                else abs(_yaw_delta(pose_after.yaw_deg, pose_before.yaw_deg))
+            )
+            if pulse_progress < (0.001 if velocity_m_s else 0.25):
+                self.device.stop()
+                raise CalibrationError("calibration_no_motion")
             if (
                 velocity_m_s
                 and math.hypot(pose_after.x - pose_before.x, pose_after.y - pose_before.y) > target
@@ -456,7 +473,7 @@ class CalibrationRunner:
     def _yaw(self) -> None:
         self._pulse_until(0.0, self.config.yaw_rate_deg_s, self.config.yaw_degrees)
 
-    def _write(self, stages: dict[str, object]) -> Path:
+    def _write(self, stages: dict[str, object], descriptor: int) -> None:
         body = {
             "schema_version": 1,
             "kind": "ohmni_supervised_lidar_calibration_capture",
@@ -471,10 +488,12 @@ class CalibrationRunner:
         encoded = (json.dumps(body, separators=(",", ":"), allow_nan=False) + "\n").encode()
         if len(encoded) > MAX_OUTPUT_BYTES:
             raise CalibrationError("calibration_capture_exceeds_byte_limit")
-        descriptor = os.open(self.output, os.O_WRONLY | os.O_TRUNC)
-        with os.fdopen(descriptor, "wb") as stream:
+        with os.fdopen(os.dup(descriptor), "wb") as stream:
             stream.write(encoded)
-        return self.output
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.stat(self.output, follow_symlinks=False).st_ino != os.fstat(descriptor).st_ino:
+            raise CalibrationError("calibration_output_replaced")
 
 
 def _token(path: Path) -> bytes:
@@ -484,12 +503,28 @@ def _token(path: Path) -> bytes:
     return bytes.fromhex(encoded.decode("ascii"))
 
 
+def calibration_source_sha256() -> str:
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        digest.update(path.relative_to(root).as_posix().encode() + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lease-port", required=True, type=int)
     parser.add_argument("--lease-token-file", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--expected-boot-id", required=True)
+    parser.add_argument("--expected-source-sha256", required=True)
+    parser.add_argument("--supervised-clear-space", required=True, action="store_true")
     args = parser.parse_args(argv)
+    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    source_sha256 = calibration_source_sha256()
+    if boot_id != args.expected_boot_id or source_sha256 != args.expected_source_sha256:
+        raise CalibrationError("calibration_provenance_mismatch")
     token = _token(args.lease_token_file)
     lease = HostLease(token)
     device = OhmniDevice(
@@ -507,21 +542,29 @@ def main(argv: list[str] | None = None) -> int:
         pump.close()
         device.disable()
 
-    signal.signal(signal.SIGTERM, stop)
-    pump.start()
-    deadline = time.monotonic() + 2.0
-    while not lease.ready() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    if not lease.ready():
-        pump.close()
-        device.disable()
-        raise RuntimeError("calibration host lease was not received")
     try:
-        CalibrationRunner(device, lease, args.output).run()
+        signal.signal(signal.SIGTERM, stop)
+        pump.start()
+        deadline = time.monotonic() + 2.0
+        while not lease.ready() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not lease.ready():
+            raise RuntimeError("calibration host lease was not received")
+        CalibrationRunner(
+            device,
+            lease,
+            args.output,
+            boot_id=boot_id,
+            executed_bundle_source_sha256=source_sha256,
+        ).run()
     finally:
-        pump.close()
-        device.close()
-        signal.signal(signal.SIGTERM, previous)
+        try:
+            pump.close()
+        finally:
+            try:
+                device.close()
+            finally:
+                signal.signal(signal.SIGTERM, previous)
     return 0
 
 

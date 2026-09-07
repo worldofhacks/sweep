@@ -37,6 +37,9 @@ class RawLidar:
     def __init__(self, clock: Clock, *, fresh: bool = True) -> None:
         self.clock, self.fresh = clock, fresh
 
+    def close(self) -> None:
+        pass
+
     def raw_revolution(self, _now: float) -> RawRevolution | None:
         if not self.fresh:
             return None
@@ -74,7 +77,7 @@ def _lease(clock: Clock) -> HostLease:
     return lease
 
 
-def test_calibration_pulse_bypasses_only_the_uncalibrated_forward_guard(
+def test_supervised_calibration_pulse_uses_raw_lidar_while_normal_drive_requires_calibration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = Clock()
@@ -275,7 +278,7 @@ def test_runner_stops_and_removes_incomplete_capture_after_live_fault(
 
     simulation = RunnerSimulation(monkeypatch, fault=fault)
     output = tmp_path / "capture.json"
-    with pytest.raises((CalibrationError, RuntimeError)):
+    with pytest.raises((CalibrationError, RuntimeError)) as error:
         CalibrationRunner(
             simulation.device,
             simulation.lease,
@@ -284,6 +287,9 @@ def test_runner_stops_and_removes_incomplete_capture_after_live_fault(
             sleep=simulation.sleep,
         ).run()
     assert simulation.started_moving is not None
+    if fault == "no_motion":
+        assert str(error.value) == "calibration_no_motion"
+        assert simulation.clock() - simulation.started_moving < 1.0
     assert not output.exists()
     assert simulation.device.motion is None
     assert not simulation.device.enabled
@@ -304,3 +310,149 @@ def test_runner_refuses_an_existing_output_before_enabling(
         CalibrationRunner(device, _lease(clock), output, monotonic=clock).run()
     assert not device.enabled
     assert output.read_text() == "reserved"
+
+
+def _cli_arguments(tmp_path) -> list[str]:
+    from pathlib import Path
+
+    from .calibration import calibration_source_sha256
+
+    token = tmp_path / "token"
+    token.write_text((b"c" * 32).hex())
+    return [
+        "--lease-port",
+        "18912",
+        "--lease-token-file",
+        str(token),
+        "--output",
+        str(tmp_path / "capture.json"),
+        "--expected-boot-id",
+        Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "--expected-source-sha256",
+        calibration_source_sha256(),
+        "--supervised-clear-space",
+    ]
+
+
+@pytest.mark.parametrize("invalid", ["boot", "source", "clear-space"])
+def test_cli_rejects_missing_supervision_or_mismatched_provenance_before_opening_device(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, invalid: str
+) -> None:
+    from . import calibration
+
+    arguments = _cli_arguments(tmp_path)
+    if invalid == "clear-space":
+        arguments.remove("--supervised-clear-space")
+    else:
+        flag = "--expected-boot-id" if invalid == "boot" else "--expected-source-sha256"
+        arguments[arguments.index(flag) + 1] = "invalid"
+    monkeypatch.setattr(calibration, "OhmniDevice", lambda config: pytest.fail("device opened"))
+    with pytest.raises((calibration.CalibrationError, SystemExit)):
+        calibration.main(arguments)
+
+
+def test_cli_writes_actual_boot_and_source_pin_through_real_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import json
+
+    from . import calibration
+
+    arguments = _cli_arguments(tmp_path)
+    simulation = RunnerSimulation(monkeypatch)
+    runner = calibration.CalibrationRunner
+
+    class Pump:
+        def __init__(self, *args):
+            pass
+
+        def start(self):
+            pass
+
+        def close(self):
+            simulation.lease.close()
+
+    monkeypatch.setattr(calibration, "OhmniDevice", lambda config: simulation.device)
+    monkeypatch.setattr(calibration, "HostLease", lambda token: simulation.lease)
+    monkeypatch.setattr(calibration, "LeaseSocketPump", Pump)
+    monkeypatch.setattr(
+        calibration,
+        "CalibrationRunner",
+        lambda *args, **kwargs: runner(
+            *args, **kwargs, monotonic=simulation.clock, sleep=simulation.sleep
+        ),
+    )
+    assert calibration.main(arguments) == 0
+    capture = json.loads((tmp_path / "capture.json").read_text())
+    assert capture["boot_id"] == arguments[arguments.index("--expected-boot-id") + 1]
+    assert capture["executed_bundle_source_sha256"] == calibration.calibration_source_sha256()
+    for stage in capture["stages"].values():
+        expected = max(
+            abs(scan["monotonic_s"] - stage["encoder"]["right_receipt_ns"] / 1e9)
+            for scan in stage["revolutions"]
+        )
+        assert stage["max_encoder_revolution_delta_s"] == pytest.approx(expected)
+
+
+def test_cli_closes_device_when_initial_host_lease_never_arrives(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from . import calibration
+
+    arguments = _cli_arguments(tmp_path)
+    clock = Clock()
+    closed = []
+
+    class Device:
+        def disable(self):
+            pass
+
+        def close(self):
+            closed.append("device")
+
+    class Pump:
+        def __init__(self, *args):
+            pass
+
+        def start(self):
+            pass
+
+        def close(self):
+            closed.append("pump")
+
+    monkeypatch.setattr(calibration, "OhmniDevice", lambda config: Device())
+    monkeypatch.setattr(calibration, "LeaseSocketPump", Pump)
+    monkeypatch.setattr(calibration.time, "monotonic", clock)
+    monkeypatch.setattr(
+        calibration.time, "sleep", lambda delay: setattr(clock, "value", clock() + delay)
+    )
+    with pytest.raises(RuntimeError, match="host lease was not received"):
+        calibration.main(arguments)
+    assert closed == ["pump", "device"]
+
+
+def test_failed_final_disable_discards_capture(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from .calibration import CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    real_disable = simulation.device.disable
+    calls = 0
+
+    def disable():
+        nonlocal calls
+        calls += 1
+        real_disable()
+        if calls == 2:
+            raise RuntimeError("stop acknowledgement missing")
+
+    monkeypatch.setattr(simulation.device, "disable", disable)
+    output = tmp_path / "capture.json"
+    with pytest.raises(RuntimeError, match="stop acknowledgement missing"):
+        CalibrationRunner(
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=simulation.sleep,
+        ).run()
+    assert not output.exists()
