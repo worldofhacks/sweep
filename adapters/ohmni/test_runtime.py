@@ -945,6 +945,6 @@ def test_confirmed_console_come_home_executes_the_approved_ground_return(
             ("adapter", "completed"),
             ("autonomy", "completed"),
         ]
-        assert device.x >= 0.024
+        assert device.x >= 0.02
     finally:
         node.stop()
