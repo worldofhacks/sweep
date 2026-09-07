@@ -1,19 +1,29 @@
 # Sweep production-chain readiness
 
-At the 11:41 UTC checkpoint on 2026-09-07, the field relay remains an observer:
-its deployed `relay.app:app` entry point refuses commands because it has no
-downstream executor. The published software has not been merged into main.
-A composed deployment and a supervised vertical flight profile are being prepared.
-Ohmni 11 is online with motion disabled. Ohmni 12 is offline; the operator suspects
-a depleted battery. The aircraft and controller are being powered down for a
-battery swap and charging.
+At the 12:50 UTC checkpoint on 2026-09-07, the composed supervised service
+is live. `sweep-supervised-relay` listens on loopback port 18794, and the public
+`/field/` routes use session `sweep-field-20260907-v1`. An authenticated WebSocket
+reports the `supervised_vertical` profile, `armed: false`, and no connected devices.
+The former observer relay remains active on port 18793 for rollback. The public
+field-console assets match staged SHA-256
+`745071f6e9d4ad3a153f46a7bcbfe01f665f5cfd5af65279d97492cd6f0b36af`.
 
-The next physical milestone is a bounded ground mapping run. It requires usable
-camera views, uninterrupted wheel odometry, collision sensing, a proven local
-stop, and an operator-defined route. A partial tag layout can support a diagnostic
-recording. The operator reports that tag placement is nearly complete. World
-registration and flight approval require the measured tag and geometry evidence
-described below.
+The profile permits one supervised 1.8 m takeoff, hold, and landing using fresh
+local height and the operator-declared 2.5908 m ceiling. World navigation remains
+a separate deployment. The supervised APK is staged at
+`https://sweep.hollowatlas.xyz/releases/SweepBridge-supervised-af0bf300.apk` with
+SHA-256 `8f34a116cdea7c09990e7a1deb2d496e58b9bd573e48567ec20a0caeda04238a`.
+It has not been installed on the phone.
+
+No physical movement or acceptance evidence has been recorded for this deployment.
+Ground and aircraft activation remain pending the operator's return and the stated
+physical checks.
+
+The next physical sequence begins when the operator returns: install the supervised
+APK, hand the phone to session `sweep-field-20260907-v1`, power the replacement
+aircraft, then wait for fresh telemetry and named readiness. The actual aircraft
+cannot provide fresh telemetry while it is off. Ground mapping follows its own
+camera, odometry, collision-stop, route, and measured-registration checks.
 
 ## Observed field behavior
 
@@ -56,16 +66,42 @@ controller dependency. It rejoined at epoch 4 with a fresh local odometry origin
 Its camera process remained unchanged and both motion and spotter flags remained
 zero. Ohmni 12 was already unreachable and received no update.
 
+At 12:55 UTC, a bounded ADB connection attempt to Ohmni 11 was refused and
+`adb devices` was empty. No node configuration changed. The last observation still
+belongs to the old session and connection epoch; the node is currently unreachable.
+The new public session has zero devices as expected. APK installation and phone
+handoff to the new session remain pending the operator's return.
+
 A grounded DJI camera check detected no raw AprilTags in 20 frames. The floor
 tags were strongly foreshortened in that view. This is a visibility diagnostic;
-no hover or flight command was issued. The operator requested a roughly six-foot
-hover and declared an 8.5-foot height limit. The new profile must check fresh
-flight-controller height continuously while retaining the existing world-navigation
-guards for mapped routes. Phone and relay changes remain under review.
+no hover or flight command was issued. The deployed profile isolates supervised
+vertical control from mapped navigation. The replacement aircraft still needs a
+grounded identity check, a near-zero height baseline, and measured callback
+freshness before flight.
 
-The next Ohmni change pairs encoder readings inside the vendor bus owner. It has
-not been installed. Lidar orientation and origin measurements also remain
-unconfigured, and no physical drive or local collision-stop test has passed.
+An isolated fake-node relay was driven through the public console in a real browser.
+The browser authenticated, selected and armed D-01, confirmed takeoff, recorded a
+relay command of `{"z_mm":1800}`, showed hovering, then confirmed `land_all` and
+showed landed. The screenshots are
+`/var/tmp/supervised-browser-evidence-20260907-run4/browser-hover.png` and
+`/var/tmp/supervised-browser-evidence-20260907-run4/browser-landed.png`. The driver
+then timed out while checking for a `Select D-01` button that no longer exists after
+selection. The command record and screenshots remain valid browser integration
+evidence; the driver run is not reported as a wholly passing harness. It provides
+no physical flight evidence.
+
+The owner-side encoder sampler in #298 has not been installed. It waits for
+vendor servo initialization before polling and withdraws an existing stream when
+reinitialization begins. Restarting the vendor process enables wheel torque and
+initializes the neck, so that operation waits for the operator's return. A
+60-second uninterrupted stationary recording must pass before ground motion.
+
+The lidar-frame fix in #295 prevents a second rotation of scans that already use
+body-relative angles. The operator estimates the sensor is about 24 inches above
+the floor and 22 inches diagonally from the drive-wheel midpoint, toward the
+rear-left at about 135 degrees. These are rough measurements. The mount remains
+unconfigured pending direct offsets and a stationary target check. No physical
+drive or local collision-stop test has passed.
 
 ## Software and remaining evidence
 
@@ -95,6 +131,12 @@ The common console UI and live-state fixes are in
 phone-navigation composition is in
 [#292](https://github.com/worldofhacks/sweep/pull/292), and the reproducible
 Ohmni installer is in [#293](https://github.com/worldofhacks/sweep/pull/293).
+The normalized lidar frame is in [#295](https://github.com/worldofhacks/sweep/pull/295).
+The supervised vertical relay and console readiness policy are in
+[#296](https://github.com/worldofhacks/sweep/pull/296), with the phone's continuous
+height guard in [#297](https://github.com/worldofhacks/sweep/pull/297). The
+owner-side paired encoder sampler and installer are in
+[#298](https://github.com/worldofhacks/sweep/pull/298).
 
 The map-authoring UI in #248 and destination-intent backend in #143 remain
 teammate-owned. Their integration and review are separate dependencies.
@@ -121,13 +163,24 @@ A fixed integration snapshot at `aedbe6b0` passed all 2,768 Python tests and all
 a broader run exposed a default-capacity regression, which was corrected and
 verified with the four resume-interleaving tests and ten simulator tests.
 
-At the 11:32 UTC check, #271–#286 and #289–#291 plus #293 passed all five CI
-jobs. #287 and #288 passed the browser job but failed the build because a helper
-excluded Vite's boolean host type. The corrected helper passed the actual build
-and its endpoint tests and was pushed to both PRs. #292 inherited that type
-failure and two outdated return-test expectations. Its updated prerequisite merge
-and helper passed 114 affected Python tests and the console build. CI for those
-three updated PRs remains pending at this checkpoint.
+At the 12:55 UTC CI check, #294 through #298 each had five completed successful
+jobs. #296 was checked on head `5b2cad2da79c6e1ef938fefac615808fa82c6fc6`. The final
+fixed integration snapshot `f517a98f` passed all 2,810 Python tests in 7m48s. The later
+`b51c388a` change only makes two Kotlin tests wait for the ready roster before
+issuing navigation commands; all 25 RelayLink tests passed. Ruff passed for all
+284 Python files.
+
+The console passed 795 tests, lint, and its build. The profile-specific readiness
+fixture runs real Python registry state through the TypeScript parser, reducer,
+selection chips, and Takeoff control. The real Android build passed 176 core and
+45 node tests and produced the staged supervised APK from `af0bf300`.
+
+An earlier #297 Python job reached the ten-minute deadline after the
+`test_world_bundle.py` progress boundary. An ordered 632-test reproduction passed,
+and the subsequent CI run completed in 5m59s. The original stall remains
+unexplained in the retained log. An earlier #298 browser run failed a simulated
+translation with `adapter_failure`; the next complete browser job passed. These
+runs remain in the evidence record.
 
 Physical captures and private deployment configuration stay with the field
 evidence bundle. This document contains no approval key, reader credential, or
