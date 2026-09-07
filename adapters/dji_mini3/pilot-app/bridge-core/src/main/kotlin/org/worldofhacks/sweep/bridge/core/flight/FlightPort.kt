@@ -27,6 +27,8 @@ interface FlightPort {
 
     fun startTakeoff(onResult: (PortResult) -> Unit)
 
+    fun stopTakeoff(onResult: (PortResult) -> Unit)
+
     fun startLanding(onResult: (PortResult) -> Unit)
 
     /** Called once per tick before the loop reads the aircraft; the fake port integrates its kinematics here. */

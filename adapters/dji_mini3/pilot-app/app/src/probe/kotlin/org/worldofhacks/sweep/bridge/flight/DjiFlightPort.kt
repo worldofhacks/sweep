@@ -118,6 +118,8 @@ class DjiFlightPort(private val log: (name: String, detail: String) -> Unit) : F
 
     override fun startTakeoff(onResult: (PortResult) -> Unit) = perform(KeyTools.createKey(FlightControllerKey.KeyStartTakeoff), onResult)
 
+    override fun stopTakeoff(onResult: (PortResult) -> Unit) = perform(KeyTools.createKey(FlightControllerKey.KeyStopTakeoff), onResult)
+
     override fun startLanding(onResult: (PortResult) -> Unit) = perform(KeyTools.createKey(FlightControllerKey.KeyStartAutoLanding), onResult)
 
     private fun perform(key: DJIKey.ActionKey<EmptyMsg, EmptyMsg>, onResult: (PortResult) -> Unit) {

@@ -138,6 +138,7 @@ class FlightController(
     private var landingReason: String? = null
     private var supervisedFlightTargetZM: Double? = null
     private var supervisedFlightAirborne = false
+    private var supervisedTakeoffStopIssued = false
     private var stickSeq = 0L
     private val rate = RateMeter()
     private var lastFrame: StickFrame? = null
@@ -217,6 +218,7 @@ class FlightController(
         flownIntoHold = false
         supervisedFlightTargetZM = null
         supervisedFlightAirborne = false
+        supervisedTakeoffStopIssued = false
         if (vsEnabled) {
             vsEnabled = false
             port.disableVirtualStick { result -> if (result is PortResult.Failed) log("virtual stick disable after takeover failed: ${result.detail}") }
@@ -397,6 +399,7 @@ class FlightController(
         if (config.supervisedVertical != null) {
             supervisedFlightTargetZM = targetZ
             supervisedFlightAirborne = false
+            supervisedTakeoffStopIssued = false
         }
         transition(Phase.TakingOff(now, targetZ, null))
         val gen = generation
@@ -407,6 +410,7 @@ class FlightController(
                 is PortResult.Failed -> {
                     supervisedFlightTargetZM = null
                     supervisedFlightAirborne = false
+                    supervisedTakeoffStopIssued = false
                     failActive(FlightReason.TAKEOFF_FAILED, "takeoff action refused: ${result.detail}")
                     transition(Phase.Idle)
                 }
@@ -678,8 +682,16 @@ class FlightController(
                     transition(Phase.Settling(now + config.settleMs, "network stop hover"))
                 }
                 is Phase.TakingOff -> {
-                    failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted during takeoff; the aircraft finishes the takeoff under the flight controller")
-                    transition(Phase.Idle)
+                    if (supervisedFlightTargetZM != null) {
+                        stopSupervisedFlight(
+                            FlightReason.ESTOP_ASSERTED,
+                            "relay network stop asserted during supervised takeoff",
+                            now,
+                        )
+                    } else {
+                        failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted during takeoff; the aircraft finishes the takeoff under the flight controller")
+                        transition(Phase.Idle)
+                    }
                 }
                 else -> Unit
             }
@@ -705,9 +717,14 @@ class FlightController(
         val targetZM = supervisedFlightTargetZM ?: return
         val supervised = config.supervisedVertical ?: return
         if (facts.flying) supervisedFlightAirborne = true
+        if (supervisedTakeoffStopIssued && facts.flying && phase !is Phase.Landing) {
+            startLanding(now, "supervised_takeoff_cancelled")
+            return
+        }
         if (supervisedFlightAirborne && facts.onGround) {
             supervisedFlightTargetZM = null
             supervisedFlightAirborne = false
+            supervisedTakeoffStopIssued = false
             return
         }
         if (authorityLost != null || phase is Phase.Landing) return
@@ -982,6 +999,7 @@ class FlightController(
         } else if (!facts.flying && elapsed >= config.takeoffTimeoutMs) {
             supervisedFlightTargetZM = null
             supervisedFlightAirborne = false
+            supervisedTakeoffStopIssued = false
             failActive(FlightReason.TAKEOFF_TIMEOUT, "aircraft is still ${facts.flightState} after $elapsed ms")
             transition(Phase.Idle)
             return
@@ -1055,7 +1073,17 @@ class FlightController(
     private fun stopSupervisedFlight(reason: FlightReason, detail: String, now: Long) {
         failActive(reason, detail)
         event("supervised vertical safety stop: $detail")
-        if (facts.flying) startLanding(now, reason.wire) else transition(Phase.Idle)
+        if (facts.flying) {
+            startLanding(now, reason.wire)
+            return
+        }
+        if (!supervisedTakeoffStopIssued) {
+            supervisedTakeoffStopIssued = true
+            port.stopTakeoff { result ->
+                if (result is PortResult.Failed) log("stop takeoff failed: ${result.detail}")
+            }
+        }
+        transition(Phase.Idle)
     }
 
     private fun afterTakeoff(targetZM: Double, now: Long, elapsedMs: Long) {
@@ -1121,6 +1149,7 @@ class FlightController(
             event("landed (${current.reason})")
             supervisedFlightTargetZM = null
             supervisedFlightAirborne = false
+            supervisedTakeoffStopIssued = false
             landingReason = null
             transition(Phase.Idle)
             return
