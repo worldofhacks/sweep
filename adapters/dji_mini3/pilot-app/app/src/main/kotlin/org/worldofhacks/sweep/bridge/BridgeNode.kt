@@ -144,7 +144,12 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                 logLine("cannot start the relay link: capture-alignment.json is invalid")
                 return@launch
             }
-            val navigationAdmission = try { loadNavigationAdmission(application.filesDir) } catch (_: Exception) { logLine("cannot start the relay link: navigation-admission.json is invalid"); return@launch }
+            val navigationAdmission = try {
+                loadNavigationAdmission(application.filesDir, setup.session, setup.droneId, setup.token.toByteArray(Charsets.UTF_8))
+            } catch (_: Exception) {
+                logLine("cannot start the relay link: navigation-admission.json is invalid")
+                return@launch
+            }
             if (captureAlignment == null) logLine("body-camera localization disabled: capture-alignment.json is missing")
             val loopback = isLoopback(hostOf(setup.relayUrl))
             val wifi = wifiNetwork
