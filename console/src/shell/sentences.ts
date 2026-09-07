@@ -112,6 +112,7 @@ const READINESS_SENTENCES: Sentences = {
 }
 
 export const ZERO_POSITION_QUALITY_HELP = 'Position quality is 0%. Live telemetry does not establish valid positioning. Check device positioning; the relay’s quality limit still applies.'
+export const SUPERVISED_VERTICAL_ZERO_POSITION_QUALITY_HELP = 'Position quality is 0%. Supervised takeoff requires fresh onboard height. Mapped flight remains unavailable.'
 
 const MEMBERSHIP_REASON_SENTENCES: Sentences = {
   authenticated_join: 'The adapter authenticated and joined the roster.',

@@ -1,8 +1,16 @@
 import type { RelayAircraftState } from '../relay/contract'
 import { readinessNotes } from '../shell/readiness'
 
-export function ReadinessHelp({ drone, className }: { drone: RelayAircraftState; className: string }) {
-  const notes = readinessNotes(drone)
+export function ReadinessHelp({
+  drone,
+  className,
+  capabilityProfile = null,
+}: {
+  drone: RelayAircraftState
+  className: string
+  capabilityProfile?: string | null
+}) {
+  const notes = readinessNotes(drone, capabilityProfile)
   if (notes.length === 0) return null
   return (
     <div className={className}>

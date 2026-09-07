@@ -52,6 +52,7 @@ export function FleetPane({ controller, now }: FleetPaneProps) {
               lastInSelection={state.selection.length === 1 && state.selection[0] === drone.drone_id}
               selectionEnabled={isIntentEnabled(state, 'select')}
               selectionDisabledReason={capabilityBlockedReason(state, 'select')}
+              capabilityProfile={state.capabilityProfile}
               onToggle={() => toggleAircraft(drone.drone_id)}
             />
           ))
@@ -87,6 +88,7 @@ function RegistryCard({
   lastInSelection,
   selectionEnabled,
   selectionDisabledReason,
+  capabilityProfile,
   onToggle,
 }: {
   drone: RelayAircraftState
@@ -96,6 +98,7 @@ function RegistryCard({
   lastInSelection: boolean
   selectionEnabled: boolean
   selectionDisabledReason: string | null
+  capabilityProfile: string | null
   onToggle: () => void
 }) {
   const id = formatDeviceId(drone)
@@ -141,7 +144,7 @@ function RegistryCard({
           ))
         )}
       </div>
-      <ReadinessHelp drone={drone} className="ct-registry-reasons" />
+      <ReadinessHelp drone={drone} className="ct-registry-reasons" capabilityProfile={capabilityProfile} />
       <button
         type="button"
         className={selected ? 'ct-registry-select is-selected' : 'ct-registry-select'}
