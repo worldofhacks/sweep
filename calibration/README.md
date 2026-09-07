@@ -40,7 +40,7 @@ Intrinsics calibration requires `fov_bounds_deg` for both axes. The example boun
 belong to the synthetic 920/900-pixel camera fixture. Replace them with bounds from
 independent measurements or specifications for the actual decoded crop, accounting
 for zoom and stabilization. Pinhole intervals must satisfy
-`0 < minimum < maximum <= 180`. Do not derive these bounds from the calibration
+`0 < minimum < maximum < 180`. Do not derive these bounds from the calibration
 result being checked.
 Then run:
 

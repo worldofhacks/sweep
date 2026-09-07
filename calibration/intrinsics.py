@@ -16,7 +16,11 @@ _MINIMUM_DETECTIONS = 20
 _MAXIMUM_RMS_REPROJECTION_ERROR_PX = 0.5
 _MINIMUM_POSE_CONSTRAINT_RATIO = 0.005
 _MAXIMUM_RELATIVE_FOCAL_STDDEV = 0.05
-_FISHEYE_CALIBRATION_FLAGS = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC | cv2.fisheye.CALIB_CHECK_COND
+_FISHEYE_CALIBRATION_FLAGS = (
+    cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
+    | cv2.fisheye.CALIB_CHECK_COND
+    | cv2.fisheye.CALIB_FIX_SKEW
+)
 _FISHEYE_CRITERIA = (
     cv2.TERM_CRITERIA_COUNT + cv2.TERM_CRITERIA_EPS,
     100,
@@ -170,6 +174,8 @@ def _calibrate_fisheye(
         camera_matrix,
         distortion,
     )
+    if not isfinite(reprojection_rms):
+        raise ValueError("fisheye reprojection check produced a non-finite error")
     if reprojection_rms >= _MAXIMUM_RMS_REPROJECTION_ERROR_PX:
         raise ValueError(
             f"RMS reprojection error {reprojection_rms:.3f}px exceeds "
@@ -301,6 +307,7 @@ def _validate_request(request: CalibrationRequest) -> None:
     bounds = request.pipeline.get("fov_bounds_deg")
     if not isinstance(bounds, dict) or set(bounds) != {"horizontal", "vertical"}:
         raise ValueError("pipeline fov_bounds_deg must declare horizontal and vertical bounds")
+    maximum = 180 if request.model == "pinhole" else 360
     for axis, interval in bounds.items():
         if (
             not isinstance(interval, list)
@@ -311,11 +318,13 @@ def _validate_request(request: CalibrationRequest) -> None:
                 or not isfinite(value)
                 for value in interval
             )
-            or not 0 < interval[0] < interval[1] <= (180 if request.model == "pinhole" else 360)
+            or not 0 < interval[0] < interval[1]
+            or interval[1] > maximum
+            or (request.model == "pinhole" and interval[1] == maximum)
         ):
-            maximum = 180 if request.model == "pinhole" else 360
+            ending = ")" if request.model == "pinhole" else "]"
             raise ValueError(
-                f"fov_bounds_deg {axis} must be [minimum, maximum] within (0, {maximum}]"
+                f"fov_bounds_deg {axis} must be [minimum, maximum] within (0, {maximum}{ending}"
             )
 
 
