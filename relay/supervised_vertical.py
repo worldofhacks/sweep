@@ -880,13 +880,10 @@ class SupervisedVerticalArbiter:
         allowed = (
             {MembershipState.READY, MembershipState.DEGRADED} if safe else {MembershipState.READY}
         )
-        if (
-            aircraft.membership not in allowed
-            and not (
-                not safe
-                and aircraft.membership is MembershipState.DEGRADED
-                and aircraft.readiness_reasons == ("home_pose_missing",)
-            )
+        if aircraft.membership not in allowed and not (
+            not safe
+            and aircraft.membership is MembershipState.DEGRADED
+            and aircraft.readiness_reasons == ("home_pose_missing",)
         ):
             return _refusal_id(
                 intent_id,

@@ -46,6 +46,7 @@ def _vertical_config() -> SupervisedVerticalConfig:
         motion_conflict_window_ms=500,
     )
 
+
 @pytest.fixture
 def vertical_server(tmp_path: Path) -> Iterator[RelayServer]:
     settings = RelaySettings(
@@ -289,8 +290,7 @@ def test_supervised_vertical_allows_stops_without_an_aircraft() -> None:
     arbiter = SupervisedVerticalArbiter(_vertical_config())
 
     assert (
-        arbiter.check_intent(make_intent(IntentName.HOLD, selection=(GROUND_ID,)), snapshot)
-        is None
+        arbiter.check_intent(make_intent(IntentName.HOLD, selection=(GROUND_ID,)), snapshot) is None
     )
     assert arbiter.check_intent(make_intent(IntentName.ESTOP, selection=()), snapshot) is None
 
@@ -321,9 +321,7 @@ def test_supervised_vertical_takeoff_requires_fresh_local_height() -> None:
 
 def test_supervised_vertical_rejects_a_ceiling_above_eight_and_a_half_feet() -> None:
     with pytest.raises(ValueError, match="8.5 foot"):
-        SupervisedVerticalConfig(
-            **(asdict(_vertical_config()) | {"maximum_height_m": 2.5909})
-        )
+        SupervisedVerticalConfig(**(asdict(_vertical_config()) | {"maximum_height_m": 2.5909}))
 
 
 def _ready_with_height(server: RelayServer) -> bool:
