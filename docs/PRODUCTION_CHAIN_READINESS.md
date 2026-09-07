@@ -10,7 +10,7 @@ field-console assets match staged SHA-256
 
 The profile permits one supervised 1.8 m takeoff, hold, and landing using fresh
 local height and the operator-declared 2.5908 m ceiling. World navigation remains
-a separate deployment. The supervised APK is staged at
+a separate deployment. The supervised APK is published and available at
 `https://sweep.hollowatlas.xyz/releases/SweepBridge-supervised-af0bf300.apk` with
 SHA-256 `8f34a116cdea7c09990e7a1deb2d496e58b9bd573e48567ec20a0caeda04238a`.
 It has not been installed on the phone.
@@ -46,7 +46,7 @@ The check issued no motor or camera-aim command. Phone wireless debugging was
 disabled after setup; the phone's normal Wi-Fi and controller USB connection
 remain the application transport.
 
-The verified console build is `7019e68ed759ebc0b49bf89dead224575bd1c28d`. Its
+The earlier playback check used console build `7019e68ed759ebc0b49bf89dead224575bd1c28d`. Its
 production HTML and JavaScript hashes matched the staged build. The playback
 check reported 315 decoded aircraft frames, 212 G-11 frames, and 221 G-12 frames.
 It covers that observation interval only.
@@ -79,7 +79,7 @@ vertical control from mapped navigation. The replacement aircraft still needs a
 grounded identity check, a near-zero height baseline, and measured callback
 freshness before flight.
 
-An isolated fake-node relay was driven through the public console in a real browser.
+An isolated fake-node relay was driven through the production console bundle on a local test server in a real browser.
 The browser authenticated, selected and armed D-01, confirmed takeoff, recorded a
 relay command of `{"z_mm":1800}`, showed hovering, then confirmed `land_all` and
 showed landed. The screenshots are
@@ -173,7 +173,7 @@ issuing navigation commands; all 25 RelayLink tests passed. Ruff passed for all
 The console passed 795 tests, lint, and its build. The profile-specific readiness
 fixture runs real Python registry state through the TypeScript parser, reducer,
 selection chips, and Takeoff control. The real Android build passed 176 core and
-45 node tests and produced the staged supervised APK from `af0bf300`.
+45 node tests and produced the published supervised APK from `af0bf300`.
 
 An earlier #297 Python job reached the ten-minute deadline after the
 `test_world_bundle.py` progress boundary. An ordered 632-test reproduction passed,
