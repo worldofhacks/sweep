@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,6 +12,7 @@ import pytest
 from perception.control_localization import ControlLocalizationSnapshot
 from perception.control_publisher import ControlPublisher, ControlPublisherConfig, LiveBinding
 from perception.world_localization import (
+    CaptureAlignmentConfig,
     MeasurementUncertainty,
     WorldEnuTransform,
     WorldLocalizationAdapter,
@@ -24,6 +26,7 @@ from tests.test_measured_world_geometry import _authoring, _held_out_world_bundl
 from tools.map_geometry import generate
 
 IDENTITY = ((1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+_CANONICAL_ALIGNMENT_SHA256 = "0877d81fe8e9cd96e07ca6fd0374d8dd2b3fba072d96d6a2dff799a1bbe652d0"
 
 
 @pytest.mark.parametrize("reader", ["config", "evidence"])
@@ -49,11 +52,32 @@ raise SystemExit(1)
 
 COVARIANCE = ((0.01, 0.0, 0.0), (0.0, 0.02, 0.0), (0.0, 0.0, 0.03))
 _UNSET = object()
+_alignment_sha256 = ""
 
 
 def mapping():
     return ClockMapping(
         "phone_snapshot_wall_ms", "phone_snapshot_wall_ms", "ms", 1_000_000, 1, 1, 1, 2
+    )
+
+
+def test_canonical_phone_capture_alignment_fixture_matches_the_host_contract():
+    fixture_directory = Path(__file__).with_name("fixtures")
+    config_bytes = (fixture_directory / "capture-alignment.json").read_bytes()
+    assert sha256(config_bytes).hexdigest() == _CANONICAL_ALIGNMENT_SHA256
+    config = CaptureAlignmentConfig.from_document(
+        json.loads(config_bytes), _CANONICAL_ALIGNMENT_SHA256
+    )
+    observation = Observation.parse(
+        json.loads((fixture_directory / "capture-alignment-observation.json").read_text())
+        | {"t_ingest": 1}
+    )
+
+    assert config.alignment_config_id == "ohmni-alignment-fixture"
+    assert observation.submission.source_id == "dji-body-camera"
+    assert (
+        observation.submission.payload["capture_alignment"]["alignment_config_sha256"]
+        == config.sha256
     )
 
 
@@ -132,6 +156,67 @@ def evidence(tmp_path, manifest, geometry_directory, geometry_authoring):
             "measured": True,
             "variance_m2": 0.07,
         },
+        "capture_alignment": {
+            "v": 1,
+            "enabled": True,
+            "id": "dji-body-camera-v1",
+            "scope": {
+                "session": "live-session",
+                "device_id": 1,
+                "connection_epoch": 7,
+                "map_id": manifest["map_id"],
+                "source_id": "dji-body-camera",
+                "frame": "body",
+                "camera_frame": "camera",
+            },
+            "capture_clock": {"clock_id": "phone_snapshot_wall_ms", "unit": "ms"},
+            "frame_pts_clock": {"clock_id": "dji_stream_presentation_ms", "unit": "ms"},
+            "clock_mapping_id": "phone_snapshot_wall_ms",
+            "frame_pts_to_capture": {
+                "offset_ms": 0.0,
+                "rate_numerator": 1,
+                "rate_denominator": 1,
+                "max_error_ms": 0.0,
+            },
+            "gimbal_callback": {
+                "max_latency_ms": 0.0,
+                "max_orientation_error_deg": 0.0,
+                "angular_rate_bound_deg_s": 0.0,
+            },
+            "body_attitude_callback": {
+                "max_latency_ms": 0.0,
+                "max_orientation_error_deg": 0.0,
+                "angular_rate_bound_deg_s": 0.0,
+            },
+            "max_extrinsics_angle_error_deg": 0.0,
+            "kinematic_calibration": {
+                "id": "dji-gimbal-camera-kinematics-v1",
+                "sha256": "a" * 64,
+                "gimbal_attitude_convention": "intrinsic_zyx_degrees",
+                "body_to_gimbal": {
+                    "parent_frame": "body",
+                    "child_frame": "gimbal",
+                    "x_m": 0.0,
+                    "y_m": 0.0,
+                    "z_m": 0.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "qw": 1.0,
+                },
+                "gimbal_to_camera": {
+                    "parent_frame": "gimbal",
+                    "child_frame": "camera",
+                    "x_m": 0.0,
+                    "y_m": 0.0,
+                    "z_m": 0.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "qw": 1.0,
+                },
+            },
+        },
     }
     paths = {"geometry_directory": geometry_directory, "geometry_authoring": geometry_authoring}
     hashes = {}
@@ -141,6 +226,8 @@ def evidence(tmp_path, manifest, geometry_directory, geometry_authoring):
         path.write_bytes(encoded)
         paths[name] = path
         hashes[name] = sha256(encoded).hexdigest()
+    global _alignment_sha256
+    _alignment_sha256 = hashes["capture_alignment"]
     return paths, hashes
 
 
@@ -154,7 +241,9 @@ def pins(manifest, hashes, geometry_report, geometry_sha256, **overrides):
         geometry_sha256=geometry_sha256,
         physical_datum=manifest["frame"]["physical_datum"],
         tag_source_id="laptop-detector",
-        body_pose_source_id="dji-attitude",
+        body_pose_source_id="dji-body-camera",
+        capture_alignment_config_id="dji-body-camera-v1",
+        capture_alignment_config_sha256=hashes["capture_alignment"],
         telemetry_source_id="dji-telemetry",
         telemetry_frame_id="dji_enu",
         height_datum_id="dji-relative-altitude-to-enu-z",
@@ -235,10 +324,37 @@ def camera_frame(capture=1_000_000, **overrides):
     )
 
 
+def capture_alignment(capture):
+    return {
+        "v": 1,
+        "alignment_config_id": "dji-body-camera-v1",
+        "alignment_config_sha256": _alignment_sha256,
+        "kinematic_calibration_id": "dji-gimbal-camera-kinematics-v1",
+        "kinematic_calibration_sha256": "a" * 64,
+        "frame_pts": {"clock_id": "dji_stream_presentation_ms", "unit": "ms", "value": capture},
+        "gimbal_receipt": {"clock_id": "phone_snapshot_wall_ms", "unit": "ms", "value": capture},
+        "body_attitude_receipt": {
+            "clock_id": "phone_snapshot_wall_ms",
+            "unit": "ms",
+            "value": capture,
+        },
+        "gimbal_attitude": {"yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0},
+        "body_attitude": {"yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0},
+        "frame_capture_error_ms": 0.0,
+        "gimbal_callback_latency_ms": 0.0,
+        "body_attitude_callback_latency_ms": 0.0,
+        "gimbal_callback_orientation_error_deg": 0.0,
+        "body_attitude_callback_orientation_error_deg": 0.0,
+        "gimbal_angular_rate_bound_deg_s": 0.0,
+        "body_angular_rate_bound_deg_s": 0.0,
+        "max_extrinsics_angle_error_deg": 0.0,
+    }
+
+
 def body_pose(capture=1_000_000, **overrides):
     return event(
         "body",
-        "dji-attitude",
+        "dji-body-camera",
         "body",
         {
             "kind": "pose",
@@ -253,18 +369,7 @@ def body_pose(capture=1_000_000, **overrides):
                 "qz": 0.0,
                 "qw": 1.0,
             },
-            "capture_alignment": {
-                "gimbal_capture": {
-                    "clock_id": "phone_snapshot_wall_ms",
-                    "unit": "ms",
-                    "value": capture,
-                },
-                "attitude_capture": {
-                    "clock_id": "phone_snapshot_wall_ms",
-                    "unit": "ms",
-                    "value": capture,
-                },
-            },
+            "capture_alignment": capture_alignment(capture),
         },
         capture,
         **overrides,
@@ -357,17 +462,19 @@ def test_tag_requires_same_capture_time_body_pose_and_camera_frame(adapter):
 
 def test_dynamic_capture_pose_rotation_enters_the_world_body_transform(adapter):
     adapter.ingest(camera_frame(), connection_epoch=7)
+    alignment = capture_alignment(1_000_000)
+    alignment["gimbal_attitude"] = {"yaw_deg": 90.0, "pitch_deg": 0.0, "roll_deg": 0.0}
     adapter.ingest(
         event(
             "body",
-            "dji-attitude",
+            "dji-body-camera",
             "body",
             {
                 "kind": "pose",
                 "pose": {
                     "parent_frame": "body",
                     "child_frame": "camera",
-                    "x_m": 1.0,
+                    "x_m": 0.0,
                     "y_m": 0.0,
                     "z_m": 0.0,
                     "qx": 0.0,
@@ -375,24 +482,30 @@ def test_dynamic_capture_pose_rotation_enters_the_world_body_transform(adapter):
                     "qz": 2**-0.5,
                     "qw": 2**-0.5,
                 },
-                "capture_alignment": {
-                    "gimbal_capture": {
-                        "clock_id": "phone_snapshot_wall_ms",
-                        "unit": "ms",
-                        "value": 1_000_000,
-                    },
-                    "attitude_capture": {
-                        "clock_id": "phone_snapshot_wall_ms",
-                        "unit": "ms",
-                        "value": 1_000_000,
-                    },
-                },
+                "capture_alignment": alignment,
             },
         ),
         connection_epoch=7,
     )
     (fix,) = adapter.ingest(tag(), connection_epoch=7)
-    np.testing.assert_allclose(fix.position_map_enu_m, (-19.0, 10.0, -32.0))
+    np.testing.assert_allclose(
+        fix.extrinsics.matrix[:2],
+        ((0.0, -1.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0)),
+        atol=1e-6,
+    )
+
+
+def test_body_camera_pose_must_match_the_pinned_gimbal_composition(adapter):
+    raw = body_pose().to_mapping()
+    payload = dict(raw["payload"])
+    alignment = dict(payload["capture_alignment"])
+    alignment["gimbal_attitude"] = {"yaw_deg": 90.0, "pitch_deg": 0.0, "roll_deg": 0.0}
+    payload["capture_alignment"] = alignment
+
+    with pytest.raises(WorldLocalizationError, match="measured mount and actual gimbal angles"):
+        adapter.ingest(
+            event("body-invalid-mount", "dji-body-camera", "body", payload), connection_epoch=7
+        )
 
 
 def test_local_enu_telemetry_is_preserved_and_height_is_explicit(adapter):
@@ -462,10 +575,8 @@ def test_dynamic_body_pose_has_its_own_pinned_source(adapter):
 
 def test_camera_cache_cannot_mix_another_session_at_the_same_capture_stamp(adapter):
     adapter.ingest(camera_frame(session="other-session"), connection_epoch=7)
-    adapter.ingest(body_pose(session="other-session"), connection_epoch=7)
-
-    with pytest.raises(WorldLocalizationError, match="matching captured camera frame"):
-        adapter.ingest(tag(), connection_epoch=7)
+    with pytest.raises(WorldLocalizationError, match="scope"):
+        adapter.ingest(body_pose(session="other-session"), connection_epoch=7)
 
 
 def test_nonpositive_canonical_confidence_is_refused(adapter):
@@ -594,8 +705,10 @@ def test_unproven_pose_cannot_claim_capture_time_gimbal_and_attitude(adapter, tm
     raw = body_pose().to_mapping()
     payload = dict(raw["payload"])
     payload.pop("capture_alignment")
-    with pytest.raises(WorldLocalizationError, match="capture-aligned"):
-        unproven.ingest(event("body-unproven", "dji-attitude", "body", payload), connection_epoch=7)
+    with pytest.raises(WorldLocalizationError, match="measured capture alignment"):
+        unproven.ingest(
+            event("body-unproven", "dji-body-camera", "body", payload), connection_epoch=7
+        )
 
 
 def test_live_canonical_events_flow_through_the_real_fuser_and_signed_frame(adapter, tmp_path):
