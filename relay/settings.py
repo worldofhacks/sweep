@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from relay.auth import StaticCredentialResolver
 from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
+from relay.contracts import NodeType
 from relay.observation_ingress import ObservationConfiguration
 from relay.session import RelayLimits
 from relay.state import aircraft_limit_for_profile
@@ -43,6 +44,7 @@ class CapabilityRelease(StrEnum):
 class RelaySettings:
     relay_token: bytes = field(repr=False)
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
+    node_types: Mapping[int, NodeType] = field(default_factory=dict)
     allow_shared_adapter_token: bool = False
     localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     log_dir: Path = Path(".sweep/session-logs")
@@ -112,6 +114,19 @@ class RelaySettings:
             )
         object.__setattr__(self, "adapter_keys", MappingProxyType(adapter_keys))
         object.__setattr__(self, "localization_keys", MappingProxyType(localization_keys))
+        if not isinstance(self.node_types, Mapping):
+            raise SettingsError("SWEEP_NODE_TYPES_JSON must be a mapping")
+        node_types = dict(self.node_types)
+        if any(
+            type(device_id) is not int
+            or device_id not in adapter_keys
+            or not isinstance(node_type, NodeType)
+            for device_id, node_type in node_types.items()
+        ):
+            raise SettingsError(
+                "SWEEP_NODE_TYPES_JSON must map configured adapter IDs to aircraft or ground"
+            )
+        object.__setattr__(self, "node_types", MappingProxyType(node_types))
         if (
             type(self.transcript_upload_timeout_ms) is not int
             or not 1 <= self.transcript_upload_timeout_ms <= MAX_TRANSCRIPT_UPLOAD_TIMEOUT_MS
@@ -196,6 +211,7 @@ class RelaySettings:
                 else None
             ),
             adapter_keys=adapter_keys,
+            node_types=_node_types(values.get("SWEEP_NODE_TYPES_JSON", "{}")),
             localization_keys=_credential_keys(
                 values.get("SWEEP_LOCALIZATION_KEYS_JSON", "{}"),
                 "SWEEP_LOCALIZATION_KEYS_JSON",
@@ -350,6 +366,28 @@ def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
         if not isinstance(raw_key, str) or not raw_key:
             raise SettingsError(f"{name} credentials must be non-empty strings")
         result[drone_id] = raw_key.encode()
+    return result
+
+
+def _node_types(raw: str) -> dict[int, NodeType]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SettingsError("SWEEP_NODE_TYPES_JSON must be valid JSON") from error
+    if not isinstance(value, dict):
+        raise SettingsError("SWEEP_NODE_TYPES_JSON must be an object")
+    result: dict[int, NodeType] = {}
+    for raw_id, raw_node_type in value.items():
+        try:
+            device_id = int(raw_id)
+            node_type = NodeType(raw_node_type)
+        except (TypeError, ValueError):
+            raise SettingsError(
+                "SWEEP_NODE_TYPES_JSON must map positive device IDs to aircraft or ground"
+            ) from None
+        if str(device_id) != str(raw_id) or device_id <= 0:
+            raise SettingsError("SWEEP_NODE_TYPES_JSON IDs must be canonical positive integers")
+        result[device_id] = node_type
     return result
 
 

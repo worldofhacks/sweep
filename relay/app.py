@@ -240,6 +240,7 @@ class RelayRuntime:
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
                     observation_configuration=self.settings.observation_configuration,
+                    node_types=self.settings.node_types,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
