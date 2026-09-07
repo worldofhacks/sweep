@@ -43,9 +43,9 @@ function PairedEncoderSampler(serial, socketPath, options) {
   this._server = null;
   this._clients = [];
   this._stopped = true;
+  this._qualified = false;
   this._onServoResponse = this._handleServoResponse.bind(this);
   this._onSerialClose = this._fail.bind(this, 'serial_disconnected');
-  this._onSerialOpen = this._resumeAfterOpen.bind(this);
   this._gatedSendCustom = this._queueOrSend.bind(this);
 }
 
@@ -60,8 +60,6 @@ PairedEncoderSampler.prototype.start = function () {
   this._createServer();
   this._serial.on('servo_response', this._onServoResponse);
   this._serial.on('close', this._onSerialClose);
-  this._serial.on('open', this._onSerialOpen);
-  this._schedule(0);
 };
 
 PairedEncoderSampler.prototype.stop = function (done) {
@@ -79,7 +77,6 @@ PairedEncoderSampler.prototype.stop = function (done) {
   this._serial.sendCustom = this._directSendCustom;
   this._serial.removeListener('servo_response', this._onServoResponse);
   this._serial.removeListener('close', this._onSerialClose);
-  this._serial.removeListener('open', this._onSerialOpen);
   const server = this._server;
   this._server = null;
   this._clients.forEach(function (client) { client.destroy(); });
@@ -136,8 +133,31 @@ PairedEncoderSampler.prototype._schedule = function (delayMs) {
   }, delayMs);
 };
 
-PairedEncoderSampler.prototype._resumeAfterOpen = function () {
-  if (!this._failed) this._schedule(0);
+PairedEncoderSampler.prototype.beginInitialization = function () {
+  if (this._stopped) return;
+  const poll = this._active;
+  const wasQualified = this._qualified;
+  this._qualified = false;
+  this._abortActive();
+  if (this._timer) {
+    this._clearTimeout(this._timer);
+    this._timer = null;
+  }
+  this._releaseBus();
+  if (wasQualified) {
+    this._publish({
+      v: 1,
+      type: 'sweep_encoder_unavailable',
+      poll_id: poll ? poll.id : null,
+      reason: 'serial_reinitializing',
+    });
+  }
+};
+
+PairedEncoderSampler.prototype.activate = function () {
+  if (this._stopped || this._failed || this._qualified || !this._serial.opened) return;
+  this._qualified = true;
+  this._schedule(0);
 };
 
 PairedEncoderSampler.prototype._beginPoll = function () {
@@ -213,6 +233,7 @@ PairedEncoderSampler.prototype._fail = function (reason) {
   const poll = this._active;
   if (poll && poll.timeout) this._clearTimeout(poll.timeout);
   this._active = null;
+  this._qualified = false;
   this._releaseBus();
   this._failed = true;
   this._publish({

@@ -18,17 +18,40 @@ _SERIAL_REPLACEMENT = _SERIAL + (
     b"  );\r\n"
     b"  this._sweep_encoder.start();\r\n"
 )
+_MODEL = (
+    b"  this._model = new ControlModel({\r\n"
+    b'    calibpath: config_path + "/telebot_calib.json"\r\n'
+    b"  }, this._serial, this);\r\n"
+)
+_MODEL_REPLACEMENT = _MODEL + (
+    b"  const sweepEncoderModelStart = this._model.start.bind(this._model);\r\n"
+    b"  this._model.start = function () {\r\n"
+    b"    sweepEncoderModelStart();\r\n"
+    b"    self._sweep_encoder.activate();\r\n"
+    b"  };\r\n"
+    b"  const sweepEncoderModelInitialize = this._model.initialize.bind(this._model);\r\n"
+    b"  this._model.initialize = function (fw_version) {\r\n"
+    b"    self._sweep_encoder.beginInitialization();\r\n"
+    b"    return sweepEncoderModelInitialize(fw_version);\r\n"
+    b"  };\r\n"
+)
 
 
 def prepare(source: bytes, expected_sha256: str = REFERENCE_SHA256) -> bytes:
     if hashlib.sha256(source).hexdigest() != expected_sha256:
         raise ValueError("vendor telebot_node.js does not match the reviewed source")
-    if source.count(_REQUIRE) != 1 or source.count(_SERIAL) != 1:
+    if source.count(_REQUIRE) != 1 or source.count(_SERIAL) != 1 or source.count(_MODEL) != 1:
         raise ValueError("vendor telebot_node.js does not contain the reviewed patch anchors")
-    patched = source.replace(_REQUIRE, _REQUIRE_REPLACEMENT).replace(_SERIAL, _SERIAL_REPLACEMENT)
+    patched = (
+        source.replace(_REQUIRE, _REQUIRE_REPLACEMENT)
+        .replace(_SERIAL, _SERIAL_REPLACEMENT)
+        .replace(_MODEL, _MODEL_REPLACEMENT)
+    )
     if (
         patched.count(b"sweep_paired_encoder_sampler") != 1
         or patched.count(b"_sweep_encoder.start()") != 1
+        or patched.count(b"_sweep_encoder.activate()") != 1
+        or patched.count(b"_sweep_encoder.beginInitialization()") != 1
     ):
         raise ValueError("prepared owner patch is ambiguous")
     return patched
