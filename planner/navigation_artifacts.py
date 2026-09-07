@@ -117,14 +117,15 @@ def _bounded_bytes(directory_descriptor: int, filename: str, limit: int, name: s
     """Read one confined, no-follow descriptor snapshot and bound those exact bytes."""
     if Path(filename).name != filename or not hasattr(os, "O_NOFOLLOW"):
         raise ValueError(f"{name} must be a regular direct child")
-    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(filename, flags, dir_fd=directory_descriptor)
     except OSError as exc:
         raise ValueError(f"{name} must be a regular direct child") from exc
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise ValueError(f"{name} must be a regular file")
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError(f"{name} must be a regular file within its byte limit")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             payload = stream.read(limit + 1)
     finally:
@@ -226,6 +227,8 @@ class NavigationArtifact:
         accepted_map_versions: dict[str, str],
         arrival_slots: tuple[ArrivalSlot, ...] = (),
         connectors: tuple[Connector, ...] = (),
+        *,
+        authoring: str | Path | None = None,
     ) -> NavigationArtifact:
         """Load an accepted map plus pinned offline geometry as a non-dispatchable preview."""
         if not isinstance(accepted_map_versions, dict) or any(
@@ -264,6 +267,14 @@ class NavigationArtifact:
                 )
                 height, width = report["shape_yx"]
                 if v2:
+                    _verify_v2_derivation(
+                        bundle,
+                        directory_descriptor,
+                        accepted_map_versions,
+                        authoring,
+                        report_payload,
+                        report,
+                    )
                     grids = tuple(
                         _load_grid_v2(directory_descriptor, report, name, z, height, width)
                         for name, z in zip(report["grid_files"], bands, strict=True)
@@ -323,7 +334,7 @@ class NavigationArtifact:
                 map_pin,
                 geometry_pin,
                 navigation_pin,
-                preview_evidence("surveyed" if v2 else report["evidence_kind"]),
+                preview_evidence(report["evidence_kind"]),
                 clearance,
                 tuple(tuple(point) for point in geofence["polygon"]),
                 geofence_low,
@@ -420,6 +431,50 @@ def _load_grid_v2(
         height,
         frozenset((int(x), int(y)) for y, x in zip(*np.where(rows == 1), strict=True)),
     )
+
+
+def _bounded_path_bytes(path: Path, limit: int, label: str) -> bytes:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"{label} cannot be read") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError(f"{label} must be a bounded regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            payload = stream.read(limit + 1)
+    finally:
+        os.close(descriptor)
+    if len(payload) > limit:
+        raise ValueError(f"{label} exceeds its byte limit")
+    return payload
+
+
+def _verify_v2_derivation(
+    bundle, directory_descriptor, accepted_versions, authoring, report_payload, report
+):
+    if authoring is None:
+        raise ValueError("world geometry requires its immutable authoring input")
+    authoring_path = Path(authoring)
+    payload = _bounded_path_bytes(authoring_path, _MAX_REPORT_BYTES, "world geometry authoring")
+    if sha256(payload).hexdigest() != report["authoring_sha256"]:
+        raise ValueError("world geometry authoring hash mismatch")
+    import tempfile
+
+    from tools.map_geometry import generate
+
+    with tempfile.TemporaryDirectory(prefix="world-geometry-verify-") as temporary:
+        expected_directory = Path(temporary) / "expected"
+        expected = generate(bundle, authoring_path, expected_directory, accepted_versions)
+        if (expected_directory / "geometry.json").read_bytes() != report_payload:
+            raise ValueError("world geometry report is not derived from its pinned authoring")
+        preview = _bounded_bytes(
+            directory_descriptor, "preview.html", _MAX_REPORT_BYTES, "geometry preview"
+        )
+        if sha256(preview).hexdigest() != expected["files"]["preview.html"]:
+            raise ValueError("world geometry files are not derived from pinned authoring")
 
 
 def _validate_geometry_report_v2(report: object, validated: ValidatedBundle) -> tuple[float, ...]:
@@ -522,7 +577,10 @@ def _validate_geometry_report_v2(report: object, validated: ValidatedBundle) -> 
         or any(
             not isinstance(item, dict)
             or item.get("passes") is not True
-            or finite_number(item.get("maximum_error_m"), "checkpoint maximum error", positive=True)
+            or item.get("height_proven") is not False
+            or finite_number(
+                item.get("maximum_xy_error_m"), "checkpoint maximum XY error", positive=True
+            )
             > 0.10
             for item in checkpoints
         )
