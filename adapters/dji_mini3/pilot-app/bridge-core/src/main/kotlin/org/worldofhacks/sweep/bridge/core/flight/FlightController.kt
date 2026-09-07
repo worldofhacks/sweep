@@ -64,6 +64,7 @@ class FlightController(
     private val port: FlightPort,
     private val clock: Clock,
     val config: FlightConfig = FlightConfig(),
+    private val monotonicNowMs: () -> Long = clock::nowMs,
     private val log: (String) -> Unit = {},
 ) {
     private sealed interface Phase {
@@ -76,6 +77,8 @@ class FlightController(
         data class Settling(val untilMs: Long, val detail: String) : Phase
 
         data class TakingOff(val startedMs: Long, val targetZM: Double, val hoverSinceMs: Long?) : Phase
+
+        data class SupervisedClimb(val targetZM: Double, val settledSinceMs: Long?) : Phase
 
         data class Landing(val startedMs: Long, val reason: String, val attempts: Int, val awaitingResult: Boolean, val retryAtMs: Long?) : Phase
 
@@ -133,6 +136,8 @@ class FlightController(
     /** Set when a hold interrupted a command the node was flying, so the failsafe still lands what the node flew. */
     private var flownIntoHold = false
     private var landingReason: String? = null
+    private var supervisedFlightTargetZM: Double? = null
+    private var supervisedFlightAirborne = false
     private var stickSeq = 0L
     private val rate = RateMeter()
     private var lastFrame: StickFrame? = null
@@ -210,6 +215,8 @@ class FlightController(
         failActive(FlightReason.AUTHORITY_LOST, "$reason${detail?.let { ": $it" } ?: ""}; re-arm control authority on the flight card")
         authorityLost = reason
         flownIntoHold = false
+        supervisedFlightTargetZM = null
+        supervisedFlightAirborne = false
         if (vsEnabled) {
             vsEnabled = false
             port.disableVirtualStick { result -> if (result is PortResult.Failed) log("virtual stick disable after takeover failed: ${result.detail}") }
@@ -351,7 +358,46 @@ class FlightController(
             return
         }
         val targetZ = args.zMm / 1000.0
+        config.supervisedVertical?.let { supervised ->
+            if (targetZ > supervised.hardCeilingM) {
+                fail(
+                    sink,
+                    FlightReason.VERTICAL_CEILING_EXCEEDED,
+                    "takeoff target ${format(targetZ)} m exceeds the local hard ceiling ${format(supervised.hardCeilingM)} m",
+                )
+                return
+            }
+            val height = freshLocalHeight(supervised)
+            if (height == null) {
+                fail(
+                    sink,
+                    FlightReason.LOCAL_HEIGHT_UNAVAILABLE,
+                    "takeoff requires a finite KeyAltitude callback no older than ${supervised.maximumHeightAgeMs} ms",
+                )
+                return
+            }
+            if (height >= supervised.hardCeilingM) {
+                fail(
+                    sink,
+                    FlightReason.VERTICAL_CEILING_EXCEEDED,
+                    "local height ${format(height)} m is already at the hard ceiling ${format(supervised.hardCeilingM)} m",
+                )
+                return
+            }
+            if (height >= targetZ) {
+                fail(
+                    sink,
+                    FlightReason.VERTICAL_CEILING_EXCEEDED,
+                    "local height ${format(height)} m is not below the signed takeoff target ${format(targetZ)} m",
+                )
+                return
+            }
+        }
         active = Active(command, sink, now, "auto takeoff")
+        if (config.supervisedVertical != null) {
+            supervisedFlightTargetZM = targetZ
+            supervisedFlightAirborne = false
+        }
         transition(Phase.TakingOff(now, targetZ, null))
         val gen = generation
         port.startTakeoff { result ->
@@ -359,6 +405,8 @@ class FlightController(
             when (result) {
                 PortResult.Ok -> active?.executingNow("auto takeoff started; target z ${format(targetZ)} m, completes on the reported flight state")
                 is PortResult.Failed -> {
+                    supervisedFlightTargetZM = null
+                    supervisedFlightAirborne = false
                     failActive(FlightReason.TAKEOFF_FAILED, "takeoff action refused: ${result.detail}")
                     transition(Phase.Idle)
                 }
@@ -367,6 +415,10 @@ class FlightController(
     }
 
     private fun goto(command: FlightCommand, args: CommandArgs.Goto, sink: ReportSink, now: Long) {
+        if (config.supervisedVertical != null) {
+            fail(sink, FlightReason.UNSUPPORTED, "goto is disabled by the supervised vertical profile")
+            return
+        }
         if (!motionAllowed(sink)) return
         if (!facts.flying) {
             fail(sink, FlightReason.NOT_AIRBORNE, "aircraft is ${facts.flightState}; goto needs a hovering aircraft")
@@ -401,6 +453,10 @@ class FlightController(
     }
 
     private fun rotateTo(command: FlightCommand, args: CommandArgs.RotateTo, sink: ReportSink, now: Long) {
+        if (config.supervisedVertical != null) {
+            fail(sink, FlightReason.UNSUPPORTED, "rotate_to is disabled by the supervised vertical profile")
+            return
+        }
         if (!motionAllowed(sink)) return
         if (!facts.flying) {
             fail(sink, FlightReason.NOT_AIRBORNE, "aircraft is ${facts.flightState}; rotate_to needs a hovering aircraft")
@@ -448,6 +504,10 @@ class FlightController(
      * or moves a stick.
      */
     fun startBench(label: String, frame: StickFrame, durationMs: Long, sink: ReportSink): Boolean {
+        if (config.supervisedVertical != null) {
+            fail(sink, FlightReason.UNSUPPORTED, "bench stick motion is disabled by the supervised vertical profile")
+            return false
+        }
         val now = clock.nowMs()
         val command = FlightCommand("bench-$label-$now", CommandArgs.Hover, label)
         authorityLost?.let {
@@ -497,7 +557,13 @@ class FlightController(
     }
 
     /** Takeoff and land from the bench card use the command path with a logging sink. */
-    fun benchTakeoff(zMm: Long, sink: ReportSink) = execute(FlightCommand("bench-takeoff-${clock.nowMs()}", CommandArgs.Takeoff(zMm), "bench takeoff"), sink)
+    fun benchTakeoff(zMm: Long, sink: ReportSink) {
+        if (config.supervisedVertical != null) {
+            fail(sink, FlightReason.UNSUPPORTED, "bench takeoff is disabled by the supervised vertical profile")
+            return
+        }
+        execute(FlightCommand("bench-takeoff-${clock.nowMs()}", CommandArgs.Takeoff(zMm), "bench takeoff"), sink)
+    }
 
     fun benchLand(sink: ReportSink) = execute(FlightCommand("bench-land-${clock.nowMs()}", CommandArgs.Land, "bench land"), sink)
 
@@ -508,6 +574,7 @@ class FlightController(
         pollDeadman(nowMs)
         checkLink()
         checkEstop(nowMs)
+        checkSupervisedFlight(nowMs)
         checkNavigation(nowMs)
         advancePhase(nowMs)
         streamSticks(nowMs)
@@ -566,8 +633,18 @@ class FlightController(
 
     private fun checkLink() {
         if (facts.linked) return
-        if (phase == Phase.Idle && active == null && !vsEnabled) return
         val reason = if (!facts.aircraftConnected) "aircraft_disconnected" else "rc_disconnected"
+        if (supervisedFlightTargetZM != null && !facts.onGround && authorityLost == null) {
+            if (phase !is Phase.Landing) {
+                stopSupervisedFlight(
+                    FlightReason.AUTHORITY_LOST,
+                    "$reason during supervised vertical flight; landing",
+                    clock.nowMs(),
+                )
+            }
+            return
+        }
+        if (phase == Phase.Idle && active == null && !vsEnabled) return
         event("authority lost: $reason; loop cancelled, physical RC remains primary")
         failActive(FlightReason.AUTHORITY_LOST, "$reason: the loop cancelled; physical RC remains primary")
         if (vsEnabled) {
@@ -592,7 +669,11 @@ class FlightController(
             // whose Virtual Stick enable answered after it, reaches Running under an asserted
             // stop and is cut on the first tick that sees it, before this tick's frame goes out.
             when (phase) {
-                is Phase.Running, is Phase.Navigating, is Phase.NavigationHolding, is Phase.Bench -> {
+                is Phase.Enabling -> {
+                    failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted while virtual stick was enabling")
+                    transition(Phase.Idle)
+                }
+                is Phase.Running, is Phase.SupervisedClimb, is Phase.Navigating, is Phase.NavigationHolding, is Phase.Bench -> {
                     failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted: sticks neutral, hovering")
                     transition(Phase.Settling(now + config.settleMs, "network stop hover"))
                 }
@@ -620,6 +701,24 @@ class FlightController(
         }
     }
 
+    private fun checkSupervisedFlight(now: Long) {
+        val targetZM = supervisedFlightTargetZM ?: return
+        val supervised = config.supervisedVertical ?: return
+        if (facts.flying) supervisedFlightAirborne = true
+        if (supervisedFlightAirborne && facts.onGround) {
+            supervisedFlightTargetZM = null
+            supervisedFlightAirborne = false
+            return
+        }
+        if (authorityLost != null || phase is Phase.Landing) return
+        guardVerticalHeight(
+            targetZM,
+            supervised,
+            now,
+            enforceCommandCeiling = phase is Phase.TakingOff || phase is Phase.SupervisedClimb || phase is Phase.Enabling,
+        )
+    }
+
     private fun advancePhase(now: Long) {
         when (val current = phase) {
             Phase.Idle, is Phase.Holding -> Unit
@@ -639,6 +738,7 @@ class FlightController(
                 releaseVirtualStick()
             }
             is Phase.TakingOff -> advanceTakeoff(current, now)
+            is Phase.SupervisedClimb -> advanceSupervisedClimb(current, now)
             is Phase.Landing -> advanceLanding(current, now)
             is Phase.Bench -> if (now >= current.untilMs) {
                 completeActive("bench ${current.label} held ${frameWord(current.frame)} for ${now - (active?.startedMs ?: now)} ms")
@@ -860,6 +960,9 @@ class FlightController(
     }
 
     private fun advanceTakeoff(current: Phase.TakingOff, now: Long) {
+        config.supervisedVertical?.let { supervised ->
+            if (guardVerticalHeight(current.targetZM, supervised, now) == null) return
+        }
         val elapsed = now - current.startedMs
         if (facts.flying && elapsed >= config.takeoffMinMs) {
             val hovering = facts.speedMS < config.hoverSpeedMS && facts.flightState != TAKING_OFF
@@ -877,6 +980,8 @@ class FlightController(
                 phase = current.copy(hoverSinceMs = null)
             }
         } else if (!facts.flying && elapsed >= config.takeoffTimeoutMs) {
+            supervisedFlightTargetZM = null
+            supervisedFlightAirborne = false
             failActive(FlightReason.TAKEOFF_TIMEOUT, "aircraft is still ${facts.flightState} after $elapsed ms")
             transition(Phase.Idle)
             return
@@ -884,7 +989,83 @@ class FlightController(
         progress(now, "taking off: state ${facts.flightState}, z ${format(facts.zUp)} m, $elapsed ms")
     }
 
+    private fun advanceSupervisedClimb(current: Phase.SupervisedClimb, now: Long) {
+        val supervised = config.supervisedVertical ?: return
+        val height = guardVerticalHeight(current.targetZM, supervised, now) ?: return
+        if (abs(current.targetZM - height) <= supervised.targetToleranceM) {
+            val since = current.settledSinceMs ?: now
+            if (now - since >= supervised.targetSettleMs) {
+                completeActive(
+                    "local height ${format(height)} m remained within ${format(supervised.targetToleranceM)} m of target " +
+                        "${format(current.targetZM)} m for ${now - since} ms",
+                )
+                releaseVirtualStick()
+            } else {
+                phase = current.copy(settledSinceMs = since)
+            }
+            return
+        }
+        if (current.settledSinceMs != null) phase = current.copy(settledSinceMs = null)
+        progress(now, "supervised climb: local height ${format(height)} m, target ${format(current.targetZM)} m")
+    }
+
+    private fun freshLocalHeight(supervised: SupervisedVerticalConfig): Double? {
+        val sample = facts.localHeight ?: return null
+        val ageMs = monotonicNowMs() - sample.receivedAtMonotonicMs
+        return sample.zUpM.takeIf { ageMs in 0..supervised.maximumHeightAgeMs }
+    }
+
+    private fun guardVerticalHeight(
+        targetZM: Double,
+        supervised: SupervisedVerticalConfig,
+        now: Long,
+        enforceCommandCeiling: Boolean = true,
+    ): Double? {
+        val height = freshLocalHeight(supervised)
+        if (height == null) {
+            stopVertical(
+                FlightReason.LOCAL_HEIGHT_UNAVAILABLE,
+                "KeyAltitude is absent, invalid, future-dated, or older than ${supervised.maximumHeightAgeMs} ms",
+                now,
+            )
+            return null
+        }
+        if (height >= supervised.hardCeilingM) {
+            stopVertical(
+                FlightReason.VERTICAL_CEILING_EXCEEDED,
+                "local height ${format(height)} m reached the hard ceiling ${format(supervised.hardCeilingM)} m",
+                now,
+            )
+            return null
+        }
+        if (enforceCommandCeiling && height > targetZM + supervised.targetToleranceM) {
+            stopVertical(
+                FlightReason.VERTICAL_CEILING_EXCEEDED,
+                "local height ${format(height)} m exceeded the signed command ceiling ${format(targetZM)} m",
+                now,
+            )
+            return null
+        }
+        return height
+    }
+
+    private fun stopVertical(reason: FlightReason, detail: String, now: Long) =
+        stopSupervisedFlight(reason, detail, now)
+
+    private fun stopSupervisedFlight(reason: FlightReason, detail: String, now: Long) {
+        failActive(reason, detail)
+        event("supervised vertical safety stop: $detail")
+        if (facts.flying) startLanding(now, reason.wire) else transition(Phase.Idle)
+    }
+
     private fun afterTakeoff(targetZM: Double, now: Long, elapsedMs: Long) {
+        val supervised = config.supervisedVertical
+        if (supervised != null) {
+            if (guardVerticalHeight(targetZM, supervised, now) == null) return
+            event("takeoff hover reached at z ${format(facts.zUp)} m; closing the climb on fresh KeyAltitude toward ${format(targetZM)} m")
+            beginVirtualStick(now) { transition(Phase.SupervisedClimb(targetZM, null)) }
+            return
+        }
         val climb = MotionPlanner.climb(targetZM, facts, config.limits, config.altitudeToleranceM)
         if (climb == null) {
             completeActive("airborne at z ${format(facts.zUp)} m after $elapsedMs ms (target ${format(targetZM)} m)")
@@ -938,6 +1119,8 @@ class FlightController(
         if (facts.onGround) {
             completeActive("landed after $elapsed ms (${current.reason})")
             event("landed (${current.reason})")
+            supervisedFlightTargetZM = null
+            supervisedFlightAirborne = false
             landingReason = null
             transition(Phase.Idle)
             return
@@ -961,6 +1144,7 @@ class FlightController(
         if (!vsEnabled) return
         val frame = when (val current = phase) {
             is Phase.Running -> frameFor(current.steps[current.index])
+            is Phase.SupervisedClimb -> supervisedClimbFrame(current, now)
             Phase.Navigating -> navigationFrame(now)
             is Phase.Bench -> current.frame
             else -> StickFrame.NEUTRAL
@@ -976,6 +1160,13 @@ class FlightController(
     private fun frameFor(step: MotionStep): StickFrame = when (step) {
         is MotionStep.Velocity -> mapping.toFrame(step.body)
         is MotionStep.Yaw -> mapping.toFrame(BodyVelocity(yawTargetDeg = step.targetDeg))
+    }
+
+    private fun supervisedClimbFrame(current: Phase.SupervisedClimb, now: Long): StickFrame {
+        val supervised = config.supervisedVertical ?: return StickFrame.NEUTRAL
+        val height = guardVerticalHeight(current.targetZM, supervised, now) ?: return StickFrame.NEUTRAL
+        if (height >= current.targetZM - supervised.targetToleranceM) return StickFrame.NEUTRAL
+        return StickFrame.NEUTRAL.copy(verticalThrottle = config.limits.maxVerticalMS)
     }
 
     // ---- virtual stick lifecycle ----
@@ -1121,6 +1312,7 @@ class FlightController(
         }
         is Phase.Settling -> "settling"
         is Phase.TakingOff -> "taking_off"
+        is Phase.SupervisedClimb -> "supervised_climb"
         is Phase.Landing -> "landing"
         is Phase.Holding -> "watchdog_hold"
         Phase.Navigating -> "navigating"

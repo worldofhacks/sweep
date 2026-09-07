@@ -11,6 +11,7 @@ plugins {
 val djiAppKey: String = providers.gradleProperty("DJI_API_KEY").orNull
     ?: providers.environmentVariable("DJI_APP_KEY").orNull
     ?: ""
+val supervisedVertical: Boolean = providers.gradleProperty("sweepSupervisedVertical").orNull == "true"
 
 android {
     namespace = "org.worldofhacks.sweep.bridge"
@@ -23,6 +24,7 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         manifestPlaceholders["DJI_API_KEY"] = djiAppKey
+        buildConfigField("boolean", "SUPERVISED_VERTICAL", supervisedVertical.toString())
     }
 
     flavorDimensions += "aircraft"

@@ -204,6 +204,7 @@ class RelayLinkTest {
                 assertEquals("nominal", status.body.watchdogState.wire)
                 assertEquals("stopped", status.body.videoPublishState.wire)
                 assertEquals(81, status.body.phoneBatteryPercent)
+                assertNull(status.body.localHeight)
 
                 val state = link.state.value
                 assertEquals(RelayConnection.CONNECTED, state.connection)
@@ -220,6 +221,38 @@ class RelayLinkTest {
                 assertTrue(stamps.zipWithNext().all { (earlier, later) -> earlier <= later }, "timestamps regress: $stamps")
                 val ids = stub.frames.drop(1).map { it.str("event_id") }
                 assertEquals(ids.size, ids.toSet().size, "event ids repeat")
+            }
+        }
+    }
+
+    @Test
+    fun `node status reports the age of a received flight controller altitude`() {
+        StubRelay(key).use { stub ->
+            val clock = SteppedClock(1_000)
+            val aircraft = FakeAircraft(connected = true)
+            aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 1.8, receivedAtMonotonicMs = 930)) }
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, monotonicNowMs = clock::nowMs, timing = timing).use { link ->
+                link.start()
+                val status = NodeStatusFrame.parse(stub.awaitFrame("node_status"))
+
+                assertEquals(1.8, status.body.localHeight?.zM)
+                assertEquals("flight_controller_altitude", status.body.localHeight?.source?.wire)
+                assertEquals(70, status.body.localHeight?.ageMs)
+            }
+        }
+    }
+
+    @Test
+    fun `node status omits a future or stale local height receipt`() {
+        listOf(399L, 1_001L).forEach { receivedAtMs ->
+            StubRelay(key).use { stub ->
+                val clock = SteppedClock(1_000)
+                val aircraft = FakeAircraft(connected = true)
+                aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 0.0, receivedAtMonotonicMs = receivedAtMs)) }
+                RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, monotonicNowMs = clock::nowMs, timing = timing).use { link ->
+                    link.start()
+                    assertNull(NodeStatusFrame.parse(stub.awaitFrame("node_status")).body.localHeight)
+                }
             }
         }
     }

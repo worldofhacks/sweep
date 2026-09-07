@@ -1,6 +1,7 @@
 package org.worldofhacks.sweep.bridge
 
 import android.app.Application
+import android.os.SystemClock
 import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -153,6 +154,10 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                 logLine("cannot start the relay link: navigation-admission.json is invalid")
                 return@launch
             }
+            if (BuildConfig.SUPERVISED_VERTICAL && navigationAdmission != null) {
+                logLine("cannot start the relay link: supervised vertical does not allow navigation-admission.json")
+                return@launch
+            }
             if (captureAlignment == null) logLine("body-camera localization disabled: capture-alignment.json is missing")
             val loopback = isLoopback(hostOf(setup.relayUrl))
             val wifi = wifiNetwork
@@ -183,6 +188,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     aircraft = session.aircraft,
                     executor = session.executor,
                     phone = phone,
+                    monotonicNowMs = SystemClock::elapsedRealtime,
                     log = { line -> logLine(line) },
                     clientProvider = if (loopback) null else ({ wifi?.binding?.value?.client }),
                     videoPublish = { videoPublish.current() },

@@ -22,6 +22,8 @@ data class AircraftFacts(
     val vyNorth: Double = 0.0,
     val vzUp: Double = 0.0,
     val yawDeg: Double = 0.0,
+    /** The finite, takeoff-relative KeyAltitude value and the node's monotonic callback receipt time. */
+    val localHeight: LocalHeightFacts? = null,
 ) {
     val linked: Boolean
         get() = aircraftConnected && rcConnected
@@ -35,6 +37,13 @@ data class AircraftFacts(
     /** Measured velocity rotated into the body frame (forward, right) at the current heading. */
     val bodyVelocity: Pair<Double, Double>
         get() = GroundFrame.toBody(vxEast, vyNorth, yawDeg)
+}
+
+data class LocalHeightFacts(val zUpM: Double, val receivedAtMonotonicMs: Long) {
+    init {
+        require(zUpM.isFinite()) { "local height must be finite" }
+        require(receivedAtMonotonicMs >= 0) { "local height receipt time must be non-negative" }
+    }
 }
 
 /**

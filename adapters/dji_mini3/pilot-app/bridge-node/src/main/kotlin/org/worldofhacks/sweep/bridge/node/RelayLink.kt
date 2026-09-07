@@ -32,6 +32,7 @@ import org.worldofhacks.sweep.bridge.core.frames.ContractError
 import org.worldofhacks.sweep.bridge.core.frames.ControlHeartbeat
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
 import org.worldofhacks.sweep.bridge.core.frames.LifecycleStatus
+import org.worldofhacks.sweep.bridge.core.frames.LocalHeight
 import org.worldofhacks.sweep.bridge.core.frames.MembershipEvent
 import org.worldofhacks.sweep.bridge.core.frames.MembershipFrame
 import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
@@ -96,6 +97,7 @@ class RelayLink(
     private val executor: CommandExecutor,
     private val phone: PhoneStatusSource,
     private val clock: Clock = SystemClock,
+    private val monotonicNowMs: () -> Long = { System.nanoTime() / 1_000_000L },
     private val timing: LinkTiming = LinkTiming(),
     private val log: NodeLog = NodeLog { },
     client: OkHttpClient? = null,
@@ -822,6 +824,14 @@ class RelayLink(
             videoPublishState = videoPublish.current(),
             phoneBatteryPercent = phoneStatus.batteryPercent.coerceIn(0, 100),
             phoneThermalState = phoneStatus.thermalState,
+            localHeight = snapshot.localHeight?.let { measurement ->
+                val ageMs = monotonicNowMs() - measurement.receivedAtMonotonicMs
+                if (ageMs !in 0..MAXIMUM_LOCAL_HEIGHT_AGE_MS) null else LocalHeight(
+                    zM = measurement.zM,
+                    source = LocalHeight.Source.FLIGHT_CONTROLLER_ALTITUDE,
+                    ageMs = ageMs,
+                )
+            },
         )
     }
 
@@ -1185,6 +1195,7 @@ class RelayLink(
         const val MAX_BACKOFF_EXPONENT = 16
         const val MAX_COMMANDS = 50
         const val MAX_DETAIL = 512
+        const val MAXIMUM_LOCAL_HEIGHT_AGE_MS = 500L
         const val RATE_WINDOW_MS = 2_000L
         const val WATCHDOG_HOLD = "watchdog_hold"
         const val WATCHDOG_FAILSAFE = "watchdog_failsafe"

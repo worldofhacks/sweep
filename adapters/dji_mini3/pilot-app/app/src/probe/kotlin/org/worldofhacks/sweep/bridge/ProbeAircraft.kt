@@ -32,6 +32,7 @@ import org.worldofhacks.sweep.bridge.node.CommandReport
 import org.worldofhacks.sweep.bridge.node.AttitudeSample
 import org.worldofhacks.sweep.bridge.node.CaptureAlignmentCollector
 import org.worldofhacks.sweep.bridge.node.FlightStates
+import org.worldofhacks.sweep.bridge.node.LocalHeightMeasurement
 import org.worldofhacks.sweep.bridge.node.TelemetryKeyLedger
 import org.worldofhacks.sweep.bridge.node.TelemetryKeyStatus
 import org.worldofhacks.sweep.bridge.session.AircraftIdentity
@@ -89,6 +90,7 @@ internal class ProbeAircraft(
     private var velocity: Velocity3D? = null
     private var attitude: Attitude? = null
     private var altitude: Double? = null
+    private var altitudeReceivedAtMonotonicMs: Long? = null
     private var ultrasonicHeightDm: Int? = null
     private var flightMode: FlightMode? = null
     private var motorsOn: Boolean? = null
@@ -113,14 +115,18 @@ internal class ProbeAircraft(
     private val bindings: List<Binding<*>> = listOf(
         Binding("KeyConnection", FlightControllerKey.KeyConnection) { connected ->
             aircraftConnected = connected
-            if (!connected) origin = null
+            if (!connected) {
+                origin = null
+                altitude = null
+                altitudeReceivedAtMonotonicMs = null
+            }
         },
         Binding("KeyRcConnection", RemoteControllerKey.KeyConnection, ComponentIndexType.LEFT_OR_MAIN) { rcConnected = it },
         Binding("KeyAircraftLocation3D", FlightControllerKey.KeyAircraftLocation3D) { location = it },
         Binding("KeyAircraftVelocity", FlightControllerKey.KeyAircraftVelocity) { velocity = it },
         Binding("KeyAircraftAttitude", FlightControllerKey.KeyAircraftAttitude) { attitude = it },
         Binding("KeyGimbalAttitude", GimbalKey.KeyGimbalAttitude, ComponentIndexType.LEFT_OR_MAIN) { },
-        Binding("KeyAltitude", FlightControllerKey.KeyAltitude) { altitude = it },
+        Binding("KeyAltitude", FlightControllerKey.KeyAltitude) { altitude = it.takeIf { value -> value.isFinite() } },
         Binding("KeyUltrasonicHeight", FlightControllerKey.KeyUltrasonicHeight) { ultrasonicHeightDm = it },
         Binding("KeyFlightMode", FlightControllerKey.KeyFlightMode) { flightMode = it },
         Binding("KeyAreMotorsOn", FlightControllerKey.KeyAreMotorsOn) { motorsOn = it },
@@ -195,6 +201,8 @@ internal class ProbeAircraft(
             if (!connected) {
                 rcConnected = false
                 origin = null
+                altitude = null
+                altitudeReceivedAtMonotonicMs = null
             }
             val names = if (connected) ledger.productConnected { answers.getValue(it) } else emptyList()
             Pair(names.map(byName::getValue), ledger.snapshot())
@@ -269,6 +277,11 @@ internal class ProbeAircraft(
             rates.tick(binding.name, now)
             val status = if (ledger.value(binding.name, now)) ledger.status(binding.name) else null
             binding.accept(value)
+            if (binding.name == "KeyAltitude") {
+                altitudeReceivedAtMonotonicMs = (value as? Double)
+                    ?.takeIf { height -> height.isFinite() }
+                    ?.let { SystemClock.elapsedRealtime() }
+            }
             Pair(status, ledger.attachedAtMs?.let { now - it })
         }
         if (first != null) {
@@ -346,6 +359,9 @@ internal class ProbeAircraft(
             yawDeg = yaw,
             virtualStickEnabled = virtualStickEnabled,
             authorityLostReason = authorityLostReason,
+            localHeight = altitude?.let { height ->
+                altitudeReceivedAtMonotonicMs?.let { receivedAtMs -> LocalHeightMeasurement(height, receivedAtMs) }
+            },
         )
     }
 
