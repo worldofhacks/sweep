@@ -120,6 +120,7 @@ class _AircraftRecord:
     history_truncated: int = 0
     camera_capabilities: CapabilitiesFrame | None = None
     node_status: NodeStatusFrame | None = None
+    node_status_received_at: int | None = None
     # The latest node_status that claimed publishing; kept across rejoin as frame history.
     video_publishing_at: int | None = None
 
@@ -673,12 +674,16 @@ class FleetRegistry:
             self.check_current(frame.drone_id, frame.connection_epoch)
             self._aircraft[frame.drone_id].camera_capabilities = frame
 
-    def apply_node_status(self, frame: NodeStatusFrame) -> None:
+    def apply_node_status(self, frame: NodeStatusFrame, *, received_at: int | None = None) -> None:
         """Retain the node's latest bridge health; only signed readiness changes authority."""
+        effective_received_at = frame.t if received_at is None else received_at
+        if effective_received_at < 0:
+            raise ValueError("node status receipt time must be non-negative")
         with self._lock:
             self.check_current(frame.drone_id, frame.connection_epoch)
             record = self._aircraft[frame.drone_id]
             record.node_status = frame
+            record.node_status_received_at = effective_received_at
             if frame.video_publish_state is VideoPublishState.PUBLISHING:
                 record.video_publishing_at = max(record.video_publishing_at or 0, frame.t)
 
@@ -924,7 +929,9 @@ class FleetRegistry:
                 else record.camera_capabilities.state_payload()
             ),
             "node_status": (
-                None if record.node_status is None else record.node_status.state_payload()
+                None
+                if record.node_status is None
+                else record.node_status.state_payload(reported_at_ms=record.node_status_received_at)
             ),
             "video": project_video(
                 membership=record.membership,

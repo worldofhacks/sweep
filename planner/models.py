@@ -158,6 +158,7 @@ class RefusalReason(StrEnum):
     BATTERY_CRITICAL = "battery_critical"
     LINK_QUALITY = "link_quality"
     LINK_STALE = "link_stale"
+    LOCAL_HEIGHT_UNAVAILABLE = "local_height_unavailable"
     POSITION_QUALITY = "position_quality"
     POSITION_STALE = "position_stale"
     OPERATOR_ABSENT = "operator_absent"
@@ -242,6 +243,21 @@ class Geofence:
 
 
 @dataclass(frozen=True, slots=True)
+class LocalHeightEvidence:
+    z_m: float
+    observed_at_ms: int
+    source: str
+
+    def __post_init__(self) -> None:
+        if not _is_finite_number(self.z_m):
+            raise ValueError("local height must be finite")
+        if not _is_nonnegative_int(self.observed_at_ms):
+            raise ValueError("local height observation timestamp must be non-negative")
+        if not isinstance(self.source, str) or not self.source:
+            raise ValueError("local height source must be non-empty")
+
+
+@dataclass(frozen=True, slots=True)
 class AircraftState:
     drone_id: int
     connection_epoch: int
@@ -263,6 +279,8 @@ class AircraftState:
     heading_deg: float | None = None
     active_task_id: str | None = None
     position_loss_since_ms: int | None = None
+    local_height: LocalHeightEvidence | None = None
+    readiness_reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -320,6 +338,13 @@ class AircraftState:
             self.position_loss_since_ms
         ):
             raise ValueError("position_loss_since_ms must be null or non-negative")
+        if self.local_height is not None and not isinstance(self.local_height, LocalHeightEvidence):
+            raise ValueError("local_height must be LocalHeightEvidence or null")
+        if (
+            not isinstance(self.readiness_reasons, tuple)
+            or any(not isinstance(reason, str) or not reason for reason in self.readiness_reasons)
+        ):
+            raise ValueError("readiness_reasons must be non-empty strings")
 
     @property
     def airborne(self) -> bool:
@@ -364,6 +389,8 @@ class AircraftState:
             heading_deg=_optional_heading(raw.get("heading_deg")),
             active_task_id=_optional_string(raw.get("active_task_id")),
             position_loss_since_ms=_optional_nonnegative_int(raw.get("position_loss_since_ms")),
+            local_height=_local_height_evidence(raw.get("local_height")),
+            readiness_reasons=_readiness_reasons(raw.get("readiness_reasons", ())),
         )
 
     def to_dict(self) -> dict[str, JsonValue]:
@@ -388,6 +415,16 @@ class AircraftState:
             "heading_deg": self.heading_deg,
             "active_task_id": self.active_task_id,
             "position_loss_since_ms": self.position_loss_since_ms,
+            "local_height": (
+                None
+                if self.local_height is None
+                else {
+                    "z_m": self.local_height.z_m,
+                    "observed_at_ms": self.local_height.observed_at_ms,
+                    "source": self.local_height.source,
+                }
+            ),
+            "readiness_reasons": list(self.readiness_reasons),
         }
 
 
@@ -404,6 +441,7 @@ class FleetSnapshot:
     formation: str = "none"
     spacing: float = 0.8
     fleet_observation_complete: bool = False
+    ground_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.roster_version):
@@ -417,6 +455,15 @@ class FleetSnapshot:
             for drone_id in self.selection
         ):
             raise ValueError("selection ids must be positive integers")
+        if (
+            not isinstance(self.ground_ids, tuple)
+            or any(
+                not isinstance(drone_id, int) or isinstance(drone_id, bool) or drone_id <= 0
+                for drone_id in self.ground_ids
+            )
+            or len(set(self.ground_ids)) != len(self.ground_ids)
+        ):
+            raise ValueError("ground ids must be unique positive integers")
         if not isinstance(self.armed, bool) or not isinstance(self.estop_active, bool):
             raise ValueError("armed and estop_active must be booleans")
         if not isinstance(self.operator_present, bool):
@@ -487,6 +534,7 @@ class FleetSnapshot:
             formation=_string(raw, "formation", fallback="none"),
             spacing=_number_or_default(raw, "spacing", 0.8),
             fleet_observation_complete=fleet_observation_complete,
+            ground_ids=(),
         )
 
     @classmethod
@@ -604,12 +652,18 @@ class FleetSnapshot:
                     ),
                     active_task_id=safety.active_task_id,
                     position_loss_since_ms=safety.position_loss_since_ms,
+                    local_height=safety.local_height,
+                    readiness_reasons=safety.readiness_reasons,
                 )
             )
 
         selection_raw = raw.get("selection")
         if not isinstance(selection_raw, Iterable) or isinstance(selection_raw, str | bytes):
             raise ValueError("relay selection must be an iterable of aircraft ids")
+        ground_ids_raw = raw.get("ground_ids", ())
+        if not isinstance(ground_ids_raw, Iterable) or isinstance(ground_ids_raw, str | bytes):
+            raise ValueError("relay ground ids must be an iterable")
+        ground_ids = tuple(_parse_drone_id(value) for value in ground_ids_raw)
         return cls(
             roster_version=_nonnegative_int(raw, "roster_version"),
             aircraft={state.drone_id: state for state in states},
@@ -622,6 +676,7 @@ class FleetSnapshot:
             formation=_string(raw, "formation", fallback="none"),
             spacing=_number_or_default(raw, "spacing", 0.8),
             fleet_observation_complete=enrichment.fleet_observation_complete,
+            ground_ids=ground_ids,
         )
 
     def to_dict(self) -> dict[str, JsonValue]:
@@ -637,6 +692,7 @@ class FleetSnapshot:
             "formation": self.formation,
             "spacing": self.spacing,
             "fleet_observation_complete": self.fleet_observation_complete,
+            "ground_ids": list(self.ground_ids),
         }
 
 
@@ -820,6 +876,8 @@ class RelayAircraftSafetyEnrichment:
     last_known_position_quality: float | None = None
     last_link_seen_ms: int | None = None
     last_position_seen_ms: int | None = None
+    local_height: LocalHeightEvidence | None = None
+    readiness_reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -848,6 +906,13 @@ class RelayAircraftSafetyEnrichment:
         ):
             if value is not None and not _is_nonnegative_int(value):
                 raise ValueError("enrichment timestamps must be null or non-negative")
+        if self.local_height is not None and not isinstance(self.local_height, LocalHeightEvidence):
+            raise ValueError("local_height must be LocalHeightEvidence or null")
+        if (
+            not isinstance(self.readiness_reasons, tuple)
+            or any(not isinstance(reason, str) or not reason for reason in self.readiness_reasons)
+        ):
+            raise ValueError("readiness_reasons must be non-empty strings")
         for value in (
             self.last_known_battery,
             self.last_known_link_quality,
@@ -877,6 +942,26 @@ class RelaySnapshotEnrichment:
         if any(drone_id != value.drone_id for drone_id, value in normalized.items()):
             raise ValueError("enrichment keys must match drone_id")
         object.__setattr__(self, "aircraft", MappingProxyType(normalized))
+
+
+def _readiness_reasons(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(reason, str) or not reason for reason in value
+    ):
+        raise ValueError("readiness_reasons must be non-empty strings")
+    return tuple(value)
+
+
+def _local_height_evidence(value: object) -> LocalHeightEvidence | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("local_height must be a mapping or null")
+    return LocalHeightEvidence(
+        z_m=_number(value, "z_m"),
+        observed_at_ms=_nonnegative_int(value, "observed_at_ms"),
+        source=_string(value, "source"),
+    )
 
 
 def _json_native(value: object) -> JsonValue:

@@ -96,6 +96,18 @@ export const C1_BASIC_CONTROL_INTENTS: readonly ConsoleIntentName[] = [
   'translate',
 ]
 
+export const SUPERVISED_VERTICAL_INTENTS: readonly ConsoleIntentName[] = [
+  'arm',
+  'estop',
+  'hold',
+  'land',
+  'land_all',
+  'select',
+  'takeoff',
+  'ground_velocity',
+  'survey_area',
+]
+
 /** The exact profile emitted by a C2 simulator relay. */
 export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
   'arm',
@@ -550,6 +562,13 @@ export type RelayTelemetryState = Partial<Omit<RelayTelemetryEvent, 'event_id' |
 export type RelayNodeStatusState = Omit<RelayNodeStatusEvent, 'event_id' | 'session' | 'connection_epoch'>
 export type RelayCameraCapabilitiesState = Omit<RelayCapabilitiesEvent, 'event_id' | 'session' | 'connection_epoch'>
 
+export interface RelayLocalHeight {
+  z_m: number
+  source: 'flight_controller_altitude'
+  age_ms: number
+  reported_at_ms?: number
+}
+
 export interface RelayNodeStatusEvent extends RelayNodeEventEnvelope {
   type: 'node_status'
   virtual_stick_enabled: boolean
@@ -559,6 +578,7 @@ export interface RelayNodeStatusEvent extends RelayNodeEventEnvelope {
   video_publish_state: 'stopped' | 'connecting' | 'publishing' | 'failed'
   phone_battery_percent: number
   phone_thermal_state: 'none' | 'light' | 'moderate' | 'severe' | 'critical' | 'emergency' | 'shutdown'
+  local_height?: RelayLocalHeight
   device_telemetry?: DeviceTelemetry
 }
 
@@ -1057,7 +1077,9 @@ function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled 
       ? C1_BASIC_CONTROL_INTENTS
       : profile === 'c2_fleet_operations'
         ? C2_FLEET_OPERATIONS_INTENTS
-        : null
+        : profile === 'supervised_vertical'
+          ? SUPERVISED_VERTICAL_INTENTS
+          : null
   return (
     exactProfile === null ||
     (enabled.every((name) => name === 'body_pulse' || name === 'robot_peripheral' || name === 'camera_control' || exactProfile.includes(name as ConsoleIntentName)) &&
@@ -1338,15 +1360,32 @@ function isPublicCapabilitiesEvent(value: Record<string, unknown>): boolean {
 }
 
 function isPublicNodeStatusEvent(value: Record<string, unknown>): boolean {
+  const optional = [
+    ...(Object.hasOwn(value, 'device_telemetry') ? ['device_telemetry'] : []),
+    ...(Object.hasOwn(value, 'local_height') ? ['local_height'] : []),
+  ]
   return hasPublicNodeEnvelope(value, ['virtual_stick_enabled', 'control_authority', 'authority_change_reason',
-    'watchdog_state', 'video_publish_state', 'phone_battery_percent', 'phone_thermal_state', ...(Object.hasOwn(value, 'device_telemetry') ? ['device_telemetry'] : [])]) &&
+    'watchdog_state', 'video_publish_state', 'phone_battery_percent', 'phone_thermal_state', ...optional]) &&
     (!Object.hasOwn(value, 'device_telemetry') || isDeviceTelemetry(value.device_telemetry)) &&
+    (!Object.hasOwn(value, 'local_height') || isLocalHeight(value.local_height)) &&
     typeof value.virtual_stick_enabled === 'boolean' && typeof value.control_authority === 'boolean' &&
     (value.authority_change_reason === null || (isBoundedNodeText(value.authority_change_reason) && /^[a-z0-9_]+$/.test(value.authority_change_reason))) &&
     (value.watchdog_state === 'nominal' || value.watchdog_state === 'hold' || value.watchdog_state === 'failsafe') &&
     (value.video_publish_state === 'stopped' || value.video_publish_state === 'connecting' || value.video_publish_state === 'publishing' || value.video_publish_state === 'failed') &&
     Number.isInteger(value.phone_battery_percent) && Number(value.phone_battery_percent) >= 0 && Number(value.phone_battery_percent) <= 100 &&
     typeof value.phone_thermal_state === 'string' && ['none', 'light', 'moderate', 'severe', 'critical', 'emergency', 'shutdown'].includes(value.phone_thermal_state)
+}
+
+function isLocalHeight(value: unknown): value is RelayLocalHeight {
+  if (!isRecord(value)) return false
+  const fields = Object.hasOwn(value, 'reported_at_ms')
+    ? ['z_m', 'source', 'age_ms', 'reported_at_ms']
+    : ['z_m', 'source', 'age_ms']
+  return hasExactFields(value, fields) &&
+    isFiniteNumber(value.z_m) &&
+    value.source === 'flight_controller_altitude' &&
+    isNonNegativeInteger(value.age_ms) &&
+    (value.reported_at_ms === undefined || isNonNegativeInteger(value.reported_at_ms))
 }
 
 function isPublicCaptureReadinessEvent(value: Record<string, unknown>): boolean {

@@ -7,6 +7,7 @@ import {
   dpadBlockedReason,
   formationControls,
   type CatalogRow,
+  supervisedVerticalProfile,
   type ControlSpec,
 } from './controls'
 
@@ -20,6 +21,11 @@ export interface CommandsPaneProps {
 export function CommandsPane({ controller, steps, onSteps }: CommandsPaneProps) {
   const { state, issueIntent, selectAllReady } = controller
   const dpadReason = dpadBlockedReason(state)
+  const supervisedVertical = supervisedVerticalProfile(state)
+  const catalog = commandCatalog(state).map((group) => ({
+    ...group,
+    rows: supervisedVertical ? group.rows.filter((row) => row.spec === null || row.spec.supported) : group.rows,
+  })).filter((group) => group.rows.length > 0)
   const run = (spec: ControlSpec) => {
     if (spec.name === 'select') selectAllReady()
     else issueIntent(spec.press)
@@ -29,7 +35,7 @@ export function CommandsPane({ controller, steps, onSteps }: CommandsPaneProps) 
 
   return (
     <div>
-      {commandCatalog(state).map((group) => (
+      {catalog.map((group) => (
         <div key={group.title} className="ct-catalog-group" role="group" aria-label={`${group.title} commands`}>
           <p className="ct-eyebrow">{group.title}</p>
           {group.rows.map((row) => (
@@ -53,7 +59,8 @@ export function CommandsPane({ controller, steps, onSteps }: CommandsPaneProps) 
           ))}
         </div>
       ))}
-      <div className="ct-commands-extras">
+      {!supervisedVertical && (
+        <div className="ct-commands-extras">
         <div>
           <p className="ct-eyebrow">Translate</p>
           <TranslatePad
@@ -114,7 +121,8 @@ export function CommandsPane({ controller, steps, onSteps }: CommandsPaneProps) 
             ))}
           </div>
         </div>
-      </div>
+        </div>
+      )}
     </div>
   )
 }

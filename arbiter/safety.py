@@ -162,6 +162,8 @@ class SafetyConfig:
 
 
 class SafetyArbiter:
+    requires_world_positioning = True
+
     def __init__(self, config: SafetyConfig) -> None:
         self.config = config
 

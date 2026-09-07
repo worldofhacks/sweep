@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   C1_BASIC_CONTROL_INTENTS,
   C2_FLEET_OPERATIONS_INTENTS,
+  SUPERVISED_VERTICAL_INTENTS,
   FORMATION_NAMES,
   MAX_INTENT_DRONE_ID,
   MAX_INTENT_DRONE_IDS,
@@ -74,6 +75,18 @@ describe('M1.1 wire compatibility', () => {
     expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse'] })).toBeNull()
     expect(parseRelayServerEvent({ ...state, enabled_intent_names: ['body_pulse'] })).toBeNull()
     expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse', 'unknown'] })).toBeNull()
+  })
+
+  test('accepts only the exact supervised vertical capability set', () => {
+    const state = {
+      v: 1, t, type: 'state', event_id: 'vertical-profile', session,
+      roster_version: 1, armed: false, estop: false, selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'supervised_vertical', enabled_intent_names: [...SUPERVISED_VERTICAL_INTENTS],
+      pending: null, accepted_plan: null, drones: [aircraft()],
+    }
+    expect(parseRelayServerEvent(state)).not.toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...SUPERVISED_VERTICAL_INTENTS, 'translate'] })).toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: ['takeoff'] })).toBeNull()
   })
 
   test('normalizes the deployed ground state and accepts its signed pose evidence', () => {
@@ -432,6 +445,18 @@ describe('M1.1 wire compatibility', () => {
       drone: 1,
       connection_epoch: 2,
     })
+  })
+
+  test('accepts optional SDK local-height evidence and refuses a null placeholder', () => {
+    const status = {
+      v: 1, t, type: 'node_status', event_id: 'height-status', session, drone_id: 1,
+      connection_epoch: 2, virtual_stick_enabled: false, control_authority: true,
+      authority_change_reason: null, watchdog_state: 'nominal', video_publish_state: 'stopped',
+      phone_battery_percent: 80, phone_thermal_state: 'none',
+      local_height: { z_m: 0.4, source: 'flight_controller_altitude', age_ms: 12 },
+    }
+    expect(parseRelayServerEvent(status)).toMatchObject({ type: 'node_status', local_height: { z_m: 0.4 } })
+    expect(parseRelayServerEvent({ ...status, local_height: null })).toBeNull()
   })
 
   test('accepts node-local safety actions as operator-visible evidence', () => {

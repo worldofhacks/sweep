@@ -60,6 +60,10 @@ export interface ControlSpec {
   rule: SelectionRule
 }
 
+export function supervisedVerticalProfile(state: ControlState): boolean {
+  return state.capabilityProfile === 'supervised_vertical'
+}
+
 export const FORMATION_NAMES = CONTRACT_FORMATION_NAMES
 const FORMATION_SPACING_CLEARANCE_FACTOR = 1.01
 

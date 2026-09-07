@@ -403,7 +403,22 @@ def test_node_status_frame_reports_watchdog_and_phone_health() -> None:
     assert frame.to_event() == raw
     payload = frame.state_payload()
     assert payload["type"] == "node_status"
+    assert payload["local_height"] is None
     assert "event_id" not in payload
+
+
+def test_node_status_local_height_is_an_optional_object_not_null() -> None:
+    raw = node_status_payload(
+        event_id="status-height",
+        local_height={"z_m": 0.4, "source": "flight_controller_altitude", "age_ms": 12},
+    )
+
+    frame = parse_node_status(raw)
+
+    assert frame.local_height is not None
+    assert frame.local_height.z_m == 0.4
+    with pytest.raises(ContractError, match="local_height must be an object"):
+        parse_node_status(node_status_payload(event_id="status-height-null", local_height=None))
 
 
 @pytest.mark.parametrize(
