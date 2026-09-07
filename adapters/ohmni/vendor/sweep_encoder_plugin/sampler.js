@@ -39,6 +39,7 @@ function PairedEncoderSampler(serial, socketPath, options) {
   this._pollId = 0;
   this._active = null;
   this._failed = false;
+  this._unavailable = null;
   this._timer = null;
   this._server = null;
   this._clients = [];
@@ -106,6 +107,7 @@ PairedEncoderSampler.prototype._createServer = function () {
     this._clients.push(client);
     client.on('error', () => this._removeClient(client));
     client.on('close', () => this._removeClient(client));
+    if (this._unavailable) client.write(JSON.stringify(this._unavailable) + '\n');
   });
   this._server.listen(this._socketPath, () => fs.chmodSync(this._socketPath, 0o600));
 };
@@ -157,6 +159,7 @@ PairedEncoderSampler.prototype.beginInitialization = function () {
 PairedEncoderSampler.prototype.activate = function () {
   if (this._stopped || this._failed || this._qualified || !this._serial.opened) return;
   this._qualified = true;
+  this._unavailable = null;
   this._schedule(0);
 };
 
@@ -252,6 +255,7 @@ PairedEncoderSampler.prototype._abortActive = function () {
 };
 
 PairedEncoderSampler.prototype._publish = function (payload) {
+  if (payload.type === 'sweep_encoder_unavailable') this._unavailable = payload;
   const message = JSON.stringify(payload) + '\n';
   this._clients.slice().forEach((client) => {
     if (client.destroyed) return;
