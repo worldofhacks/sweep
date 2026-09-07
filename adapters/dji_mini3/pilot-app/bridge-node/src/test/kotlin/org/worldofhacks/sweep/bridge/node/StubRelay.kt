@@ -47,6 +47,7 @@ class StubRelay(
     private val sockets = CopyOnWriteArrayList<WebSocket>()
     private val events = AtomicLong()
     private val heartbeatSeq = AtomicLong()
+    private val navigationSeq = AtomicLong()
     private val heartbeatLoop = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "stub-control-heartbeat").apply { isDaemon = true }
     }
@@ -212,6 +213,49 @@ class StubRelay(
         val event = unsigned.with("signature", JsonString(Signing.sign(unsigned, signingKey)))
         broadcast(event)
         return event
+    }
+
+    fun sendNavigationAuthorization(
+        timestamp: Long = relayNow(),
+        commandId: String = "route-command-1",
+        routeId: String = "route-1",
+        navigationConfigId: String = "navigation-a",
+        signingKey: ByteArray = key,
+    ): JsonObject {
+        val unsigned = Json.value(linkedMapOf(
+            "v" to 1, "type" to "navigation_route_authorization", "t" to timestamp, "expires_at_ms" to timestamp + 1_000,
+            "event_id" to eventId(), "session" to session, "device_id" to droneId, "connection_epoch" to epoch.get(),
+            "command_id" to commandId, "route_id" to routeId, "seq" to navigationSeq.incrementAndGet(), "position_frame" to "map_enu",
+            "clock_lease_id" to "lease-1", "max_clock_error_ms" to 25, "navigation_config_id" to navigationConfigId,
+            "navigation_config_sha256" to NAV_HASH, "map_version" to "map-v1", "map_sha256" to NAV_HASH, "geometry_sha256" to NAV_HASH,
+            "camera_calibration_sha256" to NAV_HASH, "body_extrinsics_sha256" to NAV_HASH, "world_transform_sha256" to NAV_HASH,
+            "control_source_ids" to listOf("tag-source"), "segments" to listOf(linkedMapOf(
+                "start_x_mm" to 0, "start_y_mm" to 0, "start_z_mm" to 1_000, "end_x_mm" to 1_000, "end_y_mm" to 0, "end_z_mm" to 1_000, "tube_radius_mm" to 200,
+            )), "max_speed_mm_s" to 300, "max_acceleration_mm_s2" to 300, "max_deceleration_mm_s2" to 300,
+            "max_position_uncertainty_mm" to 50, "max_cross_track_mm" to 200, "arrival_horizontal_tolerance_mm" to 100,
+            "arrival_vertical_tolerance_mm" to 100, "pose_freshness_ms" to 500, "tracking_timeout_ms" to 1_000, "flight_approved" to true,
+        )) as JsonObject
+        return unsigned.with("signature", JsonString(Signing.sign(unsigned, signingKey))).also(::broadcast)
+    }
+
+    fun sendNavigationPose(
+        timestamp: Long = relayNow(),
+        commandId: String = "route-command-1",
+        routeId: String = "route-1",
+        navigationConfigId: String = "navigation-a",
+        signingKey: ByteArray = key,
+    ): JsonObject {
+        val unsigned = Json.value(linkedMapOf(
+            "v" to 1, "type" to "navigation_pose", "t" to timestamp, "event_id" to eventId(), "session" to session,
+            "device_id" to droneId, "connection_epoch" to epoch.get(), "command_id" to commandId, "route_id" to routeId,
+            "seq" to navigationSeq.incrementAndGet(), "position_frame" to "map_enu", "clock_lease_id" to "lease-1",
+            "navigation_config_id" to navigationConfigId, "navigation_config_sha256" to NAV_HASH, "map_version" to "map-v1",
+            "map_sha256" to NAV_HASH, "geometry_sha256" to NAV_HASH, "camera_calibration_sha256" to NAV_HASH,
+            "body_extrinsics_sha256" to NAV_HASH, "world_transform_sha256" to NAV_HASH, "control_source_ids" to listOf("tag-source"),
+            "pose_time_ms" to timestamp, "fix_time_ms" to timestamp, "x_mm" to 0, "y_mm" to 0, "z_mm" to 1_000,
+            "position_uncertainty_mm" to 20, "status" to "ready", "flight_approved" to true,
+        )) as JsonObject
+        return unsigned.with("signature", JsonString(Signing.sign(unsigned, signingKey))).also(::broadcast)
     }
 
     fun dropConnections() {
@@ -381,4 +425,8 @@ class StubRelay(
             sockets -= webSocket
         }
     }
+    private companion object {
+        const val NAV_HASH = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+
 }
