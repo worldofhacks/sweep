@@ -209,7 +209,7 @@ class SessionAuditLog:
                     raise AuditLogError(
                         "session log replay is uncertain after an incomplete operation"
                     )
-            records = self._committed_records(parse=True)
+            records = self._committed_records(parse=True, deadline=deadline)
             return [record for record in records if record["seq"] > after_sequence], len(records)
         finally:
             self._lock.release()
@@ -746,7 +746,9 @@ class SessionAuditLog:
             if mirror is not None:
                 mirror.close()
 
-    def _committed_records(self, *, parse: bool) -> list[dict[str, object]]:
+    def _committed_records(
+        self, *, parse: bool, deadline: float | None = None
+    ) -> list[dict[str, object]]:
         """Verify every mirror line against its committed digest, parsing on request."""
         rows = self._database_rows()
         if not self.path.exists():
@@ -757,6 +759,8 @@ class SessionAuditLog:
         try:
             with open(self.path, "rb", buffering=_MIRROR_READ_BUFFER) as stream:
                 for line_number, row in enumerate(rows, start=1):
+                    if deadline is not None and monotonic() >= deadline:
+                        raise AuditLogError("session log read exceeded the live replay deadline")
                     chunk = stream.read(row.length)
                     if len(chunk) != row.length or hashlib.sha256(chunk).digest() != row.digest:
                         self._fail_divergent_mirror()
@@ -768,6 +772,8 @@ class SessionAuditLog:
                         raise AuditLogError(f"cannot replay {self.path.name}: {error}") from None
                     _validate_record(record, line_number, self.session, line_number)
                     records.append(record)
+                if deadline is not None and monotonic() >= deadline:
+                    raise AuditLogError("session log read exceeded the live replay deadline")
                 if stream.read(1):
                     self._fail_divergent_mirror()
         except OSError as error:

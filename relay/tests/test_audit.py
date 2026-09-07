@@ -141,6 +141,39 @@ def test_replay_deadline_includes_waiting_to_acquire_the_audit_lock(
     assert [record["seq"] for record in log.replay()] == [1]
 
 
+@pytest.mark.parametrize("slow_phase", ["row_read", "decode"])
+def test_live_history_read_times_out_without_blocking_later_appends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slow_phase: str
+) -> None:
+    log = SessionAuditLog(tmp_path, "session-1")
+    log.append(_event("before-history"))
+    clock = [0.0]
+    real_rows = log._database_rows
+    real_loads = json.loads
+
+    def slow_rows():
+        for row in real_rows():
+            clock[0] = 2.0
+            yield row
+
+    def slow_decode(chunk):
+        record = real_loads(chunk)
+        clock[0] = 2.0
+        return record
+
+    with monkeypatch.context() as patch:
+        patch.setattr("relay.audit.monotonic", lambda: clock[0])
+        if slow_phase == "row_read":
+            patch.setattr(log, "_database_rows", slow_rows)
+        else:
+            patch.setattr("relay.audit.json.loads", slow_decode)
+        with pytest.raises(AuditLogError, match="live replay deadline"):
+            log.replay_snapshot(deadline=1.0)
+
+    assert log.append(_event("after-history"))["seq"] == 2
+    assert [record["seq"] for record in log.replay()] == [1, 2]
+
+
 @pytest.mark.parametrize("reopen", [False, True])
 def test_schema_initialization_runs_once_per_log_with_full_durability_on_every_connection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reopen: bool
