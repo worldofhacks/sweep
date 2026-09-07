@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -220,7 +221,16 @@ def _camera(event_id: str, capture_ns: int, image_id: str) -> Observation:
     )
 
 
-def _body(event_id: str, capture_ns: int) -> Observation:
+def _body(
+    event_id: str,
+    capture_ns: int,
+    *,
+    x_m: float = 0,
+    y_m: float = 0,
+    z_m: float = 0,
+    qz: float = 0,
+    qw: float = 1,
+) -> Observation:
     return _event(
         event_id,
         "odom",
@@ -230,13 +240,13 @@ def _body(event_id: str, capture_ns: int) -> Observation:
             "pose": {
                 "parent_frame": "odom",
                 "child_frame": "body",
-                "x_m": 0,
-                "y_m": 0,
-                "z_m": 0,
+                "x_m": x_m,
+                "y_m": y_m,
+                "z_m": z_m,
                 "qx": 0,
                 "qy": 0,
-                "qz": 0,
-                "qw": 1,
+                "qz": qz,
+                "qw": qw,
             },
         },
         POSE_SCOPE,
@@ -301,7 +311,9 @@ def _fuse(events: list[Observation], *, vertical: bool = True) -> dict[str, obje
     )
 
 
-def _fuse_local_odom(events: list[Observation]) -> dict[str, object]:
+def _fuse_local_odom(
+    events: list[Observation], mount_document: dict[str, object] | None = None
+) -> dict[str, object]:
     request = parse_fusion_request(_local_odom_request())
     calibration = _calibration(
         _calibration_document(), {"path": "calibration.json", "sha256": "c" * 64}
@@ -310,7 +322,7 @@ def _fuse_local_odom(events: list[Observation]) -> dict[str, object]:
         events,
         request=request,
         calibration=calibration,
-        mount=_mount(_mount_document(), calibration),
+        mount=_mount(_mount_document() if mount_document is None else mount_document, calibration),
         registration=None,
         input_pins={
             name: {"path": f"{name}.json", "sha256": name[0] * 64}
@@ -364,6 +376,13 @@ def test_fusion_without_measured_vertical_datum_is_explicitly_odom_only() -> Non
 
 
 def test_local_odom_mode_fuses_camera_tag_through_measured_body_mount() -> None:
+    mount_document = _mount_document()
+    mount_document["T_body_camera"] = [
+        [0.0, -1.0, 0.0, 0.5],
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.25],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
     events = []
     for index in range(2):
         capture = 1_000_000 + index * 10_000
@@ -371,20 +390,41 @@ def test_local_odom_mode_fuses_camera_tag_through_measured_body_mount() -> None:
         events.extend(
             [
                 _camera(f"local-camera-{index}", capture, image),
-                _body(f"local-body-{index}", capture),
+                _body(
+                    f"local-body-{index}",
+                    capture,
+                    x_m=1.0,
+                    y_m=2.0,
+                    z_m=3.0,
+                    qz=math.sqrt(0.5),
+                    qw=math.sqrt(0.5),
+                ),
                 _tag(f"local-tag-{index}", capture, image, 42, 1.25),
             ]
         )
 
-    result = _fuse_local_odom(events)
+    result = _fuse_local_odom(events, mount_document)
 
     assert result["approval_status"] == "unapproved"
     assert result["candidate_mode"] == "local_odom"
     assert result["candidate_frame"] == "odom"
     assert result["candidates"][0]["tag_id"] == 42
-    assert result["candidates"][0]["T_odom_tag"][0][3] == pytest.approx(1.25)
+    transform = result["candidates"][0]["T_odom_tag"]
+    assert transform[0][3] == pytest.approx(-0.25)
+    assert transform[1][3] == pytest.approx(2.5)
+    assert transform[2][3] == pytest.approx(4.25)
+    assert transform[0][:2] == pytest.approx([-1.0, 0.0])
+    assert transform[1][:2] == pytest.approx([0.0, -1.0])
     assert {"registration", "vertical_datum", "checkpoint"}.isdisjoint(result)
     assert "world registered" in result["claim_scope"]
+
+
+def test_local_odom_request_rejects_world_evidence_fields() -> None:
+    request = _local_odom_request()
+    request["registration"] = {"path": "registration.json", "sha256": "a" * 64}
+
+    with pytest.raises(ValueError, match="fusion request schema is invalid"):
+        parse_fusion_request(request)
 
 
 def test_local_odom_mode_refuses_bad_capture_association_and_ambiguous_pose() -> None:
