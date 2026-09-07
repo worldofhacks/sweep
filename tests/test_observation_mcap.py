@@ -66,7 +66,12 @@ def test_import_rejects_falsified_contract_and_corrupt_mcap(tmp_path):
     encoded = _jsonl(tmp_path / "input.jsonl", ("aircraft-world.json",))[0]
     false_contract = tmp_path / "false.mcap"
     with false_contract.open("xb") as stream:
-        writer = Writer(stream, compression=CompressionType.NONE, use_chunking=False)
+        writer = Writer(
+            stream,
+            compression=CompressionType.NONE,
+            use_chunking=False,
+            enable_data_crcs=True,
+        )
         writer.start(profile=PROFILE, library=LIBRARY)
         schema_id = writer.register_schema(SCHEMA_NAME, SCHEMA_ENCODING, SCHEMA)
         channel_id = writer.register_channel("/other", MESSAGE_ENCODING, schema_id)
@@ -79,6 +84,47 @@ def test_import_rejects_falsified_contract_and_corrupt_mcap(tmp_path):
     corrupt.write_bytes(false_contract.read_bytes()[:-8])
     with pytest.raises(McapError, match="invalid MCAP"):
         import_mcap(corrupt)
+
+
+def test_import_rejects_an_unchecked_tampered_data_section(tmp_path):
+    encoded = _jsonl(tmp_path / "input.jsonl", ("aircraft-world.json",))[0]
+    unchecked = tmp_path / "unchecked.mcap"
+    with unchecked.open("xb") as stream:
+        writer = Writer(
+            stream,
+            compression=CompressionType.NONE,
+            use_chunking=False,
+            enable_data_crcs=False,
+        )
+        writer.start(profile=PROFILE, library=LIBRARY)
+        schema_id = writer.register_schema(SCHEMA_NAME, SCHEMA_ENCODING, SCHEMA)
+        channel_id = writer.register_channel(
+            TOPIC,
+            MESSAGE_ENCODING,
+            schema_id,
+            metadata={"sweep_contract": "observation/v1"},
+        )
+        writer.add_message(channel_id, 1_005_000_000, encoded, 1_005_000_000)
+        writer.finish()
+    unchecked.write_bytes(
+        unchecked.read_bytes().replace(b'"confidence":0.9', b'"confidence":0.8', 1)
+    )
+
+    with pytest.raises(McapError, match="data section checksum"):
+        import_mcap(unchecked)
+
+
+def test_import_rejects_a_tampered_summary_before_using_its_metadata(tmp_path):
+    input_jsonl = tmp_path / "input.jsonl"
+    _jsonl(input_jsonl, ("aircraft-world.json",))
+    mcap = tmp_path / "observations.mcap"
+    export_jsonl(input_jsonl, mcap)
+    data = mcap.read_bytes()
+    offset = data.rfind(b"/sweep/observations")
+    mcap.write_bytes(data[:offset] + b"/sweep/observationx" + data[offset + 19 :])
+
+    with pytest.raises(McapError, match="summary checksum"):
+        import_mcap(mcap)
 
 
 def test_import_rejects_compressed_chunks_before_decompression(tmp_path, monkeypatch):

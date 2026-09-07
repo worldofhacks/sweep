@@ -30,6 +30,8 @@ A timestamp is `{ "clock_id": string, "unit": "ms" | "ns", "value": integer }`. 
 
 MCAP export stores `t_ingest` in both MCAP timestamp fields. The canonical body retains `t_capture` and its source clock unchanged. A capture-derived MCAP timestamp requires the relay to persist an authenticated mapped capture time.
 
+MCAP imports require nonzero data-section and summary CRCs. The importer validates data before replay and validates the summary before reading contract metadata. CRCs detect accidental corruption; they do not authenticate an MCAP file.
+
 ## Frame declarations
 
 A declaration has `frame_id`, `kind`, `axis_convention`, and metric `unit`. The sole global declaration has `frame_id: "world"`, `kind: "world"`, `axis_convention: "right_handed_z_up"`, `map_id`, `map_version`, and `physical_datum`.

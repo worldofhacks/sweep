@@ -7,17 +7,22 @@ import json
 import os
 import secrets
 import stat
+import struct
 import tempfile
+import zlib
 from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
-from mcap.reader import NonSeekingReader, SeekingReader
+from mcap.opcode import Opcode
+from mcap.reader import FOOTER_SIZE, MAGIC_SIZE, NonSeekingReader, SeekingReader
 from mcap.records import (
     Attachment,
     AttachmentIndex,
     Chunk,
     ChunkIndex,
+    DataEnd,
+    Footer,
     MessageIndex,
     Metadata,
     MetadataIndex,
@@ -139,9 +144,54 @@ def _preflight_mcap(source) -> None:
         Metadata,
         MetadataIndex,
     )
+    data_ends: list[DataEnd] = []
+    footers: list[Footer] = []
     for record in reader.records:
         if isinstance(record, unsupported):
             raise McapError("MCAP contains a record outside the observation contract")
+        if isinstance(record, DataEnd):
+            data_ends.append(record)
+        elif isinstance(record, Footer):
+            footers.append(record)
+    if len(data_ends) != 1 or data_ends[0].data_section_crc == 0:
+        raise McapError("MCAP must contain one nonzero data section checksum")
+    if len(footers) != 1:
+        raise McapError("MCAP must contain one footer")
+    _validate_summary_crc(source, footers[0])
+
+
+def _validate_summary_crc(source, footer: Footer) -> None:
+    source.seek(0, os.SEEK_END)
+    footer_start = source.tell() - FOOTER_SIZE - MAGIC_SIZE
+    if (
+        footer.summary_crc == 0
+        or footer.summary_start == 0
+        or footer.summary_start > footer_start
+        or not footer.summary_start <= footer.summary_offset_start <= footer_start
+    ):
+        raise McapError("MCAP summary checksum is required")
+
+    source.seek(footer.summary_start)
+    checksum = 0
+    remaining = footer_start - footer.summary_start
+    while remaining:
+        block = source.read(min(64 * 1024, remaining))
+        if not block:
+            raise McapError("MCAP summary ends before its footer")
+        checksum = zlib.crc32(block, checksum)
+        remaining -= len(block)
+    checksum = zlib.crc32(
+        struct.pack(
+            "<BQQQ",
+            Opcode.FOOTER,
+            20,
+            footer.summary_start,
+            footer.summary_offset_start,
+        ),
+        checksum,
+    )
+    if checksum != footer.summary_crc:
+        raise McapError("MCAP summary checksum does not match")
 
 
 def _validate_mcap_header(source) -> None:
