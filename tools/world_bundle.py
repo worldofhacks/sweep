@@ -150,6 +150,7 @@ class _SourceSnapshots:
             )
             self.bytes[path] = payload
         _require(hashlib.sha256(payload).hexdigest() == digest, f"{name} hash mismatch")
+        _require(len(payload) <= limit, f"{name} exceeds its size limit")
         return payload
 
 
@@ -597,7 +598,10 @@ def _validate_tags(
                 type(other_id) is int and other_id in seen and other_id != tag["id"],
                 "tape verification needs another known tag",
             )
-            _require(measured > 0 and bound > 0, "tape measurement and bound must be positive")
+            _require(
+                measured > 0 and 0 < bound <= 0.10,
+                "tape measurement must be positive and error bound within (0, 0.10] metres",
+            )
             other = seen[other_id]
             expected = math.dist(
                 (tag["x_m"], tag["y_m"], tag["z_m"]), (other["x_m"], other["y_m"], other["z_m"])
