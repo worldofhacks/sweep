@@ -13,6 +13,8 @@ from urllib.parse import quote
 
 MAX_DEVICE_ID = 64
 FRAME_FRESHNESS_S = 3.0
+MIN_PTS_PORT = 1024
+MAX_PTS_PORT = 65_535
 
 
 @dataclass(frozen=True)
@@ -58,7 +60,17 @@ def publish_url(host: str, device_id: int, key: str) -> str:
     return f"rtsp://{path}:{quote(password, safe='')}@{origin}/{path}"
 
 
-def command(ffmpeg: str, url: str, source: V4LSource) -> list[str]:
+def _pts_url(port: int) -> str:
+    if type(port) is not int or not MIN_PTS_PORT <= port <= MAX_PTS_PORT:
+        raise ValueError("PTS sidecar port must be a non-privileged TCP port")
+    return f"tcp://127.0.0.1:{port}?tcp_nodelay=1"
+
+
+def _tee_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace(":", "\\:").replace("|", "\\|")
+
+
+def command(ffmpeg: str, url: str, source: V4LSource, *, pts_port: int | None = None) -> list[str]:
     values = [
         ffmpeg,
         "-nostdin",
@@ -79,12 +91,12 @@ def command(ffmpeg: str, url: str, source: V4LSource) -> list[str]:
     ]
     if source.input_fps is not None:
         values.extend(("-framerate", str(source.input_fps)))
+    if pts_port is None:
+        values.extend(("-i", source.device, "-r", "15"))
+    else:
+        values.extend(("-timestamps", "default", "-copyts", "-i", source.device))
     values.extend(
         (
-            "-i",
-            source.device,
-            "-r",
-            "15",
             "-c:v",
             "libx264",
             "-preset",
@@ -97,13 +109,27 @@ def command(ffmpeg: str, url: str, source: V4LSource) -> list[str]:
             "800k",
             "-g",
             "15",
-            "-rtsp_transport",
-            "tcp",
-            "-f",
-            "rtsp",
-            url,
         )
     )
+    if pts_port is None:
+        values.extend(("-rtsp_transport", "tcp", "-f", "rtsp", url))
+    else:
+        sidecar = _pts_url(pts_port)
+        values.extend(
+            (
+                "-fps_mode",
+                "passthrough",
+                "-map",
+                "0:v:0",
+                "-f",
+                "tee",
+                (
+                    f"[onfail=abort:f=rtsp:rtsp_transport=tcp]{_tee_escape(url)}"
+                    "|[onfail=abort:f=nut:syncpoints=none:write_index=0:"
+                    f"avoid_negative_ts=disabled]{_tee_escape(sidecar)}"
+                ),
+            )
+        )
     return values
 
 
@@ -120,6 +146,11 @@ def from_environment(host: str, key: str) -> Camera:
             height=int(os.environ["SWEEP_CAMERA_HEIGHT_PX"]),
         )
         device_id = int(os.environ["SWEEP_DEVICE_UNIT"])
+        pts_port = (
+            None
+            if "SWEEP_CAMERA_PTS_PORT" not in os.environ
+            else int(os.environ["SWEEP_CAMERA_PTS_PORT"])
+        )
     except KeyError as error:
         raise ValueError(f"camera publishing requires {error.args[0]}") from error
     except ValueError as error:
@@ -130,6 +161,7 @@ def from_environment(host: str, key: str) -> Camera:
         key,
         os.environ.get("SWEEP_FFMPEG", "/data/local/sweep/ffmpeg"),
         source,
+        pts_port=pts_port,
     )
 
 
@@ -142,9 +174,12 @@ class Camera:
         ffmpeg: str,
         source: V4LSource,
         *,
+        pts_port: int | None = None,
         monotonic=time.monotonic,
     ) -> None:
-        self._command = command(ffmpeg, publish_url(host, device_id, key), source)
+        self._command = command(
+            ffmpeg, publish_url(host, device_id, key), source, pts_port=pts_port
+        )
         self._monotonic = monotonic
         self._process: subprocess.Popen[bytes] | None = None
         self._stop = threading.Event()
