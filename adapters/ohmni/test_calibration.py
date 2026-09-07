@@ -165,3 +165,66 @@ def test_opposite_wheel_encoder_deltas_count_as_yaw_and_wheel_travel() -> None:
     expected_wheel_m = 100 / TICKS_PER_MM / 1000
     assert progress.wheel_travel_m == pytest.approx(expected_wheel_m)
     assert progress.yaw_degrees > 0
+
+
+def test_runner_completes_three_stages_with_actual_device_steps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from .calibration import CalibrationRunner
+
+    clock = Clock()
+    device = _device(monkeypatch, clock)
+    lease = _lease(clock)
+    state = {"x": 0.0, "y": 0.0, "yaw": 0.0, "poll": 1, "left": 1000, "right": 1000}
+
+    def snapshot(now=None):
+        pair = EncoderPair(
+            state["poll"], state["left"], state["right"], int(clock() * 1e9), int(clock() * 1e9)
+        )
+        return Pose(state["x"], state["y"], state["yaw"], quality=0.6), pair
+
+    device.odometry.snapshot_with_sample = snapshot  # type: ignore[method-assign]
+    device.odometry.snapshot = lambda now=None: snapshot(now)[0]  # type: ignore[method-assign]
+    sequence = 1
+
+    def tick(_delay: float) -> None:
+        nonlocal sequence
+        motion = device.motion
+        if motion and motion.velocity_m_s:
+            state["x"] += motion.velocity_m_s * 0.1
+            state["left"] += 700
+            state["right"] -= 700
+        elif motion and motion.yaw_rate_deg_s:
+            state["yaw"] += motion.yaw_rate_deg_s * 0.1
+            state["left"] += 600
+            state["right"] += 600
+        clock.value += 0.1
+        state["poll"] += 1
+        assert lease.renew(sequence + 1, b"c" * 32)
+        sequence += 1
+        device.step(clock())
+
+    output = tmp_path / "capture.json"
+    CalibrationRunner(device, lease, output, monotonic=clock, sleep=tick).run()
+    capture = __import__("json").loads(output.read_text())
+    assert set(capture["stages"]) == {"baseline", "after_forward", "after_yaw"}
+    assert all(len(stage["revolutions"]) == 10 for stage in capture["stages"].values())
+    assert device.motion is None
+    assert not device.enabled
+    assert device.drive_shell.commands[-2:] == ["manual_move 0 0", "sleep"]
+
+
+def test_runner_refuses_an_existing_output_before_enabling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from .calibration import CalibrationRunner
+
+    clock = Clock()
+    device = _device(monkeypatch, clock)
+    device.disable()
+    output = tmp_path / "existing.json"
+    output.write_text("reserved")
+    with pytest.raises(FileExistsError):
+        CalibrationRunner(device, _lease(clock), output, monotonic=clock).run()
+    assert not device.enabled
+    assert output.read_text() == "reserved"

@@ -13,6 +13,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 
 from .device import Config, OhmniDevice
@@ -190,14 +191,25 @@ class _Progress:
     previous: EncoderPair | None = None
     wheel_travel_m: float = 0.0
     yaw_degrees: float = 0.0
+    lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
 
     def add(self, pair: EncoderPair) -> None:
-        if self.previous is not None:
-            left = encoder_delta(self.previous.left, pair.left) / TICKS_PER_MM / 1000
-            right = -encoder_delta(self.previous.right, pair.right) / TICKS_PER_MM / 1000
-            self.wheel_travel_m += (abs(left) + abs(right)) / 2
-            self.yaw_degrees += math.degrees(abs(right - left) / (BASE_MM / 1000))
-        self.previous = pair
+        with self.lock:
+            if (
+                self.previous is not None
+                and pair.right_receipt_ns <= self.previous.right_receipt_ns
+            ):
+                return
+            if self.previous is not None:
+                left = encoder_delta(self.previous.left, pair.left) / TICKS_PER_MM / 1000
+                right = -encoder_delta(self.previous.right, pair.right) / TICKS_PER_MM / 1000
+                self.wheel_travel_m += (abs(left) + abs(right)) / 2
+                self.yaw_degrees += math.degrees(abs(right - left) / (BASE_MM / 1000))
+            self.previous = pair
+
+    def values(self) -> tuple[float, float]:
+        with self.lock:
+            return self.wheel_travel_m, self.yaw_degrees
 
 
 class CalibrationRunner:
@@ -210,10 +222,14 @@ class CalibrationRunner:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         config: CalibrationConfig | None = None,
+        boot_id: str | None = None,
+        executed_bundle_source_sha256: str | None = None,
     ) -> None:
         self.device, self.lease, self.output = device, lease, output
         self.monotonic, self.sleep = monotonic, sleep
         self.config = CalibrationConfig() if config is None else config
+        self.boot_id = boot_id
+        self.executed_bundle_source_sha256 = executed_bundle_source_sha256
         self._started = 0.0
         self._progress = _Progress()
 
@@ -227,6 +243,7 @@ class CalibrationRunner:
             self._require_lease()
             if not self.device.enable():
                 raise CalibrationError("calibration device enable refused")
+            self._initialize()
             stages["baseline"] = self._capture_stage()
             self._forward()
             self._settle()
@@ -240,6 +257,24 @@ class CalibrationRunner:
             raise
         finally:
             self.device.disable()
+
+    def _initialize(self) -> None:
+        deadline = self.monotonic() + STAGE_TIMEOUT_S
+        while self.monotonic() < deadline:
+            self._require_lease()
+            try:
+                self._snapshot()
+            except CalibrationError:
+                self.sleep(0.01)
+                continue
+            revolution = (
+                self.device.lidar.raw_revolution(self.monotonic()) if self.device.lidar else None
+            )
+            if revolution is not None and len(revolution.points) >= 20:
+                return
+            self.sleep(0.01)
+        self.device.stop()
+        raise CalibrationError("calibration_initialization_timeout")
 
     def _require_lease(self) -> None:
         if self.monotonic() - self._started >= self.config.max_runtime_s:
@@ -257,10 +292,11 @@ class CalibrationRunner:
             self.device.stop()
             raise CalibrationError("wheel_odometry_unavailable")
         self._progress.add(pair)
-        if self._progress.wheel_travel_m > self.config.max_wheel_travel_m:
+        wheel_travel_m, yaw_degrees = self._progress.values()
+        if wheel_travel_m > self.config.max_wheel_travel_m:
             self.device.stop()
             raise CalibrationError("calibration_wheel_travel_limit")
-        if self._progress.yaw_degrees > self.config.max_yaw_degrees:
+        if yaw_degrees > self.config.max_yaw_degrees:
             self.device.stop()
             raise CalibrationError("calibration_yaw_limit")
         return pose, pair
@@ -277,9 +313,10 @@ class CalibrationRunner:
             return str(error)
         wheel_reserve_m = FORWARD_SPEED_M_S * 0.1
         yaw_reserve_deg = YAW_RATE_DEG_S * 0.1
-        if self._progress.wheel_travel_m + wheel_reserve_m > self.config.max_wheel_travel_m:
+        wheel_travel_m, yaw_degrees = self._progress.values()
+        if wheel_travel_m + wheel_reserve_m > self.config.max_wheel_travel_m:
             return "calibration_wheel_travel_limit"
-        if self._progress.yaw_degrees + yaw_reserve_deg > self.config.max_yaw_degrees:
+        if yaw_degrees + yaw_reserve_deg > self.config.max_yaw_degrees:
             return "calibration_yaw_limit"
         return None
 
@@ -289,13 +326,17 @@ class CalibrationRunner:
         pose, pair = self._snapshot(stage_started)
         revolutions: list[dict[str, object]] = []
         timestamps: set[float] = set()
+        max_translation_drift_m = 0.0
+        max_yaw_drift_deg = 0.0
+        max_encoder_revolution_delta_s = 0.0
         while len(revolutions) < REVOLUTIONS_PER_STAGE:
             self._require_lease()
             current, current_pair = self._snapshot()
-            if (
-                math.hypot(current.x - pose.x, current.y - pose.y) > MAX_CAPTURE_DRIFT_M
-                or abs(_yaw_delta(current.yaw_deg, pose.yaw_deg)) > MAX_CAPTURE_DRIFT_DEG
-            ):
+            translation_drift_m = math.hypot(current.x - pose.x, current.y - pose.y)
+            yaw_drift_deg = abs(_yaw_delta(current.yaw_deg, pose.yaw_deg))
+            max_translation_drift_m = max(max_translation_drift_m, translation_drift_m)
+            max_yaw_drift_deg = max(max_yaw_drift_deg, yaw_drift_deg)
+            if translation_drift_m > MAX_CAPTURE_DRIFT_M or yaw_drift_deg > MAX_CAPTURE_DRIFT_DEG:
                 self.device.stop()
                 raise CalibrationError("calibration_capture_drift")
             revolution = (
@@ -303,6 +344,7 @@ class CalibrationRunner:
             )
             if (
                 revolution is not None
+                and revolution.monotonic_s >= stage_started
                 and revolution.monotonic_s not in timestamps
                 and revolution.points
             ):
@@ -320,7 +362,10 @@ class CalibrationRunner:
                         ],
                     }
                 )
-                _ = current_pair
+                max_encoder_revolution_delta_s = max(
+                    max_encoder_revolution_delta_s,
+                    abs(revolution.monotonic_s - current_pair.right_receipt_ns / 1_000_000_000),
+                )
             if len(revolutions) == REVOLUTIONS_PER_STAGE:
                 break
             if self.monotonic() >= deadline:
@@ -336,41 +381,47 @@ class CalibrationRunner:
             },
             "encoder": asdict(pair),
             "revolutions": revolutions,
+            "stage_started_monotonic_s": stage_started,
+            "stage_completed_monotonic_s": self.monotonic(),
+            "max_translation_drift_m": max_translation_drift_m,
+            "max_yaw_drift_deg": max_yaw_drift_deg,
+            "max_encoder_revolution_delta_s": max_encoder_revolution_delta_s,
+            "monotonic_clock": "linux_monotonic",
         }
 
     def _settle(self) -> None:
         deadline = self.monotonic() + SETTLE_TIMEOUT_S
-        first: Pose | None = None
-        receipts: set[int] = set()
+        samples: list[tuple[Pose, EncoderPair]] = []
         while True:
             self._require_lease()
             pose, pair = self._snapshot()
-            if first is None:
-                first = pose
-            receipts.add(pair.right_receipt_ns)
-            stable = (
-                math.hypot(pose.vx, pose.vy) <= 0.01
-                and math.hypot(pose.x - first.x, pose.y - first.y) <= 0.0001
-                and abs(_yaw_delta(pose.yaw_deg, first.yaw_deg)) <= 0.1
-                and len(receipts) >= 3
-                and self.device.motion is None
-            )
-            if stable:
-                return
+            if not samples or pair.right_receipt_ns > samples[-1][1].right_receipt_ns:
+                samples.append((pose, pair))
+                samples = samples[-3:]
+            if len(samples) == 3:
+                first, last = samples[0][0], samples[-1][0]
+                stable = (
+                    math.hypot(last.vx, last.vy) <= 0.01
+                    and math.hypot(last.x - first.x, last.y - first.y) <= 0.0001
+                    and abs(_yaw_delta(last.yaw_deg, first.yaw_deg)) <= 0.1
+                    and self.device.motion is None
+                )
+                if stable:
+                    return
             if self.monotonic() >= deadline:
                 self.device.stop()
                 raise CalibrationError("calibration_settle_timeout")
             self.sleep(0.01)
 
     def _pulse_until(self, velocity_m_s: float, yaw_rate_deg_s: float, target: float) -> None:
-        started_travel, started_yaw = self._progress.wheel_travel_m, self._progress.yaw_degrees
+        started_travel, started_yaw = self._progress.values()
         while True:
             self._require_lease()
             pose_before, _ = self._snapshot()
             current = (
-                self._progress.wheel_travel_m - started_travel
+                self._progress.values()[0] - started_travel
                 if velocity_m_s
-                else self._progress.yaw_degrees - started_yaw
+                else self._progress.values()[1] - started_yaw
             )
             if current >= target:
                 return
@@ -413,6 +464,8 @@ class CalibrationRunner:
             "mount": {"x_m": MOUNT_X_M, "y_m": MOUNT_Y_M, "z_m": MOUNT_Z_M},
             "wheel_diameter_mm": self.config.wheel_diameter_mm,
             "limits": asdict(self.config),
+            "boot_id": self.boot_id,
+            "executed_bundle_source_sha256": self.executed_bundle_source_sha256,
             "stages": stages,
         }
         encoded = (json.dumps(body, separators=(",", ":"), allow_nan=False) + "\n").encode()
