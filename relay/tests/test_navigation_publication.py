@@ -236,6 +236,7 @@ def test_three_aircraft_navigation_publishes_only_to_their_phones_and_excludes_g
                 "node_type": "aircraft",
                 "connection_epoch": 1,
                 "membership": "ready",
+                "readiness_reasons": [],
                 "control_authority": True,
                 "rc_safety_operator_present": True,
                 "telemetry": {
