@@ -194,14 +194,26 @@ def evidence(tmp_path, manifest, geometry_directory, geometry_authoring):
                 "sha256": "a" * 64,
                 "gimbal_attitude_convention": "intrinsic_zyx_degrees",
                 "body_to_gimbal": {
-                    "parent_frame": "body", "child_frame": "gimbal",
-                    "x_m": 0.0, "y_m": 0.0, "z_m": 0.0,
-                    "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
+                    "parent_frame": "body",
+                    "child_frame": "gimbal",
+                    "x_m": 0.0,
+                    "y_m": 0.0,
+                    "z_m": 0.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "qw": 1.0,
                 },
                 "gimbal_to_camera": {
-                    "parent_frame": "gimbal", "child_frame": "camera",
-                    "x_m": 0.0, "y_m": 0.0, "z_m": 0.0,
-                    "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
+                    "parent_frame": "gimbal",
+                    "child_frame": "camera",
+                    "x_m": 0.0,
+                    "y_m": 0.0,
+                    "z_m": 0.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "qw": 1.0,
                 },
             },
         },
@@ -319,14 +331,12 @@ def capture_alignment(capture):
         "alignment_config_sha256": _alignment_sha256,
         "kinematic_calibration_id": "dji-gimbal-camera-kinematics-v1",
         "kinematic_calibration_sha256": "a" * 64,
-        "frame_pts": {
-            "clock_id": "dji_stream_presentation_ms", "unit": "ms", "value": capture
-        },
-        "gimbal_receipt": {
-            "clock_id": "phone_snapshot_wall_ms", "unit": "ms", "value": capture
-        },
+        "frame_pts": {"clock_id": "dji_stream_presentation_ms", "unit": "ms", "value": capture},
+        "gimbal_receipt": {"clock_id": "phone_snapshot_wall_ms", "unit": "ms", "value": capture},
         "body_attitude_receipt": {
-            "clock_id": "phone_snapshot_wall_ms", "unit": "ms", "value": capture
+            "clock_id": "phone_snapshot_wall_ms",
+            "unit": "ms",
+            "value": capture,
         },
         "gimbal_attitude": {"yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0},
         "body_attitude": {"yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0},
