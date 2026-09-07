@@ -109,7 +109,7 @@ describe('observation v1 console mirror', () => {
     clock.frame = 'body'
     expect(parseObservation(clock)).toBeNull()
 
-    const unmapped = observation({
+    const unmapped: Record<string, unknown> = observation({
       kind: 'pose',
       pose: {
         parent_frame: 'body', child_frame: 'camera',
