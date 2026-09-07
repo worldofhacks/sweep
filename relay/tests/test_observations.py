@@ -217,6 +217,32 @@ def test_capture_precedes_source_receipt_and_mapping_binds_the_declared_clock() 
         ObservationSubmission.parse({key: invalid[key] for key in invalid if key != "t_ingest"})
 
 
+@pytest.mark.parametrize(
+    ("fixture", "path", "replacement"),
+    [
+        ("aircraft-world.json", ("node_type",), []),
+        ("aircraft-world.json", ("frame",), []),
+        ("aircraft-world.json", ("payload", "kind"), {}),
+        ("aircraft-world.json", ("payload", "position", "frame"), []),
+        ("aircraft-world.json", ("t_source_receipt", "unit"), []),
+        ("camera-tag-observation.json", ("payload", "reason"), []),
+        ("camera-tag-observation.json", ("payload", "pixel_frame"), {}),
+    ],
+)
+def test_malformed_container_enums_raise_observation_error(
+    fixture: str, path: tuple[str, ...], replacement: object
+) -> None:
+    raw = json.loads((FIXTURES / fixture).read_text())
+    raw.pop("t_ingest")
+    target = raw
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = replacement
+
+    with pytest.raises(ObservationError):
+        decode_submission(json.dumps(raw))
+
+
 def test_unknown_frame_stale_epoch_and_unconfigured_mapping_fail_closed() -> None:
     scan = json.loads((FIXTURES / "ground-odom-range-scan.json").read_text())
     submission = ObservationSubmission.parse({key: scan[key] for key in scan if key != "t_ingest"})
