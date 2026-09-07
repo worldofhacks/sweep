@@ -197,6 +197,24 @@ async function testIncompletePollLatchesUnavailableAndNeverReusesLateReply() {
   });
 }
 
+async function testReaderConnectingAfterBootFailureReceivesTheLatchedFault() {
+  await withSampler(async ({ serial, socketPath }) => {
+    await wait(30);
+    const client = await connect(socketPath);
+    try {
+      assert.deepStrictEqual(await nextJson(client), {
+        v: 1,
+        type: 'sweep_encoder_unavailable',
+        poll_id: 1,
+        reason: 'missing_encoder_reply',
+      });
+      assert.deepStrictEqual(serial.requests.map((request) => request.sid), [0]);
+    } finally {
+      client.destroy();
+    }
+  });
+}
+
 async function testExternalDriveEncoderReadsAreSuppressedForSamplerLifetime() {
   await withSampler(async ({ serial, socketPath }) => {
     const client = await connect(socketPath);
@@ -243,6 +261,7 @@ async function testFanoutBoundsClientsAndDropsSlowReaders() {
   await testDelayedPairFansOut();
   await testOutOfOrderReplyCannotAdvanceThePoll();
   await testIncompletePollLatchesUnavailableAndNeverReusesLateReply();
+  await testReaderConnectingAfterBootFailureReceivesTheLatchedFault();
   await testExternalDriveEncoderReadsAreSuppressedForSamplerLifetime();
   await testFanoutBoundsClientsAndDropsSlowReaders();
   process.stdout.write('paired encoder sampler tests passed\n');
