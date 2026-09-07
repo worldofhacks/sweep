@@ -18,6 +18,7 @@ class WhipEndpointTest {
     fun `an explicit ground host and port override the relay host`() {
         assertEquals("http://ground:9000/drone4/whip", WhipEndpoint.whipUrl("ws://10.10.1.60:8000", " ground ", 9000, 4))
         assertEquals("http://[fe80::1]:8889/drone1/whip", WhipEndpoint.whipUrl("ws://[fe80::2]:8000", "fe80::1", 8889, 1))
+        assertEquals("http://[fe80::1]:8889/drone1/whip", WhipEndpoint.whipUrl("ws://[fe80::2]:8000", "[fe80::1]", 8889, 1))
         assertEquals("http://[fe80::2]:8889/drone1/whip", WhipEndpoint.whipUrl("ws://[fe80::2]:8000", null, 8889, 1))
     }
 
@@ -38,6 +39,7 @@ class WhipEndpointTest {
             "https://ground.example/path",
             "https://ground.example?query",
             "ground.example/path",
+            "ground.example:8443",
         )) {
             assertThrows(IllegalArgumentException::class.java) {
                 WhipEndpoint.whipUrl("wss://relay.local/ws", invalid, 443, 1)
