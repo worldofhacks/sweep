@@ -19,24 +19,17 @@ _REFLECTOR_RADIUS_M = 0.002
 
 def _room_reflectors() -> tuple[tuple[float, float], ...]:
     generator = random.Random(9)
-    return tuple(
-        (generator.uniform(-3.0, 3.0), generator.uniform(2.0, 3.0))
-        for _ in range(75)
-    ) + tuple(
-        (generator.uniform(-4.0, -3.0), generator.uniform(-2.0, 3.0))
-        for _ in range(60)
-    ) + tuple(
-        (generator.uniform(1.0, 4.0), generator.uniform(-3.0, -2.0))
-        for _ in range(55)
+    return (
+        tuple((generator.uniform(-3.0, 3.0), generator.uniform(2.0, 3.0)) for _ in range(75))
+        + tuple((generator.uniform(-4.0, -3.0), generator.uniform(-2.0, 3.0)) for _ in range(60))
+        + tuple((generator.uniform(1.0, 4.0), generator.uniform(-3.0, -2.0)) for _ in range(55))
     )
 
 
 _REFLECTORS = _room_reflectors()
 
 
-def _raycast_distance(
-    origin: tuple[float, float], direction: tuple[float, float]
-) -> float:
+def _raycast_distance(origin: tuple[float, float], direction: tuple[float, float]) -> float:
     distances = []
     for center in _REFLECTORS:
         delta = (center[0] - origin[0], center[1] - origin[1])
