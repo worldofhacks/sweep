@@ -19,6 +19,7 @@ from planner.navigation import (
 )
 from planner.navigation_authorization import NavigationApproval, content_digest
 from planner.navigation_runtime import (
+    MAX_AIRCRAFT,
     NavigationExecutionConfig,
     NavigationFrame,
     NavigationRuntime,
@@ -138,8 +139,8 @@ _WIRE_LIMIT_FIELDS = frozenset(
 
 
 def _device_mapping(value: object, name: str) -> dict[int, object]:
-    if not isinstance(value, dict) or not 1 <= len(value) <= 4:
-        raise ValueError(f"{name} must map one through four device IDs")
+    if not isinstance(value, dict) or not 1 <= len(value) <= MAX_AIRCRAFT:
+        raise ValueError(f"{name} must map one through {MAX_AIRCRAFT} device IDs")
     result: dict[int, object] = {}
     for raw_id, item in value.items():
         if type(raw_id) is not str or not raw_id.isdecimal() or str(int(raw_id)) != raw_id:
@@ -248,8 +249,7 @@ def _validate_world_localization(
             or control.camera_calibration_id != pins.camera_calibration_id
             or control.body_extrinsics_id != pins.body_extrinsics_id
             or control.source_ids != source_ids
-            or control.clock_mapping.capture_clock_id != pins.capture_clock_mapping_id
-            or control.clock_mapping.max_error_ms != publisher.clock_mapping.max_error_ms
+            or control.clock_mapping != publisher.clock_mapping
             or profile.map_version != pins.map_version
             or profile.map_sha256 != pins.map_content_sha256
             or profile.geometry_sha256 != pins.geometry_sha256
@@ -320,13 +320,15 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
     permission = NavigationPermission(frozenset(permission_raw))
     if raw["home_zone_id"] not in permission.permitted_zone_ids:
         raise ValueError("home zone must have explicit arrival permission")
-    execution = dict(
-        _fields(
-            raw["execution"],
-            set(NavigationExecutionConfig.__dataclass_fields__),
-            "navigation execution",
-        )
-    )
+    execution_fields = set(NavigationExecutionConfig.__dataclass_fields__)
+    execution_raw = raw["execution"]
+    if (
+        isinstance(execution_raw, dict)
+        and set(execution_raw) == execution_fields - {"max_aircraft"}
+    ):
+        execution = {**execution_raw, "max_aircraft": 4}
+    else:
+        execution = dict(_fields(execution_raw, execution_fields, "navigation execution"))
     execution["motion"] = MotionConfig(
         **_fields(execution["motion"], set(MotionConfig.__dataclass_fields__), "navigation motion")
     )
