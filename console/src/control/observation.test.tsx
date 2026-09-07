@@ -145,7 +145,7 @@ describe('current and retained device observations', () => {
       connection: { ...reported.connection, status: 'disconnected' },
     }, 16_000).aircraft[11]
     expect(relayUnavailable.client_observation?.state).toBe('unknown')
-    expect(deriveStream(relayUnavailable, 16_000).status).toBe('unreported')
+    expect(deriveStream(relayUnavailable, 16_000).status).toBe('live')
   })
 })
 

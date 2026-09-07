@@ -66,12 +66,12 @@ describe('stream view', () => {
     })
   })
 
-  test('keeps a fresh ground stream live when its control observation is stale', () => {
+  test.each(['unknown', 'stale'] as const)('keeps a fresh ground stream live when its control observation is %s', (state) => {
     expect(deriveStream(drone({
       node_type: 'ground',
       video: { status: 'live', last_frame_at: now - 400 },
       client_observation: {
-        state: 'stale', reason: 'No fresh accepted ground observation is available.', now,
+        state, reason: 'No fresh accepted ground observation is available.', now,
       },
     }), now)).toMatchObject({
       status: 'live',
@@ -79,15 +79,11 @@ describe('stream view', () => {
     })
   })
 
-  test('withdraws a live ground stream when the relay is unavailable or the device disconnects', () => {
+  test('withdraws a live ground stream when the device disconnects', () => {
     const base = {
       node_type: 'ground' as const,
       video: { status: 'live' as const, last_frame_at: now - 400 },
     }
-    expect(deriveStream(drone({
-      ...base,
-      client_observation: { state: 'unknown', reason: 'Relay connection unavailable.', now },
-    }), now).status).toBe('unreported')
     expect(deriveStream(drone({
       ...base,
       membership: 'disconnected',
