@@ -29,6 +29,7 @@ from planner.navigation import (
 )
 from planner.navigation_authorization import NavigationApproval, content_digest
 from planner.navigation_contracts import finite_number, integer, normalized_text, sha256_digest
+from relay.capabilities import CapabilityProfile
 from relay.control_localization import ControlLocalizationPins, ControlPose
 from relay.intent_v1 import IntentName, IntentV1
 
@@ -54,6 +55,9 @@ class NavigationFrame:
             or not np.isclose(np.linalg.det(matrix[:3, :3]), 1, atol=1e-9, rtol=0)
         ):
             raise ValueError("navigation frame must be an immutable proper rigid transform")
+        for row in self.world_from_enu:
+            for value in row:
+                finite_number(value, "world_from_enu coordinate")
         if self.control_pins is not None and (
             not isinstance(self.control_pins, ControlLocalizationPins)
             or self.control_pins.drone_id != self.drone_id
@@ -82,11 +86,14 @@ class NavigationExecutionConfig:
     segment_timeout_ms: int
     frames: tuple[NavigationFrame, ...]
     wire_config_sha256: str | None = None
+    line_zone_id: str | None = None
 
     def __post_init__(self) -> None:
         normalized_text(self.floor_id, "floor_id")
         if self.wire_config_sha256 is not None:
             sha256_digest(self.wire_config_sha256, "wire_config_sha256")
+        if self.line_zone_id is not None:
+            normalized_text(self.line_zone_id, "line_zone_id")
         if not isinstance(self.motion, MotionConfig):
             raise ValueError("navigation motion must use MotionConfig")
         for name in ("speed_m_s", "position_tolerance_m", "minimum_position_quality"):
@@ -157,7 +164,10 @@ class NavigationExecution:
         specs = self.command_specs()
         epochs = {drone.drone_id: drone.connection_epoch for drone in self.route.selected}
         return (
-            plan.intent_name is self.intent_name
+            self.intent_name in {IntentName.COME_HOME, IntentName.FORMATION_SET}
+            and plan.intent_name is self.intent_name
+            and plan.formation_update
+            == ("line" if self.intent_name is IntentName.FORMATION_SET else None)
             and plan.roster_version == self.route.roster_version
             and set(plan.selection) == set(epochs)
             and len(specs) == len(plan.commands)
@@ -192,6 +202,16 @@ def navigation_configuration_digest(
     )
 
 
+def navigation_capability_profile(
+    base: CapabilityProfile, config: NavigationExecutionConfig
+) -> CapabilityProfile:
+    if config.line_zone_id is None or base.supports(IntentName.FORMATION_SET):
+        return base
+    return CapabilityProfile(
+        f"{base.name[:50]}_mapped_line", base.enabled_intent_names | {IntentName.FORMATION_SET}
+    )
+
+
 class NavigationRuntime:
     def __init__(
         self,
@@ -220,6 +240,9 @@ class NavigationRuntime:
             raise ValueError(
                 "flight navigation requires retained control poses and measured source pins"
             )
+
+    def capability_profile(self, base: CapabilityProfile) -> CapabilityProfile:
+        return navigation_capability_profile(base, self.config)
 
     def _approved_artifact(self) -> NavigationArtifact:
         artifact = self.artifact()
@@ -254,13 +277,27 @@ class NavigationRuntime:
 
     def prepare(self, intent: IntentV1, snapshot: FleetSnapshot) -> Plan | Refusal:
         try:
-            if intent.name is not IntentName.COME_HOME:
-                raise ValueError("navigation runtime has no configured route for this intent")
             artifact = self._validate(snapshot)
+            destination = self.home_zone_id
+            if intent.name is IntentName.FORMATION_SET and intent.args.get("name") == "line":
+                destination = self.config.line_zone_id
+                zone = next((zone for zone in artifact.zones if zone.zone_id == destination), None)
+                if zone is None or len(intent.selection) != 2 or len(zone.arrival_slots) != 2:
+                    raise ValueError("line formation requires two aircraft and two approved slots")
+                first, second = (slot.pose for slot in zone.arrival_slots)
+                if (
+                    first.z_m != second.z_m
+                    or abs(dist(first.xyz, second.xyz) - snapshot.spacing) > 1e-6
+                ):
+                    raise ValueError(
+                        "line slot height or spacing differs from the selected formation"
+                    )
+            elif intent.name is not IntentName.COME_HOME:
+                raise ValueError("navigation runtime has no configured route for this intent")
             positions = self._positions(snapshot)
             route = self.planner.plan(
                 NavigationRequest(
-                    self.home_zone_id,
+                    destination,
                     snapshot.roster_version,
                     intent.t,
                     tuple(item for item in positions if item.drone_id in intent.selection),
@@ -312,6 +349,7 @@ class NavigationRuntime:
             tuple(sorted(intent.selection)),
             intent.confirm,
             commands,
+            formation_update="line" if intent.name is IntentName.FORMATION_SET else None,
             navigation=execution,
         )
 
@@ -339,6 +377,18 @@ class NavigationRuntime:
                 raise ValueError("navigation configuration or approval changed")
             positions = self._positions(snapshot)
             route_plan = execution.route
+            destination = self.home_zone_id
+            if plan.intent_name is IntentName.FORMATION_SET:
+                destination = self.config.line_zone_id
+                slots = route_plan.arrival_slots
+                if (
+                    len(slots) != 2
+                    or slots[0].pose.z_m != slots[1].pose.z_m
+                    or abs(dist(slots[0].pose.xyz, slots[1].pose.xyz) - snapshot.spacing) > 1e-6
+                ):
+                    raise ValueError("line formation spacing or altitude changed")
+            if route_plan.destination_zone_id != destination:
+                raise ValueError("navigation destination differs from the configured operation")
             if route_plan.permission != self.permission or route_plan.config != self.config.motion:
                 raise ValueError("navigation permission or motion envelope changed")
             if (
@@ -488,11 +538,11 @@ class NavigationRuntime:
                 ):
                     raise ValueError("navigation control pose provenance changed")
                 error_ms = pin.clock_mapping.max_error_ms
-                if any(
+                if not 0 <= snapshot.now_ms - pose.t <= self.config.position_max_age_ms or any(
                     not error_ms
                     <= snapshot.now_ms - timestamp
                     <= self.config.position_max_age_ms - error_ms
-                    for timestamp in (pose.t, pose.pose_time_ms, pose.fix_time_ms)
+                    for timestamp in (pose.pose_time_ms, pose.fix_time_ms)
                 ):
                     raise ValueError("navigation control pose or fix is stale or future")
                 if pose.position_uncertainty_mm / 1000 > self.config.motion.pose_uncertainty_m:

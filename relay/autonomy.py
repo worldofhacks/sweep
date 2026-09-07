@@ -49,6 +49,8 @@ from planner.models import (
     RelayAircraftSafetyEnrichment,
     RelaySnapshotEnrichment,
 )
+from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
+from planner.navigation_runtime import navigation_capability_profile
 from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
 from relay.app import RelayRuntime, TranscriptServiceFactory, create_app
@@ -120,6 +122,7 @@ class AutonomyConfig:
     safety: SafetyConfig
     sim_camera: SimCameraConfig | None = None
     control_localization_projector: ControlLocalizationProjector | None = None
+    navigation: NavigationDeployment | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
@@ -127,6 +130,7 @@ class AutonomyConfig:
         values = os.environ if environ is None else environ
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
         localization_raw = values.get("SWEEP_CONTROL_LOCALIZATION_JSON", "")
+        navigation_path = values.get("SWEEP_NAVIGATION_CONFIG", "")
         return cls(
             planning=_config_from_json(
                 PlanningConfig, values.get("SWEEP_PLANNING_JSON", ""), "SWEEP_PLANNING_JSON"
@@ -145,6 +149,9 @@ class AutonomyConfig:
                 else _localization_projector_from_json(
                     localization_raw, "SWEEP_CONTROL_LOCALIZATION_JSON"
                 )
+            ),
+            navigation=(
+                None if not navigation_path else load_navigation_deployment(navigation_path)
             ),
         )
 
@@ -447,9 +454,20 @@ class AutonomySession:
         self.session_id = session_id
         self._composition = composition
         self.capability_profile = composition.capability_profile
+        navigation = composition.config.navigation
+        navigation_runtime = (
+            None
+            if navigation is None
+            else navigation.for_session(
+                session_id,
+                lambda drone_id: composition.runtime.sessions[session_id].control_pose(drone_id),
+                composition.config.control_localization_projector,
+            )
+        )
         self.planner = DeterministicPlanner(
             composition.config.planning,
             self.capability_profile,
+            navigation_runtime=navigation_runtime,
         )
         self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
@@ -892,6 +910,10 @@ class AutonomyComposition:
     ) -> None:
         self.config = config
         self.capability_profile = config.planning.effective_capability_profile(capability_profile)
+        if config.navigation is not None:
+            self.capability_profile = navigation_capability_profile(
+                self.capability_profile, config.navigation.config
+            )
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()

@@ -150,3 +150,63 @@ def test_approval_rejects_tampered_document():
     with pytest.raises(ValueError):
         NavigationApproval.verify({"mode": "flight"}, KEY)
     assert runtime.approval.mode == "simulation"
+
+
+def test_two_aircraft_line_routes_check_each_actual_segment_and_arrival():
+    from dataclasses import asdict
+
+    from planner.planner import DeterministicPlanner
+    from planner.test_navigation import arrival
+    from tests.autonomy_fixtures import planning_config
+
+    runtime, _, _, geometry = setup_runtime()
+    geometry[0] = artifact(slots=(arrival("line-a", 6.5, 1.5), arrival("line-b", 6.5, 3.5)))
+    runtime.config = replace(
+        runtime.config,
+        frames=(*runtime.config.frames, NavigationFrame(2, "measured-enu-world-2", IDENTITY)),
+        line_zone_id="atrium",
+    )
+    raw = asdict(runtime.approval)
+    raw.update(
+        v=1,
+        type="navigation_approval",
+        epochs=[[1, 1], [2, 1]],
+        evidence_sha256=[],
+        configuration_sha256=navigation_configuration_digest(
+            geometry[0], runtime.config, PERMISSION, "atrium"
+        ),
+    )
+    runtime.approval = NavigationApproval.verify({**raw, "signature": sign_event(raw, KEY)}, KEY)
+    snapshot = replace_aircraft(
+        replace(make_snapshot(2), spacing=2.0), 1, pose=Position(0.5, 1.5, 1.0)
+    )
+    snapshot = replace_aircraft(snapshot, 2, pose=Position(2.5, 1.5, 1.0))
+    intent = make_intent(IntentName.FORMATION_SET, args={"name": "line"}, confirm=True)
+    plan = DeterministicPlanner(planning_config(), navigation_runtime=runtime).plan(
+        intent, snapshot
+    )
+    assert isinstance(plan, Plan)
+    assert plan.formation_update == "line"
+    assert {route.arrival_slot.slot_id for route in plan.navigation.route.routes} == {
+        "line-a",
+        "line-b",
+    }
+    from arbiter.safety import SafetyArbiter
+    from tests.autonomy_fixtures import safety_config
+
+    assert SafetyArbiter(safety_config()).check_plan(plan, snapshot) is None
+    for command in plan.commands:
+        assert runtime.check(plan, command, snapshot) is None
+        issued = snapshot.now_ms
+        snapshot = replace(snapshot, now_ms=issued + 10)
+        changes = {"position_last_seen_ms": snapshot.now_ms}
+        if "x" in command.parameters:
+            changes["pose"] = Position(*(command.parameters[axis] for axis in ("x", "y", "z")))
+        snapshot = replace_aircraft(snapshot, command.drone_id, **changes)
+        assert runtime.check(plan, command, snapshot, completed=True, issued_at_ms=issued) is None
+    assert sorted(
+        (item.pose.x, item.pose.y, item.pose.z) for item in snapshot.aircraft.values()
+    ) == [(6.5, 1.5, 1.0), (6.5, 3.5, 1.0)]
+    assert isinstance(
+        runtime.check(plan, plan.commands[-1], replace(snapshot, spacing=1.0)), Refusal
+    )

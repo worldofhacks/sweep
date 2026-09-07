@@ -191,6 +191,8 @@ class DeterministicPlanner:
         self.config = config
         self.navigation_runtime = navigation_runtime
         self.capability_profile = config.effective_capability_profile(capability_profile)
+        if navigation_runtime is not None:
+            self.capability_profile = navigation_runtime.capability_profile(self.capability_profile)
 
     def supports(self, intent: IntentV1) -> bool:
         return self.capability_profile.supports(intent.name)
@@ -391,6 +393,8 @@ class DeterministicPlanner:
                 builder.add(drone_id, CommandOperation.HOVER)
 
         elif intent.name in {IntentName.FORMATION_NEXT, IntentName.FORMATION_SET}:
+            if self.navigation_runtime is not None:
+                return self.navigation_runtime.prepare(intent, snapshot)
             name = (
                 _next_formation(snapshot.formation, len(selected))
                 if intent.name is IntentName.FORMATION_NEXT
