@@ -26,15 +26,27 @@ function isDriveEncoderRequest(sid, command, payload) {
     payload.length >= 1 && payload[0] === ADDRESS;
 }
 
+function isReadRequest(command, payload) {
+  return command === READ_COMMAND && payload && payload.length >= 1;
+}
+
+function readKey(sid, address) {
+  return sid + ':' + address;
+}
+
 function PairedEncoderSampler(serial, socketPath, options) {
   options = options || {};
   this._serial = serial;
   this._directSendCustom = serial.sendCustom.bind(serial);
+  this._directSendBatteryQuery = serial.sendBatteryQuery.bind(serial);
   this._deferredRequests = [];
   this._draining = false;
   this._deferredDrainTimer = null;
   this._deferredDrainDone = [];
   this._scheduleAfterDrainMs = null;
+  this._scheduleAfterReadsMs = null;
+  this._vendorReads = {};
+  this._batteryReads = 0;
   this._socketPath = socketPath;
   this._clock = options.monotonicNs || monotonicNs;
   this._setTimeout = options.setTimeout || setTimeout;
@@ -51,8 +63,10 @@ function PairedEncoderSampler(serial, socketPath, options) {
   this._stopped = true;
   this._qualified = false;
   this._onServoResponse = this._handleServoResponse.bind(this);
+  this._onCoreResponse = this._handleCoreResponse.bind(this);
   this._onSerialClose = this._fail.bind(this, 'serial_disconnected');
   this._gatedSendCustom = this._queueOrSend.bind(this);
+  this._gatedSendBatteryQuery = this._queueOrSendBatteryQuery.bind(this);
 }
 
 PairedEncoderSampler.prototype.isActive = function () {
@@ -63,8 +77,10 @@ PairedEncoderSampler.prototype.start = function () {
   if (!this._stopped) return;
   this._stopped = false;
   this._serial.sendCustom = this._gatedSendCustom;
+  this._serial.sendBatteryQuery = this._gatedSendBatteryQuery;
   this._createServer();
   this._serial.on('servo_response', this._onServoResponse);
+  this._serial.on('core_response', this._onCoreResponse);
   this._serial.on('close', this._onSerialClose);
 };
 
@@ -75,6 +91,9 @@ PairedEncoderSampler.prototype.stop = function (done) {
   }
   this._stopped = true;
   this._scheduleAfterDrainMs = null;
+  this._scheduleAfterReadsMs = null;
+  this._vendorReads = {};
+  this._batteryReads = 0;
   this._abortActive();
   if (this._timer) {
     this._clearTimeout(this._timer);
@@ -82,7 +101,9 @@ PairedEncoderSampler.prototype.stop = function (done) {
   }
   this._releaseBus(() => {
     this._serial.sendCustom = this._directSendCustom;
+    this._serial.sendBatteryQuery = this._directSendBatteryQuery;
     this._serial.removeListener('servo_response', this._onServoResponse);
+    this._serial.removeListener('core_response', this._onCoreResponse);
     this._serial.removeListener('close', this._onSerialClose);
     const server = this._server;
     this._server = null;
@@ -148,6 +169,9 @@ PairedEncoderSampler.prototype.beginInitialization = function () {
   const wasQualified = this._qualified;
   this._qualified = false;
   this._scheduleAfterDrainMs = null;
+  this._scheduleAfterReadsMs = null;
+  this._vendorReads = {};
+  this._batteryReads = 0;
   this._abortActive();
   if (this._timer) {
     this._clearTimeout(this._timer);
@@ -173,6 +197,10 @@ PairedEncoderSampler.prototype.activate = function () {
 
 PairedEncoderSampler.prototype._beginPoll = function () {
   if (this._stopped || this._failed || this._active || this._draining) return;
+  if (this._hasOutstandingReads()) {
+    this._scheduleWhenReadsComplete(0);
+    return;
+  }
   if (!this._serial.opened) {
     this._schedule(this._pollIntervalMs);
     return;
@@ -194,10 +222,31 @@ PairedEncoderSampler.prototype._beginPoll = function () {
 PairedEncoderSampler.prototype._queueOrSend = function (sid, command, payload) {
   if (isDriveEncoderRequest(sid, command, payload)) return;
   if (this._active || this._draining) {
-    this._deferredRequests.push({ sid: sid, command: command, payload: Buffer.from(payload) });
+    this._deferredRequests.push({ kind: 'custom', sid: sid, command: command, payload: Buffer.from(payload) });
     return;
   }
+  this._sendVendorRequest(sid, command, payload);
+};
+
+PairedEncoderSampler.prototype._queueOrSendBatteryQuery = function () {
+  if (this._active || this._draining) {
+    this._deferredRequests.push({ kind: 'battery' });
+    return;
+  }
+  this._sendBatteryQuery();
+};
+
+PairedEncoderSampler.prototype._sendVendorRequest = function (sid, command, payload) {
+  if (!this._failed && !this._stopped && isReadRequest(command, payload)) {
+    const key = readKey(sid, payload[0]);
+    this._vendorReads[key] = (this._vendorReads[key] || 0) + 1;
+  }
   this._directSendCustom(sid, command, payload);
+};
+
+PairedEncoderSampler.prototype._sendBatteryQuery = function () {
+  if (!this._failed && !this._stopped) this._batteryReads += 1;
+  this._directSendBatteryQuery();
 };
 
 PairedEncoderSampler.prototype._releaseBus = function (done) {
@@ -211,7 +260,8 @@ PairedEncoderSampler.prototype._releaseBus = function (done) {
   const drain = () => {
     this._deferredDrainTimer = null;
     const request = this._deferredRequests.shift();
-    if (request) this._directSendCustom(request.sid, request.command, request.payload);
+    if (request && request.kind === 'battery') this._sendBatteryQuery();
+    else if (request) this._sendVendorRequest(request.sid, request.command, request.payload);
     if (request || this._deferredRequests.length) {
       this._deferredDrainTimer = this._setTimeout(drain, DEFERRED_REQUEST_GAP_MS);
       return;
@@ -224,7 +274,7 @@ PairedEncoderSampler.prototype._releaseBus = function (done) {
 
 PairedEncoderSampler.prototype._scheduleWhenDrainCompletes = function (delayMs) {
   if (!this._draining) {
-    this._schedule(delayMs);
+    this._scheduleWhenReadsComplete(delayMs);
     return;
   }
   if (this._scheduleAfterDrainMs === null || delayMs < this._scheduleAfterDrainMs) {
@@ -239,7 +289,21 @@ PairedEncoderSampler.prototype._finishDeferredDrain = function () {
   const delayMs = this._scheduleAfterDrainMs;
   this._scheduleAfterDrainMs = null;
   if (delayMs !== null && this._qualified && !this._failed && !this._stopped) {
+    this._scheduleWhenReadsComplete(delayMs);
+  }
+};
+
+PairedEncoderSampler.prototype._hasOutstandingReads = function () {
+  return this._batteryReads !== 0 || Object.keys(this._vendorReads).length !== 0;
+};
+
+PairedEncoderSampler.prototype._scheduleWhenReadsComplete = function (delayMs) {
+  if (!this._hasOutstandingReads()) {
     this._schedule(delayMs);
+    return;
+  }
+  if (this._scheduleAfterReadsMs === null || delayMs < this._scheduleAfterReadsMs) {
+    this._scheduleAfterReadsMs = delayMs;
   }
 };
 
@@ -251,6 +315,13 @@ PairedEncoderSampler.prototype._requestSide = function (poll, side) {
 };
 
 PairedEncoderSampler.prototype._handleServoResponse = function (message) {
+  const key = readKey(message.sid, message.addr);
+  if (this._vendorReads[key]) {
+    this._vendorReads[key] -= 1;
+    if (this._vendorReads[key] === 0) delete this._vendorReads[key];
+    this._resumeWhenReadsComplete();
+    return;
+  }
   const poll = this._active;
   if (!poll || message.sid !== poll.side || message.addr !== ADDRESS || !message.data || message.data.length < 2) {
     return;
@@ -271,6 +342,19 @@ PairedEncoderSampler.prototype._handleServoResponse = function (message) {
   this._complete(poll);
 };
 
+PairedEncoderSampler.prototype._handleCoreResponse = function (message) {
+  if (!message || (message.type !== 'battery' && message.type !== 'battery_new') || this._batteryReads === 0) return;
+  this._batteryReads -= 1;
+  this._resumeWhenReadsComplete();
+};
+
+PairedEncoderSampler.prototype._resumeWhenReadsComplete = function () {
+  if (this._hasOutstandingReads()) return;
+  const delayMs = this._scheduleAfterReadsMs;
+  this._scheduleAfterReadsMs = null;
+  if (delayMs !== null && this._qualified && !this._failed && !this._stopped) this._schedule(delayMs);
+};
+
 PairedEncoderSampler.prototype._expire = function (poll) {
   if (this._active !== poll) return;
   this._fail('missing_encoder_reply');
@@ -283,6 +367,9 @@ PairedEncoderSampler.prototype._fail = function (reason) {
   this._active = null;
   this._qualified = false;
   this._scheduleAfterDrainMs = null;
+  this._scheduleAfterReadsMs = null;
+  this._vendorReads = {};
+  this._batteryReads = 0;
   this._failed = true;
   this._releaseBus();
   this._publish({

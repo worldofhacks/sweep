@@ -13,11 +13,19 @@ class FakeSerial extends EventEmitter {
     super();
     this.opened = true;
     this.requests = [];
+    this.batteryRequests = [];
   }
   sendCustom(sid, command, payload) {
     const request = { sid, command, payload: Buffer.from(payload), sentNs: process.hrtime.bigint() };
     this.requests.push(request);
     this.emit('sent', request);
+  }
+  sendBatteryQuery() {
+    this.batteryRequests.push({ sentNs: process.hrtime.bigint() });
+    this.emit('battery_sent');
+  }
+  batteryReply(type) {
+    this.emit('core_response', { type: type || 'battery' });
   }
   reply(sid, value, address) {
     const data = Buffer.alloc(2);
@@ -79,6 +87,70 @@ async function withSampler(options, test) {
     await new Promise((resolve) => sampler.stop(resolve));
     fs.rmSync(directory, { recursive: true, force: true });
   }
+}
+
+
+async function testBatteryReplyBeforeActivationBlocksTheFirstEncoderPoll() {
+  await withSampler({ activate: false, pollIntervalMs: 1 }, async ({ sampler, serial }) => {
+    serial.sendBatteryQuery();
+    sampler.activate();
+    await wait(8);
+    assert.strictEqual(serial.batteryRequests.length, 1);
+    assert.deepStrictEqual(serial.requests, []);
+
+    serial.batteryReply('battery_new');
+    await wait(5);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [58]);
+  });
+}
+
+async function testBatteryRequestDuringAnEncoderPairDrainsBeforeTheNextPair() {
+  await withSampler({ pollIntervalMs: 1 }, async ({ serial }) => {
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [58]);
+    serial.sendBatteryQuery();
+    assert.strictEqual(serial.batteryRequests.length, 0);
+
+    serial.reply(0, 10);
+    serial.reply(1, 20);
+    await wait(2);
+    assert.strictEqual(serial.batteryRequests.length, 1);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [58, 58]);
+
+    serial.batteryReply();
+    await wait(5);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [58, 58, 58]);
+  });
+}
+
+async function testWormNeckReadBlocksTheNextEncoderPollUntilItsResponse() {
+  await withSampler({ activate: false, pollIntervalMs: 1 }, async ({ sampler, serial }) => {
+    serial.sendCustom(4, 4, Buffer.from([0x6b, 1]));
+    sampler.activate();
+    await wait(8);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [0x6b]);
+
+    serial.reply(4, 0, 0x6b);
+    await wait(5);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [0x6b, 58]);
+  });
+}
+
+async function testMissedBatteryReplyLeavesThePairedStreamStale() {
+  await withSampler({ pollIntervalMs: 1 }, async ({ serial, socketPath }) => {
+    const client = await connect(socketPath);
+    try {
+      const firstPair = nextJson(client);
+      serial.reply(0, 10);
+      serial.reply(1, 20);
+      serial.sendBatteryQuery();
+      assert.strictEqual((await firstPair).type, 'sweep_encoder_pair');
+
+      await wait(20);
+      assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [58, 58]);
+    } finally {
+      client.destroy();
+    }
+  });
 }
 
 async function testNativeInitializationDefersPollingButKeepsTheEncoderGate() {
@@ -183,7 +255,9 @@ async function testDeferredVendorReadsKeepTheirSpacingBeforeAnotherEncoderPoll()
     assert.deepStrictEqual(serial.requests.map((request) => request.sid), [0]);
     let injected = false;
     serial.on('sent', (request) => {
-      if (!injected && request.payload[0] === 59 && request.sid === 0) {
+      if (request.payload[0] !== 59) return;
+      setTimeout(() => serial.reply(request.sid, 1, 59), 1);
+      if (!injected && request.sid === 0) {
         injected = true;
         setTimeout(() => serial.sendCustom(1, 4, Buffer.from([59, 4])), 1);
       }
@@ -202,6 +276,25 @@ async function testDeferredVendorReadsKeepTheirSpacingBeforeAnotherEncoderPoll()
     const nextEncoder = serial.requests.findIndex((request, index) => index > lastVendor && request.payload[0] === 58);
     assert(nextEncoder > lastVendor);
     assert.strictEqual(sampler.isActive(), true);
+  });
+}
+
+
+async function testNativeEncoderReplyBlocksTheNextPollUntilEverySideReplies() {
+  await withSampler({ pollIntervalMs: 1 }, async ({ serial }) => {
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [58]);
+    serial.reply(0, 10);
+    serial.reply(1, 20);
+
+    serial.sendCustom(0, 4, Buffer.from([59, 4]));
+    serial.reply(0, 1, 59);
+    serial.sendCustom(1, 4, Buffer.from([59, 4]));
+    await wait(8);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [58, 58, 59, 59]);
+
+    serial.reply(1, 1, 59);
+    await wait(5);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [58, 58, 59, 59, 58]);
   });
 }
 
@@ -375,10 +468,15 @@ async function testFanoutBoundsClientsAndDropsSlowReaders() {
 }
 
 (async () => {
+  await testBatteryReplyBeforeActivationBlocksTheFirstEncoderPoll();
+  await testBatteryRequestDuringAnEncoderPairDrainsBeforeTheNextPair();
+  await testWormNeckReadBlocksTheNextEncoderPollUntilItsResponse();
+  await testMissedBatteryReplyLeavesThePairedStreamStale();
   await testNativeInitializationDefersPollingButKeepsTheEncoderGate();
   await testDelayedPairFansOut();
   await testOutOfOrderReplyCannotAdvanceThePoll();
   await testDeferredVendorReadsKeepTheirSpacingBeforeAnotherEncoderPoll();
+  await testNativeEncoderReplyBlocksTheNextPollUntilEverySideReplies();
   await testInitializationAndStopDrainDeferredVendorReadsWithoutBursting();
   await testReinitializationPublishesInvalidationWithoutALatePair();
   await testFaultDrainKeepsDeferredVendorReadsSpacedAndNeverReusesLateReply();
