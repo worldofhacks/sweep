@@ -115,9 +115,49 @@ async function testPluginUsesExistingOwnerAndWaitsForModelStart() {
   }
 }
 
+async function testPluginFreezesEncoderTraceWhenSamplerFails() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-encoder-fault-trace-'));
+  const serial = new FakeSerial();
+  const owner = {
+    _serial: serial,
+    _sweepEncoderSocketPath: path.join(directory, 'encoder.sock'),
+    _sweepEncoderTracePath: path.join(directory, 'trace.json'),
+    _model: { initialize() {}, start() {} },
+  };
+
+  try {
+    const plugin = new SweepEncoderPlugin(owner);
+    for (let poll = 1; poll <= 34; poll += 1) {
+      for (const sid of [0, 1]) {
+        plugin._sampler._directSendCustom(sid, 4, Buffer.from([58, 2]));
+        serial.emit('servo_response', { sid, addr: 58, data: Buffer.from([poll, 0]) });
+      }
+    }
+    plugin._sampler._active = { id: 35, side: 1, timeout: null };
+    plugin._sampler._fail('missing_encoder_reply');
+    for (let value = 0; value < 100; value += 1) {
+      serial.sendCustom(value % 2, 4, Buffer.from([59, 4]));
+    }
+    serial.emit('servo_response', { sid: 1, addr: 58, data: Buffer.from([0x34, 0x12]) });
+
+    const fault = plugin._trace.snapshot().fault;
+    assert.strictEqual(fault.reason, 'missing_encoder_reply');
+    assert.strictEqual(fault.poll_id, 35);
+    assert.strictEqual(fault.pending_side, 1);
+    assert.strictEqual(fault.context.length, 64);
+    assert(fault.context.some((entry) => entry.type === 'wire_send_custom' && entry.address === 58));
+    assert.strictEqual(fault.after_fault.length, 64);
+    assert(fault.after_fault.some((entry) => entry.type === 'servo_response' && entry.address === 58 && entry.uint16_le === 0x1234));
+    await new Promise((resolve) => plugin._sampler.stop(resolve));
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 Promise.resolve()
   .then(testTraceKeepsFirstEncoderFailureAfterStartupTraffic)
   .then(testPluginUsesExistingOwnerAndWaitsForModelStart)
+  .then(testPluginFreezesEncoderTraceWhenSamplerFails)
   .then(() => process.stdout.write('sweep encoder plugin tests passed\n'))
   .catch((error) => {
     process.stderr.write(error.stack + '\n');
