@@ -102,8 +102,7 @@ EncoderTrace.prototype._record = function (record) {
   this._latest.push(record);
   if (this._latest.length > LATEST_LIMIT) this._latest.shift();
   if (this._fault !== null) {
-    this._fault.after_fault.push(record);
-    if (this._fault.after_fault.length > LATEST_LIMIT) this._fault.after_fault.shift();
+    if (this._fault.after_fault.length < LATEST_LIMIT) this._fault.after_fault.push(record);
   }
   this._scheduleFlush();
 };

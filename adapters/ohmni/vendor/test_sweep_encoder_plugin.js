@@ -135,10 +135,10 @@ async function testPluginFreezesEncoderTraceWhenSamplerFails() {
     }
     plugin._sampler._active = { id: 35, side: 1, timeout: null };
     plugin._sampler._fail('missing_encoder_reply');
+    serial.emit('servo_response', { sid: 1, addr: 58, data: Buffer.from([0x34, 0x12]) });
     for (let value = 0; value < 100; value += 1) {
       serial.sendCustom(value % 2, 4, Buffer.from([59, 4]));
     }
-    serial.emit('servo_response', { sid: 1, addr: 58, data: Buffer.from([0x34, 0x12]) });
 
     const fault = plugin._trace.snapshot().fault;
     assert.strictEqual(fault.reason, 'missing_encoder_reply');
@@ -154,10 +154,36 @@ async function testPluginFreezesEncoderTraceWhenSamplerFails() {
   }
 }
 
+async function testPluginRecordsActualSamplerTimeout() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-encoder-timeout-trace-'));
+  const serial = new FakeSerial();
+  const owner = {
+    _serial: serial,
+    _sweepEncoderSocketPath: path.join(directory, 'encoder.sock'),
+    _sweepEncoderTracePath: path.join(directory, 'trace.json'),
+    _model: { initialize() {}, start() {} },
+  };
+
+  try {
+    const plugin = new SweepEncoderPlugin(owner);
+    owner._model.start();
+    await wait(130);
+    const fault = plugin._trace.snapshot().fault;
+    assert.strictEqual(fault.reason, 'missing_encoder_reply');
+    assert.strictEqual(fault.poll_id, 1);
+    assert.strictEqual(fault.pending_side, 0);
+    assert(fault.context.some((entry) => entry.type === 'wire_send_custom' && entry.sid === 0 && entry.address === 58));
+    await new Promise((resolve) => plugin._sampler.stop(resolve));
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 Promise.resolve()
   .then(testTraceKeepsFirstEncoderFailureAfterStartupTraffic)
   .then(testPluginUsesExistingOwnerAndWaitsForModelStart)
   .then(testPluginFreezesEncoderTraceWhenSamplerFails)
+  .then(testPluginRecordsActualSamplerTimeout)
   .then(() => process.stdout.write('sweep encoder plugin tests passed\n'))
   .catch((error) => {
     process.stderr.write(error.stack + '\n');
