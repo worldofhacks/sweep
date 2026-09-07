@@ -498,6 +498,20 @@ def test_source_binding_rejects_a_known_payload_kind_that_it_did_not_authorize()
     assert rejected.value.code == "payload_not_authorized"
 
 
+@pytest.mark.parametrize(
+    "covariance",
+    (
+        [1_000_000.0, 1.0, 0.0, 0.0, 1_000_000.0, 0.0, 0.0, 0.0, 1_000_000.0],
+        [-1e-12, 0.0, 0.0, 0.0, 1e-12, 0.0, 0.0, 0.0, 1e-12],
+    ),
+)
+def test_tag_covariance_rejects_indefinite_or_asymmetric_matrices(covariance: list[float]) -> None:
+    raw = json.loads((FIXTURES / "camera-tag-observation.json").read_text())
+    raw["payload"]["covariance_m2"] = covariance
+    with pytest.raises(ObservationError, match="positive semidefinite"):
+        ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+
+
 def test_ground_telemetry_uses_the_same_payload_shape_as_aircraft() -> None:
     raw = json.loads((FIXTURES / "ground-odom-range-scan.json").read_text())
     raw["frame"] = "odom"
