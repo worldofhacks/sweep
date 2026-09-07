@@ -2,6 +2,33 @@
 
 The Ohmni adapter runs on the robot's Android deployment payload. `run.sh` launches the ground runtime; it records and verifies its own PID before stopping it. Shutdown sends `SIGTERM` and waits for the runtime to write its local stop before the launcher removes the PID record.
 
+## Build and install
+
+Build on a Python 3.12 x86_64 Linux host. The private artifact manifest supplies
+HTTPS URLs and reviewed SHA-256 pins for four entries: `python` (Python 3.12 x86_64
+musl standalone), `musl` (an archive containing `lib/ld-musl-x86_64.so.1`), `ffmpeg`
+(static x86_64), and `websockets` (a pure Python wheel). Each entry has `url` and
+`sha256` fields.
+
+```sh
+python3 adapters/ohmni/tools/fetch_artifacts.py /private/ohmni-artifacts.json /private/ohmni-artifacts
+python3 adapters/ohmni/tools/build_payload.py /private/ohmni-artifacts /private/ohmni-runtime.tar
+adapters/ohmni/install.sh "$ADB_SERIAL" /private/ohmni-runtime.tar
+```
+
+The builder verifies each archive, copies the runtime and its imported contract
+modules, and runs an import check with the packaged musl Python. It produces a plain
+tar compatible with the measured Android 7.1 Toybox. Tests, tools, environment files,
+caches, and logs are excluded.
+
+Stop the existing runtime before installing. The installer verifies the robot's
+`su 0` shell, refuses a running node, stages the tar through ADB, and extracts it as
+root. It leaves the node stopped. Set `ADB` to the platform-tools executable when
+it is outside your PATH. Supply private configuration after installation; physical
+motion still requires the runtime's qualification checks.
+
+## Runtime configuration
+
 `node.env` is private configuration and must have mode 600:
 
 ```sh
