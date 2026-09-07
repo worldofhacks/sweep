@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "units": "meters",
+  "frame": "world",
+  "obstacles": [
+    {
+      "id": "counter",
+      "floor_id": "level_1",
+      "polygon": [
+        [
+          2,
+          2
+        ],
+        [
+          2.5,
+          2
+        ],
+        [
+          2.5,
+          2.5
+        ],
+        [
+          2,
+          2.5
+        ],
+        [
+          2,
+          2
+        ]
+      ],
+      "z_min_m": 0,
+      "z_max_m": 1
+    }
+  ],
+  "no_fly": [
+    {
+      "id": "stairs",
+      "floor_id": "level_1",
+      "polygon": [
+        [
+          -2,
+          2
+        ],
+        [
+          -1,
+          2
+        ],
+        [
+          -1,
+          2.5
+        ],
+        [
+          -2,
+          2.5
+        ],
+        [
+          -2,
+          2
+        ]
+      ],
+      "z_min_m": 0,
+      "z_max_m": 3
+    }
+  ]
+}

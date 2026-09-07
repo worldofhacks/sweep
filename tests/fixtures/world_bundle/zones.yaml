@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "units": "meters",
+  "frame": "world",
+  "geofence": {
+    "polygon": [
+      [
+        -3,
+        -3
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        -3,
+        3
+      ],
+      [
+        -3,
+        -3
+      ]
+    ],
+    "z_min_m": 0,
+    "z_max_m": 3
+  },
+  "zones": [
+    {
+      "id": "lobby",
+      "floor_id": "level_1",
+      "polygon": [
+        [
+          -3,
+          -3
+        ],
+        [
+          3,
+          -3
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          -3,
+          3
+        ],
+        [
+          -3,
+          -3
+        ]
+      ],
+      "z_min_m": 0,
+      "z_max_m": 3
+    }
+  ],
+  "corridors": [
+    {
+      "id": "lobby-spine",
+      "floor_id": "level_1",
+      "centerline": [
+        [
+          -1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "width_m": 0.8,
+      "z_min_m": 0.8,
+      "z_max_m": 1.2,
+      "height_evidence": [
+        {
+          "evidence_ref": "manual-clearance-0",
+          "evidence_path": "evidence/corridor-0.json",
+          "evidence_sha256": "a79bda952ac8f5eb9d344b289ddb324520d73fe18d8f4c273cb0064188b4cc69",
+          "measured_clearance_m": 2.2,
+          "maximum_flight_height_m": 1.4
+        }
+      ]
+    }
+  ]
+}

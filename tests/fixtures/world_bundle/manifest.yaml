@@ -1,0 +1,45 @@
+{
+  "schema_version": 2,
+  "bundle_kind": "world-bundle",
+  "bundle_version": "world-fixture-v2",
+  "map_id": "level-1-fixture",
+  "created_at": "2026-09-07T00:00:00Z",
+  "units": "meters",
+  "frame": {
+    "name": "world",
+    "axis_convention": "right_handed_z_up",
+    "x": "toward_elevator",
+    "y": "toward_street_wall",
+    "z": "up",
+    "units": "meters",
+    "physical_datum": "tag_0_center"
+  },
+  "occupancy": {
+    "path": "ohmni-grid.png",
+    "sha256": "262825e470bbb485b65b0f2beca795df53a75831682c27b607c16dfd6fa5ed1d",
+    "encoding": "png-gray8",
+    "width_cells": 3,
+    "height_cells": 2,
+    "cell_m": 0.1,
+    "origin_xy": [
+      -1,
+      -1
+    ]
+  },
+  "registration": {
+    "source": "ohmni_slam",
+    "residual_m": 0.01,
+    "maximum_residual_m": 0.03,
+    "tie_tag_ids": [
+      0,
+      1,
+      2
+    ]
+  },
+  "files": {
+    "tags.yaml": "b7e5040ceaabe18aca66c2d54d5fdbf2827b1979f0a7704ca22becc8fbe27049",
+    "zones.yaml": "efbf54a72b7fdd24a2fab840689efa2b898be1dba4445ad9f473a738feed89bc",
+    "obstacles.yaml": "cb13e6dba1b2bc91f16e5685faeddd1fa24f906f1d97635922c9b85b2033a2ff"
+  },
+  "content_sha256": "381dd8442299e85f66bed545bb94f32f0e613f781ff3bce7c299003843a5355c"
+}
