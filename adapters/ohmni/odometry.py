@@ -32,10 +32,9 @@ def encoder_pair(text: str) -> tuple[int, int] | None:
 
 @dataclass(frozen=True)
 class Pose:
-    """Launch-frame pose with paired encoder timing.
+    """sample_ns is the right-wheel reply completing the update.
 
-    sample_ns is the right-wheel reply completing the odometry update; sample_skew_ns is
-    the left-to-right reply interval, not a simultaneous sensor-acquisition time.
+    sample_skew_ns is the interval between the sequential wheel replies.
     """
 
     x: float
@@ -55,7 +54,7 @@ class Odometry:
         self._previous: tuple[int, int] | None = None
         self.updated = 0.0
         self.lost = False
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ohmni-encoders", daemon=True)
 

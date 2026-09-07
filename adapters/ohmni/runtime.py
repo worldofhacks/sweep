@@ -28,6 +28,7 @@ from .models import GroundStatus, RangeScan
 from .return_controller import ApprovedReturnRoute, ReturnController, read_approval_key
 
 _LOGGER = logging.getLogger(__name__)
+MAX_POSE_CAPTURE_AGE_NS = 100_000_000
 
 
 class GroundDevice(Protocol):
@@ -82,8 +83,32 @@ class GroundRuntimeConfig:
     relay_connect_host: str | None = None
     # Measured additive wall-clock correction for relay messages; sensor clocks stay native.
     relay_clock_offset_ms: int = 0
+    pose_clock_mapping_id: str | None = None
+    pose_clock_boot_id: str | None = None
+    maximum_pose_sample_skew_ns: int | None = None
 
     def __post_init__(self) -> None:
+        pose_timing = (
+            self.pose_clock_mapping_id,
+            self.pose_clock_boot_id,
+            self.maximum_pose_sample_skew_ns,
+        )
+        if any(value is not None for value in pose_timing):
+            if (
+                not isinstance(self.pose_clock_mapping_id, str)
+                or not 1 <= len(self.pose_clock_mapping_id) <= 128
+                or self.pose_clock_mapping_id != self.pose_clock_mapping_id.strip()
+                or not self.pose_clock_mapping_id.isprintable()
+                or not isinstance(self.pose_clock_boot_id, str)
+                or type(self.maximum_pose_sample_skew_ns) is not int
+                or not 0 <= self.maximum_pose_sample_skew_ns <= MAX_POSE_CAPTURE_AGE_NS
+            ):
+                raise ValueError("pose capture requires a mapping, boot ID, and bounded pair skew")
+            try:
+                if str(uuid.UUID(self.pose_clock_boot_id)) != self.pose_clock_boot_id:
+                    raise ValueError("noncanonical boot ID")
+            except ValueError as error:
+                raise ValueError("pose clock boot ID must be a canonical UUID") from error
         if self.relay_connect_host is not None:
             ipaddress.ip_address(self.relay_connect_host)
         if type(self.relay_clock_offset_ms) is not int or abs(self.relay_clock_offset_ms) > 300_000:
@@ -132,6 +157,7 @@ class GroundRuntimeConfig:
 
 class OhmniRuntime:
     def __init__(self, config: GroundRuntimeConfig, device: GroundDevice) -> None:
+        _check_pose_capture_boot(config)
         self.config = config
         self.device = device
         self._key = config.token.encode()
@@ -580,6 +606,19 @@ class OhmniRuntime:
             "value": time.monotonic_ns(),
         }
         confidence = _confidence(status.pos_quality)
+        sample_ns = status.pose_sample_ns
+        sample_skew_ns = status.pose_sample_skew_ns
+        capture_ns = (
+            sample_ns
+            if self.config.pose_clock_mapping_id is not None
+            and confidence > 0
+            and type(sample_ns) is int
+            and sample_ns >= 0
+            and 0 <= receipt["value"] - sample_ns <= MAX_POSE_CAPTURE_AGE_NS
+            and type(sample_skew_ns) is int
+            and 0 <= sample_skew_ns <= self.config.maximum_pose_sample_skew_ns
+            else None
+        )
         pose_event = self._observation(
             self.config.pose_source_id,
             self.config.odom_frame,
@@ -599,6 +638,7 @@ class OhmniRuntime:
                 },
             },
             confidence=confidence,
+            capture_ns=capture_ns,
         )
         self._pose_event_id = pose_event["event_id"]
         self._enqueue(pose_event)
@@ -690,6 +730,7 @@ class OhmniRuntime:
         payload: Mapping[str, object],
         *,
         confidence: float,
+        capture_ns: int | None = None,
     ) -> dict[str, object]:
         assert self._epoch is not None
         raw = {
@@ -703,9 +744,15 @@ class OhmniRuntime:
             "node_type": "ground",
             "frame": frame,
             "confidence": confidence,
-            "t_capture": None,
+            "t_capture": (
+                None
+                if capture_ns is None
+                else {"clock_id": self.config.source_clock_id, "unit": "ns", "value": capture_ns}
+            ),
             "t_source_receipt": dict(receipt),
-            "clock_mapping_id": None,
+            "clock_mapping_id": self.config.pose_clock_mapping_id
+            if capture_ns is not None
+            else None,
             "payload": dict(payload),
         }
         return ObservationSubmission.parse(raw).to_mapping()
@@ -866,6 +913,17 @@ def _confidence(value: object) -> float:
     return 0.0
 
 
+def _check_pose_capture_boot(config: GroundRuntimeConfig) -> None:
+    if config.pose_clock_boot_id is None:
+        return
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError as error:
+        raise ValueError("pose capture clock requires a readable current boot ID") from error
+    if boot_id != config.pose_clock_boot_id:
+        raise ValueError("pose capture clock qualification belongs to another robot boot")
+
+
 def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
     parser = argparse.ArgumentParser(prog="python -m adapters.ohmni.runtime")
     parser.add_argument("--relay", default=os.environ.get("SWEEP_RELAY_URL"))
@@ -873,6 +931,18 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
     parser.add_argument("--device-id", type=int, default=os.environ.get("SWEEP_DEVICE_UNIT"))
     parser.add_argument("--token", default=os.environ.get("SWEEP_NODE_KEY"))
     parser.add_argument("--adapter-id", default=os.environ.get("SWEEP_ADAPTER_ID"))
+    parser.add_argument(
+        "--source-clock-id", default=os.environ.get("SWEEP_SOURCE_CLOCK_ID", "ohmni-monotonic")
+    )
+    parser.add_argument(
+        "--pose-clock-mapping-id", default=os.environ.get("SWEEP_POSE_CLOCK_MAPPING_ID")
+    )
+    parser.add_argument("--pose-clock-boot-id", default=os.environ.get("SWEEP_POSE_CLOCK_BOOT_ID"))
+    parser.add_argument(
+        "--maximum-pose-sample-skew-ns",
+        type=int,
+        default=os.environ.get("SWEEP_MAXIMUM_POSE_SAMPLE_SKEW_NS"),
+    )
     parser.add_argument("--relay-connect-host", default=os.environ.get("SWEEP_RELAY_CONNECT_HOST"))
     parser.add_argument(
         "--relay-clock-offset-ms",
@@ -923,6 +993,10 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         device_id=args.device_id,
         token=args.token,
         adapter_id=args.adapter_id or f"ohmni-{args.device_id}",
+        source_clock_id=args.source_clock_id,
+        pose_clock_mapping_id=args.pose_clock_mapping_id,
+        pose_clock_boot_id=args.pose_clock_boot_id,
+        maximum_pose_sample_skew_ns=args.maximum_pose_sample_skew_ns,
         relay_connect_host=args.relay_connect_host,
         relay_clock_offset_ms=args.relay_clock_offset_ms,
         telemetry_hz=args.telemetry_hz,
@@ -953,6 +1027,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from .device import build
 
     config = parse_args(argv)
+    _check_pose_capture_boot(config)
     device = build()
     node = OhmniRuntime(config, device)
     restore_sigterm = _install_sigterm_stop(node)
