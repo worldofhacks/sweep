@@ -26,5 +26,6 @@ format: `frames.gray`, `frames.jsonl`, and `manifest.json`. A successful capture
 has a complete manifest and no `INCOMPLETE` marker. Failures retain the marker so
 partial output cannot be mistaken for a completed recording.
 
-The recording adds no camera publisher or robot control command. Measure the
-robot's encoder CPU cost separately before adding a live fisheye stream.
+The manifest records wall time and CPU used by the capture process. The decoder
+runs in a separate process, so its CPU is not included. Measure decoder CPU before
+using this recording to justify a live fisheye stream.

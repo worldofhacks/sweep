@@ -46,7 +46,11 @@ def record_head(
     stream = WebcamStream(url, resolution=(640, 480))
     output.mkdir(parents=False, exist_ok=False)
     (output / "INCOMPLETE").touch(exist_ok=False)
-    started_mono, started_utc = time.monotonic_ns(), time.time_ns()
+    started_mono, started_utc, started_cpu = (
+        time.monotonic_ns(),
+        time.time_ns(),
+        time.process_time_ns(),
+    )
     hashes = [hashlib.sha256(), hashlib.sha256()]
     count, size, first, last = 0, 0, None, None
     with (output / "frames.gray").open("xb") as raw, (output / "frames.jsonl").open("xb") as index:
@@ -82,7 +86,11 @@ def record_head(
             os.fsync(file.fileno())
     if not count:
         raise ValueError("no matching 640x480 frames received")
-    ended_mono, ended_utc = time.monotonic_ns(), time.time_ns()
+    ended_mono, ended_utc, ended_cpu = (
+        time.monotonic_ns(),
+        time.time_ns(),
+        time.process_time_ns(),
+    )
     manifest = {
         "schema_version": "ohmni-camera-capture/v1",
         "status": "complete",
@@ -129,6 +137,16 @@ def record_head(
             "latency": {
                 "status": "unavailable",
                 "reason": "RTSP decoder supplies no exposure timestamp",
+            },
+            "cpu": {
+                "host_process_cpu_ns": ended_cpu - started_cpu,
+                "wall_duration_ns": ended_mono - started_mono,
+                "decoder_subprocess_cpu": {
+                    "status": "not_measured",
+                    "reason": (
+                        "the decoder runs in a separate process without attributable CPU accounting"
+                    ),
+                },
             },
         },
     }
