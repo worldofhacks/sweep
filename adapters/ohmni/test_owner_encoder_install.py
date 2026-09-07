@@ -19,11 +19,15 @@ def _tools(tmp_path: Path) -> tuple[Path, Path]:
         f"#!{sys.executable}\n"
         "import json, os, pathlib, sys\n"
         "args = sys.argv[1:]\n"
+        "target = '" + NODE_DIR + "/telebot_node.js'\n"
         "script = sys.stdin.read() if args[2:] == ['shell', '-T', 'su', '0', 'sh'] else ''\n"
         "with open(os.environ['OWNER_INSTALL_CALLS'], 'a') as stream:\n"
         "    stream.write(json.dumps([args, script]) + '\\n')\n"
-        "if args[2] == 'pull': pathlib.Path(args[-1]).write_bytes(b'original')\n"
-        "if args[2] == 'shell' and 'sha256sum' in args[-1]: print('" + REFERENCE_SHA + "')\n"
+        "if args[2] == 'pull': raise SystemExit('unprivileged protected read')\n"
+        "if args[2:] == ['exec-out', 'su', '0', 'cat', target]:\n"
+        "    sys.stdout.buffer.write(b'original')\n"
+        "elif args[2:] == ['exec-out', 'su', '0', 'sha256sum', target]:\n"
+        "    print('" + REFERENCE_SHA + "  telebot_node.js')\n"
         "if args[2] == 'shell' and args[-1].startswith('mktemp'):\n"
         "    print('/data/local/tmp/sweep-owner-patch.Ab12Cd34')\n"
     )
@@ -60,6 +64,15 @@ def test_owner_install_rechecks_content_and_restores_vendor_metadata(tmp_path: P
     scripts = [script for _, script in calls]
     install = next(script for script in scripts if "cp -p $target $backup" in script)
     assert f"= {REFERENCE_SHA} ]" in install
+    assert any(
+        args[2:] == ["exec-out", "su", "0", "cat", f"{NODE_DIR}/telebot_node.js"]
+        for args, _ in calls
+    )
+    assert any(
+        args[2:] == ["exec-out", "su", "0", "sha256sum", f"{NODE_DIR}/telebot_node.js"]
+        for args, _ in calls
+    )
+    assert not any(args[2] == "pull" for args, _ in calls)
     assert "chown 1000:1000 $target $module" in install
     assert "chmod 600 $target $module" in install
     assert "chcon u:object_r:system_app_data_file:s0 $target $module" in install
