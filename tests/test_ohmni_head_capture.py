@@ -61,6 +61,10 @@ def test_record_head_writes_bounded_frames_index_and_receipt_provenance(tmp_path
         <= manifest["capture"]["ended_monotonic_ns"]
     )
     assert manifest["measurements"]["latency"]["status"] == "unavailable"
+    cpu = manifest["measurements"]["cpu"]
+    assert type(cpu["host_process_cpu_ns"]) is int and cpu["host_process_cpu_ns"] >= 0
+    assert type(cpu["wall_duration_ns"]) is int and cpu["wall_duration_ns"] > 0
+    assert cpu["decoder_subprocess_cpu"]["status"] == "not_measured"
     assert "secret" not in (output / "manifest.json").read_text()
     assert not (output / "INCOMPLETE").exists()
     with pytest.raises(FileExistsError):
