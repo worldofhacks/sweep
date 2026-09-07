@@ -108,6 +108,7 @@ def with_ground_capabilities(profile: CapabilityProfile) -> CapabilityProfile:
         profile.enabled_intent_names | GROUND_ADDITIONAL_INTENT_NAMES,
     )
 
+
 C1_CAPABILITY_PROFILE = CapabilityProfile(
     name="c1_basic_control",
     enabled_intent_names=C1_IMPLEMENTED_INTENT_NAMES,
