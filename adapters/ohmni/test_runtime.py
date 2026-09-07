@@ -781,8 +781,8 @@ def test_confirmed_console_come_home_executes_the_approved_ground_return(
         session = relay_server.runtime.sessions[SESSION]
         _wait_for(
             lambda: (
-                bool(session.current_state()["drones"])
-                and session.current_state()["drones"][0]["membership"] == "ready"
+                session.registry.ready_ground_identity(GROUND_ID, time.time_ns() // 1_000_000)
+                is not None
             ),
             "ground readiness",
         )
