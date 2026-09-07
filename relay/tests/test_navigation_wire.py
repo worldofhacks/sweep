@@ -5,10 +5,6 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
-
-from adapters.dji_mini3.remote import CommandRequest
-from planner.models import Plan, Position
-from planner.navigation import preview_evidence
 from planner.navigation_authorization import NavigationApproval, content_digest
 from planner.navigation_runtime import (
     NavigationExecutionConfig,
@@ -16,6 +12,10 @@ from planner.navigation_runtime import (
     NavigationRuntime,
     navigation_configuration_digest,
 )
+
+from adapters.dji_mini3.remote import CommandRequest
+from planner.models import Plan, Position
+from planner.navigation import preview_evidence
 from planner.test_navigation import MOTION, PERMISSION, artifact
 from relay.auth import sign_event, verify_event_signature
 from relay.control_localization import ClockMapping, ControlLocalizationPins, ControlPose

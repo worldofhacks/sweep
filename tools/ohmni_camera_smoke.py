@@ -18,6 +18,7 @@ from types import MappingProxyType
 
 import cv2
 import numpy as np
+from tools.ohmni_camera_frames import CameraCapture, CaptureError, open_capture
 
 from perception.camera_tags import CameraTagDetector, read_calibration
 from relay.observations import (
@@ -31,7 +32,6 @@ from relay.observations import (
     ingest,
 )
 from tools.map_common import finite_number
-from tools.ohmni_camera_frames import CameraCapture, CaptureError, open_capture
 
 FORMAT = "ohmni.camera-smoke.v1"
 MAX_TAG_SIZES = 64

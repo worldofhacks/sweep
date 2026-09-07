@@ -9,10 +9,11 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from math import isfinite
 
-from adapters.dji_mini3.remote import CommandRequest
-from planner.models import Command, CommandOperation, FleetSnapshot, Plan
 from planner.navigation_authorization import content_digest
 from planner.navigation_runtime import NavigationRuntime
+
+from adapters.dji_mini3.remote import CommandRequest
+from planner.models import Command, CommandOperation, FleetSnapshot, Plan
 from relay.auth import sign_event
 from relay.control_localization import ControlPose
 
