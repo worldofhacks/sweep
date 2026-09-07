@@ -42,7 +42,8 @@ export function FleetMap({ controller, catalog, mapEndpoint, now }: ModuleProps)
   const snapshot = useSensorStore(sensors)
   const fleet = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
   const devices = useMemo(() => {
-    const canonical = canonicalMapDevices(fleet, Object.values(state.latestObservations))
+    const relayNow = fleet.find((device) => device.client_observation)?.client_observation?.now ?? at
+    const canonical = canonicalMapDevices(fleet, Object.values(state.latestObservations), relayNow)
     const placed = new Set(canonical.map((device) => device.droneId))
     return [...canonical, ...mapDevices(fleet, snapshot, at).filter((device) => !placed.has(device.droneId) && fleet.find((item) => item.drone_id === device.droneId)?.node_type !== 'ground')]
   }, [fleet, snapshot, state.latestObservations, at])
