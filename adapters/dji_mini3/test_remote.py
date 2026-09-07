@@ -602,3 +602,36 @@ def test_command_deadline_bounds_a_node_that_only_heartbeats() -> None:
         RemoteBridgeAdapter(
             link, epochs=link.epochs, acknowledgement_timeout_ms=TIMEOUT_MS, command_deadline_ms=10
         )
+
+
+def test_bound_navigation_goto_carries_its_frozen_route_id() -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    link = ScriptedLink(epochs={1: 1})
+    adapter = _adapter(link)
+    command = Command(
+        command_id="navigation-goto-1",
+        intent_id="intent-navigation-1",
+        roster_version=snapshot.roster_version,
+        drone_id=1,
+        connection_epoch=1,
+        operation=CommandOperation.GOTO,
+        parameters={
+            "x": 1.5,
+            "y": -2.0,
+            "z": 1.0,
+            "speed": 0.2,
+            "navigation_route_id": "frozen-route-1",
+        },
+    )
+
+    with adapter.for_commands(command.intent_id, command.roster_version, (command,)):
+        acknowledgement = adapter.goto(1, 1.5, -2.0, 1.0, 0.2)
+
+    assert acknowledgement.status is LifecycleStatus.COMPLETED
+    assert dict(link.sent[0].args) == {
+        "x_mm": 1_500,
+        "y_mm": -2_000,
+        "z_mm": 1_000,
+        "speed_mm_s": 200,
+        "navigation_route_id": "frozen-route-1",
+    }
