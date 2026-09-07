@@ -11,11 +11,26 @@ from pathlib import Path
 
 import cv2
 
+try:
+    import resource
+except ImportError:
+    resource = None
+
 from perception.webcam_stream import WebcamStream
 from tools.map_common import finite_number
 
 MAX_BYTES = 512 * 1024 * 1024
 MAX_FRAMES = 10000
+
+
+def _reaped_children_cpu_ns() -> int | None:
+    if resource is None or not hasattr(resource, "RUSAGE_CHILDREN"):
+        return None
+    try:
+        usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    except OSError:
+        return None
+    return int((usage.ru_utime + usage.ru_stime) * 1_000_000_000)
 
 
 def record_head(
@@ -43,6 +58,7 @@ def record_head(
         for value in (run_id, device_id, camera_id)
     ):
         raise ValueError("run, device and camera identities must be 1 to 128 characters")
+    started_children_cpu = _reaped_children_cpu_ns()
     stream = WebcamStream(url, resolution=(640, 480))
     output.mkdir(parents=False, exist_ok=False)
     (output / "INCOMPLETE").touch(exist_ok=False)
@@ -91,6 +107,15 @@ def record_head(
         time.time_ns(),
         time.process_time_ns(),
     )
+    ended_children_cpu = _reaped_children_cpu_ns()
+    child_cpu_ns = (
+        None
+        if started_children_cpu is None or ended_children_cpu is None
+        else ended_children_cpu - started_children_cpu
+    )
+    if child_cpu_ns is not None and child_cpu_ns < 0:
+        child_cpu_ns = None
+    child_cpu_status = "measured" if child_cpu_ns is not None else "unavailable"
     manifest = {
         "schema_version": "ohmni-camera-capture/v1",
         "status": "complete",
@@ -141,12 +166,12 @@ def record_head(
             "cpu": {
                 "host_process_cpu_ns": ended_cpu - started_cpu,
                 "wall_duration_ns": ended_mono - started_mono,
-                "decoder_subprocess_cpu": {
-                    "status": "not_measured",
-                    "reason": (
-                        "the decoder runs in a separate process without attributable CPU accounting"
-                    ),
-                },
+                "child_process_cpu_ns": child_cpu_ns,
+                "child_process_cpu_status": child_cpu_status,
+                "child_process_cpu_scope": "all children reaped during this capture",
+                "aggregate_process_cpu_ns": (
+                    None if child_cpu_ns is None else ended_cpu - started_cpu + child_cpu_ns
+                ),
             },
         },
     }
