@@ -95,6 +95,7 @@ def _smoke_import(stage: Path, loader: Path) -> None:
                 str(interpreter),
                 "-I",
                 "-c",
+                "import sys; sys.path.insert(0, " + repr(str(stage)) + "); "
                 "import adapters.ohmni.runtime; import relay.contracts",
             ],
             cwd=stage,

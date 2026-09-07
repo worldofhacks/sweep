@@ -108,6 +108,7 @@ def test_payload_smoke_import_uses_the_packaged_musl_python(
                 str(interpreter),
                 "-I",
                 "-c",
+                "import sys; sys.path.insert(0, " + repr(str(stage)) + "); "
                 "import adapters.ohmni.runtime; import relay.contracts",
             ],
             stage,

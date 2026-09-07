@@ -2,7 +2,7 @@
 
 This package runs the ground adapter on the measured Ohmni Android 7.1 image. It ships a musl Python 3.12 runtime, a pure-Python `websockets` wheel, the Ohmni adapter, and the small relay/planner contract set it imports. The robot does not run Docker, `pip`, or a host Python interpreter.
 
-`run.sh` starts `./lib/ld-musl-x86_64.so.1 ./python/bin/python3.12 -m adapters.ohmni`. It reads a mode-600 `node.env`, records a PID, verifies that PID before stopping it, and gives the runtime time to issue its local stop writes. `install.sh` transfers a plain tar with `adb` and extracts it with Toybox. It does not start the adapter or enable motion.
+`run.sh` starts `./lib/ld-musl-x86_64.so.1 ./python/bin/python3.12 -m adapters.ohmni`. It reads a mode-600 `node.env`, records a PID, verifies that PID before stopping it, and gives the runtime time to issue its local stop writes. `install.sh` stages a plain tar through ADB, then extracts it with Toybox through the Ohmni's `su 0` shell. It leaves the adapter stopped. Set `ADB` to the platform-tools executable when it is outside your PATH.
 
 A normal runtime joins with motion disabled until the local spotter, calibrated lidar, current pose, and signed relay heartbeat qualify it. The local device deadman continues to run independently of the relay event loop. Deployment and physical motion are separate supervised activities.
 
@@ -43,8 +43,8 @@ SWEEP_LIDAR_MOUNT_YAW_DEG=0.00
 The lidar transform values are measurements. They must not be copied from this example. Start only after the qualification checks below:
 
 ```sh
-adb -s "$ADB_SERIAL" shell /data/local/sweep/run.sh start
-adb -s "$ADB_SERIAL" shell /data/local/sweep/run.sh stop
+adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/run.sh start
+adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/run.sh stop
 ```
 
 ## Approved ground return
@@ -59,7 +59,7 @@ The adapter acknowledges completion after the final pose is inside the approved 
 
 ## Qualification record
 
-Before any hardware deployment or motion, record the following alongside the device/session evidence:
+Before enabling ground motion, record the following alongside the device/session evidence:
 
 - review the exact artifact manifest and verify the produced payload contains the musl loader, Python, runtime modules, and no credentials;
 - verify the local STOP, relay HOLD, relay ESTOP, link loss, heartbeat expiry, lost odometry, stale lidar, and spotter withdrawal all stop the robot;
@@ -68,4 +68,4 @@ Before any hardware deployment or motion, record the following alongside the dev
 - verify a supervised return on the marked corridor with raw pose, scan, command, acknowledgement, and camera evidence;
 - confirm that the final completion follows a measured arrival pose and that no completion is emitted when the artifact, grant, pose, scan, or footprint check is unavailable.
 
-No command in this package deploys to a robot or moves it.
+Installation and runtime startup are separate commands. Runtime startup leaves motion subject to the local safety checks above.
