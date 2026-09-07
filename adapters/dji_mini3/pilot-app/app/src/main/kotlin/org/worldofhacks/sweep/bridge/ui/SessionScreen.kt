@@ -205,7 +205,7 @@ private fun SetupCard(
         !setup.loaded -> "Loading the encrypted setup"
         !(relayUrl.startsWith("ws://") || relayUrl.startsWith("wss://")) -> "Relay URL must start with ws:// or wss://"
         session.isBlank() -> "Session id is required"
-        droneNumber == null || droneNumber !in 1..4 -> "Aircraft number must be 1 to 4"
+        droneNumber == null || droneNumber <= 0 -> "Aircraft number must be a positive integer"
         !tokenReady -> "Enter the node token once"
         else -> null
     }
