@@ -78,6 +78,7 @@ def world_binding() -> SourceBinding:
         "level-1",
         "sha256:map-v1",
         "level-1-survey-2026-09",
+        ("aircraft-ms",),
     )
 
 
@@ -247,7 +248,15 @@ def test_unknown_frame_stale_epoch_and_unconfigured_mapping_fail_closed() -> Non
             mapped,
             t_ingest=42,
             frames=local_registry(),
-            binding=local_binding(),
+            binding=SourceBinding(
+                "demo-1",
+                9,
+                3,
+                "ohmni-lidar",
+                "ground",
+                ("odom", "lidar"),
+                allowed_clock_mapping_ids=("missing",),
+            ),
             mappings={},
             timing=TimingPolicy(25),
         )
@@ -274,7 +283,7 @@ def test_rate_policy_is_a_pure_bounded_admission_check() -> None:
     assert policy.accepts(None, 1_000)
     assert not policy.accepts(1_000, 1_199)
     assert policy.accepts(1_000, 1_200)
-    assert policy.accepts(1_000, 999)
+    assert not policy.accepts(1_000, 999)
 
 
 def test_registry_resolves_repeated_local_frame_ids_by_the_full_source_scope() -> None:
@@ -318,6 +327,7 @@ def test_world_requires_matching_host_binding_pins_and_numeric_confidence() -> N
         "level-1",
         "sha256:other-map",
         "level-1-survey-2026-09",
+        ("aircraft-ms",),
     )
 
     with pytest.raises(ObservationError) as pins:
@@ -394,3 +404,41 @@ def test_pose_camera_and_status_payloads_have_closed_encodable_shapes() -> None:
             timing=TimingPolicy(25),
         )
         assert decode_observation(result.encode()).submission.payload["kind"] == payload["kind"]
+
+
+def test_submission_state_is_deeply_immutable_and_export_returns_fresh_values() -> None:
+    raw = json.loads((FIXTURES / "ground-odom-range-scan.json").read_text())
+    submission = ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+
+    with pytest.raises(TypeError):
+        submission.payload["kind"] = "status"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        submission.payload["ranges_m"][0] = 9.0  # type: ignore[index]
+
+    exported = submission.to_mapping()
+    exported["payload"]["ranges_m"][0] = 9.0  # type: ignore[index]
+    assert submission.to_mapping()["payload"]["ranges_m"][0] != 9.0  # type: ignore[index]
+
+
+def test_parser_rejects_boolean_version_huge_numbers_and_non_utf8_json() -> None:
+    raw = json.loads((FIXTURES / "aircraft-world.json").read_text())
+    raw["v"] = True
+    with pytest.raises(ObservationError) as version:
+        ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+    assert version.value.code == "invalid_observation"
+
+    raw["v"] = 1
+    raw["device_id"] = 2**31
+    with pytest.raises(ObservationError) as device:
+        ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+    assert device.value.code == "invalid_observation"
+
+    raw["device_id"] = 7
+    raw["payload"]["position"]["x_m"] = 10**100_000
+    with pytest.raises(ObservationError) as coordinate:
+        ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+    assert coordinate.value.code == "invalid_observation"
+
+    with pytest.raises(ObservationError) as encoding:
+        decode_submission(b"\xff")
+    assert encoding.value.code == "invalid_observation"
