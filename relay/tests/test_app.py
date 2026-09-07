@@ -16,7 +16,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import relay.app as app_module
 import relay.audit as audit_module
-from relay.app import RelayRuntime, create_app
+from relay.app import RelayRuntime, create_app, default_media_monitor
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
@@ -1673,6 +1673,27 @@ class _ScriptedMediaClient:
 
     async def close(self) -> None:
         self.closed = True
+
+
+def test_default_media_monitor_polls_configured_adapter_identities(
+    app_settings: RelaySettings, clock: MutableClock
+) -> None:
+    settings = replace(
+        app_settings,
+        adapter_keys={
+            1: ADAPTER_KEY,
+            11: b"adapter-eleven-key-is-at-least-32",
+            12: b"adapter-twelve-key-is-at-least-32",
+        },
+        media_api_url="http://127.0.0.1:9997",
+        media_api_password="media-api-password",
+    )
+
+    monitor = default_media_monitor(settings, clock)
+
+    assert monitor is not None
+    assert monitor._drone_ids == (1, 11, 12)
+    asyncio.run(monitor.stop())
 
 
 def test_state_video_follows_mediamtx_while_it_answers_and_the_node_claim_after(

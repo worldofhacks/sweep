@@ -70,6 +70,7 @@ def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor
     return MediaMonitor(
         client,
         clock=clock,
+        drone_ids=tuple(sorted(settings.adapter_keys)),
         poll_interval_ms=settings.media_poll_interval_ms,
         stale_after_ms=settings.media_stale_after_ms,
     )
