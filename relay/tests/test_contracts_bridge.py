@@ -60,6 +60,23 @@ def test_command_signature_round_trips_through_relay_auth_canonical_json() -> No
     )
 
 
+def test_goto_accepts_only_a_canonical_optional_navigation_route_id() -> None:
+    raw = command_payload(
+        event_id="command-navigation-route",
+        args={
+            "x_mm": 1_000,
+            "y_mm": -400,
+            "z_mm": 1_000,
+            "speed_mm_s": 500,
+            "navigation_route_id": "frozen-route-1",
+        },
+    )
+
+    frame = parse_command(raw)
+
+    assert frame.args["navigation_route_id"] == "frozen-route-1"
+
+
 def test_command_event_builder_produces_a_frame_the_parser_and_node_accept() -> None:
     event = command_event(
         t=1_756_700_000_000,

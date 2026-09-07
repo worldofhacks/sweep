@@ -79,6 +79,7 @@ class _IntentContext:
     intent_id: str
     roster_version: int
     command_ids: Mapping[tuple[int, CommandOperation], str]
+    navigation_route_ids: Mapping[tuple[int, CommandOperation], str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,7 +179,9 @@ class RemoteBridgeAdapter:
         """
         if self._context is not None:
             raise AdapterError("an intent context is already bound")
-        self._context = _IntentContext(intent_id, roster_version, MappingProxyType({}))
+        self._context = _IntentContext(
+            intent_id, roster_version, MappingProxyType({}), MappingProxyType({})
+        )
         try:
             yield
         finally:
@@ -195,6 +198,7 @@ class RemoteBridgeAdapter:
         if self._context is not None:
             raise AdapterError("an intent context is already bound")
         identities: dict[tuple[int, CommandOperation], str] = {}
+        route_ids: dict[tuple[int, CommandOperation], str] = {}
         for command in commands:
             if command.intent_id != intent_id or command.roster_version != roster_version:
                 raise AdapterError("command scope contains a command from another intent")
@@ -202,10 +206,16 @@ class RemoteBridgeAdapter:
             if key in identities:
                 raise AdapterError("command scope contains an ambiguous aircraft operation")
             identities[key] = command.command_id
+            route_id = command.parameters.get("navigation_route_id")
+            if route_id is not None:
+                if command.operation is not CommandOperation.GOTO or not isinstance(route_id, str):
+                    raise AdapterError("navigation route id must belong to a goto command")
+                route_ids[key] = route_id
         self._context = _IntentContext(
             intent_id,
             roster_version,
             MappingProxyType(identities),
+            MappingProxyType(route_ids),
         )
         try:
             yield
@@ -219,15 +229,26 @@ class RemoteBridgeAdapter:
     def goto(
         self, drone_id: int, x: float, y: float, z: float, speed: float
     ) -> AdapterAcknowledgement:
+        args: dict[str, int | str] = {
+            "x_mm": _milli(x, "x"),
+            "y_mm": _milli(y, "y"),
+            "z_mm": _milli(z, "z"),
+            "speed_mm_s": _positive_milli(speed, "speed"),
+        }
+        if (
+            self._context is not None
+            and (
+                route_id := self._context.navigation_route_ids.get(
+                    (drone_id, CommandOperation.GOTO)
+                )
+            )
+            is not None
+        ):
+            args["navigation_route_id"] = route_id
         return self._flight(
             drone_id,
             CommandOperation.GOTO,
-            {
-                "x_mm": _milli(x, "x"),
-                "y_mm": _milli(y, "y"),
-                "z_mm": _milli(z, "z"),
-                "speed_mm_s": _positive_milli(speed, "speed"),
-            },
+            args,
         )
 
     def rotate_to(self, drone_id: int, yaw: float, speed: float) -> AdapterAcknowledgement:

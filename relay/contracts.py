@@ -135,7 +135,13 @@ COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingP
     {
         CommandOperation.TAKEOFF: MappingProxyType({"z_mm": "integer"}),
         CommandOperation.GOTO: MappingProxyType(
-            {"x_mm": "integer", "y_mm": "integer", "z_mm": "integer", "speed_mm_s": "positive"}
+            {
+                "x_mm": "integer",
+                "y_mm": "integer",
+                "z_mm": "integer",
+                "speed_mm_s": "positive",
+                "navigation_route_id": "optional_id",
+            }
         ),
         CommandOperation.ROTATE_TO: MappingProxyType(
             {"yaw_mdeg": "integer", "speed_mdeg_s": "positive"}
@@ -1438,11 +1444,14 @@ def _command_arguments(
 ) -> Mapping[str, int | str]:
     spec = COMMAND_ARGUMENT_FIELDS[operation]
     value = _mapping(raw, code, "command args must be an object")
-    if set(value) != set(spec):
+    optional = {field for field, kind in spec.items() if kind == "optional_id"}
+    if not set(value).issuperset(set(spec) - optional) or not set(value).issubset(set(spec)):
         raise ContractError(code, f"{operation.value} arguments do not match the v1 contract")
     result: dict[str, int | str] = {}
     for field, kind in spec.items():
-        if kind == "id":
+        if kind == "optional_id" and field not in value:
+            continue
+        if kind in {"id", "optional_id"}:
             result[field] = _nonempty_string(value[field], field, code)
         elif kind == "positive":
             result[field] = _positive_int(value[field], field, code)
