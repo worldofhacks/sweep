@@ -126,5 +126,5 @@ def test_export_revalidates_after_copying_its_artifact_snapshot(tmp_path, monkey
         return snapshot
 
     monkeypatch.setattr(admission_exporter, "_artifact_bytes", mutate_after_snapshot)
-    with pytest.raises(ValueError, match="tuning|approved profile"):
+    with pytest.raises(ValueError, match="navigation artifact inputs changed"):
         export_phone_navigation_admission(deployment, 1, key, tmp_path / "output")
