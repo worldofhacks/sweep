@@ -247,6 +247,12 @@ def test_survey_complete_uses_authenticated_lifecycle_and_saves_reloadable_candi
     session.process_intent(intent, Principal("console", None, CONSOLE_KEY))
     started = session.execute_pending_intent("survey-1")
     assert started[-1]["status"] == "executing"
+    assert started[-1]["result"] == {
+        "run_id": "survey-survey-1",
+        "connection_epoch": 1,
+    }
+    assert started[-1]["drone_id"] == GROUND_ID
+    assert started[-1]["connection_epoch"] == 1
     scan = _observation(
         "scan-1",
         "ohmni-lidar",

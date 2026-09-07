@@ -93,6 +93,7 @@ def test_host_node_type_controls_authenticated_join_and_state(tmp_path):
     assert accepted[0]["node_type"] == "ground"
     assert state["drones"][0]["drone_id"] == 9
     assert state["drones"][0]["node_type"] == "ground"
+    assert state["drones"][0]["ground_readiness"] == {"source_id": None}
     assert state["drones"][0]["adapter_capabilities"] == ["ground_drive"]
 
     refused = session.process_membership(
@@ -146,6 +147,8 @@ def test_ground_readiness_uses_ground_safety_and_pose_evidence():
 
     assert transition.membership.value == "ready"
     assert transition.readiness_reasons == ()
+    state = registry.state_event(session=SESSION, t=1_756_700_000_001, event_id="ground-state")
+    assert state["drones"][0]["ground_readiness"] == {"source_id": "ohmni-pose"}
 
 
 def test_ground_readiness_requires_the_accepted_pose_identity():

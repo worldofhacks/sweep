@@ -859,6 +859,12 @@ class RelaySession:
                             spacing=sink_result.spacing_update,
                         )
                     )
+                survey_result = (
+                    sink_result.result
+                    if sink_result.source == "survey_area"
+                    and sink_result.status is LifecycleStatus.EXECUTING
+                    else None
+                )
                 events.append(
                     self.record_lifecycle(
                         intent_id=pending.intent.intent_id,
@@ -866,6 +872,15 @@ class RelaySession:
                         source=sink_result.source,
                         reason=sink_result.reason,
                         detail=sink_result.detail,
+                        drone_id=(
+                            pending.intent.selection[0] if survey_result is not None else None
+                        ),
+                        connection_epoch=(
+                            survey_result["connection_epoch"]
+                            if survey_result is not None
+                            else None
+                        ),
+                        result=survey_result,
                     )
                 )
         pending.events = events
@@ -1626,6 +1641,7 @@ class RelaySession:
         connection_epoch: int | None = None,
         reason: str | None = None,
         detail: str | None = None,
+        result: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         """Wire a planner/arbiter-owned lifecycle result without importing its types."""
         if status is LifecycleStatus.REFUSED:
@@ -1657,6 +1673,7 @@ class RelaySession:
                 connection_epoch=connection_epoch,
                 reason=reason,
                 detail=detail,
+                result=result,
             )
             self._remember_intent(intent_id)
             self._transition_intent(entry, status)
@@ -2800,8 +2817,11 @@ def _bounded_control_projection_snapshot(value: object, field: str) -> object:
 
 
 def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
-    missing = _DRONE_STATE_KEYS - set(drone)
-    unknown = set(drone) - _DRONE_STATE_KEYS
+    expected = _DRONE_STATE_KEYS
+    if drone.get("node_type") == "ground":
+        expected = expected | {"ground_readiness"}
+    missing = expected - set(drone)
+    unknown = set(drone) - expected
     if missing or unknown:
         detail = []
         if missing:
@@ -2828,7 +2848,17 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
         not isinstance(home_pose, Mapping) or set(home_pose) != {"x", "y", "z"}
     ):
         raise AuditLogError("drone home_pose fields do not match the bounded projection")
-    projection = {key: drone[key] for key in _DRONE_STATE_KEYS - _VOLATILE_DRONE_KEYS}
+    ground_readiness = drone.get("ground_readiness")
+    if ground_readiness is not None and (
+        not isinstance(ground_readiness, Mapping)
+        or set(ground_readiness) != {"source_id"}
+        or (
+            ground_readiness["source_id"] is not None
+            and not isinstance(ground_readiness["source_id"], str)
+        )
+    ):
+        raise AuditLogError("drone ground_readiness fields do not match the bounded projection")
+    projection = {key: drone[key] for key in expected - _VOLATILE_DRONE_KEYS}
     for report, timestamp in _TIMESTAMPED_DRONE_REPORTS.items():
         value = projection.get(report)
         if value is None and report != "video":
