@@ -1332,7 +1332,7 @@ class RelaySession:
                 if isinstance(frame, CapabilitiesFrame):
                     self.registry.apply_capabilities(frame)
                 elif isinstance(frame, NodeStatusFrame):
-                    self.registry.apply_node_status(frame)
+                    self.registry.apply_node_status(frame, received_at=now)
                 elif isinstance(frame, MediaFileFrame):
                     self._remember_media(frame.file)
                     self._retain_media(frame.file)
@@ -2691,6 +2691,7 @@ _DRONE_REPORT_FIELDS = {
             "video_publish_state",
             "phone_battery_percent",
             "phone_thermal_state",
+            "local_height",
         }
     ),
     "video": frozenset({"status", "last_frame_at"}),
@@ -2867,6 +2868,17 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
         if not isinstance(value, Mapping) or set(value) != _DRONE_REPORT_FIELDS[report]:
             raise AuditLogError(f"drone {report} fields do not match the bounded projection")
         projection[report] = {key: item for key, item in value.items() if key != timestamp}
+    node_status = projection.get("node_status")
+    if node_status is not None:
+        assert isinstance(node_status, Mapping)
+        local_height = node_status["local_height"]
+        if local_height is not None and (
+            not isinstance(local_height, Mapping)
+            or set(local_height) != {"z_m", "source", "age_ms", "reported_at_ms"}
+        ):
+            raise AuditLogError(
+                "drone node_status local_height fields do not match the bounded projection"
+            )
     camera = projection.get("camera_capabilities")
     if camera is not None:
         assert isinstance(camera, Mapping)

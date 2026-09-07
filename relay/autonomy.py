@@ -47,6 +47,7 @@ from planner.models import (
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
+    LocalHeightEvidence,
     Plan,
     PreparedExecution,
     Refusal,
@@ -78,6 +79,12 @@ from relay.intent_v1 import IntentName, IntentV1
 from relay.navigation_wire import NavigationWirePublisher
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
+from relay.supervised_vertical import (
+    SUPERVISED_VERTICAL_PROFILE,
+    SupervisedVerticalArbiter,
+    SupervisedVerticalConfig,
+    SupervisedVerticalPlanner,
+)
 
 LIFECYCLE_SOURCE = "autonomy"
 PREEMPTED_BY_ESTOP = "preempted_by_estop"
@@ -128,21 +135,57 @@ class PlanPreempted(BaseException):
 
 @dataclass(frozen=True, slots=True)
 class AutonomyConfig:
-    """Planner, arbiter, and sim camera values; none of them has a deployment default."""
+    """One explicit world policy or the separate supervised vertical policy."""
 
-    planning: PlanningConfig
-    safety: SafetyConfig
+    planning: PlanningConfig | None = None
+    safety: SafetyConfig | None = None
+    supervised_vertical: SupervisedVerticalConfig | None = None
     sim_camera: SimCameraConfig | None = None
     control_localization_projector: ControlLocalizationProjector | None = None
     navigation: NavigationDeployment | None = None
 
+    def __post_init__(self) -> None:
+        world = self.planning is not None or self.safety is not None
+        if world == (self.supervised_vertical is not None):
+            raise ValueError("configure either planning+safety or supervised_vertical")
+        if world and (self.planning is None or self.safety is None):
+            raise ValueError("world policy requires both planning and safety")
+        if self.supervised_vertical is not None and (
+            self.control_localization_projector is not None or self.navigation is not None
+        ):
+            raise ValueError("supervised_vertical does not accept world localization or navigation")
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
-        """Load exact deployment contracts; localization requires measured pins and bounds."""
+        """Load one deployment policy and reject a mixed world/vertical configuration."""
         values = os.environ if environ is None else environ
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
         localization_raw = values.get("SWEEP_CONTROL_LOCALIZATION_JSON", "")
         navigation_path = values.get("SWEEP_NAVIGATION_CONFIG", "")
+        vertical_raw = values.get("SWEEP_SUPERVISED_VERTICAL_JSON", "")
+        if vertical_raw:
+            if any(
+                (
+                    values.get("SWEEP_PLANNING_JSON", ""),
+                    values.get("SWEEP_SAFETY_JSON", ""),
+                    localization_raw,
+                    navigation_path,
+                )
+            ):
+                raise SettingsError(
+                    "SWEEP_SUPERVISED_VERTICAL_JSON cannot be combined with "
+                    "world planning, safety, localization, or navigation"
+                )
+            return cls(
+                supervised_vertical=_config_from_json(
+                    SupervisedVerticalConfig, vertical_raw, "SWEEP_SUPERVISED_VERTICAL_JSON"
+                ),
+                sim_camera=(
+                    None
+                    if not camera_raw
+                    else _config_from_json(SimCameraConfig, camera_raw, "SWEEP_SIM_CAMERA_JSON")
+                ),
+            )
         return cls(
             planning=_config_from_json(
                 PlanningConfig, values.get("SWEEP_PLANNING_JSON", ""), "SWEEP_PLANNING_JSON"
@@ -162,9 +205,7 @@ class AutonomyConfig:
                     localization_raw, "SWEEP_CONTROL_LOCALIZATION_JSON"
                 )
             ),
-            navigation=(
-                None if not navigation_path else load_navigation_deployment(navigation_path)
-            ),
+            navigation=None if not navigation_path else load_navigation_deployment(navigation_path),
         )
 
 
@@ -217,6 +258,7 @@ def relay_snapshot(
     if not isinstance(drones_raw, list):
         raise ValueError("relay state requires a drones list")
     drones: list[Mapping[str, object]] = []
+    ground_ids: list[int] = []
     enrichment: dict[int, RelayAircraftSafetyEnrichment] = {}
     fleet_observation_complete = True
     for drone in drones_raw:
@@ -226,6 +268,10 @@ def relay_snapshot(
         if node_type not in ("aircraft", "ground"):
             raise ValueError("relay node type is unknown")
         if node_type == "ground":
+            drone_id = drone.get("drone_id")
+            if not isinstance(drone_id, int) or isinstance(drone_id, bool) or drone_id <= 0:
+                raise ValueError("relay drone entries require a positive drone_id")
+            ground_ids.append(drone_id)
             continue
         drone_id = drone.get("drone_id")
         if not isinstance(drone_id, int) or isinstance(drone_id, bool) or drone_id <= 0:
@@ -258,10 +304,12 @@ def relay_snapshot(
             ),
             active_task_id=None,
             position_loss_since_ms=None,
+            local_height=_local_height_evidence(drone.get("node_status")),
+            readiness_reasons=_readiness_reasons(drone.get("readiness_reasons")),
         )
         drones.append(drone)
     snapshot = FleetSnapshot.from_relay_state(
-        {**state, "drones": drones},
+        {**state, "drones": drones, "ground_ids": tuple(ground_ids)},
         enrichment=RelaySnapshotEnrichment(
             operator_present=operator_last_seen_ms is not None,
             operator_last_seen_ms=0 if operator_last_seen_ms is None else operator_last_seen_ms,
@@ -272,6 +320,45 @@ def relay_snapshot(
     if estop_requested and not snapshot.estop_active:
         snapshot = replace(snapshot, estop_active=True)
     return snapshot
+
+
+def _readiness_reasons(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(
+        not isinstance(reason, str) or not reason for reason in value
+    ):
+        raise ValueError("relay readiness reasons must be non-empty strings")
+    return tuple(value)
+
+
+def _local_height_evidence(node_status: object) -> LocalHeightEvidence | None:
+    if not isinstance(node_status, Mapping):
+        return None
+    raw = node_status.get("local_height")
+    if not isinstance(raw, Mapping):
+        return None
+    z_m = raw.get("z_m")
+    source = raw.get("source")
+    age_ms = raw.get("age_ms")
+    reported_at_ms = raw.get("reported_at_ms")
+    if (
+        isinstance(z_m, bool)
+        or not isinstance(z_m, int | float)
+        or isinstance(source, bool)
+        or not isinstance(source, str)
+        or not isinstance(age_ms, int)
+        or isinstance(age_ms, bool)
+        or not isinstance(reported_at_ms, int)
+        or isinstance(reported_at_ms, bool)
+        or age_ms < 0
+        or reported_at_ms < age_ms
+    ):
+        return None
+    try:
+        return LocalHeightEvidence(
+            z_m=float(z_m), observed_at_ms=reported_at_ms - age_ms, source=source
+        )
+    except ValueError:
+        return None
 
 
 def control_projection(intent_name: IntentName, result: ExecutionResult) -> dict[str, object]:
@@ -488,12 +575,18 @@ class AutonomySession:
             if navigation_runtime is not None and navigation.approval.mode == "flight"
             else None
         )
-        self.planner = DeterministicPlanner(
-            composition.config.planning,
-            self.capability_profile,
-            navigation_runtime=navigation_runtime,
-        )
-        self.arbiter = SafetyArbiter(composition.config.safety)
+        if composition.config.supervised_vertical is not None:
+            self.planner = SupervisedVerticalPlanner(composition.config.supervised_vertical)
+            self.arbiter = SupervisedVerticalArbiter(composition.config.supervised_vertical)
+        else:
+            assert composition.config.planning is not None
+            assert composition.config.safety is not None
+            self.planner = DeterministicPlanner(
+                composition.config.planning,
+                self.capability_profile,
+                navigation_runtime=navigation_runtime,
+            )
+            self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
         self._operator_last_seen_ms: int | None = None
         self._stop_requested = False
@@ -1121,16 +1214,20 @@ class AutonomyComposition:
         node_types: Mapping[int, NodeType] | None = None,
     ) -> None:
         self.config = config
-        profile = config.planning.effective_capability_profile(capability_profile)
-        if node_types is not None and any(
-            node_type is NodeType.GROUND for node_type in node_types.values()
-        ):
-            profile = with_ground_capabilities(profile)
-            profile = CapabilityProfile(
-                profile.name, profile.enabled_intent_names | SURVEY_ADDITIONAL_INTENT_NAMES
-            )
-        if config.navigation is not None:
-            profile = navigation_capability_profile(profile, config.navigation.config)
+        if config.supervised_vertical is not None:
+            profile = SUPERVISED_VERTICAL_PROFILE
+        else:
+            assert config.planning is not None
+            profile = config.planning.effective_capability_profile(capability_profile)
+            if node_types is not None and any(
+                node_type is NodeType.GROUND for node_type in node_types.values()
+            ):
+                profile = with_ground_capabilities(profile)
+                profile = CapabilityProfile(
+                    profile.name, profile.enabled_intent_names | SURVEY_ADDITIONAL_INTENT_NAMES
+                )
+            if config.navigation is not None:
+                profile = navigation_capability_profile(profile, config.navigation.config)
         self.capability_profile = profile
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}

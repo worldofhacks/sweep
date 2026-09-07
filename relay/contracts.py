@@ -652,7 +652,7 @@ class CaptureReadinessFrame:
 
 @dataclass(frozen=True, slots=True)
 class NodeStatusFrame:
-    """Node-authored bridge health; informational and never a readiness gate."""
+    """Node-authored bridge health and optional local-height evidence."""
 
     v: Literal[1]
     t: int
@@ -668,6 +668,7 @@ class NodeStatusFrame:
     video_publish_state: VideoPublishState
     phone_battery_percent: int
     phone_thermal_state: PhoneThermalState
+    local_height: LocalHeightFrame | None = None
 
     def to_event(self) -> dict[str, object]:
         return {
@@ -681,18 +682,23 @@ class NodeStatusFrame:
             **self._payload(),
         }
 
-    def state_payload(self) -> dict[str, object]:
+    def state_payload(self, *, reported_at_ms: int | None = None) -> dict[str, object]:
         """Return the per-aircraft projection without transport-only fields."""
         return {
             "v": self.v,
             "t": self.t,
             "type": self.type,
             "drone_id": self.drone_id,
-            **self._payload(),
+            **self._payload(
+                reported_at_ms=self.t if reported_at_ms is None else reported_at_ms,
+                include_local_height=True,
+            ),
         }
 
-    def _payload(self) -> dict[str, object]:
-        return {
+    def _payload(
+        self, *, reported_at_ms: int | None = None, include_local_height: bool = False
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
             "virtual_stick_enabled": self.virtual_stick_enabled,
             "control_authority": self.control_authority,
             "authority_change_reason": self.authority_change_reason,
@@ -701,6 +707,24 @@ class NodeStatusFrame:
             "phone_battery_percent": self.phone_battery_percent,
             "phone_thermal_state": self.phone_thermal_state.value,
         }
+        if self.local_height is not None:
+            payload["local_height"] = {
+                **self.local_height.to_dict(),
+                **({"reported_at_ms": reported_at_ms} if reported_at_ms is not None else {}),
+            }
+        elif include_local_height:
+            payload["local_height"] = None
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class LocalHeightFrame:
+    z_m: float
+    source: Literal["flight_controller_altitude"]
+    age_ms: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {"z_m": self.z_m, "source": self.source, "age_ms": self.age_ms}
 
 
 def parse_membership_request(raw: object) -> MembershipRequest:
@@ -1239,6 +1263,20 @@ def parse_capture_readiness(raw: object) -> CaptureReadinessFrame:
     )
 
 
+def _local_height(value: object, code: str) -> LocalHeightFrame:
+    height = _mapping(value, code, "local_height must be an object")
+    _exact_fields(height, {"z_m", "source", "age_ms"}, code)
+    z_m = _finite_number(height["z_m"], "local_height.z_m", code)
+    source = height["source"]
+    if source != "flight_controller_altitude":
+        raise ContractError(code, "local_height.source is unsupported")
+    return LocalHeightFrame(
+        z_m=z_m,
+        source="flight_controller_altitude",
+        age_ms=_nonnegative_int(height["age_ms"], "local_height.age_ms", code),
+    )
+
+
 def parse_node_status(raw: object) -> NodeStatusFrame:
     code = "invalid_node_status"
     value = _mapping(raw, code, "node_status frame must be an object")
@@ -1253,6 +1291,8 @@ def parse_node_status(raw: object) -> NodeStatusFrame:
         "phone_battery_percent",
         "phone_thermal_state",
     }
+    if "local_height" in value:
+        fields = fields | {"local_height"}
     _exact_fields(value, fields, code)
     _common_envelope(value, expected_type="node_status", code=code)
     battery = _nonnegative_int(value["phone_battery_percent"], "phone_battery_percent", code)
@@ -1278,6 +1318,7 @@ def parse_node_status(raw: object) -> NodeStatusFrame:
         _enum(VideoPublishState, value["video_publish_state"], "video_publish_state", code),
         battery,
         _enum(PhoneThermalState, value["phone_thermal_state"], "phone_thermal_state", code),
+        None if "local_height" not in value else _local_height(value["local_height"], code),
     )
 
 

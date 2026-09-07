@@ -54,6 +54,7 @@ const REASON_SENTENCES: Sentences = {
     `Battery is critical; only ${noun === 'robot' ? 'stopping' : 'landing'} is permitted.`,
   link_quality: 'Radio link quality is below the limit for commanded motion.',
   link_stale: 'No link report arrived inside the freshness window.',
+  local_height_unavailable: 'No fresh flight-controller altitude report is available for supervised vertical flight.',
   position_quality: 'Position quality is below the limit for commanded motion.',
   position_stale: 'No position report arrived inside the freshness window.',
   operator_absent: 'No operator presence was reported at the ground station.',

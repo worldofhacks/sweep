@@ -20,6 +20,7 @@ from relay.session import RelaySession
 from relay.state import RegistryError
 from relay.tests.conftest import (
     ADAPTER_KEY,
+    MutableClock,
     acknowledgement_payload,
     capabilities_payload,
     capture_bundle_payload,
@@ -75,6 +76,33 @@ def test_capabilities_and_node_status_update_state_and_fan_out(
     replayed = [record["event"]["type"] for record in relay_session.replay()["events"]]
     assert replayed[-4:] == ["capabilities", "state", "node_status", "state"]
     assert relay_session.metrics()["node_events"] == 2
+
+
+def test_node_status_height_age_uses_relay_receipt_time(
+    relay_session: RelaySession, adapter_principal: Principal, clock: MutableClock
+) -> None:
+    now = clock.value
+    relay_session.process_membership(
+        membership_payload(action="join", event_id="join-height-receipt", timestamp=now - 600),
+        adapter_principal,
+    )
+    status = relay_session.process_frame(
+        node_status_payload(
+            event_id="status-height-receipt",
+            timestamp=now - 500,
+            local_height={"z_m": 0.4, "source": "flight_controller_altitude", "age_ms": 12},
+        ),
+        adapter_principal,
+    )
+
+    local_height = status[1]["drones"][0]["node_status"]["local_height"]
+    assert local_height == {
+        "z_m": 0.4,
+        "source": "flight_controller_altitude",
+        "age_ms": 12,
+        "reported_at_ms": now,
+    }
+
 
 
 @pytest.mark.parametrize(

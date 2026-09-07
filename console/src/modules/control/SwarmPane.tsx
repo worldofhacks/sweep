@@ -25,6 +25,7 @@ import {
   motionControls,
   noReadyReason,
   readyIds,
+  supervisedVerticalProfile,
   type ControlSpec,
 } from './controls'
 
@@ -45,6 +46,9 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
   const selectEnabled = isIntentEnabled(state, 'select')
   const dpadReason = dpadBlockedReason(state)
   const rosterWord = rosterNoun(sortedAircraft(state.aircraft))
+  const supervisedVertical = supervisedVerticalProfile(state)
+  const fleet = fleetControls(state).filter((spec) => !supervisedVertical || spec.supported)
+  const motion = motionControls(state).filter((spec) => !supervisedVertical || spec.supported)
   const run = (spec: ControlSpec) => {
     if (spec.name === 'select') selectAllReady()
     else issueIntent(spec.press)
@@ -113,7 +117,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
 
         <p className="ct-eyebrow">Fleet</p>
         <div className="ct-fleet-row" role="group" aria-label="Fleet controls">
-          {fleetControls(state).map((spec) => (
+          {fleet.map((spec) => (
             <ControlButton key={spec.key} spec={spec} onPress={run} />
           ))}
         </div>
@@ -122,13 +126,14 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
           <div className="ct-motion">
             <p className="ct-eyebrow">Motion — every selected {rosterWord}</p>
             <div className="ct-motion-list" role="group" aria-label="Motion controls">
-              {motionControls(state).map((spec) => (
+              {motion.map((spec) => (
                 <ControlButton key={spec.key} spec={spec} motion onPress={run} />
               ))}
             </div>
             <p className="ct-motion-foot">{MOTION_FOOTNOTE}</p>
           </div>
-          <div className="ct-dpad-wrap">
+          {!supervisedVertical && (
+            <div className="ct-dpad-wrap">
             <p className="ct-eyebrow">Translate together</p>
             <TranslatePad
               blockedReason={dpadReason}
@@ -149,16 +154,19 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
             </label>
             <p className="ct-dpad-note">Robots: room east +x, north +y. Aircraft: relay-configured translation frame. One step is configured by the relay.</p>
             {dpadReason && <p className="ct-dpad-note">{dpadReason}</p>}
-          </div>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="ct-column">
-        <FormationPanel
-          controller={controller}
-          preview={formationPreview}
-          onPreview={onFormationPreview}
-        />
+        {!supervisedVertical && (
+          <FormationPanel
+            controller={controller}
+            preview={formationPreview}
+            onPreview={onFormationPreview}
+          />
+        )}
         {pendingRequest && <FanoutCard pending={pendingRequest} state={state} />}
       </div>
     </div>
