@@ -2,7 +2,7 @@
 
 This package runs the ground adapter on the measured Ohmni Android 7.1 image. It ships a musl Python 3.12 runtime, a pure-Python `websockets` wheel, the Ohmni adapter, and the small relay/planner contract set it imports. The robot does not run Docker, `pip`, or a host Python interpreter.
 
-`run.sh` starts `./lib/ld-musl-x86_64.so.1 ./python/bin/python3.12 -m adapters.ohmni`. It reads a mode-600 `node.env`, records a PID, verifies that PID before stopping it, and gives the runtime time to issue its local stop writes. `install.sh` stages a plain tar through ADB, then extracts it with Toybox through the Ohmni's `su 0` shell. It leaves the adapter stopped. Set `ADB` to the platform-tools executable when it is outside your PATH.
+`run.sh` starts `./lib/ld-musl-x86_64.so.1 ./python/bin/python3.12 -m adapters.ohmni`. It reads a mode-600 `node.env`, records a PID, verifies that PID before stopping it, and gives the runtime time to issue its local stop writes. `camera.sh` is separate: it starts only the camera publisher from `camera.env`, verifies its own PID before stopping it, and never creates a ground device or sends a control command. `install.sh` stages a plain tar through ADB, then extracts it with Toybox through the Ohmni's `su 0` shell. It leaves the adapter stopped. Set `ADB` to the platform-tools executable when it is outside your PATH.
 
 A normal runtime joins with motion disabled until the local spotter, calibrated lidar, current pose, and signed relay heartbeat qualify it. The local device deadman continues to run independently of the relay event loop. Deployment and physical motion are separate supervised activities.
 
@@ -49,7 +49,15 @@ SWEEP_LIDAR_MOUNT_YAW_DEG=0.00
 
 The lidar transform values are measurements. They must not be copied from this example. Camera publishing is disabled unless `SWEEP_MEDIA_HOST` and every `SWEEP_CAMERA_*` source value are present. The source is an approved V4L node, its exact input format, its native rate (`native`) or a measured integer FPS, and its dimensions. The relay device ID derives the canonical MediaMTX path `drone{id}`; it is never renumbered to a ground-unit path. Current measured configurations are unit 11: `/dev/video1`, `mjpeg`, `native`, 640×480; unit 12: `/dev/video0`, `uyvy422`, `30`, 640×480. These identify a usable image stream only. They do not establish tag identity, camera calibration, pose, or timing.
 
-The publisher reports `publishing` only after ffmpeg reports a decoded frame and reverts to `failed` when progress goes stale. Start only after the qualification checks below:
+The publisher reports `publishing` only after ffmpeg reports a decoded frame and reverts to `failed` when progress goes stale. The field media server keeps RTSP on VPS loopback. Each camera uses `adb reverse tcp:8554 tcp:18554`, and its `camera.env` sets `SWEEP_MEDIA_HOST=127.0.0.1:8554`; the media-only publisher credential then stays inside the authenticated ADB tunnel instead of crossing the public network. Keep `camera.env` mode 600 and use the separate camera process only after the payload that contains it is installed:
+
+```sh
+adb -s "$ADB_SERIAL" reverse tcp:8554 tcp:18554
+adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/adapters/ohmni/camera.sh start
+adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/adapters/ohmni/camera.sh stop
+```
+
+Start the ground runtime only after the qualification checks below:
 
 ```sh
 adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/run.sh start

@@ -5,8 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from .camera import Camera, V4LSource, command, publish_url, stream_name
-from .device import _camera_from_environment
+from .camera import Camera, V4LSource, command, from_environment, publish_url, stream_name
 
 SOURCE_11 = V4LSource("/dev/video1", "mjpeg", None, 640, 480)
 
@@ -56,11 +55,11 @@ def test_camera_environment_requires_an_explicit_verified_source(
     monkeypatch.setenv("SWEEP_CAMERA_WIDTH_PX", "640")
     monkeypatch.setenv("SWEEP_CAMERA_HEIGHT_PX", "480")
 
-    camera = _camera_from_environment("media.example", "node-key")
+    camera = from_environment("media.example", "node-key")
     values = camera._command
     assert values[values.index("-i") + 1] == "/dev/video1"
     assert "/drone11" in values[-1]
 
     monkeypatch.delenv("SWEEP_CAMERA_INPUT_FORMAT")
     with pytest.raises(ValueError, match="SWEEP_CAMERA_INPUT_FORMAT"):
-        _camera_from_environment("media.example", "node-key")
+        from_environment("media.example", "node-key")
