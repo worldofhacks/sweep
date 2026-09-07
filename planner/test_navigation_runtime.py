@@ -210,3 +210,23 @@ def test_two_aircraft_line_routes_check_each_actual_segment_and_arrival():
     assert isinstance(
         runtime.check(plan, plan.commands[-1], replace(snapshot, spacing=1.0)), Refusal
     )
+
+
+def test_live_tracking_accepts_progress_and_refuses_departure_from_frozen_segment():
+    from relay.tests.test_navigation_wire import _publisher
+
+    publisher, plan, snapshots, poses, clock = _publisher()
+    runtime = publisher.runtime
+    clock.value = 100100
+    poses[0] = replace(poses[0], t=100100, pose_time_ms=100050, fix_time_ms=100050, x_mm=2000)
+    current = replace_aircraft(
+        replace(snapshots[0], now_ms=100100),
+        1,
+        pose=Position(2.0, 1.5, 1.0),
+        position_last_seen_ms=100100,
+    )
+    assert isinstance(runtime.check(plan, plan.commands[0], current), Refusal)
+    assert runtime.check_tracking(plan, plan.commands[0], current, poses[0]) is None
+    poses[0] = replace(poses[0], y_mm=1700)
+    current = replace_aircraft(current, 1, pose=Position(2.0, 1.7, 1.0))
+    assert isinstance(runtime.check_tracking(plan, plan.commands[0], current, poses[0]), Refusal)

@@ -40,10 +40,20 @@ class NavigationFrame:
     transform_id: str
     world_from_enu: tuple[tuple[float, ...], ...]
     control_pins: ControlLocalizationPins | None = None
+    camera_calibration_sha256: str | None = None
+    body_extrinsics_sha256: str | None = None
+    world_transform_sha256: str | None = None
 
     def __post_init__(self) -> None:
         integer(self.drone_id, "drone_id", minimum=1)
         normalized_text(self.transform_id, "transform_id")
+        for name in (
+            "camera_calibration_sha256",
+            "body_extrinsics_sha256",
+            "world_transform_sha256",
+        ):
+            if getattr(self, name) is not None:
+                sha256_digest(getattr(self, name), name)
         matrix = np.asarray(self.world_from_enu, dtype=float)
         if (
             not isinstance(self.world_from_enu, tuple)
@@ -361,6 +371,7 @@ class NavigationRuntime:
         *,
         completed: bool = False,
         issued_at_ms: int | None = None,
+        _tracking_pose: ControlPose | None = None,
     ) -> Refusal | None:
         try:
             execution = plan.navigation
@@ -375,7 +386,7 @@ class NavigationRuntime:
                 or execution.configuration_sha256 != self.approval.configuration_sha256
             ):
                 raise ValueError("navigation configuration or approval changed")
-            positions = self._positions(snapshot)
+            positions = self._positions(snapshot, _tracking_pose)
             route_plan = execution.route
             destination = self.home_zone_id
             if plan.intent_name is IntentName.FORMATION_SET:
@@ -405,7 +416,31 @@ class NavigationRuntime:
                 active = next(item for item in positions if item.drone_id == command.drone_id)
                 arrival = completed or cursor == count
                 segment_index = min(cursor, count - 1)
-                if arrival:
+                if _tracking_pose is not None:
+                    if completed or command.operation is not CommandOperation.GOTO:
+                        raise ValueError("tracking evidence requires an active goto segment")
+                    segment = route.swept_segments[segment_index]
+                    start, end = np.asarray(segment.start.xyz), np.asarray(segment.end.xyz)
+                    vector = end - start
+                    length_squared = float(vector @ vector)
+                    progress = (
+                        0.0
+                        if length_squared == 0
+                        else float(
+                            np.clip(
+                                (np.asarray(active.pose.xyz) - start) @ vector / length_squared,
+                                0,
+                                1,
+                            )
+                        )
+                    )
+                    if (
+                        dist(active.pose.xyz, start + progress * vector)
+                        > self.config.motion.tracking_allowance_m
+                    ):
+                        raise ValueError("navigation position left the frozen tracking corridor")
+                    target = active.pose
+                elif arrival:
                     target = route.swept_segments[segment_index].end
                     if (
                         active.pose.floor_id != target.floor_id
@@ -430,7 +465,7 @@ class NavigationRuntime:
                             is not FlightState.HOVERING
                         ):
                             raise ValueError("arrival hold is not confirmed by telemetry")
-                    # Recheck the endpoint and remaining geometry with the actual arrival pose.
+                if arrival or _tracking_pose is not None:
                     segments = route.swept_segments
                     adjusted = replace(segments[segment_index], start=target)
                     adjusted_segments = (
@@ -500,7 +535,18 @@ class NavigationRuntime:
             raise ValueError("navigation control pose is missing")
         return pose.pose_time_ms
 
-    def _positions(self, snapshot: FleetSnapshot) -> tuple[DronePose, ...]:
+    def check_tracking(
+        self, plan: Plan, command: Command, snapshot: FleetSnapshot, pose: ControlPose
+    ) -> Refusal | None:
+        if self.control_pose is None or self.control_pose(command.drone_id) != pose:
+            return self._refusal(
+                plan.intent_id, snapshot, "tracking pose is not retained by this session"
+            )
+        return self.check(plan, command, snapshot, _tracking_pose=pose)
+
+    def _positions(
+        self, snapshot: FleetSnapshot, override: ControlPose | None = None
+    ) -> tuple[DronePose, ...]:
         positions = []
         for aircraft in snapshot.aircraft.values():
             if not aircraft.airborne and aircraft.drone_id not in snapshot.selection:
@@ -517,7 +563,11 @@ class NavigationRuntime:
                 raise ValueError("navigation position evidence is stale or low quality")
             xyz = (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
             if self.approval.mode == "flight":
-                pose = self.control_pose(aircraft.drone_id)
+                pose = (
+                    override
+                    if override is not None and override.drone_id == aircraft.drone_id
+                    else self.control_pose(aircraft.drone_id)
+                )
                 pin = frame.control_pins
                 if (
                     pose is None
